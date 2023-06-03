@@ -46,8 +46,8 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: install rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: install rust nightly
+        uses: dtolnay/rust-toolchain@nightly
 
       - run: cargo bench
 
