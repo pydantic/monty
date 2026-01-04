@@ -19,7 +19,7 @@ pub use monty_cls::{PyMonty, PyMontyComplete, PyMontySnapshot};
 #[pymodule]
 mod monty {
     use pyo3::prelude::*;
-    use pyo3::types::{PyDict, PyDictMethods};
+    use pyo3::types::PyDict;
 
     #[pymodule_export]
     use super::PyMonty as Monty;
@@ -35,36 +35,29 @@ mod monty {
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
         let py = m.py();
 
-        // Create the TypedDict using Python's typing module
-        let typing = py.import("typing")?;
-        let typed_dict = typing.getattr("TypedDict")?;
+        // Create ResourceLimits TypedDict by executing Python code
+        let locals = PyDict::new(py);
+        py.run(
+            c"
+from typing import TypedDict
 
-        // Get base types
-        let builtins = py.import("builtins")?;
-        let int_type = builtins.getattr("int")?;
-        let float_type = builtins.getattr("float")?;
+class ResourceLimits(TypedDict, total=False):
+    \"\"\"
+    Configuration for resource limits during code execution.
 
-        // Define the fields with their types (all Optional)
-        let fields = PyDict::new(py);
-        fields.set_item("max_allocations", &int_type)?;
-        fields.set_item("max_duration_secs", &float_type)?;
-        fields.set_item("max_memory", &int_type)?;
-        fields.set_item("gc_interval", &int_type)?;
-        fields.set_item("max_recursion_depth", &int_type)?;
-
-        // Create the TypedDict class: TypedDict('ResourceLimits', {...}, total=False)
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("total", false)?;
-        let resource_limits = typed_dict.call(("ResourceLimits", fields), Some(&kwargs))?;
-
-        // Set the docstring
-        resource_limits.setattr(
-            "__doc__",
-            "Configuration for resource limits during code execution.\n\n\
-             All limits are optional. Omit a key to disable that limit.",
+    All limits are optional. Omit a key to disable that limit.
+    \"\"\"
+    max_allocations: int
+    max_duration_secs: float
+    max_memory: int
+    gc_interval: int
+    max_recursion_depth: int
+",
+            None,
+            Some(&locals),
         )?;
 
-        // Add to module
+        let resource_limits = locals.get_item("ResourceLimits")?.unwrap();
         m.add("ResourceLimits", resource_limits)?;
 
         Ok(())
