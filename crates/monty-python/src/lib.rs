@@ -38,24 +38,19 @@ mod monty {
         // Create the TypedDict using Python's typing module
         let typing = py.import("typing")?;
         let typed_dict = typing.getattr("TypedDict")?;
-        let optional = typing.getattr("Optional")?;
 
         // Get base types
         let builtins = py.import("builtins")?;
         let int_type = builtins.getattr("int")?;
         let float_type = builtins.getattr("float")?;
 
-        // Create Optional[int] and Optional[float]
-        let int_or_none = optional.get_item(int_type)?;
-        let float_or_none = optional.get_item(float_type)?;
-
         // Define the fields with their types (all Optional)
         let fields = PyDict::new(py);
-        fields.set_item("max_allocations", &int_or_none)?;
-        fields.set_item("max_duration_secs", &float_or_none)?;
-        fields.set_item("max_memory", &int_or_none)?;
-        fields.set_item("gc_interval", &int_or_none)?;
-        fields.set_item("max_recursion_depth", &int_or_none)?;
+        fields.set_item("max_allocations", &int_type)?;
+        fields.set_item("max_duration_secs", &float_type)?;
+        fields.set_item("max_memory", &int_type)?;
+        fields.set_item("gc_interval", &int_type)?;
+        fields.set_item("max_recursion_depth", &int_type)?;
 
         // Create the TypedDict class: TypedDict('ResourceLimits', {...}, total=False)
         let kwargs = PyDict::new(py);
@@ -66,10 +61,7 @@ mod monty {
         resource_limits.setattr(
             "__doc__",
             "Configuration for resource limits during code execution.\n\n\
-             All limits are optional. Omit a key or set to None to disable that limit.\n\n\
-             Example::\n\n\
-                 limits: ResourceLimits = {'max_duration_secs': 5.0, 'max_memory': 1024 * 1024}\n\
-                 result = m.run(limits=limits)",
+             All limits are optional. Omit a key to disable that limit.",
         )?;
 
         // Add to module

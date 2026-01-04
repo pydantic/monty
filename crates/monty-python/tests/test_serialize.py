@@ -187,7 +187,8 @@ def test_monty_dump_load_various_outputs(code: str, expected: Any):
 
 def test_progress_dump_load_with_limits():
     m = monty.Monty('func()', external_functions=['func'])
-    progress = m.start(limits={'max_allocations': 1000})
+    limits = monty.ResourceLimits(max_allocations=1000)
+    progress = m.start(limits=limits)
     assert isinstance(progress, monty.MontySnapshot)
 
     data = progress.dump()

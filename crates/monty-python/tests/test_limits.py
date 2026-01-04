@@ -2,38 +2,31 @@ import pytest
 from inline_snapshot import snapshot
 
 import monty
-from monty import ResourceLimits
 
 
-def test_resource_limits_is_typeddict():
-    """Verify ResourceLimits is a proper TypedDict."""
-    assert isinstance(ResourceLimits, type)
-    # TypedDict classes have __annotations__
-    assert hasattr(ResourceLimits, '__annotations__')
-    assert 'max_allocations' in ResourceLimits.__annotations__
-    assert 'max_duration_secs' in ResourceLimits.__annotations__
+def test_resource_limits_custom():
+    limits = monty.ResourceLimits(
+        max_allocations=100,
+        max_duration_secs=5.0,
+        max_memory=1024,
+        gc_interval=10,
+        max_recursion_depth=500,
+    )
+    assert limits.get('max_allocations') == snapshot(100)
+    assert limits.get('max_duration_secs') == snapshot(5.0)
+    assert limits.get('max_memory') == snapshot(1024)
+    assert limits.get('gc_interval') == snapshot(10)
+    assert limits.get('max_recursion_depth') == snapshot(500)
 
 
-def test_resource_limits_type_annotation():
-    """Verify ResourceLimits can be used as a type annotation."""
-    limits: ResourceLimits = {'max_duration_secs': 5.0}
-    assert limits['max_duration_secs'] == 5.0
+def test_resource_limits_repr():
+    limits = monty.ResourceLimits(max_duration_secs=1.0)
+    assert repr(limits) == snapshot("{'max_duration_secs': 1.0}")
 
 
 def test_run_with_limits():
     m = monty.Monty('1 + 1')
-    assert m.run(limits={'max_duration_secs': 5.0}) == snapshot(2)
-
-
-def test_run_with_all_limits():
-    m = monty.Monty('1 + 1')
-    limits: ResourceLimits = {
-        'max_allocations': 100,
-        'max_duration_secs': 5.0,
-        'max_memory': 1024 * 1024,
-        'gc_interval': 10,
-        'max_recursion_depth': 500,
-    }
+    limits = monty.ResourceLimits(max_duration_secs=5.0)
     assert m.run(limits=limits) == snapshot(2)
 
 
@@ -47,8 +40,9 @@ def recurse(n):
 recurse(10)
 """
     m = monty.Monty(code)
+    limits = monty.ResourceLimits(max_recursion_depth=5)
     with pytest.raises(RecursionError):
-        m.run(limits={'max_recursion_depth': 5})
+        m.run(limits=limits)
 
 
 def test_recursion_limit_ok():
@@ -61,7 +55,8 @@ def recurse(n):
 recurse(5)
 """
     m = monty.Monty(code)
-    assert m.run(limits={'max_recursion_depth': 100}) == snapshot(5)
+    limits = monty.ResourceLimits(max_recursion_depth=100)
+    assert m.run(limits=limits) == snapshot(5)
 
 
 def test_allocation_limit():
@@ -74,8 +69,9 @@ for i in range(10000):
 len(result)
 """
     m = monty.Monty(code)
+    limits = monty.ResourceLimits(max_allocations=5)
     with pytest.raises(MemoryError):
-        m.run(limits={'max_allocations': 5})
+        m.run(limits=limits)
 
 
 def test_memory_limit():
@@ -86,10 +82,12 @@ for i in range(1000):
 len(result)
 """
     m = monty.Monty(code)
+    limits = monty.ResourceLimits(max_memory=100)
     with pytest.raises(MemoryError):
-        m.run(limits={'max_memory': 100})
+        m.run(limits=limits)
 
 
 def test_limits_with_inputs():
     m = monty.Monty('x * 2', inputs=['x'])
-    assert m.run(inputs={'x': 21}, limits={'max_duration_secs': 5.0}) == snapshot(42)
+    limits = monty.ResourceLimits(max_duration_secs=5.0)
+    assert m.run(inputs={'x': 21}, limits=limits) == snapshot(42)

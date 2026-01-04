@@ -115,7 +115,8 @@ def test_start_with_inputs():
 
 def test_start_with_limits():
     m = monty.Monty('1 + 2')
-    result = m.start(limits={'max_allocations': 1000})
+    limits = monty.ResourceLimits(max_allocations=1000)
+    result = m.start(limits=limits)
     assert isinstance(result, monty.MontyComplete)
     assert result.output == snapshot(3)
 

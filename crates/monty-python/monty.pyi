@@ -8,26 +8,22 @@ class ResourceLimits(TypedDict, total=False):
     """
     Configuration for resource limits during code execution.
 
-    All limits are optional. Omit a key or set to None to disable that limit.
-
-    Example:
-        >>> limits: ResourceLimits = {'max_duration_secs': 5.0, 'max_memory': 1024 * 1024}
-        >>> result = monty.run("...", limits=limits)
+    All limits are optional. Omit a key to disable that limit.
     """
 
-    max_allocations: int | None
+    max_allocations: int
     """Maximum number of heap allocations allowed."""
 
-    max_duration_secs: float | None
+    max_duration_secs: float
     """Maximum execution time in seconds."""
 
-    max_memory: int | None
+    max_memory: int
     """Maximum heap memory in bytes."""
 
-    gc_interval: int | None
+    gc_interval: int
     """Run garbage collection every N allocations."""
 
-    max_recursion_depth: int | None
+    max_recursion_depth: int
     """Maximum function call stack depth (default: 1000)."""
 
 @final
@@ -108,7 +104,6 @@ class Monty:
         """
 
     def __repr__(self) -> str: ...
-
     def dump(self) -> bytes:
         """
         Serialize the Monty instance to a binary format.
@@ -181,7 +176,6 @@ class MontySnapshot:
         """
 
     def __repr__(self) -> str: ...
-
     def dump(self) -> bytes:
         """
         Serialize the MontySnapshot instance to a binary format.
