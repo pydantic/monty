@@ -13,10 +13,10 @@ print(f'Inputs: {m.run(inputs={"x": 10, "y": 20})}')  # 30
 # Reusing the same parsed code with different values
 print(f'Reuse: {m.run(inputs={"x": 100, "y": 200})}')  # 300
 
-# With resource limits
-limits = monty.ResourceLimits(max_duration_secs=5.0, max_memory=1024 * 1024)
+# With resource limits (ResourceLimits is a TypedDict - just use a plain dict)
 m = monty.Monty('x * y * z', inputs=['x', 'y', 'z'])
-print(f'With limits: {m.run(inputs={"x": 2, "y": 3, "z": 4}, limits=limits)}')  # 24
+result = m.run(inputs={'x': 2, 'y': 3, 'z': 4}, limits={'max_duration_secs': 5.0, 'max_memory': 1024 * 1024})
+print(f'With limits: {result}')  # 24
 
 # External function callbacks
 m = monty.Monty('fetch("https://example.com")', external_functions=['fetch'])

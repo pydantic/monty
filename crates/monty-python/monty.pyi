@@ -1,8 +1,34 @@
 from typing import Any, Callable, Literal, final
 
-from typing_extensions import Self
+from typing_extensions import Self, TypedDict
 
 __all__ = ['Monty', 'MontyComplete', 'MontySnapshot', 'ResourceLimits']
+
+class ResourceLimits(TypedDict, total=False):
+    """
+    Configuration for resource limits during code execution.
+
+    All limits are optional. Omit a key or set to None to disable that limit.
+
+    Example:
+        >>> limits: ResourceLimits = {'max_duration_secs': 5.0, 'max_memory': 1024 * 1024}
+        >>> result = monty.run("...", limits=limits)
+    """
+
+    max_allocations: int | None
+    """Maximum number of heap allocations allowed."""
+
+    max_duration_secs: float | None
+    """Maximum execution time in seconds."""
+
+    max_memory: int | None
+    """Maximum heap memory in bytes."""
+
+    gc_interval: int | None
+    """Run garbage collection every N allocations."""
+
+    max_recursion_depth: int | None
+    """Maximum function call stack depth (default: 1000)."""
 
 @final
 class Monty:
@@ -204,50 +230,5 @@ class MontyComplete:
     @property
     def output(self) -> Any:
         """The final output value from the executed code."""
-
-    def __repr__(self) -> str: ...
-
-@final
-class ResourceLimits:
-    """
-    Configuration for resource limits during code execution.
-
-    All limits are optional. Set to None to disable a specific limit.
-    """
-
-    max_allocations: int | None
-    """Maximum number of heap allocations allowed."""
-
-    max_duration_secs: float | None
-    """Maximum execution time in seconds."""
-
-    max_memory: int | None
-    """Maximum heap memory in bytes."""
-
-    gc_interval: int | None
-    """Run garbage collection every N allocations."""
-
-    max_recursion_depth: int | None
-    """Maximum function call stack depth (default: 1000)."""
-
-    def __new__(
-        cls,
-        *,
-        max_allocations: int | None = None,
-        max_duration_secs: float | None = None,
-        max_memory: int | None = None,
-        gc_interval: int | None = None,
-        max_recursion_depth: int | None = ...,
-    ) -> Self:
-        """
-        Create a new ResourceLimits configuration.
-
-        Arguments:
-            max_allocations: Maximum number of heap allocations
-            max_duration_secs: Maximum execution time in seconds
-            max_memory: Maximum heap memory in bytes
-            gc_interval: Run garbage collection every N allocations
-            max_recursion_depth: Maximum function call depth (default: 1000)
-        """
 
     def __repr__(self) -> str: ...

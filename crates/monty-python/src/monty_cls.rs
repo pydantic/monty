@@ -13,7 +13,7 @@ use pyo3::{prelude::*, IntoPyObjectExt};
 use crate::convert::{monty_to_py, py_to_monty};
 use crate::exceptions::{exc_monty_to_py, exc_py_to_monty};
 use crate::external::ExternalFunctionRegistry;
-use crate::limits::PyResourceLimits;
+use crate::limits::extract_limits;
 
 /// A sandboxed Python interpreter instance.
 ///
@@ -84,7 +84,7 @@ impl PyMonty {
         &self,
         py: Python<'_>,
         inputs: Option<&Bound<'_, PyDict>>,
-        limits: Option<&PyResourceLimits>,
+        limits: Option<&Bound<'_, PyDict>>,
         external_functions: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
@@ -118,12 +118,12 @@ impl PyMonty {
         match (limits, print_callback) {
             (Some(limits), Some(callback)) => {
                 run_code!(
-                    LimitedTracker::new(limits.to_monty_limits()),
+                    LimitedTracker::new(extract_limits(limits)?),
                     CallbackStringPrint(callback)
                 )
             }
             (Some(limits), None) => {
-                run_code!(LimitedTracker::new(limits.to_monty_limits()), StdPrint)
+                run_code!(LimitedTracker::new(extract_limits(limits)?), StdPrint)
             }
             (None, Some(callback)) => {
                 run_code!(NoLimitTracker::default(), CallbackStringPrint(callback))
@@ -139,7 +139,7 @@ impl PyMonty {
         &self,
         py: Python<'py>,
         inputs: Option<&Bound<'py, PyDict>>,
-        limits: Option<&PyResourceLimits>,
+        limits: Option<&Bound<'py, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         // Extract input values in the order they were declared
@@ -158,11 +158,11 @@ impl PyMonty {
         // separate code paths due to generics
         let progress = match (limits, print_callback) {
             (Some(limits), Some(callback)) => EitherProgress::Limited(start!(
-                LimitedTracker::new(limits.to_monty_limits()),
+                LimitedTracker::new(extract_limits(limits)?),
                 CallbackStringPrint(callback)
             )),
             (Some(limits), None) => {
-                EitherProgress::Limited(start!(LimitedTracker::new(limits.to_monty_limits()), StdPrint))
+                EitherProgress::Limited(start!(LimitedTracker::new(extract_limits(limits)?), StdPrint))
             }
             (None, Some(callback)) => {
                 EitherProgress::NoLimit(start!(NoLimitTracker::default(), CallbackStringPrint(callback)))
