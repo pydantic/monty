@@ -19,7 +19,8 @@ pub use monty_cls::{PyMonty, PyMontyComplete, PyMontySnapshot};
 #[pymodule]
 mod monty {
     use pyo3::prelude::*;
-    use pyo3::types::PyDict;
+
+    use crate::limits::create_resource_limits_class;
 
     #[pymodule_export]
     use super::PyMonty as Monty;
@@ -30,36 +31,10 @@ mod monty {
     #[pymodule_export]
     use super::PyMontyComplete as MontyComplete;
 
-    /// Creates the ResourceLimits TypedDict and adds it to the module.
+    /// Registers the ResourceLimits TypedDict in the module.
     #[pymodule_init]
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
-        let py = m.py();
-
-        // Create ResourceLimits TypedDict by executing Python code
-        let locals = PyDict::new(py);
-        py.run(
-            c"
-from typing import TypedDict
-
-class ResourceLimits(TypedDict, total=False):
-    \"\"\"
-    Configuration for resource limits during code execution.
-
-    All limits are optional. Omit a key to disable that limit.
-    \"\"\"
-    max_allocations: int
-    max_duration_secs: float
-    max_memory: int
-    gc_interval: int
-    max_recursion_depth: int
-",
-            None,
-            Some(&locals),
-        )?;
-
-        let resource_limits = locals.get_item("ResourceLimits")?.unwrap();
-        m.add("ResourceLimits", resource_limits)?;
-
+        m.add("ResourceLimits", create_resource_limits_class(m.py())?)?;
         Ok(())
     }
 }

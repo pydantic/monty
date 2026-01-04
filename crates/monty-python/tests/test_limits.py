@@ -91,3 +91,15 @@ def test_limits_with_inputs():
     m = monty.Monty('x * 2', inputs=['x'])
     limits = monty.ResourceLimits(max_duration_secs=5.0)
     assert m.run(inputs={'x': 21}, limits=limits) == snapshot(42)
+
+
+def test_limits_wrong_type_raises_error():
+    m = monty.Monty('1 + 1')
+    with pytest.raises(TypeError):
+        m.run(limits={'max_allocations': 'not an int'})  # pyright: ignore[reportArgumentType]
+
+
+def test_limits_none_value_allowed():
+    m = monty.Monty('1 + 1')
+    # None is valid to explicitly disable a limit
+    assert m.run(limits={'max_allocations': None}) == snapshot(2)  # pyright: ignore[reportArgumentType]

@@ -10,6 +10,34 @@ use std::time::Duration;
 /// Default maximum recursion depth if not specified.
 const DEFAULT_MAX_RECURSION_DEPTH: usize = 1000;
 
+/// Creates the `ResourceLimits` TypedDict class.
+///
+/// This is called during module initialization to create and register the TypedDict.
+pub fn create_resource_limits_class(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
+    let locals = PyDict::new(py);
+    py.run(
+        c"
+from typing import TypedDict
+
+class ResourceLimits(TypedDict, total=False):
+    \"\"\"
+    Configuration for resource limits during code execution.
+
+    All limits are optional. Omit a key to disable that limit.
+    \"\"\"
+    max_allocations: int
+    max_duration_secs: float
+    max_memory: int
+    gc_interval: int
+    max_recursion_depth: int
+",
+        None,
+        Some(&locals),
+    )?;
+
+    Ok(locals.get_item("ResourceLimits")?.unwrap())
+}
+
 /// Extracts resource limits from a Python dict.
 ///
 /// The dict should have the following optional keys:
@@ -21,15 +49,15 @@ const DEFAULT_MAX_RECURSION_DEPTH: usize = 1000;
 ///
 /// If a key is missing or set to `None`, that limit is not applied
 /// (except `max_recursion_depth` which defaults to 1000).
+///
+/// Raises `TypeError` if a value is present but has the wrong type.
 pub fn extract_limits(dict: &Bound<'_, PyDict>) -> PyResult<monty::ResourceLimits> {
-    let max_allocations: Option<usize> = dict.get_item("max_allocations")?.and_then(|v| v.extract().ok());
-    let max_duration_secs: Option<f64> = dict.get_item("max_duration_secs")?.and_then(|v| v.extract().ok());
-    let max_memory: Option<usize> = dict.get_item("max_memory")?.and_then(|v| v.extract().ok());
-    let gc_interval: Option<usize> = dict.get_item("gc_interval")?.and_then(|v| v.extract().ok());
-    let max_recursion_depth: Option<usize> = dict
-        .get_item("max_recursion_depth")?
-        .and_then(|v| v.extract().ok())
-        .or(Some(DEFAULT_MAX_RECURSION_DEPTH));
+    let max_allocations = extract_optional_usize(dict, "max_allocations")?;
+    let max_duration_secs = extract_optional_f64(dict, "max_duration_secs")?;
+    let max_memory = extract_optional_usize(dict, "max_memory")?;
+    let gc_interval = extract_optional_usize(dict, "gc_interval")?;
+    let max_recursion_depth =
+        extract_optional_usize(dict, "max_recursion_depth")?.or(Some(DEFAULT_MAX_RECURSION_DEPTH));
 
     let mut limits = monty::ResourceLimits::new().max_recursion_depth(max_recursion_depth);
 
@@ -47,4 +75,22 @@ pub fn extract_limits(dict: &Bound<'_, PyDict>) -> PyResult<monty::ResourceLimit
     }
 
     Ok(limits)
+}
+
+/// Extracts an optional usize from a dict, raising `TypeError` if the value has the wrong type.
+fn extract_optional_usize(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<usize>> {
+    match dict.get_item(key)? {
+        None => Ok(None),
+        Some(value) if value.is_none() => Ok(None),
+        Some(value) => Ok(Some(value.extract()?)),
+    }
+}
+
+/// Extracts an optional f64 from a dict, raising `TypeError` if the value has the wrong type.
+fn extract_optional_f64(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<f64>> {
+    match dict.get_item(key)? {
+        None => Ok(None),
+        Some(value) if value.is_none() => Ok(None),
+        Some(value) => Ok(Some(value.extract()?)),
+    }
 }
