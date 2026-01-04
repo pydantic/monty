@@ -43,8 +43,9 @@ import monty
 
 m = monty.Monty('x + y', inputs=['x', 'y'])
 
-# With resource limits (ResourceLimits is a TypedDict)
-result = m.run(inputs={'x': 1, 'y': 2}, limits={'max_duration_secs': 1.0})
+# With resource limits
+limits = monty.ResourceLimits(max_duration_secs=1.0)
+result = m.run(inputs={'x': 1, 'y': 2}, limits=limits)
 assert result == 3
 ```
 

@@ -4,28 +4,6 @@ from typing_extensions import Self, TypedDict
 
 __all__ = ['Monty', 'MontyComplete', 'MontySnapshot', 'ResourceLimits']
 
-class ResourceLimits(TypedDict, total=False):
-    """
-    Configuration for resource limits during code execution.
-
-    All limits are optional. Omit a key to disable that limit.
-    """
-
-    max_allocations: int
-    """Maximum number of heap allocations allowed."""
-
-    max_duration_secs: float
-    """Maximum execution time in seconds."""
-
-    max_memory: int
-    """Maximum heap memory in bytes."""
-
-    gc_interval: int
-    """Run garbage collection every N allocations."""
-
-    max_recursion_depth: int
-    """Maximum function call stack depth (default: 1000)."""
-
 @final
 class Monty:
     """
@@ -103,7 +81,6 @@ class Monty:
             MontyComplete if execution finished without external calls.
         """
 
-    def __repr__(self) -> str: ...
     def dump(self) -> bytes:
         """
         Serialize the Monty instance to a binary format.
@@ -132,6 +109,8 @@ class Monty:
         Raises:
             ValueError: If deserialization fails.
         """
+
+    def __repr__(self) -> str: ...
 
 @final
 class MontySnapshot:
@@ -175,7 +154,6 @@ class MontySnapshot:
             RuntimeError: If execution has already completed.
         """
 
-    def __repr__(self) -> str: ...
     def dump(self) -> bytes:
         """
         Serialize the MontySnapshot instance to a binary format.
@@ -217,6 +195,8 @@ class MontySnapshot:
             ValueError: If deserialization fails.
         """
 
+    def __repr__(self) -> str: ...
+
 @final
 class MontyComplete:
     """The result of a completed code execution."""
@@ -226,3 +206,25 @@ class MontyComplete:
         """The final output value from the executed code."""
 
     def __repr__(self) -> str: ...
+
+class ResourceLimits(TypedDict, total=False):
+    """
+    Configuration for resource limits during code execution.
+
+    All limits are optional. Omit a key to disable that limit.
+    """
+
+    max_allocations: int
+    """Maximum number of heap allocations allowed."""
+
+    max_duration_secs: float
+    """Maximum execution time in seconds."""
+
+    max_memory: int
+    """Maximum heap memory in bytes."""
+
+    gc_interval: int
+    """Run garbage collection every N allocations."""
+
+    max_recursion_depth: int
+    """Maximum function call stack depth (default: 1000)."""
