@@ -181,8 +181,12 @@ pub struct StackFrame {
     pub frame_name: Option<String>,
     /// The source code line for preview in the traceback.
     pub preview_line: Option<String>,
-    /// Whether this frame is from a `raise` statement (no caret shown for raise).
-    pub is_raise: bool,
+    /// Whether to hide the caret marker in the traceback for this frame.
+    ///
+    /// Set to `true` for:
+    /// - `raise` statements (CPython doesn't show carets for raise)
+    /// - `AttributeError` on attribute access (CPython doesn't show carets for these)
+    pub hide_caret: bool,
 }
 
 impl fmt::Display for StackFrame {
@@ -199,8 +203,8 @@ impl fmt::Display for StackFrame {
             let trimmed = line.trim_start();
             writeln!(f, "\n    {trimmed}")?;
 
-            // CPython doesn't show caret for `raise` statements
-            if !self.is_raise {
+            // Hide caret for raise statements, AttributeError, etc.
+            if !self.hide_caret {
                 let leading_spaces = line.len() - trimmed.len();
                 // Calculate caret position relative to the trimmed line
                 // Column is 1-indexed, so subtract 1, then subtract leading spaces we stripped
@@ -232,7 +236,7 @@ impl StackFrame {
                 .preview_line_number()
                 .and_then(|ln| source.lines().nth(ln as usize))
                 .map(str::to_string),
-            is_raise: f.is_raise,
+            hide_caret: f.hide_caret,
         }
     }
 
@@ -246,7 +250,7 @@ impl StackFrame {
                 .preview_line_number()
                 .and_then(|ln| source.lines().nth(ln as usize))
                 .map(str::to_string),
-            is_raise: false,
+            hide_caret: false,
         }
     }
 }

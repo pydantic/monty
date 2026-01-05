@@ -1348,10 +1348,18 @@ struct HandlerResumeState<'a> {
 ///
 /// This builds the traceback chain by appending each caller's frame information
 /// to the exception, so the full call stack is visible when the error is displayed.
+///
+/// Note: AttributeError gets special handling - CPython doesn't show carets for it,
+/// so we suppress carets by using the `add_caller_frame_no_caret` method.
 fn add_frame_info(name: StringId, position: CodeRange, error: &mut RunError) {
     match error {
         RunError::Exc(exc) | RunError::UncatchableExc(exc) => {
-            exc.add_caller_frame(position, name);
+            // CPython doesn't show carets for AttributeError on attribute access
+            if exc.exc.exc_type() == ExcType::AttributeError {
+                exc.add_caller_frame_no_caret(position, name);
+            } else {
+                exc.add_caller_frame(position, name);
+            }
         }
         RunError::Internal(_) => {}
     }

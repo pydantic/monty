@@ -806,11 +806,23 @@ impl ExceptionRaise {
     /// is raised from a namespace lookup - the initial frame has the position but not
     /// the function name, which gets filled in as the error propagates.
     pub(crate) fn add_caller_frame(&mut self, position: CodeRange, name: StringId) {
+        self.add_caller_frame_inner(position, name, false);
+    }
+
+    /// Like `add_caller_frame`, but suppresses caret display in the traceback.
+    ///
+    /// Used for errors where CPython doesn't show carets (e.g., AttributeError).
+    pub(crate) fn add_caller_frame_no_caret(&mut self, position: CodeRange, name: StringId) {
+        self.add_caller_frame_inner(position, name, true);
+    }
+
+    fn add_caller_frame_inner(&mut self, position: CodeRange, name: StringId, hide_caret: bool) {
         if let Some(ref mut frame) = self.frame {
             // If innermost frame has no name, set it instead of adding a parent
             // This handles errors from namespace lookups which create nameless frames
             if frame.frame_name.is_none() {
                 frame.frame_name = Some(name);
+                frame.hide_caret = hide_caret;
                 return;
             }
             // Find the outermost frame (the one with no parent) and add the new frame as its parent
@@ -818,10 +830,14 @@ impl ExceptionRaise {
             while current.parent.is_some() {
                 current = current.parent.as_mut().unwrap();
             }
-            current.parent = Some(Box::new(RawStackFrame::new(position, name, None)));
+            let mut new_frame = RawStackFrame::new(position, name, None);
+            new_frame.hide_caret = hide_caret;
+            current.parent = Some(Box::new(new_frame));
         } else {
             // No frame yet - create one
-            self.frame = Some(RawStackFrame::new(position, name, None));
+            let mut new_frame = RawStackFrame::new(position, name, None);
+            new_frame.hide_caret = hide_caret;
+            self.frame = Some(new_frame);
         }
     }
 
@@ -860,8 +876,12 @@ pub struct RawStackFrame {
     /// The name of the frame (function name StringId, or None for module-level code).
     pub frame_name: Option<StringId>,
     pub parent: Option<Box<RawStackFrame>>,
-    /// Whether this frame is from a `raise` statement (no caret shown for raise).
-    pub is_raise: bool,
+    /// Whether to hide the caret marker in the traceback for this frame.
+    ///
+    /// Set to `true` for:
+    /// - `raise` statements (CPython doesn't show carets for raise)
+    /// - `AttributeError` on attribute access (CPython doesn't show carets for these)
+    pub hide_caret: bool,
 }
 
 impl RawStackFrame {
@@ -870,7 +890,7 @@ impl RawStackFrame {
             position,
             frame_name: Some(frame_name),
             parent: parent.map(|p| Box::new(p.clone())),
-            is_raise: false,
+            hide_caret: false,
         }
     }
 
@@ -879,7 +899,7 @@ impl RawStackFrame {
             position,
             frame_name: None,
             parent: None,
-            is_raise: false,
+            hide_caret: false,
         }
     }
 
@@ -889,7 +909,7 @@ impl RawStackFrame {
             position,
             frame_name: Some(frame_name),
             parent: None,
-            is_raise: true,
+            hide_caret: true,
         }
     }
 }
