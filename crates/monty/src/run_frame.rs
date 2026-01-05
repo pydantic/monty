@@ -165,7 +165,7 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
         clause_state: Option<ClauseState>,
     ) -> RunResult<Option<FrameExit>> {
         // Check time limit at statement boundaries
-        heap.tracker().check_time().map_err(|e| {
+        heap.tracker_mut().check_time().map_err(|e| {
             let frame = node.position().map(|pos| self.stack_frame(pos));
             RunError::UncatchableExc(e.into_exception(frame))
         })?;

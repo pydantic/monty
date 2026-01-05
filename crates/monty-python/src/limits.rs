@@ -3,9 +3,11 @@
 //! Provides a TypedDict interface to configure resource limits for code execution,
 //! including time limits, memory limits, and recursion depth.
 
+use std::time::Duration;
+
+use monty::{ResourceError, ResourceTracker};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use std::time::Duration;
 
 /// Default maximum recursion depth if not specified.
 const DEFAULT_MAX_RECURSION_DEPTH: usize = 1000;
@@ -92,5 +94,82 @@ fn extract_optional_f64(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<
         None => Ok(None),
         Some(value) if value.is_none() => Ok(None),
         Some(value) => Ok(Some(value.extract()?)),
+    }
+}
+
+/// How often to check Python signals (every N calls to `check_time`).
+///
+/// This balances responsiveness to Ctrl+C against performance overhead.
+/// With ~1000 checks, signal handling adds negligible overhead while still
+/// responding to interrupts within a reasonable timeframe.
+const SIGNAL_CHECK_INTERVAL: u64 = 1000;
+
+/// A resource tracker that wraps another ResourceTracker and periodically checks Python signals.
+///
+/// This allows Ctrl+C and other Python signals to interrupt long-running code
+/// executed through the monty interpreter. Signals are checked every
+/// `SIGNAL_CHECK_INTERVAL` calls to `check_time` (at statement boundaries).
+#[derive(Debug)]
+pub struct PySignalTracker<T: ResourceTracker> {
+    inner: T,
+    /// Counter for check_time calls, used to rate-limit signal checks.
+    check_counter: u64,
+}
+
+impl<T: ResourceTracker> PySignalTracker<T> {
+    /// Creates a new signal-checking tracker wrapping the given limits.
+    pub fn new(inner: T) -> Self {
+        Self {
+            inner,
+            check_counter: 0,
+        }
+    }
+
+    fn check_python_signals(&mut self) -> Result<(), ResourceError> {
+        // Periodically check Python signals
+        self.check_counter += 1;
+
+        #[allow(clippy::redundant_closure_for_method_calls)]
+        if self.check_counter.is_multiple_of(SIGNAL_CHECK_INTERVAL) && Python::attach(|py| py.check_signals()).is_err()
+        {
+            // Return a time error to abort execution - the actual signal
+            // error will be raised via py.check_signals() after execution
+            Err(ResourceError::Time {
+                limit: Duration::ZERO,
+                elapsed: Duration::ZERO,
+            })
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl<T: ResourceTracker> ResourceTracker for PySignalTracker<T> {
+    fn on_allocate(&mut self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError> {
+        self.inner.on_allocate(get_size)
+    }
+
+    fn on_free(&mut self, get_size: impl FnOnce() -> usize) {
+        self.inner.on_free(get_size);
+    }
+
+    fn check_time(&mut self) -> Result<(), ResourceError> {
+        // First check inner tracker's time limit
+        self.inner.check_time()?;
+
+        // then periodically check for Python signals
+        self.check_python_signals()
+    }
+
+    fn should_gc(&self) -> bool {
+        self.inner.should_gc()
+    }
+
+    fn on_gc_complete(&mut self) {
+        self.inner.on_gc_complete();
+    }
+
+    fn check_recursion_depth(&self, current_depth: usize) -> Result<(), ResourceError> {
+        self.inner.check_recursion_depth(current_depth)
     }
 }

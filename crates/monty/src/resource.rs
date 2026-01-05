@@ -108,7 +108,7 @@ pub trait ResourceTracker: fmt::Debug {
     ///
     /// Returns `Ok(())` if within time limit, or `Err(ResourceError::Time)`
     /// if the limit is exceeded.
-    fn check_time(&self) -> Result<(), ResourceError>;
+    fn check_time(&mut self) -> Result<(), ResourceError>;
 
     /// Returns true if garbage collection should run.
     ///
@@ -164,7 +164,7 @@ impl ResourceTracker for NoLimitTracker {
     fn on_free(&mut self, _: impl FnOnce() -> usize) {}
 
     #[inline]
-    fn check_time(&self) -> Result<(), ResourceError> {
+    fn check_time(&mut self) -> Result<(), ResourceError> {
         Ok(())
     }
 
@@ -355,7 +355,7 @@ impl ResourceTracker for LimitedTracker {
         self.current_memory = self.current_memory.saturating_sub(get_size());
     }
 
-    fn check_time(&self) -> Result<(), ResourceError> {
+    fn check_time(&mut self) -> Result<(), ResourceError> {
         if let Some(max) = self.limits.max_duration {
             let elapsed = self.start_time.elapsed();
             if elapsed > max {

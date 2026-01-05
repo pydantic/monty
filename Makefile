@@ -19,6 +19,10 @@ install: .cargo .pre-commit ## Install the package, dependencies, and pre-commit
 dev-py: ## Install the python package for development
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml
 
+.PHONY: dev-py-release
+dev-py-release: ## Install the python package for development with a release build
+	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
+
 .PHONY: format-rs
 format-rs:  ## Format Rust code with fmt
 	@cargo fmt --version
@@ -54,7 +58,7 @@ format-lint-rs: format-rs lint-rs ## Format and lint Rust code with fmt and clip
 
 .PHONY: test-no-features
 test-no-features: ## Run rust tests without any features enabled
-		cargo test -p monty
+	cargo test -p monty
 
 .PHONY: test-ref-count-panic
 test-ref-count-panic: ## Run rust tests with ref-count-panic enabled

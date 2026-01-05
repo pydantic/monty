@@ -29,7 +29,7 @@ pub use crate::exception_private::ExcType;
 pub use crate::exception_public::{CodeLoc, MontyException, StackFrame};
 pub use crate::io::{CollectStringPrint, NoPrint, PrintWriter, StdPrint};
 pub use crate::object::{InvalidInputError, MontyObject};
-pub use crate::resource::{LimitedTracker, NoLimitTracker, ResourceLimits, ResourceTracker};
+pub use crate::resource::{LimitedTracker, NoLimitTracker, ResourceError, ResourceLimits, ResourceTracker};
 pub use crate::run::{MontyRun, RunProgress, Snapshot};
 
 #[cfg(feature = "ref-count-return")]
