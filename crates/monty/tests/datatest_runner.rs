@@ -4,7 +4,10 @@ use std::fs;
 use std::path::Path;
 
 use ahash::AHashMap;
-use monty::{LimitedTracker, MontyException, MontyObject, MontyRun, ResourceLimits, RunProgress, StdPrint};
+use monty::{
+    ExcType, ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRun, ResourceLimits, RunProgress,
+    StdPrint,
+};
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -252,33 +255,51 @@ const ITER_EXT_FUNCTIONS: &[&str] = &[
     "concat_strings", // (a, b) -> a + b (strings)
     "return_value",   // (x) -> x (identity)
     "get_list",       // () -> [1, 2, 3]
+    "raise_error",    // (exc_type: str, message: str) -> raises exception
 ];
 
 /// Dispatches an external function call to the appropriate test implementation.
 ///
+/// Returns `ExternalResult::Return` for successful calls, or `ExternalResult::Error`
+/// for calls that should raise an exception.
+///
 /// # Panics
 /// Panics if the function name is unknown or arguments are invalid types.
-fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> MontyObject {
+fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> ExternalResult {
     match name {
         "add_ints" => {
             assert!(args.len() == 2, "add_ints requires 2 arguments");
             let a = i64::try_from(&args[0]).expect("add_ints: first arg must be int");
             let b = i64::try_from(&args[1]).expect("add_ints: second arg must be int");
-            MontyObject::Int(a + b)
+            MontyObject::Int(a + b).into()
         }
         "concat_strings" => {
             assert!(args.len() == 2, "concat_strings requires 2 arguments");
             let a = String::try_from(&args[0]).expect("concat_strings: first arg must be str");
             let b = String::try_from(&args[1]).expect("concat_strings: second arg must be str");
-            MontyObject::String(a + &b)
+            MontyObject::String(a + &b).into()
         }
         "return_value" => {
             assert!(args.len() == 1, "return_value requires 1 argument");
-            args.into_iter().next().unwrap()
+            args.into_iter().next().unwrap().into()
         }
         "get_list" => {
             assert!(args.is_empty(), "get_list requires no arguments");
-            MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2), MontyObject::Int(3)])
+            MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2), MontyObject::Int(3)]).into()
+        }
+        "raise_error" => {
+            // raise_error(exc_type: str, message: str) -> raises exception
+            assert!(args.len() == 2, "raise_error requires 2 arguments");
+            let exc_type_str = String::try_from(&args[0]).expect("raise_error: first arg must be str");
+            let message = String::try_from(&args[1]).expect("raise_error: second arg must be str");
+            let exc_type = match exc_type_str.as_str() {
+                "ValueError" => ExcType::ValueError,
+                "TypeError" => ExcType::TypeError,
+                "KeyError" => ExcType::KeyError,
+                "RuntimeError" => ExcType::RuntimeError,
+                _ => panic!("raise_error: unsupported exception type: {exc_type_str}"),
+            };
+            MontyException::new(exc_type, Some(message)).into()
         }
         _ => panic!("Unknown external function: {name}"),
     }

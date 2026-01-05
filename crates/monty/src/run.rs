@@ -1,6 +1,6 @@
 //! Public interface for running Monty code.
 use crate::evaluate::ExternalCall;
-use crate::exception_private::{ExcType, RunError};
+use crate::exception_private::{ExcType, ExceptionRaise, RunError};
 use crate::expressions::Node;
 use crate::heap::Heap;
 use crate::intern::{ExtFunctionId, Interns};
@@ -257,14 +257,48 @@ pub struct Snapshot<T: ResourceTracker> {
     position_stack: Vec<CodePosition>,
 }
 
-impl<T: ResourceTracker> Snapshot<T> {
+/// Return value or exception from an external function.
+#[derive(Debug)]
+pub enum ExternalResult {
     /// Continues execution with the return value from the external function.
+    Return(MontyObject),
+    /// Continues execution with the exception raised by the external function.
+    Error(MontyException),
+}
+
+impl From<MontyObject> for ExternalResult {
+    fn from(value: MontyObject) -> Self {
+        ExternalResult::Return(value)
+    }
+}
+
+impl From<MontyException> for ExternalResult {
+    fn from(exception: MontyException) -> Self {
+        ExternalResult::Error(exception)
+    }
+}
+
+impl<T: ResourceTracker> Snapshot<T> {
+    /// Continues execution with the return value or exception from the external function.
     ///
     /// Consumes self and returns the next execution progress.
     ///
     /// # Arguments
-    /// * `return_value` - The value returned by the external function
+    /// * `result` - The return value or exception from the external function
+    /// * `print` - The print writer to use for output
     pub fn run(
+        self,
+        result: impl Into<ExternalResult>,
+        print: &mut impl PrintWriter,
+    ) -> Result<RunProgress<T>, MontyException> {
+        match result.into() {
+            ExternalResult::Return(return_value) => self.run_return(return_value, print),
+            ExternalResult::Error(exception) => self.run_exception(exception, print),
+        }
+    }
+
+    /// Continues execution with the return value from the external function.
+    fn run_return(
         mut self,
         return_value: MontyObject,
         print: &mut impl PrintWriter,
@@ -282,6 +316,23 @@ impl<T: ResourceTracker> Snapshot<T> {
         // Continue execution from saved position
         let snapshot_tracker = SnapshotTracker::new(self.position_stack);
         // Note: run_from_position consumes self.executor, but may return it in RunProgress::FunctionCall
+        self.executor
+            .run_from_position(self.heap, self.namespaces, snapshot_tracker, print)
+    }
+
+    /// Continues execution with the exception raised by the external function.
+    fn run_exception(
+        mut self,
+        exc: MontyException,
+        print: &mut impl PrintWriter,
+    ) -> Result<RunProgress<T>, MontyException> {
+        // Convert MontyException to ExceptionRaise and store as pending exception
+        let exc_raise: ExceptionRaise = exc.into();
+        self.namespaces.set_ext_exception(exc_raise);
+
+        // Continue execution from saved position - the exception will propagate
+        // through normal try/except handling when take_ext_return_value is called
+        let snapshot_tracker = SnapshotTracker::new(self.position_stack);
         self.executor
             .run_from_position(self.heap, self.namespaces, snapshot_tracker, print)
     }

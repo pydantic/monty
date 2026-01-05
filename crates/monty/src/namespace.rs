@@ -1,4 +1,4 @@
-use crate::exception_private::ExcType;
+use crate::exception_private::{ExcType, ExceptionRaise, RunError};
 use crate::expressions::{Identifier, NameScope};
 use crate::heap::{Heap, HeapId};
 use crate::intern::Interns;
@@ -94,6 +94,11 @@ pub struct Namespaces {
     ///
     /// This is somewhat similar to temporal style durable execution, but just within a single statement.
     next_ext_return_value: usize,
+    /// Pending exception from an external function call.
+    ///
+    /// When set, the next call to `take_ext_return_value` will return this error,
+    /// allowing it to propagate through try/except blocks.
+    ext_exception: Option<ExceptionRaise>,
 }
 
 impl Namespaces {
@@ -106,6 +111,7 @@ impl Namespaces {
             reuse_ids: vec![],
             ext_return_values: vec![],
             next_ext_return_value: 0,
+            ext_exception: None,
         }
     }
 
@@ -118,29 +124,49 @@ impl Namespaces {
         self.ext_return_values.push(return_value);
     }
 
-    /// Takes a return value, and increments the pointer so the next call will take the next value.
+    /// Sets a pending exception from an external function call.
     ///
-    /// Returns `Some(Value)` if `next_return_value` points to a value, `None` otherwise.
-    /// Used when resuming after an external function call to return the value.
-    pub fn take_ext_return_value(&mut self, heap: &mut Heap<impl ResourceTracker>) -> Option<Value> {
+    /// The next call to `take_ext_return_value` will return this exception as an error,
+    /// allowing it to propagate through try/except blocks.
+    pub fn set_ext_exception(&mut self, exc: ExceptionRaise) {
+        self.next_ext_return_value = 0;
+        self.ext_exception = Some(exc);
+    }
+
+    /// Takes a return value or exception from an external function call.
+    ///
+    /// First checks for a pending exception (set via `set_ext_exception`). If found,
+    /// returns `Err(RunError::Exc(...))` so the exception propagates through try/except.
+    ///
+    /// Otherwise returns `Ok(Some(Value))` if a return value is available, or `Ok(None)` if
+    /// this is the first call (no cached return value yet).
+    ///
+    /// Used when resuming after an external function call.
+    pub fn take_ext_return_value(&mut self, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
+        // Check for pending exception first
+        if let Some(exc) = self.ext_exception.take() {
+            return Err(RunError::Exc(exc));
+        }
+        // Normal return value logic
         if let Some(value) = self.ext_return_values.get(self.next_ext_return_value) {
             self.next_ext_return_value += 1;
-            Some(value.clone_with_heap(heap))
+            Ok(Some(value.clone_with_heap(heap)))
         } else {
-            None
+            Ok(None)
         }
     }
 
-    /// Clears the return values and resets the pointer.
+    /// Clears the return values, exception, and resets the pointer.
     ///
     /// This should be used between expressions so return values are only used in the current expression.
     #[cfg(not(feature = "ref-count-panic"))]
     pub fn clear_ext_return_values(&mut self, _heap: &mut Heap<impl ResourceTracker>) {
         self.ext_return_values.clear();
         self.next_ext_return_value = 0;
+        self.ext_exception = None;
     }
 
-    /// if `ref-count-panic` is enabled, drop reach member of self.return_values properly before clearing to avoid panic
+    /// if `ref-count-panic` is enabled, drop each member of self.return_values properly before clearing to avoid panic
     /// on drop.
     #[cfg(feature = "ref-count-panic")]
     pub fn clear_ext_return_values(&mut self, heap: &mut Heap<impl ResourceTracker>) {
@@ -150,6 +176,7 @@ impl Namespaces {
         }
         self.ext_return_values.clear();
         self.next_ext_return_value = 0;
+        self.ext_exception = None;
     }
 
     /// Gets an immutable slice reference to a namespace by index.
@@ -247,6 +274,8 @@ impl Namespaces {
         for value in std::mem::take(&mut self.ext_return_values) {
             value.drop_with_heap(heap);
         }
+        // Clear any pending exception
+        self.ext_exception = None;
     }
 
     /// Looks up a variable by name in the appropriate namespace based on the scope index for mutation.

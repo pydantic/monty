@@ -78,18 +78,29 @@ impl Callable {
                     }
                     Value::ExtFunction(f_id) => {
                         let f_id = *f_id;
-                        return if let Some(return_value) = namespaces.take_ext_return_value(heap) {
-                            // When resuming from an external call, the args were re-evaluated
-                            // and need to be dropped since we're using the cached return value
-                            if let Some(args) = args_opt.take() {
-                                args.drop_with_heap(heap);
+                        return match namespaces.take_ext_return_value(heap) {
+                            Ok(Some(return_value)) => {
+                                // When resuming from an external call, the args were re-evaluated
+                                // and need to be dropped since we're using the cached return value
+                                if let Some(args) = args_opt.take() {
+                                    args.drop_with_heap(heap);
+                                }
+                                Ok(EvalResult::Value(return_value))
                             }
-                            Ok(EvalResult::Value(return_value))
-                        } else {
-                            let args = args_opt
-                                .take()
-                                .expect("external function args already taken before making call");
-                            Ok(EvalResult::ExternalCall(ExternalCall::new(f_id, args)))
+                            Ok(None) => {
+                                // First call - make external function call
+                                let args = args_opt
+                                    .take()
+                                    .expect("external function args already taken before making call");
+                                Ok(EvalResult::ExternalCall(ExternalCall::new(f_id, args)))
+                            }
+                            Err(e) => {
+                                // External function raised an exception - propagate it
+                                if let Some(args) = args_opt.take() {
+                                    args.drop_with_heap(heap);
+                                }
+                                Err(e)
+                            }
                         };
                     }
                     // Check for heap-allocated closure or function with defaults

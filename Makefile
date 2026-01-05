@@ -4,14 +4,21 @@
 .cargo: ## Check that cargo is installed
 	@cargo --version || echo 'Please install cargo: https://github.com/rust-lang/cargo'
 
+.PHONY: .uv
+.uv: ## Check that uv is installed
+	@uv --version || echo 'Please install uv: https://docs.astral.sh/uv/getting-started/installation/'
+
 .PHONY: .pre-commit
 .pre-commit: ## Check that pre-commit is installed
 	@pre-commit -V || echo 'Please install pre-commit: https://pre-commit.com/'
 
-.PHONY: install
-install: .cargo .pre-commit ## Install the package, dependencies, and pre-commit for local development
+.PHONY: install-py
+install-py: .uv ## Install python dependencies
 	# --only-dev to avoid building the python package, use make dev-py for that
 	uv sync --all-packages --only-dev
+
+.PHONY: install
+install: .cargo .pre-commit install-py ## Install the package, dependencies, and pre-commit for local development
 	cargo check --workspace
 	pre-commit install --install-hooks
 
