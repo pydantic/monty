@@ -271,12 +271,7 @@ impl PyMonty {
         mut print_output: impl PrintWriter,
     ) -> PyResult<Py<PyAny>> {
         if self.external_function_names.is_empty() {
-            let result = self.runner.run(input_values, tracker, &mut print_output);
-
-            // Check for pending signals (e.g., Ctrl+C) after execution
-            py.check_signals()?;
-
-            match result {
+            match self.runner.run(input_values, tracker, &mut print_output) {
                 Ok(v) => monty_to_py(py, &v),
                 Err(err) => Err(exc_monty_to_py(err)),
             }
@@ -544,10 +539,7 @@ fn execute_progress(
 ) -> PyResult<Py<PyAny>> {
     loop {
         match progress {
-            RunProgress::Complete(result) => {
-                py.check_signals()?;
-                return monty_to_py(py, &result);
-            }
+            RunProgress::Complete(result) => return monty_to_py(py, &result),
             RunProgress::FunctionCall {
                 function_name,
                 args,
@@ -564,9 +556,7 @@ fn execute_progress(
 
                 let return_value = registry.call(&function_name, &args, &kwargs);
 
-                let result = state.run(return_value, print_output);
-                py.check_signals()?;
-                progress = result.map_err(exc_monty_to_py)?;
+                progress = state.run(return_value, print_output).map_err(exc_monty_to_py)?;
             }
         }
     }

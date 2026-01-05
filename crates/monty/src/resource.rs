@@ -2,7 +2,7 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use crate::exception_private::{ExceptionRaise, RawStackFrame, RunError, SimpleException};
-use crate::ExcType;
+use crate::{ExcType, MontyException};
 
 /// Error returned when a resource limit is exceeded during execution.
 ///
@@ -11,13 +11,26 @@ use crate::ExcType;
 #[derive(Debug, Clone)]
 pub enum ResourceError {
     /// Maximum number of allocations exceeded.
-    Allocation { limit: usize, count: usize },
+    Allocation {
+        limit: usize,
+        count: usize,
+    },
     /// Maximum execution time exceeded.
-    Time { limit: Duration, elapsed: Duration },
+    Time {
+        limit: Duration,
+        elapsed: Duration,
+    },
     /// Maximum memory usage exceeded.
-    Memory { limit: usize, used: usize },
+    Memory {
+        limit: usize,
+        used: usize,
+    },
     /// Maximum recursion depth exceeded.
-    Recursion { limit: usize, depth: usize },
+    Recursion {
+        limit: usize,
+        depth: usize,
+    },
+    Exception(MontyException),
 }
 
 impl fmt::Display for ResourceError {
@@ -34,6 +47,9 @@ impl fmt::Display for ResourceError {
             }
             Self::Recursion { .. } => {
                 write!(f, "maximum recursion depth exceeded")
+            }
+            Self::Exception(exc) => {
+                write!(f, "{exc}")
             }
         }
     }
@@ -54,19 +70,23 @@ impl ResourceError {
         let (exc_type, msg) = match self {
             Self::Allocation { limit, count } => (
                 ExcType::MemoryError,
-                format!("allocation limit exceeded: {count} > {limit}"),
+                Some(format!("allocation limit exceeded: {count} > {limit}")),
             ),
             Self::Memory { limit, used } => (
                 ExcType::MemoryError,
-                format!("memory limit exceeded: {used} bytes > {limit} bytes"),
+                Some(format!("memory limit exceeded: {used} bytes > {limit} bytes")),
             ),
             Self::Time { limit, elapsed } => (
                 ExcType::TimeoutError,
-                format!("time limit exceeded: {elapsed:?} > {limit:?}"),
+                Some(format!("time limit exceeded: {elapsed:?} > {limit:?}")),
             ),
-            Self::Recursion { .. } => (ExcType::RecursionError, "maximum recursion depth exceeded".to_string()),
+            Self::Recursion { .. } => (
+                ExcType::RecursionError,
+                Some("maximum recursion depth exceeded".to_string()),
+            ),
+            Self::Exception(exc) => (exc.exc_type(), exc.into_message()),
         };
-        let exc = SimpleException::new(exc_type, Some(msg));
+        let exc = SimpleException::new(exc_type, msg);
         match frame {
             Some(f) => exc.with_frame(f),
             None => exc.into(),

@@ -1,3 +1,7 @@
+import os
+import signal
+import threading
+
 import pytest
 from inline_snapshot import snapshot
 
@@ -103,3 +107,35 @@ def test_limits_none_value_allowed():
     m = monty.Monty('1 + 1')
     # None is valid to explicitly disable a limit
     assert m.run(limits={'max_allocations': None}) == snapshot(2)  # pyright: ignore[reportArgumentType]
+
+
+def test_keyboard_interrupt():
+    """Test that KeyboardInterrupt is raised when a signal is sent during execution."""
+    # Use a long-running computation
+    code = """
+def fib(n):
+    if n <= 1:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+fib(30)
+"""
+    m = monty.Monty(code)
+
+    # Send SIGINT from another thread after a delay
+    def send_interrupt():
+        os.kill(os.getpid(), signal.SIGINT)
+
+    # Use a longer delay to let execution settle
+    timer = threading.Timer(0.1, send_interrupt)
+    timer.start()
+
+    try:
+        raised = False
+        try:
+            m.run()
+        except KeyboardInterrupt:
+            raised = True
+        assert raised, 'Expected KeyboardInterrupt to be raised'
+    finally:
+        timer.cancel()

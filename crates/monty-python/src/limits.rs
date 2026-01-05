@@ -9,6 +9,8 @@ use monty::{ResourceError, ResourceTracker};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
+use crate::exceptions::exc_py_to_monty;
+
 /// Default maximum recursion depth if not specified.
 const DEFAULT_MAX_RECURSION_DEPTH: usize = 1000;
 
@@ -117,7 +119,7 @@ pub struct PySignalTracker<T: ResourceTracker> {
 }
 
 impl<T: ResourceTracker> PySignalTracker<T> {
-    /// Creates a new signal-checking tracker wrapping the given limits.
+    /// Creates a new signal-checking tracker wrapping the given tracker.
     pub fn new(inner: T) -> Self {
         Self {
             inner,
@@ -130,17 +132,13 @@ impl<T: ResourceTracker> PySignalTracker<T> {
         self.check_counter += 1;
 
         #[allow(clippy::redundant_closure_for_method_calls)]
-        if self.check_counter.is_multiple_of(SIGNAL_CHECK_INTERVAL) && Python::attach(|py| py.check_signals()).is_err()
-        {
-            // Return a time error to abort execution - the actual signal
-            // error will be raised via py.check_signals() after execution
-            Err(ResourceError::Time {
-                limit: Duration::ZERO,
-                elapsed: Duration::ZERO,
-            })
-        } else {
-            Ok(())
+        if self.check_counter.is_multiple_of(SIGNAL_CHECK_INTERVAL) {
+            Python::attach(|py| {
+                py.check_signals()
+                    .map_err(|e| ResourceError::Exception(exc_py_to_monty(py, e)))
+            })?;
         }
+        Ok(())
     }
 }
 
