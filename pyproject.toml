@@ -90,6 +90,8 @@ reportUndefinedVariable = false
 reportPossiblyUnboundVariable = false
 # exception variable cleanup tests intentionally access unbound variables
 reportUnboundVariable = false
+# attribute error tests intentionally access/assign non-existent attributes
+reportAttributeAccessIssue = false
 
 [tool.codespell]
 # Ref: https://github.com/codespell-project/codespell#using-a-config-file

@@ -104,6 +104,7 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
                 )
             }
             Expr::AttrCall { object, attr, args } => self.attr_call(object, attr, args),
+            Expr::AttrGet { object, attr } => self.attr_get(object, attr),
             Expr::Op { left, op, right } => match op {
                 // Handle boolean operators with short-circuit evaluation.
                 // These return the actual operand value, not a boolean.
@@ -241,6 +242,11 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
             }
             Expr::AttrCall { object, attr, args } => {
                 let result = return_ext_call!(self.attr_call(object, attr, args)?);
+                result.drop_with_heap(self.heap);
+                Ok(EvalResult::Value(()))
+            }
+            Expr::AttrGet { object, attr } => {
+                let result = return_ext_call!(self.attr_get(object, attr)?);
                 result.drop_with_heap(self.heap);
                 Ok(EvalResult::Value(()))
             }
@@ -491,6 +497,52 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
                 .call_attr(self.heap, attr, args, self.interns)
                 .map(EvalResult::Value)
         }
+    }
+
+    /// Evaluates attribute access expression (e.g., `point.x`).
+    ///
+    /// Retrieves the value of an attribute from an object. Currently only
+    /// supports dataclass field access. The returned value is cloned with
+    /// proper reference counting.
+    fn attr_get(&mut self, object_ident: &Identifier, attr: &Attr) -> RunResult<EvalResult<Value>> {
+        // Allocate a heap string for the key since we need a Value for Dict lookup
+        let key_id = self.heap.allocate(HeapData::Str(attr.to_string().clone().into()))?;
+        let key = Value::Ref(key_id);
+
+        // Get the object value (always returns a cloned value with incremented refcount)
+        let value = self
+            .namespaces
+            .get_var_value(self.local_idx, self.heap, object_ident, self.interns)?;
+
+        // Dispatch based on value type
+        let result = if let Value::Ref(heap_id) = &value {
+            let heap_id = *heap_id;
+            // Use with_entry_mut to temporarily extract data and allow heap access
+            self.heap.with_entry_mut(heap_id, |heap, data| match data {
+                HeapData::Dataclass(dc) => {
+                    let field_value = dc.get_field(&key, heap, self.interns)?;
+                    match field_value {
+                        Some(v) => Ok(v.clone_with_heap(heap)),
+                        None => Err(ExcType::attribute_error_not_found(dc.name(), attr.as_str())),
+                    }
+                }
+                other => {
+                    let ty = other.py_type(Some(heap));
+                    Err(ExcType::attribute_error(ty, attr))
+                }
+            })
+        } else {
+            let ty = value.py_type(Some(self.heap));
+            Err(ExcType::attribute_error(ty, attr))
+        };
+
+        // Clean up the key we allocated
+        key.drop_with_heap(self.heap);
+
+        // Clean up the object value we retrieved (get_var_value returns cloned value)
+        value.drop_with_heap(self.heap);
+
+        result.map(EvalResult::Value)
     }
 
     /// Evaluates an f-string by processing its parts sequentially.

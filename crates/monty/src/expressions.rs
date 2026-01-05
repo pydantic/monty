@@ -105,6 +105,15 @@ pub enum Expr {
         /// same as above for Box
         args: Box<ArgExprs>,
     },
+    /// Attribute access expression (e.g., `point.x`).
+    ///
+    /// Retrieves the value of an attribute from an object. For dataclasses,
+    /// this returns the field value. For other types, this may trigger
+    /// special attribute handling.
+    AttrGet {
+        object: Identifier,
+        attr: Attr,
+    },
     Op {
         left: Box<ExprLoc>,
         op: Operator,
@@ -233,6 +242,15 @@ pub enum Node {
         index: ExprLoc,
         value: ExprLoc,
     },
+    /// Attribute assignment (e.g., `point.x = 5`).
+    ///
+    /// Assigns a value to an attribute on an object. For mutable dataclasses,
+    /// this sets the field value. Returns an error for immutable objects.
+    AttrAssign {
+        object: Identifier,
+        attr: Attr,
+        value: ExprLoc,
+    },
     For {
         target: Identifier,
         iter: ExprLoc,
@@ -269,6 +287,7 @@ impl Node {
             Self::Assign { object, .. } => Some(object.position),
             Self::OpAssign { object, .. } => Some(object.position),
             Self::SubscriptAssign { value, .. } => Some(value.position),
+            Self::AttrAssign { value, .. } => Some(value.position),
             Self::For { iter, .. } => Some(iter.position),
             Self::If { test, .. } => Some(test.position),
             Self::FunctionDef(_) => None,

@@ -14,7 +14,7 @@ use crate::parse::{CodeRange, ExceptHandler, Try};
 use crate::resource::ResourceTracker;
 use crate::snapshot::{AbstractSnapshotTracker, ClauseState, FrameExit, TryClauseState, TryPhase};
 use crate::types::PyTrait;
-use crate::value::Value;
+use crate::value::{Attr, Value};
 
 /// Result type for runtime operations.
 pub type RunResult<T> = Result<T, RunError>;
@@ -223,6 +223,11 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
             }
             Node::SubscriptAssign { target, index, value } => {
                 if let Some(exit) = self.subscript_assign(namespaces, heap, target, index, value)? {
+                    return Ok(Some(exit));
+                }
+            }
+            Node::AttrAssign { object, attr, value } => {
+                if let Some(exit) = self.attr_assign(namespaces, heap, object, attr, value)? {
                     return Ok(Some(exit));
                 }
             }
@@ -582,6 +587,64 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
         } else {
             let e = exc_fmt!(ExcType::TypeError; "'{}' object does not support item assignment", target_val.py_type(Some(heap)));
             Err(e.with_frame(self.stack_frame(index.position)).into())
+        }
+    }
+
+    /// Assigns a value to an attribute on an object: `object.attr = value`.
+    ///
+    /// Currently only supports mutable dataclass instances. Returns an error for:
+    /// - Non-heap values (they don't have attributes)
+    /// - Immutable dataclasses (frozen=True)
+    /// - Other heap types that don't support attribute assignment
+    fn attr_assign(
+        &mut self,
+        namespaces: &mut Namespaces,
+        heap: &mut Heap<impl ResourceTracker>,
+        object_ident: &Identifier,
+        attr: &Attr,
+        value_expr: &ExprLoc,
+    ) -> RunResult<Option<FrameExit>> {
+        // Evaluate the value first
+        let val = frame_ext_call!(self.execute_expr(namespaces, heap, value_expr)?);
+
+        // Get the object and set the attribute
+        let object_val = namespaces.get_var_mut(self.local_idx, object_ident, self.interns)?;
+        if let Value::Ref(id) = object_val {
+            heap.with_entry_mut(*id, |heap, data| -> RunResult<()> {
+                match data {
+                    HeapData::Dataclass(dc) => {
+                        if dc.is_mutable() {
+                            // Allocate a heap string for the key since we need a Value for Dict lookup
+                            let key_id = heap.allocate(HeapData::Str(attr.to_string().into()))?;
+                            let key = Value::Ref(key_id);
+
+                            // Set the field - key ownership transferred to Dict
+                            // If the key already exists, the duplicate key is dropped inside set_field
+                            let old_val = dc.set_field(key, val, heap, self.interns)?;
+                            if let Some(old) = old_val {
+                                old.drop_with_heap(heap);
+                            }
+                            Ok(())
+                        } else {
+                            // Drop the value we were going to assign
+                            val.drop_with_heap(heap);
+                            Err(ExcType::attribute_error_frozen(dc.name(), attr.as_str()))
+                        }
+                    }
+                    other => {
+                        // Drop the value we were going to assign
+                        val.drop_with_heap(heap);
+                        let ty = other.py_type(Some(heap));
+                        Err(ExcType::attribute_error_no_setattr(ty, attr.as_str()))
+                    }
+                }
+            })?;
+            Ok(None)
+        } else {
+            // Drop the value
+            val.drop_with_heap(heap);
+            let ty = object_val.py_type(Some(heap));
+            Err(ExcType::attribute_error_no_setattr(ty, attr.as_str()))
         }
     }
 

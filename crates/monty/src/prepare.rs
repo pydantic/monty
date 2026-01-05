@@ -324,6 +324,12 @@ impl<'i> Prepare<'i> {
                     let value = self.prepare_expression(value)?;
                     new_nodes.push(Node::SubscriptAssign { target, index, value });
                 }
+                ParseNode::AttrAssign { object, attr, value } => {
+                    // AttrAssign doesn't assign to the object itself, just modifies its attribute
+                    let object = self.get_id(object).0;
+                    let value = self.prepare_expression(value)?;
+                    new_nodes.push(Node::AttrAssign { object, attr, value });
+                }
                 ParseNode::For {
                     target,
                     iter,
@@ -512,6 +518,11 @@ impl<'i> Prepare<'i> {
                 let (object, _is_new) = self.get_id(object);
                 args.prepare_args(|expr| self.prepare_expression(expr))?;
                 Expr::AttrCall { object, attr, args }
+            }
+            Expr::AttrGet { object, attr } => {
+                // Don't error here if object is undefined - let runtime raise NameError with proper traceback.
+                let (object, _is_new) = self.get_id(object);
+                Expr::AttrGet { object, attr }
             }
             Expr::List(elements) => {
                 let expressions = elements
@@ -1074,6 +1085,9 @@ fn collect_scope_info_from_node(
         ParseNode::SubscriptAssign { .. } => {
             // Subscript assignment doesn't create a new name, it modifies existing container
         }
+        ParseNode::AttrAssign { .. } => {
+            // Attribute assignment doesn't create a new name, it modifies existing object
+        }
         ParseNode::For {
             target, body, or_else, ..
         } => {
@@ -1256,6 +1270,10 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
             collect_referenced_names_from_expr(index, referenced, interner);
             collect_referenced_names_from_expr(value, referenced, interner);
         }
+        ParseNode::AttrAssign { object, value, .. } => {
+            referenced.insert(interner.get_str(object.name_id).to_string());
+            collect_referenced_names_from_expr(value, referenced, interner);
+        }
         ParseNode::For {
             iter, body, or_else, ..
         } => {
@@ -1356,6 +1374,9 @@ fn collect_referenced_names_from_expr(
         Expr::AttrCall { object, args, .. } => {
             referenced.insert(interner.get_str(object.name_id).to_string());
             collect_referenced_names_from_args(args, referenced, interner);
+        }
+        Expr::AttrGet { object, .. } => {
+            referenced.insert(interner.get_str(object.name_id).to_string());
         }
         Expr::IfElse { test, body, orelse } => {
             collect_referenced_names_from_expr(test, referenced, interner);

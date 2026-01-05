@@ -163,6 +163,31 @@ impl ExcType {
         exc_fmt!(Self::AttributeError; "'{class_name}' object method '{method_name}' requires external call (not yet implemented)").into()
     }
 
+    /// Creates an AttributeError for when a specific attribute is not found on an object.
+    ///
+    /// Matches CPython's format: `AttributeError: 'ClassName' object has no attribute 'attr_name'`
+    #[must_use]
+    pub fn attribute_error_not_found(class_name: &str, attr_name: &str) -> RunError {
+        exc_fmt!(Self::AttributeError; "'{class_name}' object has no attribute '{attr_name}'").into()
+    }
+
+    /// Creates an AttributeError for attribute assignment on types that don't support it.
+    ///
+    /// Matches CPython's format for setting attributes on built-in types.
+    #[must_use]
+    pub fn attribute_error_no_setattr(type_: Type, attr_name: &str) -> RunError {
+        exc_fmt!(Self::AttributeError; "'{type_}' object has no attribute '{attr_name}' and no __dict__ for setting new attributes").into()
+    }
+
+    /// Creates an AttributeError for assigning to a read-only attribute on a frozen dataclass.
+    ///
+    /// Matches the concept of Python's FrozenInstanceError but uses AttributeError since
+    /// Monty doesn't have the dataclasses module.
+    #[must_use]
+    pub fn attribute_error_frozen(class_name: &str, attr_name: &str) -> RunError {
+        exc_fmt!(Self::AttributeError; "'{class_name}' object attribute '{attr_name}' is read-only").into()
+    }
+
     #[must_use]
     pub fn type_error_not_sub(type_: Type) -> RunError {
         exc_fmt!(Self::TypeError; "'{type_}' object is not subscriptable").into()

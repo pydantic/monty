@@ -6,7 +6,7 @@ use std::hash::{Hash, Hasher};
 use std::mem::discriminant;
 
 use ahash::AHashSet;
-use strum::Display;
+use strum::{AsRefStr, Display};
 
 use crate::args::ArgValues;
 use crate::builtins::Builtins;
@@ -1109,7 +1109,7 @@ impl EitherStr {
 ///
 /// Uses strum `Display` derive with lowercase serialization.
 /// The `Other(String)` variant is a fallback for unknown/dynamic attribute names.
-#[derive(Debug, Clone, Display, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Display, AsRefStr, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub enum Attr {
     // List methods
@@ -1166,6 +1166,18 @@ impl From<String> for Attr {
             "issuperset" => Self::Issuperset,
             "isdisjoint" => Self::Isdisjoint,
             _ => Self::Other(name),
+        }
+    }
+}
+
+impl Attr {
+    /// Returns the attribute name as a string reference.
+    ///
+    /// DO NOT use `as_ref` directly, it returns the wrong value for `Self::Other`.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Other(name) => name,
+            v => v.as_ref(),
         }
     }
 }

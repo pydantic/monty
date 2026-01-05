@@ -18,6 +18,7 @@ use crate::expressions::{Expr, ExprLoc, Identifier, Literal};
 use crate::fstring::{ConversionFlag, FStringPart, FormatSpec};
 use crate::intern::{InternerBuilder, StringId};
 use crate::operators::{CmpOperator, Operator};
+use crate::value::Attr;
 use crate::StackFrame;
 
 /// A parameter in a function signature with optional default value.
@@ -90,6 +91,11 @@ pub enum ParseNode {
     SubscriptAssign {
         target: Identifier,
         index: ExprLoc,
+        value: ExprLoc,
+    },
+    AttrAssign {
+        object: Identifier,
+        attr: Attr,
         value: ExprLoc,
     },
     For {
@@ -415,21 +421,27 @@ impl<'a> Parser<'a> {
     }
 
     /// `lhs = rhs` -> `lhs, rhs`
-    /// Handles both simple assignments (x = value) and subscript assignments (dict[key] = value)
+    /// Handles simple assignments (x = value), subscript assignments (dict[key] = value),
+    /// and attribute assignments (obj.attr = value)
     fn parse_assignment(&mut self, lhs: AstExpr, rhs: AstExpr) -> Result<ParseNode, ParseError> {
-        // Check if this is a subscript assignment like dict[key] = value
-        if let AstExpr::Subscript(ast::ExprSubscript { value, slice, .. }) = lhs {
-            Ok(ParseNode::SubscriptAssign {
+        match lhs {
+            // Subscript assignment like dict[key] = value
+            AstExpr::Subscript(ast::ExprSubscript { value, slice, .. }) => Ok(ParseNode::SubscriptAssign {
                 target: self.parse_identifier(*value)?,
                 index: self.parse_expression(*slice)?,
                 value: self.parse_expression(rhs)?,
-            })
-        } else {
+            }),
+            // Attribute assignment like obj.attr = value
+            AstExpr::Attribute(ast::ExprAttribute { value, attr, .. }) => Ok(ParseNode::AttrAssign {
+                object: self.parse_identifier(*value)?,
+                attr: attr.id().to_string().into(),
+                value: self.parse_expression(rhs)?,
+            }),
             // Simple identifier assignment like x = value
-            Ok(ParseNode::Assign {
+            _ => Ok(ParseNode::Assign {
                 target: self.parse_identifier(lhs)?,
                 object: self.parse_expression(rhs)?,
-            })
+            }),
         }
     }
 
@@ -647,7 +659,17 @@ impl<'a> Parser<'a> {
                 self.convert_range(range),
                 Expr::Literal(Literal::Ellipsis),
             )),
-            AstExpr::Attribute(_) => Err(ParseError::not_implemented("attribute access")),
+            AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => {
+                let object = self.parse_identifier(*value)?;
+                let position = self.convert_range(range);
+                Ok(ExprLoc::new(
+                    position,
+                    Expr::AttrGet {
+                        object,
+                        attr: attr.id().to_string().into(),
+                    },
+                ))
+            }
             AstExpr::Subscript(ast::ExprSubscript {
                 value, slice, range, ..
             }) => {
