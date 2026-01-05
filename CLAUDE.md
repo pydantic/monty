@@ -76,10 +76,13 @@ Commands:
 cargo build
 
 # Run tests (this is the best way to run all tests as it enables the ref-count-panic feature)
-make test
+make test-ref-count-panic
 
 # Run a specific test
-cargo test --features ref-count-panic str__ops
+cargo test -p monty --features ref-count-panic str__ops
+
+# Run test_cases tests only
+make test-cases
 
 # Run the interpreter on a Python file
 cargo run -p monty-cli -- <file.py>
@@ -265,7 +268,9 @@ Make sure functions are added in the most logical place, e.g. as methods on a st
 
 The code should follow the "newspaper" style where public and primary functions are at the top of the file, followed by private functions and utilities.
 
-ALWAYS run `make lint` after making changes and fix all suggestions to maintain code quality.
+ALWAYS run `make lint-rs` after making changes to rust code and fix all suggestions to maintain code quality.
+
+ALWAYS run `make lint-py` after making changes to python code and fix all suggestions to maintain code quality.
 
 ALWAYS update this file when it is out of date.
 

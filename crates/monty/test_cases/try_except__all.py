@@ -374,3 +374,99 @@ try:
 except MemoryError as e:
     multi_no_match_propagated = repr(e) == "MemoryError('out of memory')"
 assert multi_no_match_propagated, 'exception should propagate when no handler matches'
+
+# === BaseException hierarchy ===
+# BaseException should catch all exceptions including Exception subclasses
+caught_value_by_base = False
+try:
+    raise ValueError('value')
+except BaseException:
+    caught_value_by_base = True
+assert caught_value_by_base, 'BaseException should catch ValueError'
+
+caught_key_by_base = False
+try:
+    raise KeyError('key')
+except BaseException:
+    caught_key_by_base = True
+assert caught_key_by_base, 'BaseException should catch KeyError'
+
+caught_type_by_base = False
+try:
+    raise TypeError('type')
+except BaseException:
+    caught_type_by_base = True
+assert caught_type_by_base, 'BaseException should catch TypeError'
+
+# BaseException catches KeyboardInterrupt
+caught_keyboard_by_base = False
+try:
+    raise KeyboardInterrupt()
+except BaseException:
+    caught_keyboard_by_base = True
+assert caught_keyboard_by_base, 'BaseException should catch KeyboardInterrupt'
+
+# BaseException catches SystemExit
+caught_sysexit_by_base = False
+try:
+    raise SystemExit()
+except BaseException:
+    caught_sysexit_by_base = True
+assert caught_sysexit_by_base, 'BaseException should catch SystemExit'
+
+# === Exception does NOT catch BaseException direct subclasses ===
+# Exception should NOT catch KeyboardInterrupt
+caught_keyboard_by_exc = False
+try:
+    try:
+        raise KeyboardInterrupt()
+    except Exception:
+        caught_keyboard_by_exc = True
+except BaseException:
+    pass
+assert not caught_keyboard_by_exc, 'Exception should NOT catch KeyboardInterrupt'
+
+# Exception should NOT catch SystemExit
+caught_sysexit_by_exc = False
+try:
+    try:
+        raise SystemExit()
+    except Exception:
+        caught_sysexit_by_exc = True
+except BaseException:
+    pass
+assert not caught_sysexit_by_exc, 'Exception should NOT catch SystemExit'
+
+# But Exception SHOULD catch regular exceptions
+caught_value_by_exc = False
+try:
+    raise ValueError('test')
+except Exception:
+    caught_value_by_exc = True
+assert caught_value_by_exc, 'Exception should catch ValueError'
+
+# === isinstance with BaseException ===
+try:
+    raise ValueError('test')
+except ValueError as e:
+    assert isinstance(e, BaseException), 'ValueError should be instance of BaseException'
+
+try:
+    raise KeyboardInterrupt()
+except KeyboardInterrupt as e:
+    assert isinstance(e, BaseException), 'KeyboardInterrupt should be instance of BaseException'
+    assert not isinstance(e, Exception), 'KeyboardInterrupt should NOT be instance of Exception'
+
+try:
+    raise SystemExit()
+except SystemExit as e:
+    assert isinstance(e, BaseException), 'SystemExit should be instance of BaseException'
+    assert not isinstance(e, Exception), 'SystemExit should NOT be instance of Exception'
+
+# === Tuple containing BaseException ===
+caught_by_tuple_with_base = False
+try:
+    raise KeyboardInterrupt()
+except (ValueError, BaseException):
+    caught_by_tuple_with_base = True
+assert caught_by_tuple_with_base, 'tuple with BaseException should catch KeyboardInterrupt'

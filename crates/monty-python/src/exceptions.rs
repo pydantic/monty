@@ -4,8 +4,7 @@
 //! so that Python code sees native Python exceptions.
 
 use ::monty::{ExcType, MontyException};
-use pyo3::exceptions::{self, PyBaseException};
-use pyo3::prelude::*;
+use pyo3::{exceptions, prelude::*, PyTypeCheck};
 
 /// Converts Monty's `MontyException` to a Python exception.
 ///
@@ -18,6 +17,7 @@ pub fn exc_monty_to_py(exc: MontyException) -> PyErr {
 
     match exc_type {
         ExcType::Exception => exceptions::PyException::new_err(msg),
+        ExcType::BaseException => exceptions::PyBaseException::new_err(msg),
         ExcType::SystemExit => exceptions::PySystemExit::new_err(msg),
         ExcType::KeyboardInterrupt => exceptions::PyKeyboardInterrupt::new_err(msg),
         ExcType::ArithmeticError => exceptions::PyArithmeticError::new_err(msg),
@@ -50,7 +50,7 @@ pub fn exc_py_to_monty(py: Python<'_>, py_err: PyErr) -> MontyException {
 }
 
 /// Converts a Python exception to Monty's `MontyObject::Exception`.
-pub fn exc_to_monty_object(exc: &Bound<'_, PyBaseException>) -> ::monty::MontyObject {
+pub fn exc_to_monty_object(exc: &Bound<'_, exceptions::PyBaseException>) -> ::monty::MontyObject {
     let exc_type = py_err_to_exc_type(exc);
     let arg = exc.str().ok().map(|s| s.to_string_lossy().into_owned());
 
@@ -59,33 +59,35 @@ pub fn exc_to_monty_object(exc: &Bound<'_, PyBaseException>) -> ::monty::MontyOb
 
 /// Maps a Python exception type to Monty's `ExcType` enum.
 ///
-/// NOTE: order matters here!
-fn py_err_to_exc_type(exc: &Bound<'_, PyBaseException>) -> ExcType {
-    if exc.cast::<exceptions::PyArithmeticError>().is_ok() {
+/// NOTE: order matters here as some exceptions are subclasses of others!
+fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
+    if exceptions::PyArithmeticError::type_check(exc) {
         ExcType::ZeroDivisionError
-    } else if exc.cast::<exceptions::PyAssertionError>().is_ok() {
+    } else if exceptions::PyAssertionError::type_check(exc) {
         ExcType::AssertionError
-    } else if exc.cast::<exceptions::PyAttributeError>().is_ok() {
+    } else if exceptions::PyAttributeError::type_check(exc) {
         ExcType::AttributeError
-    } else if exc.cast::<exceptions::PyMemoryError>().is_ok() {
+    } else if exceptions::PyMemoryError::type_check(exc) {
         ExcType::MemoryError
-    } else if exc.cast::<exceptions::PyNameError>().is_ok() {
+    } else if exceptions::PyNameError::type_check(exc) {
         ExcType::NameError
-    } else if exc.cast::<exceptions::PySyntaxError>().is_ok() {
+    } else if exceptions::PySyntaxError::type_check(exc) {
         ExcType::SyntaxError
-    } else if exc.cast::<exceptions::PyTimeoutError>().is_ok() {
+    } else if exceptions::PyTimeoutError::type_check(exc) {
         ExcType::TimeoutError
-    } else if exc.cast::<exceptions::PyTypeError>().is_ok() {
+    } else if exceptions::PyTypeError::type_check(exc) {
         ExcType::TypeError
-    } else if exc.cast::<exceptions::PyValueError>().is_ok() {
+    } else if exceptions::PyValueError::type_check(exc) {
         ExcType::ValueError
-    } else if exc.cast::<exceptions::PyRuntimeError>().is_ok() {
+    } else if exceptions::PyRuntimeError::type_check(exc) {
         ExcType::RuntimeError
-    } else if exc.cast::<exceptions::PySystemError>().is_ok() {
+    } else if exceptions::PySystemError::type_check(exc) {
         ExcType::SystemExit
-    } else if exc.cast::<exceptions::PyKeyboardInterrupt>().is_ok() {
+    } else if exceptions::PyKeyboardInterrupt::type_check(exc) {
         ExcType::KeyboardInterrupt
-    } else {
+    } else if exceptions::PyException::type_check(exc) {
         ExcType::Exception
+    } else {
+        ExcType::BaseException
     }
 }

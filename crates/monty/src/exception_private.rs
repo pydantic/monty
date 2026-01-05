@@ -25,10 +25,11 @@ use crate::value::{Attr, Value};
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, IntoStaticStr, Serialize, Deserialize)]
 pub enum ExcType {
-    /// Base exception class - matches any exception in isinstance checks.
+    /// primary exception class - matches any exception in isinstance checks.
     Exception,
 
     /// System exit exceptions
+    BaseException,
     SystemExit,
     KeyboardInterrupt,
 
@@ -83,8 +84,10 @@ impl ExcType {
             return true;
         }
         match handler_type {
-            // Exception catches all standard exceptions
-            Self::Exception => true,
+            // BaseException catches all standard exceptions
+            Self::BaseException => true,
+            // Exception catches everything except BaseException, and direct subclasses: KeyboardInterrupt, SystemExit
+            Self::Exception => !matches!(self, Self::BaseException | Self::KeyboardInterrupt | Self::SystemExit),
             // LookupError catches KeyError and IndexError
             Self::LookupError => matches!(self, Self::KeyError | Self::IndexError),
             // ArithmeticError catches ZeroDivisionError and OverflowError
