@@ -1,4 +1,4 @@
-from typing import Any, Callable, Literal, final
+from typing import Any, Callable, Literal, final, overload
 
 from typing_extensions import Self, TypedDict
 
@@ -137,21 +137,30 @@ class MontySnapshot:
     def kwargs(self) -> dict[str, Any]:
         """The keyword arguments passed to the external function."""
 
-    def resume(self, return_value: Any) -> MontySnapshot | MontyComplete:
-        """
-        Resume execution with the return value from an external function call.
+    @overload
+    def resume(self, *, return_value: Any) -> MontySnapshot | MontyComplete:
+        """Resume execution with a return value from the external function.
 
         Resume may only be called once on each MontySnapshot instance.
 
         Arguments:
             return_value: The value to return from the external function call.
+            exception: An exception to raise in the Monty interpreter.
 
         Returns:
             MontySnapshot if another external function call is pending,
             MontyComplete if execution finished.
 
         Raises:
+            TypeError: If both arguments are provided.
             RuntimeError: If execution has already completed.
+        """
+
+    @overload
+    def resume(self, *, exception: BaseException) -> MontySnapshot | MontyComplete:
+        """Resume execution by raising the exception in the Monty interpreter.
+
+        See docstring for the first overload for more information.
         """
 
     def dump(self) -> bytes:

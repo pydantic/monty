@@ -38,7 +38,7 @@ def test_start_progress_resume_returns_complete():
     assert progress.args == snapshot(())
     assert progress.kwargs == snapshot({})
 
-    result = progress.resume(42)
+    result = progress.resume(return_value=42)
     assert isinstance(result, monty.MontyComplete)
     assert result.output == snapshot(42)
 
@@ -79,12 +79,12 @@ def test_start_multiple_external_calls():
     assert progress.function_name == snapshot('a')
 
     # Resume with first return value
-    progress = progress.resume(10)
+    progress = progress.resume(return_value=10)
     assert isinstance(progress, monty.MontySnapshot)
     assert progress.function_name == snapshot('b')
 
     # Resume with second return value
-    result = progress.resume(5)
+    result = progress.resume(return_value=5)
     assert isinstance(result, monty.MontyComplete)
     assert result.output == snapshot(15)
 
@@ -98,7 +98,7 @@ def test_start_chain_of_external_calls():
     while isinstance(progress, monty.MontySnapshot):
         assert progress.function_name == snapshot('c')
         call_count += 1
-        progress = progress.resume(call_count)
+        progress = progress.resume(return_value=call_count)
 
     assert isinstance(progress, monty.MontyComplete)
     assert progress.output == snapshot(6)  # 1 + 2 + 3
@@ -139,11 +139,11 @@ def test_start_resume_cannot_be_called_twice():
     assert isinstance(progress, monty.MontySnapshot)
 
     # First resume succeeds
-    progress.resume(1)
+    progress.resume(return_value=1)
 
     # Second resume should fail
     with pytest.raises(RuntimeError) as exc_info:
-        progress.resume(2)
+        progress.resume(return_value=2)
     assert exc_info.value.args[0] == snapshot('Progress already resumed')
 
 
@@ -152,7 +152,7 @@ def test_start_complex_return_value():
     progress = m.start()
     assert isinstance(progress, monty.MontySnapshot)
 
-    result = progress.resume({'a': [1, 2, 3], 'b': {'nested': True}})
+    result = progress.resume(return_value={'a': [1, 2, 3], 'b': {'nested': True}})
     assert isinstance(result, monty.MontyComplete)
     assert result.output == snapshot({'a': [1, 2, 3], 'b': {'nested': True}})
 
@@ -162,7 +162,7 @@ def test_start_resume_with_none():
     progress = m.start()
     assert isinstance(progress, monty.MontySnapshot)
 
-    result = progress.resume(None)
+    result = progress.resume(return_value=None)
     assert isinstance(result, monty.MontyComplete)
     assert result.output is None
 
@@ -190,7 +190,7 @@ def test_start_can_reuse_monty_instance():
     progress1 = m.start(inputs={'x': 1})
     assert isinstance(progress1, monty.MontySnapshot)
     assert progress1.args == snapshot((1,))
-    result1 = progress1.resume(10)
+    result1 = progress1.resume(return_value=10)
     assert isinstance(result1, monty.MontyComplete)
     assert result1.output == snapshot(10)
 
@@ -198,7 +198,7 @@ def test_start_can_reuse_monty_instance():
     progress2 = m.start(inputs={'x': 2})
     assert isinstance(progress2, monty.MontySnapshot)
     assert progress2.args == snapshot((2,))
-    result2 = progress2.resume(20)
+    result2 = progress2.resume(return_value=20)
     assert isinstance(result2, monty.MontyComplete)
     assert result2.output == snapshot(20)
 
@@ -219,3 +219,93 @@ def test_start_returns_complete_for_various_types(code: str, expected: Any):
     result = m.start()
     assert isinstance(result, monty.MontyComplete)
     assert result.output == expected
+
+
+def test_start_progress_resume_with_exception_caught():
+    """Test that resuming with an exception is caught by try/except."""
+    code = """
+try:
+    result = external_func()
+except ValueError:
+    caught = True
+caught
+"""
+    m = monty.Monty(code, external_functions=['external_func'])
+    progress = m.start()
+    assert isinstance(progress, monty.MontySnapshot)
+
+    # Resume with an exception using keyword argument
+    result = progress.resume(exception=ValueError('test error'))
+    assert isinstance(result, monty.MontyComplete)
+    assert result.output == snapshot(True)
+
+
+def test_start_progress_resume_exception_propagates_uncaught():
+    """Test that uncaught exceptions from resume() propagate to caller."""
+    code = 'external_func()'
+    m = monty.Monty(code, external_functions=['external_func'])
+    progress = m.start()
+    assert isinstance(progress, monty.MontySnapshot)
+
+    # Resume with an exception that won't be caught
+    with pytest.raises(ValueError) as exc_info:
+        progress.resume(exception=ValueError('uncaught error'))
+    assert exc_info.value.args[0] == snapshot('uncaught error')
+
+
+def test_resume_none():
+    code = 'external_func()'
+    m = monty.Monty(code, external_functions=['external_func'])
+    progress = m.start()
+    assert isinstance(progress, monty.MontySnapshot)
+    result = progress.resume(return_value=None)
+    assert isinstance(result, monty.MontyComplete)
+    assert result.output == snapshot(None)
+
+
+def test_invalid_resume_args():
+    """Test that resume() with no args returns None."""
+    code = 'external_func()'
+    m = monty.Monty(code, external_functions=['external_func'])
+    progress = m.start()
+    assert isinstance(progress, monty.MontySnapshot)
+
+    # no args provided
+    with pytest.raises(TypeError) as exc_info:
+        progress.resume()  # pyright: ignore[reportCallIssue]
+    assert exc_info.value.args[0] == snapshot('resume() accepts either return_value or exception, not both')
+
+    # Both arguments provided
+    with pytest.raises(TypeError) as exc_info:
+        progress.resume(return_value=42, exception=ValueError('error'))  # pyright: ignore[reportCallIssue]
+    assert exc_info.value.args[0] == snapshot('resume() accepts either return_value or exception, not both')
+
+    # invalid kwarg provided
+    with pytest.raises(TypeError) as exc_info:
+        progress.resume(invalid_kwarg=42)  # pyright: ignore[reportCallIssue]
+    assert exc_info.value.args[0] == snapshot('resume() accepts either return_value or exception, not both')
+
+
+def test_start_progress_resume_exception_in_nested_try():
+    """Test exception handling in nested try/except blocks."""
+    code = """
+outer_caught = False
+finally_ran = False
+try:
+    try:
+        external_func()
+    except TypeError:
+        pass  # Won't catch ValueError
+    finally:
+        finally_ran = True
+except ValueError:
+    outer_caught = True
+(outer_caught, finally_ran)
+"""
+    m = monty.Monty(code, external_functions=['external_func'])
+    progress = m.start()
+    assert isinstance(progress, monty.MontySnapshot)
+
+    result = progress.resume(exception=ValueError('propagates to outer'))
+    assert isinstance(result, monty.MontyComplete)
+    assert result.output == snapshot((True, True))

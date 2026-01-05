@@ -3,12 +3,12 @@ use std::fmt::Write;
 
 // Use `::monty` to refer to the external crate (not the pymodule)
 use ::monty::{
-    LimitedTracker, MontyException, MontyObject, MontyRun, NoLimitTracker, PrintWriter, ResourceTracker, RunProgress,
-    Snapshot, StdPrint,
+    ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRun, NoLimitTracker, PrintWriter,
+    ResourceTracker, RunProgress, Snapshot, StdPrint,
 };
 use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
-use pyo3::{prelude::*, IntoPyObjectExt};
+use pyo3::{intern, prelude::*, IntoPyObjectExt};
 
 use crate::convert::{monty_to_py, py_to_monty};
 use crate::exceptions::{exc_monty_to_py, exc_py_to_monty};
@@ -377,23 +377,53 @@ pub struct PyMontySnapshot {
 
 #[pymethods]
 impl PyMontySnapshot {
-    pub fn resume<'py>(&mut self, py: Python<'py>, return_value: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
-        let monty_return_value = py_to_monty(return_value)?;
+    /// Resumes execution with either a return value or an exception.
+    ///
+    /// Exactly one of `return_value` or `exception` must be provided.
+    ///
+    /// # Arguments
+    /// * `return_value` - The value to return from the external function call
+    /// * `exception` - An exception to raise in the Monty interpreter
+    ///
+    /// # Raises
+    /// * `TypeError` if both arguments are provided, or neither
+    /// * `RuntimeError` if the snapshot has already been resumed
+    #[pyo3(signature = (**kwargs))]
+    pub fn resume<'py>(&mut self, py: Python<'py>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Bound<'py, PyAny>> {
+        const ARGS_ERROR: &str = "resume() accepts either return_value or exception, not both";
+        let Some(kwargs) = kwargs else {
+            return Err(PyTypeError::new_err(ARGS_ERROR));
+        };
+        if kwargs.len() != 1 {
+            return Err(PyTypeError::new_err(ARGS_ERROR));
+        }
+        let external_result: ExternalResult = if let Some(rv) = kwargs.get_item(intern!(py, "return_value"))? {
+            // Return value provided
+            py_to_monty(&rv)?.into()
+        } else if let Some(exc) = kwargs.get_item(intern!(py, "exception"))? {
+            // Exception provided
+            let py_err = PyErr::from_value(exc.into_any());
+            exc_py_to_monty(py, py_err).into()
+        } else {
+            // wrong key in kwargs
+            return Err(PyTypeError::new_err(ARGS_ERROR));
+        };
+
         let snapshot = std::mem::replace(&mut self.snapshot, EitherSnapshot::Done);
         let progress = match snapshot {
             EitherSnapshot::NoLimit(snapshot) => {
                 let result = if let Some(print_callback) = &self.print_callback {
-                    snapshot.run(monty_return_value, &mut CallbackStringPrint(print_callback.bind(py)))
+                    snapshot.run(external_result, &mut CallbackStringPrint(print_callback.bind(py)))
                 } else {
-                    snapshot.run(monty_return_value, &mut StdPrint)
+                    snapshot.run(external_result, &mut StdPrint)
                 };
                 EitherProgress::NoLimit(result.map_err(exc_monty_to_py)?)
             }
             EitherSnapshot::Limited(snapshot) => {
                 let result = if let Some(print_callback) = &self.print_callback {
-                    snapshot.run(monty_return_value, &mut CallbackStringPrint(print_callback.bind(py)))
+                    snapshot.run(external_result, &mut CallbackStringPrint(print_callback.bind(py)))
                 } else {
-                    snapshot.run(monty_return_value, &mut StdPrint)
+                    snapshot.run(external_result, &mut StdPrint)
                 };
                 EitherProgress::Limited(result.map_err(exc_monty_to_py)?)
             }

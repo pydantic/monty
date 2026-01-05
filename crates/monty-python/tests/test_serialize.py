@@ -62,7 +62,7 @@ def test_progress_dump_load_roundtrip():
     assert progress2.args == snapshot((1, 2))
     assert progress2.kwargs == snapshot({})
 
-    result = progress2.resume(100)
+    result = progress2.resume(return_value=100)
     assert isinstance(result, monty.MontyComplete)
     assert result.output == snapshot(100)
 
@@ -94,7 +94,7 @@ def test_progress_dump_after_resume_fails():
     progress = m.start()
     assert isinstance(progress, monty.MontySnapshot)
 
-    progress.resume(1)
+    progress.resume(return_value=1)
 
     with pytest.raises(RuntimeError) as exc_info:
         progress.dump()
@@ -119,7 +119,7 @@ def test_progress_dump_load_multiple_calls():
     progress2 = monty.MontySnapshot.load(data)
 
     # Resume with first return value
-    progress3 = progress2.resume(10)
+    progress3 = progress2.resume(return_value=10)
     assert isinstance(progress3, monty.MontySnapshot)
     assert progress3.function_name == snapshot('b')
 
@@ -128,7 +128,7 @@ def test_progress_dump_load_multiple_calls():
     progress4 = monty.MontySnapshot.load(data2)
 
     # Resume with second return value
-    result = progress4.resume(5)
+    result = progress4.resume(return_value=5)
     assert isinstance(result, monty.MontyComplete)
     assert result.output == snapshot(15)
 
@@ -149,7 +149,7 @@ def test_progress_load_with_print_callback():
     output.clear()
     progress2 = monty.MontySnapshot.load(data, print_callback=callback)
 
-    result = progress2.resume(None)
+    result = progress2.resume(return_value=None)
     assert isinstance(result, monty.MontyComplete)
     assert output == snapshot([('stdout', 'after'), ('stdout', '\n')])
 
@@ -162,7 +162,7 @@ def test_progress_load_without_print_callback():
     data = progress.dump()
     progress2 = monty.MontySnapshot.load(data)
 
-    result = progress2.resume(42)
+    result = progress2.resume(return_value=42)
     assert isinstance(result, monty.MontyComplete)
     assert result.output == snapshot(42)
 
@@ -194,6 +194,6 @@ def test_progress_dump_load_with_limits():
     data = progress.dump()
     progress2 = monty.MontySnapshot.load(data)
 
-    result = progress2.resume(99)
+    result = progress2.resume(return_value=99)
     assert isinstance(result, monty.MontyComplete)
     assert result.output == snapshot(99)

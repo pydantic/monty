@@ -145,10 +145,8 @@ impl Namespaces {
     pub fn take_ext_return_value(&mut self, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
         // Check for pending exception first
         if let Some(exc) = self.ext_exception.take() {
-            return Err(RunError::Exc(exc));
-        }
-        // Normal return value logic
-        if let Some(value) = self.ext_return_values.get(self.next_ext_return_value) {
+            Err(RunError::Exc(exc))
+        } else if let Some(value) = self.ext_return_values.get(self.next_ext_return_value) {
             self.next_ext_return_value += 1;
             Ok(Some(value.clone_with_heap(heap)))
         } else {

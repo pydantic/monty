@@ -89,7 +89,7 @@ print(result.args)
 #> ('https://example.com',)
 
 # Perform the actual fetch, then resume with the result
-result = result.resume('hello world')
+result = result.resume(return_value='hello world')
 
 print(type(result))
 #> <class 'monty.MontyComplete'>
@@ -128,7 +128,7 @@ state = progress.dump()
 
 # Later, restore and resume (e.g., in a different process)
 progress2 = monty.MontySnapshot.load(state)
-result = progress2.resume('response data')
+result = progress2.resume(return_value='response data')
 print(result.output)
 #> response data
 ```
