@@ -324,11 +324,21 @@ impl<'i> Prepare<'i> {
                     let value = self.prepare_expression(value)?;
                     new_nodes.push(Node::SubscriptAssign { target, index, value });
                 }
-                ParseNode::AttrAssign { object, attr, value } => {
+                ParseNode::AttrAssign {
+                    object,
+                    attr,
+                    target_position,
+                    value,
+                } => {
                     // AttrAssign doesn't assign to the object itself, just modifies its attribute
                     let object = self.get_id(object).0;
                     let value = self.prepare_expression(value)?;
-                    new_nodes.push(Node::AttrAssign { object, attr, value });
+                    new_nodes.push(Node::AttrAssign {
+                        object,
+                        attr,
+                        target_position,
+                        value,
+                    });
                 }
                 ParseNode::For {
                     target,

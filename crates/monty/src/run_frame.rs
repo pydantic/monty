@@ -226,8 +226,13 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
                     return Ok(Some(exit));
                 }
             }
-            Node::AttrAssign { object, attr, value } => {
-                if let Some(exit) = self.attr_assign(namespaces, heap, object, attr, value)? {
+            Node::AttrAssign {
+                object,
+                attr,
+                target_position,
+                value,
+            } => {
+                if let Some(exit) = self.attr_assign(namespaces, heap, object, attr, *target_position, value)? {
                     return Ok(Some(exit));
                 }
             }
@@ -602,6 +607,7 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
         heap: &mut Heap<impl ResourceTracker>,
         object_ident: &Identifier,
         attr: &Attr,
+        target_position: CodeRange,
         value_expr: &ExprLoc,
     ) -> RunResult<Option<FrameExit>> {
         // Evaluate the value first
@@ -609,6 +615,7 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
 
         // Get the object and set the attribute
         let object_val = namespaces.get_var_mut(self.local_idx, object_ident, self.interns)?;
+        let frame = self.stack_frame(target_position);
         if let Value::Ref(id) = object_val {
             heap.with_entry_mut(*id, |heap, data| -> RunResult<()> {
                 match data {
@@ -638,13 +645,14 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
                         Err(ExcType::attribute_error_no_setattr(ty, attr.as_str()))
                     }
                 }
-            })?;
+            })
+            .map_err(|e| e.set_frame(frame))?;
             Ok(None)
         } else {
             // Drop the value
             val.drop_with_heap(heap);
             let ty = object_val.py_type(Some(heap));
-            Err(ExcType::attribute_error_no_setattr(ty, attr.as_str()))
+            Err(ExcType::attribute_error_no_setattr(ty, attr.as_str()).set_frame(frame))
         }
     }
 
@@ -1305,9 +1313,9 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
         }
     }
 
+    /// Create frame without parent - the parent chain is built up by add_frame_info()
+    /// as the error propagates through the call stack
     fn stack_frame(&self, position: CodeRange) -> RawStackFrame {
-        // Create frame without parent - the parent chain is built up by add_frame_info()
-        // as the error propagates through the call stack
         RawStackFrame::new(position, self.name, None)
     }
 

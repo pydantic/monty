@@ -249,6 +249,7 @@ pub enum Node {
     AttrAssign {
         object: Identifier,
         attr: Attr,
+        target_position: CodeRange,
         value: ExprLoc,
     },
     For {

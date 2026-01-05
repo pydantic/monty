@@ -96,6 +96,7 @@ pub enum ParseNode {
     AttrAssign {
         object: Identifier,
         attr: Attr,
+        target_position: CodeRange,
         value: ExprLoc,
     },
     For {
@@ -432,9 +433,10 @@ impl<'a> Parser<'a> {
                 value: self.parse_expression(rhs)?,
             }),
             // Attribute assignment like obj.attr = value
-            AstExpr::Attribute(ast::ExprAttribute { value, attr, .. }) => Ok(ParseNode::AttrAssign {
+            AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => Ok(ParseNode::AttrAssign {
                 object: self.parse_identifier(*value)?,
                 attr: attr.id().to_string().into(),
+                target_position: self.convert_range(range),
                 value: self.parse_expression(rhs)?,
             }),
             // Simple identifier assignment like x = value
