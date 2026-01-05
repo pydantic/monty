@@ -140,24 +140,109 @@ def test_undeclared_function_raises_name_error():
         m.run()
 
 
-# TODO: Raising exceptions from external function callbacks is not yet implemented in Monty.
-# When called, it panics rather than propagating the exception.
-# def test_external_function_raises_exception():
-#     m = monty.Monty('fail()', external_functions=['fail'])
-#
-#     def fail(*args: Any, **kwargs: Any) -> None:
-#         raise ValueError('intentional error')
-#
-#     with pytest.raises(ValueError, match='intentional error'):
-#         m.run(external_functions={'fail': fail})
-#
-#
-# def test_external_function_wrong_name_raises():
-#     m = monty.Monty('foo()', external_functions=['foo'])
-#
-#     def bar(*args: Any, **kwargs: Any) -> int:
-#         return 1
-#
-#     # This should raise KeyError but currently panics
-#     with pytest.raises(KeyError, match="'foo' not found"):
-#         m.run(external_functions={'bar': bar})
+def test_external_function_raises_exception():
+    """Test that exceptions from external functions propagate to the caller."""
+    m = monty.Monty('fail()', external_functions=['fail'])
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        raise ValueError('intentional error')
+
+    with pytest.raises(ValueError) as exc_info:
+        m.run(external_functions={'fail': fail})
+    assert exc_info.value.args[0] == snapshot('intentional error')
+
+
+def test_external_function_wrong_name_raises():
+    """Test that calling a missing external function raises KeyError."""
+    m = monty.Monty('foo()', external_functions=['foo'])
+
+    def bar(*args: Any, **kwargs: Any) -> int:
+        return 1
+
+    with pytest.raises(KeyError) as exc_info:
+        m.run(external_functions={'bar': bar})
+    # KeyError wraps the message in quotes
+    assert exc_info.value.args[0] == snapshot('"External function \'foo\' not found"')
+
+
+def test_external_function_exception_caught_by_try_except():
+    """Test that exceptions from external functions can be caught by try/except."""
+    code = """
+try:
+    fail()
+except ValueError:
+    caught = True
+caught
+"""
+    m = monty.Monty(code, external_functions=['fail'])
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        raise ValueError('caught error')
+
+    result = m.run(external_functions={'fail': fail})
+    assert result == snapshot(True)
+
+
+def test_external_function_exception_type_preserved():
+    """Test that various exception types are correctly preserved."""
+    m = monty.Monty('fail()', external_functions=['fail'])
+
+    def fail_type_error(*args: Any, **kwargs: Any) -> None:
+        raise TypeError('type error message')
+
+    with pytest.raises(TypeError) as exc_info:
+        m.run(external_functions={'fail': fail_type_error})
+    assert exc_info.value.args[0] == snapshot('type error message')
+
+
+def test_external_function_exception_in_expression():
+    """Test exception from external function in an expression context."""
+    m = monty.Monty('1 + fail() + 2', external_functions=['fail'])
+
+    def fail(*args: Any, **kwargs: Any) -> int:
+        raise RuntimeError('mid-expression error')
+
+    with pytest.raises(RuntimeError) as exc_info:
+        m.run(external_functions={'fail': fail})
+    assert exc_info.value.args[0] == snapshot('mid-expression error')
+
+
+def test_external_function_exception_after_successful_call():
+    """Test exception handling after a successful external call."""
+    code = """
+a = success()
+b = fail()
+a + b
+"""
+    m = monty.Monty(code, external_functions=['success', 'fail'])
+
+    def success(*args: Any, **kwargs: Any) -> int:
+        return 10
+
+    def fail(*args: Any, **kwargs: Any) -> int:
+        raise ValueError('second call fails')
+
+    with pytest.raises(ValueError) as exc_info:
+        m.run(external_functions={'success': success, 'fail': fail})
+    assert exc_info.value.args[0] == snapshot('second call fails')
+
+
+def test_external_function_exception_with_finally():
+    """Test that finally block runs when external function raises."""
+    code = """
+finally_ran = False
+try:
+    fail()
+except ValueError:
+    pass
+finally:
+    finally_ran = True
+finally_ran
+"""
+    m = monty.Monty(code, external_functions=['fail'])
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        raise ValueError('error')
+
+    result = m.run(external_functions={'fail': fail})
+    assert result == snapshot(True)

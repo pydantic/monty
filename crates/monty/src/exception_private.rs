@@ -84,7 +84,7 @@ impl ExcType {
             return true;
         }
         match handler_type {
-            // BaseException catches all standard exceptions
+            // BaseException catches all exceptions
             Self::BaseException => true,
             // Exception catches everything except BaseException, and direct subclasses: KeyboardInterrupt, SystemExit
             Self::Exception => !matches!(self, Self::BaseException | Self::KeyboardInterrupt | Self::SystemExit),

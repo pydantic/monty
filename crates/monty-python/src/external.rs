@@ -4,11 +4,13 @@
 //! External functions are registered by name and called when Monty execution
 //! reaches a call to that function.
 
-use ::monty::MontyObject;
+use ::monty::{ExternalResult, MontyObject};
+use pyo3::exceptions::PyKeyError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 
 use crate::convert::{monty_to_py, py_to_monty};
+use crate::exceptions::exc_py_to_monty;
 
 /// Registry that maps external function names to Python callables.
 ///
@@ -31,16 +33,16 @@ impl<'py> ExternalFunctionRegistry<'py> {
     /// with unpacked `*args, **kwargs`, and converts the result back to Monty format.
     ///
     /// If the Python function raises an exception, it's converted to a Monty
-    /// exception object that can be raised inside Monty execution.
+    /// exception that will be raised inside Monty execution.
     pub fn call(
         &self,
         function_name: &str,
         args: &[MontyObject],
         kwargs: &[(MontyObject, MontyObject)],
-    ) -> MontyObject {
+    ) -> ExternalResult {
         match self.call_inner(function_name, args, kwargs) {
-            Ok(result) => result,
-            Err(err) => todo!("raising errors within external function calls is not yet implemented {err:?}"),
+            Ok(result) => ExternalResult::Return(result),
+            Err(err) => ExternalResult::Error(exc_py_to_monty(self.py, err)),
         }
     }
 
@@ -52,9 +54,10 @@ impl<'py> ExternalFunctionRegistry<'py> {
         kwargs: &[(MontyObject, MontyObject)],
     ) -> PyResult<MontyObject> {
         // Look up the callable
-        let callable = self.functions.get_item(function_name)?.ok_or_else(|| {
-            PyErr::new::<pyo3::exceptions::PyKeyError, _>(format!("External function '{function_name}' not found"))
-        })?;
+        let callable = self
+            .functions
+            .get_item(function_name)?
+            .ok_or_else(|| PyErr::new::<PyKeyError, _>(format!("External function '{function_name}' not found")))?;
 
         // Convert positional arguments to Python objects
         let py_args: PyResult<Vec<Py<PyAny>>> = args.iter().map(|arg| monty_to_py(self.py, arg)).collect();

@@ -60,8 +60,15 @@ pub fn exc_to_monty_object(exc: &Bound<'_, exceptions::PyBaseException>) -> ::mo
 /// Maps a Python exception type to Monty's `ExcType` enum.
 ///
 /// NOTE: order matters here as some exceptions are subclasses of others!
+/// More specific exceptions must be checked before their parent classes.
 fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
-    if exceptions::PyArithmeticError::type_check(exc) {
+    // LookupError subclasses (check specific types before parent)
+    if exceptions::PyKeyError::type_check(exc) {
+        ExcType::KeyError
+    } else if exceptions::PyIndexError::type_check(exc) {
+        ExcType::IndexError
+    // ArithmeticError subclasses
+    } else if exceptions::PyArithmeticError::type_check(exc) {
         ExcType::ZeroDivisionError
     } else if exceptions::PyAssertionError::type_check(exc) {
         ExcType::AssertionError
