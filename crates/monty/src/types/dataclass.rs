@@ -22,6 +22,12 @@ use crate::value::{Attr, Value};
 /// - `name`: The class name (e.g., "Point", "User")
 /// - `fields`: A Dict mapping field names (strings) to their values
 /// - `methods`: Set of method names that should trigger external calls
+/// - `mutable`: Whether the dataclass instance can be modified
+///
+/// # Hashability
+/// When `mutable` is false, the dataclass is immutable and hashable. The hash
+/// is computed from the class name and all field values. When `mutable` is true,
+/// the dataclass behaves like a regular Python object and is unhashable.
 ///
 /// # Reference Counting
 /// The `fields` Dict contains Values that may be heap-allocated. The
@@ -30,7 +36,7 @@ use crate::value::{Attr, Value};
 ///
 /// # Attribute Access
 /// - Getting: Looks up the field name in the fields Dict
-/// - Setting: Updates or adds the field in the fields Dict
+/// - Setting: Updates or adds the field in the fields Dict (only if mutable)
 /// - Method calls: If the attribute name is in `methods`, triggers external call
 #[derive(Debug)]
 pub struct Dataclass {
@@ -40,6 +46,8 @@ pub struct Dataclass {
     fields: Dict,
     /// Method names that trigger external function calls
     methods: AHashSet<String>,
+    /// Whether this dataclass instance is mutable (affects hashability)
+    mutable: bool,
 }
 
 impl Dataclass {
@@ -49,9 +57,15 @@ impl Dataclass {
     /// * `name` - The class name
     /// * `fields` - Dict of field name -> value pairs (ownership transferred)
     /// * `methods` - Set of method names that trigger external calls
+    /// * `mutable` - Whether this instance is mutable (affects hashability)
     #[must_use]
-    pub fn new(name: String, fields: Dict, methods: AHashSet<String>) -> Self {
-        Self { name, fields, methods }
+    pub fn new(name: String, fields: Dict, methods: AHashSet<String>, mutable: bool) -> Self {
+        Self {
+            name,
+            fields,
+            methods,
+            mutable,
+        }
     }
 
     /// Returns the class name.
@@ -70,6 +84,12 @@ impl Dataclass {
     #[must_use]
     pub fn fields(&self) -> &Dict {
         &self.fields
+    }
+
+    /// Returns whether this dataclass instance is mutable.
+    #[must_use]
+    pub fn is_mutable(&self) -> bool {
+        self.mutable
     }
 
     /// Gets a field value by name.
@@ -115,7 +135,35 @@ impl Dataclass {
             name: self.name.clone(),
             fields: self.fields.clone_with_heap(heap),
             methods: self.methods.clone(),
+            mutable: self.mutable,
         }
+    }
+
+    /// Computes the hash for this dataclass if it's immutable.
+    ///
+    /// Returns Some(hash) for immutable dataclasses, None for mutable ones.
+    /// The hash is computed from the class name and all field values.
+    pub fn compute_hash(&self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Option<u64> {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        if self.mutable {
+            return None;
+        }
+
+        let mut hasher = DefaultHasher::new();
+        // Hash the class name
+        self.name.hash(&mut hasher);
+        // Hash each field (name, value) pair
+        for (key, value) in &self.fields {
+            // Hash the key
+            let key_hash = key.py_hash(heap, interns)?;
+            key_hash.hash(&mut hasher);
+            // Hash the value
+            let value_hash = value.py_hash(heap, interns)?;
+            value_hash.hash(&mut hasher);
+        }
+        Some(hasher.finish())
     }
 }
 
@@ -215,17 +263,18 @@ impl PyTrait for Dataclass {
 }
 
 // Custom serde implementation for Dataclass.
-// Serializes all three fields; methods set is serialized as a Vec for determinism.
+// Serializes all four fields; methods set is serialized as a Vec for determinism.
 impl serde::Serialize for Dataclass {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("Dataclass", 3)?;
+        let mut state = serializer.serialize_struct("Dataclass", 4)?;
         state.serialize_field("name", &self.name)?;
         state.serialize_field("fields", &self.fields)?;
         // Serialize methods as sorted Vec for deterministic output
         let mut methods_vec: Vec<&String> = self.methods.iter().collect();
         methods_vec.sort();
         state.serialize_field("methods", &methods_vec)?;
+        state.serialize_field("mutable", &self.mutable)?;
         state.end()
     }
 }
@@ -237,12 +286,14 @@ impl<'de> serde::Deserialize<'de> for Dataclass {
             name: String,
             fields: Dict,
             methods: Vec<String>,
+            mutable: bool,
         }
         let dc = DataclassFields::deserialize(deserializer)?;
         Ok(Self {
             name: dc.name,
             fields: dc.fields,
             methods: dc.methods.into_iter().collect(),
+            mutable: dc.mutable,
         })
     }
 }

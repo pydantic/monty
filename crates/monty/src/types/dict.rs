@@ -108,11 +108,13 @@ impl Dict {
 
         // Check if key already exists in bucket
         if let Some(index) = opt_index {
-            // Key exists, replace in place to preserve insertion order
-            // Note: we don't decrement old value's refcount since this is a transfer
-            // and we don't increment new value's refcount either
+            // Key exists, replace in place to preserve insertion order.
+            // The new duplicate key must be dropped since we keep the existing key.
+            // The old value must also be dropped since we're replacing it.
             let existing_bucket = &mut self.entries[index];
-            existing_bucket.value = value;
+            let old_value = std::mem::replace(&mut existing_bucket.value, value);
+            old_value.drop_with_heap(heap);
+            key.drop_with_heap(heap);
         } else {
             // Key doesn't exist, add new pair to indices and entries
             let index = self.entries.len();

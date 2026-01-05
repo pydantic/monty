@@ -251,11 +251,14 @@ fn parse_ref_counts(s: &str) -> AHashMap<String, usize> {
 ///
 /// These functions are provided by the test runner when a test uses `# mode: iter`.
 const ITER_EXT_FUNCTIONS: &[&str] = &[
-    "add_ints",       // (a, b) -> a + b (integers)
-    "concat_strings", // (a, b) -> a + b (strings)
-    "return_value",   // (x) -> x (identity)
-    "get_list",       // () -> [1, 2, 3]
-    "raise_error",    // (exc_type: str, message: str) -> raises exception
+    "add_ints",           // (a, b) -> a + b (integers)
+    "concat_strings",     // (a, b) -> a + b (strings)
+    "return_value",       // (x) -> x (identity)
+    "get_list",           // () -> [1, 2, 3]
+    "raise_error",        // (exc_type: str, message: str) -> raises exception
+    "make_point",         // () -> Dataclass Point(x=1, y=2) (immutable)
+    "make_mutable_point", // () -> Dataclass Point(x=1, y=2) (mutable)
+    "make_user",          // (name) -> Dataclass User(name=name, active=True) (immutable)
 ];
 
 /// Dispatches an external function call to the appropriate test implementation.
@@ -300,6 +303,52 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> ExternalResult 
                 _ => panic!("raise_error: unsupported exception type: {exc_type_str}"),
             };
             MontyException::new(exc_type, Some(message)).into()
+        }
+        "make_point" => {
+            assert!(args.is_empty(), "make_point requires no arguments");
+            // Return an immutable Point(x=1, y=2) dataclass
+            MontyObject::Dataclass {
+                name: "Point".to_string(),
+                fields: vec![
+                    (MontyObject::String("x".to_string()), MontyObject::Int(1)),
+                    (MontyObject::String("y".to_string()), MontyObject::Int(2)),
+                ]
+                .into(),
+                methods: vec![],
+                mutable: false,
+            }
+            .into()
+        }
+        "make_mutable_point" => {
+            assert!(args.is_empty(), "make_mutable_point requires no arguments");
+            // Return a mutable Point(x=1, y=2) dataclass
+            MontyObject::Dataclass {
+                name: "Point".to_string(),
+                fields: vec![
+                    (MontyObject::String("x".to_string()), MontyObject::Int(1)),
+                    (MontyObject::String("y".to_string()), MontyObject::Int(2)),
+                ]
+                .into(),
+                methods: vec![],
+                mutable: true,
+            }
+            .into()
+        }
+        "make_user" => {
+            assert!(args.len() == 1, "make_user requires 1 argument");
+            let name = String::try_from(&args[0]).expect("make_user: first arg must be str");
+            // Return an immutable User(name=name, active=True) dataclass
+            MontyObject::Dataclass {
+                name: "User".to_string(),
+                fields: vec![
+                    (MontyObject::String("name".to_string()), MontyObject::String(name)),
+                    (MontyObject::String("active".to_string()), MontyObject::Bool(true)),
+                ]
+                .into(),
+                methods: vec![],
+                mutable: false,
+            }
+            .into()
         }
         _ => panic!("Unknown external function: {name}"),
     }

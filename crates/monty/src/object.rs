@@ -103,6 +103,17 @@ pub enum MontyObject {
     ///
     /// Returned by the `type()` builtin and can be compared with other types.
     Type(Type),
+    /// A dataclass instance with class name, fields, method names, and mutability.
+    Dataclass {
+        /// The class name (e.g., "Point", "User").
+        name: String,
+        /// Field name -> value mapping.
+        fields: DictPairs,
+        /// Method names that trigger external function calls.
+        methods: Vec<String>,
+        /// Whether this dataclass instance is mutable.
+        mutable: bool,
+    },
     /// Fallback for values that cannot be represented as other variants.
     ///
     /// Contains the `repr()` string of the original value.
@@ -217,6 +228,25 @@ impl MontyObject {
                 let exc = SimpleException::new(exc_type, arg);
                 Ok(Value::Ref(heap.allocate(HeapData::Exception(exc))?))
             }
+            Self::Dataclass {
+                name,
+                fields,
+                methods,
+                mutable,
+            } => {
+                use crate::types::Dataclass;
+                // Convert fields to Dict
+                let pairs: Result<Vec<(Value, Value)>, InvalidInputError> = fields
+                    .into_iter()
+                    .map(|(k, v)| Ok((k.to_value(heap, interns)?, v.to_value(heap, interns)?)))
+                    .collect();
+                let dict = Dict::from_pairs(pairs?, heap, interns)
+                    .map_err(|_| InvalidInputError::invalid_type("unhashable dataclass field keys"))?;
+                // Convert methods Vec to AHashSet
+                let methods_set: ahash::AHashSet<String> = methods.into_iter().collect();
+                let dc = Dataclass::new(name, dict, methods_set, mutable);
+                Ok(Value::Ref(heap.allocate(HeapData::Dataclass(dc))?))
+            }
             Self::Repr(_) => Err(InvalidInputError::invalid_type("Repr")),
             Self::Cycle(_, _) => Err(InvalidInputError::invalid_type("Cycle")),
             Self::Type(t) => Ok(Value::Builtin(Builtins::Type(t))),
@@ -321,10 +351,27 @@ impl MontyObject {
                         arg: exc.arg().map(ToString::to_string),
                     },
                     HeapData::Dataclass(dc) => {
-                        // Represent Dataclass as a repr string
-                        let mut s = String::new();
-                        let _ = dc.py_repr_fmt(&mut s, heap, visited, interns);
-                        Self::Repr(s)
+                        // Convert fields to DictPairs
+                        let fields = DictPairs(
+                            dc.fields()
+                                .into_iter()
+                                .map(|(k, v)| {
+                                    (
+                                        MontyObject::from_value_inner(k, heap, visited, interns),
+                                        MontyObject::from_value_inner(v, heap, visited, interns),
+                                    )
+                                })
+                                .collect(),
+                        );
+                        // Convert methods set to sorted Vec for determinism
+                        let mut methods: Vec<String> = dc.methods().iter().cloned().collect();
+                        methods.sort();
+                        Self::Dataclass {
+                            name: dc.name().to_owned(),
+                            fields,
+                            methods,
+                            mutable: dc.is_mutable(),
+                        }
                     }
                 };
 
@@ -448,6 +495,27 @@ impl MontyObject {
                 }
                 f.write_char(')')
             }
+            Self::Dataclass { name, fields, .. } => {
+                // Format: ClassName(field1=value1, field2=value2, ...)
+                f.write_str(name)?;
+                f.write_char('(')?;
+                let mut first = true;
+                for (k, v) in fields.iter() {
+                    if !first {
+                        f.write_str(", ")?;
+                    }
+                    first = false;
+                    // For string keys, write without quotes
+                    if let Self::String(s) = k {
+                        f.write_str(s)?;
+                    } else {
+                        k.repr_fmt(f)?;
+                    }
+                    f.write_char('=')?;
+                    v.repr_fmt(f)?;
+                }
+                f.write_char(')')
+            }
             Self::Repr(s) => write!(f, "Repr({})", string_repr(s)),
             Self::Cycle(_, placeholder) => f.write_str(placeholder),
             Self::Type(t) => write!(f, "<class '{t}'>"),
@@ -479,6 +547,7 @@ impl MontyObject {
             Self::Set(s) => !s.is_empty(),
             Self::FrozenSet(fs) => !fs.is_empty(),
             Self::Exception { .. } => true,
+            Self::Dataclass { .. } => true, // Dataclass instances are always truthy
             Self::Repr(_) => true,
             Self::Cycle(_, _) => true,
             Self::Type(_) => true,
@@ -504,6 +573,7 @@ impl MontyObject {
             Self::Set(_) => "set",
             Self::FrozenSet(_) => "frozenset",
             Self::Exception { .. } => "Exception",
+            Self::Dataclass { .. } => "dataclass",
             Self::Repr(_) => "repr",
             Self::Cycle(_, _) => "cycle",
             Self::Type(_) => "type",
@@ -560,6 +630,20 @@ impl PartialEq for MontyObject {
                     arg: b_arg,
                 },
             ) => a_type == b_type && a_arg == b_arg,
+            (
+                Self::Dataclass {
+                    name: a_name,
+                    fields: a_fields,
+                    methods: a_methods,
+                    mutable: a_mutable,
+                },
+                Self::Dataclass {
+                    name: b_name,
+                    fields: b_fields,
+                    methods: b_methods,
+                    mutable: b_mutable,
+                },
+            ) => a_name == b_name && a_fields == b_fields && a_methods == b_methods && a_mutable == b_mutable,
             (Self::Repr(a), Self::Repr(b)) => a == b,
             (Self::Cycle(a, _), Self::Cycle(b, _)) => a == b,
             (Self::Type(a), Self::Type(b)) => a == b,

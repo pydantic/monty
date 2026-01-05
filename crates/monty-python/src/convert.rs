@@ -115,6 +115,14 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject) -> PyResult<Py<PyAny>> {
             let builtins = py.import("builtins")?;
             Ok(builtins.getattr(type_name)?.unbind())
         }
+        // Dataclass - convert to dict representation of its fields
+        MontyObject::Dataclass { fields, .. } => {
+            let dict = PyDict::new(py);
+            for (k, v) in fields {
+                dict.set_item(monty_to_py(py, k)?, monty_to_py(py, v)?)?;
+            }
+            Ok(dict.into_any().unbind())
+        }
         // Output-only types - convert to string representation
         MontyObject::Repr(s) => Ok(PyString::new(py, s).into_any().unbind()),
         MontyObject::Cycle(_, placeholder) => Ok(PyString::new(py, placeholder).into_any().unbind()),

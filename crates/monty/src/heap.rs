@@ -130,11 +130,11 @@ impl HeapData {
                 range.step.hash(&mut hasher);
                 Some(hasher.finish())
             }
-            // Mutable types, exceptions, and dataclasses cannot be hashed
+            // Dataclass hashability depends on the mutable flag
+            Self::Dataclass(dc) => dc.compute_hash(heap, interns),
+            // Mutable types and exceptions cannot be hashed
             // (Cell is handled specially in get_or_compute_hash)
-            Self::List(_) | Self::Dict(_) | Self::Set(_) | Self::Cell(_) | Self::Exception(_) | Self::Dataclass(_) => {
-                None
-            }
+            Self::List(_) | Self::Dict(_) | Self::Set(_) | Self::Cell(_) | Self::Exception(_) => None,
         }
     }
 }
@@ -441,12 +441,16 @@ impl HashState {
             | HeapData::Closure(_, _, _)
             | HeapData::FunctionDefaults(_, _)
             | HeapData::Range(_) => Self::Unknown,
-            // Mutable containers, exceptions, and dataclasses are unhashable
-            HeapData::List(_)
-            | HeapData::Dict(_)
-            | HeapData::Set(_)
-            | HeapData::Exception(_)
-            | HeapData::Dataclass(_) => Self::Unhashable,
+            // Dataclass hashability depends on the mutable flag
+            HeapData::Dataclass(dc) => {
+                if dc.is_mutable() {
+                    Self::Unhashable
+                } else {
+                    Self::Unknown
+                }
+            }
+            // Mutable containers and exceptions are unhashable
+            HeapData::List(_) | HeapData::Dict(_) | HeapData::Set(_) | HeapData::Exception(_) => Self::Unhashable,
         }
     }
 }
