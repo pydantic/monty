@@ -237,3 +237,58 @@ assert not (len == 1), 'builtin not equal to int'
 assert not (len == 'len'), 'builtin not equal to string'
 assert not (cross_test == None), 'function not equal to None'
 assert not (ValueError == None), 'exc type not equal to None'
+
+
+# === Parameter shadowing global variables ===
+# Function parameters should shadow global variables with the same name
+x = 5
+
+
+def shadow_single(x):
+    return x + 1
+
+
+# When called with 10, param x=10 should be used, not global x=5
+assert shadow_single(10) == 11, 'param shadows global - single param'
+
+y = 3
+
+
+def shadow_multiple(x, y):
+    return x + y
+
+
+# When called with (20, 30), params should be used, not globals x=5, y=3
+assert shadow_multiple(20, 30) == 50, 'param shadows global - multiple params'
+
+
+def shadow_uses_global_too(x):
+    # x is param, y is global
+    return x + y
+
+
+# x=100 (param), y=3 (global), so 100 + 3 = 103
+assert shadow_uses_global_too(100) == 103, 'param shadows but can still access other globals'
+
+
+def shadow_with_default(x=99):
+    return x + 1
+
+
+# When called with argument, param shadows global
+assert shadow_with_default(10) == 11, 'param with default shadows global'
+# When called without argument, default is used (not global)
+assert shadow_with_default() == 100, 'param default used, not global'
+
+
+# Global is still accessible outside the function
+assert x == 5, 'global still accessible after function that shadows it'
+assert y == 3, 'other global still accessible'
+
+
+# Verify global can still be used as argument
+def double(x):
+    return x * 2
+
+
+assert double(x) == 10, 'global used as argument, param shadows inside'

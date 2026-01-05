@@ -58,3 +58,69 @@ def test_inputs_order_independent():
     m = monty.Monty('a - b', inputs=['a', 'b'])
     # Dict order shouldn't matter
     assert m.run(inputs={'b': 3, 'a': 10}) == snapshot(7)
+
+
+def test_function_param_shadows_input():
+    """Function parameter should shadow script input with the same name."""
+    code = """
+def foo(x):
+    return x + 1
+
+foo(x * 2)
+"""
+    m = monty.Monty(code, inputs=['x'])
+    # x=5, so foo(x * 2) = foo(10), and inside foo, x is 10 (not 5), so returns 11
+    assert m.run(inputs={'x': 5}) == snapshot(11)
+
+
+def test_function_param_shadows_input_multiple_params():
+    """Multiple function parameters should all shadow their corresponding inputs."""
+    code = """
+def add(x, y):
+    return x + y
+
+add(x * 10, y * 100)
+"""
+    m = monty.Monty(code, inputs=['x', 'y'])
+    # x=2, y=3, so add(20, 300) should return 320
+    assert m.run(inputs={'x': 2, 'y': 3}) == snapshot(320)
+
+
+def test_input_accessible_outside_shadowing_function():
+    """Script input should still be accessible outside the function that shadows it."""
+    code = """
+def double(x):
+    return x * 2
+
+result = double(10) + x
+result
+"""
+    m = monty.Monty(code, inputs=['x'])
+    # double(10) = 20, x (input) = 5, so result = 25
+    assert m.run(inputs={'x': 5}) == snapshot(25)
+
+
+def test_function_param_shadows_input_with_default():
+    """Function parameter with default should shadow script input when called with arg."""
+    code = """
+def foo(x=100):
+    return x + 1
+
+foo(x * 2)
+"""
+    m = monty.Monty(code, inputs=['x'])
+    # x=5, foo(10), inside foo x=10 (not 5 or 100), returns 11
+    assert m.run(inputs={'x': 5}) == snapshot(11)
+
+
+def test_function_uses_input_directly():
+    """Function that doesn't shadow should still access the input."""
+    code = """
+def foo(y):
+    return x + y
+
+foo(10)
+"""
+    m = monty.Monty(code, inputs=['x'])
+    # x=5 (input), foo(10) with y=10, returns x + y = 5 + 10 = 15
+    assert m.run(inputs={'x': 5}) == snapshot(15)

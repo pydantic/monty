@@ -908,7 +908,18 @@ impl<'i> Prepare<'i> {
             }
         }
 
-        // 6. Check if exists in global namespace (implicit global read)
+        // 6. Check if name was pre-populated in name_map (from function parameters)
+        // This ensures parameters shadow global variables with the same name.
+        // Parameters are added to name_map during FunctionScope::new_function() but are NOT
+        // in assigned_names (since they're not assigned in the function body).
+        if let Some(&id) = self.name_map.get(name_str) {
+            return (
+                Identifier::new_with_scope(ident.name_id, ident.position, id, NameScope::Local),
+                false, // Not new - was pre-populated from parameters
+            );
+        }
+
+        // 7. Check if exists in global namespace (implicit global read)
         if let Some(ref global_map) = self.global_name_map {
             if let Some(&global_id) = global_map.get(name_str) {
                 return (
@@ -918,7 +929,7 @@ impl<'i> Prepare<'i> {
             }
         }
 
-        // 7. Name not found anywhere - resolve to local (will be NameError at runtime)
+        // 8. Name not found anywhere - resolve to local (will be NameError at runtime)
         let (id, is_new) = match self.name_map.entry(name_str.to_string()) {
             Entry::Occupied(e) => (*e.get(), false),
             Entry::Vacant(e) => {

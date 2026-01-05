@@ -320,3 +320,114 @@ fn invalid_input_repr_nested_in_list() {
     )])]);
     assert!(result.is_err(), "Repr nested in list should be invalid");
 }
+
+// === Function Parameter Shadowing Tests ===
+// These tests verify that function parameters properly shadow script inputs with the same name.
+
+#[test]
+fn function_param_shadows_input() {
+    // Function parameter `x` should shadow the script input `x`
+    let code = "
+def foo(x):
+    return x + 1
+
+foo(x * 2)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec!["x".to_owned()], vec![]).unwrap();
+    // x=5 (input), foo(x * 2) = foo(10), inside foo x=10 (param), returns 11
+    let result = ex.run_no_limits(vec![MontyObject::Int(5)]).unwrap();
+    assert_eq!(result, MontyObject::Int(11));
+}
+
+#[test]
+fn function_param_shadows_input_multiple_params() {
+    // Multiple function parameters should all shadow their corresponding inputs
+    let code = "
+def add(x, y):
+    return x + y
+
+add(x * 10, y * 100)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec!["x".to_owned(), "y".to_owned()], vec![]).unwrap();
+    // x=2, y=3 (inputs), add(20, 300), inside add x=20, y=300, returns 320
+    let result = ex
+        .run_no_limits(vec![MontyObject::Int(2), MontyObject::Int(3)])
+        .unwrap();
+    assert_eq!(result, MontyObject::Int(320));
+}
+
+#[test]
+fn function_param_shadows_input_but_global_accessible() {
+    // Function parameter shadows input, but other inputs are still accessible as globals
+    let code = "
+def foo(x):
+    return x + y
+
+foo(100)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec!["x".to_owned(), "y".to_owned()], vec![]).unwrap();
+    // x=5, y=3 (inputs), foo(100), inside foo x=100 (param), y=3 (global), returns 103
+    let result = ex
+        .run_no_limits(vec![MontyObject::Int(5), MontyObject::Int(3)])
+        .unwrap();
+    assert_eq!(result, MontyObject::Int(103));
+}
+
+#[test]
+fn function_param_shadows_input_accessible_outside() {
+    // Script input should still be accessible outside the function that shadows it
+    let code = "
+def double(x):
+    return x * 2
+
+double(10) + x
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec!["x".to_owned()], vec![]).unwrap();
+    // x=5 (input), double(10) = 20, then 20 + x (global) = 20 + 5 = 25
+    let result = ex.run_no_limits(vec![MontyObject::Int(5)]).unwrap();
+    assert_eq!(result, MontyObject::Int(25));
+}
+
+#[test]
+fn function_param_with_default_shadows_input() {
+    // Function parameter with default should shadow input when called with argument
+    let code = "
+def foo(x=100):
+    return x + 1
+
+foo(x * 2)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec!["x".to_owned()], vec![]).unwrap();
+    // x=5 (input), foo(10), inside foo x=10 (param), returns 11
+    let result = ex.run_no_limits(vec![MontyObject::Int(5)]).unwrap();
+    assert_eq!(result, MontyObject::Int(11));
+}
+
+#[test]
+fn function_uses_input_as_argument() {
+    // Input can be passed as argument, and param shadows inside function
+    let code = "
+def double(x):
+    return x * 2
+
+double(x)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec!["x".to_owned()], vec![]).unwrap();
+    // x=7 (input), double(7), inside double x=7 (param from arg), returns 14
+    let result = ex.run_no_limits(vec![MontyObject::Int(7)]).unwrap();
+    assert_eq!(result, MontyObject::Int(14));
+}
+
+#[test]
+fn function_doesnt_uses_input_as_argument() {
+    let code = "
+def double(x):
+    return x * 2
+
+double(2)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec!["x".to_owned()], vec![]).unwrap();
+    // x=7 (input), double(7), inside double x=7 (param from arg), returns 14
+    let result = ex.run_no_limits(vec![MontyObject::Int(7)]).unwrap();
+    assert_eq!(result, MontyObject::Int(4));
+}
