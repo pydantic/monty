@@ -11,25 +11,14 @@ use crate::{ExcType, MontyException};
 #[derive(Debug, Clone)]
 pub enum ResourceError {
     /// Maximum number of allocations exceeded.
-    Allocation {
-        limit: usize,
-        count: usize,
-    },
+    Allocation { limit: usize, count: usize },
     /// Maximum execution time exceeded.
-    Time {
-        limit: Duration,
-        elapsed: Duration,
-    },
+    Time { limit: Duration, elapsed: Duration },
     /// Maximum memory usage exceeded.
-    Memory {
-        limit: usize,
-        used: usize,
-    },
+    Memory { limit: usize, used: usize },
     /// Maximum recursion depth exceeded.
-    Recursion {
-        limit: usize,
-        depth: usize,
-    },
+    Recursion { limit: usize, depth: usize },
+    /// Any other error, e.g. when propagating a python exception
     Exception(MontyException),
 }
 
