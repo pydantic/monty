@@ -320,6 +320,12 @@ impl MontyObject {
                         exc_type: exc.exc_type(),
                         arg: exc.arg().map(ToString::to_string),
                     },
+                    HeapData::Dataclass(dc) => {
+                        // Represent Dataclass as a repr string
+                        let mut s = String::new();
+                        let _ = dc.py_repr_fmt(&mut s, heap, visited, interns);
+                        Self::Repr(s)
+                    }
                 };
 
                 // Remove from visited set after processing

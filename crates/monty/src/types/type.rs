@@ -36,6 +36,9 @@ pub enum Type {
     Set,
     #[strum(serialize = "frozenset")]
     FrozenSet,
+    /// User-defined dataclass instance type.
+    #[strum(disabled)]
+    Dataclass,
     #[strum(disabled)]
     Exception(ExcType),
     Function,

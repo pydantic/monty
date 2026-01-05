@@ -154,6 +154,15 @@ impl ExcType {
         exc_fmt!(Self::AttributeError; "'{type_}' object has no attribute '{attr}'").into()
     }
 
+    /// Creates an AttributeError for a dataclass method that requires external call integration.
+    ///
+    /// This is a temporary error used when dataclass methods are called but the external
+    /// call mechanism hasn't been integrated yet.
+    #[must_use]
+    pub fn attribute_error_method_not_implemented(class_name: &str, method_name: &str) -> RunError {
+        exc_fmt!(Self::AttributeError; "'{class_name}' object method '{method_name}' requires external call (not yet implemented)").into()
+    }
+
     #[must_use]
     pub fn type_error_not_sub(type_: Type) -> RunError {
         exc_fmt!(Self::TypeError; "'{type_}' object is not subscriptable").into()

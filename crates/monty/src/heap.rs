@@ -10,7 +10,7 @@ use crate::exception_private::{ExcType, SimpleException};
 use crate::intern::{FunctionId, Interns};
 use crate::resource::{ResourceError, ResourceTracker};
 use crate::run_frame::RunResult;
-use crate::types::{Bytes, Dict, FrozenSet, List, PyTrait, Range, Set, Str, Tuple, Type};
+use crate::types::{Bytes, Dataclass, Dict, FrozenSet, List, PyTrait, Range, Set, Str, Tuple, Type};
 use crate::value::{Attr, Value};
 
 /// Unique identifier for values stored inside the heap arena.
@@ -72,6 +72,11 @@ pub enum HeapData {
     /// Stored on the heap to keep `Value` enum small (16 bytes). Exceptions
     /// are created when exception types are called or when `raise` is executed.
     Exception(SimpleException),
+    /// A dataclass instance with fields and method references.
+    ///
+    /// Contains a class name, a Dict of field name -> value mappings, and a set
+    /// of method names that trigger external function calls when invoked.
+    Dataclass(Dataclass),
 }
 
 impl HeapData {
@@ -125,9 +130,11 @@ impl HeapData {
                 range.step.hash(&mut hasher);
                 Some(hasher.finish())
             }
-            // Mutable types and exceptions cannot be hashed
+            // Mutable types, exceptions, and dataclasses cannot be hashed
             // (Cell is handled specially in get_or_compute_hash)
-            Self::List(_) | Self::Dict(_) | Self::Set(_) | Self::Cell(_) | Self::Exception(_) => None,
+            Self::List(_) | Self::Dict(_) | Self::Set(_) | Self::Cell(_) | Self::Exception(_) | Self::Dataclass(_) => {
+                None
+            }
         }
     }
 }
@@ -150,6 +157,7 @@ impl PyTrait for HeapData {
             Self::Cell(_) => Type::Cell,
             Self::Range(_) => Type::Range,
             Self::Exception(e) => e.py_type(),
+            Self::Dataclass(dc) => dc.py_type(heap),
         }
     }
 
@@ -167,6 +175,7 @@ impl PyTrait for HeapData {
             Self::Cell(v) => std::mem::size_of::<Value>() + v.py_estimate_size(),
             Self::Range(_) => std::mem::size_of::<Range>(),
             Self::Exception(e) => std::mem::size_of::<SimpleException>() + e.arg().map_or(0, String::len),
+            Self::Dataclass(dc) => dc.py_estimate_size(),
         }
     }
 
@@ -180,8 +189,12 @@ impl PyTrait for HeapData {
             Self::Set(s) => PyTrait::py_len(s, heap, interns),
             Self::FrozenSet(fs) => PyTrait::py_len(fs, heap, interns),
             Self::Range(r) => Some(r.len()),
-            // Cells and Exceptions don't have length
-            Self::Cell(_) | Self::Closure(_, _, _) | Self::FunctionDefaults(_, _) | Self::Exception(_) => None,
+            // Cells, Exceptions, and Dataclasses don't have length
+            Self::Cell(_)
+            | Self::Closure(_, _, _)
+            | Self::FunctionDefaults(_, _)
+            | Self::Exception(_)
+            | Self::Dataclass(_) => None,
         }
     }
 
@@ -197,6 +210,7 @@ impl PyTrait for HeapData {
             (Self::Closure(a_id, a_cells, _), Self::Closure(b_id, b_cells, _)) => *a_id == *b_id && a_cells == b_cells,
             (Self::FunctionDefaults(a_id, _), Self::FunctionDefaults(b_id, _)) => *a_id == *b_id,
             (Self::Range(a), Self::Range(b)) => a.py_eq(b, heap, interns),
+            (Self::Dataclass(a), Self::Dataclass(b)) => a.py_eq(b, heap, interns),
             // Cells and Exceptions compare by identity only (handled at Value level via HeapId comparison)
             (Self::Cell(_), Self::Cell(_)) | (Self::Exception(_), Self::Exception(_)) => false,
             _ => false, // Different types are never equal
@@ -227,6 +241,7 @@ impl PyTrait for HeapData {
                 }
             }
             Self::Cell(v) => v.py_dec_ref_ids(stack),
+            Self::Dataclass(dc) => dc.py_dec_ref_ids(stack),
             // Range and Exception have no nested heap references
             Self::Range(_) | Self::Exception(_) => {}
         }
@@ -245,6 +260,7 @@ impl PyTrait for HeapData {
             Self::Cell(_) => true, // Cells are always truthy
             Self::Range(r) => r.py_bool(heap, interns),
             Self::Exception(_) => true, // Exceptions are always truthy
+            Self::Dataclass(dc) => dc.py_bool(heap, interns),
         }
     }
 
@@ -270,6 +286,7 @@ impl PyTrait for HeapData {
             Self::Cell(v) => write!(f, "<cell: {} object>", v.py_type(Some(heap))),
             Self::Range(r) => r.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Exception(e) => e.py_repr_fmt(f),
+            Self::Dataclass(dc) => dc.py_repr_fmt(f, heap, heap_ids, interns),
         }
     }
     // py_str is always the same as py_repr which is the default impl
@@ -286,7 +303,7 @@ impl PyTrait for HeapData {
             (Self::List(a), Self::List(b)) => a.py_add(b, heap, interns),
             (Self::Tuple(a), Self::Tuple(b)) => a.py_add(b, heap, interns),
             (Self::Dict(a), Self::Dict(b)) => a.py_add(b, heap, interns),
-            // Cells don't support arithmetic operations
+            // Cells and Dataclasses don't support arithmetic operations
             _ => Ok(None),
         }
     }
@@ -365,6 +382,7 @@ impl PyTrait for HeapData {
             Self::Dict(d) => d.py_call_attr(heap, attr, args, interns),
             Self::Set(s) => s.py_call_attr(heap, attr, args, interns),
             Self::FrozenSet(fs) => fs.py_call_attr(heap, attr, args, interns),
+            Self::Dataclass(dc) => dc.py_call_attr(heap, attr, args, interns),
             _ => Err(ExcType::attribute_error(self.py_type(Some(heap)), attr)),
         }
     }
@@ -423,8 +441,12 @@ impl HashState {
             | HeapData::Closure(_, _, _)
             | HeapData::FunctionDefaults(_, _)
             | HeapData::Range(_) => Self::Unknown,
-            // Mutable containers and exceptions are unhashable
-            HeapData::List(_) | HeapData::Dict(_) | HeapData::Set(_) | HeapData::Exception(_) => Self::Unhashable,
+            // Mutable containers, exceptions, and dataclasses are unhashable
+            HeapData::List(_)
+            | HeapData::Dict(_)
+            | HeapData::Set(_)
+            | HeapData::Exception(_)
+            | HeapData::Dataclass(_) => Self::Unhashable,
         }
     }
 }
@@ -1188,6 +1210,17 @@ impl<T: ResourceTracker> Heap<T> {
                 // Cell can contain a reference to another heap value
                 if let Value::Ref(id) = value {
                     work_list.push(*id);
+                }
+            }
+            HeapData::Dataclass(dc) => {
+                // Dataclass fields are stored in a Dict - iterate through entries
+                for (k, v) in dc.fields() {
+                    if let Value::Ref(id) = k {
+                        work_list.push(*id);
+                    }
+                    if let Value::Ref(id) = v {
+                        work_list.push(*id);
+                    }
                 }
             }
         }
