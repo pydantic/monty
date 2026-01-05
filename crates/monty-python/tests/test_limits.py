@@ -1,5 +1,7 @@
+import multiprocessing
 import os
 import signal
+import time
 from types import FrameType
 
 import pytest
@@ -129,10 +131,16 @@ fib(30)
         signal.alarm(1)  # Fire after 1 second
         with pytest.raises(ValueError) as exc_info:
             m.run()
-        assert exc_info.value.args[0] == 'potato'
+        assert exc_info.value.args[0] == snapshot('potato')
     finally:
         signal.alarm(0)  # Cancel any pending alarm
         signal.signal(signal.SIGALRM, old_handler)
+
+
+def _send_sigint_after_delay(pid: int, delay: float) -> None:
+    """Helper function to send SIGINT to a process after a delay."""
+    time.sleep(delay)
+    os.kill(pid, signal.SIGINT)
 
 
 def test_keyboard_interrupt():
@@ -147,14 +155,10 @@ fib(35)
 """
     m = monty.Monty(code)
 
-    # Use signal.alarm with SIGALRM to send SIGINT after delay
-    def send_sigint(signum: int, frame: FrameType | None) -> None:
-        os.kill(os.getpid(), signal.SIGINT)
-
-    old_handler = signal.signal(signal.SIGALRM, send_sigint)
+    # Send SIGINT after a short delay using a separate process
+    proc = multiprocessing.Process(target=_send_sigint_after_delay, args=(os.getpid(), 0.05))
+    proc.start()
     try:
-        signal.alarm(1)  # Send SIGINT after 1 second
-
         raised_keyboard_interrupt = False
         try:
             m.run()
@@ -163,5 +167,4 @@ fib(35)
 
         assert raised_keyboard_interrupt, 'Expected KeyboardInterrupt to be raised'
     finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, old_handler)
+        proc.join()
