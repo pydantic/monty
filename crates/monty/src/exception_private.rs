@@ -28,6 +28,10 @@ pub enum ExcType {
     /// Base exception class - matches any exception in isinstance checks.
     Exception,
 
+    /// System exit exceptions
+    SystemExit,
+    KeyboardInterrupt,
+
     // --- ArithmeticError hierarchy ---
     /// Intermediate class for arithmetic errors.
     ArithmeticError,

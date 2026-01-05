@@ -18,6 +18,8 @@ pub fn exc_monty_to_py(exc: MontyException) -> PyErr {
 
     match exc_type {
         ExcType::Exception => exceptions::PyException::new_err(msg),
+        ExcType::SystemExit => exceptions::PySystemExit::new_err(msg),
+        ExcType::KeyboardInterrupt => exceptions::PyKeyboardInterrupt::new_err(msg),
         ExcType::ArithmeticError => exceptions::PyArithmeticError::new_err(msg),
         ExcType::OverflowError => exceptions::PyOverflowError::new_err(msg),
         ExcType::ZeroDivisionError => exceptions::PyZeroDivisionError::new_err(msg),
@@ -79,6 +81,10 @@ fn py_err_to_exc_type(exc: &Bound<'_, PyBaseException>) -> ExcType {
         ExcType::ValueError
     } else if exc.cast::<exceptions::PyRuntimeError>().is_ok() {
         ExcType::RuntimeError
+    } else if exc.cast::<exceptions::PySystemError>().is_ok() {
+        ExcType::SystemExit
+    } else if exc.cast::<exceptions::PyKeyboardInterrupt>().is_ok() {
+        ExcType::KeyboardInterrupt
     } else {
         ExcType::Exception
     }

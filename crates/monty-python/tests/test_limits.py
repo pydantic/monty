@@ -1,6 +1,6 @@
 import os
 import signal
-import threading
+from types import FrameType
 
 import pytest
 from inline_snapshot import snapshot
@@ -109,9 +109,8 @@ def test_limits_none_value_allowed():
     assert m.run(limits={'max_allocations': None}) == snapshot(2)  # pyright: ignore[reportArgumentType]
 
 
-def test_keyboard_interrupt():
-    """Test that KeyboardInterrupt is raised when a signal is sent during execution."""
-    # Use a long-running computation
+def test_signal_alarm_custom_error():
+    """Test that custom signal handlers work during execution."""
     code = """
 def fib(n):
     if n <= 1:
@@ -122,20 +121,47 @@ fib(30)
 """
     m = monty.Monty(code)
 
-    # Send SIGINT from another thread after a delay
-    def send_interrupt():
+    def raise_potato(signum: int, frame: FrameType | None) -> None:
+        raise ValueError('potato')
+
+    old_handler = signal.signal(signal.SIGALRM, raise_potato)
+    try:
+        signal.alarm(1)  # Fire after 1 second
+        with pytest.raises(ValueError) as exc_info:
+            m.run()
+        assert exc_info.value.args[0] == 'potato'
+    finally:
+        signal.alarm(0)  # Cancel any pending alarm
+        signal.signal(signal.SIGALRM, old_handler)
+
+
+def test_keyboard_interrupt():
+    """Test that KeyboardInterrupt is raised when SIGINT is sent during execution."""
+    code = """
+def fib(n):
+    if n <= 1:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+fib(35)
+"""
+    m = monty.Monty(code)
+
+    # Use signal.alarm with SIGALRM to send SIGINT after delay
+    def send_sigint(signum: int, frame: FrameType | None) -> None:
         os.kill(os.getpid(), signal.SIGINT)
 
-    # Use a longer delay to let execution settle
-    timer = threading.Timer(0.1, send_interrupt)
-    timer.start()
-
+    old_handler = signal.signal(signal.SIGALRM, send_sigint)
     try:
-        raised = False
+        signal.alarm(1)  # Send SIGINT after 1 second
+
+        raised_keyboard_interrupt = False
         try:
             m.run()
         except KeyboardInterrupt:
-            raised = True
-        assert raised, 'Expected KeyboardInterrupt to be raised'
+            raised_keyboard_interrupt = True
+
+        assert raised_keyboard_interrupt, 'Expected KeyboardInterrupt to be raised'
     finally:
-        timer.cancel()
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
