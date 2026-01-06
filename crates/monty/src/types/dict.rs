@@ -1,19 +1,19 @@
 use std::fmt::Write;
 
 use ahash::AHashSet;
-use hashbrown::hash_table::Entry;
-use hashbrown::HashTable;
-
-use crate::args::ArgValues;
-use crate::exception_private::ExcType;
-use crate::types::Type;
+use hashbrown::{hash_table::Entry, HashTable};
 
 use super::{List, PyTrait, Tuple};
-use crate::heap::{Heap, HeapData, HeapId};
-use crate::intern::{attr, Interns};
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::value::{Attr, Value};
+use crate::{
+    args::ArgValues,
+    exception_private::ExcType,
+    heap::{Heap, HeapData, HeapId},
+    intern::{attr, Interns},
+    resource::ResourceTracker,
+    run_frame::RunResult,
+    types::Type,
+    value::{Attr, Value},
+};
 
 /// Python dict type preserving insertion order.
 ///
@@ -155,8 +155,10 @@ impl Dict {
     /// This is an O(1) lookup that doesn't require mutable heap access.
     /// Only works for string keys - returns None if the key is not found.
     pub fn get_by_str(&self, key_str: &str, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Option<&Value> {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
+        use std::{
+            collections::hash_map::DefaultHasher,
+            hash::{Hash, Hasher},
+        };
 
         // Compute hash for the string key
         let mut hasher = DefaultHasher::new();

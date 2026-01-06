@@ -1,14 +1,15 @@
 //! Implementation of the isinstance() builtin function.
 
-use crate::args::ArgValues;
-use crate::exception_private::ExcType;
-use crate::heap::{Heap, HeapData};
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::types::{PyTrait, Type};
-use crate::value::Value;
-
 use super::Builtins;
+use crate::{
+    args::ArgValues,
+    exception_private::ExcType,
+    heap::{Heap, HeapData},
+    resource::ResourceTracker,
+    run_frame::RunResult,
+    types::{PyTrait, Type},
+    value::Value,
+};
 
 /// Implementation of the isinstance() builtin function.
 ///

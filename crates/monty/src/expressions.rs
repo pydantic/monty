@@ -1,13 +1,14 @@
-use crate::args::ArgExprs;
-use crate::builtins::Builtins;
-use crate::callable::Callable;
-use crate::intern::{BytesId, FunctionId, StringId};
-use crate::namespace::NamespaceId;
-use crate::operators::{CmpOperator, Operator};
-use crate::parse::{CodeRange, Try};
-use crate::value::{Attr, Value};
-
-use crate::fstring::FStringPart;
+use crate::{
+    args::ArgExprs,
+    builtins::Builtins,
+    callable::Callable,
+    fstring::FStringPart,
+    intern::{BytesId, FunctionId, StringId},
+    namespace::NamespaceId,
+    operators::{CmpOperator, Operator},
+    parse::{CodeRange, Try},
+    value::{Attr, Value},
+};
 
 /// Indicates which namespace a variable reference belongs to.
 ///

@@ -1,13 +1,15 @@
 //! Implementation of the ord() builtin function.
 
-use crate::args::ArgValues;
-use crate::exception_private::{exc_err_fmt, ExcType};
-use crate::heap::{Heap, HeapData};
-use crate::intern::Interns;
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::types::PyTrait;
-use crate::value::Value;
+use crate::{
+    args::ArgValues,
+    exception_private::{exc_err_fmt, ExcType},
+    heap::{Heap, HeapData},
+    intern::Interns,
+    resource::ResourceTracker,
+    run_frame::RunResult,
+    types::PyTrait,
+    value::Value,
+};
 
 /// Implementation of the ord() builtin function.
 ///

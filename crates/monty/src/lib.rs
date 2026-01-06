@@ -25,12 +25,13 @@ mod snapshot;
 mod types;
 mod value;
 
-pub use crate::exception_private::ExcType;
-pub use crate::exception_public::{CodeLoc, MontyException, StackFrame};
-pub use crate::io::{CollectStringPrint, NoPrint, PrintWriter, StdPrint};
-pub use crate::object::{InvalidInputError, MontyObject};
-pub use crate::resource::{LimitedTracker, NoLimitTracker, ResourceError, ResourceLimits, ResourceTracker};
-pub use crate::run::{ExternalResult, MontyRun, RunProgress, Snapshot};
-
 #[cfg(feature = "ref-count-return")]
 pub use crate::run::RefCountOutput;
+pub use crate::{
+    exception_private::ExcType,
+    exception_public::{CodeLoc, MontyException, StackFrame},
+    io::{CollectStringPrint, NoPrint, PrintWriter, StdPrint},
+    object::{InvalidInputError, MontyObject},
+    resource::{LimitedTracker, NoLimitTracker, ResourceError, ResourceLimits, ResourceTracker},
+    run::{ExternalResult, MontyRun, RunProgress, Snapshot},
+};

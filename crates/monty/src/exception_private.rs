@@ -1,22 +1,24 @@
-use std::borrow::Cow;
-use std::fmt::{self, Write};
+use std::{
+    borrow::Cow,
+    fmt::{self, Write},
+};
 
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
 
-use crate::args::ArgValues;
-use crate::exception_public::{MontyException, StackFrame};
-use crate::expressions::ExprLoc;
-
-use crate::heap::{Heap, HeapData};
-use crate::intern::{Interns, StringId};
-use crate::operators::{CmpOperator, Operator};
-use crate::parse::CodeRange;
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::types::str::string_repr;
-use crate::types::{PyTrait, Type};
-use crate::value::Value;
+use crate::{
+    args::ArgValues,
+    exception_public::{MontyException, StackFrame},
+    expressions::ExprLoc,
+    heap::{Heap, HeapData},
+    intern::{Interns, StringId},
+    operators::{CmpOperator, Operator},
+    parse::CodeRange,
+    resource::ResourceTracker,
+    run_frame::RunResult,
+    types::{str::string_repr, PyTrait, Type},
+    value::Value,
+};
 
 /// Python exception types supported by the interpreter.
 ///

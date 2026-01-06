@@ -1,13 +1,15 @@
 use strum::{Display, EnumString, IntoStaticStr};
 
-use crate::args::ArgValues;
-use crate::exception_private::ExcType;
-use crate::heap::Heap;
-use crate::intern::Interns;
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::types::{Bytes, Dict, FrozenSet, List, PyTrait, Range, Set, Str, Tuple};
-use crate::value::Value;
+use crate::{
+    args::ArgValues,
+    exception_private::ExcType,
+    heap::Heap,
+    intern::Interns,
+    resource::ResourceTracker,
+    run_frame::RunResult,
+    types::{Bytes, Dict, FrozenSet, List, PyTrait, Range, Set, Str, Tuple},
+    value::Value,
+};
 
 /// Represents the Python type of a value.
 ///

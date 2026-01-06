@@ -1,10 +1,9 @@
+use std::ffi::CString;
+
 use criterion::{black_box, criterion_group, criterion_main, Bencher, Criterion};
 use monty::MontyRun;
 use pprof::criterion::{Output, PProfProfiler};
-
-use pyo3::prelude::*;
-use pyo3::types::PyAny;
-use std::ffi::CString;
+use pyo3::{prelude::*, types::PyAny};
 
 /// Runs a benchmark using the Monty interpreter.
 /// Parses once, then benchmarks repeated execution.

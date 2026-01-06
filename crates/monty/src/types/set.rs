@@ -3,17 +3,18 @@ use std::fmt::Write;
 use ahash::AHashSet;
 use hashbrown::HashTable;
 
-use crate::args::ArgValues;
-use crate::exception_private::ExcType;
-use crate::for_iterator::ForIterator;
-use crate::heap::{Heap, HeapData, HeapId};
-use crate::intern::{attr, Interns};
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::types::Type;
-use crate::value::{Attr, Value};
-
 use super::PyTrait;
+use crate::{
+    args::ArgValues,
+    exception_private::ExcType,
+    for_iterator::ForIterator,
+    heap::{Heap, HeapData, HeapId},
+    intern::{attr, Interns},
+    resource::ResourceTracker,
+    run_frame::RunResult,
+    types::Type,
+    value::{Attr, Value},
+};
 
 /// Entry in the set storage, containing a value and its cached hash.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

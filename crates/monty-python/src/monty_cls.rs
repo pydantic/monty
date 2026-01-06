@@ -1,19 +1,24 @@
-use std::borrow::Cow;
-use std::fmt::Write;
+use std::{borrow::Cow, fmt::Write};
 
 // Use `::monty` to refer to the external crate (not the pymodule)
 use ::monty::{
     ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRun, NoLimitTracker, PrintWriter,
     ResourceTracker, RunProgress, Snapshot, StdPrint,
 };
-use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyTypeError, PyValueError};
-use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
-use pyo3::{intern, prelude::*, IntoPyObjectExt};
+use pyo3::{
+    exceptions::{PyKeyError, PyRuntimeError, PyTypeError, PyValueError},
+    intern,
+    prelude::*,
+    types::{PyBytes, PyDict, PyList, PyTuple},
+    IntoPyObjectExt,
+};
 
-use crate::convert::{monty_to_py, py_to_monty};
-use crate::exceptions::{exc_monty_to_py, exc_py_to_monty};
-use crate::external::ExternalFunctionRegistry;
-use crate::limits::{extract_limits, PySignalTracker};
+use crate::{
+    convert::{monty_to_py, py_to_monty},
+    exceptions::{exc_monty_to_py, exc_py_to_monty},
+    external::ExternalFunctionRegistry,
+    limits::{extract_limits, PySignalTracker},
+};
 
 /// A sandboxed Python interpreter instance.
 ///

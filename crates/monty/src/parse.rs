@@ -1,25 +1,25 @@
-use std::borrow::Cow;
-use std::fmt;
+use std::{borrow::Cow, fmt};
 
-use ruff_python_ast::name::Name;
 use ruff_python_ast::{
-    self as ast, BoolOp, CmpOp, ConversionFlag as RuffConversionFlag, ElifElseClause, Expr as AstExpr,
+    self as ast, name::Name, BoolOp, CmpOp, ConversionFlag as RuffConversionFlag, ElifElseClause, Expr as AstExpr,
     InterpolatedStringElement, Keyword, Number, Operator as AstOperator, ParameterWithDefault, Stmt, UnaryOp,
 };
 use ruff_python_parser::parse_module;
 use ruff_text_size::{Ranged, TextRange};
 
-use crate::args::{ArgExprs, Kwarg};
-use crate::builtins::Builtins;
-use crate::callable::Callable;
-use crate::exception_private::ExcType;
-use crate::exception_public::{CodeLoc, MontyException};
-use crate::expressions::{Expr, ExprLoc, Identifier, Literal};
-use crate::fstring::{ConversionFlag, FStringPart, FormatSpec};
-use crate::intern::{InternerBuilder, StringId};
-use crate::operators::{CmpOperator, Operator};
-use crate::value::Attr;
-use crate::StackFrame;
+use crate::{
+    args::{ArgExprs, Kwarg},
+    builtins::Builtins,
+    callable::Callable,
+    exception_private::ExcType,
+    exception_public::{CodeLoc, MontyException},
+    expressions::{Expr, ExprLoc, Identifier, Literal},
+    fstring::{ConversionFlag, FStringPart, FormatSpec},
+    intern::{InternerBuilder, StringId},
+    operators::{CmpOperator, Operator},
+    value::Attr,
+    StackFrame,
+};
 
 /// A parameter in a function signature with optional default value.
 #[derive(Debug, Clone)]

@@ -4,15 +4,17 @@
 //! positional-only, positional-or-keyword, *args, keyword-only, and **kwargs.
 //! It also handles default values and the argument binding algorithm.
 
-use crate::args::{ArgValues, KwargsValues};
-use crate::exception_private::{ExcType, SimpleException};
-use crate::expressions::Identifier;
-use crate::heap::{Heap, HeapData};
-use crate::intern::{Interns, StringId};
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::types::{Dict, Tuple};
-use crate::value::Value;
+use crate::{
+    args::{ArgValues, KwargsValues},
+    exception_private::{ExcType, SimpleException},
+    expressions::Identifier,
+    heap::{Heap, HeapData},
+    intern::{Interns, StringId},
+    resource::ResourceTracker,
+    run_frame::RunResult,
+    types::{Dict, Tuple},
+    value::Value,
+};
 
 /// Represents a Python function signature with all parameter types.
 ///

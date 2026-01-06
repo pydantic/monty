@@ -5,13 +5,18 @@
 //! - Converting `MontyObject::Dataclass` back to Python via `PyMontyDataclass`
 //! - `PyMontyDataclass`: A Python class that mimics dataclass behavior
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+};
 
 use ::monty::MontyObject;
-use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyDict, PyString, PyType};
-use pyo3::{intern, prelude::*};
+use pyo3::{
+    intern,
+    prelude::*,
+    sync::PyOnceLock,
+    types::{PyDict, PyString, PyType},
+};
 
 use crate::convert::{monty_to_py, py_to_monty};
 

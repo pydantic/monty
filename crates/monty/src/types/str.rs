@@ -8,13 +8,15 @@ use std::fmt::Write;
 use ahash::AHashSet;
 
 use super::PyTrait;
-use crate::args::ArgValues;
-use crate::heap::{Heap, HeapData, HeapId};
-use crate::intern::Interns;
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::types::Type;
-use crate::value::Value;
+use crate::{
+    args::ArgValues,
+    heap::{Heap, HeapData, HeapId},
+    intern::Interns,
+    resource::ResourceTracker,
+    run_frame::RunResult,
+    types::Type,
+    value::Value,
+};
 
 /// Python string value stored on the heap.
 ///

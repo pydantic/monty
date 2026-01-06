@@ -6,8 +6,7 @@
 use std::time::Duration;
 
 use monty::{ResourceError, ResourceTracker};
-use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::{prelude::*, types::PyDict};
 
 use crate::exceptions::exc_py_to_monty;
 

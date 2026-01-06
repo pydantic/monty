@@ -1,8 +1,12 @@
-use std::fmt;
-use std::time::{Duration, Instant};
+use std::{
+    fmt,
+    time::{Duration, Instant},
+};
 
-use crate::exception_private::{ExceptionRaise, RawStackFrame, RunError, SimpleException};
-use crate::{ExcType, MontyException};
+use crate::{
+    exception_private::{ExceptionRaise, RawStackFrame, RunError, SimpleException},
+    ExcType, MontyException,
+};
 
 /// Error returned when a resource limit is exceeded during execution.
 ///

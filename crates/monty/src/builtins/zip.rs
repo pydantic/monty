@@ -1,14 +1,16 @@
 //! Implementation of the zip() builtin function.
 
-use crate::args::ArgValues;
-use crate::exception_private::{exc_err_fmt, ExcType};
-use crate::for_iterator::ForIterator;
-use crate::heap::{Heap, HeapData};
-use crate::intern::Interns;
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::types::{List, Tuple};
-use crate::value::Value;
+use crate::{
+    args::ArgValues,
+    exception_private::{exc_err_fmt, ExcType},
+    for_iterator::ForIterator,
+    heap::{Heap, HeapData},
+    intern::Interns,
+    resource::ResourceTracker,
+    run_frame::RunResult,
+    types::{List, Tuple},
+    value::Value,
+};
 
 /// Implementation of the zip() builtin function.
 ///

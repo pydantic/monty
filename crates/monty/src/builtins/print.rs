@@ -1,14 +1,16 @@
 //! Implementation of the print() builtin function.
 
-use crate::args::{ArgValues, KwargsValues};
-use crate::exception_private::{exc_err_fmt, exc_fmt, ExcType, RunError};
-use crate::heap::{Heap, HeapData};
-use crate::intern::Interns;
-use crate::io::PrintWriter;
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::types::PyTrait;
-use crate::value::Value;
+use crate::{
+    args::{ArgValues, KwargsValues},
+    exception_private::{exc_err_fmt, exc_fmt, ExcType, RunError},
+    heap::{Heap, HeapData},
+    intern::Interns,
+    io::PrintWriter,
+    resource::ResourceTracker,
+    run_frame::RunResult,
+    types::PyTrait,
+    value::Value,
+};
 
 /// Implementation of the print() builtin function.
 ///

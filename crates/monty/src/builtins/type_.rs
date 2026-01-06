@@ -1,13 +1,9 @@
 //! Implementation of the type() builtin function.
 
-use crate::args::ArgValues;
-use crate::heap::Heap;
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::types::PyTrait;
-use crate::value::Value;
-
 use super::Builtins;
+use crate::{
+    args::ArgValues, heap::Heap, resource::ResourceTracker, run_frame::RunResult, types::PyTrait, value::Value,
+};
 
 /// Implementation of the type() builtin function.
 ///

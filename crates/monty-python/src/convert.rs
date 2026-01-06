@@ -6,12 +6,16 @@
 
 use ::monty::MontyObject;
 use monty::MontyException;
-use pyo3::exceptions::PyBaseException;
-use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple};
+use pyo3::{
+    exceptions::PyBaseException,
+    prelude::*,
+    types::{PyBool, PyBytes, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple},
+};
 
-use crate::dataclass::{dataclass_to_monty, is_dataclass, PyMontyDataclass};
-use crate::exceptions::{exc_monty_to_py, exc_to_monty_object};
+use crate::{
+    dataclass::{dataclass_to_monty, is_dataclass, PyMontyDataclass},
+    exceptions::{exc_monty_to_py, exc_to_monty_object},
+};
 
 /// Converts a Python object to Monty's `MontyObject` representation.
 ///

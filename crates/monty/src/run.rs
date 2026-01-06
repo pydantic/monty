@@ -1,20 +1,21 @@
 //! Public interface for running Monty code.
-use crate::evaluate::ExternalCall;
-use crate::exception_private::{ExcType, ExceptionRaise, RunError};
-use crate::expressions::Node;
-use crate::heap::Heap;
-use crate::intern::{ExtFunctionId, Interns};
-use crate::io::{PrintWriter, StdPrint};
-use crate::namespace::Namespaces;
-use crate::object::MontyObject;
-use crate::parse::parse;
-use crate::prepare::prepare;
-use crate::resource::NoLimitTracker;
-use crate::resource::ResourceTracker;
-use crate::run_frame::{RunFrame, RunResult};
-use crate::snapshot::{CodePosition, FrameExit, NoSnapshotTracker, SnapshotTracker};
-use crate::value::Value;
-use crate::MontyException;
+use crate::{
+    evaluate::ExternalCall,
+    exception_private::{ExcType, ExceptionRaise, RunError},
+    expressions::Node,
+    heap::Heap,
+    intern::{ExtFunctionId, Interns},
+    io::{PrintWriter, StdPrint},
+    namespace::Namespaces,
+    object::MontyObject,
+    parse::parse,
+    prepare::prepare,
+    resource::{NoLimitTracker, ResourceTracker},
+    run_frame::{RunFrame, RunResult},
+    snapshot::{CodePosition, FrameExit, NoSnapshotTracker, SnapshotTracker},
+    value::Value,
+    MontyException,
+};
 
 /// Primary interface for running Monty code.
 ///
@@ -430,8 +431,9 @@ impl Executor {
     /// Only available when the `ref-count-return` feature is enabled.
     #[cfg(feature = "ref-count-return")]
     fn run_ref_counts(&self, inputs: Vec<MontyObject>) -> Result<RefCountOutput, MontyException> {
-        use crate::value::Value;
         use std::collections::HashSet;
+
+        use crate::value::Value;
 
         let mut heap = Heap::new(self.namespace_size, NoLimitTracker::default());
         let mut namespaces = self.prepare_namespaces(inputs, &mut heap)?;

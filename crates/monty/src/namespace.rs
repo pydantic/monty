@@ -1,10 +1,12 @@
-use crate::exception_private::{ExcType, ExceptionRaise, RunError};
-use crate::expressions::{Identifier, NameScope};
-use crate::heap::{Heap, HeapId};
-use crate::intern::Interns;
-use crate::resource::{ResourceError, ResourceTracker};
-use crate::run_frame::RunResult;
-use crate::value::Value;
+use crate::{
+    exception_private::{ExcType, ExceptionRaise, RunError},
+    expressions::{Identifier, NameScope},
+    heap::{Heap, HeapId},
+    intern::Interns,
+    resource::{ResourceError, ResourceTracker},
+    run_frame::RunResult,
+    value::Value,
+};
 
 /// Unique identifier for values stored inside the namespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]

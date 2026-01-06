@@ -1,12 +1,14 @@
 //! Implementation of the round() builtin function.
 
-use crate::args::ArgValues;
-use crate::exception_private::{exc_err_fmt, ExcType};
-use crate::heap::Heap;
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::types::PyTrait;
-use crate::value::Value;
+use crate::{
+    args::ArgValues,
+    exception_private::{exc_err_fmt, ExcType},
+    heap::Heap,
+    resource::ResourceTracker,
+    run_frame::RunResult,
+    types::PyTrait,
+    value::Value,
+};
 
 pub fn normalize_bool_to_int(value: Value) -> Value {
     match value {

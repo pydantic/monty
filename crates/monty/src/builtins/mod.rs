@@ -28,20 +28,14 @@ mod sum;
 mod type_;
 mod zip;
 
-use std::fmt::Write;
-use std::str::FromStr;
+use std::{fmt::Write, str::FromStr};
 
 use strum::{Display, EnumString, IntoStaticStr};
 
-use crate::args::ArgValues;
-use crate::exception_private::ExcType;
-use crate::heap::Heap;
-use crate::intern::Interns;
-use crate::io::PrintWriter;
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::types::Type;
-use crate::value::Value;
+use crate::{
+    args::ArgValues, exception_private::ExcType, heap::Heap, intern::Interns, io::PrintWriter,
+    resource::ResourceTracker, run_frame::RunResult, types::Type, value::Value,
+};
 
 /// Enumerates every interpreter-native Python builtins
 ///

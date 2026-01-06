@@ -1,20 +1,20 @@
-use crate::args::ArgValues;
-use crate::evaluate::{EvalResult, EvaluateExpr, ExternalCall};
-use crate::exception_private::{
-    exc_err_static, exc_fmt, ExcType, ExceptionRaise, RawStackFrame, RunError, SimpleException,
+use crate::{
+    args::ArgValues,
+    evaluate::{EvalResult, EvaluateExpr, ExternalCall},
+    exception_private::{exc_err_static, exc_fmt, ExcType, ExceptionRaise, RawStackFrame, RunError, SimpleException},
+    expressions::{ExprLoc, Identifier, NameScope, Node},
+    for_iterator::ForIterator,
+    heap::{Heap, HeapData},
+    intern::{FunctionId, Interns, StringId, MODULE_STRING_ID},
+    io::PrintWriter,
+    namespace::{NamespaceId, Namespaces, GLOBAL_NS_IDX},
+    operators::Operator,
+    parse::{CodeRange, ExceptHandler, Try},
+    resource::ResourceTracker,
+    snapshot::{AbstractSnapshotTracker, ClauseState, FrameExit, TryClauseState, TryPhase},
+    types::PyTrait,
+    value::{Attr, Value},
 };
-use crate::expressions::{ExprLoc, Identifier, NameScope, Node};
-use crate::for_iterator::ForIterator;
-use crate::heap::{Heap, HeapData};
-use crate::intern::{FunctionId, Interns, StringId, MODULE_STRING_ID};
-use crate::io::PrintWriter;
-use crate::namespace::{NamespaceId, Namespaces, GLOBAL_NS_IDX};
-use crate::operators::Operator;
-use crate::parse::{CodeRange, ExceptHandler, Try};
-use crate::resource::ResourceTracker;
-use crate::snapshot::{AbstractSnapshotTracker, ClauseState, FrameExit, TryClauseState, TryPhase};
-use crate::types::PyTrait;
-use crate::value::{Attr, Value};
 
 /// Result type for runtime operations.
 pub type RunResult<T> = Result<T, RunError>;

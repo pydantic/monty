@@ -7,18 +7,18 @@ use std::fmt::Write;
 
 use ahash::AHashSet;
 
-use crate::args::ArgValues;
-use crate::exception_private::ExcType;
-use crate::for_iterator::ForIterator;
-use crate::types::Type;
-
-use super::list::repr_sequence_fmt;
-use super::PyTrait;
-use crate::heap::{Heap, HeapData, HeapId};
-use crate::intern::Interns;
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::value::Value;
+use super::{list::repr_sequence_fmt, PyTrait};
+use crate::{
+    args::ArgValues,
+    exception_private::ExcType,
+    for_iterator::ForIterator,
+    heap::{Heap, HeapData, HeapId},
+    intern::Interns,
+    resource::ResourceTracker,
+    run_frame::RunResult,
+    types::Type,
+    value::Value,
+};
 
 /// Python tuple value stored on the heap.
 ///

@@ -1,7 +1,4 @@
-use std::env;
-use std::fs;
-use std::process::ExitCode;
-use std::time::Instant;
+use std::{env, fs, process::ExitCode, time::Instant};
 
 use monty::{MontyObject, MontyRun, NoLimitTracker, RunProgress, StdPrint};
 

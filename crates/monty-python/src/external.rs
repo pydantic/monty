@@ -5,12 +5,16 @@
 //! reaches a call to that function.
 
 use ::monty::{ExternalResult, MontyObject};
-use pyo3::exceptions::PyKeyError;
-use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyTuple};
+use pyo3::{
+    exceptions::PyKeyError,
+    prelude::*,
+    types::{PyDict, PyTuple},
+};
 
-use crate::convert::{monty_to_py, py_to_monty};
-use crate::exceptions::exc_py_to_monty;
+use crate::{
+    convert::{monty_to_py, py_to_monty},
+    exceptions::exc_py_to_monty,
+};
 
 /// Registry that maps external function names to Python callables.
 ///

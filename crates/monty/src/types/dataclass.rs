@@ -2,16 +2,17 @@ use std::fmt::Write;
 
 use ahash::AHashSet;
 
-use crate::args::ArgValues;
-use crate::exception_private::ExcType;
-use crate::types::Type;
-
 use super::{Dict, PyTrait};
-use crate::heap::{Heap, HeapId};
-use crate::intern::Interns;
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::value::{Attr, Value};
+use crate::{
+    args::ArgValues,
+    exception_private::ExcType,
+    heap::{Heap, HeapId},
+    intern::Interns,
+    resource::ResourceTracker,
+    run_frame::RunResult,
+    types::Type,
+    value::{Attr, Value},
+};
 
 /// Python dataclass instance type.
 ///
@@ -157,8 +158,10 @@ impl Dataclass {
     /// Returns Some(hash) for frozen (immutable) dataclasses, None for mutable ones.
     /// The hash is computed from the class name and declared field values only.
     pub fn compute_hash(&self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Option<u64> {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
+        use std::{
+            collections::hash_map::DefaultHasher,
+            hash::{Hash, Hasher},
+        };
 
         // Only frozen (immutable) dataclasses are hashable
         if !self.frozen {

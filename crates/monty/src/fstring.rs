@@ -6,17 +6,18 @@
 
 use std::str::FromStr;
 
-use crate::evaluate::{return_ext_call, EvalResult, EvaluateExpr};
-use crate::exception_private::{exc_err_fmt, exc_fmt, ExcType};
-use crate::expressions::ExprLoc;
-
-use crate::heap::{Heap, HeapData};
-use crate::intern::{Interns, StringId};
-use crate::io::PrintWriter;
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::types::PyTrait;
-use crate::value::Value;
+use crate::{
+    evaluate::{return_ext_call, EvalResult, EvaluateExpr},
+    exception_private::{exc_err_fmt, exc_fmt, ExcType},
+    expressions::ExprLoc,
+    heap::{Heap, HeapData},
+    intern::{Interns, StringId},
+    io::PrintWriter,
+    resource::ResourceTracker,
+    run_frame::RunResult,
+    types::PyTrait,
+    value::Value,
+};
 
 // ============================================================================
 // F-string type definitions

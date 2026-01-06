@@ -7,20 +7,20 @@
 /// The trait is designed to work with `enum_dispatch` for efficient virtual
 /// dispatch on `HeapData` without boxing overhead.
 use std::borrow::Cow;
-use std::cmp::Ordering;
-use std::fmt::Write;
+use std::{cmp::Ordering, fmt::Write};
 
 use ahash::AHashSet;
 
-use crate::args::ArgValues;
-use crate::exception_private::ExcType;
-
 use super::Type;
-use crate::heap::{Heap, HeapId};
-use crate::intern::Interns;
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::value::{Attr, Value};
+use crate::{
+    args::ArgValues,
+    exception_private::ExcType,
+    heap::{Heap, HeapId},
+    intern::Interns,
+    resource::ResourceTracker,
+    run_frame::RunResult,
+    value::{Attr, Value},
+};
 
 /// Common operations for heap-allocated Python values.
 ///

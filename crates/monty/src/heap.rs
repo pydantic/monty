@@ -1,17 +1,21 @@
-use std::collections::hash_map::DefaultHasher;
-use std::fmt::Write;
-use std::hash::{Hash, Hasher};
-use std::mem::discriminant;
+use std::{
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem::discriminant,
+};
 
 use ahash::AHashSet;
 
-use crate::args::ArgValues;
-use crate::exception_private::{ExcType, SimpleException};
-use crate::intern::{FunctionId, Interns};
-use crate::resource::{ResourceError, ResourceTracker};
-use crate::run_frame::RunResult;
-use crate::types::{Bytes, Dataclass, Dict, FrozenSet, List, PyTrait, Range, Set, Str, Tuple, Type};
-use crate::value::{Attr, Value};
+use crate::{
+    args::ArgValues,
+    exception_private::{ExcType, SimpleException},
+    intern::{FunctionId, Interns},
+    resource::{ResourceError, ResourceTracker},
+    run_frame::RunResult,
+    types::{Bytes, Dataclass, Dict, FrozenSet, List, PyTrait, Range, Set, Str, Tuple, Type},
+    value::{Attr, Value},
+};
 
 /// Unique identifier for values stored inside the heap arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]

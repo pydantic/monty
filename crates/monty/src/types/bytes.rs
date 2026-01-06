@@ -7,13 +7,15 @@ use std::fmt::Write;
 use ahash::AHashSet;
 
 use super::{PyTrait, Type};
-use crate::args::ArgValues;
-use crate::exception_private::ExcType;
-use crate::heap::{Heap, HeapData, HeapId};
-use crate::intern::Interns;
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::value::Value;
+use crate::{
+    args::ArgValues,
+    exception_private::ExcType,
+    heap::{Heap, HeapData, HeapId},
+    intern::Interns,
+    resource::ResourceTracker,
+    run_frame::RunResult,
+    value::Value,
+};
 
 /// Python bytes value stored on the heap.
 ///

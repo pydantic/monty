@@ -32,8 +32,8 @@ dev-py-release: ## Install the python package for development with a release bui
 
 .PHONY: format-rs
 format-rs:  ## Format Rust code with fmt
-	@cargo fmt --version
-	cargo fmt --all
+	@cargo +nightly fmt --version
+	cargo +nightly fmt --all
 
 .PHONY: format-py
 format-py: ## Format Python code - WARNING be careful about this command as it may modify code and break tests silently!

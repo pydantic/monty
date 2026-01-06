@@ -1,16 +1,11 @@
-use std::error::Error;
-use std::ffi::CString;
-use std::fs;
-use std::path::Path;
+use std::{error::Error, ffi::CString, fs, path::Path};
 
 use ahash::AHashMap;
 use monty::{
     ExcType, ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRun, ResourceLimits, RunProgress,
     StdPrint,
 };
-
-use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::{prelude::*, types::PyDict};
 
 /// Recursion limit for test execution.
 ///

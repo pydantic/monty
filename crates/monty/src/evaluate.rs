@@ -1,20 +1,21 @@
 use std::cmp::Ordering;
 
-use crate::args::{ArgExprs, ArgValues, Kwarg, KwargsValues};
-use crate::callable::Callable;
-use crate::exception_private::{exc_err_fmt, ExcType, RunError, SimpleException};
-use crate::expressions::{Expr, ExprLoc, NameScope};
-use crate::fstring::{fstring_interpolation, ConversionFlag, FStringPart};
-
-use crate::heap::{Heap, HeapData};
-use crate::intern::{ExtFunctionId, Interns, StringId};
-use crate::io::PrintWriter;
-use crate::namespace::{NamespaceId, Namespaces};
-use crate::operators::{CmpOperator, Operator};
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::types::{Dict, List, PyTrait, Set, Str, Tuple};
-use crate::value::{Attr, Value};
+use crate::{
+    args::{ArgExprs, ArgValues, Kwarg, KwargsValues},
+    callable::Callable,
+    exception_private::{exc_err_fmt, ExcType, RunError, SimpleException},
+    expressions::{Expr, ExprLoc, NameScope},
+    fstring::{fstring_interpolation, ConversionFlag, FStringPart},
+    heap::{Heap, HeapData},
+    intern::{ExtFunctionId, Interns, StringId},
+    io::PrintWriter,
+    namespace::{NamespaceId, Namespaces},
+    operators::{CmpOperator, Operator},
+    resource::ResourceTracker,
+    run_frame::RunResult,
+    types::{Dict, List, PyTrait, Set, Str, Tuple},
+    value::{Attr, Value},
+};
 
 /// Container for evaluation context that holds all state needed during expression evaluation.
 ///

@@ -1,24 +1,24 @@
-use std::borrow::Cow;
-use std::cmp::Ordering;
-use std::collections::hash_map::DefaultHasher;
-use std::fmt::Write;
-use std::hash::{Hash, Hasher};
-use std::mem::discriminant;
+use std::{
+    borrow::Cow,
+    cmp::Ordering,
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem::discriminant,
+};
 
 use ahash::AHashSet;
 
-use crate::args::ArgValues;
-use crate::builtins::Builtins;
-use crate::exception_private::{exc_err_fmt, ExcType};
-
-use crate::heap::HeapData;
-use crate::heap::{Heap, HeapId};
-use crate::intern::{BytesId, ExtFunctionId, FunctionId, Interns, StringId};
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::types::bytes::bytes_repr_fmt;
-use crate::types::str::string_repr_fmt;
-use crate::types::{Dict, PyTrait, Type};
+use crate::{
+    args::ArgValues,
+    builtins::Builtins,
+    exception_private::{exc_err_fmt, ExcType},
+    heap::{Heap, HeapData, HeapId},
+    intern::{BytesId, ExtFunctionId, FunctionId, Interns, StringId},
+    resource::ResourceTracker,
+    run_frame::RunResult,
+    types::{bytes::bytes_repr_fmt, str::string_repr_fmt, Dict, PyTrait, Type},
+};
 
 /// Primary value type representing Python objects at runtime.
 ///

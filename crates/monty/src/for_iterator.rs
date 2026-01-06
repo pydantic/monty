@@ -10,13 +10,15 @@
 //! For constructors like `list()` and `tuple()`, use `ForIterator::new()` followed
 //! by `collect()` to materialize all items into a Vec.
 
-use crate::exception_private::ExcType;
-use crate::heap::{Heap, HeapData, HeapId};
-use crate::intern::{BytesId, Interns};
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::types::{PyTrait, Range, Str};
-use crate::value::Value;
+use crate::{
+    exception_private::ExcType,
+    heap::{Heap, HeapData, HeapId},
+    intern::{BytesId, Interns},
+    resource::ResourceTracker,
+    run_frame::RunResult,
+    types::{PyTrait, Range, Str},
+    value::Value,
+};
 
 /// Iterator state for Python for loops.
 ///

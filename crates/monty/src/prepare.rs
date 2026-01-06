@@ -2,16 +2,18 @@ use std::collections::hash_map::Entry;
 
 use ahash::{AHashMap, AHashSet};
 
-use crate::args::ArgExprs;
-use crate::callable::Callable;
-use crate::expressions::{Expr, ExprLoc, Identifier, Literal, NameScope, Node};
-use crate::fstring::{FStringPart, FormatSpec};
-use crate::function::Function;
-use crate::intern::{FunctionId, InternerBuilder, StringId};
-use crate::namespace::NamespaceId;
-use crate::operators::{CmpOperator, Operator};
-use crate::parse::{ExceptHandler, ParseError, ParseNode, ParseResult, ParsedSignature, Try};
-use crate::signature::Signature;
+use crate::{
+    args::ArgExprs,
+    callable::Callable,
+    expressions::{Expr, ExprLoc, Identifier, Literal, NameScope, Node},
+    fstring::{FStringPart, FormatSpec},
+    function::Function,
+    intern::{FunctionId, InternerBuilder, StringId},
+    namespace::NamespaceId,
+    operators::{CmpOperator, Operator},
+    parse::{ExceptHandler, ParseError, ParseNode, ParseResult, ParsedSignature, Try},
+    signature::Signature,
+};
 
 /// Result of the prepare phase, containing everything needed to execute code.
 ///

@@ -2,15 +2,17 @@
 
 use std::cmp::Ordering;
 
-use crate::args::ArgValues;
-use crate::exception_private::{exc_err_fmt, ExcType};
-use crate::for_iterator::ForIterator;
-use crate::heap::Heap;
-use crate::intern::Interns;
-use crate::resource::ResourceTracker;
-use crate::run_frame::RunResult;
-use crate::types::PyTrait;
-use crate::value::Value;
+use crate::{
+    args::ArgValues,
+    exception_private::{exc_err_fmt, ExcType},
+    for_iterator::ForIterator,
+    heap::Heap,
+    intern::Interns,
+    resource::ResourceTracker,
+    run_frame::RunResult,
+    types::PyTrait,
+    value::Value,
+};
 
 /// Implementation of the min() builtin function.
 ///
