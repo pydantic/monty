@@ -32,8 +32,7 @@ pub fn exc_monty_to_py(exc: MontyException) -> PyErr {
         ExcType::AssertionError => exceptions::PyAssertionError::new_err(msg),
         ExcType::AttributeError => exceptions::PyAttributeError::new_err(msg),
         // FrozenInstanceError is a subclass of AttributeError in Python's dataclasses module.
-        // We use AttributeError here since pyo3 doesn't have FrozenInstanceError built-in.
-        // The error message will still be correct.
+        // We use AttributeError here since this function doesn't have access to Python GIL.
         ExcType::FrozenInstanceError => exceptions::PyAttributeError::new_err(msg),
         ExcType::MemoryError => exceptions::PyMemoryError::new_err(msg),
         ExcType::NameError => exceptions::PyNameError::new_err(msg),

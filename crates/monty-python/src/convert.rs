@@ -4,6 +4,9 @@
 //! - `py_to_monty`: Convert Python objects to Monty's `MontyObject` for input
 //! - `monty_to_py`: Convert Monty's `MontyObject` back to Python objects for output
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use ::monty::MontyObject;
 use monty::MontyException;
 use pyo3::exceptions::PyBaseException;
@@ -118,13 +121,16 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject) -> PyResult<Py<PyAny>> {
             let builtins = py.import("builtins")?;
             Ok(builtins.getattr(type_name)?.unbind())
         }
-        // Dataclass - convert to dict representation of its attrs
-        MontyObject::Dataclass { attrs, .. } => {
-            let dict = PyDict::new(py);
-            for (k, v) in attrs {
-                dict.set_item(monty_to_py(py, k)?, monty_to_py(py, v)?)?;
-            }
-            Ok(dict.into_any().unbind())
+        // Dataclass - convert to PyDataclass
+        MontyObject::Dataclass {
+            name,
+            field_names,
+            attrs,
+            frozen,
+            methods: _,
+        } => {
+            let dc = PyMontyDataclass::new(py, name.clone(), field_names.clone(), attrs, *frozen)?;
+            Ok(Py::new(py, dc)?.into_any())
         }
         // Output-only types - convert to string representation
         MontyObject::Repr(s) => Ok(PyString::new(py, s).into_any().unbind()),
@@ -196,4 +202,143 @@ fn get_field_marker(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static DC_FIELD_MARKER: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
     DC_FIELD_MARKER.import(py, "dataclasses", "_FIELD")
+}
+
+/// Imitation of a dataclass to allow returning MontyObject::Dataclass to Python
+/// as something that behaves like a dataclass.
+///
+/// Supports attribute access, repr, equality, and hashing (for frozen instances).
+#[pyclass(name = "MontyDataclass")]
+struct PyMontyDataclass {
+    /// Class name (e.g., "Point", "User")
+    name: String,
+    /// Declared field names in definition order (for repr)
+    field_names: Vec<String>,
+    /// All attributes (fields + any extra attrs)
+    attrs: Py<PyDict>,
+    /// Whether this instance is frozen (immutable)
+    frozen: bool,
+}
+
+#[pymethods]
+impl PyMontyDataclass {
+    /// Returns the class name.
+    #[getter]
+    fn __name__(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the qualified name (same as __name__ since we don't track nesting).
+    #[getter]
+    fn __qualname__(&self) -> &str {
+        &self.name
+    }
+
+    /// Get an attribute value.
+    fn __getattr__(&self, py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
+        let attrs = self.attrs.bind(py);
+        match attrs.get_item(name)? {
+            Some(value) => Ok(value.unbind()),
+            None => Err(pyo3::exceptions::PyAttributeError::new_err(format!(
+                "'{}' object has no attribute '{}'",
+                self.name, name
+            ))),
+        }
+    }
+
+    /// Set an attribute value.
+    fn __setattr__(&self, py: Python<'_>, name: &str, value: Py<PyAny>) -> PyResult<()> {
+        if self.frozen {
+            return Err(pyo3::exceptions::PyAttributeError::new_err(format!(
+                "cannot assign to field '{name}'"
+            )));
+        }
+        let attrs = self.attrs.bind(py);
+        attrs.set_item(name, value)?;
+        Ok(())
+    }
+
+    /// String representation: ClassName(field1=value1, field2=value2, ...)
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        let attrs = self.attrs.bind(py);
+        let mut parts = Vec::new();
+        for field_name in &self.field_names {
+            if let Some(value) = attrs.get_item(field_name)? {
+                let value_repr: String = value.repr()?.extract()?;
+                parts.push(format!("{field_name}={value_repr}"));
+            }
+        }
+        Ok(format!("{}({})", self.name, parts.join(", ")))
+    }
+
+    /// String representation (same as repr for dataclasses).
+    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        self.__repr__(py)
+    }
+
+    /// Equality comparison.
+    fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+        // Check if other is also a PyDataclass
+        if let Ok(other_dc) = other.extract::<PyRef<'_, PyMontyDataclass>>() {
+            if self.name != other_dc.name {
+                return Ok(false);
+            }
+            let self_attrs = self.attrs.bind(py);
+            let other_attrs = other_dc.attrs.bind(py);
+            // Compare all attrs
+            self_attrs.eq(other_attrs)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Hash (only for frozen dataclasses).
+    fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
+        if !self.frozen {
+            return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                "unhashable type: '{}'",
+                self.name
+            )));
+        }
+
+        let mut hasher = DefaultHasher::new();
+        self.name.hash(&mut hasher);
+
+        let attrs = self.attrs.bind(py);
+        for field_name in &self.field_names {
+            field_name.hash(&mut hasher);
+            if let Some(value) = attrs.get_item(field_name)? {
+                let value_hash: isize = value.hash()?;
+                value_hash.hash(&mut hasher);
+            }
+        }
+        Ok(hasher.finish() as isize)
+    }
+
+    /// Boolean truthiness (dataclasses are always truthy).
+    fn __bool__(&self) -> bool {
+        true
+    }
+}
+
+impl PyMontyDataclass {
+    /// Creates a new PyDataclass from MontyObject fields.
+    fn new<'a>(
+        py: Python<'_>,
+        name: String,
+        field_names: Vec<String>,
+        attrs: impl IntoIterator<Item = &'a (MontyObject, MontyObject)>,
+        frozen: bool,
+    ) -> PyResult<Self> {
+        let dict = PyDict::new(py);
+        for (k, v) in attrs {
+            dict.set_item(monty_to_py(py, k)?, monty_to_py(py, v)?)?;
+        }
+        Ok(Self {
+            name,
+            field_names,
+            attrs: dict.unbind(),
+            frozen,
+        })
+    }
 }
