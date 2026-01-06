@@ -46,8 +46,8 @@ pub struct Dataclass {
     fields: Dict,
     /// Method names that trigger external function calls
     methods: AHashSet<String>,
-    /// Whether this dataclass instance is mutable (affects hashability)
-    mutable: bool,
+    /// Whether this dataclass instance is immutable (affects hashability)
+    frozen: bool,
 }
 
 impl Dataclass {
@@ -57,14 +57,14 @@ impl Dataclass {
     /// * `name` - The class name
     /// * `fields` - Dict of field name -> value pairs (ownership transferred)
     /// * `methods` - Set of method names that trigger external calls
-    /// * `mutable` - Whether this instance is mutable (affects hashability)
+    /// * `frozen` - Whether this dataclass instance is immutable (affects hashability)
     #[must_use]
-    pub fn new(name: String, fields: Dict, methods: AHashSet<String>, mutable: bool) -> Self {
+    pub fn new(name: String, fields: Dict, methods: AHashSet<String>, frozen: bool) -> Self {
         Self {
             name,
             fields,
             methods,
-            mutable,
+            frozen,
         }
     }
 
@@ -88,8 +88,8 @@ impl Dataclass {
 
     /// Returns whether this dataclass instance is mutable.
     #[must_use]
-    pub fn is_mutable(&self) -> bool {
-        self.mutable
+    pub fn is_frozen(&self) -> bool {
+        self.frozen
     }
 
     /// Gets a field value by name.
@@ -135,7 +135,7 @@ impl Dataclass {
             name: self.name.clone(),
             fields: self.fields.clone_with_heap(heap),
             methods: self.methods.clone(),
-            mutable: self.mutable,
+            frozen: self.frozen,
         }
     }
 
@@ -147,7 +147,7 @@ impl Dataclass {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
-        if self.mutable {
+        if self.frozen {
             return None;
         }
 
@@ -274,7 +274,7 @@ impl serde::Serialize for Dataclass {
         let mut methods_vec: Vec<&String> = self.methods.iter().collect();
         methods_vec.sort();
         state.serialize_field("methods", &methods_vec)?;
-        state.serialize_field("mutable", &self.mutable)?;
+        state.serialize_field("mutable", &self.frozen)?;
         state.end()
     }
 }
@@ -293,7 +293,7 @@ impl<'de> serde::Deserialize<'de> for Dataclass {
             name: dc.name,
             fields: dc.fields,
             methods: dc.methods.into_iter().collect(),
-            mutable: dc.mutable,
+            frozen: dc.mutable,
         })
     }
 }

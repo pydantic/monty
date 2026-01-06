@@ -111,8 +111,8 @@ pub enum MontyObject {
         fields: DictPairs,
         /// Method names that trigger external function calls.
         methods: Vec<String>,
-        /// Whether this dataclass instance is mutable.
-        mutable: bool,
+        /// Whether this dataclass instance is immutable.
+        frozen: bool,
     },
     /// Fallback for values that cannot be represented as other variants.
     ///
@@ -232,7 +232,7 @@ impl MontyObject {
                 name,
                 fields,
                 methods,
-                mutable,
+                frozen,
             } => {
                 use crate::types::Dataclass;
                 // Convert fields to Dict
@@ -244,7 +244,7 @@ impl MontyObject {
                     .map_err(|_| InvalidInputError::invalid_type("unhashable dataclass field keys"))?;
                 // Convert methods Vec to AHashSet
                 let methods_set: ahash::AHashSet<String> = methods.into_iter().collect();
-                let dc = Dataclass::new(name, dict, methods_set, mutable);
+                let dc = Dataclass::new(name, dict, methods_set, frozen);
                 Ok(Value::Ref(heap.allocate(HeapData::Dataclass(dc))?))
             }
             Self::Repr(_) => Err(InvalidInputError::invalid_type("Repr")),
@@ -370,7 +370,7 @@ impl MontyObject {
                             name: dc.name().to_owned(),
                             fields,
                             methods,
-                            mutable: dc.is_mutable(),
+                            frozen: dc.is_frozen(),
                         }
                     }
                 };
@@ -635,13 +635,13 @@ impl PartialEq for MontyObject {
                     name: a_name,
                     fields: a_fields,
                     methods: a_methods,
-                    mutable: a_mutable,
+                    frozen: a_mutable,
                 },
                 Self::Dataclass {
                     name: b_name,
                     fields: b_fields,
                     methods: b_methods,
-                    mutable: b_mutable,
+                    frozen: b_mutable,
                 },
             ) => a_name == b_name && a_fields == b_fields && a_methods == b_methods && a_mutable == b_mutable,
             (Self::Repr(a), Self::Repr(b)) => a == b,

@@ -443,10 +443,10 @@ impl HashState {
             | HeapData::Range(_) => Self::Unknown,
             // Dataclass hashability depends on the mutable flag
             HeapData::Dataclass(dc) => {
-                if dc.is_mutable() {
-                    Self::Unhashable
-                } else {
+                if dc.is_frozen() {
                     Self::Unknown
+                } else {
+                    Self::Unhashable
                 }
             }
             // Mutable containers and exceptions are unhashable

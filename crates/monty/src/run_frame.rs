@@ -620,7 +620,11 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
             heap.with_entry_mut(*id, |heap, data| -> RunResult<()> {
                 match data {
                     HeapData::Dataclass(dc) => {
-                        if dc.is_mutable() {
+                        if dc.is_frozen() {
+                            // Drop the value we were going to assign
+                            val.drop_with_heap(heap);
+                            Err(ExcType::attribute_error_frozen(dc.name(), attr.as_str()))
+                        } else {
                             // Allocate a heap string for the key since we need a Value for Dict lookup
                             let key_id = heap.allocate(HeapData::Str(attr.to_string().into()))?;
                             let key = Value::Ref(key_id);
@@ -632,10 +636,6 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
                                 old.drop_with_heap(heap);
                             }
                             Ok(())
-                        } else {
-                            // Drop the value we were going to assign
-                            val.drop_with_heap(heap);
-                            Err(ExcType::attribute_error_frozen(dc.name(), attr.as_str()))
                         }
                     }
                     other => {

@@ -315,7 +315,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> ExternalResult 
                 ]
                 .into(),
                 methods: vec![],
-                mutable: false,
+                frozen: true,
             }
             .into()
         }
@@ -330,7 +330,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> ExternalResult 
                 ]
                 .into(),
                 methods: vec![],
-                mutable: true,
+                frozen: false,
             }
             .into()
         }
@@ -346,7 +346,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> ExternalResult 
                 ]
                 .into(),
                 methods: vec![],
-                mutable: false,
+                frozen: true,
             }
             .into()
         }

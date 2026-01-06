@@ -7,8 +7,9 @@
 use ::monty::MontyObject;
 use monty::MontyException;
 use pyo3::exceptions::PyBaseException;
-use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple};
+use pyo3::sync::PyOnceLock;
+use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple, PyType};
+use pyo3::{intern, prelude::*};
 
 use crate::exceptions::{exc_monty_to_py, exc_to_monty_object};
 
@@ -57,6 +58,8 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
         Ok(MontyObject::Ellipsis)
     } else if let Ok(exc) = obj.cast::<PyBaseException>() {
         Ok(exc_to_monty_object(exc))
+    } else if is_dataclass(obj) {
+        dataclass_to_monty(obj)
     } else {
         Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
             "Cannot convert {} to Monty value",
@@ -127,4 +130,68 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject) -> PyResult<Py<PyAny>> {
         MontyObject::Repr(s) => Ok(PyString::new(py, s).into_any().unbind()),
         MontyObject::Cycle(_, placeholder) => Ok(PyString::new(py, placeholder).into_any().unbind()),
     }
+}
+
+/// Copied from is_dataclass in pydantic
+fn is_dataclass(value: &Bound<'_, PyAny>) -> bool {
+    value
+        .hasattr(intern!(value.py(), "__dataclass_fields__"))
+        .unwrap_or(false)
+        && !value.is_instance_of::<PyType>()
+}
+
+/// Copied from infer_serialize_dataclass in pydantic
+fn dataclass_to_monty(value: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
+    let py = value.py();
+
+    let name = value
+        .get_type()
+        .getattr(intern!(py, "__name__"))?
+        .cast_into::<PyString>()?
+        .to_str()?
+        .to_string();
+
+    let fields = value
+        .getattr(intern!(py, "__dataclass_fields__"))?
+        .cast_into::<PyDict>()?;
+
+    let frozen = value
+        .getattr(intern!(py, "__dataclass_params__"))?
+        .getattr(intern!(py, "frozen"))?
+        .extract::<bool>()?;
+
+    let field_type_marker = get_field_marker(py)?;
+
+    let next = move |(field_name, field): (Bound<'_, PyAny>, Bound<'_, PyAny>)| -> PyResult<Option<(MontyObject, MontyObject)>> {
+        let field_type = field.getattr(intern!(py, "_field_type"))?;
+        if field_type.is(field_type_marker) {
+            let value = value.getattr(field_name.cast::<PyString>()?)?;
+            let field_name = py_to_monty(&field_name)?;
+            let value = py_to_monty(&value)?;
+            Ok(Some((field_name, value)))
+        } else {
+            Ok(None)
+        }
+    };
+
+    let fields = fields
+        .iter()
+        .filter_map(move |field| next(field).transpose())
+        .collect::<PyResult<Vec<(MontyObject, MontyObject)>>>()?
+        .into();
+
+    Ok(MontyObject::Dataclass {
+        name,
+        fields,
+        methods: vec![],
+        frozen,
+    })
+}
+
+/// Copied from get_field_marker in pydantic
+/// needed to match the logic from dataclasses.fields `tuple(f for f in fields.values() if f._field_type is _FIELD)`
+fn get_field_marker(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static DC_FIELD_MARKER: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    DC_FIELD_MARKER.import(py, "dataclasses", "_FIELD")
 }
