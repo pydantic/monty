@@ -22,6 +22,9 @@ indexmap = "2.9"
 serde = { version = "1.0", features = ["derive"] }
 postcard = { version = "1.1", features = ["alloc"] }
 
+[build-dependencies]
+pyo3-build-config = { version = "0.27.2", features = ["resolve-config"] }
+
 [features]
 # make extensions visible to cargo vendor
 extension-module = ["pyo3/extension-module", "pyo3/generate-import-lib"]

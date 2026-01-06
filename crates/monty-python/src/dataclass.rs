@@ -130,18 +130,33 @@ impl PyMontyDataclass {
             };
 
             // Create a Field object with the required attributes
-            // Field(default, default_factory, init, repr, hash, compare, metadata, kw_only, doc)
-            let field_obj = field_class.call1((
-                missing,   // default
-                missing,   // default_factory
-                true,      // init
-                true,      // repr
-                py.None(), // hash (None means use compare value)
-                true,      // compare
-                py.None(), // metadata
-                false,     // kw_only
-                py.None(), // doc
-            ))?;
+            let field_obj = if cfg!(Py_3_14) {
+                // Field(default, default_factory, init, repr, hash, compare, metadata, kw_only, doc)
+                // doc is now in 3.14
+                field_class.call1((
+                    missing,   // default
+                    missing,   // default_factory
+                    true,      // init
+                    true,      // repr
+                    py.None(), // hash (None means use compare value)
+                    true,      // compare
+                    py.None(), // metadata
+                    false,     // kw_only
+                    py.None(), // doc
+                ))?
+            } else {
+                // Field(default, default_factory, init, repr, hash, compare, metadata, kw_only)
+                field_class.call1((
+                    missing,   // default
+                    missing,   // default_factory
+                    true,      // init
+                    true,      // repr
+                    py.None(), // hash (None means use compare value)
+                    true,      // compare
+                    py.None(), // metadata
+                    false,     // kw_only
+                ))?
+            };
 
             // Set name and type (these are set after construction in real dataclasses)
             field_obj.setattr("name", field_name)?;
