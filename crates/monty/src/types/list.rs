@@ -9,7 +9,7 @@ use crate::types::Type;
 
 use super::PyTrait;
 use crate::heap::{Heap, HeapData, HeapId};
-use crate::intern::{Interns, ATTR_APPEND, ATTR_INSERT};
+use crate::intern::{attr, Interns};
 use crate::resource::ResourceTracker;
 use crate::run_frame::RunResult;
 use crate::value::{Attr, Value};
@@ -258,12 +258,12 @@ impl PyTrait for List {
         };
 
         match attr_id {
-            ATTR_APPEND => {
+            attr::APPEND => {
                 let item = args.get_one_arg("list.append")?;
                 self.append(heap, item);
                 Ok(Value::None)
             }
-            ATTR_INSERT => {
+            attr::INSERT => {
                 let (index_obj, item) = args.get_two_args("insert")?;
                 let index = index_obj.as_int()? as usize;
                 self.insert(heap, index, item);

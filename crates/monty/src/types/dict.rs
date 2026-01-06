@@ -10,7 +10,7 @@ use crate::types::Type;
 
 use super::{List, PyTrait, Tuple};
 use crate::heap::{Heap, HeapData, HeapId};
-use crate::intern::{Interns, ATTR_GET, ATTR_ITEMS, ATTR_KEYS, ATTR_POP, ATTR_VALUES};
+use crate::intern::{attr, Interns};
 use crate::resource::ResourceTracker;
 use crate::run_frame::RunResult;
 use crate::value::{Attr, Value};
@@ -558,7 +558,7 @@ impl PyTrait for Dict {
         };
 
         match attr_id {
-            ATTR_GET => {
+            attr::GET => {
                 // dict.get() accepts 1 or 2 arguments
                 let (key, default) = args.get_one_two_args("get")?;
                 let default = default.unwrap_or(Value::None);
@@ -581,19 +581,19 @@ impl PyTrait for Dict {
                 default.drop_with_heap(heap);
                 Ok(value)
             }
-            ATTR_KEYS => {
+            attr::KEYS => {
                 args.check_zero_args("dict.keys")?;
                 let keys = self.keys(heap);
                 let list_id = heap.allocate(HeapData::List(List::new(keys)))?;
                 Ok(Value::Ref(list_id))
             }
-            ATTR_VALUES => {
+            attr::VALUES => {
                 args.check_zero_args("dict.values")?;
                 let values = self.values(heap);
                 let list_id = heap.allocate(HeapData::List(List::new(values)))?;
                 Ok(Value::Ref(list_id))
             }
-            ATTR_ITEMS => {
+            attr::ITEMS => {
                 args.check_zero_args("dict.items")?;
                 // Return list of tuples
                 let items = self.items(heap);
@@ -605,7 +605,7 @@ impl PyTrait for Dict {
                 let list_id = heap.allocate(HeapData::List(List::new(tuples)))?;
                 Ok(Value::Ref(list_id))
             }
-            ATTR_POP => {
+            attr::POP => {
                 // dict.pop() accepts 1 or 2 arguments (key, optional default)
                 let (key, default) = args.get_one_two_args("pop")?;
                 let result = match self.pop(&key, heap, interns) {

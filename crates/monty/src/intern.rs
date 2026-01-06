@@ -23,49 +23,43 @@ pub struct StringId(u32);
 /// The StringId for `"<module>"` - always index 0 in the interner.
 pub const MODULE_STRING_ID: StringId = StringId(0);
 
-// Pre-interned attribute names for container methods.
-// These must match the order in `InternerBuilder::new()`.
+/// Pre-interned attribute names for container methods.
+///
+/// These StringIds are assigned at startup in `InternerBuilder::new()` and provide
+/// O(1) comparison for common method names without heap allocation.
+///
+/// Usage: `use crate::intern::attr;` then `attr::APPEND`, `attr::GET`, etc.
+pub mod attr {
+    use super::StringId;
 
-/// StringId for "append" - list method
-pub const ATTR_APPEND: StringId = StringId(1);
-/// StringId for "insert" - list method
-pub const ATTR_INSERT: StringId = StringId(2);
-/// StringId for "get" - dict method
-pub const ATTR_GET: StringId = StringId(3);
-/// StringId for "keys" - dict method
-pub const ATTR_KEYS: StringId = StringId(4);
-/// StringId for "values" - dict method
-pub const ATTR_VALUES: StringId = StringId(5);
-/// StringId for "items" - dict method
-pub const ATTR_ITEMS: StringId = StringId(6);
-/// StringId for "pop" - shared method (list, dict, set)
-pub const ATTR_POP: StringId = StringId(7);
-/// StringId for "clear" - shared method
-pub const ATTR_CLEAR: StringId = StringId(8);
-/// StringId for "copy" - shared method
-pub const ATTR_COPY: StringId = StringId(9);
-/// StringId for "add" - set method
-pub const ATTR_ADD: StringId = StringId(10);
-/// StringId for "remove" - set method
-pub const ATTR_REMOVE: StringId = StringId(11);
-/// StringId for "discard" - set method
-pub const ATTR_DISCARD: StringId = StringId(12);
-/// StringId for "update" - set/dict method
-pub const ATTR_UPDATE: StringId = StringId(13);
-/// StringId for "union" - set method
-pub const ATTR_UNION: StringId = StringId(14);
-/// StringId for "intersection" - set method
-pub const ATTR_INTERSECTION: StringId = StringId(15);
-/// StringId for "difference" - set method
-pub const ATTR_DIFFERENCE: StringId = StringId(16);
-/// StringId for "symmetric_difference" - set method
-pub const ATTR_SYMMETRIC_DIFFERENCE: StringId = StringId(17);
-/// StringId for "issubset" - set method
-pub const ATTR_ISSUBSET: StringId = StringId(18);
-/// StringId for "issuperset" - set method
-pub const ATTR_ISSUPERSET: StringId = StringId(19);
-/// StringId for "isdisjoint" - set method
-pub const ATTR_ISDISJOINT: StringId = StringId(20);
+    // List methods
+    pub const APPEND: StringId = StringId(1);
+    pub const INSERT: StringId = StringId(2);
+
+    // Dict methods
+    pub const GET: StringId = StringId(3);
+    pub const KEYS: StringId = StringId(4);
+    pub const VALUES: StringId = StringId(5);
+    pub const ITEMS: StringId = StringId(6);
+
+    // Shared methods (list, dict, set)
+    pub const POP: StringId = StringId(7);
+    pub const CLEAR: StringId = StringId(8);
+    pub const COPY: StringId = StringId(9);
+
+    // Set methods
+    pub const ADD: StringId = StringId(10);
+    pub const REMOVE: StringId = StringId(11);
+    pub const DISCARD: StringId = StringId(12);
+    pub const UPDATE: StringId = StringId(13);
+    pub const UNION: StringId = StringId(14);
+    pub const INTERSECTION: StringId = StringId(15);
+    pub const DIFFERENCE: StringId = StringId(16);
+    pub const SYMMETRIC_DIFFERENCE: StringId = StringId(17);
+    pub const ISSUBSET: StringId = StringId(18);
+    pub const ISSUPERSET: StringId = StringId(19);
+    pub const ISDISJOINT: StringId = StringId(20);
+}
 
 impl StringId {
     /// Returns the raw index value.
@@ -155,27 +149,27 @@ impl InternerBuilder {
         debug_assert_eq!(interner.intern("<module>"), MODULE_STRING_ID);
 
         // Pre-intern known attribute names (indices 1-20)
-        // Order must match the ATTR_* constants defined above
-        debug_assert_eq!(interner.intern("append"), ATTR_APPEND);
-        debug_assert_eq!(interner.intern("insert"), ATTR_INSERT);
-        debug_assert_eq!(interner.intern("get"), ATTR_GET);
-        debug_assert_eq!(interner.intern("keys"), ATTR_KEYS);
-        debug_assert_eq!(interner.intern("values"), ATTR_VALUES);
-        debug_assert_eq!(interner.intern("items"), ATTR_ITEMS);
-        debug_assert_eq!(interner.intern("pop"), ATTR_POP);
-        debug_assert_eq!(interner.intern("clear"), ATTR_CLEAR);
-        debug_assert_eq!(interner.intern("copy"), ATTR_COPY);
-        debug_assert_eq!(interner.intern("add"), ATTR_ADD);
-        debug_assert_eq!(interner.intern("remove"), ATTR_REMOVE);
-        debug_assert_eq!(interner.intern("discard"), ATTR_DISCARD);
-        debug_assert_eq!(interner.intern("update"), ATTR_UPDATE);
-        debug_assert_eq!(interner.intern("union"), ATTR_UNION);
-        debug_assert_eq!(interner.intern("intersection"), ATTR_INTERSECTION);
-        debug_assert_eq!(interner.intern("difference"), ATTR_DIFFERENCE);
-        debug_assert_eq!(interner.intern("symmetric_difference"), ATTR_SYMMETRIC_DIFFERENCE);
-        debug_assert_eq!(interner.intern("issubset"), ATTR_ISSUBSET);
-        debug_assert_eq!(interner.intern("issuperset"), ATTR_ISSUPERSET);
-        debug_assert_eq!(interner.intern("isdisjoint"), ATTR_ISDISJOINT);
+        // Order must match the attr::* constants defined above
+        debug_assert_eq!(interner.intern("append"), attr::APPEND);
+        debug_assert_eq!(interner.intern("insert"), attr::INSERT);
+        debug_assert_eq!(interner.intern("get"), attr::GET);
+        debug_assert_eq!(interner.intern("keys"), attr::KEYS);
+        debug_assert_eq!(interner.intern("values"), attr::VALUES);
+        debug_assert_eq!(interner.intern("items"), attr::ITEMS);
+        debug_assert_eq!(interner.intern("pop"), attr::POP);
+        debug_assert_eq!(interner.intern("clear"), attr::CLEAR);
+        debug_assert_eq!(interner.intern("copy"), attr::COPY);
+        debug_assert_eq!(interner.intern("add"), attr::ADD);
+        debug_assert_eq!(interner.intern("remove"), attr::REMOVE);
+        debug_assert_eq!(interner.intern("discard"), attr::DISCARD);
+        debug_assert_eq!(interner.intern("update"), attr::UPDATE);
+        debug_assert_eq!(interner.intern("union"), attr::UNION);
+        debug_assert_eq!(interner.intern("intersection"), attr::INTERSECTION);
+        debug_assert_eq!(interner.intern("difference"), attr::DIFFERENCE);
+        debug_assert_eq!(interner.intern("symmetric_difference"), attr::SYMMETRIC_DIFFERENCE);
+        debug_assert_eq!(interner.intern("issubset"), attr::ISSUBSET);
+        debug_assert_eq!(interner.intern("issuperset"), attr::ISSUPERSET);
+        debug_assert_eq!(interner.intern("isdisjoint"), attr::ISDISJOINT);
 
         interner
     }
