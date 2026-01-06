@@ -119,7 +119,7 @@ def fib(n):
         return n
     return fib(n - 1) + fib(n - 2)
 
-fib(30)
+fib(35)
 """
     m = monty.Monty(code)
 

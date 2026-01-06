@@ -77,7 +77,10 @@ jobs:
 
       - run: uv sync --all-packages --only-dev
       - run: make dev-py
-      - run: make test-py
+      - run: make run-pytest
+        # also test with a release build
+      - run: make dev-py-release
+      - run: make run-pytest
 
   bench-test:
     runs-on: ubuntu-latest

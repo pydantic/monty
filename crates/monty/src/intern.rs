@@ -146,30 +146,53 @@ impl InternerBuilder {
         let mut interner = Self::default();
 
         // Index 0: "<module>" for module-level code
-        debug_assert_eq!(interner.intern("<module>"), MODULE_STRING_ID);
+        let id = interner.intern("<module>");
+        debug_assert_eq!(id, MODULE_STRING_ID);
 
-        // Pre-intern known attribute names (indices 1-20)
-        // Order must match the attr::* constants defined above
-        debug_assert_eq!(interner.intern("append"), attr::APPEND);
-        debug_assert_eq!(interner.intern("insert"), attr::INSERT);
-        debug_assert_eq!(interner.intern("get"), attr::GET);
-        debug_assert_eq!(interner.intern("keys"), attr::KEYS);
-        debug_assert_eq!(interner.intern("values"), attr::VALUES);
-        debug_assert_eq!(interner.intern("items"), attr::ITEMS);
-        debug_assert_eq!(interner.intern("pop"), attr::POP);
-        debug_assert_eq!(interner.intern("clear"), attr::CLEAR);
-        debug_assert_eq!(interner.intern("copy"), attr::COPY);
-        debug_assert_eq!(interner.intern("add"), attr::ADD);
-        debug_assert_eq!(interner.intern("remove"), attr::REMOVE);
-        debug_assert_eq!(interner.intern("discard"), attr::DISCARD);
-        debug_assert_eq!(interner.intern("update"), attr::UPDATE);
-        debug_assert_eq!(interner.intern("union"), attr::UNION);
-        debug_assert_eq!(interner.intern("intersection"), attr::INTERSECTION);
-        debug_assert_eq!(interner.intern("difference"), attr::DIFFERENCE);
-        debug_assert_eq!(interner.intern("symmetric_difference"), attr::SYMMETRIC_DIFFERENCE);
-        debug_assert_eq!(interner.intern("issubset"), attr::ISSUBSET);
-        debug_assert_eq!(interner.intern("issuperset"), attr::ISSUPERSET);
-        debug_assert_eq!(interner.intern("isdisjoint"), attr::ISDISJOINT);
+        // Pre-intern known attribute names (indices 1-20).
+        // Order must match the attr::* constants defined above.
+        // Note: We separate the intern() call from debug_assert_eq! because
+        // debug_assert_eq! is completely removed in release builds.
+        let id = interner.intern("append");
+        debug_assert_eq!(id, attr::APPEND);
+        let id = interner.intern("insert");
+        debug_assert_eq!(id, attr::INSERT);
+        let id = interner.intern("get");
+        debug_assert_eq!(id, attr::GET);
+        let id = interner.intern("keys");
+        debug_assert_eq!(id, attr::KEYS);
+        let id = interner.intern("values");
+        debug_assert_eq!(id, attr::VALUES);
+        let id = interner.intern("items");
+        debug_assert_eq!(id, attr::ITEMS);
+        let id = interner.intern("pop");
+        debug_assert_eq!(id, attr::POP);
+        let id = interner.intern("clear");
+        debug_assert_eq!(id, attr::CLEAR);
+        let id = interner.intern("copy");
+        debug_assert_eq!(id, attr::COPY);
+        let id = interner.intern("add");
+        debug_assert_eq!(id, attr::ADD);
+        let id = interner.intern("remove");
+        debug_assert_eq!(id, attr::REMOVE);
+        let id = interner.intern("discard");
+        debug_assert_eq!(id, attr::DISCARD);
+        let id = interner.intern("update");
+        debug_assert_eq!(id, attr::UPDATE);
+        let id = interner.intern("union");
+        debug_assert_eq!(id, attr::UNION);
+        let id = interner.intern("intersection");
+        debug_assert_eq!(id, attr::INTERSECTION);
+        let id = interner.intern("difference");
+        debug_assert_eq!(id, attr::DIFFERENCE);
+        let id = interner.intern("symmetric_difference");
+        debug_assert_eq!(id, attr::SYMMETRIC_DIFFERENCE);
+        let id = interner.intern("issubset");
+        debug_assert_eq!(id, attr::ISSUBSET);
+        let id = interner.intern("issuperset");
+        debug_assert_eq!(id, attr::ISSUPERSET);
+        let id = interner.intern("isdisjoint");
+        debug_assert_eq!(id, attr::ISDISJOINT);
 
         interner
     }
