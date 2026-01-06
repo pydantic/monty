@@ -16,7 +16,7 @@ use crate::resource::ResourceTracker;
 use crate::run_frame::RunResult;
 use crate::types::str::string_repr;
 use crate::types::{PyTrait, Type};
-use crate::value::{Attr, Value};
+use crate::value::Value;
 
 /// Python exception types supported by the interpreter.
 ///
@@ -156,7 +156,7 @@ impl ExcType {
     }
 
     #[must_use]
-    pub fn attribute_error(type_: Type, attr: &Attr) -> RunError {
+    pub fn attribute_error(type_: Type, attr: &str) -> RunError {
         exc_fmt!(Self::AttributeError; "'{type_}' object has no attribute '{attr}'").into()
     }
 

@@ -6,7 +6,6 @@ use std::hash::{Hash, Hasher};
 use std::mem::discriminant;
 
 use ahash::AHashSet;
-use strum::{AsRefStr, Display};
 
 use crate::args::ArgValues;
 use crate::builtins::Builtins;
@@ -939,7 +938,7 @@ impl Value {
         if let Self::Ref(id) = self {
             heap.call_attr(*id, attr, args, interns)
         } else {
-            Err(ExcType::attribute_error(self.py_type(Some(heap)), attr))
+            Err(ExcType::attribute_error(self.py_type(Some(heap)), attr.as_str(interns)))
         }
     }
 
@@ -1105,79 +1104,53 @@ impl EitherStr {
     }
 }
 
-/// Attribute names for method calls on container types (list, dict, set).
+/// Attribute names for accessing fields and methods on objects.
 ///
-/// Uses strum `Display` derive with lowercase serialization.
-/// The `Other(String)` variant is a fallback for unknown/dynamic attribute names.
-#[derive(Debug, Clone, Display, AsRefStr, serde::Serialize, serde::Deserialize)]
-#[strum(serialize_all = "lowercase")]
+/// Uses `StringId` for interned attribute names (parsed at compile time) and
+/// `Other(String)` for runtime-constructed names (e.g., from `getattr()`).
+///
+/// Known method names (append, get, keys, etc.) are pre-interned with stable
+/// `StringId` values - see `intern.rs` for the `ATTR_*` constants.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Attr {
-    // List methods
-    Append,
-    Insert,
-    // Dict methods
-    Get,
-    Keys,
-    Values,
-    Items,
-    // Shared methods
-    Pop,
-    Clear,
-    Copy,
-    // Set methods
-    Add,
-    Remove,
-    Discard,
-    Update,
-    Union,
-    Intersection,
-    Difference,
-    #[strum(serialize = "symmetric_difference")]
-    SymmetricDifference,
-    Issubset,
-    Issuperset,
-    Isdisjoint,
-    /// Fallback for unknown attribute names. Displays as the contained string.
-    #[strum(default)]
-    Other(String),
-}
+    /// Interned attribute name (compile-time constant or parsed identifier).
+    ///
+    /// Compare against `ATTR_*` constants from `intern.rs` for known methods.
+    Interned(StringId),
 
-impl From<String> for Attr {
-    fn from(name: String) -> Self {
-        match name.as_str() {
-            "append" => Self::Append,
-            "insert" => Self::Insert,
-            "get" => Self::Get,
-            "keys" => Self::Keys,
-            "values" => Self::Values,
-            "items" => Self::Items,
-            "pop" => Self::Pop,
-            "clear" => Self::Clear,
-            "copy" => Self::Copy,
-            "add" => Self::Add,
-            "remove" => Self::Remove,
-            "discard" => Self::Discard,
-            "update" => Self::Update,
-            "union" => Self::Union,
-            "intersection" => Self::Intersection,
-            "difference" => Self::Difference,
-            "symmetric_difference" => Self::SymmetricDifference,
-            "issubset" => Self::Issubset,
-            "issuperset" => Self::Issuperset,
-            "isdisjoint" => Self::Isdisjoint,
-            _ => Self::Other(name),
-        }
-    }
+    /// Runtime-constructed attribute name (rare, e.g., from `getattr()`).
+    Other(String),
 }
 
 impl Attr {
     /// Returns the attribute name as a string reference.
-    ///
-    /// DO NOT use `as_ref` directly, it returns the wrong value for `Self::Other`.
-    pub fn as_str(&self) -> &str {
+    pub fn as_str<'a>(&'a self, interns: &'a Interns) -> &'a str {
         match self {
+            Self::Interned(id) => interns.get_str(*id),
             Self::Other(name) => name,
-            v => v.as_ref(),
+        }
+    }
+
+    /// Returns the `StringId` if this is an interned attribute.
+    #[inline]
+    pub fn string_id(&self) -> Option<StringId> {
+        match self {
+            Self::Interned(id) => Some(*id),
+            Self::Other(_) => None,
+        }
+    }
+
+    /// Converts the attribute to a `Value` for use as a dict key.
+    ///
+    /// For interned attributes, returns `Value::InternString(id)` - no heap allocation.
+    /// For runtime attributes, allocates a heap string and returns `Value::Ref(id)`.
+    pub fn to_value(&self, heap: &mut Heap<impl ResourceTracker>) -> Result<Value, crate::resource::ResourceError> {
+        match self {
+            Self::Interned(id) => Ok(Value::InternString(*id)),
+            Self::Other(name) => {
+                let heap_id = heap.allocate(HeapData::Str(name.clone().into()))?;
+                Ok(Value::Ref(heap_id))
+            }
         }
     }
 }

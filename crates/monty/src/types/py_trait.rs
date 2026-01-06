@@ -227,9 +227,9 @@ pub trait PyTrait {
         heap: &mut Heap<impl ResourceTracker>,
         attr: &Attr,
         _args: ArgValues,
-        _interns: &Interns,
+        interns: &Interns,
     ) -> RunResult<Value> {
-        Err(ExcType::attribute_error(self.py_type(Some(heap)), attr))
+        Err(ExcType::attribute_error(self.py_type(Some(heap)), attr.as_str(interns)))
     }
 
     /// Estimates the memory size in bytes of this value.

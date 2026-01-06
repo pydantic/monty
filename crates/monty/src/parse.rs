@@ -435,7 +435,7 @@ impl<'a> Parser<'a> {
             // Attribute assignment like obj.attr = value (supports chained like a.b.c = value)
             AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => Ok(ParseNode::AttrAssign {
                 object: Box::new(self.parse_expression(*value)?),
-                attr: attr.id().to_string().into(),
+                attr: Attr::Interned(self.interner.intern(attr.id())),
                 target_position: self.convert_range(range),
                 value: self.parse_expression(rhs)?,
             }),
@@ -611,7 +611,7 @@ impl<'a> Parser<'a> {
                             position,
                             Expr::AttrCall {
                                 object,
-                                attr: attr.id().to_string().into(),
+                                attr: Attr::Interned(self.interner.intern(attr.id())),
                                 args: Box::new(args),
                             },
                         ))
@@ -668,7 +668,7 @@ impl<'a> Parser<'a> {
                     position,
                     Expr::AttrGet {
                         object,
-                        attr: attr.id().to_string().into(),
+                        attr: Attr::Interned(self.interner.intern(attr.id())),
                     },
                 ))
             }

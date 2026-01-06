@@ -253,13 +253,10 @@ impl PyTrait for Dataclass {
         heap: &mut Heap<impl ResourceTracker>,
         attr: &Attr,
         args: ArgValues,
-        _interns: &Interns,
+        interns: &Interns,
     ) -> RunResult<Value> {
-        // Check if this is a method that should trigger an external call
-        let method_name = match attr {
-            Attr::Other(name) => name.as_str(),
-            _ => return Err(ExcType::attribute_error(Type::Dataclass, attr)),
-        };
+        // Get method name from the attribute
+        let method_name = attr.as_str(interns);
 
         if self.methods.contains(method_name) {
             // TODO: Integrate with external call system
@@ -268,7 +265,7 @@ impl PyTrait for Dataclass {
             Err(ExcType::attribute_error_method_not_implemented(&self.name, method_name))
         } else {
             args.drop_with_heap(heap);
-            Err(ExcType::attribute_error(Type::Dataclass, attr))
+            Err(ExcType::attribute_error(Type::Dataclass, method_name))
         }
     }
 }

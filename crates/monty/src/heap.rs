@@ -383,7 +383,7 @@ impl PyTrait for HeapData {
             Self::Set(s) => s.py_call_attr(heap, attr, args, interns),
             Self::FrozenSet(fs) => fs.py_call_attr(heap, attr, args, interns),
             Self::Dataclass(dc) => dc.py_call_attr(heap, attr, args, interns),
-            _ => Err(ExcType::attribute_error(self.py_type(Some(heap)), attr)),
+            _ => Err(ExcType::attribute_error(self.py_type(Some(heap)), attr.as_str(interns))),
         }
     }
 

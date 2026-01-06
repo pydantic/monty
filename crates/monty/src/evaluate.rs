@@ -496,9 +496,8 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
     /// supports dataclass field access. The returned value is cloned with
     /// proper reference counting. Supports chained attribute access.
     fn attr_get(&mut self, object_expr: &ExprLoc, attr: &Attr) -> RunResult<EvalResult<Value>> {
-        // Allocate a heap string for the key since we need a Value for Dict lookup
-        let key_id = self.heap.allocate(HeapData::Str(attr.to_string().clone().into()))?;
-        let key = Value::Ref(key_id);
+        // Convert attr to Value - uses InternString for interned attrs (no heap alloc)
+        let key = attr.to_value(self.heap)?;
 
         // Evaluate the object expression to get the value
         let value = return_ext_call!(self.evaluate_use(object_expr)?);
@@ -512,20 +511,20 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
                     let attr_value = dc.get_attr(&key, heap, self.interns)?;
                     match attr_value {
                         Some(v) => Ok(v.clone_with_heap(heap)),
-                        None => Err(ExcType::attribute_error_not_found(dc.name(), attr.as_str())),
+                        None => Err(ExcType::attribute_error_not_found(dc.name(), attr.as_str(self.interns))),
                     }
                 }
                 other => {
                     let ty = other.py_type(Some(heap));
-                    Err(ExcType::attribute_error(ty, attr))
+                    Err(ExcType::attribute_error(ty, attr.as_str(self.interns)))
                 }
             })
         } else {
             let ty = value.py_type(Some(self.heap));
-            Err(ExcType::attribute_error(ty, attr))
+            Err(ExcType::attribute_error(ty, attr.as_str(self.interns)))
         };
 
-        // Clean up the key we allocated
+        // Clean up the key (no-op for InternString, dec_ref for heap strings)
         key.drop_with_heap(self.heap);
 
         // Clean up the object value we retrieved

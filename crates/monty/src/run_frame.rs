@@ -619,6 +619,8 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
         let object_val = frame_ext_call!(self.execute_expr(namespaces, heap, object_expr)?);
 
         let frame = self.stack_frame(target_position);
+        let attr_str = attr.as_str(self.interns);
+
         if let Value::Ref(id) = &object_val {
             let id = *id;
             let result = heap.with_entry_mut(id, |heap, data| -> RunResult<()> {
@@ -627,11 +629,10 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
                         if dc.is_frozen() {
                             // Drop the value we were going to assign
                             val.drop_with_heap(heap);
-                            Err(ExcType::frozen_instance_error(attr.as_str()))
+                            Err(ExcType::frozen_instance_error(attr_str))
                         } else {
-                            // Allocate a heap string for the key since we need a Value for Dict lookup
-                            let key_id = heap.allocate(HeapData::Str(attr.to_string().into()))?;
-                            let key = Value::Ref(key_id);
+                            // Convert attr to Value - uses InternString for interned attrs (no heap alloc)
+                            let key = attr.to_value(heap)?;
 
                             // Set the attr - key ownership transferred to Dict
                             // If the key already exists, the duplicate key is dropped inside set_attr
@@ -646,7 +647,7 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
                         // Drop the value we were going to assign
                         val.drop_with_heap(heap);
                         let ty = other.py_type(Some(heap));
-                        Err(ExcType::attribute_error_no_setattr(ty, attr.as_str()))
+                        Err(ExcType::attribute_error_no_setattr(ty, attr_str))
                     }
                 }
             });
@@ -659,7 +660,7 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
             val.drop_with_heap(heap);
             let ty = object_val.py_type(Some(heap));
             object_val.drop_with_heap(heap);
-            Err(ExcType::attribute_error_no_setattr(ty, attr.as_str()).set_frame(frame))
+            Err(ExcType::attribute_error_no_setattr(ty, attr_str).set_frame(frame))
         }
     }
 
