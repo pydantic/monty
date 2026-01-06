@@ -133,6 +133,7 @@ impl PyMontyDataclass {
             let field_obj = if cfg!(Py_3_14) {
                 // Field(default, default_factory, init, repr, hash, compare, metadata, kw_only, doc)
                 // doc is now in 3.14
+                // https://github.com/python/cpython/blob/3.14/Lib/dataclasses.py#L294
                 field_class.call1((
                     missing,   // default
                     missing,   // default_factory
@@ -145,6 +146,7 @@ impl PyMontyDataclass {
                     py.None(), // doc
                 ))?
             } else {
+                // https://github.com/python/cpython/blob/3.13/Lib/dataclasses.py#L288
                 // Field(default, default_factory, init, repr, hash, compare, metadata, kw_only)
                 field_class.call1((
                     missing,   // default
@@ -174,19 +176,33 @@ impl PyMontyDataclass {
     #[getter]
     fn __dataclass_params__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let params_class = get_dataclass_params_class(py)?;
-        // _DataclassParams(init, repr, eq, order, unsafe_hash, frozen, match_args, kw_only, slots, weakref_slot)
-        let params = params_class.call1((
-            true,        // init
-            true,        // repr
-            true,        // eq
-            false,       // order
-            false,       // unsafe_hash
-            self.frozen, // frozen
-            true,        // match_args
-            false,       // kw_only
-            false,       // slots
-            false,       // weakref_slot
-        ))?;
+        let params = if cfg!(Py_3_12) {
+            // https://github.com/python/cpython/blob/3.12/Lib/dataclasses.py#L373
+            // _DataclassParams(init, repr, eq, order, unsafe_hash, frozen, match_args, kw_only, slots, weakref_slot)
+            params_class.call1((
+                true,        // init
+                true,        // repr
+                true,        // eq
+                false,       // order
+                false,       // unsafe_hash
+                self.frozen, // frozen
+                true,        // match_args
+                false,       // kw_only
+                false,       // slots
+                false,       // weakref_slot
+            ))?
+        } else {
+            // https://github.com/python/cpython/blob/3.11/Lib/dataclasses.py#L346
+            // _DataclassParams(init, repr, eq, order, unsafe_hash, frozen)
+            params_class.call1((
+                true,        // init
+                true,        // repr
+                true,        // eq
+                false,       // order
+                false,       // unsafe_hash
+                self.frozen, // frozen
+            ))?
+        };
         Ok(params.unbind())
     }
 
