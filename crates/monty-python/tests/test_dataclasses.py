@@ -552,3 +552,42 @@ def test_dataclass_dataclass_fields_attr():
     assert 'y' in df
     assert df['x'].name == snapshot('x')
     assert df['y'].name == snapshot('y')
+
+
+def test_dataclass_params_frozen():
+    """__dataclass_params__.frozen reflects frozen status."""
+
+    @dataclass(frozen=True)
+    class FrozenPoint:
+        x: int
+        y: int
+
+    @dataclass
+    class MutablePoint:
+        x: int
+        y: int
+
+    m = monty.Monty('(f, m)', inputs=['f', 'm'])
+    frozen, mutable = m.run(inputs={'f': FrozenPoint(x=1, y=2), 'm': MutablePoint(x=3, y=4)})
+
+    assert frozen.__dataclass_params__.frozen is True
+    assert mutable.__dataclass_params__.frozen is False
+
+
+def test_dataclass_params_attributes():
+    """__dataclass_params__ has expected attributes."""
+
+    @dataclass
+    class Point:
+        x: int
+        y: int
+
+    m = monty.Monty('p', inputs=['p'])
+    result = m.run(inputs={'p': Point(x=10, y=20)})
+
+    params = result.__dataclass_params__
+    assert params.init is True
+    assert params.repr is True
+    assert params.eq is True
+    assert params.order is False
+    assert params.frozen is False

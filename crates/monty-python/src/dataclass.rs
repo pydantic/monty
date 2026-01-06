@@ -75,30 +75,6 @@ pub fn dataclass_to_monty(value: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
     })
 }
 
-/// Cached import of `dataclasses._FIELD` marker.
-///
-/// Used to match the logic from `dataclasses.fields()`:
-/// `tuple(f for f in fields.values() if f._field_type is _FIELD)`
-fn get_field_marker(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
-    static DC_FIELD_MARKER: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
-
-    DC_FIELD_MARKER.import(py, "dataclasses", "_FIELD")
-}
-
-/// Cached import of `dataclasses.MISSING` sentinel.
-fn get_missing(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
-    static DC_MISSING: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
-
-    DC_MISSING.import(py, "dataclasses", "MISSING")
-}
-
-/// Cached import of `dataclasses.Field` class.
-fn get_field_class(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
-    static DC_FIELD_CLASS: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
-
-    DC_FIELD_CLASS.import(py, "dataclasses", "Field")
-}
-
 /// Python class that mimics dataclass behavior for `MontyObject::Dataclass`.
 ///
 /// Supports:
@@ -175,6 +151,28 @@ impl PyMontyDataclass {
             fields_dict.set_item(field_name, field_obj)?;
         }
         Ok(fields_dict.unbind())
+    }
+
+    /// Returns a `_DataclassParams` object with dataclass configuration.
+    ///
+    /// This enables compatibility with code that checks `obj.__dataclass_params__.frozen`, etc.
+    #[getter]
+    fn __dataclass_params__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let params_class = get_dataclass_params_class(py)?;
+        // _DataclassParams(init, repr, eq, order, unsafe_hash, frozen, match_args, kw_only, slots, weakref_slot)
+        let params = params_class.call1((
+            true,        // init
+            true,        // repr
+            true,        // eq
+            false,       // order
+            false,       // unsafe_hash
+            self.frozen, // frozen
+            true,        // match_args
+            false,       // kw_only
+            false,       // slots
+            false,       // weakref_slot
+        ))?;
+        Ok(params.unbind())
     }
 
     /// Get an attribute value.
@@ -274,4 +272,35 @@ impl PyMontyDataclass {
             frozen,
         })
     }
+}
+
+/// Cached import of `dataclasses._FIELD` marker.
+///
+/// Used to match the logic from `dataclasses.fields()`:
+/// `tuple(f for f in fields.values() if f._field_type is _FIELD)`
+fn get_field_marker(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static DC_FIELD_MARKER: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    DC_FIELD_MARKER.import(py, "dataclasses", "_FIELD")
+}
+
+/// Cached import of `dataclasses.MISSING` sentinel.
+fn get_missing(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static DC_MISSING: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    DC_MISSING.import(py, "dataclasses", "MISSING")
+}
+
+/// Cached import of `dataclasses.Field` class.
+fn get_field_class(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static DC_FIELD_CLASS: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    DC_FIELD_CLASS.import(py, "dataclasses", "Field")
+}
+
+/// Cached import of `dataclasses._DataclassParams` class.
+fn get_dataclass_params_class(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static DC_PARAMS_CLASS: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    DC_PARAMS_CLASS.import(py, "dataclasses", "_DataclassParams")
 }
