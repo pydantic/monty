@@ -88,3 +88,18 @@ assert level1.x.x.x == 42, 'level1.x.x.x is 42'
 level1.x.x.x = 7
 assert level1.x.x.x == 7, 'level1.x.x.x updated to 7'
 assert level3.x == 7, 'level3.x also updated to 7'
+
+# === Empty dataclass ===
+empty = make_empty()
+assert repr(empty) == 'Empty()', 'empty dataclass repr'
+assert str(empty) == 'Empty()', 'empty dataclass str'
+
+# === FrozenInstanceError is subclass of AttributeError ===
+# Catching AttributeError should also catch FrozenInstanceError
+frozen_point = make_point()
+caught = False
+try:
+    frozen_point.x = 10
+except AttributeError:
+    caught = True
+assert caught, 'FrozenInstanceError caught by AttributeError'

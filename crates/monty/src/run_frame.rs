@@ -627,7 +627,7 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
                         if dc.is_frozen() {
                             // Drop the value we were going to assign
                             val.drop_with_heap(heap);
-                            Err(ExcType::attribute_error_frozen(dc.name(), attr.as_str()))
+                            Err(ExcType::frozen_instance_error(attr.as_str()))
                         } else {
                             // Allocate a heap string for the key since we need a Value for Dict lookup
                             let key_id = heap.allocate(HeapData::Str(attr.to_string().into()))?;

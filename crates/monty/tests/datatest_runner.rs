@@ -259,6 +259,7 @@ const ITER_EXT_FUNCTIONS: &[&str] = &[
     "make_point",         // () -> Dataclass Point(x=1, y=2) (immutable)
     "make_mutable_point", // () -> Dataclass Point(x=1, y=2) (mutable)
     "make_user",          // (name) -> Dataclass User(name=name, active=True) (immutable)
+    "make_empty",         // () -> Dataclass Empty() (immutable, no fields)
 ];
 
 /// Dispatches an external function call to the appropriate test implementation.
@@ -345,6 +346,17 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> ExternalResult 
                     (MontyObject::String("active".to_string()), MontyObject::Bool(true)),
                 ]
                 .into(),
+                methods: vec![],
+                frozen: true,
+            }
+            .into()
+        }
+        "make_empty" => {
+            assert!(args.is_empty(), "make_empty requires no arguments");
+            // Return an immutable empty dataclass with no fields
+            MontyObject::Dataclass {
+                name: "Empty".to_string(),
+                fields: vec![].into(),
                 methods: vec![],
                 frozen: true,
             }

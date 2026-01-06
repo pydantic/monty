@@ -57,9 +57,13 @@ pub enum ExcType {
     /// Subclass of RuntimeError.
     RecursionError,
 
+    // --- AttributeError hierarchy ---
+    AttributeError,
+    /// Subclass of AttributeError (from dataclasses module).
+    FrozenInstanceError,
+
     // --- Standalone exception types ---
     AssertionError,
-    AttributeError,
     MemoryError,
     NameError,
     SyntaxError,
@@ -94,6 +98,8 @@ impl ExcType {
             Self::ArithmeticError => matches!(self, Self::ZeroDivisionError | Self::OverflowError),
             // RuntimeError catches RecursionError and NotImplementedError
             Self::RuntimeError => matches!(self, Self::RecursionError | Self::NotImplementedError),
+            // AttributeError catches FrozenInstanceError
+            Self::AttributeError => matches!(self, Self::FrozenInstanceError),
             // All other types only match exactly (handled by self == handler_type above)
             _ => false,
         }
@@ -179,13 +185,13 @@ impl ExcType {
         exc_fmt!(Self::AttributeError; "'{type_}' object has no attribute '{attr_name}' and no __dict__ for setting new attributes").into()
     }
 
-    /// Creates an AttributeError for assigning to a read-only attribute on a frozen dataclass.
+    /// Creates a FrozenInstanceError for assigning to a frozen dataclass.
     ///
-    /// Matches the concept of Python's FrozenInstanceError but uses AttributeError since
-    /// Monty doesn't have the dataclasses module.
+    /// Matches CPython's `dataclasses.FrozenInstanceError` which is a subclass of `AttributeError`.
+    /// Message format: "cannot assign to field 'attr_name'"
     #[must_use]
-    pub fn attribute_error_frozen(class_name: &str, attr_name: &str) -> RunError {
-        exc_fmt!(Self::AttributeError; "'{class_name}' object attribute '{attr_name}' is read-only").into()
+    pub fn frozen_instance_error(attr_name: &str) -> RunError {
+        exc_fmt!(Self::FrozenInstanceError; "cannot assign to field '{attr_name}'").into()
     }
 
     #[must_use]
