@@ -41,7 +41,7 @@ format-py: ## Format Python code - WARNING be careful about this command as it m
 	uv run ruff check --fix --fix-only
 
 .PHONY: format
-format: format-rs ## Format Rust code, this does not format Python code as we have to be careful with that
+format: format-rs format-py ## Format Rust code, this does not format Python code as we have to be careful with that
 
 .PHONY: lint-rs
 lint-rs:  ## Lint Rust code with fmt and clippy
@@ -62,6 +62,9 @@ lint: lint-rs lint-py ## Lint the code with ruff and clippy
 
 .PHONY: format-lint-rs
 format-lint-rs: format-rs lint-rs ## Format and lint Rust code with fmt and clippy
+
+.PHONY: format-lint-py
+format-lint-py: format-py lint-py ## Format and lint Python code with ruff
 
 .PHONY: test-no-features
 test-no-features: ## Run rust tests without any features enabled

@@ -2,16 +2,17 @@ use std::fmt::Write;
 
 use crate::{
     args::ArgValues,
-    exception_private::{ExcType, RunError},
+    evaluate::EvalResult,
     expressions::{ExprLoc, Identifier, Node},
     heap::{Heap, HeapId},
-    intern::Interns,
+    intern::{FunctionId, Interns, StringId},
     io::PrintWriter,
     namespace::{NamespaceId, Namespaces},
+    parse::CodeRange,
     resource::ResourceTracker,
     run_frame::{RunFrame, RunResult},
     signature::Signature,
-    snapshot::{FrameExit, NoSnapshotTracker},
+    snapshot::{AbstractSnapshotTracker, FrameExit, FunctionFrame},
     value::Value,
 };
 
@@ -122,22 +123,34 @@ impl Function {
     /// This method is used for non-closure functions. For closures (functions with
     /// captured variables), use `call_with_cells` instead.
     ///
+    /// Returns `EvalResult::Value` on normal completion, or `EvalResult::ExternalCall`
+    /// if execution is suspended waiting for an external function call.
+    ///
     /// # Arguments
+    /// * `function_id` - The ID of this function (for tracking in call stack)
     /// * `namespaces` - The namespace storage for managing all namespaces
     /// * `heap` - The heap for allocating objects
     /// * `args` - The arguments to pass to the function
     /// * `defaults` - Evaluated default values for optional parameters
     /// * `interns` - String storage for looking up interned names in error messages
     /// * `print` - The print for print output
+    /// * `snapshot_tracker` - Tracker for recording execution position for resumption
+    /// * `call_position` - Source position where this function is being called from
+    /// * `caller_name_id` - Name of the calling function for traceback frames
+    #[allow(clippy::too_many_arguments)]
     pub fn call(
         &self,
+        function_id: FunctionId,
         namespaces: &mut Namespaces,
         heap: &mut Heap<impl ResourceTracker>,
         args: ArgValues,
         defaults: &[Value],
         interns: &Interns,
         print: &mut impl PrintWriter,
-    ) -> RunResult<Value> {
+        snapshot_tracker: &mut impl AbstractSnapshotTracker,
+        call_position: CodeRange,
+        caller_name_id: StringId,
+    ) -> RunResult<EvalResult<Value>> {
         // Create a new local namespace for this function call (with memory and recursion tracking)
         // For resource errors (recursion, memory), we don't attach a frame here - the caller
         // will add the call site frame as the error propagates up, which is what we want.
@@ -160,21 +173,44 @@ impl Function {
         // 4. Fill remaining slots with Undefined for local variables
         namespace.resize_with(self.namespace_size, || Value::Undefined);
 
+        // Track position depth before executing so we can extract function positions later
+        let initial_depth = snapshot_tracker.depth();
+
         // Execute the function body in a new frame
-        let mut p = NoSnapshotTracker;
-        let mut frame = RunFrame::function_frame(local_idx, self.name.name_id, interns, &mut p, print);
+        let mut frame = RunFrame::function_frame(local_idx, self.name.name_id, interns, snapshot_tracker, print);
 
-        let result = frame.execute(namespaces, heap, &self.body);
+        let result = match frame.execute(namespaces, heap, &self.body) {
+            Ok(r) => r,
+            Err(e) => {
+                // Clean up namespace on error before propagating
+                namespaces.drop_with_heap(local_idx, heap);
+                return Err(e);
+            }
+        };
 
-        // Clean up the function's namespace (properly decrementing ref counts)
-        namespaces.drop_with_heap(local_idx, heap);
-
-        map_result(result)
+        // Handle the frame exit result
+        Ok(handle_frame_exit(
+            result,
+            function_id,
+            local_idx,
+            self.name.name_id,
+            0, // No captured cells for non-closure functions
+            initial_depth,
+            snapshot_tracker,
+            namespaces,
+            heap,
+            call_position,
+            caller_name_id,
+        ))
     }
 
     /// Calls this function as a closure with captured cells.
     ///
+    /// Returns `EvalResult::Value` on normal completion, or `EvalResult::ExternalCall`
+    /// if execution is suspended waiting for an external function call.
+    ///
     /// # Arguments
+    /// * `function_id` - The ID of this function (for tracking in call stack)
     /// * `namespaces` - The namespace manager for all namespaces
     /// * `heap` - The heap for allocating objects
     /// * `args` - The arguments to pass to the function
@@ -182,12 +218,16 @@ impl Function {
     /// * `defaults` - Evaluated default values for optional parameters
     /// * `interns` - String storage for looking up interned names in error messages
     /// * `print` - The print for print output
+    /// * `snapshot_tracker` - Tracker for recording execution position for resumption
+    /// * `call_position` - Source position where this function is being called from
+    /// * `caller_name_id` - Name of the calling function for traceback frames
     ///
     /// This method is called when invoking a `Value::Closure`. The captured_cells
     /// are pushed sequentially after cell_vars in the namespace.
     #[allow(clippy::too_many_arguments)]
     pub fn call_with_cells(
         &self,
+        function_id: FunctionId,
         namespaces: &mut Namespaces,
         heap: &mut Heap<impl ResourceTracker>,
         args: ArgValues,
@@ -195,7 +235,10 @@ impl Function {
         defaults: &[Value],
         interns: &Interns,
         print: &mut impl PrintWriter,
-    ) -> RunResult<Value> {
+        snapshot_tracker: &mut impl AbstractSnapshotTracker,
+        call_position: CodeRange,
+        caller_name_id: StringId,
+    ) -> RunResult<EvalResult<Value>> {
         // Create a new local namespace for this function call (with memory and recursion tracking)
         // For resource errors (recursion, memory), we don't attach a frame here - the caller
         // will add the call site frame as the error propagates up, which is what we want.
@@ -223,16 +266,35 @@ impl Function {
         // 4. Fill remaining slots with Undefined for local variables
         namespace.resize_with(self.namespace_size, || Value::Undefined);
 
+        // Track position depth before executing so we can extract function positions later
+        let initial_depth = snapshot_tracker.depth();
+
         // Execute the function body in a new frame
-        let mut p = NoSnapshotTracker;
-        let mut frame = RunFrame::function_frame(local_idx, self.name.name_id, interns, &mut p, print);
+        let mut frame = RunFrame::function_frame(local_idx, self.name.name_id, interns, snapshot_tracker, print);
 
-        let result = frame.execute(namespaces, heap, &self.body);
+        let result = match frame.execute(namespaces, heap, &self.body) {
+            Ok(r) => r,
+            Err(e) => {
+                // Clean up namespace on error before propagating
+                namespaces.drop_with_heap(local_idx, heap);
+                return Err(e);
+            }
+        };
 
-        // Clean up the function's namespace (properly decrementing ref counts)
-        namespaces.drop_with_heap(local_idx, heap);
-
-        map_result(result)
+        // Handle the frame exit result
+        Ok(handle_frame_exit(
+            result,
+            function_id,
+            local_idx,
+            self.name.name_id,
+            captured_cells.len(),
+            initial_depth,
+            snapshot_tracker,
+            namespaces,
+            heap,
+            call_position,
+            caller_name_id,
+        ))
     }
 
     /// Writes the Python repr() string for this function to a formatter.
@@ -252,15 +314,50 @@ impl Function {
     }
 }
 
-fn map_result(result: RunResult<Option<FrameExit>>) -> RunResult<Value> {
-    match result? {
-        Some(FrameExit::Return(obj)) => Ok(obj),
-        Some(FrameExit::ExternalCall { .. }) => {
-            // External function calls inside user-defined functions not yet supported
-            Err(RunError::Exc(
-                ExcType::not_implemented("external function calls inside user-defined functions").into(),
-            ))
+/// Handles the result of executing a function frame.
+///
+/// On normal return, cleans up the namespace and returns the value.
+/// On external call, preserves the namespace and pushes a FunctionFrame onto the call stack.
+#[allow(clippy::too_many_arguments)]
+fn handle_frame_exit(
+    result: Option<FrameExit>,
+    function_id: FunctionId,
+    namespace_idx: NamespaceId,
+    name_id: StringId,
+    captured_cell_count: usize,
+    initial_depth: usize,
+    snapshot_tracker: &mut impl AbstractSnapshotTracker,
+    namespaces: &mut Namespaces,
+    heap: &mut Heap<impl ResourceTracker>,
+    call_position: CodeRange,
+    caller_name_id: StringId,
+) -> EvalResult<Value> {
+    match result {
+        Some(FrameExit::Return(value)) => {
+            // Normal return - clean up the namespace
+            namespaces.drop_with_heap(namespace_idx, heap);
+            EvalResult::Value(value)
         }
-        None => Ok(Value::None),
+        Some(FrameExit::ExternalCall(mut ext_call)) => {
+            // Extract this function's positions from the shared tracker
+            let saved_positions = snapshot_tracker.extract_after(initial_depth);
+
+            // External call - preserve namespace and push this frame onto call stack
+            ext_call.push_frame(FunctionFrame {
+                function_id,
+                namespace_idx,
+                name_id,
+                captured_cell_count,
+                saved_positions,
+                call_position,
+                caller_name_id,
+            });
+            EvalResult::ExternalCall(ext_call)
+        }
+        None => {
+            // Implicit return None - clean up the namespace
+            namespaces.drop_with_heap(namespace_idx, heap);
+            EvalResult::Value(Value::None)
+        }
     }
 }

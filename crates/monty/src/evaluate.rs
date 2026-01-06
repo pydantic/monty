@@ -13,6 +13,7 @@ use crate::namespace::{NamespaceId, Namespaces};
 use crate::operators::{CmpOperator, Operator};
 use crate::resource::ResourceTracker;
 use crate::run_frame::RunResult;
+use crate::snapshot::{AbstractSnapshotTracker, FunctionFrame};
 use crate::types::{Dict, List, PyTrait, Set, Str, Tuple};
 use crate::value::{Attr, Value};
 
@@ -29,7 +30,8 @@ use crate::value::{Attr, Value};
 /// # Type Parameters
 /// * `T` - The resource tracker type for enforcing execution limits
 /// * `W` - The print type for print output
-pub struct EvaluateExpr<'h, 's, T: ResourceTracker, W: PrintWriter> {
+/// * `P` - The snapshot tracker type for recording execution position
+pub struct EvaluateExpr<'h, 's, T: ResourceTracker, W: PrintWriter, S: AbstractSnapshotTracker> {
     /// The namespace stack containing all scopes (global, local, etc.)
     pub namespaces: &'h mut Namespaces,
     /// Index of the current local namespace in the namespace stack
@@ -40,6 +42,10 @@ pub struct EvaluateExpr<'h, 's, T: ResourceTracker, W: PrintWriter> {
     pub interns: &'s Interns,
     /// Writer for print output
     pub print: &'s mut W,
+    /// Tracker for recording execution position for snapshot/resume
+    pub snapshot_tracker: &'h mut S,
+    /// Name of the current frame (function name or "<module>") for traceback frames.
+    pub name: StringId,
 }
 
 /// Similar to the legacy `ok!()` macro, this gives shorthand for returning early
@@ -54,7 +60,7 @@ macro_rules! return_ext_call {
 }
 pub(crate) use return_ext_call;
 
-impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
+impl<'h, 's, T: ResourceTracker, W: PrintWriter, S: AbstractSnapshotTracker> EvaluateExpr<'h, 's, T, W, S> {
     /// Creates a new `EvaluateExpr` with the given evaluation context.
     ///
     /// # Arguments
@@ -63,12 +69,16 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
     /// * `heap` - The heap for object allocation
     /// * `interns` - String storage for looking up interned names
     /// * `print` - The print for print output
+    /// * `snapshot_tracker` - Tracker for recording execution position
+    /// * `name` - Name of the current frame for traceback frames
     pub fn new(
         namespaces: &'h mut Namespaces,
         local_idx: NamespaceId,
         heap: &'h mut Heap<T>,
         interns: &'s Interns,
         print: &'s mut W,
+        snapshot_tracker: &'h mut S,
+        name: StringId,
     ) -> Self {
         Self {
             namespaces,
@@ -76,6 +86,8 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
             heap,
             interns,
             print,
+            snapshot_tracker,
+            name,
         }
     }
 
@@ -101,6 +113,9 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
                     args,
                     self.interns,
                     self.print,
+                    self.snapshot_tracker,
+                    expr_loc.position,
+                    self.name,
                 )
             }
             Expr::AttrCall { object, attr, args } => self.attr_call(object, attr, args),
@@ -235,6 +250,9 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
                     args,
                     self.interns,
                     self.print,
+                    self.snapshot_tracker,
+                    expr_loc.position,
+                    self.name,
                 )?;
                 let value = return_ext_call!(eval_result);
                 value.drop_with_heap(self.heap);
@@ -960,18 +978,39 @@ pub enum EvalResult<T> {
     ExternalCall(ExternalCall),
 }
 
-/// External function call that needs host resolution.
+/// Represents an external function call that has paused execution.
+///
+/// When an external function is called, execution pauses and this struct is returned
+/// to the host. The host executes the external function and provides the return value
+/// to resume execution.
+///
+/// If the external call occurs inside user-defined functions, the `call_stack` contains
+/// the suspended function frames from outermost to innermost.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ExternalCall {
-    /// The name of the function being called.
+    /// The ID of the external function being called.
     pub function_id: ExtFunctionId,
     /// The evaluated arguments to the function.
     pub args: ArgValues,
+    /// Stack of suspended function frames (outermost first, innermost last).
+    /// Empty when the external call is at module level.
+    pub call_stack: Vec<FunctionFrame>,
 }
 
 impl ExternalCall {
-    /// Creates a new external function call.
+    /// Creates a new external function call at module level (no suspended functions).
     pub fn new(function_id: ExtFunctionId, args: ArgValues) -> Self {
-        Self { function_id, args }
+        Self {
+            function_id,
+            args,
+            call_stack: Vec::new(),
+        }
+    }
+
+    /// Pushes a function frame onto the call stack.
+    ///
+    /// Called when an external call propagates up through a user-defined function.
+    pub fn push_frame(&mut self, frame: FunctionFrame) {
+        self.call_stack.push(frame);
     }
 }

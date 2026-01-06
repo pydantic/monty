@@ -137,9 +137,13 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
             // External calls are returned as Ok(Some(FrameExit::ExternalCall(...))) from execute_node
             let exit_frame = self.execute_node(namespaces, heap, node, clause_state)?;
             if let Some(exit) = exit_frame {
-                // Set the index of the node to execute on resume
-                // we will have called set_skip() already if we need to skip the current node
-                self.snapshot_tracker.record(i);
+                // Only record position for external calls (suspensions).
+                // Returns complete the frame - there's no position to resume from.
+                if matches!(exit, FrameExit::ExternalCall(_)) {
+                    // Set the index of the node to execute on resume
+                    // we will have called set_skip() already if we need to skip the current node
+                    self.snapshot_tracker.record(i);
+                }
                 return Ok(Some(exit));
             }
             clause_state = None;
@@ -183,8 +187,16 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
 
         match node {
             Node::Expr(expr) => {
-                match EvaluateExpr::new(namespaces, self.local_idx, heap, self.interns, self.print)
-                    .evaluate_discard(expr)
+                match EvaluateExpr::new(
+                    namespaces,
+                    self.local_idx,
+                    heap,
+                    self.interns,
+                    self.print,
+                    self.snapshot_tracker,
+                    self.name,
+                )
+                .evaluate_discard(expr)
                 {
                     Ok(EvalResult::Value(())) => {}
                     Ok(EvalResult::ExternalCall(ext_call)) => return Ok(Some(FrameExit::ExternalCall(ext_call))),
@@ -268,7 +280,17 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
         heap: &mut Heap<impl ResourceTracker>,
         expr: &ExprLoc,
     ) -> RunResult<EvalResult<Value>> {
-        match EvaluateExpr::new(namespaces, self.local_idx, heap, self.interns, self.print).evaluate_use(expr) {
+        match EvaluateExpr::new(
+            namespaces,
+            self.local_idx,
+            heap,
+            self.interns,
+            self.print,
+            self.snapshot_tracker,
+            self.name,
+        )
+        .evaluate_use(expr)
+        {
             Ok(value) => Ok(value),
             Err(mut e) => {
                 add_frame_info(self.name, expr.position, &mut e);
@@ -283,7 +305,17 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
         heap: &mut Heap<impl ResourceTracker>,
         expr: &ExprLoc,
     ) -> RunResult<EvalResult<bool>> {
-        match EvaluateExpr::new(namespaces, self.local_idx, heap, self.interns, self.print).evaluate_bool(expr) {
+        match EvaluateExpr::new(
+            namespaces,
+            self.local_idx,
+            heap,
+            self.interns,
+            self.print,
+            self.snapshot_tracker,
+            self.name,
+        )
+        .evaluate_bool(expr)
+        {
             Ok(value) => Ok(value),
             Err(mut e) => {
                 add_frame_info(self.name, expr.position, &mut e);

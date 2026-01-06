@@ -9,12 +9,12 @@ use std::str::FromStr;
 use crate::evaluate::{return_ext_call, EvalResult, EvaluateExpr};
 use crate::exception_private::{exc_err_fmt, exc_fmt, ExcType};
 use crate::expressions::ExprLoc;
-
 use crate::heap::{Heap, HeapData};
 use crate::intern::{Interns, StringId};
 use crate::io::PrintWriter;
 use crate::resource::ResourceTracker;
 use crate::run_frame::RunResult;
+use crate::snapshot::AbstractSnapshotTracker;
 use crate::types::PyTrait;
 use crate::value::Value;
 
@@ -276,7 +276,7 @@ impl ValueType {
 /// `Ok(())` on success, or an error if formatting fails.
 /// The caller is responsible for dropping `value` after this function returns.
 pub(crate) fn fstring_interpolation(
-    evaluator: &mut EvaluateExpr<'_, '_, impl ResourceTracker, impl PrintWriter>,
+    evaluator: &mut EvaluateExpr<'_, '_, impl ResourceTracker, impl PrintWriter, impl AbstractSnapshotTracker>,
     result: &mut String,
     value: &Value,
     conversion: ConversionFlag,
@@ -352,7 +352,7 @@ fn apply_conversion(
 /// Evaluates each part and concatenates the results into a format spec string,
 /// which is then parsed into a `ParsedFormatSpec` at runtime.
 fn evaluate_dynamic_format_spec(
-    evaluator: &mut EvaluateExpr<'_, '_, impl ResourceTracker, impl PrintWriter>,
+    evaluator: &mut EvaluateExpr<'_, '_, impl ResourceTracker, impl PrintWriter, impl AbstractSnapshotTracker>,
     parts: &[FStringPart],
 ) -> RunResult<EvalResult<String>> {
     let mut result = String::new();

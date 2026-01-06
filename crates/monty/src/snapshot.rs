@@ -4,6 +4,9 @@ use crate::{
     evaluate::ExternalCall,
     exception_private::{ExceptionRaise, SimpleException},
     for_iterator::ForIterator,
+    intern::{FunctionId, StringId},
+    namespace::NamespaceId,
+    parse::CodeRange,
     value::Value,
 };
 
@@ -25,6 +28,37 @@ pub enum FrameExit {
     ExternalCall(ExternalCall),
 }
 
+/// State of a suspended function call for snapshot/resume.
+///
+/// When an external function is called from inside a user-defined function, we need to
+/// preserve the function's execution state so we can resume after the external call
+/// completes. This struct captures all information needed to resume a suspended function.
+///
+/// The call stack is stored as a `Vec<FunctionFrame>` with the outermost function first
+/// and the innermost (where the external call occurred) last.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct FunctionFrame {
+    /// The function being executed.
+    pub function_id: FunctionId,
+    /// Index of this function's namespace in the Namespaces stack.
+    /// The namespace is kept alive while suspended so local variables persist.
+    pub namespace_idx: NamespaceId,
+    /// The function's name for stack traces (used when exception occurs inside this function).
+    pub name_id: StringId,
+    /// Number of captured cells from enclosing scopes (for closures).
+    /// Used for proper cleanup - these cells had their ref counts incremented.
+    pub captured_cell_count: usize,
+    /// Saved position stack for resuming this function's execution.
+    /// Each frame has its own position stack to handle nested control flow within the function.
+    pub saved_positions: Vec<CodePosition>,
+    /// Source position where this function was called from.
+    /// Used to build proper tracebacks when exceptions propagate through suspended frames.
+    pub call_position: CodeRange,
+    /// Name of the calling function (or module) for traceback frames.
+    /// When an exception propagates out of this function, the frame shows the caller's name.
+    pub caller_name_id: StringId,
+}
+
 pub trait AbstractSnapshotTracker: Debug {
     /// Get the next position to execute from
     fn next(&mut self) -> CodePosition;
@@ -37,6 +71,15 @@ pub trait AbstractSnapshotTracker: Debug {
 
     /// Whether to clear return values, this is only necessary when position is being tracked
     fn clear_return_values() -> bool;
+
+    /// Returns the current depth of the position stack.
+    /// Used to track how many positions existed before entering a function.
+    fn depth(&self) -> usize;
+
+    /// Extracts all positions added after the given depth.
+    /// Returns positions added after `initial_depth` while keeping positions at or before
+    /// that depth in the stack.
+    fn extract_after(&mut self, initial_depth: usize) -> Vec<CodePosition>;
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +96,14 @@ impl AbstractSnapshotTracker for NoSnapshotTracker {
 
     fn clear_return_values() -> bool {
         false
+    }
+
+    fn depth(&self) -> usize {
+        0
+    }
+
+    fn extract_after(&mut self, _initial_depth: usize) -> Vec<CodePosition> {
+        Vec::new()
     }
 }
 
@@ -96,11 +147,23 @@ impl AbstractSnapshotTracker for SnapshotTracker {
     fn clear_return_values() -> bool {
         true
     }
+
+    fn depth(&self) -> usize {
+        self.stack.len()
+    }
+
+    fn extract_after(&mut self, initial_depth: usize) -> Vec<CodePosition> {
+        if self.stack.len() > initial_depth {
+            self.stack.split_off(initial_depth)
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 /// Represents a position within nested control flow for snapshotting and code resumption.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) struct CodePosition {
+pub struct CodePosition {
     /// Index of the next node to execute within the node array
     pub index: usize,
     /// indicates how to resume within the nested control flow if relevant
@@ -112,7 +175,7 @@ pub(crate) struct CodePosition {
 /// When execution suspends inside a control flow structure (if/for), this records
 /// which branch was taken so we can skip re-evaluating the condition on resume.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) enum ClauseState {
+pub enum ClauseState {
     /// When resuming within the if statement,
     /// whether the condition was met - true to resume the if branch and false to resume the else branch
     If(bool),

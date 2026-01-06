@@ -26,9 +26,9 @@ repos:
         types: [rust]
         language: system
         pass_filenames: false
-      - id: lint-py
-        name: Lint Python
-        entry: make lint-py
+      - id: format-lint-py
+        name: Format & Lint Python
+        entry: make format-lint-py
         types: [python]
         language: system
         pass_filenames: false
