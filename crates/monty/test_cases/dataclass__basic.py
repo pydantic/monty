@@ -13,9 +13,31 @@ assert str(point) == 'Point(x=1, y=2)', 'point str'
 assert bool(point), 'dataclass bool is True'
 
 # === Hash for immutable dataclass ===
-# Immutable dataclasses are hashable
+# Immutable (frozen) dataclasses are hashable
 h1 = hash(point)
 assert h1 != 0, 'hash is not zero'
+
+# Hash is consistent - same object hashes to same value
+h2 = hash(point)
+assert h1 == h2, 'hash is consistent'
+
+# Equal frozen dataclasses hash to same value
+point2 = make_point()
+assert hash(point) == hash(point2), 'equal dataclasses have equal hash'
+
+# Frozen dataclass can be used as dict key
+d = {point: 'first'}
+assert d[point] == 'first', 'frozen dataclass as dict key'
+assert d[point2] == 'first', 'equal frozen dataclass looks up same value'
+
+# Frozen dataclass can be added to set
+s = {point, point2}
+assert len(s) == 1, 'equal frozen dataclasses deduplicated in set'
+
+# Different field values produce different hash
+alice = make_user('Alice')
+bob = make_user('Bob')
+assert hash(alice) != hash(bob), 'different field values have different hash'
 
 # === Mutable dataclass ===
 mut_point = make_mutable_point()
@@ -48,6 +70,11 @@ mut_point.x = 10
 assert mut_point.x == 10, 'mut_point.x updated to 10'
 mut_point.y = 20
 assert mut_point.y == 20, 'mut_point.y updated to 20'
+assert repr(mut_point) == 'Point(x=10, y=20)', 'repr after attribute update'
+
+# === set other attributes
+mut_point.z = 30
+assert mut_point.z == 30, 'mut_point.z updated to 30'
 assert repr(mut_point) == 'Point(x=10, y=20)', 'repr after attribute update'
 
 # === Nested attribute access (chained get) ===

@@ -1217,8 +1217,8 @@ impl<T: ResourceTracker> Heap<T> {
                 }
             }
             HeapData::Dataclass(dc) => {
-                // Dataclass fields are stored in a Dict - iterate through entries
-                for (k, v) in dc.fields() {
+                // Dataclass attrs are stored in a Dict - iterate through entries
+                for (k, v) in dc.attrs() {
                     if let Value::Ref(id) = k {
                         work_list.push(*id);
                     }

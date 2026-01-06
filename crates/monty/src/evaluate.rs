@@ -509,8 +509,8 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
             // Use with_entry_mut to temporarily extract data and allow heap access
             self.heap.with_entry_mut(heap_id, |heap, data| match data {
                 HeapData::Dataclass(dc) => {
-                    let field_value = dc.get_field(&key, heap, self.interns)?;
-                    match field_value {
+                    let attr_value = dc.get_attr(&key, heap, self.interns)?;
+                    match attr_value {
                         Some(v) => Ok(v.clone_with_heap(heap)),
                         None => Err(ExcType::attribute_error_not_found(dc.name(), attr.as_str())),
                     }

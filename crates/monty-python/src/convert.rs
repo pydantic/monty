@@ -118,10 +118,10 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject) -> PyResult<Py<PyAny>> {
             let builtins = py.import("builtins")?;
             Ok(builtins.getattr(type_name)?.unbind())
         }
-        // Dataclass - convert to dict representation of its fields
-        MontyObject::Dataclass { fields, .. } => {
+        // Dataclass - convert to dict representation of its attrs
+        MontyObject::Dataclass { attrs, .. } => {
             let dict = PyDict::new(py);
-            for (k, v) in fields {
+            for (k, v) in attrs {
                 dict.set_item(monty_to_py(py, k)?, monty_to_py(py, v)?)?;
             }
             Ok(dict.into_any().unbind())
@@ -140,7 +140,9 @@ fn is_dataclass(value: &Bound<'_, PyAny>) -> bool {
         && !value.is_instance_of::<PyType>()
 }
 
-/// Copied from infer_serialize_dataclass in pydantic
+/// Converts a Python dataclass instance to MontyObject.
+///
+/// Extracts field names in definition order (for repr) and all field values as attrs.
 fn dataclass_to_monty(value: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
     let py = value.py();
 
@@ -151,7 +153,7 @@ fn dataclass_to_monty(value: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
         .to_str()?
         .to_string();
 
-    let fields = value
+    let fields_dict = value
         .getattr(intern!(py, "__dataclass_fields__"))?
         .cast_into::<PyDict>()?;
 
@@ -162,27 +164,27 @@ fn dataclass_to_monty(value: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
 
     let field_type_marker = get_field_marker(py)?;
 
-    let next = move |(field_name, field): (Bound<'_, PyAny>, Bound<'_, PyAny>)| -> PyResult<Option<(MontyObject, MontyObject)>> {
+    // Collect field names and attrs
+    let mut field_names = Vec::new();
+    let mut attrs = Vec::new();
+
+    for (field_name_obj, field) in fields_dict.iter() {
         let field_type = field.getattr(intern!(py, "_field_type"))?;
         if field_type.is(field_type_marker) {
-            let value = value.getattr(field_name.cast::<PyString>()?)?;
-            let field_name = py_to_monty(&field_name)?;
-            let value = py_to_monty(&value)?;
-            Ok(Some((field_name, value)))
-        } else {
-            Ok(None)
-        }
-    };
+            let field_name_str = field_name_obj.cast::<PyString>()?.to_str()?.to_string();
+            let field_value = value.getattr(field_name_obj.cast::<PyString>()?)?;
+            let field_name_monty = py_to_monty(&field_name_obj)?;
+            let field_value_monty = py_to_monty(&field_value)?;
 
-    let fields = fields
-        .iter()
-        .filter_map(move |field| next(field).transpose())
-        .collect::<PyResult<Vec<(MontyObject, MontyObject)>>>()?
-        .into();
+            field_names.push(field_name_str);
+            attrs.push((field_name_monty, field_value_monty));
+        }
+    }
 
     Ok(MontyObject::Dataclass {
         name,
-        fields,
+        field_names,
+        attrs: attrs.into(),
         methods: vec![],
         frozen,
     })

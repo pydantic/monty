@@ -150,6 +150,38 @@ impl Dict {
         }
     }
 
+    /// Gets a value from the dict by string key name (immutable lookup).
+    ///
+    /// This is an O(1) lookup that doesn't require mutable heap access.
+    /// Only works for string keys - returns None if the key is not found.
+    pub fn get_by_str(&self, key_str: &str, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Option<&Value> {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        // Compute hash for the string key
+        let mut hasher = DefaultHasher::new();
+        key_str.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        // Find entry with matching hash and key
+        self.indices
+            .find(hash, |&idx| {
+                let entry_key = &self.entries[idx].key;
+                match entry_key {
+                    Value::InternString(id) => interns.get_str(*id) == key_str,
+                    Value::Ref(id) => {
+                        if let HeapData::Str(s) = heap.get(*id) {
+                            s.as_str() == key_str
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                }
+            })
+            .map(|&idx| &self.entries[idx].value)
+    }
+
     /// Sets a key-value pair in the dict.
     ///
     /// The caller transfers ownership of `key` and `value` to the dict. Their refcounts

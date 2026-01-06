@@ -633,9 +633,9 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
                             let key_id = heap.allocate(HeapData::Str(attr.to_string().into()))?;
                             let key = Value::Ref(key_id);
 
-                            // Set the field - key ownership transferred to Dict
-                            // If the key already exists, the duplicate key is dropped inside set_field
-                            let old_val = dc.set_field(key, val, heap, self.interns)?;
+                            // Set the attr - key ownership transferred to Dict
+                            // If the key already exists, the duplicate key is dropped inside set_attr
+                            let old_val = dc.set_attr(key, val, heap, self.interns)?;
                             if let Some(old) = old_val {
                                 old.drop_with_heap(heap);
                             }
