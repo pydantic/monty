@@ -1,5 +1,5 @@
 use crate::args::ArgValues;
-use crate::evaluate::{EvalResult, EvaluateExpr, ExternalCall};
+use crate::evaluate::{EvalResult, EvaluateExpr};
 use crate::exception_private::{
     exc_err_static, exc_fmt, ExcType, ExceptionRaise, RawStackFrame, RunError, SimpleException,
 };
@@ -12,7 +12,7 @@ use crate::namespace::{NamespaceId, Namespaces, GLOBAL_NS_IDX};
 use crate::operators::Operator;
 use crate::parse::{CodeRange, ExceptHandler, Try};
 use crate::resource::ResourceTracker;
-use crate::snapshot::{AbstractSnapshotTracker, ClauseState, FrameExit, TryClauseState, TryPhase};
+use crate::snapshot::{AbstractSnapshotTracker, ClauseState, ExternalCall, FrameExit, TryClauseState, TryPhase};
 use crate::types::PyTrait;
 use crate::value::{Attr, Value};
 

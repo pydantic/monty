@@ -1,7 +1,7 @@
 use crate::{
     args::ArgValues,
     builtins::Builtins,
-    evaluate::{EvalResult, ExternalCall},
+    evaluate::EvalResult,
     exception_private::{exc_fmt, ExcType},
     expressions::Identifier,
     heap::{Heap, HeapData},
@@ -11,7 +11,7 @@ use crate::{
     parse::CodeRange,
     resource::ResourceTracker,
     run_frame::RunResult,
-    snapshot::AbstractSnapshotTracker,
+    snapshot::{AbstractSnapshotTracker, ExternalCall},
     types::{PyTrait, Type},
     value::Value,
 };

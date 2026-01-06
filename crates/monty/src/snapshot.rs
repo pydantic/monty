@@ -1,10 +1,10 @@
 use std::fmt::Debug;
 
 use crate::{
-    evaluate::ExternalCall,
+    args::ArgValues,
     exception_private::{ExceptionRaise, SimpleException},
     for_iterator::ForIterator,
-    intern::{FunctionId, StringId},
+    intern::{ExtFunctionId, FunctionId, StringId},
     namespace::NamespaceId,
     parse::CodeRange,
     value::Value,
@@ -57,6 +57,42 @@ pub struct FunctionFrame {
     /// Name of the calling function (or module) for traceback frames.
     /// When an exception propagates out of this function, the frame shows the caller's name.
     pub caller_name_id: StringId,
+}
+
+/// Represents a paused external function call with all information needed
+/// to resume execution.
+///
+/// If the external call occurs inside user-defined functions, the `call_stack` contains
+/// the suspended function frames from outermost to innermost.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ExternalCall {
+    /// The ID of the external function being called.
+    pub function_id: ExtFunctionId,
+    /// The evaluated arguments to the function.
+    pub args: ArgValues,
+    /// Stack of suspended function frames (outermost first, innermost last).
+    /// Empty when the external call is at module level.
+    pub call_stack: Vec<FunctionFrame>,
+}
+
+impl ExternalCall {
+    /// Creates a new external function call at module level (no suspended functions).
+    pub fn new(function_id: ExtFunctionId, args: ArgValues) -> Self {
+        Self {
+            function_id,
+            args,
+            call_stack: Vec::new(),
+        }
+    }
+
+    /// Pushes a function frame onto the call stack.
+    ///
+    /// Called when an external call propagates up through a user-defined function.
+    /// Frames are pushed in order as the call unwinds, so innermost is first.
+    /// The caller must reverse the stack before resuming to get outermost-first order.
+    pub fn push_frame(&mut self, frame: FunctionFrame) {
+        self.call_stack.push(frame);
+    }
 }
 
 pub trait AbstractSnapshotTracker: Debug {

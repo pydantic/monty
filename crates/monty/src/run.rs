@@ -1,5 +1,4 @@
 //! Public interface for running Monty code.
-use crate::evaluate::ExternalCall;
 use crate::exception_private::{ExcType, ExceptionRaise, RunError};
 use crate::expressions::Node;
 use crate::heap::Heap;
@@ -7,13 +6,11 @@ use crate::intern::{ExtFunctionId, Interns, StringId};
 use crate::io::{PrintWriter, StdPrint};
 use crate::namespace::Namespaces;
 use crate::object::MontyObject;
-use crate::parse::parse;
-use crate::parse::CodeRange;
+use crate::parse::{parse, CodeRange};
 use crate::prepare::prepare;
-use crate::resource::NoLimitTracker;
-use crate::resource::ResourceTracker;
+use crate::resource::{NoLimitTracker, ResourceTracker};
 use crate::run_frame::{RunFrame, RunResult};
-use crate::snapshot::{CodePosition, FrameExit, FunctionFrame, NoSnapshotTracker, SnapshotTracker};
+use crate::snapshot::{CodePosition, ExternalCall, FrameExit, FunctionFrame, NoSnapshotTracker, SnapshotTracker};
 use crate::value::Value;
 use crate::MontyException;
 

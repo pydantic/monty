@@ -5,15 +5,14 @@ use crate::callable::Callable;
 use crate::exception_private::{exc_err_fmt, ExcType, RunError, SimpleException};
 use crate::expressions::{Expr, ExprLoc, Identifier, NameScope};
 use crate::fstring::{fstring_interpolation, ConversionFlag, FStringPart};
-
 use crate::heap::{Heap, HeapData};
-use crate::intern::{ExtFunctionId, Interns, StringId};
+use crate::intern::{Interns, StringId};
 use crate::io::PrintWriter;
 use crate::namespace::{NamespaceId, Namespaces};
 use crate::operators::{CmpOperator, Operator};
 use crate::resource::ResourceTracker;
 use crate::run_frame::RunResult;
-use crate::snapshot::{AbstractSnapshotTracker, FunctionFrame};
+use crate::snapshot::{AbstractSnapshotTracker, ExternalCall};
 use crate::types::{Dict, List, PyTrait, Set, Str, Tuple};
 use crate::value::{Attr, Value};
 
@@ -976,43 +975,4 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter, S: AbstractSnapshotTracker> Eva
 pub enum EvalResult<T> {
     Value(T),
     ExternalCall(ExternalCall),
-}
-
-/// Represents an external function call that has paused execution.
-///
-/// When an external function is called, execution pauses and this struct is returned
-/// to the host. The host executes the external function and provides the return value
-/// to resume execution.
-///
-/// If the external call occurs inside user-defined functions, the `call_stack` contains
-/// the suspended function frames from outermost to innermost.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct ExternalCall {
-    /// The ID of the external function being called.
-    pub function_id: ExtFunctionId,
-    /// The evaluated arguments to the function.
-    pub args: ArgValues,
-    /// Stack of suspended function frames (outermost first, innermost last).
-    /// Empty when the external call is at module level.
-    pub call_stack: Vec<FunctionFrame>,
-}
-
-impl ExternalCall {
-    /// Creates a new external function call at module level (no suspended functions).
-    pub fn new(function_id: ExtFunctionId, args: ArgValues) -> Self {
-        Self {
-            function_id,
-            args,
-            call_stack: Vec::new(),
-        }
-    }
-
-    /// Pushes a function frame onto the call stack.
-    ///
-    /// Called when an external call propagates up through a user-defined function.
-    /// Frames are pushed in order as the call unwinds, so innermost is first.
-    /// The caller must reverse the stack before resuming to get outermost-first order.
-    pub fn push_frame(&mut self, frame: FunctionFrame) {
-        self.call_stack.push(frame);
-    }
 }
