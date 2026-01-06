@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import asdict, astuple, dataclass, fields, is_dataclass
 
 import pytest
 from inline_snapshot import snapshot
@@ -435,3 +435,120 @@ def test_dataclass_hash_as_dict_key():
 
     d = {a: 'first'}
     assert d[b] == snapshot('first')
+
+
+# === dataclasses module compatibility ===
+
+
+def test_dataclass_is_dataclass():
+    """is_dataclass() returns True for returned dataclasses."""
+
+    @dataclass
+    class Person:
+        name: str
+        age: int
+
+    m = monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': Person(name='Alice', age=30)})
+    assert is_dataclass(result) is True
+
+
+def test_dataclass_fields():
+    """fields() returns Field objects for returned dataclasses."""
+
+    @dataclass
+    class Point:
+        x: int
+        y: int
+
+    m = monty.Monty('p', inputs=['p'])
+    result = m.run(inputs={'p': Point(x=10, y=20)})
+
+    fs = fields(result)
+    assert len(fs) == snapshot(2)
+    assert fs[0].name == snapshot('x')
+    assert fs[1].name == snapshot('y')
+    # Type is inferred from value
+    assert fs[0].type is int
+    assert fs[1].type is int
+
+
+def test_dataclass_fields_string():
+    """fields() returns correct type for string fields."""
+
+    @dataclass
+    class Person:
+        name: str
+
+    m = monty.Monty('p', inputs=['p'])
+    result = m.run(inputs={'p': Person(name='Alice')})
+
+    fs = fields(result)
+    assert fs[0].name == snapshot('name')
+    assert fs[0].type is str
+
+
+def test_dataclass_asdict():
+    """asdict() converts returned dataclass to dict."""
+
+    @dataclass
+    class Point:
+        x: int
+        y: int
+
+    m = monty.Monty('p', inputs=['p'])
+    result = m.run(inputs={'p': Point(x=10, y=20)})
+
+    d = asdict(result)
+    assert d == snapshot({'x': 10, 'y': 20})
+
+
+def test_dataclass_asdict_nested():
+    """asdict() recursively converts nested dataclasses."""
+
+    @dataclass
+    class Inner:
+        value: int
+
+    @dataclass
+    class Outer:
+        inner: Inner
+
+    m = monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': Outer(inner=Inner(value=42))})
+
+    d = asdict(result)
+    assert d == snapshot({'inner': {'value': 42}})
+
+
+def test_dataclass_astuple():
+    """astuple() converts returned dataclass to tuple."""
+
+    @dataclass
+    class Point:
+        x: int
+        y: int
+
+    m = monty.Monty('p', inputs=['p'])
+    result = m.run(inputs={'p': Point(x=10, y=20)})
+
+    t = astuple(result)
+    assert t == snapshot((10, 20))
+
+
+def test_dataclass_dataclass_fields_attr():
+    """__dataclass_fields__ attribute is accessible."""
+
+    @dataclass
+    class Point:
+        x: int
+        y: int
+
+    m = monty.Monty('p', inputs=['p'])
+    result = m.run(inputs={'p': Point(x=10, y=20)})
+
+    df = result.__dataclass_fields__
+    assert 'x' in df
+    assert 'y' in df
+    assert df['x'].name == snapshot('x')
+    assert df['y'].name == snapshot('y')

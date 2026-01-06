@@ -196,12 +196,28 @@ fn dataclass_to_monty(value: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
     })
 }
 
-/// Copied from get_field_marker in pydantic
-/// needed to match the logic from dataclasses.fields `tuple(f for f in fields.values() if f._field_type is _FIELD)`
+/// Cached import of `dataclasses._FIELD` marker.
+///
+/// Used to match the logic from `dataclasses.fields()`:
+/// `tuple(f for f in fields.values() if f._field_type is _FIELD)`
 fn get_field_marker(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static DC_FIELD_MARKER: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
     DC_FIELD_MARKER.import(py, "dataclasses", "_FIELD")
+}
+
+/// Cached import of `dataclasses.MISSING` sentinel.
+fn get_missing(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static DC_MISSING: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    DC_MISSING.import(py, "dataclasses", "MISSING")
+}
+
+/// Cached import of `dataclasses.Field` class.
+fn get_field_class(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static DC_FIELD_CLASS: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    DC_FIELD_CLASS.import(py, "dataclasses", "Field")
 }
 
 /// Imitation of a dataclass to allow returning MontyObject::Dataclass to Python
@@ -232,6 +248,50 @@ impl PyMontyDataclass {
     #[getter]
     fn __qualname__(&self) -> &str {
         &self.name
+    }
+
+    /// Returns a dict mapping field names to Field objects.
+    ///
+    /// This enables compatibility with `dataclasses.is_dataclass()`, `dataclasses.fields()`,
+    /// `dataclasses.asdict()`, etc.
+    #[getter]
+    fn __dataclass_fields__(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        let field_marker = get_field_marker(py)?;
+        let missing = get_missing(py)?;
+        let field_class = get_field_class(py)?;
+        let attrs = self.attrs.bind(py);
+
+        let fields_dict = PyDict::new(py);
+        for field_name in &self.field_names {
+            // Get the field value's type for the type annotation
+            let field_type = if let Some(value) = attrs.get_item(field_name)? {
+                value.get_type().into_any()
+            } else {
+                py.None().into_bound(py).get_type().into_any()
+            };
+
+            // Create a Field object with the required attributes
+            // Field(default, default_factory, init, repr, hash, compare, metadata, kw_only, doc)
+            let field_obj = field_class.call1((
+                missing,   // default
+                missing,   // default_factory
+                true,      // init
+                true,      // repr
+                py.None(), // hash (None means use compare value)
+                true,      // compare
+                py.None(), // metadata
+                false,     // kw_only
+                py.None(), // doc
+            ))?;
+
+            // Set name and type (these are set after construction in real dataclasses)
+            field_obj.setattr("name", field_name)?;
+            field_obj.setattr("type", field_type)?;
+            field_obj.setattr("_field_type", field_marker)?;
+
+            fields_dict.set_item(field_name, field_obj)?;
+        }
+        Ok(fields_dict.unbind())
     }
 
     /// Get an attribute value.
@@ -271,11 +331,6 @@ impl PyMontyDataclass {
         Ok(format!("{}({})", self.name, parts.join(", ")))
     }
 
-    /// String representation (same as repr for dataclasses).
-    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
-        self.__repr__(py)
-    }
-
     /// Equality comparison.
     fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
         // Check if other is also a PyDataclass
@@ -313,11 +368,6 @@ impl PyMontyDataclass {
             }
         }
         Ok(hasher.finish() as isize)
-    }
-
-    /// Boolean truthiness (dataclasses are always truthy).
-    fn __bool__(&self) -> bool {
-        true
     }
 }
 
