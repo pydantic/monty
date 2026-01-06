@@ -6,6 +6,7 @@ from dataclasses import (
     fields,
     is_dataclass,
 )
+from typing import NoReturn
 
 import pytest
 from inline_snapshot import snapshot
@@ -368,6 +369,38 @@ def test_frozen_instance_error_from_monty_caught_as_attribute_error():
     # Can catch with AttributeError
     with pytest.raises(AttributeError):
         m.run(inputs={'p': Point(x=10, y=20)})
+
+
+def test_frozen_instance_error_from_external_function():
+    """FrozenInstanceError from external function is properly converted."""
+    code = """
+try:
+    fail()
+except FrozenInstanceError:
+    caught = 'frozen'
+except AttributeError:
+    caught = 'attr'
+caught
+"""
+    m = monty.Monty(code, external_functions=['fail'])
+
+    def fail() -> NoReturn:
+        raise FrozenInstanceError('cannot assign to field')
+
+    # Monty should catch it as FrozenInstanceError specifically
+    result = m.run(external_functions={'fail': fail})
+    assert result == snapshot('frozen')
+
+
+def test_frozen_instance_error_from_external_function_propagates():
+    """FrozenInstanceError from external function propagates to Python."""
+    m = monty.Monty('fail()', external_functions=['fail'])
+
+    def fail() -> NoReturn:
+        raise FrozenInstanceError('test frozen error')
+
+    with pytest.raises(FrozenInstanceError, match='test frozen error'):
+        m.run(external_functions={'fail': fail})
 
 
 # === Equality ===

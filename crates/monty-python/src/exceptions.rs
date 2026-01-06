@@ -71,41 +71,82 @@ pub fn exc_to_monty_object(exc: &Bound<'_, exceptions::PyBaseException>) -> ::mo
 /// Maps a Python exception type to Monty's `ExcType` enum.
 ///
 /// NOTE: order matters here as some exceptions are subclasses of others!
-/// More specific exceptions must be checked before their parent classes.
+/// In general we group exceptions by their type hierarchy to improve performance.
 fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
-    // LookupError subclasses (check specific types before parent)
-    if exceptions::PyKeyError::type_check(exc) {
-        ExcType::KeyError
-    } else if exceptions::PyIndexError::type_check(exc) {
-        ExcType::IndexError
-    // ArithmeticError subclasses
-    } else if exceptions::PyArithmeticError::type_check(exc) {
-        ExcType::ZeroDivisionError
-    } else if exceptions::PyAssertionError::type_check(exc) {
-        ExcType::AssertionError
-    } else if exceptions::PyAttributeError::type_check(exc) {
-        ExcType::AttributeError
-    } else if exceptions::PyMemoryError::type_check(exc) {
-        ExcType::MemoryError
-    } else if exceptions::PyNameError::type_check(exc) {
-        ExcType::NameError
-    } else if exceptions::PySyntaxError::type_check(exc) {
-        ExcType::SyntaxError
-    } else if exceptions::PyTimeoutError::type_check(exc) {
-        ExcType::TimeoutError
-    } else if exceptions::PyTypeError::type_check(exc) {
-        ExcType::TypeError
-    } else if exceptions::PyValueError::type_check(exc) {
-        ExcType::ValueError
-    } else if exceptions::PyRuntimeError::type_check(exc) {
-        ExcType::RuntimeError
-    } else if exceptions::PySystemError::type_check(exc) {
+    // Exception hierarchy
+    if exceptions::PyException::type_check(exc) {
+        // put the most commonly used exceptions first
+        if exceptions::PyTypeError::type_check(exc) {
+            ExcType::TypeError
+        } else if exceptions::PyValueError::type_check(exc) {
+            ExcType::ValueError
+        } else if exceptions::PyAssertionError::type_check(exc) {
+            ExcType::AssertionError
+        } else if exceptions::PySyntaxError::type_check(exc) {
+            ExcType::SyntaxError
+        // LookupError hierarchy
+        } else if exceptions::PyLookupError::type_check(exc) {
+            if exceptions::PyKeyError::type_check(exc) {
+                ExcType::KeyError
+            } else if exceptions::PyIndexError::type_check(exc) {
+                ExcType::IndexError
+            } else {
+                ExcType::LookupError
+            }
+        // ArithmeticError hierarchy
+        } else if exceptions::PyArithmeticError::type_check(exc) {
+            if exceptions::PyZeroDivisionError::type_check(exc) {
+                ExcType::ZeroDivisionError
+            } else if exceptions::PyOverflowError::type_check(exc) {
+                ExcType::OverflowError
+            } else {
+                ExcType::ArithmeticError
+            }
+        // RuntimeError hierarchy
+        } else if exceptions::PyRuntimeError::type_check(exc) {
+            if exceptions::PyNotImplementedError::type_check(exc) {
+                ExcType::NotImplementedError
+            } else if exceptions::PyRecursionError::type_check(exc) {
+                ExcType::RecursionError
+            } else {
+                ExcType::RuntimeError
+            }
+        // AttributeError hierarchy
+        } else if exceptions::PyAttributeError::type_check(exc) {
+            if is_frozen_instance_error(exc) {
+                ExcType::FrozenInstanceError
+            } else {
+                ExcType::AttributeError
+            }
+        // other standalone exception types
+        } else if exceptions::PyNameError::type_check(exc) {
+            ExcType::NameError
+        } else if exceptions::PyTimeoutError::type_check(exc) {
+            ExcType::TimeoutError
+        } else if exceptions::PyMemoryError::type_check(exc) {
+            ExcType::MemoryError
+        } else {
+            ExcType::Exception
+        }
+    // BaseException direct subclasses
+    } else if exceptions::PySystemExit::type_check(exc) {
         ExcType::SystemExit
     } else if exceptions::PyKeyboardInterrupt::type_check(exc) {
         ExcType::KeyboardInterrupt
-    } else if exceptions::PyException::type_check(exc) {
-        ExcType::Exception
+    // Catch-all for BaseException
     } else {
         ExcType::BaseException
+    }
+}
+
+/// Checks if an exception is an instance of `dataclasses.FrozenInstanceError`.
+///
+/// Since `FrozenInstanceError` is not a built-in PyO3 exception type, we need to
+/// check using Python's isinstance against the imported class.
+fn is_frozen_instance_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
+    if let Ok(frozen_error_cls) = get_frozen_instance_error(exc.py()) {
+        exc.is_instance(frozen_error_cls).unwrap_or(false)
+    } else {
+        false
     }
 }
