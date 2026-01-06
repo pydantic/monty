@@ -188,11 +188,13 @@ impl PyMontyDataclass {
     }
 
     /// Set an attribute value.
+    ///
+    /// Raises `FrozenInstanceError` (subclass of `AttributeError`) for frozen dataclasses.
     fn __setattr__(&self, py: Python<'_>, name: &str, value: Py<PyAny>) -> PyResult<()> {
         if self.frozen {
-            return Err(pyo3::exceptions::PyAttributeError::new_err(format!(
-                "cannot assign to field '{name}'"
-            )));
+            let frozen_error = get_frozen_instance_error(py)?;
+            let msg = format!("cannot assign to field '{name}'");
+            return Err(PyErr::from_value(frozen_error.call1((msg,))?));
         }
         let attrs = self.attrs.bind(py);
         attrs.set_item(name, value)?;
@@ -303,4 +305,11 @@ fn get_dataclass_params_class(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static DC_PARAMS_CLASS: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
     DC_PARAMS_CLASS.import(py, "dataclasses", "_DataclassParams")
+}
+
+/// Cached import of `dataclasses.FrozenInstanceError` exception class.
+pub fn get_frozen_instance_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static DC_FROZEN_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    DC_FROZEN_ERROR.import(py, "dataclasses", "FrozenInstanceError")
 }

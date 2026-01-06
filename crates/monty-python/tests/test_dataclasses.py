@@ -1,4 +1,11 @@
-from dataclasses import asdict, astuple, dataclass, fields, is_dataclass
+from dataclasses import (
+    FrozenInstanceError,
+    asdict,
+    astuple,
+    dataclass,
+    fields,
+    is_dataclass,
+)
 
 import pytest
 from inline_snapshot import snapshot
@@ -273,7 +280,7 @@ def test_dataclass_setattr_mutable():
 
 
 def test_dataclass_setattr_frozen():
-    """Setting attributes on frozen dataclass raises AttributeError."""
+    """Setting attributes on frozen dataclass raises FrozenInstanceError."""
 
     @dataclass(frozen=True)
     class Point:
@@ -283,11 +290,84 @@ def test_dataclass_setattr_frozen():
     m = monty.Monty('p', inputs=['p'])
     result = m.run(inputs={'p': Point(x=10, y=20)})
 
-    with pytest.raises(AttributeError, match="cannot assign to field 'x'"):
+    # FrozenInstanceError is raised (which is a subclass of AttributeError)
+    with pytest.raises(FrozenInstanceError, match="cannot assign to field 'x'"):
         result.x = 100
 
-    with pytest.raises(AttributeError, match="cannot assign to field 'z'"):
+    with pytest.raises(FrozenInstanceError, match="cannot assign to field 'z'"):
         result.z = 30
+
+
+def test_frozen_instance_error_is_attribute_error():
+    """FrozenInstanceError can be caught as AttributeError."""
+
+    @dataclass(frozen=True)
+    class Point:
+        x: int
+        y: int
+
+    m = monty.Monty('p', inputs=['p'])
+    result = m.run(inputs={'p': Point(x=10, y=20)})
+
+    # Can catch with AttributeError (parent class)
+    with pytest.raises(AttributeError):
+        result.x = 100
+
+    # Verify it's actually FrozenInstanceError
+    try:
+        result.y = 200
+    except AttributeError as e:
+        assert isinstance(e, FrozenInstanceError)
+
+
+def test_frozen_instance_error_message():
+    """FrozenInstanceError has correct message format."""
+
+    @dataclass(frozen=True)
+    class Point:
+        x: int
+        y: int
+
+    m = monty.Monty('p', inputs=['p'])
+    result = m.run(inputs={'p': Point(x=10, y=20)})
+
+    with pytest.raises(FrozenInstanceError) as exc_info:
+        result.x = 100
+    assert exc_info.value.args[0] == snapshot("cannot assign to field 'x'")
+
+
+def test_frozen_instance_error_from_monty_code():
+    """FrozenInstanceError raised by Monty code is properly converted."""
+
+    @dataclass(frozen=True)
+    class Point:
+        x: int
+        y: int
+
+    # Monty code that tries to modify a frozen dataclass
+    code = """
+p.x = 100
+"""
+    m = monty.Monty(code, inputs=['p'])
+
+    with pytest.raises(FrozenInstanceError, match="cannot assign to field 'x'"):
+        m.run(inputs={'p': Point(x=10, y=20)})
+
+
+def test_frozen_instance_error_from_monty_caught_as_attribute_error():
+    """FrozenInstanceError from Monty can be caught as AttributeError."""
+
+    @dataclass(frozen=True)
+    class Point:
+        x: int
+        y: int
+
+    code = 'p.x = 100'
+    m = monty.Monty(code, inputs=['p'])
+
+    # Can catch with AttributeError
+    with pytest.raises(AttributeError):
+        m.run(inputs={'p': Point(x=10, y=20)})
 
 
 # === Equality ===

@@ -4,14 +4,16 @@
 //! so that Python code sees native Python exceptions.
 
 use ::monty::{ExcType, MontyException};
-use pyo3::{exceptions, prelude::*, PyTypeCheck};
+use pyo3::{exceptions, prelude::*, types::PyString, PyTypeCheck};
+
+use crate::dataclass::get_frozen_instance_error;
 
 /// Converts Monty's `MontyException` to a Python exception.
 ///
 /// Creates an appropriate Python exception type with the message.
 /// The traceback information is included in the exception message
 /// since PyO3 doesn't provide direct traceback manipulation.
-pub fn exc_monty_to_py(exc: MontyException) -> PyErr {
+pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
     let exc_type = exc.exc_type();
     let msg = exc.into_message().unwrap_or_default();
 
@@ -31,9 +33,15 @@ pub fn exc_monty_to_py(exc: MontyException) -> PyErr {
         ExcType::RecursionError => exceptions::PyRecursionError::new_err(msg),
         ExcType::AssertionError => exceptions::PyAssertionError::new_err(msg),
         ExcType::AttributeError => exceptions::PyAttributeError::new_err(msg),
-        // FrozenInstanceError is a subclass of AttributeError in Python's dataclasses module.
-        // We use AttributeError here since this function doesn't have access to Python GIL.
-        ExcType::FrozenInstanceError => exceptions::PyAttributeError::new_err(msg),
+        ExcType::FrozenInstanceError => {
+            if let Ok(exc_cls) = get_frozen_instance_error(py) {
+                if let Ok(exc_instance) = exc_cls.call1((PyString::new(py, &msg),)) {
+                    return PyErr::from_value(exc_instance);
+                }
+            }
+            // if creating the right exception fails, fallback to AttributeError which it's a subclass of
+            exceptions::PyAttributeError::new_err(msg)
+        }
         ExcType::MemoryError => exceptions::PyMemoryError::new_err(msg),
         ExcType::NameError => exceptions::PyNameError::new_err(msg),
         ExcType::SyntaxError => exceptions::PySyntaxError::new_err(msg),
