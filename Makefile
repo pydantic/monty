@@ -44,10 +44,11 @@ format-py: ## Format Python code - WARNING be careful about this command as it m
 format: format-rs ## Format Rust code, this does not format Python code as we have to be careful with that
 
 .PHONY: lint-rs
-lint-rs:  ## Lint Rust code with fmt and clippy
+lint-rs:  ## Lint Rust code with clippy and import checks
 	@cargo clippy --version
 	cargo clippy --workspace --tests --bench main -- -D warnings -A incomplete_features
 	cargo clippy --workspace --tests --all-features -- -D warnings -A incomplete_features
+	uv run scripts/check_imports.py
 
 .PHONY: lint-py
 lint-py: dev-py ## Lint Python code with ruff
