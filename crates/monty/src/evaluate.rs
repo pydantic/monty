@@ -1010,6 +1010,8 @@ impl ExternalCall {
     /// Pushes a function frame onto the call stack.
     ///
     /// Called when an external call propagates up through a user-defined function.
+    /// Frames are pushed in order as the call unwinds, so innermost is first.
+    /// The caller must reverse the stack before resuming to get outermost-first order.
     pub fn push_frame(&mut self, frame: FunctionFrame) {
         self.call_stack.push(frame);
     }

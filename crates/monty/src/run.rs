@@ -381,6 +381,10 @@ impl<T: ResourceTracker> Snapshot<T> {
                 // Function completed - clean up its namespace
                 self.namespaces.drop_with_heap(frame.namespace_idx, &mut self.heap);
 
+                // Clear old ext_return_values since this function has consumed them.
+                // The calling function needs a fresh value (this function's return).
+                self.namespaces.clear_ext_return_values(&mut self.heap);
+
                 if self.call_stack.is_empty() {
                     // All functions completed, continue at module level
                     // Push the return value for the caller to use
@@ -413,7 +417,9 @@ impl<T: ResourceTracker> Snapshot<T> {
                     call_position: frame.call_position,
                     caller_name_id: frame.caller_name_id,
                 });
-                // Prepend the remaining call stack
+                // Reverse ext_call.call_stack to outermost-first order (it was built with push)
+                ext_call.call_stack.reverse();
+                // Combine with remaining call stack (already outermost-first)
                 let mut new_call_stack = self.call_stack;
                 new_call_stack.append(&mut ext_call.call_stack);
                 ext_call.call_stack = new_call_stack;
@@ -436,6 +442,10 @@ impl<T: ResourceTracker> Snapshot<T> {
             Ok(None) => {
                 // Function completed with implicit None - clean up its namespace
                 self.namespaces.drop_with_heap(frame.namespace_idx, &mut self.heap);
+
+                // Clear old ext_return_values since this function has consumed them.
+                // The calling function needs a fresh value (this function's return).
+                self.namespaces.clear_ext_return_values(&mut self.heap);
 
                 if self.call_stack.is_empty() {
                     // All functions completed, continue at module level
@@ -684,8 +694,13 @@ impl Executor {
             Some(FrameExit::ExternalCall(ExternalCall {
                 function_id,
                 args,
-                call_stack,
+                mut call_stack,
             })) => {
+                // Reverse call_stack so outermost is first, innermost is last.
+                // This allows pop() to return the innermost frame first during resume.
+                // Building with push() is O(1) per frame; reversing once is O(n) total.
+                call_stack.reverse();
+
                 let (args, kwargs) = args.into_py_objects(&mut heap, &self.interns);
                 Ok(RunProgress::FunctionCall {
                     function_name: self.interns.get_external_function_name(function_id),
