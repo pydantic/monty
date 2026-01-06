@@ -601,11 +601,13 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
     /// - Non-heap values (they don't have attributes)
     /// - Immutable dataclasses (frozen=True)
     /// - Other heap types that don't support attribute assignment
+    ///
+    /// Supports chained attribute access like `a.b.c = value`.
     fn attr_assign(
         &mut self,
         namespaces: &mut Namespaces,
         heap: &mut Heap<impl ResourceTracker>,
-        object_ident: &Identifier,
+        object_expr: &ExprLoc,
         attr: &Attr,
         target_position: CodeRange,
         value_expr: &ExprLoc,
@@ -613,11 +615,13 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
         // Evaluate the value first
         let val = frame_ext_call!(self.execute_expr(namespaces, heap, value_expr)?);
 
-        // Get the object and set the attribute
-        let object_val = namespaces.get_var_mut(self.local_idx, object_ident, self.interns)?;
+        // Evaluate the object expression to get the object
+        let object_val = frame_ext_call!(self.execute_expr(namespaces, heap, object_expr)?);
+
         let frame = self.stack_frame(target_position);
-        if let Value::Ref(id) = object_val {
-            heap.with_entry_mut(*id, |heap, data| -> RunResult<()> {
+        if let Value::Ref(id) = &object_val {
+            let id = *id;
+            let result = heap.with_entry_mut(id, |heap, data| -> RunResult<()> {
                 match data {
                     HeapData::Dataclass(dc) => {
                         if dc.is_frozen() {
@@ -645,13 +649,16 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
                         Err(ExcType::attribute_error_no_setattr(ty, attr.as_str()))
                     }
                 }
-            })
-            .map_err(|e| e.set_frame(frame))?;
+            });
+            // Drop the object value we evaluated (it's a clone with incremented refcount)
+            object_val.drop_with_heap(heap);
+            result.map_err(|e| e.set_frame(frame))?;
             Ok(None)
         } else {
-            // Drop the value
+            // Drop the value and object
             val.drop_with_heap(heap);
             let ty = object_val.py_type(Some(heap));
+            object_val.drop_with_heap(heap);
             Err(ExcType::attribute_error_no_setattr(ty, attr.as_str()).set_frame(frame))
         }
     }

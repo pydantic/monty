@@ -99,19 +99,24 @@ pub enum Expr {
         /// by using a box here
         args: Box<ArgExprs>,
     },
+    /// Method call on an object (e.g., `obj.method(args)`).
+    ///
+    /// The object expression is evaluated first, then the method is looked up
+    /// and called with the given arguments. Supports chained attribute access
+    /// like `a.b.c.method()`.
     AttrCall {
-        object: Identifier,
+        object: Box<ExprLoc>,
         attr: Attr,
         /// same as above for Box
         args: Box<ArgExprs>,
     },
-    /// Attribute access expression (e.g., `point.x`).
+    /// Attribute access expression (e.g., `point.x` or `a.b.c`).
     ///
     /// Retrieves the value of an attribute from an object. For dataclasses,
     /// this returns the field value. For other types, this may trigger
-    /// special attribute handling.
+    /// special attribute handling. Supports chained attribute access.
     AttrGet {
-        object: Identifier,
+        object: Box<ExprLoc>,
         attr: Attr,
     },
     Op {
@@ -242,12 +247,13 @@ pub enum Node {
         index: ExprLoc,
         value: ExprLoc,
     },
-    /// Attribute assignment (e.g., `point.x = 5`).
+    /// Attribute assignment (e.g., `point.x = 5` or `a.b.c = 5`).
     ///
     /// Assigns a value to an attribute on an object. For mutable dataclasses,
     /// this sets the field value. Returns an error for immutable objects.
+    /// Supports chained attribute access on the left-hand side.
     AttrAssign {
-        object: Identifier,
+        object: Box<ExprLoc>,
         attr: Attr,
         target_position: CodeRange,
         value: ExprLoc,

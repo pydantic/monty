@@ -331,7 +331,7 @@ impl<'i> Prepare<'i> {
                     value,
                 } => {
                     // AttrAssign doesn't assign to the object itself, just modifies its attribute
-                    let object = self.get_id(object).0;
+                    let object = Box::new(self.prepare_expression(*object)?);
                     let value = self.prepare_expression(value)?;
                     new_nodes.push(Node::AttrAssign {
                         object,
@@ -524,14 +524,14 @@ impl<'i> Prepare<'i> {
                 Expr::Call { callable, args }
             }
             Expr::AttrCall { object, attr, mut args } => {
-                // Don't error here if object is undefined - let runtime raise NameError with proper traceback.
-                let (object, _is_new) = self.get_id(object);
+                // Prepare the object expression (supports chained access like a.b.c.method())
+                let object = Box::new(self.prepare_expression(*object)?);
                 args.prepare_args(|expr| self.prepare_expression(expr))?;
                 Expr::AttrCall { object, attr, args }
             }
             Expr::AttrGet { object, attr } => {
-                // Don't error here if object is undefined - let runtime raise NameError with proper traceback.
-                let (object, _is_new) = self.get_id(object);
+                // Prepare the object expression (supports chained access like a.b.c)
+                let object = Box::new(self.prepare_expression(*object)?);
                 Expr::AttrGet { object, attr }
             }
             Expr::List(elements) => {
@@ -1281,7 +1281,7 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
             collect_referenced_names_from_expr(value, referenced, interner);
         }
         ParseNode::AttrAssign { object, value, .. } => {
-            referenced.insert(interner.get_str(object.name_id).to_string());
+            collect_referenced_names_from_expr(object, referenced, interner);
             collect_referenced_names_from_expr(value, referenced, interner);
         }
         ParseNode::For {
@@ -1382,11 +1382,11 @@ fn collect_referenced_names_from_expr(
             collect_referenced_names_from_args(args, referenced, interner);
         }
         Expr::AttrCall { object, args, .. } => {
-            referenced.insert(interner.get_str(object.name_id).to_string());
+            collect_referenced_names_from_expr(object, referenced, interner);
             collect_referenced_names_from_args(args, referenced, interner);
         }
         Expr::AttrGet { object, .. } => {
-            referenced.insert(interner.get_str(object.name_id).to_string());
+            collect_referenced_names_from_expr(object, referenced, interner);
         }
         Expr::IfElse { test, body, orelse } => {
             collect_referenced_names_from_expr(test, referenced, interner);

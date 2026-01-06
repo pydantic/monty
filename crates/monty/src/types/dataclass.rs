@@ -141,13 +141,14 @@ impl Dataclass {
 
     /// Computes the hash for this dataclass if it's immutable.
     ///
-    /// Returns Some(hash) for immutable dataclasses, None for mutable ones.
+    /// Returns Some(hash) for immutable (frozen) dataclasses, None for mutable ones.
     /// The hash is computed from the class name and all field values.
     pub fn compute_hash(&self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Option<u64> {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
-        if self.frozen {
+        // Only frozen (immutable) dataclasses are hashable
+        if !self.frozen {
             return None;
         }
 

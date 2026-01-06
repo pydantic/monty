@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 use crate::args::{ArgExprs, ArgValues, Kwarg, KwargsValues};
 use crate::callable::Callable;
 use crate::exception_private::{exc_err_fmt, ExcType, RunError, SimpleException};
-use crate::expressions::{Expr, ExprLoc, Identifier, NameScope};
+use crate::expressions::{Expr, ExprLoc, NameScope};
 use crate::fstring::{fstring_interpolation, ConversionFlag, FStringPart};
 
 use crate::heap::{Heap, HeapData};
@@ -471,48 +471,37 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
     /// Calls a method on an object: `object.attr(args)`.
     ///
     /// This evaluates `object`, looks up `attr`, calls the method with `args`,
-    /// and handles proper cleanup of temporary values.
-    fn attr_call(&mut self, object_ident: &Identifier, attr: &Attr, args: &ArgExprs) -> RunResult<EvalResult<Value>> {
+    /// and handles proper cleanup of temporary values. Supports chained access
+    /// like `a.b.c.method()`.
+    fn attr_call(&mut self, object_expr: &ExprLoc, attr: &Attr, args: &ArgExprs) -> RunResult<EvalResult<Value>> {
         // Evaluate arguments first to avoid borrow conflicts
         // Note: we pass None for callable since method calls don't have a simple function name
         let args = return_ext_call!(self.evaluate_args(args, None)?);
 
-        // For Cell scope, look up the cell from the namespace and dereference
-        if let NameScope::Cell = object_ident.scope {
-            let namespace = self.namespaces.get(self.local_idx);
-            let Value::Ref(cell_id) = namespace.get(object_ident.namespace_id()) else {
-                panic!("Cell variable slot doesn't contain a cell reference - prepare-time bug")
-            };
-            // get_cell_value already handles refcount increment
-            let mut cell_value = self.heap.get_cell_value(*cell_id);
-            let result = cell_value.call_attr(self.heap, attr, args, self.interns);
-            cell_value.drop_with_heap(self.heap);
-            result.map(EvalResult::Value)
-        } else {
-            // For normal scopes, use get_var_mut
-            let object = self
-                .namespaces
-                .get_var_mut(self.local_idx, object_ident, self.interns)?;
-            object
-                .call_attr(self.heap, attr, args, self.interns)
-                .map(EvalResult::Value)
-        }
+        // Evaluate the object expression to get the value
+        let mut object = return_ext_call!(self.evaluate_use(object_expr)?);
+
+        // Call the method on the object
+        let result = object.call_attr(self.heap, attr, args, self.interns);
+
+        // Clean up the object value
+        object.drop_with_heap(self.heap);
+
+        result.map(EvalResult::Value)
     }
 
-    /// Evaluates attribute access expression (e.g., `point.x`).
+    /// Evaluates attribute access expression (e.g., `point.x` or `a.b.c`).
     ///
     /// Retrieves the value of an attribute from an object. Currently only
     /// supports dataclass field access. The returned value is cloned with
-    /// proper reference counting.
-    fn attr_get(&mut self, object_ident: &Identifier, attr: &Attr) -> RunResult<EvalResult<Value>> {
+    /// proper reference counting. Supports chained attribute access.
+    fn attr_get(&mut self, object_expr: &ExprLoc, attr: &Attr) -> RunResult<EvalResult<Value>> {
         // Allocate a heap string for the key since we need a Value for Dict lookup
         let key_id = self.heap.allocate(HeapData::Str(attr.to_string().clone().into()))?;
         let key = Value::Ref(key_id);
 
-        // Get the object value (always returns a cloned value with incremented refcount)
-        let value = self
-            .namespaces
-            .get_var_value(self.local_idx, self.heap, object_ident, self.interns)?;
+        // Evaluate the object expression to get the value
+        let value = return_ext_call!(self.evaluate_use(object_expr)?);
 
         // Dispatch based on value type
         let result = if let Value::Ref(heap_id) = &value {
@@ -539,7 +528,7 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
         // Clean up the key we allocated
         key.drop_with_heap(self.heap);
 
-        // Clean up the object value we retrieved (get_var_value returns cloned value)
+        // Clean up the object value we retrieved
         value.drop_with_heap(self.heap);
 
         result.map(EvalResult::Value)

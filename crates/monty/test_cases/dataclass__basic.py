@@ -49,3 +49,42 @@ assert mut_point.x == 10, 'mut_point.x updated to 10'
 mut_point.y = 20
 assert mut_point.y == 20, 'mut_point.y updated to 20'
 assert repr(mut_point) == 'Point(x=10, y=20)', 'repr after attribute update'
+
+# === Nested attribute access (chained get) ===
+# Create outer dataclass with inner dataclass as field
+outer = make_mutable_point()
+inner = make_mutable_point()
+inner.x = 100
+inner.y = 200
+outer.x = inner
+
+# Chained attribute get: outer.x.y
+assert outer.x.x == 100, 'outer.x.x is 100'
+assert outer.x.y == 200, 'outer.x.y is 200'
+
+# === Nested attribute assignment (chained set) ===
+# Modify nested field via chained access
+outer.x.x = 999
+assert outer.x.x == 999, 'outer.x.x updated to 999'
+outer.x.y = 888
+assert outer.x.y == 888, 'outer.x.y updated to 888'
+
+# Verify inner was modified (same object)
+assert inner.x == 999, 'inner.x also updated to 999'
+assert inner.y == 888, 'inner.y also updated to 888'
+
+# === Deeper nesting (3 levels) ===
+level1 = make_mutable_point()
+level2 = make_mutable_point()
+level3 = make_mutable_point()
+level3.x = 42
+level2.x = level3
+level1.x = level2
+
+# 3-level chained get
+assert level1.x.x.x == 42, 'level1.x.x.x is 42'
+
+# 3-level chained set
+level1.x.x.x = 7
+assert level1.x.x.x == 7, 'level1.x.x.x updated to 7'
+assert level3.x == 7, 'level3.x also updated to 7'

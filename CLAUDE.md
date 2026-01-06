@@ -274,4 +274,6 @@ ALWAYS run `make lint-py` after making changes to python code and fix all sugges
 
 ALWAYS update this file when it is out of date.
 
+NEVER add imports anywhere except at the top of the file, this applies to both python and rust.
+
 NEVER write `unsafe` code, if you think you need to write unsafe code, explicitly ask the user or leave a `todo!()` with a suggestion and explanation.
