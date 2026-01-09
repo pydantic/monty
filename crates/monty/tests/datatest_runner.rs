@@ -2,6 +2,9 @@ use std::error::Error;
 use std::ffi::CString;
 use std::fs;
 use std::path::Path;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use ahash::AHashMap;
 use monty::{
@@ -1021,6 +1024,33 @@ fn format_cpython_exception(py: Python<'_>, e: &PyErr) -> String {
     }
 }
 
+/// Timeout duration for Monty tests.
+///
+/// Tests that exceed this duration are considered to be hanging (infinite loop)
+/// and will fail with a timeout error.
+const TEST_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Runs a closure with a timeout, returning an error if it exceeds the duration.
+///
+/// Spawns the closure in a separate thread and waits for the result with a timeout.
+/// If the timeout is exceeded, returns an error message. Note that the spawned thread
+/// will continue running in the background (Rust doesn't support killing threads),
+/// but the test will fail immediately.
+fn run_with_timeout<F, T>(timeout: Duration, f: F) -> Result<T, String>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let result = f();
+        let _ = tx.send(result);
+    });
+
+    rx.recv_timeout(timeout)
+        .map_err(|_| format!("test timed out after {timeout:?} (possible infinite loop)"))
+}
+
 /// Test function that runs each fixture through Monty.
 ///
 /// Handles xfail with strict semantics: if a test is marked `xfail=monty`, it must fail.
@@ -1030,10 +1060,29 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
     let (code, expectation, config) = parse_fixture(&content);
     let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
 
-    let result = if config.iter_mode {
-        try_run_iter_test(path, &code, &expectation)
-    } else {
-        try_run_test(path, &code, &expectation)
+    // Clone data for the closure since it needs 'static lifetime
+    let path_owned = path.to_owned();
+    let code_owned = code.clone();
+    let expectation_owned = expectation.clone();
+    let iter_mode = config.iter_mode;
+
+    let result = run_with_timeout(TEST_TIMEOUT, move || {
+        if iter_mode {
+            try_run_iter_test(&path_owned, &code_owned, &expectation_owned)
+        } else {
+            try_run_test(&path_owned, &code_owned, &expectation_owned)
+        }
+    });
+
+    // Handle timeout error
+    let result = match result {
+        Ok(inner_result) => inner_result,
+        Err(timeout_msg) => Err(TestFailure {
+            test_name: test_name.clone(),
+            kind: "Timeout".to_string(),
+            expected: "completion within 5s".to_string(),
+            actual: timeout_msg,
+        }),
     };
 
     if config.xfail_monty {
