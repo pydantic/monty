@@ -1,15 +1,17 @@
 use crate::{
     args::ArgValues,
     builtins::Builtins,
-    evaluate::{EvalResult, ExternalCall},
+    evaluate::EvalResult,
     exception_private::{exc_fmt, ExcType},
     expressions::Identifier,
     heap::{Heap, HeapData},
     intern::Interns,
     io::PrintWriter,
     namespace::{NamespaceId, Namespaces},
+    parse::CodeRange,
     resource::ResourceTracker,
     run_frame::RunResult,
+    snapshot::{AbstractSnapshotTracker, ExternalCall},
     types::{PyTrait, Type},
     value::Value,
 };
@@ -32,6 +34,9 @@ pub enum Callable {
 impl Callable {
     /// Calls this callable with the given arguments.
     ///
+    /// Returns `EvalResult::Value` for immediate results, or `EvalResult::ExternalCall`
+    /// when execution is suspended waiting for an external function call.
+    ///
     /// # Arguments
     /// * `namespaces` - The namespace namespaces containing all namespaces
     /// * `local_idx` - Index of the local namespace in namespaces
@@ -39,6 +44,9 @@ impl Callable {
     /// * `args` - The arguments to pass to the callable
     /// * `interns` - String storage for looking up interned names in error messages
     /// * `print` - The print for print output
+    /// * `snapshot_tracker` - Tracker for recording execution position for resumption
+    /// * `call_position` - Source position of the call expression for tracebacks
+    #[allow(clippy::too_many_arguments)]
     pub fn call(
         &self,
         namespaces: &mut Namespaces,
@@ -47,6 +55,8 @@ impl Callable {
         args: ArgValues,
         interns: &Interns,
         print: &mut impl PrintWriter,
+        snapshot_tracker: &mut impl AbstractSnapshotTracker,
+        call_position: CodeRange,
     ) -> RunResult<EvalResult<Value>> {
         match self {
             Callable::Builtin(b) => b.call(heap, args, interns, print).map(EvalResult::Value),
@@ -69,16 +79,46 @@ impl Callable {
                         return builtin.call(heap, args, interns, print).map(EvalResult::Value);
                     }
                     Value::Function(f_id) => {
-                        let args = args_opt.take().expect("args moved twice");
-                        // Simple function without defaults - pass empty slice
-                        return interns
-                            .get_function(*f_id)
-                            .call(namespaces, heap, args, &[], interns, print)
-                            .map(EvalResult::Value);
+                        let f_id = *f_id;
+                        // Check for cached return value (resuming after external call inside function).
+                        // Use exact match to avoid consuming cached values from external function calls
+                        // (which have None position) when this is a nested user-defined function call.
+                        return match namespaces.take_ext_return_value_exact(heap, call_position) {
+                            Ok(Some(return_value)) => {
+                                // When resuming from an external call inside the function,
+                                // the args were re-evaluated and need to be dropped
+                                if let Some(args) = args_opt.take() {
+                                    args.drop_with_heap(heap);
+                                }
+                                Ok(EvalResult::Value(return_value))
+                            }
+                            Ok(None) => {
+                                // No cached return - call the function normally
+                                let args = args_opt.take().expect("args moved twice");
+                                interns.get_function(f_id).call(
+                                    f_id,
+                                    namespaces,
+                                    heap,
+                                    args,
+                                    &[],
+                                    interns,
+                                    print,
+                                    snapshot_tracker,
+                                    call_position,
+                                )
+                            }
+                            Err(e) => {
+                                // External call inside function raised an exception
+                                if let Some(args) = args_opt.take() {
+                                    args.drop_with_heap(heap);
+                                }
+                                Err(e)
+                            }
+                        };
                     }
                     Value::ExtFunction(f_id) => {
                         let f_id = *f_id;
-                        return match namespaces.take_ext_return_value(heap) {
+                        return match namespaces.take_ext_return_value(heap, call_position) {
                             Ok(Some(return_value)) => {
                                 // When resuming from an external call, the args were re-evaluated
                                 // and need to be dropped since we're using the cached return value
@@ -92,7 +132,7 @@ impl Callable {
                                 let args = args_opt
                                     .take()
                                     .expect("external function args already taken before making call");
-                                Ok(EvalResult::ExternalCall(ExternalCall::new(f_id, args)))
+                                Ok(EvalResult::ExternalCall(ExternalCall::new(f_id, args, call_position)))
                             }
                             Err(e) => {
                                 // External function raised an exception - propagate it
@@ -106,19 +146,51 @@ impl Callable {
                     // Check for heap-allocated closure or function with defaults
                     Value::Ref(heap_id) => {
                         let heap_id = *heap_id;
-                        // Use with_entry_mut to temporarily take the HeapData out,
-                        // allowing us to borrow heap mutably for the function call
-                        let args = args_opt.take().expect("args moved twice");
-                        return heap
-                            .with_entry_mut(heap_id, |heap, data| {
-                                match data {
+                        // Check for cached return value first (resuming after external call inside function).
+                        // Use exact match to avoid consuming cached values from external function calls.
+                        return match namespaces.take_ext_return_value_exact(heap, call_position) {
+                            Ok(Some(return_value)) => {
+                                if let Some(args) = args_opt.take() {
+                                    args.drop_with_heap(heap);
+                                }
+                                Ok(EvalResult::Value(return_value))
+                            }
+                            Ok(None) => {
+                                // No cached return - call the function normally
+                                // Use with_entry_mut to temporarily take the HeapData out,
+                                // allowing us to borrow heap mutably for the function call
+                                let args = args_opt.take().expect("args moved twice");
+                                heap.with_entry_mut(heap_id, |heap, data| match data {
                                     HeapData::Closure(f_id, cells, defaults) => {
-                                        let f = interns.get_function(*f_id);
-                                        f.call_with_cells(namespaces, heap, args, cells, defaults, interns, print)
+                                        let f_id = *f_id;
+                                        let f = interns.get_function(f_id);
+                                        f.call_with_cells(
+                                            f_id,
+                                            namespaces,
+                                            heap,
+                                            args,
+                                            cells,
+                                            defaults,
+                                            interns,
+                                            print,
+                                            snapshot_tracker,
+                                            call_position,
+                                        )
                                     }
                                     HeapData::FunctionDefaults(f_id, defaults) => {
-                                        let f = interns.get_function(*f_id);
-                                        f.call(namespaces, heap, args, defaults, interns, print)
+                                        let f_id = *f_id;
+                                        let f = interns.get_function(f_id);
+                                        f.call(
+                                            f_id,
+                                            namespaces,
+                                            heap,
+                                            args,
+                                            defaults,
+                                            interns,
+                                            print,
+                                            snapshot_tracker,
+                                            call_position,
+                                        )
                                     }
                                     _ => {
                                         args.drop_with_heap(heap);
@@ -127,9 +199,15 @@ impl Callable {
                                         let err = exc_fmt!(ExcType::TypeError; "'{type_name}' object is not callable");
                                         Err(err.with_position(ident.position).into())
                                     }
+                                })
+                            }
+                            Err(e) => {
+                                if let Some(args) = args_opt.take() {
+                                    args.drop_with_heap(heap);
                                 }
-                            })
-                            .map(EvalResult::Value);
+                                Err(e)
+                            }
+                        };
                     }
                     _ => {}
                 }

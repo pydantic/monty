@@ -1,10 +1,14 @@
+use std::collections::HashMap;
+
 use crate::{
     exception_private::{ExcType, ExceptionRaise, RunError},
     expressions::{Identifier, NameScope},
     heap::{Heap, HeapId},
     intern::Interns,
+    parse::CodeRange,
     resource::{ResourceError, ResourceTracker},
     run_frame::RunResult,
+    snapshot::ArgumentCache,
     value::Value,
 };
 
@@ -86,9 +90,15 @@ pub struct Namespaces {
     stack: Vec<Namespace>,
     /// if we have an old namespace to reuse, trace its id
     reuse_ids: Vec<NamespaceId>,
-    /// Return values from an external function call.
-    /// Set when resuming after an external function call.
-    ext_return_values: Vec<Value>,
+    /// Return values from external function calls or functions that completed after internal external calls.
+    ///
+    /// Each entry is `(call_position, value)`:
+    /// - `call_position` is `None` for direct external function calls (any matching position works)
+    /// - `call_position` is `Some(pos)` for function return values (only match at that exact call site)
+    ///
+    /// This distinction is necessary because during argument re-evaluation, we might have multiple
+    /// function calls. Only the correct call should receive the cached return value.
+    ext_return_values: Vec<(Option<CodeRange>, Value)>,
     /// Index of the next return value to be used.
     ///
     /// Since we can have multiple external function calls within a single statement (e.g. `foo() + bar()`),
@@ -101,6 +111,19 @@ pub struct Namespaces {
     /// When set, the next call to `take_ext_return_value` will return this error,
     /// allowing it to propagate through try/except blocks.
     ext_exception: Option<ExceptionRaise>,
+    /// Cached partially-evaluated arguments from when an external call suspended.
+    ///
+    /// When evaluating arguments for a call and one of them triggers an external call,
+    /// we cache the already-evaluated arguments here. On resume, we restore from this
+    /// cache instead of re-evaluating arguments (which would cause duplicate side effects).
+    argument_cache: Option<ArgumentCache>,
+    /// Cached return values from user-defined functions that completed after internal external calls.
+    ///
+    /// Unlike `ext_return_values` which uses index-based lookup for external calls, this map
+    /// allows direct lookup by call position. This is needed because function returns may be
+    /// interspersed with external call returns, but we need to find the correct function return
+    /// by its exact call site position.
+    func_return_values: HashMap<CodeRange, Value>,
 }
 
 impl Namespaces {
@@ -114,16 +137,24 @@ impl Namespaces {
             ext_return_values: vec![],
             next_ext_return_value: 0,
             ext_exception: None,
+            argument_cache: None,
+            func_return_values: HashMap::new(),
         }
     }
 
-    /// Push another return value from an external function call.
+    /// Push a return value from an external function call or a completed function.
     ///
     /// Also resets the return pointer to zero so we start getting values from the beginning.
-    /// Since this is used when resuming after an external function call to return the value.
-    pub fn push_ext_return_value(&mut self, return_value: Value) {
-        self.next_ext_return_value = 0;
-        self.ext_return_values.push(return_value);
+    ///
+    /// # Arguments
+    /// * `call_position` - The position of the call that should receive this value:
+    ///   - `None` for direct external function calls (any call at the right point can consume it)
+    ///   - `Some(pos)` for functions that completed after internal external calls (only the
+    ///     call at that exact position should consume it)
+    /// * `return_value` - The value to cache
+    pub fn push_ext_return_value(&mut self, call_position: Option<CodeRange>, return_value: Value) {
+        // Don't reset index - let values accumulate and be found by position search
+        self.ext_return_values.push((call_position, return_value));
     }
 
     /// Sets a pending exception from an external function call.
@@ -135,30 +166,99 @@ impl Namespaces {
         self.ext_exception = Some(exc);
     }
 
-    /// Takes a return value or exception from an external function call.
+    /// Gets a return value or exception from an external function call.
     ///
     /// First checks for a pending exception (set via `set_ext_exception`). If found,
     /// returns `Err(RunError::Exc(...))` so the exception propagates through try/except.
     ///
-    /// Otherwise returns `Ok(Some(Value))` if a return value is available, or `Ok(None)` if
-    /// this is the first call (no cached return value yet).
+    /// Otherwise checks `func_return_values` map for a matching position.
+    /// Values are cloned (not removed) so they're available for re-evaluation.
+    /// The map is cleared when function frames complete, handling recursion.
     ///
-    /// Used when resuming after an external function call.
-    pub fn take_ext_return_value(&mut self, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
+    /// Returns `Ok(Some(Value))` if a matching return value is found, or `Ok(None)` if not.
+    ///
+    /// # Arguments
+    /// * `heap` - The heap for cloning values
+    /// * `current_position` - The position of the call site requesting a cached value
+    pub fn take_ext_return_value(
+        &mut self,
+        heap: &mut Heap<impl ResourceTracker>,
+        current_position: CodeRange,
+    ) -> RunResult<Option<Value>> {
         // Check for pending exception first
         if let Some(exc) = self.ext_exception.take() {
-            Err(RunError::Exc(exc))
-        } else if let Some(value) = self.ext_return_values.get(self.next_ext_return_value) {
-            self.next_ext_return_value += 1;
-            Ok(Some(value.clone_with_heap(heap)))
-        } else {
-            Ok(None)
+            return Err(RunError::Exc(exc));
         }
+
+        // Check func_return_values map for exact position match
+        // Clone (don't remove) so the value is available for subsequent re-evaluations
+        if let Some(value) = self.func_return_values.get(&current_position) {
+            return Ok(Some(value.clone_with_heap(heap)));
+        }
+
+        Ok(None)
     }
 
-    /// Clears the return values, exception, and resets the pointer.
+    /// Caches a return value from a user-defined function that completed after internal external calls.
     ///
-    /// This should be used between expressions so return values are only used in the current expression.
+    /// Unlike `push_ext_return_value`, this stores the value in a map by position for direct lookup.
+    /// This is used when a function frame completes and needs to cache its return value for the
+    /// caller to find when re-evaluating the call expression.
+    pub fn set_func_return_value(&mut self, call_position: CodeRange, return_value: Value) {
+        self.func_return_values.insert(call_position, return_value);
+    }
+
+    /// Takes a cached return value for a user-defined function call if one exists.
+    ///
+    /// This is used for checking cached return values from user-defined functions BEFORE
+    /// evaluating arguments. When a function containing external calls completes, its return
+    /// value is stored in `func_return_values` by call position.
+    ///
+    /// Returns the cached value if found, removing it from the cache.
+    pub fn take_func_return_value(
+        &mut self,
+        heap: &mut Heap<impl ResourceTracker>,
+        current_position: CodeRange,
+    ) -> Option<Value> {
+        self.func_return_values
+            .remove(&current_position)
+            .map(|v| v.clone_with_heap(heap))
+    }
+
+    /// Gets a cached return value for a call if one exists.
+    ///
+    /// This is used for checking cached return values BEFORE evaluating arguments.
+    /// When a function or external call completes, its return value is stored by position.
+    /// This allows skipping re-evaluation when the same call is encountered during resumption.
+    ///
+    /// Values are stored in `func_return_values` (a map keyed by position) and are NOT
+    /// removed when retrieved. This allows multiple re-evaluations to find the same cached
+    /// value. Values are cleared when appropriate (e.g., when a function completes).
+    pub fn take_ext_return_value_exact(
+        &mut self,
+        heap: &mut Heap<impl ResourceTracker>,
+        current_position: CodeRange,
+    ) -> RunResult<Option<Value>> {
+        // Check for pending exception first
+        if let Some(exc) = self.ext_exception.take() {
+            return Err(RunError::Exc(exc));
+        }
+
+        // Check the func_return_values map - this holds all cached return values by position.
+        // Clone the value (don't remove) so it's available for subsequent re-evaluations.
+        if let Some(value) = self.func_return_values.get(&current_position) {
+            return Ok(Some(value.clone_with_heap(heap)));
+        }
+
+        Ok(None)
+    }
+
+    /// Clears the external return values, exception, and resets the pointer.
+    ///
+    /// This is called in control flow (for loops, if statements) to clear stale return
+    /// values from condition evaluation before entering the body. Does NOT clear
+    /// `func_return_values` or `argument_cache` since those are needed for proper
+    /// function call caching.
     #[cfg(not(feature = "ref-count-panic"))]
     pub fn clear_ext_return_values(&mut self, _heap: &mut Heap<impl ResourceTracker>) {
         self.ext_return_values.clear();
@@ -166,17 +266,116 @@ impl Namespaces {
         self.ext_exception = None;
     }
 
-    /// if `ref-count-panic` is enabled, drop each member of self.return_values properly before clearing to avoid panic
-    /// on drop.
+    /// Version with proper value dropping for ref-count-panic feature.
+    /// See non-feature version for documentation.
     #[cfg(feature = "ref-count-panic")]
     pub fn clear_ext_return_values(&mut self, heap: &mut Heap<impl ResourceTracker>) {
-        for value in &mut self.ext_return_values {
+        for (_, value) in &mut self.ext_return_values {
             let v = std::mem::replace(value, Value::Dereferenced);
             v.drop_with_heap(heap);
         }
         self.ext_return_values.clear();
         self.next_ext_return_value = 0;
         self.ext_exception = None;
+    }
+
+    /// Clears all cached values when a function frame completes.
+    ///
+    /// This is called when a function completes to clean up cached values from
+    /// internal external calls. Clears:
+    /// - `ext_return_values` - external call return values
+    /// - `func_return_values` - prevents the caller from seeing the completed function's
+    ///   internal cached values (fixes recursion bug)
+    /// - `argument_cache` - prevents outer recursion levels' cached args from being used
+    ///   by inner levels on resume (fixes argument cache collision in recursion)
+    ///
+    /// The function's return value is stored AFTER this call (in `set_func_return_value`),
+    /// so clearing here is safe - the caller will still find the return value.
+    #[cfg(not(feature = "ref-count-panic"))]
+    pub fn clear_on_function_complete(&mut self, _heap: &mut Heap<impl ResourceTracker>) {
+        self.ext_return_values.clear();
+        self.next_ext_return_value = 0;
+        self.ext_exception = None;
+        self.func_return_values.clear();
+        self.argument_cache = None;
+    }
+
+    /// Version with proper value dropping for ref-count-panic feature.
+    /// See non-feature version for documentation.
+    #[cfg(feature = "ref-count-panic")]
+    pub fn clear_on_function_complete(&mut self, heap: &mut Heap<impl ResourceTracker>) {
+        for (_, value) in &mut self.ext_return_values {
+            let v = std::mem::replace(value, Value::Dereferenced);
+            v.drop_with_heap(heap);
+        }
+        self.ext_return_values.clear();
+        self.next_ext_return_value = 0;
+        self.ext_exception = None;
+        for (_, value) in self.func_return_values.drain() {
+            value.drop_with_heap(heap);
+        }
+        if let Some(cache) = self.argument_cache.take() {
+            for value in cache.evaluated_args {
+                value.drop_with_heap(heap);
+            }
+        }
+    }
+
+    /// Clears all cached return values after a statement completes.
+    ///
+    /// This is called after each statement in iter mode to ensure cached values
+    /// don't persist across statements (e.g., across loop iterations).
+    /// Clears both ext_return_values and func_return_values.
+    #[cfg(not(feature = "ref-count-panic"))]
+    pub fn clear_statement_cache(&mut self, _heap: &mut Heap<impl ResourceTracker>) {
+        self.ext_return_values.clear();
+        self.next_ext_return_value = 0;
+        self.ext_exception = None;
+        self.func_return_values.clear();
+        self.argument_cache = None;
+    }
+
+    /// Clears all cached return values after a statement completes.
+    /// Version with proper value dropping for ref-count-panic feature.
+    #[cfg(feature = "ref-count-panic")]
+    pub fn clear_statement_cache(&mut self, heap: &mut Heap<impl ResourceTracker>) {
+        for (_, value) in &mut self.ext_return_values {
+            let v = std::mem::replace(value, Value::Dereferenced);
+            v.drop_with_heap(heap);
+        }
+        self.ext_return_values.clear();
+        self.next_ext_return_value = 0;
+        self.ext_exception = None;
+        for (_, value) in self.func_return_values.drain() {
+            value.drop_with_heap(heap);
+        }
+        if let Some(cache) = self.argument_cache.take() {
+            for value in cache.evaluated_args {
+                value.drop_with_heap(heap);
+            }
+        }
+    }
+
+    /// Sets the argument cache for partially-evaluated arguments.
+    ///
+    /// Called when an external call suspends during argument evaluation to save
+    /// the already-evaluated arguments for later resumption.
+    pub fn set_argument_cache(&mut self, cache: ArgumentCache) {
+        self.argument_cache = Some(cache);
+    }
+
+    /// Takes the argument cache if it matches the given call position.
+    ///
+    /// Returns the cached partially-evaluated arguments if this is the correct
+    /// call site, allowing resumption without re-evaluating side effects.
+    /// Returns `None` if no cache exists or the position doesn't match.
+    pub fn take_argument_cache(&mut self, call_position: CodeRange) -> Option<ArgumentCache> {
+        if let Some(cache) = &self.argument_cache {
+            if cache.call_position == call_position {
+                return self.argument_cache.take();
+            }
+        }
+        None
     }
 
     /// Gets an immutable slice reference to a namespace by index.
@@ -271,8 +470,18 @@ impl Namespaces {
             v.drop_with_heap(heap);
         }
         // Clean up any remaining return values from external function calls
-        for value in std::mem::take(&mut self.ext_return_values) {
+        for (_, value) in std::mem::take(&mut self.ext_return_values) {
             value.drop_with_heap(heap);
+        }
+        // Clean up any cached function return values
+        for value in std::mem::take(&mut self.func_return_values).into_values() {
+            value.drop_with_heap(heap);
+        }
+        // Clean up any cached arguments
+        if let Some(cache) = self.argument_cache.take() {
+            for value in cache.evaluated_args {
+                value.drop_with_heap(heap);
+            }
         }
         // Clear any pending exception
         self.ext_exception = None;

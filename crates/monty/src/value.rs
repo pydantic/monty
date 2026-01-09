@@ -419,13 +419,16 @@ impl PyTrait for Value {
                 Ok(true)
             }
             (Self::InternString(string_id), Self::Ref(id2)) => {
-                if let HeapData::Str(s2) = heap.get(*id2) {
+                let result = if let HeapData::Str(s2) = heap.get(*id2) {
                     let concat = format!("{}{}", interns.get_str(*string_id), s2.as_str());
                     *self = Value::Ref(heap.allocate(HeapData::Str(concat.into()))?);
-                    Ok(true)
+                    true
                 } else {
-                    Ok(false)
-                }
+                    false
+                };
+                // Drop the other value - we've consumed it
+                other.drop_with_heap(heap);
+                Ok(result)
             }
             (Self::Ref(id1), Self::InternString(string_id)) => {
                 if let HeapData::Str(s1) = heap.get_mut(*id1) {
@@ -446,16 +449,19 @@ impl PyTrait for Value {
                 Ok(true)
             }
             (Self::InternBytes(bytes_id), Self::Ref(id2)) => {
-                if let HeapData::Bytes(b2) = heap.get(*id2) {
+                let result = if let HeapData::Bytes(b2) = heap.get(*id2) {
                     let bytes1 = interns.get_bytes(*bytes_id);
                     let mut b = Vec::with_capacity(bytes1.len() + b2.len());
                     b.extend_from_slice(bytes1);
                     b.extend_from_slice(b2);
                     *self = Value::Ref(heap.allocate(HeapData::Bytes(b.into()))?);
-                    Ok(true)
+                    true
                 } else {
-                    Ok(false)
-                }
+                    false
+                };
+                // Drop the other value - we've consumed it
+                other.drop_with_heap(heap);
+                Ok(result)
             }
             (Self::Ref(id1), Self::InternBytes(bytes_id)) => {
                 if let HeapData::Bytes(b1) = heap.get_mut(*id1) {
@@ -468,7 +474,11 @@ impl PyTrait for Value {
             (Self::Ref(id), Self::Ref(_)) => {
                 heap.with_entry_mut(*id, |heap, data| data.py_iadd(other, heap, Some(*id), interns))
             }
-            _ => Ok(false),
+            _ => {
+                // Drop other if it's a Ref (ensure proper refcounting for unsupported type combinations)
+                other.drop_with_heap(heap);
+                Ok(false)
+            }
         }
     }
 

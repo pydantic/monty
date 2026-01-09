@@ -7,12 +7,14 @@ use crate::{
     expressions::{Expr, ExprLoc, NameScope},
     fstring::{fstring_interpolation, ConversionFlag, FStringPart},
     heap::{Heap, HeapData},
-    intern::{ExtFunctionId, Interns, StringId},
+    intern::{Interns, StringId},
     io::PrintWriter,
     namespace::{NamespaceId, Namespaces},
     operators::{CmpOperator, Operator},
+    parse::CodeRange,
     resource::ResourceTracker,
     run_frame::RunResult,
+    snapshot::{AbstractSnapshotTracker, ArgumentCache, ExternalCall},
     types::{Dict, List, PyTrait, Set, Str, Tuple},
     value::{Attr, Value},
 };
@@ -30,7 +32,8 @@ use crate::{
 /// # Type Parameters
 /// * `T` - The resource tracker type for enforcing execution limits
 /// * `W` - The print type for print output
-pub struct EvaluateExpr<'h, 's, T: ResourceTracker, W: PrintWriter> {
+/// * `P` - The snapshot tracker type for recording execution position
+pub struct EvaluateExpr<'h, 's, T: ResourceTracker, W: PrintWriter, S: AbstractSnapshotTracker> {
     /// The namespace stack containing all scopes (global, local, etc.)
     pub namespaces: &'h mut Namespaces,
     /// Index of the current local namespace in the namespace stack
@@ -41,6 +44,8 @@ pub struct EvaluateExpr<'h, 's, T: ResourceTracker, W: PrintWriter> {
     pub interns: &'s Interns,
     /// Writer for print output
     pub print: &'s mut W,
+    /// Tracker for recording execution position for snapshot/resume
+    pub snapshot_tracker: &'h mut S,
 }
 
 /// Similar to the legacy `ok!()` macro, this gives shorthand for returning early
@@ -55,7 +60,7 @@ macro_rules! return_ext_call {
 }
 pub(crate) use return_ext_call;
 
-impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
+impl<'h, 's, T: ResourceTracker, W: PrintWriter, S: AbstractSnapshotTracker> EvaluateExpr<'h, 's, T, W, S> {
     /// Creates a new `EvaluateExpr` with the given evaluation context.
     ///
     /// # Arguments
@@ -64,12 +69,14 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
     /// * `heap` - The heap for object allocation
     /// * `interns` - String storage for looking up interned names
     /// * `print` - The print for print output
+    /// * `snapshot_tracker` - Tracker for recording execution position
     pub fn new(
         namespaces: &'h mut Namespaces,
         local_idx: NamespaceId,
         heap: &'h mut Heap<T>,
         interns: &'s Interns,
         print: &'s mut W,
+        snapshot_tracker: &'h mut S,
     ) -> Self {
         Self {
             namespaces,
@@ -77,6 +84,7 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
             heap,
             interns,
             print,
+            snapshot_tracker,
         }
     }
 
@@ -94,7 +102,21 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
                 .get_var_value(self.local_idx, self.heap, ident, self.interns)
                 .map(EvalResult::Value),
             Expr::Call { callable, args } => {
-                let args = return_ext_call!(self.evaluate_args(args, Some(callable))?);
+                // Check for cached return value BEFORE evaluating arguments.
+                // This is critical for resumption: if a function containing an external call
+                // returned, its return value is cached with a specific position. When re-evaluating
+                // the expression, we must skip argument evaluation entirely to avoid side effects
+                // (like nested function calls that would clear the cached value).
+                //
+                // Only match exact positions here (not None). Cached values with None position are
+                // for direct external calls and should be matched in callable.rs, not here.
+                if let Some(cached) = self
+                    .namespaces
+                    .take_ext_return_value_exact(self.heap, expr_loc.position)?
+                {
+                    return Ok(EvalResult::Value(cached));
+                }
+                let args = return_ext_call!(self.evaluate_args_cached(args, Some(callable), expr_loc.position)?);
                 callable.call(
                     self.namespaces,
                     self.local_idx,
@@ -102,6 +124,8 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
                     args,
                     self.interns,
                     self.print,
+                    self.snapshot_tracker,
+                    expr_loc.position,
                 )
             }
             Expr::AttrCall { object, attr, args } => self.attr_call(object, attr, args),
@@ -137,7 +161,14 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
             }
             Expr::Subscript { object, index } => {
                 let obj = return_ext_call!(self.evaluate_use(object)?);
-                let key = return_ext_call!(self.evaluate_use(index)?);
+                // Handle external call in index evaluation - must drop obj before returning
+                let key = match self.evaluate_use(index)? {
+                    EvalResult::Value(v) => v,
+                    EvalResult::ExternalCall(ext_call) => {
+                        obj.drop_with_heap(self.heap);
+                        return Ok(EvalResult::ExternalCall(ext_call));
+                    }
+                };
                 let result = obj.py_getitem(&key, self.heap, self.interns);
                 // Drop temporary references to object and key
                 obj.drop_with_heap(self.heap);
@@ -236,6 +267,8 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
                     args,
                     self.interns,
                     self.print,
+                    self.snapshot_tracker,
+                    expr_loc.position,
                 )?;
                 let value = return_ext_call!(eval_result);
                 value.drop_with_heap(self.heap);
@@ -277,7 +310,14 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
             Expr::Subscript { object, index } => {
                 // Must actually perform the subscript to catch IndexError, KeyError, etc.
                 let obj = return_ext_call!(self.evaluate_use(object)?);
-                let key = return_ext_call!(self.evaluate_use(index)?);
+                // Handle external call in index evaluation - must drop obj before returning
+                let key = match self.evaluate_use(index)? {
+                    EvalResult::Value(v) => v,
+                    EvalResult::ExternalCall(ext_call) => {
+                        obj.drop_with_heap(self.heap);
+                        return Ok(EvalResult::ExternalCall(ext_call));
+                    }
+                };
                 let result = obj.py_getitem(&key, self.heap, self.interns);
                 // Drop temporary references (even on error)
                 obj.drop_with_heap(self.heap);
@@ -591,6 +631,131 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
         Ok(EvalResult::Value(Value::Ref(heap_id)))
     }
 
+    /// Evaluates function call arguments from expressions to values with caching support.
+    ///
+    /// This version checks for cached partially-evaluated arguments at the call position.
+    /// If cached arguments exist, they are used and evaluation continues from where it left off.
+    /// If an external call suspends during argument evaluation, already-evaluated arguments
+    /// are cached to avoid re-evaluation (and duplicate side effects) on resume.
+    ///
+    /// The `callable` parameter is used for error messages when argument unpacking fails.
+    /// Pass `None` for method calls where the callable name isn't readily available.
+    fn evaluate_args_cached(
+        &mut self,
+        args_expr: &ArgExprs,
+        callable: Option<&Callable>,
+        call_position: CodeRange,
+    ) -> RunResult<EvalResult<ArgValues>> {
+        // Check for cached partially-evaluated arguments
+        if let Some(cache) = self.namespaces.take_argument_cache(call_position) {
+            return self.resume_args_from_cache(args_expr, cache, callable);
+        }
+
+        // Normal evaluation with caching on suspension
+        match args_expr {
+            ArgExprs::Empty => Ok(EvalResult::Value(ArgValues::Empty)),
+            ArgExprs::One(arg) => {
+                let arg = return_ext_call!(self.evaluate_use(arg)?);
+                Ok(EvalResult::Value(ArgValues::One(arg)))
+            }
+            ArgExprs::Two(arg1, arg2) => {
+                // Evaluate first argument
+                let first = match self.evaluate_use(arg1)? {
+                    EvalResult::Value(v) => v,
+                    EvalResult::ExternalCall(ext_call) => {
+                        // First arg suspended - no caching needed (no args evaluated yet)
+                        return Ok(EvalResult::ExternalCall(ext_call));
+                    }
+                };
+
+                // Evaluate second argument
+                match self.evaluate_use(arg2)? {
+                    EvalResult::Value(second) => Ok(EvalResult::Value(ArgValues::Two(first, second))),
+                    EvalResult::ExternalCall(ext_call) => {
+                        // Second arg suspended - cache first arg
+                        self.namespaces.set_argument_cache(ArgumentCache {
+                            call_position,
+                            evaluated_args: vec![first],
+                            suspended_at_arg: 1,
+                        });
+                        Ok(EvalResult::ExternalCall(ext_call))
+                    }
+                }
+            }
+            ArgExprs::Args(args_exprs) => {
+                let args = return_ext_call!(self.evaluate_pos_args_cached(args_exprs, call_position)?);
+                Ok(EvalResult::Value(ArgValues::ArgsKargs {
+                    args,
+                    kwargs: KwargsValues::Empty,
+                }))
+            }
+            ArgExprs::Kwargs(kwargs_exprs) => {
+                let inline = return_ext_call!(self.evaluate_kwargs(kwargs_exprs)?);
+                Ok(EvalResult::Value(ArgValues::Kwargs(KwargsValues::Inline(inline))))
+            }
+            ArgExprs::ArgsKargs {
+                args,
+                var_args,
+                kwargs,
+                var_kwargs,
+            } => self.evaluate_full_args(
+                args.as_deref(),
+                var_args.as_ref(),
+                kwargs.as_deref(),
+                var_kwargs.as_ref(),
+                callable.map(|c| c.name(self.interns)),
+            ),
+        }
+    }
+
+    /// Resumes argument evaluation from cached partially-evaluated arguments.
+    fn resume_args_from_cache(
+        &mut self,
+        args_expr: &ArgExprs,
+        cache: ArgumentCache,
+        callable: Option<&Callable>,
+    ) -> RunResult<EvalResult<ArgValues>> {
+        match args_expr {
+            ArgExprs::Two(_arg1, arg2) => {
+                // We have first arg cached, evaluate second
+                debug_assert_eq!(cache.suspended_at_arg, 1);
+                debug_assert_eq!(cache.evaluated_args.len(), 1);
+
+                let first = cache.evaluated_args.into_iter().next().expect("cached arg");
+                match self.evaluate_use(arg2)? {
+                    EvalResult::Value(second) => Ok(EvalResult::Value(ArgValues::Two(first, second))),
+                    EvalResult::ExternalCall(ext_call) => {
+                        // Still suspended - re-cache first arg
+                        self.namespaces.set_argument_cache(ArgumentCache {
+                            call_position: cache.call_position,
+                            evaluated_args: vec![first],
+                            suspended_at_arg: 1,
+                        });
+                        Ok(EvalResult::ExternalCall(ext_call))
+                    }
+                }
+            }
+            ArgExprs::Args(args_exprs) => {
+                // Resume from cached positional args
+                let args = return_ext_call!(self.resume_pos_args_from_cache(
+                    args_exprs,
+                    cache.call_position,
+                    cache.evaluated_args,
+                    cache.suspended_at_arg,
+                )?);
+                Ok(EvalResult::Value(ArgValues::ArgsKargs {
+                    args,
+                    kwargs: KwargsValues::Empty,
+                }))
+            }
+            _ => {
+                // Other variants don't support caching yet - fall back to regular evaluation
+                // (this shouldn't happen if caching is working correctly)
+                self.evaluate_args(args_expr, callable)
+            }
+        }
+    }
+
     /// Evaluates function call arguments from expressions to values.
     ///
     /// The `callable` parameter is used for error messages when argument unpacking fails.
@@ -658,6 +823,71 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
             }
         }
         Ok(EvalResult::Value(args))
+    }
+
+    /// Collects positional arguments with caching support for external call resumption.
+    ///
+    /// On external call suspension, caches already-evaluated arguments to avoid
+    /// re-evaluation on resume.
+    fn evaluate_pos_args_cached(
+        &mut self,
+        exprs: &[ExprLoc],
+        call_position: CodeRange,
+    ) -> RunResult<EvalResult<Vec<Value>>> {
+        let mut args: Vec<Value> = Vec::with_capacity(exprs.len());
+        for (i, expr) in exprs.iter().enumerate() {
+            match self.evaluate_use(expr) {
+                Ok(EvalResult::Value(value)) => args.push(value),
+                Ok(EvalResult::ExternalCall(ext_call)) => {
+                    // Cache already-evaluated args before suspending
+                    if !args.is_empty() {
+                        self.namespaces.set_argument_cache(ArgumentCache {
+                            call_position,
+                            evaluated_args: args,
+                            suspended_at_arg: i,
+                        });
+                    }
+                    return Ok(EvalResult::ExternalCall(ext_call));
+                }
+                Err(err) => {
+                    self.drop_values(&mut args);
+                    return Err(err);
+                }
+            }
+        }
+        Ok(EvalResult::Value(args))
+    }
+
+    /// Resumes positional argument evaluation from cached state.
+    fn resume_pos_args_from_cache(
+        &mut self,
+        exprs: &[ExprLoc],
+        call_position: CodeRange,
+        mut cached_args: Vec<Value>,
+        suspended_at: usize,
+    ) -> RunResult<EvalResult<Vec<Value>>> {
+        // Continue evaluation from the arg that was being evaluated when we suspended.
+        // The arg at suspended_at needs to be re-evaluated (it caused the suspension),
+        // and we continue from there.
+        for (i, expr) in exprs.iter().enumerate().skip(suspended_at) {
+            match self.evaluate_use(expr) {
+                Ok(EvalResult::Value(value)) => cached_args.push(value),
+                Ok(EvalResult::ExternalCall(ext_call)) => {
+                    // Still suspended - re-cache what we have
+                    self.namespaces.set_argument_cache(ArgumentCache {
+                        call_position,
+                        evaluated_args: cached_args,
+                        suspended_at_arg: i,
+                    });
+                    return Ok(EvalResult::ExternalCall(ext_call));
+                }
+                Err(err) => {
+                    self.drop_values(&mut cached_args);
+                    return Err(err);
+                }
+            }
+        }
+        Ok(EvalResult::Value(cached_args))
     }
 
     /// Builds fully general arguments supporting all Python call syntax.
@@ -947,20 +1177,4 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter> EvaluateExpr<'h, 's, T, W> {
 pub enum EvalResult<T> {
     Value(T),
     ExternalCall(ExternalCall),
-}
-
-/// External function call that needs host resolution.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct ExternalCall {
-    /// The name of the function being called.
-    pub function_id: ExtFunctionId,
-    /// The evaluated arguments to the function.
-    pub args: ArgValues,
-}
-
-impl ExternalCall {
-    /// Creates a new external function call.
-    pub fn new(function_id: ExtFunctionId, args: ArgValues) -> Self {
-        Self { function_id, args }
-    }
 }

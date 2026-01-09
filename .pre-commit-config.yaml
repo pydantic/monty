@@ -20,15 +20,21 @@ repos:
 
   - repo: local
     hooks:
-      - id: format-lint-rs
-        name: Format & Lint Rust
-        entry: make format-lint-rs
+      - id: format-rs
+        name: Format Rust
+        entry: make format-rs
         types: [rust]
         language: system
         pass_filenames: false
-      - id: lint-py
-        name: Lint Python
-        entry: make lint-py
+      - id: lint-rs
+        name: Lint Rust
+        entry: make lint-rs
+        types: [rust]
+        language: system
+        pass_filenames: false
+      - id: format-lint-py
+        name: Format & Lint Python
+        entry: make format-lint-py
         types: [python]
         language: system
         pass_filenames: false

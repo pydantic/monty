@@ -31,6 +31,7 @@
       "Skill(fastmod)",
       "Bash(wc:*)",
       "Bash(rustup show:*)",
+      "WebSearch",
       "WebFetch(domain:docs.anthropic.com)",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:15r10nk.github.io)",

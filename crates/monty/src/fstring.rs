@@ -15,6 +15,7 @@ use crate::{
     io::PrintWriter,
     resource::ResourceTracker,
     run_frame::RunResult,
+    snapshot::AbstractSnapshotTracker,
     types::PyTrait,
     value::Value,
 };
@@ -277,7 +278,7 @@ impl ValueType {
 /// `Ok(())` on success, or an error if formatting fails.
 /// The caller is responsible for dropping `value` after this function returns.
 pub(crate) fn fstring_interpolation(
-    evaluator: &mut EvaluateExpr<'_, '_, impl ResourceTracker, impl PrintWriter>,
+    evaluator: &mut EvaluateExpr<'_, '_, impl ResourceTracker, impl PrintWriter, impl AbstractSnapshotTracker>,
     result: &mut String,
     value: &Value,
     conversion: ConversionFlag,
@@ -353,7 +354,7 @@ fn apply_conversion(
 /// Evaluates each part and concatenates the results into a format spec string,
 /// which is then parsed into a `ParsedFormatSpec` at runtime.
 fn evaluate_dynamic_format_spec(
-    evaluator: &mut EvaluateExpr<'_, '_, impl ResourceTracker, impl PrintWriter>,
+    evaluator: &mut EvaluateExpr<'_, '_, impl ResourceTracker, impl PrintWriter, impl AbstractSnapshotTracker>,
     parts: &[FStringPart],
 ) -> RunResult<EvalResult<String>> {
     let mut result = String::new();

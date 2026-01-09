@@ -13,10 +13,14 @@ import sys
 import traceback
 from threading import Lock
 
+from iter_test_methods import ITER_MODE_GLOBALS
+
 lock = Lock()
 
 
-def run_file_and_get_traceback(file_path: str, recursion_limit: int | None = None) -> str | None:
+def run_file_and_get_traceback(
+    file_path: str, recursion_limit: int | None = None, iter_mode: bool = False
+) -> str | None:
     """
     Execute a Python file and return the formatted traceback if an exception occurs.
 
@@ -28,6 +32,8 @@ def run_file_and_get_traceback(file_path: str, recursion_limit: int | None = Non
         recursion_limit: Recursion limit for execution. CPython adds ~5 frames
             of overhead for runpy, so the effective limit for user code is
             approximately recursion_limit - 5.
+        iter_mode: If True, inject external function implementations into globals
+            for iter mode tests (tests that use external functions like add_ints).
 
     Returns:
         Formatted traceback string with '^' replaced by '~', or None if no exception.
@@ -42,9 +48,12 @@ def run_file_and_get_traceback(file_path: str, recursion_limit: int | None = Non
         if recursion_limit is not None:
             sys.setrecursionlimit(recursion_limit + 5)
 
+        # Prepare init_globals for iter mode tests
+        init_globals = dict(ITER_MODE_GLOBALS) if iter_mode else None
+
         try:
             # Execute via runpy - this preserves full traceback info
-            runpy.run_path(abs_path, run_name='__main__')
+            runpy.run_path(abs_path, init_globals=init_globals, run_name='__main__')
             return None  # No exception
         except SystemExit:
             return None  # sys.exit() is not an error
@@ -65,6 +74,13 @@ def run_file_and_get_traceback(file_path: str, recursion_limit: int | None = Non
                         skip_until_test_file = False
                         result_frames.append(frame.replace(abs_path, file_name))
                 else:
+                    if iter_mode:
+                        # In iter mode, skip frames from helper modules
+                        if 'iter_test_methods.py", ' in frame:
+                            continue
+                        # python's doing something weird and show the file as <string> for dataclass exceptions
+                        if frame.startswith('  File "<string>"'):
+                            continue
                     result_frames.append(frame.replace(abs_path, file_name))
 
             # Restore a high limit for traceback formatting
@@ -73,7 +89,15 @@ def run_file_and_get_traceback(file_path: str, recursion_limit: int | None = Non
             return '\n'.join(map(normalize_debug_range, lines)).rstrip()
 
 
+def format_full_traceback(e: Exception):
+    stack = traceback.format_exception(type(e), e, e.__traceback__)
+
+    lines = (''.join(stack)).splitlines()
+    return '\n'.join(map(normalize_debug_range, lines)).rstrip()
+
+
 def normalize_debug_range(line: str) -> str:
+    line = line.replace('dataclasses.FrozenInstanceError:', 'FrozenInstanceError:')
     if re.fullmatch(r' +[\~\^]+', line):
         return line.replace('^', '~')
     else:

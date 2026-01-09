@@ -998,7 +998,7 @@ fn convert_conversion_flag(flag: RuffConversionFlag) -> ConversionFlag {
 /// extracting the preview line from source during traceback formatting.
 ///
 /// To display the filename, the caller must provide access to the string storage.
-#[derive(Clone, Copy, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CodeRange {
     /// Interned filename ID - look up in Interns to get the actual string.
     pub filename: StringId,

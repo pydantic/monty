@@ -1,4 +1,4 @@
-use std::{error::Error, ffi::CString, fs, path::Path};
+use std::{error::Error, ffi::CString, fs, path::Path, sync::mpsc, thread, time::Duration};
 
 use ahash::AHashMap;
 use monty::{
@@ -110,8 +110,6 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
         // Check for mode: iter directive
         if first_line.contains("mode: iter") {
             config.iter_mode = true;
-            // iter mode implicitly xfails cpython (no external functions there)
-            config.xfail_cpython = true;
         }
 
         // Check for xfail= directive
@@ -257,6 +255,15 @@ const ITER_EXT_FUNCTIONS: &[&str] = &[
     "make_empty",         // () -> Dataclass Empty() (immutable, no fields)
 ];
 
+/// Python implementations of external functions for running iter mode tests in CPython.
+///
+/// These implementations mirror the behavior of `dispatch_external_call` so that
+/// iter mode tests produce identical results in both Monty and CPython.
+///
+/// This is loaded from `scripts/iter_test_methods.py` which is also imported by
+/// `scripts/run_traceback.py` to ensure consistency.
+const ITER_EXT_FUNCTIONS_PYTHON: &str = include_str!("../../../scripts/iter_test_methods.py");
+
 /// Dispatches an external function call to the appropriate test implementation.
 ///
 /// Returns `ExternalResult::Return` for successful calls, or `ExternalResult::Error`
@@ -320,7 +327,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> ExternalResult 
             assert!(args.is_empty(), "make_mutable_point requires no arguments");
             // Return a mutable Point(x=1, y=2) dataclass
             MontyObject::Dataclass {
-                name: "Point".to_string(),
+                name: "MutablePoint".to_string(),
                 field_names: vec!["x".to_string(), "y".to_string()],
                 attrs: vec![
                     (MontyObject::String("x".to_string()), MontyObject::Int(1)),
@@ -781,34 +788,58 @@ fn split_code_for_module(code: &str, need_return_value: bool) -> (String, Option
 /// This imports scripts/run_traceback.py via pyo3 and calls `run_file_and_get_traceback()`
 /// which executes the file via runpy.run_path() to ensure full traceback information
 /// (including caret lines) is preserved.
-fn run_traceback_script(path: &Path) -> String {
+///
+/// When `iter_mode` is true, external function implementations are injected into the
+/// file's globals before execution.
+fn run_traceback_script(path: &Path, iter_mode: bool) -> String {
     Python::attach(|py| {
-        // Add scripts directory to sys.path (tests run from crates/monty/)
-        let sys = py.import("sys").expect("Failed to import sys");
-        let sys_path = sys.getattr("path").expect("Failed to get sys.path");
-        sys_path
-            .call_method1("insert", (0, "../../scripts"))
-            .expect("Failed to add scripts to sys.path");
-
-        // Import the run_traceback module
-        let run_traceback = py.import("run_traceback").expect("Failed to import run_traceback");
+        let run_traceback = import_run_traceback(py);
 
         // Get absolute path for the test file
         let abs_path = path.canonicalize().expect("Failed to get absolute path");
         let path_str = abs_path.to_str().expect("Invalid UTF-8 in path");
 
-        // Call run_file_and_get_traceback with the recursion limit
+        // Call run_file_and_get_traceback with the recursion limit and iter_mode flag
         let result = run_traceback
-            .call_method1("run_file_and_get_traceback", (path_str, TEST_RECURSION_LIMIT))
+            .call_method1(
+                "run_file_and_get_traceback",
+                (path_str, TEST_RECURSION_LIMIT, iter_mode),
+            )
             .expect("Failed to call run_file_and_get_traceback");
 
         // Handle None return (no exception raised)
         if result.is_none() {
             String::new()
         } else {
-            result.extract::<String>().expect("Failed to extract result string")
+            result
+                .extract()
+                .expect("Failed to extract string from return value of run_file_and_get_traceback")
         }
     })
+}
+
+fn format_traceback(py: Python<'_>, exc: PyErr) -> String {
+    let run_traceback = import_run_traceback(py);
+    let exc_value = exc.value(py);
+    let return_value = run_traceback
+        .call_method1("format_full_traceback", (exc_value,))
+        .expect("Failed to call format_full_traceback");
+    return_value
+        .extract()
+        .expect("failed to extract string from return value of format_full_traceback")
+}
+
+/// Import the run_traceback module
+fn import_run_traceback(py: Python<'_>) -> Bound<'_, PyModule> {
+    // Add scripts directory to sys.path (tests run from crates/monty/)
+    let sys = py.import("sys").expect("Failed to import sys");
+    let sys_path = sys.getattr("path").expect("Failed to get sys.path");
+    sys_path
+        .call_method1("insert", (0, "../../scripts"))
+        .expect("Failed to add scripts to sys.path");
+
+    // Import the run_traceback module
+    py.import("run_traceback").expect("Failed to import run_traceback")
 }
 
 /// Result from CPython execution - either a value to compare, or an early return.
@@ -832,7 +863,12 @@ enum CpythonResult {
 ///
 /// RefCounts tests are skipped as they're Monty-specific.
 /// Traceback tests use scripts/run_traceback.py for reliable caret line support.
-fn try_run_cpython_test(path: &Path, code: &str, expectation: &Expectation) -> Result<(), TestFailure> {
+fn try_run_cpython_test(
+    path: &Path,
+    code: &str,
+    expectation: &Expectation,
+    iter_mode: bool,
+) -> Result<(), TestFailure> {
     // Skip RefCounts tests - only relevant for Monty
     if matches!(expectation, Expectation::RefCounts(_)) {
         return Ok(());
@@ -842,7 +878,7 @@ fn try_run_cpython_test(path: &Path, code: &str, expectation: &Expectation) -> R
 
     // Traceback tests use the external script for reliable caret line support
     if let Expectation::Traceback(expected) = expectation {
-        let result = run_traceback_script(path);
+        let result = run_traceback_script(path, iter_mode);
         if result != *expected {
             return Err(TestFailure {
                 test_name,
@@ -864,6 +900,13 @@ fn try_run_cpython_test(path: &Path, code: &str, expectation: &Expectation) -> R
         // Execute statements at module level
         let globals = PyDict::new(py);
 
+        // For iter mode tests, inject external function implementations into globals
+        if iter_mode {
+            let ext_funcs_cstr = CString::new(ITER_EXT_FUNCTIONS_PYTHON).expect("Invalid C string in ext funcs");
+            py.run(&ext_funcs_cstr, Some(&globals), None)
+                .expect("Failed to define external functions for iter mode");
+        }
+
         // Run the statements
         let statements_cstr = CString::new(statements.as_str()).expect("Invalid C string in statements");
         let stmt_result = py.run(&statements_cstr, Some(&globals), None);
@@ -873,9 +916,9 @@ fn try_run_cpython_test(path: &Path, code: &str, expectation: &Expectation) -> R
             if matches!(expectation, Expectation::NoException) {
                 return CpythonResult::Failed(TestFailure {
                     test_name: test_name.clone(),
-                    kind: "CPython".to_string(),
+                    kind: "CPython unexpected exception".to_string(),
                     expected: "no exception".to_string(),
-                    actual: e.to_string(),
+                    actual: format_traceback(py, e),
                 });
             }
             if matches!(expectation, Expectation::Raise(_)) {
@@ -885,7 +928,7 @@ fn try_run_cpython_test(path: &Path, code: &str, expectation: &Expectation) -> R
                 test_name: test_name.clone(),
                 kind: "CPython unexpected exception".to_string(),
                 expected: "success".to_string(),
-                actual: e.to_string(),
+                actual: format_traceback(py, e),
             });
         }
 
@@ -918,9 +961,9 @@ fn try_run_cpython_test(path: &Path, code: &str, expectation: &Expectation) -> R
                     if matches!(expectation, Expectation::NoException) {
                         return CpythonResult::Failed(TestFailure {
                             test_name: test_name.clone(),
-                            kind: "CPython".to_string(),
+                            kind: "CPython unexpected exception".to_string(),
                             expected: "no exception".to_string(),
-                            actual: e.to_string(),
+                            actual: format_traceback(py, e),
                         });
                     }
                     if matches!(expectation, Expectation::Raise(_)) {
@@ -931,7 +974,7 @@ fn try_run_cpython_test(path: &Path, code: &str, expectation: &Expectation) -> R
                         test_name: test_name.clone(),
                         kind: "CPython unexpected exception".to_string(),
                         expected: "success".to_string(),
-                        actual: e.to_string(),
+                        actual: format_traceback(py, e),
                     })
                 }
             }
@@ -989,6 +1032,33 @@ fn format_cpython_exception(py: Python<'_>, e: &PyErr) -> String {
     }
 }
 
+/// Timeout duration for Monty tests.
+///
+/// Tests that exceed this duration are considered to be hanging (infinite loop)
+/// and will fail with a timeout error.
+const TEST_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Runs a closure with a timeout, returning an error if it exceeds the duration.
+///
+/// Spawns the closure in a separate thread and waits for the result with a timeout.
+/// If the timeout is exceeded, returns an error message. Note that the spawned thread
+/// will continue running in the background (Rust doesn't support killing threads),
+/// but the test will fail immediately.
+fn run_with_timeout<F, T>(timeout: Duration, f: F) -> Result<T, String>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let result = f();
+        let _ = tx.send(result);
+    });
+
+    rx.recv_timeout(timeout)
+        .map_err(|_| format!("test timed out after {timeout:?} (possible infinite loop)"))
+}
+
 /// Test function that runs each fixture through Monty.
 ///
 /// Handles xfail with strict semantics: if a test is marked `xfail=monty`, it must fail.
@@ -998,10 +1068,29 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
     let (code, expectation, config) = parse_fixture(&content);
     let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
 
-    let result = if config.iter_mode {
-        try_run_iter_test(path, &code, &expectation)
-    } else {
-        try_run_test(path, &code, &expectation)
+    // Clone data for the closure since it needs 'static lifetime
+    let path_owned = path.to_owned();
+    let code_owned = code.clone();
+    let expectation_owned = expectation.clone();
+    let iter_mode = config.iter_mode;
+
+    let result = run_with_timeout(TEST_TIMEOUT, move || {
+        if iter_mode {
+            try_run_iter_test(&path_owned, &code_owned, &expectation_owned)
+        } else {
+            try_run_test(&path_owned, &code_owned, &expectation_owned)
+        }
+    });
+
+    // Handle timeout error
+    let result = match result {
+        Ok(inner_result) => inner_result,
+        Err(timeout_msg) => Err(TestFailure {
+            test_name: test_name.clone(),
+            kind: "Timeout".to_string(),
+            expected: "completion within 5s".to_string(),
+            actual: timeout_msg,
+        }),
     };
 
     if config.xfail_monty {
@@ -1025,7 +1114,7 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
     let (code, expectation, config) = parse_fixture(&content);
     let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
 
-    let result = try_run_cpython_test(path, &code, &expectation);
+    let result = try_run_cpython_test(path, &code, &expectation, config.iter_mode);
 
     if config.xfail_cpython {
         // Strict xfail: test must fail; if it passed, xfail should be removed

@@ -79,7 +79,7 @@ cargo build
 make test-ref-count-panic
 
 # Run a specific test
-cargo test -p monty --features ref-count-panic str__ops
+cargo test -p monty --test datatest_runner --features ref-count-panic str__ops
 
 # Run test_cases tests only
 make test-cases

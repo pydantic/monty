@@ -169,6 +169,12 @@ fn frames_are_identical(a: &StackFrame, b: &StackFrame) -> bool {
 ///
 /// Contains all the information needed to display a traceback line:
 /// the file location, function name, and optional source code preview.
+///
+/// # Caret Markers
+///
+/// Monty uses only `~` characters for caret markers in tracebacks, unlike CPython 3.11+
+/// which uses `~` for the function name and `^` for arguments (e.g., `~~~~~~~~~~~^^^^^^^^^^^`).
+/// This simplification is intentional - Monty marks the entire expression span uniformly.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StackFrame {
     /// The filename where the code is located.
@@ -258,7 +264,7 @@ impl StackFrame {
 /// A line and column position in source code.
 ///
 /// Uses 1-based indexing for both line and column to match Python's conventions.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CodeLoc {
     /// Line number (1-based).
     pub line: u16,
