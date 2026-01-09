@@ -14,6 +14,83 @@ Project goals:
 - **Snapshotting and iteration**: Plan is to allow code to be iteratively executed and snapshotted at each function call
 - Targets the latest stable version of Python, currently Python 3.14
 
+## Bytecode VM Architecture
+
+Monty is migrating from a recursive tree-walking interpreter to a stack-based bytecode VM. The full design is documented in `bytecode-plan.md`. This section summarizes the key architecture.
+
+### Why Bytecode?
+
+1. **Simplified pause/resume**: VM state is just IP + stacks (no complex snapshot machinery)
+2. **Better performance**: Eliminates recursion, better cache locality
+3. **Enables future JIT compilation**
+4. **Enables future async support**
+
+### Execution Model
+
+The bytecode VM uses:
+
+- **Operand stack**: Values being computed are pushed/popped from a stack (`Vec<Value>`)
+- **Call frames**: Each function call creates a `CallFrame` with its own instruction pointer (IP)
+- **IP per frame**: The instruction pointer lives in each `CallFrame`, not globally - this avoids sync bugs on call/return
+
+```
+┌─────────────────────────────────────────┐
+│              VM State                    │
+│  ┌─────────────────────────────────────┐│
+│  │  Operand Stack: [val1, val2, ...]   ││
+│  └─────────────────────────────────────┘│
+│  ┌─────────────────────────────────────┐│
+│  │  Call Frames:                        ││
+│  │    Frame 0: { code, ip: 42, ... }   ││
+│  │    Frame 1: { code, ip: 7, ... }    ││
+│  └─────────────────────────────────────┘│
+│  heap, namespaces, interns (existing)   │
+└─────────────────────────────────────────┘
+```
+
+### Code Structure
+
+New bytecode module (`src/bytecode/`):
+
+- `mod.rs` - Module root
+- `op.rs` - Opcode enum definitions (`#[repr(u8)]`, no data variants)
+- `code.rs` - `Code` struct (bytecode, constants, location/exception tables)
+- `compiler.rs` - AST to bytecode compilation
+- `vm.rs` - Execution engine (main dispatch loop)
+- `snapshot.rs` - VM state serialization for pause/resume
+
+### Files Being Replaced
+
+The following tree-walker files will be replaced by the bytecode VM:
+
+- `src/evaluate.rs` - Tree-walking expression evaluator → bytecode compiler + VM
+- `src/run_frame.rs` - Recursive frame execution → `CallFrame` stack in VM
+- `src/snapshot.rs` - `SnapshotTracker`, `ClauseState`, `FunctionFrame` → simplified `VMSnapshot`
+
+### What We Keep
+
+- `Value` enum (16-byte hybrid design)
+- `Heap<T>` with reference counting and free list
+- `Interns` for string/bytes interning
+- `Function` struct (stores metadata, will also store compiled `Code`)
+- `Namespaces` stack (with modifications)
+
+### Reference Count Safety
+
+When operations can fail (return `Result`), operands must be dropped BEFORE propagating errors with `?`. Otherwise, reference counts leak:
+
+```rust
+// WRONG (leaks on error):
+let result = lhs.py_add(&rhs, heap)?;  // If error, lhs/rhs leak!
+lhs.drop_with_heap(heap);
+
+// CORRECT (drop before propagating):
+let result = lhs.py_add(&rhs, heap);   // Don't use ? yet
+lhs.drop_with_heap(heap);              // Always drop operands
+rhs.drop_with_heap(heap);
+self.push(result?);                    // Now propagate error
+```
+
 ## Dev Commands
 
 ```bash
@@ -28,6 +105,12 @@ make lint-py
 
 # format python and rust code
 make format
+
+# format just rust code
+make format-rs
+
+# format just python code
+make format-py
 ```
 
 ## Exception
@@ -271,7 +354,7 @@ ALWAYS put utility, private functions and "sub functions" underneath the functio
 
 It is important to the long term health of the project and maintainability of the codebase that code is well structured and organized, this is very important.
 
-ALWAYS run `make lint-rs` after making changes to rust code and fix all suggestions to maintain code quality.
+ALWAYS run `make format-rs` and `make lint-rs` after making changes to rust code and fix all suggestions to maintain code quality.
 
 ALWAYS run `make lint-py` after making changes to python code and fix all suggestions to maintain code quality.
 

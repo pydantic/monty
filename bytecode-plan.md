@@ -1463,24 +1463,27 @@ Opcode::Await,  // Pause current task, wait for TOS (another task or future)
 ## Migration Strategy
 
 ### Step 0: Update Documentation
-- [ ] Update `CLAUDE.md` to explain the bytecode VM architecture
-- [ ] Remove references to tree-walker (`evaluate.rs`, `run_frame.rs`, `SnapshotTracker`, `ClauseState`)
-- [ ] Document new code structure (`src/bytecode/` module)
-- [ ] Explain the VM execution model (operand stack, call frames, IP per frame)
+- [x] Update `CLAUDE.md` to explain the bytecode VM architecture
+- [x] Remove references to tree-walker (`evaluate.rs`, `run_frame.rs`, `SnapshotTracker`, `ClauseState`)
+- [x] Document new code structure (`src/bytecode/` module)
+- [x] Explain the VM execution model (operand stack, call frames, IP per frame)
 
 ### Step 1: Define Core Types
-- [ ] `Opcode` enum with all opcodes (`#[repr(u8)]`, no data variants)
-- [ ] `Code` struct (bytecode, constants, location_table, exception_table)
-- [ ] `CodeBuilder` for emission (emit, emit_u8, emit_u16, emit_jump, patch_jump)
-- [ ] `TryFrom<u8>` for safe opcode decoding
+- [x] `Opcode` enum with all opcodes (`#[repr(u8)]`, no data variants)
+- [x] `Code` struct (bytecode, constants, location_table, exception_table)
+- [x] `CodeBuilder` for emission (emit, emit_u8, emit_u16, emit_jump, patch_jump)
+- [x] `TryFrom<u8>` for safe opcode decoding
 
 ### Step 2: Basic Compiler
-- [ ] Compile literals and simple expressions
-- [ ] Compile variables (local/global)
-- [ ] Compile binary/unary operators
-- [ ] Compile if/else statements
-- [ ] Compile for/while loops
-- [ ] Run in parallel with tree-walker for testing
+- [x] Compile literals and simple expressions
+- [x] Compile variables (local/global/cell)
+- [x] Compile binary/unary operators (including short-circuit AND/OR)
+- [x] Compile if/else statements (and ternary expressions)
+- [x] Compile for loops (while loops not yet in parser)
+- [x] Compile collections (list, tuple, dict, set)
+- [x] Compile subscript operations
+- [x] Compile assert statements
+- [ ] Run in parallel with tree-walker for testing (requires Step 3)
 
 ### Step 3: VM Core
 - [ ] `VM` struct with stack and frames

@@ -22,8 +22,10 @@ impl NamespaceId {
     }
 
     /// Returns the raw index value.
+    ///
+    /// Used by the bytecode compiler to emit slot indices for variable access.
     #[inline]
-    fn index(self) -> usize {
+    pub fn index(self) -> usize {
         self.0 as usize
     }
 }

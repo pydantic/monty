@@ -1,6 +1,7 @@
 #![doc = include_str!("../../../README.md")]
 mod args;
 mod builtins;
+mod bytecode;
 mod callable;
 mod evaluate;
 mod exception_private;
