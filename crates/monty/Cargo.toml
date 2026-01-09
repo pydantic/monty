@@ -39,7 +39,6 @@ ref-count-panic = []
 pyo3 = { version = "0.27.2", features = ["auto-initialize"] }
 criterion = { version = "4.2.1", package = "codspeed-criterion-compat" }
 datatest-stable = "0.2"
-pprof = { version = "0.15", features = ["flamegraph", "criterion"] }
 serde_json = "1.0"
 
 [[bench]]

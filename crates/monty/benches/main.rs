@@ -2,7 +2,6 @@ use std::ffi::CString;
 
 use criterion::{black_box, criterion_group, criterion_main, Bencher, Criterion};
 use monty::MontyRun;
-use pprof::criterion::{Output, PProfProfiler};
 use pyo3::{prelude::*, types::PyAny};
 
 /// Runs a benchmark using the Monty interpreter.
@@ -198,9 +197,5 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(
-    name = benches;
-    config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
-    targets = criterion_benchmark
-);
+criterion_group!(benches, criterion_benchmark);
 criterion_main!(benches);
