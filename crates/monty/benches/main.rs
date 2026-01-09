@@ -1,8 +1,14 @@
 use std::ffi::CString;
 
+// Use codspeed-criterion-compat when running on CodSpeed (CI), real criterion otherwise (for flamegraphs)
+#[cfg(codspeed)]
+use codspeed_criterion_compat::{black_box, criterion_group, criterion_main, Bencher, Criterion};
+#[cfg(not(codspeed))]
 use criterion::{black_box, criterion_group, criterion_main, Bencher, Criterion};
 use monty::MontyRun;
-use pyo3::{prelude::*, types::PyAny};
+#[cfg(not(codspeed))]
+use pprof::criterion::{Output, PProfProfiler};
+use pyo3::prelude::*;
 
 /// Runs a benchmark using the Monty interpreter.
 /// Parses once, then benchmarks repeated execution.
@@ -197,5 +203,16 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+// Use pprof flamegraph profiler when running locally (not on CodSpeed)
+#[cfg(not(codspeed))]
+criterion_group!(
+    name = benches;
+    config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
+    targets = criterion_benchmark
+);
+
+// Use default config when running on CodSpeed (pprof's Profiler trait is incompatible)
+#[cfg(codspeed)]
 criterion_group!(benches, criterion_benchmark);
+
 criterion_main!(benches);

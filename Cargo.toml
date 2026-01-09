@@ -25,6 +25,10 @@ debug = true
 strip = false
 lto = false
 
+[workspace.lints.rust]
+# codspeed cfg is set by codspeed-criterion-compat when running in CodSpeed environment
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(codspeed)'] }
+
 [workspace.lints.clippy]
 dbg_macro = "warn"
 # print_stdout = "warn"
