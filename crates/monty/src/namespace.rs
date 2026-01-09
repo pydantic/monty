@@ -2,6 +2,7 @@ use crate::exception_private::{ExcType, ExceptionRaise, RunError};
 use crate::expressions::{Identifier, NameScope};
 use crate::heap::{Heap, HeapId};
 use crate::intern::Interns;
+use crate::parse::CodeRange;
 use crate::resource::{ResourceError, ResourceTracker};
 use crate::run_frame::RunResult;
 use crate::value::Value;
@@ -84,9 +85,15 @@ pub struct Namespaces {
     stack: Vec<Namespace>,
     /// if we have an old namespace to reuse, trace its id
     reuse_ids: Vec<NamespaceId>,
-    /// Return values from an external function call.
-    /// Set when resuming after an external function call.
-    ext_return_values: Vec<Value>,
+    /// Return values from external function calls or functions that completed after internal external calls.
+    ///
+    /// Each entry is `(call_position, value)`:
+    /// - `call_position` is `None` for direct external function calls (any matching position works)
+    /// - `call_position` is `Some(pos)` for function return values (only match at that exact call site)
+    ///
+    /// This distinction is necessary because during argument re-evaluation, we might have multiple
+    /// function calls. Only the correct call should receive the cached return value.
+    ext_return_values: Vec<(Option<CodeRange>, Value)>,
     /// Index of the next return value to be used.
     ///
     /// Since we can have multiple external function calls within a single statement (e.g. `foo() + bar()`),
@@ -115,13 +122,19 @@ impl Namespaces {
         }
     }
 
-    /// Push another return value from an external function call.
+    /// Push a return value from an external function call or a completed function.
     ///
     /// Also resets the return pointer to zero so we start getting values from the beginning.
-    /// Since this is used when resuming after an external function call to return the value.
-    pub fn push_ext_return_value(&mut self, return_value: Value) {
+    ///
+    /// # Arguments
+    /// * `call_position` - The position of the call that should receive this value:
+    ///   - `None` for direct external function calls (any call at the right point can consume it)
+    ///   - `Some(pos)` for functions that completed after internal external calls (only the
+    ///     call at that exact position should consume it)
+    /// * `return_value` - The value to cache
+    pub fn push_ext_return_value(&mut self, call_position: Option<CodeRange>, return_value: Value) {
         self.next_ext_return_value = 0;
-        self.ext_return_values.push(return_value);
+        self.ext_return_values.push((call_position, return_value));
     }
 
     /// Sets a pending exception from an external function call.
@@ -138,20 +151,66 @@ impl Namespaces {
     /// First checks for a pending exception (set via `set_ext_exception`). If found,
     /// returns `Err(RunError::Exc(...))` so the exception propagates through try/except.
     ///
-    /// Otherwise returns `Ok(Some(Value))` if a return value is available, or `Ok(None)` if
-    /// this is the first call (no cached return value yet).
+    /// Otherwise checks if there's a cached return value for the given call position:
+    /// - If the cached entry has `call_position = None`, it matches any call
+    /// - If the cached entry has `call_position = Some(pos)`, it only matches if `pos == current_position`
     ///
-    /// Used when resuming after an external function call.
-    pub fn take_ext_return_value(&mut self, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
+    /// Returns `Ok(Some(Value))` if a matching return value is found, or `Ok(None)` if not.
+    ///
+    /// # Arguments
+    /// * `heap` - The heap for cloning values
+    /// * `current_position` - The position of the call site requesting a cached value
+    pub fn take_ext_return_value(
+        &mut self,
+        heap: &mut Heap<impl ResourceTracker>,
+        current_position: CodeRange,
+    ) -> RunResult<Option<Value>> {
         // Check for pending exception first
         if let Some(exc) = self.ext_exception.take() {
-            Err(RunError::Exc(exc))
-        } else if let Some(value) = self.ext_return_values.get(self.next_ext_return_value) {
-            self.next_ext_return_value += 1;
-            Ok(Some(value.clone_with_heap(heap)))
-        } else {
-            Ok(None)
+            return Err(RunError::Exc(exc));
         }
+
+        // Check if the next cached value matches this call position
+        if let Some((expected_pos, value)) = self.ext_return_values.get(self.next_ext_return_value) {
+            // Match if: expected_pos is None (any position) OR expected_pos == current_position
+            if expected_pos.is_none() || *expected_pos == Some(current_position) {
+                self.next_ext_return_value += 1;
+                return Ok(Some(value.clone_with_heap(heap)));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Takes a return value ONLY if there's an exact position match.
+    ///
+    /// This is used for checking cached return values from user-defined functions BEFORE
+    /// evaluating arguments. Unlike `take_ext_return_value`, this does NOT match values
+    /// with `expected_pos = None` (which are for direct external calls).
+    ///
+    /// This distinction is important: when a user-defined function containing an external call
+    /// returns, we want to skip argument evaluation on resume. But for direct external calls
+    /// (which have `expected_pos = None`), we still need to evaluate arguments first to determine
+    /// which external call we're at.
+    pub fn take_ext_return_value_exact(
+        &mut self,
+        heap: &mut Heap<impl ResourceTracker>,
+        current_position: CodeRange,
+    ) -> RunResult<Option<Value>> {
+        // Check for pending exception first
+        if let Some(exc) = self.ext_exception.take() {
+            return Err(RunError::Exc(exc));
+        }
+
+        // Check if the next cached value has an exact position match
+        if let Some((Some(expected_pos), value)) = self.ext_return_values.get(self.next_ext_return_value) {
+            if *expected_pos == current_position {
+                self.next_ext_return_value += 1;
+                return Ok(Some(value.clone_with_heap(heap)));
+            }
+        }
+
+        Ok(None)
     }
 
     /// Clears the return values, exception, and resets the pointer.
@@ -168,7 +227,7 @@ impl Namespaces {
     /// on drop.
     #[cfg(feature = "ref-count-panic")]
     pub fn clear_ext_return_values(&mut self, heap: &mut Heap<impl ResourceTracker>) {
-        for value in &mut self.ext_return_values {
+        for (_, value) in &mut self.ext_return_values {
             let v = std::mem::replace(value, Value::Dereferenced);
             v.drop_with_heap(heap);
         }
@@ -269,7 +328,7 @@ impl Namespaces {
             v.drop_with_heap(heap);
         }
         // Clean up any remaining return values from external function calls
-        for value in std::mem::take(&mut self.ext_return_values) {
+        for (_, value) in std::mem::take(&mut self.ext_return_values) {
             value.drop_with_heap(heap);
         }
         // Clear any pending exception

@@ -312,7 +312,8 @@ impl<T: ResourceTracker> Snapshot<T> {
                     .into_python_exception(&self.executor.interns, &self.executor.code)
             })?;
 
-        self.namespaces.push_ext_return_value(value);
+        // Direct external function call - use None for position since any matching call can consume it
+        self.namespaces.push_ext_return_value(None, value);
 
         if self.call_stack.is_empty() {
             // Module-level resume - continue execution from saved position
@@ -384,8 +385,10 @@ impl<T: ResourceTracker> Snapshot<T> {
 
                 if self.call_stack.is_empty() {
                     // All functions completed, continue at module level
-                    // Push the return value for the caller to use
-                    self.namespaces.push_ext_return_value(return_value);
+                    // Push the return value with this function's call position, so only
+                    // the correct call site consumes it (not intermediate function calls)
+                    self.namespaces
+                        .push_ext_return_value(Some(frame.call_position), return_value);
                     // Use the caller's position_stack (module level), not the function's
                     self.executor.run_from_position(
                         self.heap,
@@ -395,8 +398,9 @@ impl<T: ResourceTracker> Snapshot<T> {
                     )
                 } else {
                     // More functions in the stack - continue with the next one
-                    // Push the return value for the next function to use
-                    self.namespaces.push_ext_return_value(return_value);
+                    // Push the return value with this function's call position
+                    self.namespaces
+                        .push_ext_return_value(Some(frame.call_position), return_value);
                     // position_stack stays the same (it's the outermost caller's positions)
                     self.resume_call_stack(print)
                 }
@@ -445,7 +449,8 @@ impl<T: ResourceTracker> Snapshot<T> {
 
                 if self.call_stack.is_empty() {
                     // All functions completed, continue at module level
-                    self.namespaces.push_ext_return_value(Value::None);
+                    self.namespaces
+                        .push_ext_return_value(Some(frame.call_position), Value::None);
                     // Use the caller's position_stack (module level), not the function's
                     self.executor.run_from_position(
                         self.heap,
@@ -455,7 +460,8 @@ impl<T: ResourceTracker> Snapshot<T> {
                     )
                 } else {
                     // More functions in the stack - continue with the next one
-                    self.namespaces.push_ext_return_value(Value::None);
+                    self.namespaces
+                        .push_ext_return_value(Some(frame.call_position), Value::None);
                     // position_stack stays the same (it's the outermost caller's positions)
                     self.resume_call_stack(print)
                 }

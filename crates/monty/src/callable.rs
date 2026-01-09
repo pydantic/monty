@@ -81,7 +81,7 @@ impl Callable {
                     Value::Function(f_id) => {
                         let f_id = *f_id;
                         // Check for cached return value (resuming after external call inside function)
-                        return match namespaces.take_ext_return_value(heap) {
+                        return match namespaces.take_ext_return_value(heap, call_position) {
                             Ok(Some(return_value)) => {
                                 // When resuming from an external call inside the function,
                                 // the args were re-evaluated and need to be dropped
@@ -116,7 +116,7 @@ impl Callable {
                     }
                     Value::ExtFunction(f_id) => {
                         let f_id = *f_id;
-                        return match namespaces.take_ext_return_value(heap) {
+                        return match namespaces.take_ext_return_value(heap, call_position) {
                             Ok(Some(return_value)) => {
                                 // When resuming from an external call, the args were re-evaluated
                                 // and need to be dropped since we're using the cached return value
@@ -145,7 +145,7 @@ impl Callable {
                     Value::Ref(heap_id) => {
                         let heap_id = *heap_id;
                         // Check for cached return value first (resuming after external call inside function)
-                        return match namespaces.take_ext_return_value(heap) {
+                        return match namespaces.take_ext_return_value(heap, call_position) {
                             Ok(Some(return_value)) => {
                                 if let Some(args) = args_opt.take() {
                                     args.drop_with_heap(heap);

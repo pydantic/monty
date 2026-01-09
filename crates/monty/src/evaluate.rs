@@ -99,6 +99,20 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter, S: AbstractSnapshotTracker> Eva
                 .get_var_value(self.local_idx, self.heap, ident, self.interns)
                 .map(EvalResult::Value),
             Expr::Call { callable, args } => {
+                // Check for cached return value BEFORE evaluating arguments.
+                // This is critical for resumption: if a function containing an external call
+                // returned, its return value is cached with a specific position. When re-evaluating
+                // the expression, we must skip argument evaluation entirely to avoid side effects
+                // (like nested function calls that would clear the cached value).
+                //
+                // Only match exact positions here (not None). Cached values with None position are
+                // for direct external calls and should be matched in callable.rs, not here.
+                if let Some(cached) = self
+                    .namespaces
+                    .take_ext_return_value_exact(self.heap, expr_loc.position)?
+                {
+                    return Ok(EvalResult::Value(cached));
+                }
                 let args = return_ext_call!(self.evaluate_args(args, Some(callable))?);
                 callable.call(
                     self.namespaces,
