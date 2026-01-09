@@ -155,52 +155,38 @@ fn end_to_end_cpython(bench: &mut Bencher) {
     });
 }
 
-/// Configures all benchmark groups
+/// Configures all benchmarks in a single group.
 fn criterion_benchmark(c: &mut Criterion) {
-    let mut group = c.benchmark_group("add_two");
-    group.bench_function("monty", |b| run_monty(b, ADD_TWO, 3));
-    group.bench_function("cpython", |b| run_cpython(b, ADD_TWO, 3));
-    group.finish();
+    c.bench_function("add_two__monty", |b| run_monty(b, ADD_TWO, 3));
+    c.bench_function("add_two__cpython", |b| run_cpython(b, ADD_TWO, 3));
 
-    let mut group = c.benchmark_group("list_append");
-    group.bench_function("monty", |b| run_monty(b, LIST_APPEND, 42));
-    group.bench_function("cpython", |b| run_cpython(b, LIST_APPEND, 42));
-    group.finish();
+    c.bench_function("list_append__monty", |b| run_monty(b, LIST_APPEND, 42));
+    c.bench_function("list_append__cpython", |b| run_cpython(b, LIST_APPEND, 42));
 
-    let mut group = c.benchmark_group("loop_mod_13");
-    group.bench_function("monty", |b| run_monty(b, LOOP_MOD_13, 77));
-    group.bench_function("cpython", |b| run_cpython(b, LOOP_MOD_13, 77));
-    group.finish();
+    c.bench_function("loop_mod_13__monty", |b| run_monty(b, LOOP_MOD_13, 77));
+    c.bench_function("loop_mod_13__cpython", |b| run_cpython(b, LOOP_MOD_13, 77));
 
-    let mut group = c.benchmark_group("end_to_end");
-    group.bench_function("monty", end_to_end_monty);
-    group.bench_function("cpython", end_to_end_cpython);
-    group.finish();
+    c.bench_function("end_to_end__monty", end_to_end_monty);
+    c.bench_function("end_to_end__cpython", end_to_end_cpython);
 
-    let mut group = c.benchmark_group("kitchen_sink");
-    group.bench_function("monty", |b| run_monty(b, KITCHEN_SINK, 58));
-    group.bench_function("cpython", |b| run_cpython(b, KITCHEN_SINK, 58));
-    group.finish();
+    c.bench_function("kitchen_sink__monty", |b| run_monty(b, KITCHEN_SINK, 58));
+    c.bench_function("kitchen_sink__cpython", |b| run_cpython(b, KITCHEN_SINK, 58));
 
-    let mut group = c.benchmark_group("func_call_kwargs");
-    group.bench_function("monty", |b| run_monty(b, FUNC_CALL_KWARGS, 3));
-    group.bench_function("cpython", |b| run_cpython(b, FUNC_CALL_KWARGS, 3));
-    group.finish();
+    c.bench_function("func_call_kwargs__monty", |b| run_monty(b, FUNC_CALL_KWARGS, 3));
+    c.bench_function("func_call_kwargs__cpython", |b| run_cpython(b, FUNC_CALL_KWARGS, 3));
 
-    let mut group = c.benchmark_group("list_append_str");
-    group.bench_function("monty", |b| run_monty(b, LIST_APPEND_STR, 100_000));
-    group.bench_function("cpython", |b| run_cpython(b, LIST_APPEND_STR, 100_000));
-    group.finish();
+    c.bench_function("list_append_str__monty", |b| run_monty(b, LIST_APPEND_STR, 100_000));
+    c.bench_function("list_append_str__cpython", |b| run_cpython(b, LIST_APPEND_STR, 100_000));
 
-    let mut group = c.benchmark_group("list_append_int");
-    group.bench_function("monty", |b| run_monty(b, LIST_APPEND_INT, 4_999_950_000));
-    group.bench_function("cpython", |b| run_cpython(b, LIST_APPEND_INT, 4_999_950_000));
-    group.finish();
+    c.bench_function("list_append_int__monty", |b| {
+        run_monty(b, LIST_APPEND_INT, 4_999_950_000);
+    });
+    c.bench_function("list_append_int__cpython", |b| {
+        run_cpython(b, LIST_APPEND_INT, 4_999_950_000);
+    });
 
-    let mut group = c.benchmark_group("fib");
-    group.bench_function("monty", |b| run_monty(b, FIB_25, 75_025));
-    group.bench_function("cpython", |b| run_cpython(b, FIB_25, 75_025));
-    group.finish();
+    c.bench_function("fib__monty", |b| run_monty(b, FIB_25, 75_025));
+    c.bench_function("fib__cpython", |b| run_cpython(b, FIB_25, 75_025));
 }
 
 // Use pprof flamegraph profiler when running locally (not on CodSpeed)
