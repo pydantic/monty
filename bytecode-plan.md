@@ -1,12 +1,12 @@
 # Monty Bytecode VM Migration Plan
 
+<!-- NOTE: Do not use markdown tables in this document. They are hard to read and hard to maintain. Use bullet lists instead. -->
+
 ## Design Decisions (Confirmed)
 
-| Decision           | Choice                   | Rationale                                      |
-|--------------------|--------------------------|------------------------------------------------|
-| Bytecode encoding  | Hybrid variable-width    | Better cache utilization, 2x smaller bytecode  |
-| Compilation timing | Eager (at prepare phase) | Simpler, no runtime compilation overhead       |
-| Async heap model   | Shared heap              | Objects can pass between tasks, simpler GC     |
+- **Bytecode encoding**: Variable-width `Vec<u8>` — better cache utilization, 2x smaller bytecode
+- **Compilation timing**: Eager (at prepare phase) — simpler, no runtime compilation overhead
+- **Async heap model**: Shared heap — single heap for all tasks, RC + periodic mark-sweep GC for cycles (existing behavior)
 
 ---
 
@@ -181,12 +181,10 @@ pub enum Opcode {
 ```
 
 **Operand encoding:**
-| Suffix | Operand Size | Example |
-|--------|--------------|---------|
-| (none) | 0 bytes | `BinaryAdd` |
-| (none) | 1 byte (u8/i8) | `LoadLocal`, `LoadSmallInt` |
-| `W` | 2 bytes (u16/i16) | `LoadLocalW`, `Jump` |
-| compound | multiple | `CallFunctionKw` (u8 + u8), `MakeClosure` (u16 + u8) |
+- No suffix, 0 bytes: `BinaryAdd`, `Pop`, `LoadNone`
+- No suffix, 1 byte (u8/i8): `LoadLocal`, `StoreLocal`, `LoadSmallInt`
+- `W` suffix, 2 bytes (u16/i16): `LoadLocalW`, `Jump`, `LoadConst`
+- Compound (multiple operands): `CallFunctionKw` (u8 + u8), `MakeClosure` (u16 + u8)
 
 ### 1.2 Constant Pool
 
@@ -225,6 +223,11 @@ pub struct LocationEntry {
     focus: Option<CodeRange>,
 }
 ```
+
+**Traceback fidelity note:** Full Python 3.11-style focused traceback ranges (`~~^~~`) are
+**not an immediate requirement**. Initial implementation should match current Monty behavior
+(full expression range without focus). The `focus` field can be populated incrementally as
+we improve error reporting. For now, set `focus: None` and use `range` for the full expression.
 
 ### 1.4 Exception Table Entry
 
@@ -271,6 +274,12 @@ When an exception is raised:
 4. Jump to `handler`
 
 The handler code itself checks the exception type (e.g., `isinstance(exc, ValueError)`) and either handles it or re-raises.
+
+**Exception handling notes:**
+- **`current_exception`**: Set when entering an except handler (for bare `raise`), cleared by `ClearException` opcode when exiting the handler normally.
+- **`except E as e` cleanup**: Python 3 deletes `e` at the end of the except block. The compiler emits `DeleteLocal` for the binding variable after the handler body.
+- **Exception chaining (`__context__`/`__cause__`)**: **Not currently supported**. This is noted as future work - the current implementation does not set `__context__` when raising during exception handling, nor does it support `raise X from Y` semantics fully.
+- **`finally` blocks**: Compiled as duplicated code paths (normal exit + exception exit) with appropriate cleanup.
 
 ### 1.5 Code Object
 
@@ -380,9 +389,12 @@ impl CodeBuilder {
     }
 
     /// Patch a forward jump to point to the current location.
+    /// Panics if the jump offset exceeds i16 range (function too large).
     pub fn patch_jump(&mut self, label: JumpLabel) {
         let target = self.bytecode.len();
-        let offset = (target as isize - label.0 as isize - 3) as i16; // -3 for opcode + i16
+        let raw_offset = target as i64 - label.0 as i64 - 3; // -3 for opcode + i16
+        let offset = i16::try_from(raw_offset)
+            .expect("jump offset exceeds i16 range (-32768..32767); function too large");
         let bytes = offset.to_le_bytes();
         self.bytecode[label.0 + 1] = bytes[0];
         self.bytecode[label.0 + 2] = bytes[1];
@@ -406,8 +418,11 @@ impl CodeBuilder {
     }
 
     /// Add a constant to the pool, returning its index.
+    /// Panics if the constant pool exceeds u16 range (too many constants).
     pub fn add_const(&mut self, value: Value) -> u16 {
         let idx = self.constants.len();
+        u16::try_from(idx)
+            .expect("constant pool exceeds u16 range (65535); too many constants");
         self.constants.push(value);
         idx as u16
     }
@@ -439,26 +454,26 @@ impl CodeBuilder {
 pub struct JumpLabel(usize);
 ```
 
+**Operand overflow handling:** All operand emissions must panic on overflow rather than
+silently truncating. This catches pathological cases (giant functions with >32KB bytecode,
+huge constant pools with >65535 entries) at compile time with clear error messages.
+
 ### 1.8 Opcode Decoding (VM Fetch Helpers)
 
 ```rust
 impl VM<'_, T> {
-    /// Fetch next byte and advance IP.
+    /// Fetch next byte from current frame's bytecode and advance frame's IP.
     fn fetch_byte(&mut self) -> u8 {
-        let byte = self.current_code().bytecode[self.ip];
-        self.ip += 1;
+        let frame = self.frames.last_mut().expect("no active frame");
+        let byte = frame.code.bytecode[frame.ip];
+        frame.ip += 1;
         byte
     }
 
-    /// Fetch opcode (just a typed wrapper around fetch_byte).
+    /// Fetch opcode using safe conversion.
     fn fetch_opcode(&mut self) -> Opcode {
-        // Safety: we trust the compiler emitted valid opcodes
         let byte = self.fetch_byte();
-        // In debug builds, validate the opcode
-        debug_assert!(byte <= Opcode::Nop as u8, "invalid opcode: {byte}");
-        // Transmute is safe because Opcode is #[repr(u8)] and we validated
-        // TODO: use a safe conversion method instead
-        todo!("safe opcode conversion")
+        Opcode::try_from(byte).expect("invalid opcode in bytecode")
     }
 
     /// Fetch u8 operand.
@@ -485,6 +500,25 @@ impl VM<'_, T> {
         i16::from_le_bytes([lo, hi])
     }
 }
+
+/// Safe conversion from byte to Opcode.
+impl TryFrom<u8> for Opcode {
+    type Error = &'static str;
+
+    fn try_from(byte: u8) -> Result<Self, Self::Error> {
+        // Opcode is #[repr(u8)] so we can check the range
+        if byte <= Opcode::Nop as u8 {
+            // Use a match for safety (no transmute)
+            // In practice, generate this with a macro or build script
+            Ok(OPCODE_TABLE[byte as usize])
+        } else {
+            Err("opcode byte out of range")
+        }
+    }
+}
+
+// Lookup table generated at compile time from Opcode variants
+static OPCODE_TABLE: [Opcode; 256] = /* generated */;
 ```
 
 **Rationale:** Variable-width encoding gives ~2x smaller bytecode than fixed-width.
@@ -497,16 +531,16 @@ Decode cost is trivial (~1-2 cycles) compared to cache miss cost (~10+ cycles).
 ### 2.1 VM State
 
 ```rust
-/// The bytecode virtual machine
+/// The bytecode virtual machine.
+///
+/// Note: The instruction pointer (IP) lives in each `CallFrame`, not here.
+/// This avoids sync bugs on call/return - each frame owns its position.
 pub struct VM<'a, T: ResourceTracker> {
     /// Operand stack - values being computed
     stack: Vec<Value>,
 
-    /// Call stack - function frames
+    /// Call stack - function frames (each frame has its own IP)
     frames: Vec<CallFrame>,
-
-    /// Current instruction pointer (index into current frame's bytecode)
-    ip: usize,
 
     /// Heap for reference-counted objects (existing)
     heap: &'a mut Heap<T>,
@@ -707,29 +741,20 @@ impl<'a, T: ResourceTracker> VM<'a, T> {
 ### 3.1 Compiler Structure
 
 ```rust
-/// Compiles prepared AST to bytecode
+/// Compiles prepared AST to bytecode.
+/// Uses CodeBuilder (defined in section 1.7) for bytecode emission.
 pub struct Compiler<'a> {
-    /// Current code being built
+    /// Current code being built (see section 1.7 for CodeBuilder definition)
     code: CodeBuilder,
 
-    /// Loop stack for break/continue
+    /// Loop stack for break/continue (stores jump labels to patch)
     loop_stack: Vec<LoopInfo>,
 
-    /// Try stack for exception handlers
+    /// Try stack for exception handlers (tracks protected ranges)
     try_stack: Vec<TryInfo>,
 
-    /// Interns reference
+    /// Interns reference for string/function lookups
     interns: &'a Interns,
-}
-
-struct CodeBuilder {
-    bytecode: Vec<u8>,
-    constants: Vec<Value>,
-    line_table: Vec<(usize, u32)>,
-    exception_table: Vec<ExceptionEntry>,
-    num_locals: u16,
-    max_stack: u16,
-    current_stack: u16,
 }
 ```
 
@@ -738,14 +763,17 @@ struct CodeBuilder {
 ```rust
 impl Compiler<'_> {
     fn compile_expr(&mut self, expr: &ExprLoc) {
+        // Set source location for traceback info
+        self.code.set_location(expr.range, None);
+
         match &expr.expr {
             Expr::Literal(lit) => self.compile_literal(lit),
 
             Expr::Name(ident) => {
                 match ident.scope {
-                    NameScope::Local => self.emit(Op::LoadLocal(ident.slot)),
-                    NameScope::Global => self.emit(Op::LoadGlobal(ident.slot)),
-                    NameScope::Cell => self.emit(Op::LoadCell(ident.slot)),
+                    NameScope::Local => self.code.emit_load_local(ident.slot),
+                    NameScope::Global => self.code.emit_u16(Opcode::LoadGlobal, ident.slot),
+                    NameScope::Cell => self.code.emit_u16(Opcode::LoadCell, ident.slot),
                 }
             }
 
@@ -753,18 +781,18 @@ impl Compiler<'_> {
                 // Short-circuit AND/OR
                 if *op == Operator::And {
                     self.compile_expr(left);
-                    let jump = self.emit_jump(Op::JumpIfFalseOrPop(0));
+                    let jump = self.code.emit_jump(Opcode::JumpIfFalseOrPop);
                     self.compile_expr(right);
-                    self.patch_jump(jump);
+                    self.code.patch_jump(jump);
                 } else if *op == Operator::Or {
                     self.compile_expr(left);
-                    let jump = self.emit_jump(Op::JumpIfTrueOrPop(0));
+                    let jump = self.code.emit_jump(Opcode::JumpIfTrueOrPop);
                     self.compile_expr(right);
-                    self.patch_jump(jump);
+                    self.code.patch_jump(jump);
                 } else {
                     self.compile_expr(left);
                     self.compile_expr(right);
-                    self.emit(op_to_binary_op(*op));
+                    self.code.emit(op_to_binary_opcode(*op));
                 }
             }
 
@@ -786,7 +814,7 @@ impl Compiler<'_> {
         match node {
             Node::Expr(expr) => {
                 self.compile_expr(expr);
-                self.emit(Op::Pop);  // Discard result
+                self.code.emit(Opcode::Pop);  // Discard result
             }
 
             Node::Assign { target, object } => {
@@ -796,32 +824,32 @@ impl Compiler<'_> {
 
             Node::If { test, body, or_else } => {
                 self.compile_expr(test);
-                let else_jump = self.emit_jump(Op::JumpIfFalse(0));
+                let else_jump = self.code.emit_jump(Opcode::JumpIfFalse);
                 self.compile_block(body);
 
                 if !or_else.is_empty() {
-                    let end_jump = self.emit_jump(Op::Jump(0));
-                    self.patch_jump(else_jump);
+                    let end_jump = self.code.emit_jump(Opcode::Jump);
+                    self.code.patch_jump(else_jump);
                     self.compile_block(or_else);
-                    self.patch_jump(end_jump);
+                    self.code.patch_jump(end_jump);
                 } else {
-                    self.patch_jump(else_jump);
+                    self.code.patch_jump(else_jump);
                 }
             }
 
             Node::For { target, iter, body, or_else } => {
                 self.compile_expr(iter);
-                self.emit(Op::GetIter);
+                self.code.emit(Opcode::GetIter);
 
-                let loop_start = self.current_offset();
+                let loop_start = self.code.current_offset();
                 self.loop_stack.push(LoopInfo { start: loop_start, breaks: vec![] });
 
-                let end_jump = self.emit_jump(Op::ForIter(0));
+                let end_jump = self.code.emit_jump(Opcode::ForIter);
                 self.compile_store(target);
                 self.compile_block(body);
-                self.emit_jump_to(Op::Jump(0), loop_start);
+                self.code.emit_jump_to(Opcode::Jump, loop_start);
 
-                self.patch_jump(end_jump);
+                self.code.patch_jump(end_jump);
                 // Handle or_else and break patches...
             }
 
@@ -848,10 +876,10 @@ impl Compiler<'_> {
         }
 
         // Implicit return None if no explicit return
-        func_compiler.emit(Op::LoadNone);
-        func_compiler.emit(Op::ReturnValue);
+        func_compiler.code.emit(Opcode::LoadNone);
+        func_compiler.code.emit(Opcode::ReturnValue);
 
-        func_compiler.code.build()
+        func_compiler.code.build(func.namespace_size as u16)
     }
 }
 ```
@@ -957,9 +985,11 @@ impl Executor {
 
 ```rust
 /// VM state for pause/resume - much simpler than current approach!
+/// Note: This is serialized alongside the full Heap<T> - HeapId values
+/// in stack/frames remain valid because the heap is preserved.
 #[derive(Serialize, Deserialize)]
 pub struct VMSnapshot {
-    /// Operand stack
+    /// Operand stack (may contain Value::Ref(HeapId) pointing to heap)
     stack: Vec<Value>,
 
     /// Call frames (each contains ip, namespace_idx, cells)
@@ -970,22 +1000,45 @@ pub struct VMSnapshot {
 }
 
 impl VM<'_, T> {
+    /// Create a snapshot of VM state for pause/resume.
+    /// The heap must be serialized separately alongside this snapshot.
     pub fn snapshot(&self) -> VMSnapshot {
         VMSnapshot {
-            stack: self.stack.clone(),
+            // Clone values, incrementing refcounts for heap refs
+            stack: self.stack.iter()
+                .map(|v| v.clone_with_heap(self.heap))
+                .collect(),
             frames: self.frames.iter().map(|f| f.serialize()).collect(),
-            current_exception: self.current_exception.clone(),
+            current_exception: self.current_exception
+                .as_ref()
+                .map(|v| v.clone_with_heap(self.heap)),
         }
     }
 
     pub fn restore(snapshot: VMSnapshot, heap: &mut Heap<T>, ...) -> Self {
-        // Reconstruct VM from snapshot
+        // Reconstruct VM from snapshot - heap already deserialized
     }
 }
 ```
 
-**Why this is simpler:**
-- No position tracking (IP is the position)
+**Heap serialization (matching current approach):**
+- **Full heap is serialized** alongside VMSnapshot - not just the VM state
+- `HeapId` is just a `usize` that serializes naturally as the slot index
+- `Value::Ref(HeapId)` serializes as the numeric ID; heap entries are in the serialized `Heap<T>`
+- Reference counts are preserved exactly in the serialized heap
+- On resume, deserialized heap + VMSnapshot reconstruct the full state
+
+**Namespace/local state:**
+- Namespaces are serialized alongside heap (existing pattern)
+- Local variables are `Value` entries that may point to heap via `HeapId`
+
+**Argument ownership across external call boundary:**
+- Args are converted to `MontyObject` (self-contained) before crossing boundary
+- Original `Value` refs are dropped via `drop_with_heap()`
+- Return value converted back via `to_value()` and pushed to stack
+
+**Why bytecode makes this simpler:**
+- No position tracking (IP in each frame is the position)
 - No re-evaluation of expressions (values are on the stack)
 - No ext_return_values cache (just push result and continue)
 - No ClauseState (control flow is encoded in bytecode jumps)
@@ -996,19 +1049,19 @@ impl VM<'_, T> {
 
 ### 5.1 Opcode Specialization
 
-Create specialized opcodes for common patterns:
+Create specialized opcodes for common patterns (already included in section 1.1):
 
 ```rust
-// Instead of: LoadLocal(0), LoadLocal(1), BinaryAdd
-Op::AddLocals(u16, u16),  // Add two locals directly
+// Instead of: LoadLocal + u8(0), LoadLocal + u8(1), BinaryAdd
+// Use zero-operand specialized opcodes:
+Opcode::LoadLocal0,   // Most common: first local (self, first param)
+Opcode::LoadLocal1,
+Opcode::LoadLocal2,
+Opcode::LoadLocal3,
 
-// Instead of: LoadConst(int), BinaryAdd
-Op::AddInt(i16),  // Add small int to TOS
-
-// Instead of: LoadLocal(0)
-Op::LoadLocal0,   // Most common: first local (self, first param)
-Op::LoadLocal1,
-Op::LoadLocal2,
+// Future specializations (not in initial implementation):
+// Opcode::AddLocals,    // + u8 slot1 + u8 slot2: add two locals directly
+// Opcode::AddSmallInt,  // + i8: add small int to TOS
 ```
 
 ### 5.2 Inline Caching (JIT Prep)
@@ -1033,25 +1086,26 @@ if let Some(cache) = self.get_inline_cache(ip) {
 
 ### 5.3 Stack Caching
 
-Keep top-of-stack in a register:
+Keep top-of-stack in a register (future optimization):
 
 ```rust
-impl VM {
+impl VM<'_, T> {
     fn run(&mut self) -> VMResult {
         let mut tos: Option<Value> = None;  // Cached TOS
 
         loop {
-            match self.fetch_op() {
-                Op::LoadLocal(slot) => {
+            match self.fetch_opcode() {
+                Opcode::LoadLocal => {
+                    let slot = self.fetch_u8() as u16;
                     if let Some(v) = tos.take() {
                         self.stack.push(v);
                     }
-                    tos = Some(self.load_local(slot));
+                    tos = Some(self.get_local(slot).clone_with_heap(self.heap));
                 }
-                Op::BinaryAdd => {
+                Opcode::BinaryAdd => {
                     let rhs = tos.take().unwrap();
                     let lhs = self.pop();
-                    tos = Some(lhs.py_add(&rhs, ...)?);
+                    tos = Some(lhs.py_add(&rhs, self.heap, self.interns)?);
                 }
                 // ...
             }
@@ -1059,17 +1113,6 @@ impl VM {
     }
 }
 ```
-
-### 5.4 Bytecode Threading (Advanced)
-
-For maximum performance, use **direct threading** with computed goto:
-
-```rust
-// Requires unsafe and platform-specific code
-// Each opcode handler ends with: goto *handlers[*ip++]
-```
-
-This eliminates the match dispatch overhead entirely.
 
 ---
 
@@ -1253,8 +1296,9 @@ impl EventLoop {
 ### 7.4 Async/Await Opcodes
 
 ```rust
-Op::Await,  // Pause current task, wait for TOS (another task or future)
-Op::Yield,  // Generator yield (related but different)
+// Already defined in section 1.1 as placeholders:
+Opcode::Await,  // Pause current task, wait for TOS (another task or future)
+// Note: Yield not currently in opcode list; add when implementing generators
 ```
 
 ### 7.5 Benefits of Bytecode for Async
@@ -1268,77 +1312,81 @@ Op::Yield,  // Generator yield (related but different)
 
 ## Migration Strategy
 
-### Step 1: Define Core Types (1 week)
-- [ ] `Op` enum with all opcodes
-- [ ] `Code` struct
-- [ ] `CodeBuilder` for emission
-- [ ] Unit tests for encoding/decoding
+### Step 0: Update Documentation
+- [ ] Update `CLAUDE.md` to explain the bytecode VM architecture
+- [ ] Remove references to tree-walker (`evaluate.rs`, `run_frame.rs`, `SnapshotTracker`, `ClauseState`)
+- [ ] Document new code structure (`src/bytecode/` module)
+- [ ] Explain the VM execution model (operand stack, call frames, IP per frame)
 
-### Step 2: Basic Compiler (2 weeks)
+### Step 1: Define Core Types
+- [ ] `Opcode` enum with all opcodes (`#[repr(u8)]`, no data variants)
+- [ ] `Code` struct (bytecode, constants, location_table, exception_table)
+- [ ] `CodeBuilder` for emission (emit, emit_u8, emit_u16, emit_jump, patch_jump)
+- [ ] `TryFrom<u8>` for safe opcode decoding
+
+### Step 2: Basic Compiler
 - [ ] Compile literals and simple expressions
 - [ ] Compile variables (local/global)
 - [ ] Compile binary/unary operators
 - [ ] Compile if/else statements
-- [ ] Compile for loops
+- [ ] Compile for/while loops
 - [ ] Run in parallel with tree-walker for testing
 
-### Step 3: VM Core (2 weeks)
+### Step 3: VM Core
 - [ ] `VM` struct with stack and frames
-- [ ] Main dispatch loop
+- [ ] Main dispatch loop (fetch opcode, fetch operands, execute)
 - [ ] All arithmetic/comparison ops
 - [ ] Variable load/store
 - [ ] Control flow (jumps)
 
-### Step 4: Functions & Closures (1 week)
+### Step 4: Functions & Closures
 - [ ] Function calls
 - [ ] Return values
 - [ ] Closures with captured cells
 - [ ] Default parameters
 
-### Step 5: Exception Handling (1 week)
+### Step 5: Exception Handling
 - [ ] Try/except/finally compilation
 - [ ] Exception table generation (static, no runtime stack)
 - [ ] Raise/reraise opcodes
 - [ ] Exception lookup and stack unwinding in VM
 
-### Step 6: External Calls & Snapshots (1 week)
+### Step 6: External Calls & Snapshots
 - [ ] `CallExternal` opcode
-- [ ] VMSnapshot serialization
-- [ ] Resume mechanism
+- [ ] VMSnapshot serialization (alongside heap)
+- [ ] Resume mechanism (push result, continue)
 - [ ] Integration with existing `RunProgress` API
 
-### Step 7: Remove Old Code (1 week)
+### Step 7: Remove Old Code
 - [ ] Delete `evaluate.rs`
 - [ ] Delete `run_frame.rs` tree-walker
-- [ ] Delete `SnapshotTracker`, `ClauseState`
-- [ ] Update all tests
+- [ ] Delete `SnapshotTracker`, `ClauseState`, `FunctionFrame`
+- [ ] Verify all existing tests pass
 
-### Step 8: Performance Tuning (ongoing)
+### Step 8: Performance Tuning (future)
 - [ ] Profile hot paths
-- [ ] Add specialized opcodes
-- [ ] Implement stack caching
-- [ ] Add inline caches
+- [ ] Add more specialized opcodes if needed
+- [ ] Consider stack caching
+- [ ] Consider inline caches for attribute lookup
 
 ---
 
 ## Testing Strategy
 
-### Unit Tests
-- Opcode encoding/decoding
-- Compiler output for each node type
-- VM execution of each opcode
+### Verification
+- All existing `test_cases/*.py` files must pass unchanged
+- No new test files required for the migration
+- Test via `make test-ref-count-panic`
 
-### Integration Tests
-- Existing `test_cases/*.py` files should pass unchanged
-- Compare bytecode output vs tree-walker output
+### Validation Approach
+1. Run existing test suite after each phase
+2. Any behavioral difference from tree-walker is a bug
+3. Performance comparison via existing benchmarks (optional)
 
-### Performance Tests
-- Benchmark suite comparing tree-walker vs bytecode
-- Track regression in CI
-
-### Fuzz Testing
-- Random bytecode sequences (for VM robustness)
-- Random AST → bytecode → execute
+### Notes
+- Tests live in `tests/` and `test_cases/` per repo guidelines
+- Do not add internal unit tests for opcodes/compiler - existing Python tests provide coverage
+- If a test fails, the bytecode VM has a bug - fix the VM, not the test
 
 ---
 

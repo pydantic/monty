@@ -267,6 +267,9 @@ ALWAYS consider code quality when adding new code, if functions are getting too 
 Make sure functions are added in the most logical place, e.g. as methods on a struct where appropriate.
 
 The code should follow the "newspaper" style where public and primary functions are at the top of the file, followed by private functions and utilities.
+ALWAYS put utility, private functions and "sub functions" underneath the function they're used in.
+
+It is important to the long term health of the project and maintainability of the codebase that code is well structured and organized, this is very important.
 
 ALWAYS run `make lint-rs` after making changes to rust code and fix all suggestions to maintain code quality.
 
