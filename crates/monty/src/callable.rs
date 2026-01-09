@@ -80,8 +80,10 @@ impl Callable {
                     }
                     Value::Function(f_id) => {
                         let f_id = *f_id;
-                        // Check for cached return value (resuming after external call inside function)
-                        return match namespaces.take_ext_return_value(heap, call_position) {
+                        // Check for cached return value (resuming after external call inside function).
+                        // Use exact match to avoid consuming cached values from external function calls
+                        // (which have None position) when this is a nested user-defined function call.
+                        return match namespaces.take_ext_return_value_exact(heap, call_position) {
                             Ok(Some(return_value)) => {
                                 // When resuming from an external call inside the function,
                                 // the args were re-evaluated and need to be dropped
@@ -130,7 +132,7 @@ impl Callable {
                                 let args = args_opt
                                     .take()
                                     .expect("external function args already taken before making call");
-                                Ok(EvalResult::ExternalCall(ExternalCall::new(f_id, args)))
+                                Ok(EvalResult::ExternalCall(ExternalCall::new(f_id, args, call_position)))
                             }
                             Err(e) => {
                                 // External function raised an exception - propagate it
@@ -144,8 +146,9 @@ impl Callable {
                     // Check for heap-allocated closure or function with defaults
                     Value::Ref(heap_id) => {
                         let heap_id = *heap_id;
-                        // Check for cached return value first (resuming after external call inside function)
-                        return match namespaces.take_ext_return_value(heap, call_position) {
+                        // Check for cached return value first (resuming after external call inside function).
+                        // Use exact match to avoid consuming cached values from external function calls.
+                        return match namespaces.take_ext_return_value_exact(heap, call_position) {
                             Ok(Some(return_value)) => {
                                 if let Some(args) = args_opt.take() {
                                     args.drop_with_heap(heap);

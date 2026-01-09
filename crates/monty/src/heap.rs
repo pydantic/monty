@@ -363,7 +363,11 @@ impl PyTrait for HeapData {
             Self::List(l) => l.py_iadd(other, heap, self_id, interns),
             Self::Tuple(t) => t.py_iadd(other, heap, self_id, interns),
             Self::Dict(d) => d.py_iadd(other, heap, self_id, interns),
-            _ => Ok(false),
+            _ => {
+                // Drop other if it's a Ref (ensure proper refcounting for unsupported types)
+                other.drop_with_heap(heap);
+                Ok(false)
+            }
         }
     }
 

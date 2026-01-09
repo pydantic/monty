@@ -69,15 +69,19 @@ pub struct ExternalCall {
     /// Stack of suspended function frames (outermost first, innermost last).
     /// Empty when the external call is at module level.
     pub call_stack: Vec<FunctionFrame>,
+    /// The source position of this external call.
+    /// Used to match return values to the correct call site when resuming.
+    pub call_position: CodeRange,
 }
 
 impl ExternalCall {
     /// Creates a new external function call at module level (no suspended functions).
-    pub fn new(function_id: ExtFunctionId, args: ArgValues) -> Self {
+    pub fn new(function_id: ExtFunctionId, args: ArgValues, call_position: CodeRange) -> Self {
         Self {
             function_id,
             args,
             call_stack: Vec::new(),
+            call_position,
         }
     }
 
@@ -89,6 +93,24 @@ impl ExternalCall {
     pub fn push_frame(&mut self, frame: FunctionFrame) {
         self.call_stack.push(frame);
     }
+}
+
+/// Cached state for partially-evaluated arguments when an external call suspends.
+///
+/// When evaluating arguments for a call and one of them triggers an external call,
+/// we need to remember which arguments have already been evaluated to avoid
+/// re-evaluating them (and their side effects) on resume.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ArgumentCache {
+    /// The position of the call expression whose arguments are being cached.
+    pub call_position: CodeRange,
+    /// Arguments that were evaluated before the external call suspended execution.
+    /// These are stored in order and should be used directly on resume.
+    pub evaluated_args: Vec<Value>,
+    /// Index of the argument that triggered the external call.
+    /// On resume, this argument gets the cached return value, and evaluation
+    /// continues from the next argument.
+    pub suspended_at_arg: usize,
 }
 
 pub trait AbstractSnapshotTracker: Debug {

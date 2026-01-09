@@ -256,6 +256,9 @@ pub struct Snapshot<T: ResourceTracker> {
     /// Stack of suspended function frames (outermost first, innermost last).
     /// Empty when external call is at module level.
     call_stack: Vec<FunctionFrame>,
+    /// The source position of the external call that suspended execution.
+    /// Used to match return values to the correct call site when resuming.
+    ext_call_position: CodeRange,
 }
 
 /// Return value or exception from an external function.
@@ -312,8 +315,11 @@ impl<T: ResourceTracker> Snapshot<T> {
                     .into_python_exception(&self.executor.interns, &self.executor.code)
             })?;
 
-        // Direct external function call - use None for position since any matching call can consume it
-        self.namespaces.push_ext_return_value(None, value);
+        // Store the return value in func_return_values map by position.
+        // This allows position-based lookup which handles nested calls correctly.
+        // The map is cleared in clear_on_function_complete when function frames complete,
+        // which handles recursion (each frame gets fresh cached values).
+        self.namespaces.set_func_return_value(self.ext_call_position, value);
 
         if self.call_stack.is_empty() {
             // Module-level resume - continue execution from saved position
@@ -379,16 +385,18 @@ impl<T: ResourceTracker> Snapshot<T> {
                 // Function completed - clean up its namespace
                 self.namespaces.drop_with_heap(frame.namespace_idx, &mut self.heap);
 
-                // Clear old ext_return_values since this function has consumed them.
-                // The calling function needs a fresh value (this function's return).
-                self.namespaces.clear_ext_return_values(&mut self.heap);
+                // Clear all cached values since this function has consumed them.
+                // This clears func_return_values and argument_cache to prevent
+                // outer recursion levels from seeing inner levels' cached values.
+                self.namespaces.clear_on_function_complete(&mut self.heap);
+
+                // Store the return value in func_return_values map by position.
+                // This allows the caller to look it up when re-evaluating the call expression.
+                // Using the map (not the vec) ensures values persist across multiple resumes.
+                self.namespaces.set_func_return_value(frame.call_position, return_value);
 
                 if self.call_stack.is_empty() {
                     // All functions completed, continue at module level
-                    // Push the return value with this function's call position, so only
-                    // the correct call site consumes it (not intermediate function calls)
-                    self.namespaces
-                        .push_ext_return_value(Some(frame.call_position), return_value);
                     // Use the caller's position_stack (module level), not the function's
                     self.executor.run_from_position(
                         self.heap,
@@ -398,9 +406,6 @@ impl<T: ResourceTracker> Snapshot<T> {
                     )
                 } else {
                     // More functions in the stack - continue with the next one
-                    // Push the return value with this function's call position
-                    self.namespaces
-                        .push_ext_return_value(Some(frame.call_position), return_value);
                     // position_stack stays the same (it's the outermost caller's positions)
                     self.resume_call_stack(print)
                 }
@@ -424,6 +429,7 @@ impl<T: ResourceTracker> Snapshot<T> {
                 new_call_stack.append(&mut ext_call.call_stack);
                 ext_call.call_stack = new_call_stack;
 
+                let ext_call_position = ext_call.call_position;
                 let (args, kwargs) = ext_call.args.into_py_objects(&mut self.heap, &self.executor.interns);
                 Ok(RunProgress::FunctionCall {
                     function_name: self.executor.interns.get_external_function_name(ext_call.function_id),
@@ -436,6 +442,7 @@ impl<T: ResourceTracker> Snapshot<T> {
                         // Use the caller's position_stack (unchanged)
                         position_stack: self.position_stack,
                         call_stack: ext_call.call_stack,
+                        ext_call_position,
                     },
                 })
             }
@@ -443,14 +450,17 @@ impl<T: ResourceTracker> Snapshot<T> {
                 // Function completed with implicit None - clean up its namespace
                 self.namespaces.drop_with_heap(frame.namespace_idx, &mut self.heap);
 
-                // Clear old ext_return_values since this function has consumed them.
-                // The calling function needs a fresh value (this function's return).
-                self.namespaces.clear_ext_return_values(&mut self.heap);
+                // Clear all cached values since this function has consumed them.
+                // This clears func_return_values and argument_cache to prevent
+                // outer recursion levels from seeing inner levels' cached values.
+                self.namespaces.clear_on_function_complete(&mut self.heap);
+
+                // Store the return value (None) in func_return_values map by position.
+                // This allows the caller to look it up when re-evaluating the call expression.
+                self.namespaces.set_func_return_value(frame.call_position, Value::None);
 
                 if self.call_stack.is_empty() {
                     // All functions completed, continue at module level
-                    self.namespaces
-                        .push_ext_return_value(Some(frame.call_position), Value::None);
                     // Use the caller's position_stack (module level), not the function's
                     self.executor.run_from_position(
                         self.heap,
@@ -460,8 +470,6 @@ impl<T: ResourceTracker> Snapshot<T> {
                     )
                 } else {
                     // More functions in the stack - continue with the next one
-                    self.namespaces
-                        .push_ext_return_value(Some(frame.call_position), Value::None);
                     // position_stack stays the same (it's the outermost caller's positions)
                     self.resume_call_stack(print)
                 }
@@ -705,6 +713,7 @@ impl Executor {
                 function_id,
                 args,
                 mut call_stack,
+                call_position: ext_call_position,
             })) => {
                 // Reverse call_stack so outermost is first, innermost is last.
                 // This allows pop() to return the innermost frame first during resume.
@@ -722,6 +731,7 @@ impl Executor {
                         namespaces,
                         position_stack: snapshot_tracker.into_stack(),
                         call_stack,
+                        ext_call_position,
                     },
                 })
             }

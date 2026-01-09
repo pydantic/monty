@@ -264,7 +264,7 @@ impl StackFrame {
 /// A line and column position in source code.
 ///
 /// Uses 1-based indexing for both line and column to match Python's conventions.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CodeLoc {
     /// Line number (1-based).
     pub line: u16,

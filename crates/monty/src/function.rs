@@ -60,6 +60,13 @@ pub struct Function {
     /// At call time, this many cells are created and pushed right after params.
     /// Their slots are implicitly params.len()..params.len()+cell_var_count.
     pub cell_var_count: usize,
+    /// Maps cell variable indices to their corresponding parameter indices, if any.
+    ///
+    /// When a parameter is also captured by nested functions (cell variable), its value
+    /// must be copied into the cell after binding. Each entry corresponds to a cell
+    /// (index 0..cell_var_count), and contains `Some(param_index)` if that cell is for
+    /// a parameter, or `None` otherwise.
+    pub cell_param_indices: Vec<Option<usize>>,
     /// Prepared default value expressions, evaluated at function definition time.
     ///
     /// Layout: `[pos_defaults...][arg_defaults...][kwarg_defaults...]`
@@ -78,7 +85,9 @@ impl Function {
     /// * `namespace_size` - Number of local variable slots needed
     /// * `free_var_enclosing_slots` - Enclosing namespace slots for captured variables
     /// * `cell_var_count` - Number of cells to create for variables captured by nested functions
+    /// * `cell_param_indices` - Maps cell indices to parameter indices for captured parameters
     /// * `default_exprs` - Prepared default value expressions for parameters
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: Identifier,
         signature: Signature,
@@ -86,6 +95,7 @@ impl Function {
         namespace_size: usize,
         free_var_enclosing_slots: Vec<NamespaceId>,
         cell_var_count: usize,
+        cell_param_indices: Vec<Option<usize>>,
         default_exprs: Vec<ExprLoc>,
     ) -> Self {
         Self {
@@ -95,6 +105,7 @@ impl Function {
             namespace_size,
             free_var_enclosing_slots,
             cell_var_count,
+            cell_param_indices,
             default_exprs,
         }
     }
@@ -160,10 +171,19 @@ impl Function {
             .bind(args, defaults, heap, interns, self.name, namespace)?;
 
         // 2. Push cell_var refs (slots param_count..param_count+cell_var_count)
-        // These are cells for variables that nested functions capture from us
-        for _ in 0..self.cell_var_count {
-            let cell_id = heap.alloc_cell(Value::Undefined);
+        // These are cells for variables that nested functions capture from us.
+        // For parameters that are also cell variables, we need to copy the param value into the cell.
+        for (cell_idx, opt_param_idx) in self.cell_param_indices.iter().enumerate() {
+            let initial_value = if let Some(param_idx) = opt_param_idx {
+                // This cell is for a captured parameter - copy the parameter value
+                namespace[*param_idx].clone_with_heap(heap)
+            } else {
+                // Regular cell variable - starts undefined
+                Value::Undefined
+            };
+            let cell_id = heap.alloc_cell(initial_value);
             namespace.push(Value::Ref(cell_id));
+            debug_assert_eq!(namespace.len(), self.signature.param_count() + cell_idx + 1);
         }
 
         // 3. No free_vars for non-closure functions (call_with_cells handles those)
@@ -245,10 +265,19 @@ impl Function {
             .bind(args, defaults, heap, interns, self.name, namespace)?;
 
         // 2. Push cell_var refs (slots param_count..param_count+cell_var_count)
-        // A closure can also have cell_vars if it has nested functions
-        for _ in 0..self.cell_var_count {
-            let cell_id = heap.alloc_cell(Value::Undefined);
+        // A closure can also have cell_vars if it has nested functions.
+        // For parameters that are also cell variables, we need to copy the param value into the cell.
+        for (cell_idx, opt_param_idx) in self.cell_param_indices.iter().enumerate() {
+            let initial_value = if let Some(param_idx) = opt_param_idx {
+                // This cell is for a captured parameter - copy the parameter value
+                namespace[*param_idx].clone_with_heap(heap)
+            } else {
+                // Regular cell variable - starts undefined
+                Value::Undefined
+            };
+            let cell_id = heap.alloc_cell(initial_value);
             namespace.push(Value::Ref(cell_id));
+            debug_assert_eq!(namespace.len(), self.signature.param_count() + cell_idx + 1);
         }
 
         // 3. Push free_var refs (captured cells from enclosing scope)

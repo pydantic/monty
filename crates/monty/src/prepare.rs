@@ -733,6 +733,29 @@ impl<'i> Prepare<'i> {
         let cell_var_count = inner_prepare.cell_var_map.len();
         let namespace_size = inner_prepare.namespace_size;
 
+        // Build cell_param_indices: maps cell indices to parameter indices for captured parameters.
+        // When a parameter is captured by a nested function, we need to copy its value into the cell.
+        let cell_param_indices: Vec<Option<usize>> = if cell_var_count == 0 {
+            Vec::new()
+        } else {
+            // Build a map from param name (String) to param index
+            let param_name_to_index: AHashMap<String, usize> = param_names
+                .iter()
+                .enumerate()
+                .map(|(idx, &name_id)| (self.interner.get_str(name_id).to_string(), idx))
+                .collect();
+
+            // Sort cell_var_map entries by slot to get cells in order
+            let mut cell_entries: Vec<_> = inner_prepare.cell_var_map.iter().collect();
+            cell_entries.sort_by_key(|(_, &slot)| slot);
+
+            // For each cell (in slot order), check if it's a parameter
+            cell_entries
+                .into_iter()
+                .map(|(name, _slot)| param_name_to_index.get(name).copied())
+                .collect()
+        };
+
         // Build the runtime Signature from the parsed signature
         let pos_args: Vec<StringId> = parsed_sig.pos_args.iter().map(|p| p.name).collect();
         let pos_defaults_count = parsed_sig.pos_args.iter().filter(|p| p.default.is_some()).count();
@@ -789,6 +812,7 @@ impl<'i> Prepare<'i> {
             namespace_size,
             free_var_enclosing_slots,
             cell_var_count,
+            cell_param_indices,
             default_exprs,
         ));
 

@@ -147,21 +147,22 @@ impl PyTrait for Str {
         self_id: Option<HeapId>,
         interns: &Interns,
     ) -> Result<bool, crate::resource::ResourceError> {
-        match other {
+        match &other {
             Value::Ref(other_id) => {
-                if Some(other_id) == self_id {
+                if Some(*other_id) == self_id {
                     let rhs = self.0.clone();
                     self.0.push_str(&rhs);
-                    Ok(true)
-                } else if let HeapData::Str(rhs) = heap.get(other_id) {
+                } else if let HeapData::Str(rhs) = heap.get(*other_id) {
                     self.0.push_str(rhs.as_str());
-                    Ok(true)
                 } else {
-                    Ok(false)
+                    return Ok(false);
                 }
+                // Drop the other value - we've consumed it
+                other.drop_with_heap(heap);
+                Ok(true)
             }
             Value::InternString(string_id) => {
-                self.0.push_str(interns.get_str(string_id));
+                self.0.push_str(interns.get_str(*string_id));
                 Ok(true)
             }
             _ => Ok(false),

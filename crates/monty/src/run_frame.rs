@@ -148,9 +148,10 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
             }
             clause_state = None;
 
-            // if enabled, clear return values after executing each node
+            // if enabled, clear cached return values after executing each node
+            // This ensures cached values don't persist across statements or loop iterations
             if P::clear_return_values() {
-                namespaces.clear_ext_return_values(heap);
+                namespaces.clear_statement_cache(heap);
             }
         }
         Ok(None)
