@@ -139,11 +139,12 @@ pub enum Op {
     MakeClosure(FunctionId, u8), // Create closure with n captured cells
 
     // === Exception Handling ===
-    SetupTry(i16),          // Push exception handler (jump offset to handler)
-    PopExceptHandler,       // Pop exception handler
+    // Note: No SetupTry/PopExceptHandler needed - we use static exception_table.
+    // When an exception is raised, VM consults the table to find the handler.
     Raise,                  // Raise TOS as exception
     RaiseFrom,              // Raise TOS from TOS-1
-    Reraise,                // Re-raise current exception
+    Reraise,                // Re-raise current exception (bare `raise`)
+    ClearException,         // Clear current_exception when exiting except block
 
     // === Return ===
     ReturnValue,            // Return TOS from function
@@ -166,7 +167,80 @@ pub struct ConstPool {
 
 **Note:** Strings stay in `Interns` - `LoadConst` for strings uses `Value::InternString(StringId)`.
 
-### 1.3 Code Object
+### 1.3 Location Table Entry
+
+```rust
+/// Source location for a bytecode instruction, used for tracebacks.
+///
+/// Python 3.11+ tracebacks show carets under the relevant expression:
+/// python
+///
+///    File "test.py", line 2, in foo
+///      return a + b + c
+///             ~~^~~
+///
+/// The `range` covers the full expression (`a + b`), while `focus` points
+/// to the specific operator (`+`) that caused the error.
+pub struct LocationEntry {
+    /// Bytecode offset this entry applies to
+    bytecode_offset: u32,
+
+    /// Full source range of the expression (for the ~~~~ underline)
+    range: CodeRange,
+
+    /// Optional focus point within the range (for the ^ caret).
+    /// If None, the entire range is underlined without a focus caret.
+    focus: Option<CodeRange>,
+}
+```
+
+### 1.4 Exception Table Entry
+
+``````rust
+/// Entry in the exception table - maps a protected bytecode range to its handler.
+///
+/// Instead of maintaining a runtime stack of handlers (push/pop during execution),
+/// we use a static table that's consulted when an exception is raised. This is
+/// simpler and matches CPython 3.11+'s approach.
+///
+/// For nested try blocks, multiple entries may cover the same bytecode offset.
+/// Entries are ordered innermost-first, so the VM uses the first matching entry.
+///
+/// Example: for `try: x = bar(); y = baz() except ValueError as e: print(e)`
+/// ```text
+/// 0:  LOAD_GLOBAL 'bar'
+/// 4:  CALL_FUNCTION 0
+/// 8:  STORE_LOCAL 'x'
+/// ...
+/// 24: JUMP 50              # skip handler if no exception
+/// 30: <handler code>       # exception handler starts here
+/// ```
+/// Entry: `{ start: 0, end: 24, handler: 30, stack_depth: 0 }`
+pub struct ExceptionEntry {
+    /// Start of protected bytecode range (inclusive)
+    start: u32,
+
+    /// End of protected bytecode range (exclusive)
+    end: u32,
+
+    /// Bytecode offset of the exception handler
+    handler: u32,
+
+    /// Stack depth when entering the try block.
+    /// Used to unwind the operand stack before jumping to handler.
+    stack_depth: u16,
+}
+``````
+
+When an exception is raised:
+1. Search the exception table for an entry where `start <= ip < end`
+2. Unwind the operand stack to `stack_depth`
+3. Push the exception value onto the stack
+4. Jump to `handler`
+
+The handler code itself checks the exception type (e.g., `isinstance(exc, ValueError)`) and either handles it or re-raises.
+
+### 1.5 Code Object
 
 ```rust
 /// Compiled bytecode for a function or module
@@ -177,10 +251,14 @@ pub struct Code {
     /// Constant pool for this code object
     constants: ConstPool,
 
-    /// Line number table for tracebacks: (bytecode_offset, line_number)
-    line_table: Vec<(usize, u32)>,
+    /// Source location table for tracebacks: maps bytecode offset to source location.
+    /// Each entry contains the full CodeRange for the expression, plus an optional
+    /// "focus" range for the ~^~ syntax in Python 3.11+ tracebacks.
+    /// E.g., for `x + y` causing an error, the full range covers `x + y`,
+    /// but the focus might just be `+` to show: `~~^~~`
+    location_table: Vec<LocationEntry>,
 
-    /// Exception handler table: (start, end, handler, stack_depth)
+    /// Exception handler table - see ExceptionEntry for details
     exception_table: Vec<ExceptionEntry>,
 
     /// Number of local variables (namespace size)
@@ -191,7 +269,7 @@ pub struct Code {
 }
 ```
 
-### 1.4 Bytecode Encoding (Hybrid Variable-Width)
+### 1.6 Bytecode Encoding (Hybrid Variable-Width)
 
 Use **hybrid variable-width encoding** (CPython-style) for optimal cache utilization:
 
@@ -256,12 +334,13 @@ pub struct VM<'a, T: ResourceTracker> {
     /// Interned strings/bytes (existing)
     interns: &'a Interns,
 
-    /// Exception handler stack
-    exception_handlers: Vec<ExceptionHandler>,
-
-    /// Current exception being handled (if any)
+    /// Current exception being handled (if any).
+    /// Used by bare `raise` to re-raise the current exception.
+    /// Set when entering an except handler, cleared when exiting.
     current_exception: Option<Value>,
 }
+// Note: No runtime exception_handlers stack needed - we use the static
+// exception_table in Code to find handlers when an exception is raised.
 ```
 
 ### 2.2 Call Frame
@@ -619,8 +698,8 @@ pub struct VMSnapshot {
     /// Call frames (each contains ip, namespace_idx, cells)
     frames: Vec<SerializedFrame>,
 
-    /// Exception handler stack
-    exception_handlers: Vec<ExceptionHandler>,
+    /// Current exception being handled (if any)
+    current_exception: Option<Value>,
 }
 
 impl VM<'_, T> {
@@ -628,7 +707,7 @@ impl VM<'_, T> {
         VMSnapshot {
             stack: self.stack.clone(),
             frames: self.frames.iter().map(|f| f.serialize()).collect(),
-            exception_handlers: self.exception_handlers.clone(),
+            current_exception: self.current_exception.clone(),
         }
     }
 
@@ -951,8 +1030,9 @@ Op::Yield,  // Generator yield (related but different)
 
 ### Step 5: Exception Handling (1 week)
 - [ ] Try/except/finally compilation
-- [ ] Exception handler stack
-- [ ] Raise/reraise
+- [ ] Exception table generation (static, no runtime stack)
+- [ ] Raise/reraise opcodes
+- [ ] Exception lookup and stack unwinding in VM
 
 ### Step 6: External Calls & Snapshots (1 week)
 - [ ] `CallExternal` opcode
