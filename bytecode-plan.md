@@ -38,34 +38,47 @@ Migrate Monty from a recursive tree-walking interpreter to a stack-based bytecod
 
 ### 1.1 Opcode Enum
 
+Bytecode is stored as raw `Vec<u8>` for cache efficiency. The `Opcode` enum is a pure
+discriminant with no data - operands are fetched separately from the byte stream.
+
 ```rust
-/// Bytecode opcodes - each instruction is 1 byte + optional operands.
-/// Operands use variable-width encoding for compactness.
+/// Opcode discriminant - just identifies the instruction type.
+/// Operands (if any) follow in the bytecode stream and are fetched separately.
+///
+/// With `#[repr(u8)]`, each opcode is exactly 1 byte.
 #[repr(u8)]
-pub enum Op {
-    // === Stack Operations ===
-    Pop,                    // Discard top of stack
-    Dup,                    // Duplicate top of stack
-    Rot2,                   // Swap top two items
-    Rot3,                   // Rotate top three items
+pub enum Opcode {
+    // === Stack Operations (no operand) ===
+    Pop,                    // Discard TOS
+    Dup,                    // Duplicate TOS
+    Rot2,                   // Swap top two: [a, b] → [b, a]
+    Rot3,                   // Rotate top three: [a, b, c] → [c, a, b]
 
     // === Constants & Literals ===
-    LoadConst(ConstId),     // Push constant from constant pool
-    LoadNone,               // Push None (common, deserves own opcode)
+    LoadConst,              // + u16 const_id: push constant from pool
+    LoadNone,               // Push None
     LoadTrue,               // Push True
     LoadFalse,              // Push False
-    LoadInt(i64),           // Push small integer inline
+    LoadSmallInt,           // + i8: push small integer (-128 to 127)
 
     // === Variables ===
-    LoadLocal(u16),         // Push local variable (namespace slot)
-    StoreLocal(u16),        // Pop and store to local
-    LoadGlobal(u16),        // Push from global namespace
-    StoreGlobal(u16),       // Pop and store to global
-    LoadCell(u16),          // Load from cell (closure capture)
-    StoreCell(u16),         // Store to cell
-    DeleteLocal(u16),       // Delete local variable
+    // Specialized no-operand versions for common slots (hot path)
+    LoadLocal0,             // Push local slot 0 (often 'self')
+    LoadLocal1,             // Push local slot 1
+    LoadLocal2,             // Push local slot 2
+    LoadLocal3,             // Push local slot 3
+    // General versions with operand
+    LoadLocal,              // + u8 slot: push local variable
+    LoadLocalW,             // + u16 slot: push local (wide, slot > 255)
+    StoreLocal,             // + u8 slot: pop and store to local
+    StoreLocalW,            // + u16 slot: store local (wide)
+    LoadGlobal,             // + u16 slot: push from global namespace
+    StoreGlobal,            // + u16 slot: store to global
+    LoadCell,               // + u16 slot: load from closure cell
+    StoreCell,              // + u16 slot: store to closure cell
+    DeleteLocal,            // + u8 slot: delete local variable
 
-    // === Binary Operations ===
+    // === Binary Operations (no operand) ===
     BinaryAdd,
     BinarySub,
     BinaryMul,
@@ -80,7 +93,7 @@ pub enum Op {
     BinaryRShift,
     BinaryMatMul,
 
-    // === Comparison Operations ===
+    // === Comparison Operations (no operand) ===
     CompareEq,
     CompareNe,
     CompareLt,
@@ -92,55 +105,64 @@ pub enum Op {
     CompareIn,
     CompareNotIn,
 
-    // === Unary Operations ===
+    // === Unary Operations (no operand) ===
     UnaryNot,
     UnaryNeg,
     UnaryPos,
     UnaryInvert,            // Bitwise ~
 
-    // === In-place Operations ===
+    // === In-place Operations (no operand) ===
     InplaceAdd,
     InplaceSub,
     InplaceMul,
-    // ... (all augmented assignment ops)
+    InplaceDiv,
+    InplaceFloorDiv,
+    InplaceMod,
+    InplacePow,
+    InplaceAnd,
+    InplaceOr,
+    InplaceXor,
+    InplaceLShift,
+    InplaceRShift,
 
     // === Collection Building ===
-    BuildList(u16),         // Pop n items, build list
-    BuildTuple(u16),        // Pop n items, build tuple
-    BuildDict(u16),         // Pop 2n items (key/value pairs), build dict
-    BuildSet(u16),          // Pop n items, build set
-    BuildFString(u16),      // Pop n parts, build f-string
+    BuildList,              // + u16 count: pop n items, build list
+    BuildTuple,             // + u16 count: pop n items, build tuple
+    BuildDict,              // + u16 count: pop 2n items (k/v pairs), build dict
+    BuildSet,               // + u16 count: pop n items, build set
+    BuildFString,           // + u16 count: pop n parts, concatenate
 
     // === Subscript & Attribute ===
     BinarySubscr,           // a[b]: pop index, pop obj, push result
     StoreSubscr,            // a[b] = c: pop value, pop index, pop obj
-    LoadAttr(StringId),     // obj.attr: pop obj, push attr
-    StoreAttr(StringId),    // obj.attr = x: pop value, pop obj
+    DeleteSubscr,           // del a[b]: pop index, pop obj
+    LoadAttr,               // + u16 name_id: pop obj, push obj.attr
+    StoreAttr,              // + u16 name_id: pop value, pop obj, set obj.attr
+    DeleteAttr,             // + u16 name_id: pop obj, delete obj.attr
 
     // === Function Calls ===
-    CallFunction(u8),       // Call with n positional args
-    CallFunctionKw(u8, u8), // Call with n pos args, m kw args (names on stack)
-    CallMethod(StringId, u8), // Call method with n args
-    CallExternal(ExtFunctionId, u8), // External call (triggers pause)
+    CallFunction,           // + u8 arg_count: call TOS with n positional args
+    CallFunctionKw,         // + u8 pos_count + u8 kw_count: call with pos and kw args
+    CallMethod,             // + u16 name_id + u8 arg_count: call method
+    CallExternal,           // + u16 func_id + u8 arg_count: external call (pauses VM)
 
     // === Control Flow ===
-    Jump(i16),              // Unconditional jump (relative offset)
-    JumpIfTrue(i16),        // Jump if TOS is truthy (pop)
-    JumpIfFalse(i16),       // Jump if TOS is falsy (pop)
-    JumpIfTrueOrPop(i16),   // Short-circuit OR: jump if true, else pop
-    JumpIfFalseOrPop(i16),  // Short-circuit AND: jump if false, else pop
+    Jump,                   // + i16 offset: unconditional relative jump
+    JumpIfTrue,             // + i16 offset: jump if TOS truthy, always pop
+    JumpIfFalse,            // + i16 offset: jump if TOS falsy, always pop
+    JumpIfTrueOrPop,        // + i16 offset: jump if TOS truthy (keep), else pop
+    JumpIfFalseOrPop,       // + i16 offset: jump if TOS falsy (keep), else pop
 
     // === Iteration ===
     GetIter,                // Convert TOS to iterator
-    ForIter(i16),           // Advance iterator or jump to end
+    ForIter,                // + i16 offset: advance iterator or jump to end
 
     // === Function Definition ===
-    MakeFunction(FunctionId), // Create function object
-    MakeClosure(FunctionId, u8), // Create closure with n captured cells
+    MakeFunction,           // + u16 func_id: create function object
+    MakeClosure,            // + u16 func_id + u8 cell_count: create closure
 
     // === Exception Handling ===
-    // Note: No SetupTry/PopExceptHandler needed - we use static exception_table.
-    // When an exception is raised, VM consults the table to find the handler.
+    // Note: No SetupTry/PopExceptHandler - we use static exception_table
     Raise,                  // Raise TOS as exception
     RaiseFrom,              // Raise TOS from TOS-1
     Reraise,                // Re-raise current exception (bare `raise`)
@@ -149,12 +171,22 @@ pub enum Op {
     // === Return ===
     ReturnValue,            // Return TOS from function
 
+    // === Unpacking ===
+    UnpackSequence,         // + u8 count: unpack TOS into n values
+    UnpackEx,               // + u8 before + u8 after: unpack with *rest
+
     // === Special ===
-    Nop,                    // No operation (for patching)
-    Yield,                  // Future: generator yield
-    Await,                  // Future: async await
+    Nop,                    // No operation (for patching/alignment)
 }
 ```
+
+**Operand encoding:**
+| Suffix | Operand Size | Example |
+|--------|--------------|---------|
+| (none) | 0 bytes | `BinaryAdd` |
+| (none) | 1 byte (u8/i8) | `LoadLocal`, `LoadSmallInt` |
+| `W` | 2 bytes (u16/i16) | `LoadLocalW`, `Jump` |
+| compound | multiple | `CallFunctionKw` (u8 + u8), `MakeClosure` (u16 + u8) |
 
 ### 1.2 Constant Pool
 
@@ -269,43 +301,194 @@ pub struct Code {
 }
 ```
 
-### 1.6 Bytecode Encoding (Hybrid Variable-Width)
+### 1.6 Bytecode Encoding
 
-Use **hybrid variable-width encoding** (CPython-style) for optimal cache utilization:
+Bytecode is stored as `Vec<u8>` with variable-width operands. This gives excellent
+cache locality - hot loops fit entirely in L1 cache.
 
+**Encoding rules:**
 ```
-Encoding tiers:
 1. No operand (1 byte):     [opcode]
 2. u8 operand (2 bytes):    [opcode][u8]
-3. u16 operand (3 bytes):   [opcode][u16 little-endian]
-4. Extended (4+ bytes):     [EXTENDED_ARG][high byte][opcode][low bytes]
-```
-
-**Specialized single-byte opcodes for hot paths:**
-```rust
-// Instead of LOAD_LOCAL + operand for common slots:
-Op::LoadLocal0,    // First local (often 'self' or first param)
-Op::LoadLocal1,
-Op::LoadLocal2,
-Op::LoadLocal3,
-
-// Common constants without operand:
-Op::LoadNone,
-Op::LoadTrue,
-Op::LoadFalse,
-Op::LoadIntZero,   // Push 0
-Op::LoadIntOne,    // Push 1
+3. u16 operand (3 bytes):   [opcode][lo][hi]  (little-endian)
+4. Compound operands:       [opcode][op1][op2]...
 ```
 
 **Example - `x = a + b` compiles to 6 bytes:**
 ```
-[LOAD_LOCAL_0]              # 1 byte (specialized for slot 0)
-[LOAD_LOCAL] [0x01]         # 2 bytes (slot 1)
-[BINARY_ADD]                # 1 byte
-[STORE_LOCAL] [0x02]        # 2 bytes (slot 2)
+[LoadLocal0]                # 1 byte (specialized, no operand)
+[LoadLocal] [0x01]          # 2 bytes (slot 1)
+[BinaryAdd]                 # 1 byte
+[StoreLocal] [0x02]         # 2 bytes (slot 2)
 ```
 
-**Rationale:** Cache benefits outweigh decode overhead. Hot loops fit in L1 cache, and decode cost is ~1-2 cycles per instruction vs 10+ cycles for cache miss.
+### 1.7 CodeBuilder (Bytecode Emission)
+
+```rust
+/// Builder for emitting bytecode during compilation.
+/// Handles encoding opcodes and operands into raw bytes.
+pub struct CodeBuilder {
+    bytecode: Vec<u8>,
+    constants: Vec<Value>,
+    location_table: Vec<LocationEntry>,
+    exception_table: Vec<ExceptionEntry>,
+
+    /// Current source location (set before emitting instructions)
+    current_location: Option<CodeRange>,
+    current_focus: Option<CodeRange>,
+
+    /// Track max stack depth for pre-allocation hint
+    current_stack_depth: u16,
+    max_stack_depth: u16,
+}
+
+impl CodeBuilder {
+    /// Emit a no-operand instruction.
+    pub fn emit(&mut self, op: Opcode) {
+        self.record_location();
+        self.bytecode.push(op as u8);
+    }
+
+    /// Emit instruction with u8 operand.
+    pub fn emit_u8(&mut self, op: Opcode, operand: u8) {
+        self.record_location();
+        self.bytecode.push(op as u8);
+        self.bytecode.push(operand);
+    }
+
+    /// Emit instruction with u16 operand (little-endian).
+    pub fn emit_u16(&mut self, op: Opcode, operand: u16) {
+        self.record_location();
+        self.bytecode.push(op as u8);
+        self.bytecode.extend_from_slice(&operand.to_le_bytes());
+    }
+
+    /// Emit instruction with i16 operand (for jumps).
+    pub fn emit_i16(&mut self, op: Opcode, operand: i16) {
+        self.record_location();
+        self.bytecode.push(op as u8);
+        self.bytecode.extend_from_slice(&operand.to_le_bytes());
+    }
+
+    /// Emit a forward jump, returning a label to patch later.
+    pub fn emit_jump(&mut self, op: Opcode) -> JumpLabel {
+        self.record_location();
+        let label = JumpLabel(self.bytecode.len());
+        self.bytecode.push(op as u8);
+        self.bytecode.extend_from_slice(&0i16.to_le_bytes()); // placeholder
+        label
+    }
+
+    /// Patch a forward jump to point to the current location.
+    pub fn patch_jump(&mut self, label: JumpLabel) {
+        let target = self.bytecode.len();
+        let offset = (target as isize - label.0 as isize - 3) as i16; // -3 for opcode + i16
+        let bytes = offset.to_le_bytes();
+        self.bytecode[label.0 + 1] = bytes[0];
+        self.bytecode[label.0 + 2] = bytes[1];
+    }
+
+    /// Current bytecode offset (for jump targets).
+    pub fn current_offset(&self) -> usize {
+        self.bytecode.len()
+    }
+
+    /// Emit LoadLocal, using specialized opcodes for slots 0-3.
+    pub fn emit_load_local(&mut self, slot: u16) {
+        match slot {
+            0 => self.emit(Opcode::LoadLocal0),
+            1 => self.emit(Opcode::LoadLocal1),
+            2 => self.emit(Opcode::LoadLocal2),
+            3 => self.emit(Opcode::LoadLocal3),
+            s if s <= 255 => self.emit_u8(Opcode::LoadLocal, s as u8),
+            s => self.emit_u16(Opcode::LoadLocalW, s),
+        }
+    }
+
+    /// Add a constant to the pool, returning its index.
+    pub fn add_const(&mut self, value: Value) -> u16 {
+        let idx = self.constants.len();
+        self.constants.push(value);
+        idx as u16
+    }
+
+    /// Build the final Code object.
+    pub fn build(self, num_locals: u16) -> Code {
+        Code {
+            bytecode: self.bytecode,
+            constants: ConstPool { values: self.constants },
+            location_table: self.location_table,
+            exception_table: self.exception_table,
+            num_locals,
+            stack_size: self.max_stack_depth,
+        }
+    }
+
+    fn record_location(&mut self) {
+        if let Some(range) = self.current_location {
+            self.location_table.push(LocationEntry {
+                bytecode_offset: self.bytecode.len() as u32,
+                range,
+                focus: self.current_focus,
+            });
+        }
+    }
+}
+
+/// Label for forward jump patching.
+pub struct JumpLabel(usize);
+```
+
+### 1.8 Opcode Decoding (VM Fetch Helpers)
+
+```rust
+impl VM<'_, T> {
+    /// Fetch next byte and advance IP.
+    fn fetch_byte(&mut self) -> u8 {
+        let byte = self.current_code().bytecode[self.ip];
+        self.ip += 1;
+        byte
+    }
+
+    /// Fetch opcode (just a typed wrapper around fetch_byte).
+    fn fetch_opcode(&mut self) -> Opcode {
+        // Safety: we trust the compiler emitted valid opcodes
+        let byte = self.fetch_byte();
+        // In debug builds, validate the opcode
+        debug_assert!(byte <= Opcode::Nop as u8, "invalid opcode: {byte}");
+        // Transmute is safe because Opcode is #[repr(u8)] and we validated
+        // TODO: use a safe conversion method instead
+        todo!("safe opcode conversion")
+    }
+
+    /// Fetch u8 operand.
+    fn fetch_u8(&mut self) -> u8 {
+        self.fetch_byte()
+    }
+
+    /// Fetch i8 operand.
+    fn fetch_i8(&mut self) -> i8 {
+        self.fetch_byte() as i8
+    }
+
+    /// Fetch u16 operand (little-endian).
+    fn fetch_u16(&mut self) -> u16 {
+        let lo = self.fetch_byte();
+        let hi = self.fetch_byte();
+        u16::from_le_bytes([lo, hi])
+    }
+
+    /// Fetch i16 operand (little-endian).
+    fn fetch_i16(&mut self) -> i16 {
+        let lo = self.fetch_byte();
+        let hi = self.fetch_byte();
+        i16::from_le_bytes([lo, hi])
+    }
+}
+```
+
+**Rationale:** Variable-width encoding gives ~2x smaller bytecode than fixed-width.
+Decode cost is trivial (~1-2 cycles) compared to cache miss cost (~10+ cycles).
 
 ---
 
@@ -373,21 +556,27 @@ pub struct CallFrame {
 
 ### 2.3 Main Execution Loop
 
+The VM fetches opcodes and operands from raw bytes, decoding on-the-fly:
+
 ```rust
 impl<'a, T: ResourceTracker> VM<'a, T> {
     pub fn run(&mut self) -> VMResult {
         loop {
-            // Fetch
-            let op = self.fetch_op();
+            // Fetch opcode byte and decode
+            let opcode = self.fetch_opcode();
 
-            // Decode & Execute
-            match op {
-                Op::LoadConst(idx) => {
-                    let value = self.current_frame().code.constants.get(idx);
-                    self.push(value.clone_with_heap(self.heap));
+            // Execute - operands fetched inline as needed
+            match opcode {
+                // === No-operand instructions ===
+                Opcode::LoadNone => {
+                    self.push(Value::None);
                 }
 
-                Op::BinaryAdd => {
+                Opcode::LoadTrue => {
+                    self.push(Value::Bool(true));
+                }
+
+                Opcode::BinaryAdd => {
                     let rhs = self.pop();
                     let lhs = self.pop();
                     let result = lhs.py_add(&rhs, self.heap, self.interns)?;
@@ -396,16 +585,7 @@ impl<'a, T: ResourceTracker> VM<'a, T> {
                     self.push(result.unwrap_or(Value::None)); // TODO: TypeError
                 }
 
-                Op::CallExternal(func_id, arg_count) => {
-                    let args = self.pop_n(arg_count);
-                    return VMResult::ExternalCall {
-                        function_id: func_id,
-                        args: ArgValues::from_vec(args),
-                        // State is implicitly: self.ip, self.stack, self.frames
-                    };
-                }
-
-                Op::ReturnValue => {
+                Opcode::ReturnValue => {
                     let value = self.pop();
                     if self.frames.len() == 1 {
                         return VMResult::Complete(value);
@@ -414,12 +594,100 @@ impl<'a, T: ResourceTracker> VM<'a, T> {
                     self.push(value);
                 }
 
-                // ... other ops
+                // === Specialized no-operand (hot path) ===
+                Opcode::LoadLocal0 => {
+                    let value = self.get_local(0);
+                    self.push(value.clone_with_heap(self.heap));
+                }
+
+                Opcode::LoadLocal1 => {
+                    let value = self.get_local(1);
+                    self.push(value.clone_with_heap(self.heap));
+                }
+
+                // === Instructions with u8 operand ===
+                Opcode::LoadLocal => {
+                    let slot = self.fetch_u8() as u16;
+                    let value = self.get_local(slot);
+                    self.push(value.clone_with_heap(self.heap));
+                }
+
+                Opcode::StoreLocal => {
+                    let slot = self.fetch_u8() as u16;
+                    let value = self.pop();
+                    self.set_local(slot, value);
+                }
+
+                Opcode::LoadSmallInt => {
+                    let n = self.fetch_i8();
+                    self.push(Value::Int(n as i64));
+                }
+
+                Opcode::CallFunction => {
+                    let arg_count = self.fetch_u8();
+                    self.call_function(arg_count)?;
+                }
+
+                // === Instructions with u16 operand ===
+                Opcode::LoadLocalW => {
+                    let slot = self.fetch_u16();
+                    let value = self.get_local(slot);
+                    self.push(value.clone_with_heap(self.heap));
+                }
+
+                Opcode::LoadConst => {
+                    let idx = self.fetch_u16();
+                    let value = self.current_code().constants.get(idx);
+                    self.push(value.clone_with_heap(self.heap));
+                }
+
+                Opcode::LoadAttr => {
+                    let name_id = self.fetch_u16();
+                    let obj = self.pop();
+                    let attr = self.get_attr(&obj, name_id)?;
+                    obj.drop_with_heap(self.heap);
+                    self.push(attr);
+                }
+
+                // === Instructions with i16 operand (jumps) ===
+                Opcode::Jump => {
+                    let offset = self.fetch_i16();
+                    self.ip = (self.ip as isize + offset as isize) as usize;
+                }
+
+                Opcode::JumpIfFalse => {
+                    let offset = self.fetch_i16();
+                    let cond = self.pop();
+                    if !cond.is_truthy() {
+                        self.ip = (self.ip as isize + offset as isize) as usize;
+                    }
+                    cond.drop_with_heap(self.heap);
+                }
+
+                // === Compound operands ===
+                Opcode::CallExternal => {
+                    let func_id = self.fetch_u16();
+                    let arg_count = self.fetch_u8();
+                    let args = self.pop_n(arg_count as usize);
+                    return VMResult::ExternalCall {
+                        function_id: func_id,
+                        args: ArgValues::from_vec(args),
+                    };
+                }
+
+                Opcode::MakeClosure => {
+                    let func_id = self.fetch_u16();
+                    let cell_count = self.fetch_u8();
+                    self.make_closure(func_id, cell_count)?;
+                }
+
+                // ... remaining opcodes
+                _ => todo!("opcode {:?}", opcode),
             }
         }
     }
 
-    /// Resume after external call returns
+    /// Resume after external call completes - push result and continue.
     pub fn resume(&mut self, result: Value) -> VMResult {
         self.push(result);
         self.run()
@@ -427,11 +695,10 @@ impl<'a, T: ResourceTracker> VM<'a, T> {
 }
 ```
 
-**Performance optimizations in the loop:**
-1. **Computed goto** (if using unsafe): Jump table instead of match
-2. **Stack caching**: Keep TOS in register
-3. **Opcode specialization**: Separate ops for common patterns
-4. **Inline caching**: Cache method lookups (future JIT prep)
+**Key points:**
+- Operands are fetched **inline** after matching the opcode
+- Jump offsets are relative to the IP **after** fetching the operand
+- Specialized opcodes (`LoadLocal0`, etc.) avoid operand fetch entirely
 
 ---
 
