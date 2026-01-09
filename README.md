@@ -1,5 +1,7 @@
 # Monty
 
+[![CodSpeed](https://img.shields.io/badge/CodSpeed-Performance%20Tracked-blue?logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNOCAwTDAgOEw4IDE2TDE2IDhMOCAwWiIgZmlsbD0id2hpdGUiLz48L3N2Zz4=)](https://codspeed.io/pydantic/monty?utm_source=badge)
+
 A sandboxed, snapshotable Python interpreter written in Rust.
 
 Monty is a **sandboxed Python interpreter** written in Rust. Unlike embedding CPython or using PyO3,
