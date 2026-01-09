@@ -610,13 +610,15 @@ impl<'a, T: ResourceTracker> VM<'a, T> {
                     self.push(Value::Bool(true));
                 }
 
+                // IMPORTANT: Always drop operands BEFORE propagating errors with `?`
+                // to avoid reference count leaks. Pattern: compute, drop, then propagate.
                 Opcode::BinaryAdd => {
                     let rhs = self.pop();
                     let lhs = self.pop();
-                    let result = lhs.py_add(&rhs, self.heap, self.interns)?;
+                    let result = lhs.py_add(&rhs, self.heap, self.interns);
                     lhs.drop_with_heap(self.heap);
                     rhs.drop_with_heap(self.heap);
-                    self.push(result.unwrap_or(Value::None)); // TODO: TypeError
+                    self.push(result?.unwrap_or(Value::None)); // TODO: TypeError
                 }
 
                 Opcode::ReturnValue => {
@@ -678,9 +680,9 @@ impl<'a, T: ResourceTracker> VM<'a, T> {
                 Opcode::LoadAttr => {
                     let name_id = self.fetch_u16();
                     let obj = self.pop();
-                    let attr = self.get_attr(&obj, name_id)?;
+                    let attr = self.get_attr(&obj, name_id);
                     obj.drop_with_heap(self.heap);
-                    self.push(attr);
+                    self.push(attr?);
                 }
 
                 // === Instructions with i16 operand (jumps) ===
@@ -733,6 +735,46 @@ impl<'a, T: ResourceTracker> VM<'a, T> {
 - Operands are fetched **inline** after matching the opcode
 - Jump offsets are relative to the IP **after** fetching the operand
 - Specialized opcodes (`LoadLocal0`, etc.) avoid operand fetch entirely
+
+### 2.4 Reference Count Safety in Error Handling
+
+**CRITICAL:** When an operation can fail (returns `Result`), operands must be dropped BEFORE propagating the error with `?`. Otherwise, reference counts leak.
+
+**The Problem:**
+`Value` does not implement `Drop` to decrement reference counts—it requires `drop_with_heap(&mut Heap)`. When `?` propagates an error, Rust drops the `Value` structs but does NOT decrement heap refcounts, causing permanent memory leaks.
+
+**Wrong (leaks on error):**
+```rust
+Opcode::BinaryAdd => {
+    let rhs = self.pop();
+    let lhs = self.pop();
+    let result = lhs.py_add(&rhs, self.heap)?; // If error, lhs/rhs leak!
+    lhs.drop_with_heap(self.heap);
+    rhs.drop_with_heap(self.heap);
+    self.push(result);
+}
+```
+
+**Correct (drop before propagating):**
+```rust
+Opcode::BinaryAdd => {
+    let rhs = self.pop();
+    let lhs = self.pop();
+    let result = lhs.py_add(&rhs, self.heap); // Don't use ? yet
+    lhs.drop_with_heap(self.heap);            // Always drop operands
+    rhs.drop_with_heap(self.heap);
+    self.push(result?);                       // Now propagate error if any
+}
+```
+
+**Pattern for all fallible operations:**
+1. Pop operands
+2. Call the operation (store Result, don't use `?`)
+3. Drop all operands unconditionally with `drop_with_heap()`
+4. Propagate error with `?` (or match on result)
+5. Push result on success
+
+**Helper methods** (e.g., `call_function`, `make_closure`) that pop values internally must follow the same pattern—they are responsible for dropping any values they pop before returning an error.
 
 ---
 
