@@ -194,7 +194,6 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
                     self.interns,
                     self.print,
                     self.snapshot_tracker,
-                    self.name,
                 )
                 .evaluate_discard(expr)
                 {
@@ -287,7 +286,6 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
             self.interns,
             self.print,
             self.snapshot_tracker,
-            self.name,
         )
         .evaluate_use(expr)
         {
@@ -312,7 +310,6 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
             self.interns,
             self.print,
             self.snapshot_tracker,
-            self.name,
         )
         .evaluate_bool(expr)
         {

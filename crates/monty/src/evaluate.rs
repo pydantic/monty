@@ -43,8 +43,6 @@ pub struct EvaluateExpr<'h, 's, T: ResourceTracker, W: PrintWriter, S: AbstractS
     pub print: &'s mut W,
     /// Tracker for recording execution position for snapshot/resume
     pub snapshot_tracker: &'h mut S,
-    /// Name of the current frame (function name or "<module>") for traceback frames.
-    pub name: StringId,
 }
 
 /// Similar to the legacy `ok!()` macro, this gives shorthand for returning early
@@ -69,7 +67,6 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter, S: AbstractSnapshotTracker> Eva
     /// * `interns` - String storage for looking up interned names
     /// * `print` - The print for print output
     /// * `snapshot_tracker` - Tracker for recording execution position
-    /// * `name` - Name of the current frame for traceback frames
     pub fn new(
         namespaces: &'h mut Namespaces,
         local_idx: NamespaceId,
@@ -77,7 +74,6 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter, S: AbstractSnapshotTracker> Eva
         interns: &'s Interns,
         print: &'s mut W,
         snapshot_tracker: &'h mut S,
-        name: StringId,
     ) -> Self {
         Self {
             namespaces,
@@ -86,7 +82,6 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter, S: AbstractSnapshotTracker> Eva
             interns,
             print,
             snapshot_tracker,
-            name,
         }
     }
 
@@ -114,7 +109,6 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter, S: AbstractSnapshotTracker> Eva
                     self.print,
                     self.snapshot_tracker,
                     expr_loc.position,
-                    self.name,
                 )
             }
             Expr::AttrCall { object, attr, args } => self.attr_call(object, attr, args),
@@ -251,7 +245,6 @@ impl<'h, 's, T: ResourceTracker, W: PrintWriter, S: AbstractSnapshotTracker> Eva
                     self.print,
                     self.snapshot_tracker,
                     expr_loc.position,
-                    self.name,
                 )?;
                 let value = return_ext_call!(eval_result);
                 value.drop_with_heap(self.heap);

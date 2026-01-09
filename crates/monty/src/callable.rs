@@ -5,7 +5,7 @@ use crate::{
     exception_private::{exc_fmt, ExcType},
     expressions::Identifier,
     heap::{Heap, HeapData},
-    intern::{Interns, StringId},
+    intern::Interns,
     io::PrintWriter,
     namespace::{NamespaceId, Namespaces},
     parse::CodeRange,
@@ -46,7 +46,6 @@ impl Callable {
     /// * `print` - The print for print output
     /// * `snapshot_tracker` - Tracker for recording execution position for resumption
     /// * `call_position` - Source position of the call expression for tracebacks
-    /// * `caller_name_id` - Name of the calling function for traceback frames
     #[allow(clippy::too_many_arguments)]
     pub fn call(
         &self,
@@ -58,7 +57,6 @@ impl Callable {
         print: &mut impl PrintWriter,
         snapshot_tracker: &mut impl AbstractSnapshotTracker,
         call_position: CodeRange,
-        caller_name_id: StringId,
     ) -> RunResult<EvalResult<Value>> {
         match self {
             Callable::Builtin(b) => b.call(heap, args, interns, print).map(EvalResult::Value),
@@ -105,7 +103,6 @@ impl Callable {
                                     print,
                                     snapshot_tracker,
                                     call_position,
-                                    caller_name_id,
                                 )
                             }
                             Err(e) => {
@@ -175,7 +172,6 @@ impl Callable {
                                             print,
                                             snapshot_tracker,
                                             call_position,
-                                            caller_name_id,
                                         )
                                     }
                                     HeapData::FunctionDefaults(f_id, defaults) => {
@@ -191,7 +187,6 @@ impl Callable {
                                             print,
                                             snapshot_tracker,
                                             call_position,
-                                            caller_name_id,
                                         )
                                     }
                                     _ => {

@@ -13,8 +13,7 @@ use crate::{
 /// Result of executing a frame - return, yield, or external function call.
 ///
 /// When a frame encounters a `return` statement, it produces `Return(value)`.
-/// When a frame encounters a `yield` statement, it produces `Yield(value)` to
-/// pause execution and return control to the caller.
+///
 /// When a frame encounters a call to an external function, it produces
 /// `FunctionCall` to pause execution and let the host provide the return value.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -54,9 +53,6 @@ pub struct FunctionFrame {
     /// Source position where this function was called from.
     /// Used to build proper tracebacks when exceptions propagate through suspended frames.
     pub call_position: CodeRange,
-    /// Name of the calling function (or module) for traceback frames.
-    /// When an exception propagates out of this function, the frame shows the caller's name.
-    pub caller_name_id: StringId,
 }
 
 /// Represents a paused external function call with all information needed

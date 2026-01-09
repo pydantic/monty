@@ -2,7 +2,7 @@
 use crate::exception_private::{ExcType, ExceptionRaise, RunError};
 use crate::expressions::Node;
 use crate::heap::Heap;
-use crate::intern::{ExtFunctionId, Interns, StringId};
+use crate::intern::{ExtFunctionId, Interns, StringId, MODULE_STRING_ID};
 use crate::io::{PrintWriter, StdPrint};
 use crate::namespace::Namespaces;
 use crate::object::MontyObject;
@@ -412,7 +412,6 @@ impl<T: ResourceTracker> Snapshot<T> {
                     captured_cell_count: frame.captured_cell_count,
                     saved_positions,
                     call_position: frame.call_position,
-                    caller_name_id: frame.caller_name_id,
                 });
                 // Reverse ext_call.call_stack to outermost-first order (it was built with push)
                 ext_call.call_stack.reverse();
@@ -465,13 +464,21 @@ impl<T: ResourceTracker> Snapshot<T> {
                 // Error occurred - add frames for the suspended call stack and clean up namespaces
                 self.namespaces.drop_with_heap(frame.namespace_idx, &mut self.heap);
 
-                // Add frame for where this function was called from (use caller's name)
-                add_suspended_frame_info(&mut e, frame.caller_name_id, frame.call_position);
+                // Add frame for where this function was called from.
+                // Derive caller name from parent frame (or <module> if no parent).
+                let caller_name = self.call_stack.last().map_or(MODULE_STRING_ID, |f| f.name_id);
+                add_suspended_frame_info(&mut e, caller_name, frame.call_position);
 
-                // Add frames for remaining call stack (outermost to innermost)
-                for f in self.call_stack.iter().rev() {
+                // Add frames for remaining call stack (innermost to outermost).
+                // Each frame's caller is the previous frame in the stack, or <module> for the outermost.
+                for (i, f) in self.call_stack.iter().enumerate().rev() {
                     self.namespaces.drop_with_heap(f.namespace_idx, &mut self.heap);
-                    add_suspended_frame_info(&mut e, f.caller_name_id, f.call_position);
+                    let caller_name = if i > 0 {
+                        self.call_stack[i - 1].name_id
+                    } else {
+                        MODULE_STRING_ID
+                    };
+                    add_suspended_frame_info(&mut e, caller_name, f.call_position);
                 }
                 #[cfg(feature = "ref-count-panic")]
                 self.namespaces.drop_global_with_heap(&mut self.heap);

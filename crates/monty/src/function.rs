@@ -136,7 +136,6 @@ impl Function {
     /// * `print` - The print for print output
     /// * `snapshot_tracker` - Tracker for recording execution position for resumption
     /// * `call_position` - Source position where this function is being called from
-    /// * `caller_name_id` - Name of the calling function for traceback frames
     #[allow(clippy::too_many_arguments)]
     pub fn call(
         &self,
@@ -149,7 +148,6 @@ impl Function {
         print: &mut impl PrintWriter,
         snapshot_tracker: &mut impl AbstractSnapshotTracker,
         call_position: CodeRange,
-        caller_name_id: StringId,
     ) -> RunResult<EvalResult<Value>> {
         // Create a new local namespace for this function call (with memory and recursion tracking)
         // For resource errors (recursion, memory), we don't attach a frame here - the caller
@@ -200,7 +198,6 @@ impl Function {
             namespaces,
             heap,
             call_position,
-            caller_name_id,
         ))
     }
 
@@ -220,7 +217,6 @@ impl Function {
     /// * `print` - The print for print output
     /// * `snapshot_tracker` - Tracker for recording execution position for resumption
     /// * `call_position` - Source position where this function is being called from
-    /// * `caller_name_id` - Name of the calling function for traceback frames
     ///
     /// This method is called when invoking a `Value::Closure`. The captured_cells
     /// are pushed sequentially after cell_vars in the namespace.
@@ -237,7 +233,6 @@ impl Function {
         print: &mut impl PrintWriter,
         snapshot_tracker: &mut impl AbstractSnapshotTracker,
         call_position: CodeRange,
-        caller_name_id: StringId,
     ) -> RunResult<EvalResult<Value>> {
         // Create a new local namespace for this function call (with memory and recursion tracking)
         // For resource errors (recursion, memory), we don't attach a frame here - the caller
@@ -293,7 +288,6 @@ impl Function {
             namespaces,
             heap,
             call_position,
-            caller_name_id,
         ))
     }
 
@@ -330,7 +324,6 @@ fn handle_frame_exit(
     namespaces: &mut Namespaces,
     heap: &mut Heap<impl ResourceTracker>,
     call_position: CodeRange,
-    caller_name_id: StringId,
 ) -> EvalResult<Value> {
     match result {
         Some(FrameExit::Return(value)) => {
@@ -350,7 +343,6 @@ fn handle_frame_exit(
                 captured_cell_count,
                 saved_positions,
                 call_position,
-                caller_name_id,
             });
             EvalResult::ExternalCall(ext_call)
         }
