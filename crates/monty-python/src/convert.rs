@@ -10,6 +10,7 @@ use pyo3::exceptions::PyBaseException;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple};
 
+use crate::dataclass::{dataclass_to_monty, is_dataclass, PyMontyDataclass};
 use crate::exceptions::{exc_monty_to_py, exc_to_monty_object};
 
 /// Converts a Python object to Monty's `MontyObject` representation.
@@ -57,6 +58,8 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
         Ok(MontyObject::Ellipsis)
     } else if let Ok(exc) = obj.cast::<PyBaseException>() {
         Ok(exc_to_monty_object(exc))
+    } else if is_dataclass(obj) {
+        dataclass_to_monty(obj)
     } else {
         Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
             "Cannot convert {} to Monty value",
@@ -106,7 +109,7 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject) -> PyResult<Py<PyAny>> {
         }
         // Return the exception instance as a value (not raised)
         MontyObject::Exception { exc_type, arg } => {
-            let exc = exc_monty_to_py(MontyException::new(*exc_type, arg.clone()));
+            let exc = exc_monty_to_py(py, MontyException::new(*exc_type, arg.clone()));
             Ok(exc.into_value(py).into_any())
         }
         MontyObject::Type(t) => {
@@ -115,13 +118,16 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject) -> PyResult<Py<PyAny>> {
             let builtins = py.import("builtins")?;
             Ok(builtins.getattr(type_name)?.unbind())
         }
-        // Dataclass - convert to dict representation of its fields
-        MontyObject::Dataclass { fields, .. } => {
-            let dict = PyDict::new(py);
-            for (k, v) in fields {
-                dict.set_item(monty_to_py(py, k)?, monty_to_py(py, v)?)?;
-            }
-            Ok(dict.into_any().unbind())
+        // Dataclass - convert to PyMontyDataclass
+        MontyObject::Dataclass {
+            name,
+            field_names,
+            attrs,
+            frozen,
+            methods: _,
+        } => {
+            let dc = PyMontyDataclass::new(py, name.clone(), field_names.clone(), attrs, *frozen)?;
+            Ok(Py::new(py, dc)?.into_any())
         }
         // Output-only types - convert to string representation
         MontyObject::Repr(s) => Ok(PyString::new(py, s).into_any().unbind()),

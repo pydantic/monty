@@ -97,9 +97,7 @@ def format_full_traceback(e: Exception):
 
 
 def normalize_debug_range(line: str) -> str:
-    # monty doesn't implement FrozenInstanceError which is a subclass of AttributeError
-    # so this means python exceptions match monty
-    line = line.replace('dataclasses.FrozenInstanceError:', 'AttributeError:')
+    line = line.replace('dataclasses.FrozenInstanceError:', 'FrozenInstanceError:')
     if re.fullmatch(r' +[\~\^]+', line):
         return line.replace('^', '~')
     else:

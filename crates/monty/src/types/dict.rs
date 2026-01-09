@@ -10,7 +10,7 @@ use crate::types::Type;
 
 use super::{List, PyTrait, Tuple};
 use crate::heap::{Heap, HeapData, HeapId};
-use crate::intern::Interns;
+use crate::intern::{attr, Interns};
 use crate::resource::ResourceTracker;
 use crate::run_frame::RunResult;
 use crate::value::{Attr, Value};
@@ -148,6 +148,38 @@ impl Dict {
         } else {
             Ok(None)
         }
+    }
+
+    /// Gets a value from the dict by string key name (immutable lookup).
+    ///
+    /// This is an O(1) lookup that doesn't require mutable heap access.
+    /// Only works for string keys - returns None if the key is not found.
+    pub fn get_by_str(&self, key_str: &str, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Option<&Value> {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        // Compute hash for the string key
+        let mut hasher = DefaultHasher::new();
+        key_str.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        // Find entry with matching hash and key
+        self.indices
+            .find(hash, |&idx| {
+                let entry_key = &self.entries[idx].key;
+                match entry_key {
+                    Value::InternString(id) => interns.get_str(*id) == key_str,
+                    Value::Ref(id) => {
+                        if let HeapData::Str(s) = heap.get(*id) {
+                            s.as_str() == key_str
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                }
+            })
+            .map(|&idx| &self.entries[idx].value)
     }
 
     /// Sets a key-value pair in the dict.
@@ -521,9 +553,12 @@ impl PyTrait for Dict {
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
-        match attr {
-            #[allow(clippy::manual_let_else)]
-            Attr::Get => {
+        let Some(attr_id) = attr.string_id() else {
+            return Err(ExcType::attribute_error(Type::Dict, attr.as_str(interns)));
+        };
+
+        match attr_id {
+            attr::GET => {
                 // dict.get() accepts 1 or 2 arguments
                 let (key, default) = args.get_one_two_args("get")?;
                 let default = default.unwrap_or(Value::None);
@@ -546,19 +581,19 @@ impl PyTrait for Dict {
                 default.drop_with_heap(heap);
                 Ok(value)
             }
-            Attr::Keys => {
+            attr::KEYS => {
                 args.check_zero_args("dict.keys")?;
                 let keys = self.keys(heap);
                 let list_id = heap.allocate(HeapData::List(List::new(keys)))?;
                 Ok(Value::Ref(list_id))
             }
-            Attr::Values => {
+            attr::VALUES => {
                 args.check_zero_args("dict.values")?;
                 let values = self.values(heap);
                 let list_id = heap.allocate(HeapData::List(List::new(values)))?;
                 Ok(Value::Ref(list_id))
             }
-            Attr::Items => {
+            attr::ITEMS => {
                 args.check_zero_args("dict.items")?;
                 // Return list of tuples
                 let items = self.items(heap);
@@ -570,8 +605,7 @@ impl PyTrait for Dict {
                 let list_id = heap.allocate(HeapData::List(List::new(tuples)))?;
                 Ok(Value::Ref(list_id))
             }
-            #[allow(clippy::manual_let_else, clippy::single_match_else)]
-            Attr::Pop => {
+            attr::POP => {
                 // dict.pop() accepts 1 or 2 arguments (key, optional default)
                 let (key, default) = args.get_one_two_args("pop")?;
                 let result = match self.pop(&key, heap, interns) {
@@ -606,7 +640,7 @@ impl PyTrait for Dict {
                     }
                 }
             }
-            _ => Err(ExcType::attribute_error(Type::Dict, attr)),
+            _ => Err(ExcType::attribute_error(Type::Dict, attr.as_str(interns))),
         }
     }
 }

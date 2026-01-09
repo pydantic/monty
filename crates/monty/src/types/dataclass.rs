@@ -7,7 +7,7 @@ use crate::exception_private::ExcType;
 use crate::types::Type;
 
 use super::{Dict, PyTrait};
-use crate::heap::{Heap, HeapData, HeapId};
+use crate::heap::{Heap, HeapId};
 use crate::intern::Interns;
 use crate::resource::ResourceTracker;
 use crate::run_frame::RunResult;
@@ -20,34 +20,38 @@ use crate::value::{Attr, Value};
 ///
 /// # Fields
 /// - `name`: The class name (e.g., "Point", "User")
-/// - `fields`: A Dict mapping field names (strings) to their values
+/// - `field_names`: Declared field names in definition order (used for repr)
+/// - `attrs`: All attributes including declared fields and dynamically added ones
 /// - `methods`: Set of method names that should trigger external calls
-/// - `mutable`: Whether the dataclass instance can be modified
+/// - `frozen`: Whether the dataclass instance is immutable
 ///
 /// # Hashability
-/// When `mutable` is false, the dataclass is immutable and hashable. The hash
-/// is computed from the class name and all field values. When `mutable` is true,
-/// the dataclass behaves like a regular Python object and is unhashable.
+/// When `frozen` is true, the dataclass is immutable and hashable. The hash
+/// is computed from the class name and declared field values only.
+/// When `frozen` is false, the dataclass is mutable and unhashable.
 ///
 /// # Reference Counting
-/// The `fields` Dict contains Values that may be heap-allocated. The
+/// The `attrs` Dict contains Values that may be heap-allocated. The
 /// `py_dec_ref_ids` method properly handles decrementing refcounts for
-/// all field values when the dataclass instance is freed.
+/// all attribute values when the dataclass instance is freed.
 ///
 /// # Attribute Access
-/// - Getting: Looks up the field name in the fields Dict
-/// - Setting: Updates or adds the field in the fields Dict (only if mutable)
+/// - Getting: Looks up the attribute name in the attrs Dict
+/// - Setting: Updates or adds the attribute in attrs (only if not frozen)
 /// - Method calls: If the attribute name is in `methods`, triggers external call
+/// - repr: Only shows declared fields (from field_names), not extra attributes
 #[derive(Debug)]
 pub struct Dataclass {
     /// The class name (e.g., "Point", "User")
     name: String,
-    /// Field name -> value mapping, preserves insertion order
-    fields: Dict,
+    /// Declared field names in definition order (for repr and hashing)
+    field_names: Vec<String>,
+    /// All attributes (both declared fields and dynamically added)
+    attrs: Dict,
     /// Method names that trigger external function calls
     methods: AHashSet<String>,
-    /// Whether this dataclass instance is mutable (affects hashability)
-    mutable: bool,
+    /// Whether this dataclass instance is immutable (affects hashability)
+    frozen: bool,
 }
 
 impl Dataclass {
@@ -55,16 +59,18 @@ impl Dataclass {
     ///
     /// # Arguments
     /// * `name` - The class name
-    /// * `fields` - Dict of field name -> value pairs (ownership transferred)
+    /// * `field_names` - Declared field names in definition order
+    /// * `attrs` - Dict of attribute name -> value pairs (ownership transferred)
     /// * `methods` - Set of method names that trigger external calls
-    /// * `mutable` - Whether this instance is mutable (affects hashability)
+    /// * `frozen` - Whether this dataclass instance is immutable (affects hashability)
     #[must_use]
-    pub fn new(name: String, fields: Dict, methods: AHashSet<String>, mutable: bool) -> Self {
+    pub fn new(name: String, field_names: Vec<String>, attrs: Dict, methods: AHashSet<String>, frozen: bool) -> Self {
         Self {
             name,
-            fields,
+            field_names,
+            attrs,
             methods,
-            mutable,
+            frozen,
         }
     }
 
@@ -74,50 +80,56 @@ impl Dataclass {
         &self.name
     }
 
+    /// Returns a reference to the declared field names.
+    #[must_use]
+    pub fn field_names(&self) -> &[String] {
+        &self.field_names
+    }
+
     /// Returns a reference to the methods set.
     #[must_use]
     pub fn methods(&self) -> &AHashSet<String> {
         &self.methods
     }
 
-    /// Returns a reference to the fields Dict.
+    /// Returns a reference to the attrs Dict.
     #[must_use]
-    pub fn fields(&self) -> &Dict {
-        &self.fields
+    pub fn attrs(&self) -> &Dict {
+        &self.attrs
     }
 
-    /// Returns whether this dataclass instance is mutable.
+    /// Returns whether this dataclass instance is frozen (immutable).
     #[must_use]
-    pub fn is_mutable(&self) -> bool {
-        self.mutable
+    pub fn is_frozen(&self) -> bool {
+        self.frozen
     }
 
-    /// Gets a field value by name.
+    /// Gets an attribute value by name.
     ///
-    /// Returns Ok(Some(&Value)) if the field exists, Ok(None) if it doesn't.
+    /// Returns Ok(Some(&Value)) if the attribute exists, Ok(None) if it doesn't.
     /// Returns Err if the key is unhashable (should not happen with string keys).
-    pub fn get_field(
+    pub fn get_attr(
         &self,
         name: &Value,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<Option<&Value>> {
-        self.fields.get(name, heap, interns)
+        self.attrs.get(name, heap, interns)
     }
 
-    /// Sets a field value.
+    /// Sets an attribute value.
     ///
     /// The caller transfers ownership of both `name` and `value`. Returns the
-    /// old value if the field existed (caller must drop it), or None if this
-    /// is a new field.
-    pub fn set_field(
+    /// old value if the attribute existed (caller must drop it), or None if this
+    /// is a new attribute.
+    pub fn set_attr(
         &mut self,
         name: Value,
         value: Value,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<Option<Value>> {
-        self.fields.set(name, value, heap, interns)
+        self.attrs.set(name, value, heap, interns)
     }
 
     /// Checks if a method name is in the methods set.
@@ -128,40 +140,41 @@ impl Dataclass {
 
     /// Creates a deep clone of this dataclass with proper reference counting.
     ///
-    /// The fields Dict is cloned with proper refcount handling for all values.
+    /// The attrs Dict is cloned with proper refcount handling for all values.
     #[must_use]
     pub fn clone_with_heap(&self, heap: &mut Heap<impl ResourceTracker>) -> Self {
         Self {
             name: self.name.clone(),
-            fields: self.fields.clone_with_heap(heap),
+            field_names: self.field_names.clone(),
+            attrs: self.attrs.clone_with_heap(heap),
             methods: self.methods.clone(),
-            mutable: self.mutable,
+            frozen: self.frozen,
         }
     }
 
-    /// Computes the hash for this dataclass if it's immutable.
+    /// Computes the hash for this dataclass if it's frozen.
     ///
-    /// Returns Some(hash) for immutable dataclasses, None for mutable ones.
-    /// The hash is computed from the class name and all field values.
+    /// Returns Some(hash) for frozen (immutable) dataclasses, None for mutable ones.
+    /// The hash is computed from the class name and declared field values only.
     pub fn compute_hash(&self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Option<u64> {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
-        if self.mutable {
+        // Only frozen (immutable) dataclasses are hashable
+        if !self.frozen {
             return None;
         }
 
         let mut hasher = DefaultHasher::new();
         // Hash the class name
         self.name.hash(&mut hasher);
-        // Hash each field (name, value) pair
-        for (key, value) in &self.fields {
-            // Hash the key
-            let key_hash = key.py_hash(heap, interns)?;
-            key_hash.hash(&mut hasher);
-            // Hash the value
-            let value_hash = value.py_hash(heap, interns)?;
-            value_hash.hash(&mut hasher);
+        // Hash each declared field (name, value) pair in order
+        for field_name in &self.field_names {
+            field_name.hash(&mut hasher);
+            if let Some(value) = self.attrs.get_by_str(field_name, heap, interns) {
+                let value_hash = value.py_hash(heap, interns)?;
+                value_hash.hash(&mut hasher);
+            }
         }
         Some(hasher.finish())
     }
@@ -175,7 +188,8 @@ impl PyTrait for Dataclass {
     fn py_estimate_size(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.name.len()
-            + self.fields.py_estimate_size()
+            + self.field_names.iter().map(String::len).sum::<usize>()
+            + self.attrs.py_estimate_size()
             + self.methods.len() * std::mem::size_of::<String>()
     }
 
@@ -185,13 +199,13 @@ impl PyTrait for Dataclass {
     }
 
     fn py_eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool {
-        // Dataclasses are equal if they have the same name and equal fields
-        self.name == other.name && self.fields.py_eq(&other.fields, heap, interns)
+        // Dataclasses are equal if they have the same name and equal attrs
+        self.name == other.name && self.attrs.py_eq(&other.attrs, heap, interns)
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        // Delegate to the fields Dict which handles all nested heap references
-        self.fields.py_dec_ref_ids(stack);
+        // Delegate to the attrs Dict which handles all nested heap references
+        self.attrs.py_dec_ref_ids(stack);
     }
 
     fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
@@ -207,31 +221,28 @@ impl PyTrait for Dataclass {
         interns: &Interns,
     ) -> std::fmt::Result {
         // Format: ClassName(field1=value1, field2=value2, ...)
+        // Only declared fields are shown, not dynamically added attributes
         f.write_str(&self.name)?;
         f.write_char('(')?;
 
         let mut first = true;
-        for (key, value) in &self.fields {
+        for field_name in &self.field_names {
             if !first {
                 f.write_str(", ")?;
             }
             first = false;
 
-            // Write field name (should be a string, write without quotes)
-            match key {
-                Value::InternString(id) => f.write_str(interns.get_str(*id))?,
-                Value::Ref(id) => {
-                    if let HeapData::Str(s) = heap.get(*id) {
-                        f.write_str(s.as_str())?;
-                    } else {
-                        key.py_repr_fmt(f, heap, heap_ids, interns)?;
-                    }
-                }
-                _ => key.py_repr_fmt(f, heap, heap_ids, interns)?,
-            }
-
+            // Write field name
+            f.write_str(field_name)?;
             f.write_char('=')?;
-            value.py_repr_fmt(f, heap, heap_ids, interns)?;
+
+            // Look up value in attrs
+            if let Some(value) = self.attrs.get_by_str(field_name, heap, interns) {
+                value.py_repr_fmt(f, heap, heap_ids, interns)?;
+            } else {
+                // Field not found - shouldn't happen for well-formed dataclasses
+                f.write_str("<?>")?;
+            }
         }
 
         f.write_char(')')
@@ -242,13 +253,10 @@ impl PyTrait for Dataclass {
         heap: &mut Heap<impl ResourceTracker>,
         attr: &Attr,
         args: ArgValues,
-        _interns: &Interns,
+        interns: &Interns,
     ) -> RunResult<Value> {
-        // Check if this is a method that should trigger an external call
-        let method_name = match attr {
-            Attr::Other(name) => name.as_str(),
-            _ => return Err(ExcType::attribute_error(Type::Dataclass, attr)),
-        };
+        // Get method name from the attribute
+        let method_name = attr.as_str(interns);
 
         if self.methods.contains(method_name) {
             // TODO: Integrate with external call system
@@ -257,24 +265,25 @@ impl PyTrait for Dataclass {
             Err(ExcType::attribute_error_method_not_implemented(&self.name, method_name))
         } else {
             args.drop_with_heap(heap);
-            Err(ExcType::attribute_error(Type::Dataclass, attr))
+            Err(ExcType::attribute_error(Type::Dataclass, method_name))
         }
     }
 }
 
 // Custom serde implementation for Dataclass.
-// Serializes all four fields; methods set is serialized as a Vec for determinism.
+// Serializes all five fields; methods set is serialized as a Vec for determinism.
 impl serde::Serialize for Dataclass {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("Dataclass", 4)?;
+        let mut state = serializer.serialize_struct("Dataclass", 5)?;
         state.serialize_field("name", &self.name)?;
-        state.serialize_field("fields", &self.fields)?;
+        state.serialize_field("field_names", &self.field_names)?;
+        state.serialize_field("attrs", &self.attrs)?;
         // Serialize methods as sorted Vec for deterministic output
         let mut methods_vec: Vec<&String> = self.methods.iter().collect();
         methods_vec.sort();
         state.serialize_field("methods", &methods_vec)?;
-        state.serialize_field("mutable", &self.mutable)?;
+        state.serialize_field("frozen", &self.frozen)?;
         state.end()
     }
 }
@@ -282,18 +291,20 @@ impl serde::Serialize for Dataclass {
 impl<'de> serde::Deserialize<'de> for Dataclass {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize)]
-        struct DataclassFields {
+        struct DataclassData {
             name: String,
-            fields: Dict,
+            field_names: Vec<String>,
+            attrs: Dict,
             methods: Vec<String>,
-            mutable: bool,
+            frozen: bool,
         }
-        let dc = DataclassFields::deserialize(deserializer)?;
+        let dc = DataclassData::deserialize(deserializer)?;
         Ok(Self {
             name: dc.name,
-            fields: dc.fields,
+            field_names: dc.field_names,
+            attrs: dc.attrs,
             methods: dc.methods.into_iter().collect(),
-            mutable: dc.mutable,
+            frozen: dc.frozen,
         })
     }
 }

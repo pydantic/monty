@@ -195,6 +195,107 @@ def test_external_function_exception_type_preserved():
     assert exc_info.value.args[0] == snapshot('type error message')
 
 
+@pytest.mark.parametrize(
+    'exception_class,exception_name',
+    [
+        # ArithmeticError hierarchy
+        (ZeroDivisionError, 'ZeroDivisionError'),
+        (OverflowError, 'OverflowError'),
+        (ArithmeticError, 'ArithmeticError'),
+        # RuntimeError hierarchy
+        (NotImplementedError, 'NotImplementedError'),
+        (RecursionError, 'RecursionError'),
+        (RuntimeError, 'RuntimeError'),
+        # LookupError hierarchy
+        (KeyError, 'KeyError'),
+        (IndexError, 'IndexError'),
+        (LookupError, 'LookupError'),
+        # Other exceptions
+        (ValueError, 'ValueError'),
+        (TypeError, 'TypeError'),
+        (AttributeError, 'AttributeError'),
+        (NameError, 'NameError'),
+        (AssertionError, 'AssertionError'),
+    ],
+)
+def test_external_function_exception_hierarchy(exception_class: type[BaseException], exception_name: str):
+    """Test that exception types in hierarchies are correctly preserved."""
+    # Test that exception propagates with correct type
+    m = monty.Monty('fail()', external_functions=['fail'])
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        raise exception_class('test message')
+
+    with pytest.raises(exception_class):
+        m.run(external_functions={'fail': fail})
+
+
+@pytest.mark.parametrize(
+    'exception_class,parent_class,expected_result',
+    [
+        # ArithmeticError hierarchy
+        (ZeroDivisionError, ArithmeticError, 'child'),
+        (OverflowError, ArithmeticError, 'child'),
+        # RuntimeError hierarchy
+        (NotImplementedError, RuntimeError, 'child'),
+        (RecursionError, RuntimeError, 'child'),
+        # LookupError hierarchy
+        (KeyError, LookupError, 'child'),
+        (IndexError, LookupError, 'child'),
+    ],
+)
+def test_external_function_exception_caught_by_parent(
+    exception_class: type[BaseException], parent_class: type[BaseException], expected_result: str
+):
+    """Test that child exceptions can be caught by parent except handlers."""
+    code = f"""
+try:
+    fail()
+except {parent_class.__name__}:
+    caught = 'parent'
+except {exception_class.__name__}:
+    caught = 'child'
+caught
+"""
+    m = monty.Monty(code, external_functions=['fail'])
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        raise exception_class('test')
+
+    # Child exception should be caught by parent handler (which comes first)
+    result = m.run(external_functions={'fail': fail})
+    assert result == 'parent'
+
+
+@pytest.mark.parametrize(
+    'exception_class,expected_result',
+    [
+        (ZeroDivisionError, 'ZeroDivisionError'),
+        (OverflowError, 'OverflowError'),
+        (NotImplementedError, 'NotImplementedError'),
+        (RecursionError, 'RecursionError'),
+        (KeyError, 'KeyError'),
+        (IndexError, 'IndexError'),
+    ],
+)
+def test_external_function_exception_caught_specifically(exception_class: type[BaseException], expected_result: str):
+    """Test that child exceptions can be caught by their specific handler."""
+    code = f"""
+try:
+    fail()
+except {exception_class.__name__}:
+    caught = '{expected_result}'
+caught
+"""
+    m = monty.Monty(code, external_functions=['fail'])
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        raise exception_class('test')
+
+    result = m.run(external_functions={'fail': fail})
+    assert result == expected_result
+
+
 def test_external_function_exception_in_expression():
     """Test exception from external function in an expression context."""
     m = monty.Monty('1 + fail() + 2', external_functions=['fail'])

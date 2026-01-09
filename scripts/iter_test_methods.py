@@ -44,7 +44,7 @@ class Point:
     y: int
 
 
-def make_point() -> object:
+def make_point() -> Point:
     return Point(x=1, y=2)
 
 
@@ -54,7 +54,7 @@ class MutablePoint:
     y: int
 
 
-def make_mutable_point() -> object:
+def make_mutable_point() -> MutablePoint:
     return MutablePoint(x=1, y=2)
 
 
@@ -64,8 +64,17 @@ class User:
     active: bool = True
 
 
-def make_user(name: str) -> object:
+def make_user(name: str) -> User:
     return User(name=name, active=True)
+
+
+@dataclass
+class Empty:
+    pass
+
+
+def make_empty() -> Empty:
+    return Empty()
 
 
 # All external functions available to iter mode tests
@@ -78,4 +87,5 @@ ITER_MODE_GLOBALS: dict[str, object] = {
     'make_point': make_point,
     'make_mutable_point': make_mutable_point,
     'make_user': make_user,
+    'make_empty': make_empty,
 }

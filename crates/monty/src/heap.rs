@@ -387,7 +387,7 @@ impl PyTrait for HeapData {
             Self::Set(s) => s.py_call_attr(heap, attr, args, interns),
             Self::FrozenSet(fs) => fs.py_call_attr(heap, attr, args, interns),
             Self::Dataclass(dc) => dc.py_call_attr(heap, attr, args, interns),
-            _ => Err(ExcType::attribute_error(self.py_type(Some(heap)), attr)),
+            _ => Err(ExcType::attribute_error(self.py_type(Some(heap)), attr.as_str(interns))),
         }
     }
 
@@ -447,10 +447,10 @@ impl HashState {
             | HeapData::Range(_) => Self::Unknown,
             // Dataclass hashability depends on the mutable flag
             HeapData::Dataclass(dc) => {
-                if dc.is_mutable() {
-                    Self::Unhashable
-                } else {
+                if dc.is_frozen() {
                     Self::Unknown
+                } else {
+                    Self::Unhashable
                 }
             }
             // Mutable containers and exceptions are unhashable
@@ -1221,8 +1221,8 @@ impl<T: ResourceTracker> Heap<T> {
                 }
             }
             HeapData::Dataclass(dc) => {
-                // Dataclass fields are stored in a Dict - iterate through entries
-                for (k, v) in dc.fields() {
+                // Dataclass attrs are stored in a Dict - iterate through entries
+                for (k, v) in dc.attrs() {
                     if let Value::Ref(id) = k {
                         work_list.push(*id);
                     }

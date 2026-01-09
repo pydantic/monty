@@ -23,6 +23,44 @@ pub struct StringId(u32);
 /// The StringId for `"<module>"` - always index 0 in the interner.
 pub const MODULE_STRING_ID: StringId = StringId(0);
 
+/// Pre-interned attribute names for container methods.
+///
+/// These StringIds are assigned at startup in `InternerBuilder::new()` and provide
+/// O(1) comparison for common method names without heap allocation.
+///
+/// Usage: `use crate::intern::attr;` then `attr::APPEND`, `attr::GET`, etc.
+pub mod attr {
+    use super::StringId;
+
+    // List methods
+    pub const APPEND: StringId = StringId(1);
+    pub const INSERT: StringId = StringId(2);
+
+    // Dict methods
+    pub const GET: StringId = StringId(3);
+    pub const KEYS: StringId = StringId(4);
+    pub const VALUES: StringId = StringId(5);
+    pub const ITEMS: StringId = StringId(6);
+
+    // Shared methods (list, dict, set)
+    pub const POP: StringId = StringId(7);
+    pub const CLEAR: StringId = StringId(8);
+    pub const COPY: StringId = StringId(9);
+
+    // Set methods
+    pub const ADD: StringId = StringId(10);
+    pub const REMOVE: StringId = StringId(11);
+    pub const DISCARD: StringId = StringId(12);
+    pub const UPDATE: StringId = StringId(13);
+    pub const UNION: StringId = StringId(14);
+    pub const INTERSECTION: StringId = StringId(15);
+    pub const DIFFERENCE: StringId = StringId(16);
+    pub const SYMMETRIC_DIFFERENCE: StringId = StringId(17);
+    pub const ISSUBSET: StringId = StringId(18);
+    pub const ISSUPERSET: StringId = StringId(19);
+    pub const ISDISJOINT: StringId = StringId(20);
+}
+
 impl StringId {
     /// Returns the raw index value.
     #[inline]
@@ -99,11 +137,63 @@ pub struct InternerBuilder {
 }
 
 impl InternerBuilder {
-    /// Creates a new string interner with `"<module>"` pre-interned at index 0.
+    /// Creates a new string interner with pre-interned strings.
+    ///
+    /// Pre-interns:
+    /// - Index 0: `"<module>"` for module-level code
+    /// - Indices 1-20: Known attribute names (append, insert, get, etc.)
     pub fn new() -> Self {
         let mut interner = Self::default();
+
+        // Index 0: "<module>" for module-level code
         let id = interner.intern("<module>");
         debug_assert_eq!(id, MODULE_STRING_ID);
+
+        // Pre-intern known attribute names (indices 1-20).
+        // Order must match the attr::* constants defined above.
+        // Note: We separate the intern() call from debug_assert_eq! because
+        // debug_assert_eq! is completely removed in release builds.
+        let id = interner.intern("append");
+        debug_assert_eq!(id, attr::APPEND);
+        let id = interner.intern("insert");
+        debug_assert_eq!(id, attr::INSERT);
+        let id = interner.intern("get");
+        debug_assert_eq!(id, attr::GET);
+        let id = interner.intern("keys");
+        debug_assert_eq!(id, attr::KEYS);
+        let id = interner.intern("values");
+        debug_assert_eq!(id, attr::VALUES);
+        let id = interner.intern("items");
+        debug_assert_eq!(id, attr::ITEMS);
+        let id = interner.intern("pop");
+        debug_assert_eq!(id, attr::POP);
+        let id = interner.intern("clear");
+        debug_assert_eq!(id, attr::CLEAR);
+        let id = interner.intern("copy");
+        debug_assert_eq!(id, attr::COPY);
+        let id = interner.intern("add");
+        debug_assert_eq!(id, attr::ADD);
+        let id = interner.intern("remove");
+        debug_assert_eq!(id, attr::REMOVE);
+        let id = interner.intern("discard");
+        debug_assert_eq!(id, attr::DISCARD);
+        let id = interner.intern("update");
+        debug_assert_eq!(id, attr::UPDATE);
+        let id = interner.intern("union");
+        debug_assert_eq!(id, attr::UNION);
+        let id = interner.intern("intersection");
+        debug_assert_eq!(id, attr::INTERSECTION);
+        let id = interner.intern("difference");
+        debug_assert_eq!(id, attr::DIFFERENCE);
+        let id = interner.intern("symmetric_difference");
+        debug_assert_eq!(id, attr::SYMMETRIC_DIFFERENCE);
+        let id = interner.intern("issubset");
+        debug_assert_eq!(id, attr::ISSUBSET);
+        let id = interner.intern("issuperset");
+        debug_assert_eq!(id, attr::ISSUPERSET);
+        let id = interner.intern("isdisjoint");
+        debug_assert_eq!(id, attr::ISDISJOINT);
+
         interner
     }
 

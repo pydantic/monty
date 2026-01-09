@@ -5,6 +5,7 @@
 //! function callbacks.
 
 mod convert;
+mod dataclass;
 mod exceptions;
 mod external;
 mod limits;
