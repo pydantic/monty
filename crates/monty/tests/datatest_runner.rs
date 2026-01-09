@@ -330,7 +330,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> ExternalResult 
             assert!(args.is_empty(), "make_mutable_point requires no arguments");
             // Return a mutable Point(x=1, y=2) dataclass
             MontyObject::Dataclass {
-                name: "Point".to_string(),
+                name: "MutablePoint".to_string(),
                 fields: vec![
                     (MontyObject::String("x".to_string()), MontyObject::Int(1)),
                     (MontyObject::String("y".to_string()), MontyObject::Int(2)),
@@ -782,15 +782,7 @@ fn split_code_for_module(code: &str, need_return_value: bool) -> (String, Option
 /// file's globals before execution.
 fn run_traceback_script(path: &Path, iter_mode: bool) -> String {
     Python::attach(|py| {
-        // Add scripts directory to sys.path (tests run from crates/monty/)
-        let sys = py.import("sys").expect("Failed to import sys");
-        let sys_path = sys.getattr("path").expect("Failed to get sys.path");
-        sys_path
-            .call_method1("insert", (0, "../../scripts"))
-            .expect("Failed to add scripts to sys.path");
-
-        // Import the run_traceback module
-        let run_traceback = py.import("run_traceback").expect("Failed to import run_traceback");
+        let run_traceback = import_run_traceback(py);
 
         // Get absolute path for the test file
         let abs_path = path.canonicalize().expect("Failed to get absolute path");
@@ -808,9 +800,35 @@ fn run_traceback_script(path: &Path, iter_mode: bool) -> String {
         if result.is_none() {
             String::new()
         } else {
-            result.extract::<String>().expect("Failed to extract result string")
+            result
+                .extract()
+                .expect("Failed to extract string from return value of run_file_and_get_traceback")
         }
     })
+}
+
+fn format_traceback(py: Python<'_>, exc: PyErr) -> String {
+    let run_traceback = import_run_traceback(py);
+    let exc_value = exc.value(py);
+    let return_value = run_traceback
+        .call_method1("format_full_traceback", (exc_value,))
+        .expect("Failed to call format_full_traceback");
+    return_value
+        .extract()
+        .expect("failed to extract string from return value of format_full_traceback")
+}
+
+/// Import the run_traceback module
+fn import_run_traceback(py: Python<'_>) -> Bound<'_, PyModule> {
+    // Add scripts directory to sys.path (tests run from crates/monty/)
+    let sys = py.import("sys").expect("Failed to import sys");
+    let sys_path = sys.getattr("path").expect("Failed to get sys.path");
+    sys_path
+        .call_method1("insert", (0, "../../scripts"))
+        .expect("Failed to add scripts to sys.path");
+
+    // Import the run_traceback module
+    py.import("run_traceback").expect("Failed to import run_traceback")
 }
 
 /// Result from CPython execution - either a value to compare, or an early return.
@@ -887,9 +905,9 @@ fn try_run_cpython_test(
             if matches!(expectation, Expectation::NoException) {
                 return CpythonResult::Failed(TestFailure {
                     test_name: test_name.clone(),
-                    kind: "CPython".to_string(),
+                    kind: "CPython unexpected exception".to_string(),
                     expected: "no exception".to_string(),
-                    actual: e.to_string(),
+                    actual: format_traceback(py, e),
                 });
             }
             if matches!(expectation, Expectation::Raise(_)) {
@@ -899,7 +917,7 @@ fn try_run_cpython_test(
                 test_name: test_name.clone(),
                 kind: "CPython unexpected exception".to_string(),
                 expected: "success".to_string(),
-                actual: e.to_string(),
+                actual: format_traceback(py, e),
             });
         }
 
@@ -932,9 +950,9 @@ fn try_run_cpython_test(
                     if matches!(expectation, Expectation::NoException) {
                         return CpythonResult::Failed(TestFailure {
                             test_name: test_name.clone(),
-                            kind: "CPython".to_string(),
+                            kind: "CPython unexpected exception".to_string(),
                             expected: "no exception".to_string(),
-                            actual: e.to_string(),
+                            actual: format_traceback(py, e),
                         });
                     }
                     if matches!(expectation, Expectation::Raise(_)) {
@@ -945,7 +963,7 @@ fn try_run_cpython_test(
                         test_name: test_name.clone(),
                         kind: "CPython unexpected exception".to_string(),
                         expected: "success".to_string(),
-                        actual: e.to_string(),
+                        actual: format_traceback(py, e),
                     })
                 }
             }

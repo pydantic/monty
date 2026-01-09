@@ -184,8 +184,8 @@ impl ExcType {
     /// Matches the concept of Python's FrozenInstanceError but uses AttributeError since
     /// Monty doesn't have the dataclasses module.
     #[must_use]
-    pub fn attribute_error_frozen(class_name: &str, attr_name: &str) -> RunError {
-        exc_fmt!(Self::AttributeError; "'{class_name}' object attribute '{attr_name}' is read-only").into()
+    pub fn dataclass_frozen_attr(_class_name: &str, attr_name: &str) -> RunError {
+        exc_fmt!(Self::AttributeError; "cannot assign to field '{attr_name}'").into()
     }
 
     #[must_use]

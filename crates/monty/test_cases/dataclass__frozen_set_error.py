@@ -8,5 +8,5 @@ Traceback (most recent call last):
   File "dataclass__frozen_set_error.py", line 4, in <module>
     point.x = 10
     ~~~~~~~
-AttributeError: 'Point' object attribute 'x' is read-only
+AttributeError: cannot assign to field 'x'
 """

@@ -664,7 +664,7 @@ impl<'i, P: AbstractSnapshotTracker, W: PrintWriter> RunFrame<'i, P, W> {
                         } else {
                             // Drop the value we were going to assign
                             val.drop_with_heap(heap);
-                            Err(ExcType::attribute_error_frozen(dc.name(), attr.as_str()))
+                            Err(ExcType::dataclass_frozen_attr(dc.name(), attr.as_str()))
                         }
                     }
                     other => {

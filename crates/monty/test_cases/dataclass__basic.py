@@ -5,7 +5,7 @@
 point = make_point()
 
 # === repr and str ===
-assert repr(point) == 'Point(x=1, y=2)', 'point repr'
+assert repr(point) == 'Point(x=1, y=2)', f'point repr {point=!r}'
 assert str(point) == 'Point(x=1, y=2)', 'point str'
 
 # === Boolean truthiness ===
@@ -19,11 +19,11 @@ assert h1 != 0, 'hash is not zero'
 
 # === Mutable dataclass ===
 mut_point = make_mutable_point()
-assert repr(mut_point) == 'Point(x=1, y=2)', 'mutable point repr'
+assert repr(mut_point) == 'MutablePoint(x=1, y=2)', f'mutable point repr {mut_point=!r}'
 
 # === Dataclass with string argument ===
 alice = make_user('Alice')
-assert repr(alice) == "User(name='Alice', active=True)", 'user repr with string field'
+assert repr(alice) == "User(name='Alice', active=True)", f'user repr with string field {alice=!r}'
 
 # === Dataclass in list (using existing variables) ===
 points = [point, mut_point, alice]
@@ -48,4 +48,4 @@ mut_point.x = 10
 assert mut_point.x == 10, 'mut_point.x updated to 10'
 mut_point.y = 20
 assert mut_point.y == 20, 'mut_point.y updated to 20'
-assert repr(mut_point) == 'Point(x=10, y=20)', 'repr after attribute update'
+assert repr(mut_point) == 'MutablePoint(x=10, y=20)', f'repr after attribute update {mut_point=!r}'

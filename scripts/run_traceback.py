@@ -74,9 +74,13 @@ def run_file_and_get_traceback(
                         skip_until_test_file = False
                         result_frames.append(frame.replace(abs_path, file_name))
                 else:
-                    # In iter mode, skip frames from helper modules
-                    if iter_mode and 'iter_test_methods.py' in frame:
-                        continue
+                    if iter_mode:
+                        # In iter mode, skip frames from helper modules
+                        if 'iter_test_methods.py", ' in frame:
+                            continue
+                        # python's doing something weird and show the file as <string> for dataclass exceptions
+                        if frame.startswith('  File "<string>"'):
+                            continue
                     result_frames.append(frame.replace(abs_path, file_name))
 
             # Restore a high limit for traceback formatting
@@ -85,7 +89,17 @@ def run_file_and_get_traceback(
             return '\n'.join(map(normalize_debug_range, lines)).rstrip()
 
 
+def format_full_traceback(e: Exception):
+    stack = traceback.format_exception(type(e), e, e.__traceback__)
+
+    lines = (''.join(stack)).splitlines()
+    return '\n'.join(map(normalize_debug_range, lines)).rstrip()
+
+
 def normalize_debug_range(line: str) -> str:
+    # monty doesn't implement FrozenInstanceError which is a subclass of AttributeError
+    # so this means python exceptions match monty
+    line = line.replace('dataclasses.FrozenInstanceError:', 'AttributeError:')
     if re.fullmatch(r' +[\~\^]+', line):
         return line.replace('^', '~')
     else:

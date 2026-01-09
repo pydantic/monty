@@ -9,7 +9,7 @@ This module is shared between:
 - crates/monty/tests/datatest_runner.rs (via include_str! for CPython execution)
 """
 
-from typing import Any, NoReturn
+from dataclasses import dataclass
 
 
 def add_ints(a: int, b: int) -> int:
@@ -20,7 +20,7 @@ def concat_strings(a: str, b: str) -> str:
     return a + b
 
 
-def return_value(x: Any) -> Any:
+def return_value(x: object) -> object:
     return x
 
 
@@ -28,7 +28,7 @@ def get_list() -> list[int]:
     return [1, 2, 3]
 
 
-def raise_error(exc_type: str, message: str) -> NoReturn:
+def raise_error(exc_type: str, message: str) -> None:
     exc_types: dict[str, type[Exception]] = {
         'ValueError': ValueError,
         'TypeError': TypeError,
@@ -38,41 +38,38 @@ def raise_error(exc_type: str, message: str) -> NoReturn:
     raise exc_types[exc_type](message)
 
 
-def make_point() -> Any:
-    from dataclasses import dataclass
+@dataclass(frozen=True)
+class Point:
+    x: int
+    y: int
 
-    @dataclass(frozen=True)
-    class Point:
-        x: int
-        y: int
 
+def make_point() -> object:
     return Point(x=1, y=2)
 
 
-def make_mutable_point() -> Any:
-    from dataclasses import dataclass
-
-    @dataclass
-    class Point:
-        x: int
-        y: int
-
-    return Point(x=1, y=2)
+@dataclass
+class MutablePoint:
+    x: int
+    y: int
 
 
-def make_user(name: str) -> Any:
-    from dataclasses import dataclass
+def make_mutable_point() -> object:
+    return MutablePoint(x=1, y=2)
 
-    @dataclass(frozen=True)
-    class User:
-        name: str
-        active: bool = True
 
+@dataclass(frozen=True)
+class User:
+    name: str
+    active: bool = True
+
+
+def make_user(name: str) -> object:
     return User(name=name, active=True)
 
 
 # All external functions available to iter mode tests
-ITER_MODE_GLOBALS: dict[str, Any] = {
+ITER_MODE_GLOBALS: dict[str, object] = {
     'add_ints': add_ints,
     'concat_strings': concat_strings,
     'return_value': return_value,
