@@ -499,6 +499,13 @@ impl VM<'_, T> {
         let hi = self.fetch_byte();
         i16::from_le_bytes([lo, hi])
     }
+
+    /// Apply relative jump offset to current frame's IP.
+    /// Offset is relative to position AFTER the jump instruction's operand.
+    fn jump_relative(&mut self, offset: i16) {
+        let frame = self.current_frame_mut();
+        frame.ip = (frame.ip as isize + offset as isize) as usize;
+    }
 }
 
 /// Safe conversion from byte to Opcode.
@@ -686,16 +693,17 @@ impl<'a, T: ResourceTracker> VM<'a, T> {
                 }
 
                 // === Instructions with i16 operand (jumps) ===
+                // Note: IP lives only in CallFrame (section 2.2), accessed via helpers
                 Opcode::Jump => {
                     let offset = self.fetch_i16();
-                    self.ip = (self.ip as isize + offset as isize) as usize;
+                    self.jump_relative(offset);
                 }
 
                 Opcode::JumpIfFalse => {
                     let offset = self.fetch_i16();
                     let cond = self.pop();
                     if !cond.is_truthy() {
-                        self.ip = (self.ip as isize + offset as isize) as usize;
+                        self.jump_relative(offset);
                     }
                     cond.drop_with_heap(self.heap);
                 }
@@ -990,6 +998,20 @@ impl Executor {
 ### 4.4 Execution Entry Point
 
 ```rust
+/// Result of execution - includes heap/namespaces for external call case.
+pub enum ExecutorResult<T: ResourceTracker> {
+    Complete(Value),
+    Error(Exception),
+    /// Paused at external call - includes full state for serialization
+    ExternalCall {
+        call: ExternalCall,
+        /// Heap to serialize alongside VMSnapshot (owns all heap objects)
+        heap: Heap<T>,
+        /// Namespaces to serialize (local variable storage)
+        namespaces: Namespaces,
+    },
+}
+
 impl Executor {
     pub fn run_with_tracker<T: ResourceTracker>(
         &self,
@@ -1003,7 +1025,7 @@ impl Executor {
         // Use pre-compiled module bytecode (eager compilation)
         let module_code = &self.module_code;
 
-        // Create VM
+        // Create VM (borrows heap/namespaces)
         let mut vm = VM::new(&mut heap, &mut namespaces, &self.interns);
         vm.push_frame(module_code, GLOBAL_NS_IDX);
 
@@ -1011,11 +1033,13 @@ impl Executor {
         match vm.run() {
             VMResult::Complete(value) => ExecutorResult::Complete(value),
             VMResult::ExternalCall { function_id, args } => {
-                ExecutorResult::ExternalCall(ExternalCall {
-                    function_id,
-                    args,
-                    vm_state: vm.snapshot(),  // Serialize VM state
-                })
+                // into_snapshot() consumes VM, transferring Value ownership
+                let vm_state = vm.into_snapshot();
+                ExecutorResult::ExternalCall {
+                    call: ExternalCall { function_id, args, vm_state },
+                    heap,        // Return heap for serialization
+                    namespaces,  // Return namespaces for serialization
+                }
             }
             VMResult::Error(exc) => ExecutorResult::Error(exc),
         }
@@ -1023,45 +1047,123 @@ impl Executor {
 }
 ```
 
-### 4.4 Snapshot/Resume (Simplified!)
+**Note:** The `ExternalCall` case returns ownership of `heap` and `namespaces` alongside the `VMSnapshot`. All three must be serialized together - `HeapId` values in the snapshot are indices into that specific heap instance.
+
+### 4.5 Snapshot/Resume (Simplified!)
 
 ```rust
+/// Serializable representation of a call frame.
+///
+/// Cannot store `&Code` (a reference) - instead stores `FunctionId` to look up
+/// the pre-compiled Code object on resume. Module-level code uses `None`.
+#[derive(Serialize, Deserialize)]
+pub struct SerializedFrame {
+    /// Which function's code this frame executes (None = module-level)
+    function_id: Option<FunctionId>,
+
+    /// Instruction pointer within this frame's bytecode
+    ip: usize,
+
+    /// Base index into operand stack for this frame's locals
+    stack_base: usize,
+
+    /// Namespace index for this frame's locals
+    namespace_idx: NamespaceId,
+
+    /// Captured cells for closures (HeapIds remain valid after heap deserialization)
+    cells: Vec<HeapId>,
+
+    /// Call site position (for tracebacks)
+    call_position: CodeRange,
+}
+
+impl CallFrame {
+    /// Convert to serializable form.
+    fn serialize(&self) -> SerializedFrame {
+        SerializedFrame {
+            function_id: self.function_id,
+            ip: self.ip,
+            stack_base: self.stack_base,
+            namespace_idx: self.namespace_idx,
+            cells: self.cells.clone(),
+            call_position: self.call_position,
+        }
+    }
+}
+
 /// VM state for pause/resume - much simpler than current approach!
-/// Note: This is serialized alongside the full Heap<T> - HeapId values
-/// in stack/frames remain valid because the heap is preserved.
+///
+/// **Ownership:** This struct OWNS the values (refcounts were incremented).
+/// Must be used with the serialized Heap - HeapId values are indices into that heap.
 #[derive(Serialize, Deserialize)]
 pub struct VMSnapshot {
     /// Operand stack (may contain Value::Ref(HeapId) pointing to heap)
     stack: Vec<Value>,
 
-    /// Call frames (each contains ip, namespace_idx, cells)
+    /// Call frames (serializable form - stores FunctionId, not &Code)
     frames: Vec<SerializedFrame>,
 
     /// Current exception being handled (if any)
     current_exception: Option<Value>,
 }
 
-impl VM<'_, T> {
-    /// Create a snapshot of VM state for pause/resume.
-    /// The heap must be serialized separately alongside this snapshot.
-    pub fn snapshot(&self) -> VMSnapshot {
+impl<'a, T: ResourceTracker> VM<'a, T> {
+    /// Consume the VM and create a snapshot for pause/resume.
+    ///
+    /// **Ownership transfer:** This method takes `self` by value, consuming the VM.
+    /// The snapshot owns all Values (refcounts already correct from the live VM).
+    /// The heap must be serialized alongside this snapshot.
+    ///
+    /// This is NOT a clone - it's a transfer. After calling this, the original VM
+    /// is gone and only the snapshot (+ serialized heap) represents the state.
+    pub fn into_snapshot(self) -> VMSnapshot {
         VMSnapshot {
-            // Clone values, incrementing refcounts for heap refs
-            stack: self.stack.iter()
-                .map(|v| v.clone_with_heap(self.heap))
-                .collect(),
-            frames: self.frames.iter().map(|f| f.serialize()).collect(),
-            current_exception: self.current_exception
-                .as_ref()
-                .map(|v| v.clone_with_heap(self.heap)),
+            // Move values directly - no clone, no refcount increment needed
+            // (the VM owned them, now the snapshot owns them)
+            stack: self.stack,
+            frames: self.frames.into_iter().map(|f| f.serialize()).collect(),
+            current_exception: self.current_exception,
         }
     }
 
-    pub fn restore(snapshot: VMSnapshot, heap: &mut Heap<T>, ...) -> Self {
-        // Reconstruct VM from snapshot - heap already deserialized
+    /// Reconstruct VM from snapshot.
+    ///
+    /// The heap and namespaces must already be deserialized. FunctionId values
+    /// in frames are used to look up pre-compiled Code objects from the Executor.
+    pub fn restore(
+        snapshot: VMSnapshot,
+        heap: &'a mut Heap<T>,
+        namespaces: &'a mut Namespaces,
+        interns: &'a Interns,
+        executor: &Executor,  // To look up Code by FunctionId
+    ) -> Self {
+        VM {
+            stack: snapshot.stack,
+            frames: snapshot.frames.into_iter()
+                .map(|sf| CallFrame {
+                    code: executor.get_code(sf.function_id),
+                    ip: sf.ip,
+                    stack_base: sf.stack_base,
+                    namespace_idx: sf.namespace_idx,
+                    function_id: sf.function_id,
+                    cells: sf.cells,
+                    call_position: sf.call_position,
+                })
+                .collect(),
+            heap,
+            namespaces,
+            interns,
+            current_exception: snapshot.current_exception,
+        }
     }
 }
 ```
+
+**Ownership semantics (CRITICAL):**
+- `into_snapshot(self)` **consumes** the VM - it does NOT clone
+- Values move from VM to snapshot; refcounts stay the same (no increment)
+- After snapshotting, only the snapshot owns the Values
+- This avoids the "who decrements refcounts?" ambiguity of cloning
 
 **Heap serialization (matching current approach):**
 - **Full heap is serialized** alongside VMSnapshot - not just the VM state
@@ -1069,6 +1171,12 @@ impl VM<'_, T> {
 - `Value::Ref(HeapId)` serializes as the numeric ID; heap entries are in the serialized `Heap<T>`
 - Reference counts are preserved exactly in the serialized heap
 - On resume, deserialized heap + VMSnapshot reconstruct the full state
+
+**Frame serialization:**
+- `CallFrame` stores `&Code` (a reference) which cannot be serialized
+- `SerializedFrame` stores `Option<FunctionId>` instead
+- On restore, `FunctionId` is used to look up the pre-compiled `Code` from `Executor`
+- Module-level code uses `function_id: None`; `Executor` provides `module_code` for that case
 
 **Namespace/local state:**
 - Namespaces are serialized alongside heap (existing pattern)
