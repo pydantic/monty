@@ -8,7 +8,15 @@
 
 use std::str::FromStr;
 
-use crate::{expressions::ExprLoc, intern::StringId};
+use crate::{
+    exception_private::{ExcType, RunError, SimpleException},
+    expressions::ExprLoc,
+    heap::Heap,
+    intern::{Interns, StringId},
+    resource::ResourceTracker,
+    types::{PyTrait, Type},
+    value::Value,
+};
 
 // ============================================================================
 // F-string type definitions
@@ -241,9 +249,68 @@ impl std::fmt::Display for FormatError {
     }
 }
 
-// ============================================================================
-// Format spec encoding/decoding for bytecode
-// ============================================================================
+/// Formats a value according to a format specification, applying type-appropriate formatting.
+///
+/// Dispatches to the appropriate formatting function based on the value type and format spec:
+/// - Integers: `format_int`, `format_int_base`, `format_char`
+/// - Floats: `format_float_f`, `format_float_e`, `format_float_g`, `format_float_percent`
+/// - Strings: `format_string`
+///
+/// Returns a `ValueError` if the format type character is incompatible with the value type.
+pub fn format_with_spec(
+    value: &Value,
+    spec: &ParsedFormatSpec,
+    heap: &Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> Result<String, RunError> {
+    let value_type = value.py_type(Some(heap));
+
+    match (value, spec.type_char) {
+        // Integer formatting
+        (Value::Int(n), None | Some('d')) => Ok(format_int(*n, spec)),
+        (Value::Int(n), Some('b')) => Ok(format_int_base(*n, 2, spec)?),
+        (Value::Int(n), Some('o')) => Ok(format_int_base(*n, 8, spec)?),
+        (Value::Int(n), Some('x')) => Ok(format_int_base(*n, 16, spec)?),
+        (Value::Int(n), Some('X')) => Ok(format_int_base(*n, 16, spec)?.to_uppercase()),
+        (Value::Int(n), Some('c')) => Ok(format_char(*n, spec)?),
+
+        // Float formatting
+        (Value::Float(f), None | Some('g' | 'G')) => Ok(format_float_g(*f, spec)),
+        (Value::Float(f), Some('f' | 'F')) => Ok(format_float_f(*f, spec)),
+        (Value::Float(f), Some('e')) => Ok(format_float_e(*f, spec, false)),
+        (Value::Float(f), Some('E')) => Ok(format_float_e(*f, spec, true)),
+        (Value::Float(f), Some('%')) => Ok(format_float_percent(*f, spec)),
+
+        // Int to float formatting (Python allows this)
+        (Value::Int(n), Some('f' | 'F')) => Ok(format_float_f(*n as f64, spec)),
+        (Value::Int(n), Some('e')) => Ok(format_float_e(*n as f64, spec, false)),
+        (Value::Int(n), Some('E')) => Ok(format_float_e(*n as f64, spec, true)),
+        (Value::Int(n), Some('g' | 'G')) => Ok(format_float_g(*n as f64, spec)),
+        (Value::Int(n), Some('%')) => Ok(format_float_percent(*n as f64, spec)),
+
+        // String formatting (including InternString and heap strings)
+        (_, None | Some('s')) if value_type == Type::Str => {
+            let s = value.py_str(heap, interns);
+            Ok(format_string(&s, spec)?)
+        }
+
+        // Bool as int
+        (Value::Bool(b), Some('d')) => Ok(format_int(i64::from(*b), spec)),
+
+        // No type specifier: convert to string and format
+        (_, None) => {
+            let s = value.py_str(heap, interns);
+            Ok(format_string(&s, spec)?)
+        }
+
+        // Type mismatch errors
+        (_, Some(c)) => Err(SimpleException::new(
+            ExcType::ValueError,
+            Some(format!("Unknown format code '{c}' for object of type '{value_type}'")),
+        )
+        .into()),
+    }
+}
 
 /// Encodes a ParsedFormatSpec into a u64 for storage in bytecode constants.
 ///

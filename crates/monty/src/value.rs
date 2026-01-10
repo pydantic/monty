@@ -12,12 +12,35 @@ use ahash::AHashSet;
 use crate::{
     args::ArgValues,
     builtins::Builtins,
-    exception_private::{exc_err_fmt, ExcType, RunResult},
+    exception_private::{exc_err_fmt, ExcType, RunError, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{BytesId, ExtFunctionId, FunctionId, Interns, StringId},
     resource::ResourceTracker,
     types::{bytes::bytes_repr_fmt, str::string_repr_fmt, Dict, PyTrait, Type},
 };
+
+/// Bitwise operation type for `py_bitwise`.
+#[derive(Debug, Clone, Copy)]
+pub enum BitwiseOp {
+    And,
+    Or,
+    Xor,
+    LShift,
+    RShift,
+}
+
+impl BitwiseOp {
+    /// Returns the operator symbol for error messages.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::And => "&",
+            Self::Or => "|",
+            Self::Xor => "^",
+            Self::LShift => "<<",
+            Self::RShift => ">>",
+        }
+    }
+}
 
 /// Primary value type representing Python objects at runtime.
 ///
@@ -1086,6 +1109,75 @@ impl Value {
             Self::Int(i) => Ok(*i),
             // TODO use self.type
             _ => exc_err_fmt!(ExcType::TypeError; "'{self:?}' object cannot be interpreted as an integer"),
+        }
+    }
+
+    /// Performs a binary bitwise operation on two values.
+    ///
+    /// Python only supports bitwise operations on integers (and bools, which coerce to int).
+    /// Returns a `TypeError` if either operand is not an integer or bool.
+    ///
+    /// For shift operations:
+    /// - Negative shift counts raise `ValueError`
+    /// - Left shifts > 63 raise `OverflowError`
+    /// - Right shifts > 63 return 0 (or -1 for negative numbers)
+    pub fn py_bitwise(
+        &self,
+        other: &Self,
+        op: BitwiseOp,
+        heap: &Heap<impl ResourceTracker>,
+    ) -> Result<Value, RunError> {
+        // Capture types for error messages
+        let lhs_type = self.py_type(Some(heap));
+        let rhs_type = other.py_type(Some(heap));
+
+        // Get integer values from lhs and rhs
+        let lhs_int = match self {
+            Value::Int(i) => Some(*i),
+            Value::Bool(b) => Some(i64::from(*b)),
+            _ => None,
+        };
+        let rhs_int = match other {
+            Value::Int(i) => Some(*i),
+            Value::Bool(b) => Some(i64::from(*b)),
+            _ => None,
+        };
+
+        if let (Some(l), Some(r)) = (lhs_int, rhs_int) {
+            let result = match op {
+                BitwiseOp::And => l & r,
+                BitwiseOp::Or => l | r,
+                BitwiseOp::Xor => l ^ r,
+                BitwiseOp::LShift => {
+                    // Python raises ValueError for negative shift, OverflowError for too large
+                    if r < 0 {
+                        return Err(ExcType::value_error_negative_shift_count());
+                    }
+                    // Limit shift to avoid overflow
+                    if r > 63 {
+                        return Err(ExcType::overflow_shift_count());
+                    }
+                    l << r
+                }
+                BitwiseOp::RShift => {
+                    if r < 0 {
+                        return Err(ExcType::value_error_negative_shift_count());
+                    }
+                    // Large right shifts just give 0 or -1 for negative numbers
+                    if r > 63 {
+                        if l < 0 {
+                            -1
+                        } else {
+                            0
+                        }
+                    } else {
+                        l >> r
+                    }
+                }
+            };
+            Ok(Value::Int(result))
+        } else {
+            Err(ExcType::binary_type_error(op.as_str(), lhs_type, rhs_type))
         }
     }
 

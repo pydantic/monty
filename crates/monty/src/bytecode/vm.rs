@@ -8,18 +8,15 @@ use crate::{
     bytecode::{code::Code, op::Opcode},
     exception_private::{ExcType, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
     for_iterator::ForIterator,
-    fstring::{
-        decode_format_spec, format_char, format_float_e, format_float_f, format_float_g, format_float_percent,
-        format_int, format_int_base, format_string, ParsedFormatSpec,
-    },
+    fstring::{decode_format_spec, format_string, format_with_spec, ParsedFormatSpec},
     heap::{Heap, HeapData, HeapId},
     intern::{ExtFunctionId, FunctionId, Interns, StringId, MODULE_STRING_ID},
     io::PrintWriter,
     namespace::{NamespaceId, Namespaces, GLOBAL_NS_IDX},
     parse::CodeRange,
     resource::ResourceTracker,
-    types::{Dict, List, PyTrait, Set, Str, Tuple, Type},
-    value::{Attr, Value},
+    types::{Dict, List, PyTrait, Set, Str, Tuple},
+    value::{Attr, BitwiseOp, Value},
 };
 
 // ============================================================================
@@ -74,15 +71,6 @@ enum CallResult {
     /// External function call - VM should pause and return to caller.
     /// Contains (ext_function_id, args).
     ExternalCall(ExtFunctionId, Vec<Value>),
-}
-
-/// Bitwise operation type for binary_bitwise helper.
-enum BitwiseOp {
-    And,
-    Or,
-    Xor,
-    LShift,
-    RShift,
 }
 
 /// Result of VM execution.
@@ -1341,75 +1329,20 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
 
     /// Binary bitwise operation on integers.
     ///
-    /// Python only supports bitwise operations on integers (and bools, which coerce to int).
+    /// Pops two values, performs the bitwise operation, and pushes the result.
     fn binary_bitwise(&mut self, op: BitwiseOp) -> Result<(), RunError> {
         let rhs = self.pop();
         let lhs = self.pop();
 
-        // Capture types before any operations for error messages
-        let lhs_type = lhs.py_type(Some(self.heap));
-        let rhs_type = rhs.py_type(Some(self.heap));
+        // Compute result before dropping operands (py_bitwise only reads values)
+        let result = lhs.py_bitwise(&rhs, op, self.heap);
 
-        // Get integer values from lhs and rhs
-        let lhs_int = match &lhs {
-            Value::Int(i) => Some(*i),
-            Value::Bool(b) => Some(i64::from(*b)),
-            _ => None,
-        };
-        let rhs_int = match &rhs {
-            Value::Int(i) => Some(*i),
-            Value::Bool(b) => Some(i64::from(*b)),
-            _ => None,
-        };
-
-        // Drop operands before returning error
+        // Drop operands before propagating error
         lhs.drop_with_heap(self.heap);
         rhs.drop_with_heap(self.heap);
 
-        if let (Some(l), Some(r)) = (lhs_int, rhs_int) {
-            let result = match op {
-                BitwiseOp::And => l & r,
-                BitwiseOp::Or => l | r,
-                BitwiseOp::Xor => l ^ r,
-                BitwiseOp::LShift => {
-                    // Python raises ValueError for negative shift, OverflowError for too large
-                    if r < 0 {
-                        return Err(ExcType::value_error_negative_shift_count());
-                    }
-                    // Limit shift to avoid overflow
-                    if r > 63 {
-                        return Err(ExcType::overflow_shift_count());
-                    }
-                    l << r
-                }
-                BitwiseOp::RShift => {
-                    if r < 0 {
-                        return Err(ExcType::value_error_negative_shift_count());
-                    }
-                    // Large right shifts just give 0 or -1 for negative numbers
-                    if r > 63 {
-                        if l < 0 {
-                            -1
-                        } else {
-                            0
-                        }
-                    } else {
-                        l >> r
-                    }
-                }
-            };
-            self.push(Value::Int(result));
-            Ok(())
-        } else {
-            let op_str = match op {
-                BitwiseOp::And => "&",
-                BitwiseOp::Or => "|",
-                BitwiseOp::Xor => "^",
-                BitwiseOp::LShift => "<<",
-                BitwiseOp::RShift => ">>",
-            };
-            Err(ExcType::binary_type_error(op_str, lhs_type, rhs_type))
-        }
+        self.push(result?);
+        Ok(())
     }
 
     /// In-place addition (uses py_iadd for mutable containers, falls back to py_add).
@@ -1664,7 +1597,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             // Format based on value type and conversion flag
             let result = match conversion {
                 // No conversion - format original value
-                0 => self.format_with_spec(&value, &spec)?,
+                0 => format_with_spec(&value, &spec, self.heap, self.interns)?,
                 // !s - convert to str, format as string
                 1 => {
                     let s = value.py_str(self.heap, self.interns);
@@ -1680,7 +1613,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let s = self.py_ascii(&value);
                     format_string(&s, &spec)?
                 }
-                _ => self.format_with_spec(&value, &spec)?,
+                _ => format_with_spec(&value, &spec, self.heap, self.interns)?,
             };
 
             spec_value.drop_with_heap(self.heap);
@@ -1729,57 +1662,6 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     )
                 })
             }
-        }
-    }
-
-    /// Formats a value with a format spec, applying type-appropriate formatting.
-    fn format_with_spec(&self, value: &Value, spec: &ParsedFormatSpec) -> Result<String, RunError> {
-        let value_type = value.py_type(Some(self.heap));
-
-        match (value, spec.type_char) {
-            // Integer formatting
-            (Value::Int(n), None | Some('d')) => Ok(format_int(*n, spec)),
-            (Value::Int(n), Some('b')) => Ok(format_int_base(*n, 2, spec)?),
-            (Value::Int(n), Some('o')) => Ok(format_int_base(*n, 8, spec)?),
-            (Value::Int(n), Some('x')) => Ok(format_int_base(*n, 16, spec)?),
-            (Value::Int(n), Some('X')) => Ok(format_int_base(*n, 16, spec)?.to_uppercase()),
-            (Value::Int(n), Some('c')) => Ok(format_char(*n, spec)?),
-
-            // Float formatting
-            (Value::Float(f), None | Some('g' | 'G')) => Ok(format_float_g(*f, spec)),
-            (Value::Float(f), Some('f' | 'F')) => Ok(format_float_f(*f, spec)),
-            (Value::Float(f), Some('e')) => Ok(format_float_e(*f, spec, false)),
-            (Value::Float(f), Some('E')) => Ok(format_float_e(*f, spec, true)),
-            (Value::Float(f), Some('%')) => Ok(format_float_percent(*f, spec)),
-
-            // Int to float formatting (Python allows this)
-            (Value::Int(n), Some('f' | 'F')) => Ok(format_float_f(*n as f64, spec)),
-            (Value::Int(n), Some('e')) => Ok(format_float_e(*n as f64, spec, false)),
-            (Value::Int(n), Some('E')) => Ok(format_float_e(*n as f64, spec, true)),
-            (Value::Int(n), Some('g' | 'G')) => Ok(format_float_g(*n as f64, spec)),
-            (Value::Int(n), Some('%')) => Ok(format_float_percent(*n as f64, spec)),
-
-            // String formatting (including InternString and heap strings)
-            (_, None | Some('s')) if value_type == Type::Str => {
-                let s = value.py_str(self.heap, self.interns);
-                Ok(format_string(&s, spec)?)
-            }
-
-            // Bool as int
-            (Value::Bool(b), Some('d')) => Ok(format_int(i64::from(*b), spec)),
-
-            // No type specifier: convert to string and format
-            (_, None) => {
-                let s = value.py_str(self.heap, self.interns);
-                Ok(format_string(&s, spec)?)
-            }
-
-            // Type mismatch errors
-            (_, Some(c)) => Err(SimpleException::new(
-                ExcType::ValueError,
-                Some(format!("Unknown format code '{c}' for object of type '{value_type}'")),
-            )
-            .into()),
         }
     }
 
