@@ -10,6 +10,8 @@ mod compare;
 mod exceptions;
 mod format;
 
+use call::CallResult;
+
 use crate::{
     args::{ArgValues, KwargsValues},
     bytecode::{code::Code, op::Opcode},
@@ -24,10 +26,6 @@ use crate::{
     types::PyTrait,
     value::{BitwiseOp, Value},
 };
-
-// ============================================================================
-// Exception Handling Macro
-// ============================================================================
 
 /// Tries an operation and handles any exception using the VM's exception handler.
 ///
@@ -59,30 +57,10 @@ macro_rules! catch {
     };
 }
 
-// ============================================================================
-// VM Result Types
-// ============================================================================
-
-/// Result of calling a function.
-///
-/// Distinguishes between builtin function calls (which return a value immediately),
-/// user function calls (which push a frame and continue execution), and external
-/// function calls (which pause the VM).
-enum CallResult {
-    /// Builtin function returned a value - push it onto the stack.
-    Builtin(Value),
-    /// User function call - frame was pushed, continue execution in VM loop.
-    /// The return value will be pushed by ReturnValue opcode.
-    UserFunction,
-    /// External function call - VM should pause and return to caller.
-    /// Contains (ext_function_id, args) where args preserves both positional and keyword arguments.
-    ExternalCall(ExtFunctionId, ArgValues),
-}
-
 /// Result of VM execution.
-pub enum VMSuccess {
+pub enum FrameExit {
     /// Execution completed successfully with a return value.
-    Complete(Value),
+    Return(Value),
 
     /// Execution paused for an external function call.
     ///
@@ -95,10 +73,6 @@ pub enum VMSuccess {
         args: ArgValues,
     },
 }
-
-// ============================================================================
-// Call Frame
-// ============================================================================
 
 /// A single function activation record.
 ///
@@ -163,10 +137,6 @@ impl<'code> CallFrame<'code> {
         }
     }
 }
-
-// ============================================================================
-// VM Snapshot for Pause/Resume
-// ============================================================================
 
 /// Serializable representation of a call frame.
 ///
@@ -301,7 +271,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     }
 
     /// Pushes an initial frame for module-level code and runs the VM.
-    pub fn run_module(&mut self, code: &'a Code) -> Result<VMSuccess, RunError> {
+    pub fn run_module(&mut self, code: &'a Code) -> Result<FrameExit, RunError> {
         self.frames.push(CallFrame::new_module(code, GLOBAL_NS_IDX));
         self.run()
     }
@@ -326,7 +296,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// Fetches opcodes from the current frame's bytecode and executes them.
     /// Returns when execution completes, an error occurs, or an external
     /// call is needed.
-    pub fn run(&mut self) -> Result<VMSuccess, RunError> {
+    pub fn run(&mut self) -> Result<FrameExit, RunError> {
         loop {
             // Check time limit and trigger GC if needed at each instruction.
             // For NoLimitTracker, these are inlined no-ops that compile away.
@@ -709,7 +679,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         Ok(CallResult::Builtin(result)) => self.push(result),
                         Ok(CallResult::UserFunction) => {} // Frame pushed, continue in VM loop
                         Ok(CallResult::ExternalCall(ext_id, ext_args)) => {
-                            return Ok(VMSuccess::ExternalCall {
+                            return Ok(FrameExit::ExternalCall {
                                 ext_function_id: ext_id,
                                 args: ext_args,
                             });
@@ -757,7 +727,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         Ok(CallResult::Builtin(result)) => self.push(result),
                         Ok(CallResult::UserFunction) => {} // Frame pushed, continue
                         Ok(CallResult::ExternalCall(ext_id, ext_args)) => {
-                            return Ok(VMSuccess::ExternalCall {
+                            return Ok(FrameExit::ExternalCall {
                                 ext_function_id: ext_id,
                                 args: ext_args,
                             });
@@ -805,7 +775,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         Ok(CallResult::Builtin(result)) => self.push(result),
                         Ok(CallResult::UserFunction) => {} // Frame pushed, continue
                         Ok(CallResult::ExternalCall(ext_id, ext_args)) => {
-                            return Ok(VMSuccess::ExternalCall {
+                            return Ok(FrameExit::ExternalCall {
                                 ext_function_id: ext_id,
                                 args: ext_args,
                             });
@@ -914,7 +884,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let value = self.pop();
                     if self.frames.len() == 1 {
                         // Module-level return - we're done
-                        return Ok(VMSuccess::Complete(value));
+                        return Ok(FrameExit::Return(value));
                     }
                     // Pop current frame and push return value
                     self.pop_frame();
@@ -939,7 +909,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// Resumes execution after an external call completes.
     ///
     /// Pushes the return value onto the stack and continues execution.
-    pub fn resume(&mut self, result: Value) -> Result<VMSuccess, RunError> {
+    pub fn resume(&mut self, result: Value) -> Result<FrameExit, RunError> {
         self.push(result);
         self.run()
     }
@@ -948,7 +918,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     ///
     /// Uses the exception handling mechanism to try to catch the exception.
     /// If caught, continues execution at the handler. If not, propagates the error.
-    pub fn resume_with_exception(&mut self, error: RunError) -> Result<VMSuccess, RunError> {
+    pub fn resume_with_exception(&mut self, error: RunError) -> Result<FrameExit, RunError> {
         // Use the normal exception handling mechanism
         // handle_exception returns None if caught, Some(error) if not caught
         if let Some(uncaught_error) = self.handle_exception(error) {

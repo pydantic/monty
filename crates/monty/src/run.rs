@@ -1,7 +1,7 @@
 //! Public interface for running Monty code.
 use crate::{
-    bytecode::{Code, Compiler, VMSnapshot, VMSuccess, VM},
-    exception_private::RunError,
+    bytecode::{Code, Compiler, FrameExit, VMSnapshot, VM},
+    exception_private::{RunError, RunResult},
     heap::Heap,
     intern::{ExtFunctionId, Interns},
     io::{PrintWriter, StdPrint},
@@ -11,7 +11,7 @@ use crate::{
     prepare::prepare,
     resource::{NoLimitTracker, ResourceTracker},
     value::Value,
-    MontyException,
+    ExcType, MontyException,
 };
 
 /// Primary interface for running Monty code.
@@ -60,7 +60,7 @@ impl MontyRun {
     /// Returns the code that was parsed to create this snapshot.
     #[must_use]
     pub fn code(&self) -> &str {
-        &self.executor.source_code
+        &self.executor.code
     }
 
     /// Executes the code and returns both the result and reference count data, used for testing only.
@@ -157,7 +157,7 @@ impl MontyRun {
             let result = vm.run_module(&executor.module_code);
 
             // Handle the result - convert VM to snapshot if needed for external call
-            if let Ok(VMSuccess::ExternalCall { .. }) = &result {
+            if let Ok(FrameExit::ExternalCall { .. }) = &result {
                 // Need to snapshot the VM for resumption
                 (result, Some(vm.into_snapshot()))
             } else {
@@ -169,7 +169,7 @@ impl MontyRun {
 
         // Now handle the result with owned heap and namespaces
         match result {
-            Ok(VMSuccess::Complete(value)) => {
+            Ok(FrameExit::Return(value)) => {
                 // Clean up the global namespace before returning (only needed with ref-count-panic)
                 #[cfg(feature = "ref-count-panic")]
                 namespaces.drop_global_with_heap(&mut heap);
@@ -178,7 +178,7 @@ impl MontyRun {
                 let obj = MontyObject::new(value, &mut heap, &executor.interns);
                 Ok(RunProgress::Complete(obj))
             }
-            Ok(VMSuccess::ExternalCall { ext_function_id, args }) => {
+            Ok(FrameExit::ExternalCall { ext_function_id, args }) => {
                 // Get function name and convert args to MontyObjects (includes both positional and kwargs)
                 let function_name = executor.interns.get_external_function_name(ext_function_id);
                 let (args_py, kwargs_py) = args.into_py_objects(&mut heap, &executor.interns);
@@ -201,7 +201,7 @@ impl MontyRun {
                 namespaces.drop_global_with_heap(&mut heap);
 
                 // Convert to MontyException
-                Err(err.into_python_exception(&executor.interns, &executor.source_code))
+                Err(err.into_python_exception(&executor.interns, &executor.code))
             }
         }
     }
@@ -393,7 +393,7 @@ impl<T: ResourceTracker> Snapshot<T> {
             };
 
             // Handle the result - convert VM to snapshot if needed for external call
-            if let Ok(VMSuccess::ExternalCall { .. }) = &vm_result {
+            if let Ok(FrameExit::ExternalCall { .. }) = &vm_result {
                 // Need to snapshot the VM for resumption
                 (vm_result, Some(vm.into_snapshot()))
             } else {
@@ -405,7 +405,7 @@ impl<T: ResourceTracker> Snapshot<T> {
 
         // Now handle the result with owned heap and namespaces
         match result {
-            Ok(VMSuccess::Complete(value)) => {
+            Ok(FrameExit::Return(value)) => {
                 // Clean up the global namespace before returning (only needed with ref-count-panic)
                 #[cfg(feature = "ref-count-panic")]
                 self.namespaces.drop_global_with_heap(&mut self.heap);
@@ -414,7 +414,7 @@ impl<T: ResourceTracker> Snapshot<T> {
                 let obj = MontyObject::new(value, &mut self.heap, &self.executor.interns);
                 Ok(RunProgress::Complete(obj))
             }
-            Ok(VMSuccess::ExternalCall { ext_function_id, args }) => {
+            Ok(FrameExit::ExternalCall { ext_function_id, args }) => {
                 // Get function name and convert args to MontyObjects (includes both positional and kwargs)
                 let function_name = self.executor.interns.get_external_function_name(ext_function_id);
                 let (args_py, kwargs_py) = args.into_py_objects(&mut self.heap, &self.executor.interns);
@@ -437,7 +437,7 @@ impl<T: ResourceTracker> Snapshot<T> {
                 self.namespaces.drop_global_with_heap(&mut self.heap);
 
                 // Convert to MontyException
-                Err(err.into_python_exception(&self.executor.interns, &self.executor.source_code))
+                Err(err.into_python_exception(&self.executor.interns, &self.executor.code))
             }
         }
     }
@@ -461,7 +461,7 @@ struct Executor {
     /// IDs to create values to inject into the the namespace to represent external functions.
     external_function_ids: Vec<ExtFunctionId>,
     /// Source code for error reporting (extracting preview lines for tracebacks).
-    source_code: String,
+    code: String,
 }
 
 impl Executor {
@@ -503,7 +503,7 @@ impl Executor {
             module_code,
             interns,
             external_function_ids,
-            source_code: code,
+            code,
         })
     }
 
@@ -528,7 +528,7 @@ impl Executor {
 
         // Create and run VM
         let mut vm = VM::new(&mut heap, &mut namespaces, &self.interns, print);
-        let result = vm.run_module(&self.module_code);
+        let frame_exit_result = vm.run_module(&self.module_code);
 
         // Clean up VM state before it goes out of scope
         vm.cleanup();
@@ -537,13 +537,8 @@ impl Executor {
         #[cfg(feature = "ref-count-panic")]
         namespaces.drop_global_with_heap(&mut heap);
 
-        match result {
-            Ok(VMSuccess::Complete(value)) => Ok(MontyObject::new(value, &mut heap, &self.interns)),
-            Ok(VMSuccess::ExternalCall { .. }) => Err(MontyException::runtime_error(
-                "external function calls not supported by standard execution",
-            )),
-            Err(err) => Err(err.into_python_exception(&self.interns, &self.source_code)),
-        }
+        frame_exit_to_object(frame_exit_result, &mut heap, &self.interns)
+            .map_err(|e| e.into_python_exception(&self.interns, &self.code))
     }
 
     /// Executes the code and returns both the result and reference count data, used for testing only.
@@ -569,7 +564,7 @@ impl Executor {
         // Create and run VM with StdPrint for output
         let mut print = StdPrint;
         let mut vm = VM::new(&mut heap, &mut namespaces, &self.interns, &mut print);
-        let vm_result = vm.run_module(&self.module_code);
+        let frame_exit_result = vm.run_module(&self.module_code);
 
         // Compute ref counts before consuming the heap - return value is still alive
         let final_namespace = namespaces.into_global();
@@ -590,14 +585,9 @@ impl Executor {
             obj.drop_with_heap(&mut heap);
         }
 
-        // Now convert the VM result to MontyObject (this drops the Value, decrementing refcount)
-        let py_object = match vm_result {
-            Ok(VMSuccess::Complete(value)) => Ok(MontyObject::new(value, &mut heap, &self.interns)),
-            Ok(VMSuccess::ExternalCall { .. }) => Err(MontyException::runtime_error(
-                "external function calls not supported by standard execution",
-            )),
-            Err(err) => Err(err.into_python_exception(&self.interns, &self.source_code)),
-        }?;
+        // Now convert the return value to MontyObject (this drops the Value, decrementing refcount)
+        let py_object = frame_exit_to_object(frame_exit_result, &mut heap, &self.interns)
+            .map_err(|e| e.into_python_exception(&self.interns, &self.code))?;
 
         Ok(RefCountOutput {
             py_object,
@@ -639,6 +629,19 @@ impl Executor {
             namespace.extend((0..extra).map(|_| Value::Undefined));
         }
         Ok(Namespaces::new(namespace))
+    }
+}
+
+fn frame_exit_to_object(
+    frame_exit_result: RunResult<FrameExit>,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<MontyObject> {
+    match frame_exit_result? {
+        FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, heap, interns)),
+        FrameExit::ExternalCall { .. } => {
+            Err(ExcType::not_implemented("external function calls not supported by standard execution.").into())
+        }
     }
 }
 

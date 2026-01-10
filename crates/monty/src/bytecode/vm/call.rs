@@ -1,16 +1,32 @@
 //! Function call helpers for the VM.
 
-use super::{CallFrame, CallResult, VM};
+use super::{CallFrame, VM};
 use crate::{
     args::{ArgValues, KwargsValues},
     exception_private::{ExcType, RunError},
     heap::{HeapData, HeapId},
-    intern::{FunctionId, StringId},
+    intern::{ExtFunctionId, FunctionId, StringId},
     io::PrintWriter,
     resource::ResourceTracker,
     types::{Dict, PyTrait},
     value::{Attr, Value},
 };
+
+/// Result of calling a function.
+///
+/// Distinguishes between builtin function calls (which return a value immediately),
+/// user function calls (which push a frame and continue execution), and external
+/// function calls (which pause the VM).
+pub(super) enum CallResult {
+    /// Builtin function returned a value - push it onto the stack.
+    Builtin(Value),
+    /// User function call - frame was pushed, continue execution in VM loop.
+    /// The return value will be pushed by ReturnValue opcode.
+    UserFunction,
+    /// External function call - VM should pause and return to caller.
+    /// Contains (ext_function_id, args) where args preserves both positional and keyword arguments.
+    ExternalCall(ExtFunctionId, ArgValues),
+}
 
 impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// Pops n arguments from the stack and wraps them in ArgValues.
