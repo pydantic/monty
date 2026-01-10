@@ -93,6 +93,10 @@ self.push(result?);                    // Now propagate error
 
 ## Dev Commands
 
+DO NOT run `cargo build` or `cargo run`, it will fail because of issues with Python bindings.
+
+Instead usee the following:
+
 ```bash
 # lint python and rust code
 make lint
@@ -170,6 +174,8 @@ make test-cases
 # Run the interpreter on a Python file
 cargo run -p monty-cli -- <file.py>
 ```
+
+DO NOT run `cargo run --`, it will fail because of issues with Python bindings.
 
 Read `Makefile` for other useful commands.
 

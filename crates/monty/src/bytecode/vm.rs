@@ -23,6 +23,40 @@ use crate::{
 };
 
 // ============================================================================
+// Exception Handling Macro
+// ============================================================================
+
+/// Tries an operation and handles any exception using the VM's exception handler.
+///
+/// If the operation returns an error, passes it to `handle_exception`. If the
+/// exception is caught by a Python handler, execution continues. Otherwise,
+/// returns the error from the enclosing function.
+///
+/// This macro is used throughout the VM dispatch loop to handle operations
+/// that may raise Python exceptions (e.g., `NameError`, `TypeError`).
+macro_rules! try_catch {
+    ($self:expr, $expr:expr) => {
+        if let Err(e) = $expr {
+            catch!($self, e);
+        }
+    };
+}
+
+/// Handles an already-created exception using the VM's exception handler.
+///
+/// If the exception is caught by a Python handler, execution continues.
+/// Otherwise, returns the error from the enclosing function.
+///
+/// Use this when you have an error value directly (not wrapped in `Result`).
+macro_rules! catch {
+    ($self:expr, $err:expr) => {
+        if let Some(result) = $self.handle_exception($err) {
+            return Err(result);
+        }
+    };
+}
+
+// ============================================================================
 // VM Result Types
 // ============================================================================
 
@@ -347,50 +381,18 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     self.push(Value::Int(i64::from(n)));
                 }
                 // Variables - Specialized Local Loads (no operand)
-                Opcode::LoadLocal0 => {
-                    if let Err(e) = self.load_local(0) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::LoadLocal1 => {
-                    if let Err(e) = self.load_local(1) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::LoadLocal2 => {
-                    if let Err(e) = self.load_local(2) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::LoadLocal3 => {
-                    if let Err(e) = self.load_local(3) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
+                Opcode::LoadLocal0 => try_catch!(self, self.load_local(0)),
+                Opcode::LoadLocal1 => try_catch!(self, self.load_local(1)),
+                Opcode::LoadLocal2 => try_catch!(self, self.load_local(2)),
+                Opcode::LoadLocal3 => try_catch!(self, self.load_local(3)),
                 // Variables - General Local Operations
                 Opcode::LoadLocal => {
                     let slot = u16::from(self.fetch_u8());
-                    if let Err(e) = self.load_local(slot) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
+                    try_catch!(self, self.load_local(slot));
                 }
                 Opcode::LoadLocalW => {
                     let slot = self.fetch_u16();
-                    if let Err(e) = self.load_local(slot) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
+                    try_catch!(self, self.load_local(slot));
                 }
                 Opcode::StoreLocal => {
                     let slot = u16::from(self.fetch_u8());
@@ -407,11 +409,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 // Variables - Global Operations
                 Opcode::LoadGlobal => {
                     let slot = self.fetch_u16();
-                    if let Err(e) = self.load_global(slot) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
+                    try_catch!(self, self.load_global(slot));
                 }
                 Opcode::StoreGlobal => {
                     let slot = self.fetch_u16();
@@ -420,102 +418,26 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 // Variables - Cell Operations (closures)
                 Opcode::LoadCell => {
                     let slot = self.fetch_u16();
-                    if let Err(e) = self.load_cell(slot) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
+                    try_catch!(self, self.load_cell(slot));
                 }
                 Opcode::StoreCell => {
                     let slot = self.fetch_u16();
                     self.store_cell(slot);
                 }
                 // Binary Operations - route through exception handling for tracebacks
-                Opcode::BinaryAdd => {
-                    if let Err(e) = self.binary_add() {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::BinarySub => {
-                    if let Err(e) = self.binary_sub() {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::BinaryMul => {
-                    if let Err(e) = self.binary_mult() {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::BinaryDiv => {
-                    if let Err(e) = self.binary_div() {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::BinaryFloorDiv => {
-                    if let Err(e) = self.binary_floordiv() {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::BinaryMod => {
-                    if let Err(e) = self.binary_mod() {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::BinaryPow => {
-                    if let Err(e) = self.binary_pow() {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
+                Opcode::BinaryAdd => try_catch!(self, self.binary_add()),
+                Opcode::BinarySub => try_catch!(self, self.binary_sub()),
+                Opcode::BinaryMul => try_catch!(self, self.binary_mult()),
+                Opcode::BinaryDiv => try_catch!(self, self.binary_div()),
+                Opcode::BinaryFloorDiv => try_catch!(self, self.binary_floordiv()),
+                Opcode::BinaryMod => try_catch!(self, self.binary_mod()),
+                Opcode::BinaryPow => try_catch!(self, self.binary_pow()),
                 // Bitwise operations - only work on integers
-                Opcode::BinaryAnd => {
-                    if let Err(e) = self.binary_bitwise(BitwiseOp::And) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::BinaryOr => {
-                    if let Err(e) = self.binary_bitwise(BitwiseOp::Or) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::BinaryXor => {
-                    if let Err(e) = self.binary_bitwise(BitwiseOp::Xor) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::BinaryLShift => {
-                    if let Err(e) = self.binary_bitwise(BitwiseOp::LShift) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::BinaryRShift => {
-                    if let Err(e) = self.binary_bitwise(BitwiseOp::RShift) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
+                Opcode::BinaryAnd => try_catch!(self, self.binary_bitwise(BitwiseOp::And)),
+                Opcode::BinaryOr => try_catch!(self, self.binary_bitwise(BitwiseOp::Or)),
+                Opcode::BinaryXor => try_catch!(self, self.binary_bitwise(BitwiseOp::Xor)),
+                Opcode::BinaryLShift => try_catch!(self, self.binary_bitwise(BitwiseOp::LShift)),
+                Opcode::BinaryRShift => try_catch!(self, self.binary_bitwise(BitwiseOp::RShift)),
                 Opcode::BinaryMatMul => todo!("BinaryMatMul not implemented"),
                 // Comparison Operations
                 Opcode::CompareEq => self.compare_eq(),
@@ -526,27 +448,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::CompareGe => self.compare_ord(std::cmp::Ordering::is_ge),
                 Opcode::CompareIs => self.compare_is(false),
                 Opcode::CompareIsNot => self.compare_is(true),
-                Opcode::CompareIn => {
-                    if let Err(e) = self.compare_in(false) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::CompareNotIn => {
-                    if let Err(e) = self.compare_in(true) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::CompareModEq => {
-                    if let Err(e) = self.compare_mod_eq() {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
+                Opcode::CompareIn => try_catch!(self, self.compare_in(false)),
+                Opcode::CompareNotIn => try_catch!(self, self.compare_in(true)),
+                Opcode::CompareModEq => try_catch!(self, self.compare_mod_eq()),
                 // Unary Operations
                 Opcode::UnaryNot => {
                     let value = self.pop();
@@ -568,10 +472,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     if let Some(v) = result {
                         self.push(v);
                     } else {
-                        let err = ExcType::unary_type_error("-", value_type);
-                        if let Some(result) = self.handle_exception(err) {
-                            return Err(result);
-                        }
+                        catch!(self, ExcType::unary_type_error("-", value_type));
                     }
                 }
                 Opcode::UnaryPos => {
@@ -586,10 +487,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     if let Some(v) = result {
                         self.push(v);
                     } else {
-                        let err = ExcType::unary_type_error("+", value_type);
-                        if let Some(result) = self.handle_exception(err) {
-                            return Err(result);
-                        }
+                        catch!(self, ExcType::unary_type_error("+", value_type));
                     }
                 }
                 Opcode::UnaryInvert => {
@@ -605,146 +503,47 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     if let Some(v) = result {
                         self.push(v);
                     } else {
-                        let err = ExcType::unary_type_error("~", value_type);
-                        if let Some(result) = self.handle_exception(err) {
-                            return Err(result);
-                        }
+                        catch!(self, ExcType::unary_type_error("~", value_type));
                     }
                 }
                 // In-place Operations - route through exception handling
-                Opcode::InplaceAdd => {
-                    if let Err(e) = self.inplace_add() {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
+                Opcode::InplaceAdd => try_catch!(self, self.inplace_add()),
                 // Other in-place ops use the same logic as binary ops for now
-                Opcode::InplaceSub => {
-                    if let Err(e) = self.binary_sub() {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::InplaceMul => {
-                    if let Err(e) = self.binary_mult() {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::InplaceDiv => {
-                    if let Err(e) = self.binary_div() {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::InplaceFloorDiv => {
-                    if let Err(e) = self.binary_floordiv() {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::InplaceMod => {
-                    if let Err(e) = self.binary_mod() {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::InplacePow => {
-                    if let Err(e) = self.binary_pow() {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::InplaceAnd => {
-                    if let Err(e) = self.binary_bitwise(BitwiseOp::And) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::InplaceOr => {
-                    if let Err(e) = self.binary_bitwise(BitwiseOp::Or) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::InplaceXor => {
-                    if let Err(e) = self.binary_bitwise(BitwiseOp::Xor) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::InplaceLShift => {
-                    if let Err(e) = self.binary_bitwise(BitwiseOp::LShift) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
-                Opcode::InplaceRShift => {
-                    if let Err(e) = self.binary_bitwise(BitwiseOp::RShift) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
-                }
+                Opcode::InplaceSub => try_catch!(self, self.binary_sub()),
+                Opcode::InplaceMul => try_catch!(self, self.binary_mult()),
+                Opcode::InplaceDiv => try_catch!(self, self.binary_div()),
+                Opcode::InplaceFloorDiv => try_catch!(self, self.binary_floordiv()),
+                Opcode::InplaceMod => try_catch!(self, self.binary_mod()),
+                Opcode::InplacePow => try_catch!(self, self.binary_pow()),
+                Opcode::InplaceAnd => try_catch!(self, self.binary_bitwise(BitwiseOp::And)),
+                Opcode::InplaceOr => try_catch!(self, self.binary_bitwise(BitwiseOp::Or)),
+                Opcode::InplaceXor => try_catch!(self, self.binary_bitwise(BitwiseOp::Xor)),
+                Opcode::InplaceLShift => try_catch!(self, self.binary_bitwise(BitwiseOp::LShift)),
+                Opcode::InplaceRShift => try_catch!(self, self.binary_bitwise(BitwiseOp::RShift)),
                 // Collection Building - route through exception handling
                 Opcode::BuildList => {
                     let count = self.fetch_u16() as usize;
-                    if let Err(e) = self.build_list(count) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
+                    try_catch!(self, self.build_list(count));
                 }
                 Opcode::BuildTuple => {
                     let count = self.fetch_u16() as usize;
-                    if let Err(e) = self.build_tuple(count) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
+                    try_catch!(self, self.build_tuple(count));
                 }
                 Opcode::BuildDict => {
                     let count = self.fetch_u16() as usize;
-                    if let Err(e) = self.build_dict(count) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
+                    try_catch!(self, self.build_dict(count));
                 }
                 Opcode::BuildSet => {
                     let count = self.fetch_u16() as usize;
-                    if let Err(e) = self.build_set(count) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
+                    try_catch!(self, self.build_set(count));
                 }
                 Opcode::FormatValue => {
                     let flags = self.fetch_u8();
-                    if let Err(e) = self.format_value(flags) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
+                    try_catch!(self, self.format_value(flags));
                 }
                 Opcode::BuildFString => {
                     let count = self.fetch_u16() as usize;
-                    if let Err(e) = self.build_fstring(count) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
+                    try_catch!(self, self.build_fstring(count));
                 }
                 // Subscript & Attribute - route through exception handling
                 Opcode::BinarySubscr => {
@@ -755,11 +554,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     index.drop_with_heap(self.heap);
                     match result {
                         Ok(v) => self.push(v),
-                        Err(e) => {
-                            if let Some(result) = self.handle_exception(e) {
-                                return Err(result);
-                            }
-                        }
+                        Err(e) => catch!(self, e),
                     }
                 }
                 Opcode::StoreSubscr => {
@@ -846,17 +641,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     match ForIterator::new(value, self.heap, self.interns) {
                         Ok(iter) => match self.heap.allocate(HeapData::Iterator(iter)) {
                             Ok(heap_id) => self.push(Value::Ref(heap_id)),
-                            Err(e) => {
-                                if let Some(result) = self.handle_exception(e.into()) {
-                                    return Err(result);
-                                }
-                            }
+                            Err(e) => catch!(self, e.into()),
                         },
-                        Err(e) => {
-                            if let Some(result) = self.handle_exception(e) {
-                                return Err(result);
-                            }
-                        }
+                        Err(e) => catch!(self, e),
                     }
                 }
                 Opcode::ForIter => {
@@ -879,10 +666,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         *self.heap.get_mut(heap_id) = HeapData::Iterator(iter);
 
                         match next_result {
-                            Ok(Some(value)) => {
-                                // Push the next value
-                                self.push(value);
-                            }
+                            Ok(Some(value)) => self.push(value),
                             Ok(None) => {
                                 // Iterator exhausted - pop it and jump to end
                                 let iter = self.pop();
@@ -893,9 +677,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                                 // Error during iteration (e.g., dict size changed)
                                 let iter = self.pop();
                                 iter.drop_with_heap(self.heap);
-                                if let Some(result) = self.handle_exception(e) {
-                                    return Err(result);
-                                }
+                                catch!(self, e);
                             }
                         }
                     } else {
@@ -915,24 +697,14 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Call the function and handle the result
                     match self.call_function(callable, args) {
                         Ok(CallResult::Builtin(result)) => self.push(result),
-                        Ok(CallResult::UserFunction) => {
-                            // Frame was pushed, continue execution in VM loop.
-                            // Return value will be pushed by ReturnValue opcode.
-                        }
+                        Ok(CallResult::UserFunction) => {} // Frame pushed, continue in VM loop
                         Ok(CallResult::ExternalCall(ext_id, args_vec)) => {
-                            // External function call - pause VM and return to caller
                             return Ok(VMSuccess::ExternalCall {
                                 ext_function_id: ext_id,
                                 args: args_vec,
                             });
                         }
-                        Err(err) => {
-                            // Try to handle the exception
-                            if let Some(result) = self.handle_exception(err) {
-                                return Err(result);
-                            }
-                            // Exception was handled, continue execution
-                        }
+                        Err(err) => catch!(self, err),
                     }
                 }
                 Opcode::CallFunctionKw => {
@@ -973,20 +745,14 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Call the function and handle the result
                     match self.call_function(callable, args) {
                         Ok(CallResult::Builtin(result)) => self.push(result),
-                        Ok(CallResult::UserFunction) => {
-                            // Frame was pushed, continue execution
-                        }
+                        Ok(CallResult::UserFunction) => {} // Frame pushed, continue
                         Ok(CallResult::ExternalCall(ext_id, args_vec)) => {
                             return Ok(VMSuccess::ExternalCall {
                                 ext_function_id: ext_id,
                                 args: args_vec,
                             });
                         }
-                        Err(err) => {
-                            if let Some(result) = self.handle_exception(err) {
-                                return Err(result);
-                            }
-                        }
+                        Err(err) => catch!(self, err),
                     }
                 }
                 Opcode::CallMethod => {
@@ -1005,19 +771,13 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Call the method on the object
                     match self.call_method(obj, name_id, args) {
                         Ok(result) => self.push(result),
-                        Err(err) => {
-                            // Try to handle the exception
-                            if let Some(result) = self.handle_exception(err) {
-                                return Err(result);
-                            }
-                            // Exception was handled, continue execution
-                        }
+                        Err(err) => catch!(self, err),
                     }
                 }
                 Opcode::CallExternal => {
-                    todo!("CallExternal (Step 6)")
+                    todo!("CallExternal")
                 }
-                // Function Definition (Step 4)
+                // Function Definition
                 Opcode::MakeFunction => {
                     let func_idx = self.fetch_u16();
                     let defaults_count = self.fetch_u8() as usize;
@@ -1066,13 +826,10 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::Raise => {
                     let exc = self.pop();
                     let error = self.make_exception(exc, true); // is_raise=true, hide caret
-                    if let Some(result) = self.handle_exception(error) {
-                        return Err(result);
-                    }
-                    // Exception was handled, continue execution
+                    catch!(self, error);
                 }
                 Opcode::RaiseFrom => {
-                    todo!("RaiseFrom (Step 5)")
+                    todo!("RaiseFrom")
                 }
                 Opcode::Reraise => {
                     let error = if let Some(exc) = self.current_exception.take() {
@@ -1085,10 +842,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         )
                         .into()
                     };
-                    if let Some(result) = self.handle_exception(error) {
-                        return Err(result);
-                    }
-                    // Exception was handled, continue execution
+                    catch!(self, error);
                 }
                 Opcode::ClearException => {
                     if let Some(exc) = self.current_exception.take() {
@@ -1109,11 +863,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 // Unpacking - route through exception handling
                 Opcode::UnpackSequence => {
                     let count = self.fetch_u8() as usize;
-                    if let Err(e) = self.unpack_sequence(count) {
-                        if let Some(result) = self.handle_exception(e) {
-                            return Err(result);
-                        }
-                    }
+                    try_catch!(self, self.unpack_sequence(count));
                 }
                 Opcode::UnpackEx => {
                     todo!("UnpackEx not implemented")
