@@ -16,7 +16,7 @@ use crate::{
     parse::CodeRange,
     resource::ResourceTracker,
     types::{Dict, List, PyTrait, Set, Tuple},
-    value::Value,
+    value::{Attr, Value},
 };
 
 // ============================================================================
@@ -847,7 +847,29 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 }
 
                 Opcode::CallMethod => {
-                    todo!("CallMethod (Step 4)")
+                    // CallMethod: u16 name_id, u8 arg_count
+                    // Stack: [obj, arg1, arg2, ..., argN] -> [result]
+                    let name_idx = self.fetch_u16();
+                    let arg_count = self.fetch_u8() as usize;
+                    let name_id = StringId::from_index(name_idx);
+
+                    // Pop arguments in reverse order (TOS is last arg)
+                    let args = self.pop_n_args(arg_count);
+
+                    // Pop the object
+                    let obj = self.pop();
+
+                    // Call the method on the object
+                    match self.call_method(obj, name_id, args) {
+                        Ok(result) => self.push(result),
+                        Err(err) => {
+                            // Try to handle the exception
+                            if let Some(result) = self.handle_exception(err) {
+                                return result;
+                            }
+                            // Exception was handled, continue execution
+                        }
+                    }
                 }
 
                 Opcode::CallExternal => {
@@ -1555,15 +1577,93 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     // ========================================================================
 
     /// Gets an attribute from an object.
-    fn get_attr(&self, _obj: &Value, _name_id: StringId) -> Result<Value, RunError> {
-        // TODO: Implement py_getattr on Value
-        todo!("get_attr: py_getattr not yet implemented")
+    ///
+    /// Currently only Dataclass objects support attribute access. For other types,
+    /// returns AttributeError.
+    fn get_attr(&mut self, obj: &Value, name_id: StringId) -> Result<Value, RunError> {
+        let attr_name = self.interns.get_str(name_id);
+
+        if let Value::Ref(heap_id) = obj {
+            let heap_id = *heap_id;
+            // Check if heap object is a Dataclass (need to check type first)
+            let is_dataclass = matches!(self.heap.get(heap_id), HeapData::Dataclass(_));
+
+            if is_dataclass {
+                // Use with_entry_mut to get mutable access to the dataclass
+                let name_value = Value::InternString(name_id);
+                self.heap.with_entry_mut(heap_id, |heap, data| {
+                    if let HeapData::Dataclass(dc) = data {
+                        match dc.get_attr(&name_value, heap, self.interns) {
+                            Ok(Some(value)) => {
+                                // Clone the value and increment its refcount
+                                Ok(value.clone_with_heap(heap))
+                            }
+                            Ok(None) => {
+                                // Attribute not found
+                                let type_name = dc.py_type(Some(heap));
+                                Err(ExcType::attribute_error(type_name, attr_name))
+                            }
+                            Err(e) => Err(e),
+                        }
+                    } else {
+                        unreachable!("type changed during borrow")
+                    }
+                })
+            } else {
+                // Other heap types don't support attribute access
+                let type_name = self.heap.get(heap_id).py_type(Some(self.heap));
+                Err(ExcType::attribute_error(type_name, attr_name))
+            }
+        } else {
+            // Non-heap values don't support attribute access
+            let type_name = obj.py_type(Some(self.heap));
+            Err(ExcType::attribute_error(type_name, attr_name))
+        }
     }
 
     /// Sets an attribute on an object.
-    fn set_attr(&mut self, _obj: &Value, _name_id: StringId, _value: Value) -> Result<(), RunError> {
-        // TODO: Implement py_setattr on Value
-        todo!("set_attr: py_setattr not yet implemented")
+    ///
+    /// Currently only Dataclass objects support attribute setting. For other types,
+    /// returns AttributeError.
+    fn set_attr(&mut self, obj: &Value, name_id: StringId, value: Value) -> Result<(), RunError> {
+        let attr_name = self.interns.get_str(name_id);
+
+        if let Value::Ref(heap_id) = obj {
+            let heap_id = *heap_id;
+            // Check if heap object is a Dataclass (need to check type first)
+            let is_dataclass = matches!(self.heap.get(heap_id), HeapData::Dataclass(_));
+
+            if is_dataclass {
+                // Use with_entry_mut to get mutable access to the dataclass
+                let name_value = Value::InternString(name_id);
+                self.heap.with_entry_mut(heap_id, |heap, data| {
+                    if let HeapData::Dataclass(dc) = data {
+                        match dc.set_attr(name_value, value, heap, self.interns) {
+                            Ok(old_value) => {
+                                // Drop old value if there was one
+                                if let Some(old) = old_value {
+                                    old.drop_with_heap(heap);
+                                }
+                                Ok(())
+                            }
+                            Err(e) => Err(e),
+                        }
+                    } else {
+                        unreachable!("type changed during borrow")
+                    }
+                })
+            } else {
+                // Other heap types don't support attribute setting
+                let type_name = self.heap.get(heap_id).py_type(Some(self.heap));
+                value.drop_with_heap(self.heap);
+                Err(ExcType::attribute_error(type_name, attr_name))
+            }
+        } else {
+            // Non-heap values don't support attribute setting
+            let type_name = obj.py_type(Some(self.heap));
+            value.drop_with_heap(self.heap);
+            Err(ExcType::attribute_error(type_name, attr_name))
+        }
     }
 
     // ========================================================================
@@ -1652,6 +1752,27 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     kwargs: crate::args::KwargsValues::Empty,
                 }
             }
+        }
+    }
+
+    /// Calls a method on an object.
+    ///
+    /// For heap-allocated objects (Value::Ref), dispatches to the type's
+    /// `py_call_attr` implementation via `heap.call_attr()`.
+    fn call_method(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<Value, RunError> {
+        let attr = Attr::Interned(name_id);
+
+        if let Value::Ref(heap_id) = obj {
+            // Call the method on the heap object
+            let result = self.heap.call_attr(heap_id, &attr, args, self.interns);
+            // Drop the object reference after the call
+            obj.drop_with_heap(self.heap);
+            result
+        } else {
+            // Non-heap values don't support method calls
+            let type_name = obj.py_type(Some(self.heap));
+            args.drop_with_heap(self.heap);
+            Err(ExcType::attribute_error(type_name, self.interns.get_str(name_id)))
         }
     }
 

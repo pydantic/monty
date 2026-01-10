@@ -17,7 +17,7 @@ use crate::{
     intern::Interns,
     operators::{CmpOperator, Operator},
     parse::{ExceptHandler, Try},
-    value::Value,
+    value::{Attr, Value},
 };
 
 /// Compiles prepared AST nodes to bytecode.
@@ -298,8 +298,12 @@ impl<'a> Compiler<'a> {
                 self.compile_call(callable, args);
             }
 
-            Expr::AttrCall { .. } => {
-                todo!("AttrCall compilation (Step 4)")
+            Expr::AttrCall { object, attr, args } => {
+                // Compile the object (will be on the stack)
+                self.compile_expr(object);
+
+                // Compile the method call arguments and emit CallMethod
+                self.compile_method_call(attr, args);
             }
 
             Expr::FString(parts) => {
@@ -490,6 +494,43 @@ impl<'a> Compiler<'a> {
             ArgExprs::Kwargs(_) | ArgExprs::ArgsKargs { .. } => {
                 // Keyword arguments require CallFunctionKw opcode
                 todo!("Keyword argument calls (CallFunctionKw) not yet implemented")
+            }
+        }
+    }
+
+    /// Compiles a method call on an object.
+    ///
+    /// The object should already be on the stack. This compiles the arguments
+    /// and emits a CallMethod opcode with the method name and arg count.
+    fn compile_method_call(&mut self, attr: &Attr, args: &ArgExprs) {
+        // Get the interned attribute name
+        let name_id = attr.string_id().expect("CallMethod requires interned attr name");
+
+        // Compile arguments based on the argument type
+        match args {
+            ArgExprs::Empty => {
+                self.code.emit_u16_u8(Opcode::CallMethod, name_id.index() as u16, 0);
+            }
+            ArgExprs::One(arg) => {
+                self.compile_expr(arg);
+                self.code.emit_u16_u8(Opcode::CallMethod, name_id.index() as u16, 1);
+            }
+            ArgExprs::Two(arg1, arg2) => {
+                self.compile_expr(arg1);
+                self.compile_expr(arg2);
+                self.code.emit_u16_u8(Opcode::CallMethod, name_id.index() as u16, 2);
+            }
+            ArgExprs::Args(args) => {
+                for arg in args {
+                    self.compile_expr(arg);
+                }
+                let arg_count = args.len().min(255) as u8;
+                self.code
+                    .emit_u16_u8(Opcode::CallMethod, name_id.index() as u16, arg_count);
+            }
+            ArgExprs::Kwargs(_) | ArgExprs::ArgsKargs { .. } => {
+                // TODO: Need CallMethodKw for keyword arguments
+                todo!("Method calls with keyword arguments not yet implemented")
             }
         }
     }

@@ -1498,8 +1498,9 @@ Opcode::Await,  // Pause current task, wait for TOS (another task or future)
 
 Note: Some operations use `todo!()` pending implementation:
 - Bitwise operations (BinaryAnd, BinaryOr, BinaryXor, etc.)
-- Attribute access (LoadAttr, StoreAttr) - needs py_getattr/py_setattr on Value
 - Membership test (CompareIn, CompareNotIn) - needs py_contains on Value
+- F-string compilation - needs changes to f-string representation
+- Keyword arguments (CallFunctionKw) - needs implementation
 
 ### Step 3.5: Iteration & Print Support
 - [x] `HeapData::Iterator` variant for storing `ForIterator` on heap
@@ -1515,6 +1516,8 @@ Note: Some operations use `todo!()` pending implementation:
 - [x] Return values
 - [x] Closures with captured cells
 - [x] Default parameters
+- [x] Method calls (AttrCall compilation, CallMethod opcode)
+- [x] Attribute access (LoadAttr, StoreAttr) for Dataclass objects
 
 ### Step 5: Exception Handling
 - [x] Try/except/finally compilation
@@ -1529,16 +1532,18 @@ Note: Some operations use `todo!()` pending implementation:
 - [x] Integration with existing `RunProgress` API
 
 ### Step 7: Remove Old Code
-- [ ] Delete `evaluate.rs`
-- [ ] Delete `run_frame.rs` tree-walker
-- [ ] Delete `SnapshotTracker`, `ClauseState`, `FunctionFrame`
+- [x] Delete `evaluate.rs`
+- [x] Delete `run_frame.rs` tree-walker
+- [x] Delete `SnapshotTracker`, `ClauseState`, `FunctionFrame`
+- [ ] Remove `#![allow(dead_code, unused_imports)]` from bytecode/mod.rs
 - [ ] Verify all existing tests pass
 
-### Step 8: Performance Tuning (future)
-- [ ] Profile hot paths
-- [ ] Add more specialized opcodes if needed
-- [ ] Consider stack caching
-- [ ] Consider inline caches for attribute lookup
+### Remaining Work (Post-Migration Cleanup)
+- [ ] Fix traceback generation for bytecode exceptions
+- [ ] Implement bitwise operations (BinaryAnd, BinaryOr, BinaryXor, etc.)
+- [ ] Implement membership testing (CompareIn, CompareNotIn)
+- [ ] Implement F-string compilation
+- [ ] Implement keyword arguments (CallFunctionKw)
 
 ---
 

@@ -24,6 +24,7 @@
       "Bash(git stash:*)",
       "Bash(git checkout:*)",
       "Bash(git mv:*)",
+      "Bash(git log:*)",
       "Bash(gh pr view:*)",
       "Bash(gh api:*)",
       "Bash(gh run view:*)",
