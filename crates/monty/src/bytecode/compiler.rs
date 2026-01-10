@@ -497,9 +497,45 @@ impl<'a> Compiler<'a> {
                 let arg_count = args.len().min(255) as u8;
                 self.code.emit_u8(Opcode::CallFunction, arg_count);
             }
-            ArgExprs::Kwargs(_) | ArgExprs::ArgsKargs { .. } => {
-                // Keyword arguments require CallFunctionKw opcode
-                todo!("Keyword argument calls (CallFunctionKw) not yet implemented")
+            ArgExprs::Kwargs(kwargs) => {
+                // Keyword-only call: compile kwarg values and emit CallFunctionKw
+                let mut kwname_ids = Vec::with_capacity(kwargs.len());
+                for kwarg in kwargs {
+                    self.compile_expr(&kwarg.value);
+                    kwname_ids.push(kwarg.key.name_id.index() as u16);
+                }
+                self.code.emit_call_function_kw(0, &kwname_ids);
+            }
+            ArgExprs::ArgsKargs {
+                args,
+                var_args,
+                kwargs,
+                var_kwargs,
+            } => {
+                // Mixed positional and keyword arguments
+                if var_args.is_some() || var_kwargs.is_some() {
+                    // *args and **kwargs unpacking not yet supported
+                    todo!("*args and **kwargs unpacking not yet implemented")
+                }
+
+                // Compile positional args
+                let pos_count = args.as_ref().map_or(0, Vec::len);
+                if let Some(args) = args {
+                    for arg in args {
+                        self.compile_expr(arg);
+                    }
+                }
+
+                // Compile kwarg values and collect names
+                let mut kwname_ids = Vec::new();
+                if let Some(kwargs) = kwargs {
+                    for kwarg in kwargs {
+                        self.compile_expr(&kwarg.value);
+                        kwname_ids.push(kwarg.key.name_id.index() as u16);
+                    }
+                }
+
+                self.code.emit_call_function_kw(pos_count.min(255) as u8, &kwname_ids);
             }
         }
     }

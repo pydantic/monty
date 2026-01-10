@@ -134,6 +134,22 @@ impl CodeBuilder {
         self.bytecode.push(operand3);
     }
 
+    /// Emits CallFunctionKw with inline keyword names.
+    ///
+    /// Operands: pos_count (u8) + kw_count (u8) + kw_count * name_id (u16 each)
+    ///
+    /// The kwname_ids slice contains StringId indices for each keyword argument
+    /// name, in order matching how the values were pushed to the stack.
+    pub fn emit_call_function_kw(&mut self, pos_count: u8, kwname_ids: &[u16]) {
+        self.record_location();
+        self.bytecode.push(Opcode::CallFunctionKw as u8);
+        self.bytecode.push(pos_count);
+        self.bytecode.push(kwname_ids.len() as u8);
+        for &name_id in kwname_ids {
+            self.bytecode.extend_from_slice(&name_id.to_le_bytes());
+        }
+    }
+
     /// Emits a forward jump instruction, returning a label to patch later.
     ///
     /// The jump offset is initially set to 0 and must be patched with

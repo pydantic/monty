@@ -192,7 +192,13 @@ pub enum Opcode {
     // === Function Calls ===
     /// Call TOS with n positional args. Operand: u8 arg_count.
     CallFunction,
-    /// Call with pos and kw args. Operands: u8 pos_count, u8 kw_count.
+    /// Call with positional and keyword args.
+    ///
+    /// Operands: u8 pos_count, u8 kw_count, then kw_count u16 name indices.
+    ///
+    /// Stack: [callable, pos_args..., kw_values...]
+    /// After the two count bytes, there are kw_count little-endian u16 values,
+    /// each being a StringId index for the corresponding keyword argument name.
     CallFunctionKw,
     /// Call method. Operands: u16 name_id, u8 arg_count.
     CallMethod,

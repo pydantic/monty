@@ -4,7 +4,7 @@
 //! and a call stack for function frames. Each frame owns its instruction pointer (IP).
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, KwargsValues},
     bytecode::{code::Code, op::Opcode},
     exception_private::{ExcType, ExceptionRaise, RunError, SimpleException},
     for_iterator::ForIterator,
@@ -675,7 +675,58 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     }
                 }
                 Opcode::CallFunctionKw => {
-                    todo!("CallFunctionKw (Step 4)")
+                    // Fetch operands: pos_count, kw_count, then kw_count name indices
+                    let pos_count = self.fetch_u8() as usize;
+                    let kw_count = self.fetch_u8() as usize;
+
+                    // Read keyword name StringIds
+                    let mut kwname_ids = Vec::with_capacity(kw_count);
+                    for _ in 0..kw_count {
+                        kwname_ids.push(StringId::from_index(self.fetch_u16()));
+                    }
+
+                    // Pop keyword values (TOS is last kwarg value)
+                    let kw_values = self.pop_n(kw_count);
+
+                    // Pop positional arguments
+                    let pos_args = self.pop_n(pos_count);
+
+                    // Pop the callable
+                    let callable = self.pop();
+
+                    // Build kwargs as Vec<(StringId, Value)>
+                    let kwargs_inline: Vec<(StringId, Value)> = kwname_ids.into_iter().zip(kw_values).collect();
+
+                    // Build ArgValues with both positional and keyword args
+                    let args = if pos_args.is_empty() && kwargs_inline.is_empty() {
+                        ArgValues::Empty
+                    } else if pos_args.is_empty() {
+                        ArgValues::Kwargs(KwargsValues::Inline(kwargs_inline))
+                    } else {
+                        ArgValues::ArgsKargs {
+                            args: pos_args,
+                            kwargs: KwargsValues::Inline(kwargs_inline),
+                        }
+                    };
+
+                    // Call the function and handle the result
+                    match self.call_function(callable, args) {
+                        Ok(CallResult::Builtin(result)) => self.push(result),
+                        Ok(CallResult::UserFunction) => {
+                            // Frame was pushed, continue execution
+                        }
+                        Ok(CallResult::ExternalCall(ext_id, args_vec)) => {
+                            return Ok(VMSuccess::ExternalCall {
+                                ext_function_id: ext_id,
+                                args: args_vec,
+                            });
+                        }
+                        Err(err) => {
+                            if let Some(result) = self.handle_exception(err) {
+                                return Err(result);
+                            }
+                        }
+                    }
                 }
                 Opcode::CallMethod => {
                     // CallMethod: u16 name_id, u8 arg_count
@@ -711,14 +762,8 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let defaults_count = self.fetch_u8() as usize;
                     let func_id = FunctionId::from_index(func_idx);
 
-                    // Pop default values from stack (they were pushed in order, so reverse)
-                    let defaults = if defaults_count > 0 {
-                        let mut defaults = self.pop_n(defaults_count);
-                        defaults.reverse();
-                        defaults
-                    } else {
-                        Vec::new()
-                    };
+                    // Pop default values from stack (drain maintains order: first pushed = first in vec)
+                    let defaults = self.pop_n(defaults_count);
 
                     // Create FunctionDefaults on heap and push reference
                     let heap_id = self.heap.allocate(HeapData::FunctionDefaults(func_id, defaults))?;
@@ -732,6 +777,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
 
                     // Pop cells from stack (pushed after defaults, so on top)
                     // Cells are Value::Ref pointing to HeapData::Cell
+                    // We use individual pops which reverses order, so we need to reverse back
                     let mut cells = Vec::with_capacity(cell_count);
                     for _ in 0..cell_count {
                         let cell_val = self.pop();
@@ -745,17 +791,11 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                             }
                         }
                     }
-                    // Reverse to get original order (first cell pushed is first in vector)
+                    // Reverse to get original order (individual pops reverse the order)
                     cells.reverse();
 
-                    // Pop default values from stack (they were pushed in order, so reverse)
-                    let defaults = if defaults_count > 0 {
-                        let mut defaults = self.pop_n(defaults_count);
-                        defaults.reverse();
-                        defaults
-                    } else {
-                        Vec::new()
-                    };
+                    // Pop default values from stack (drain maintains order: first pushed = first in vec)
+                    let defaults = self.pop_n(defaults_count);
 
                     // Create Closure on heap and push reference
                     let heap_id = self.heap.allocate(HeapData::Closure(func_id, cells, defaults))?;
