@@ -136,8 +136,11 @@ def test_external_function_not_provided_raises():
 def test_undeclared_function_raises_name_error():
     m = monty.Monty('unknown_func()')
 
-    with pytest.raises(NameError, match="name 'unknown_func' is not defined"):
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run()
+    inner = exc_info.value.exception()
+    assert isinstance(inner, NameError)
+    assert "name 'unknown_func' is not defined" in str(inner)
 
 
 def test_external_function_raises_exception():
@@ -147,9 +150,11 @@ def test_external_function_raises_exception():
     def fail(*args: Any, **kwargs: Any) -> None:
         raise ValueError('intentional error')
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run(external_functions={'fail': fail})
-    assert exc_info.value.args[0] == snapshot('intentional error')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, ValueError)
+    assert inner.args[0] == snapshot('intentional error')
 
 
 def test_external_function_wrong_name_raises():
@@ -159,10 +164,12 @@ def test_external_function_wrong_name_raises():
     def bar(*args: Any, **kwargs: Any) -> int:
         return 1
 
-    with pytest.raises(KeyError) as exc_info:
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run(external_functions={'bar': bar})
+    inner = exc_info.value.exception()
+    assert isinstance(inner, KeyError)
     # KeyError wraps the message in quotes
-    assert exc_info.value.args[0] == snapshot('"External function \'foo\' not found"')
+    assert inner.args[0] == snapshot('"External function \'foo\' not found"')
 
 
 def test_external_function_exception_caught_by_try_except():
@@ -190,9 +197,11 @@ def test_external_function_exception_type_preserved():
     def fail_type_error(*args: Any, **kwargs: Any) -> None:
         raise TypeError('type error message')
 
-    with pytest.raises(TypeError) as exc_info:
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run(external_functions={'fail': fail_type_error})
-    assert exc_info.value.args[0] == snapshot('type error message')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, TypeError)
+    assert inner.args[0] == snapshot('type error message')
 
 
 @pytest.mark.parametrize(
@@ -226,8 +235,10 @@ def test_external_function_exception_hierarchy(exception_class: type[BaseExcepti
     def fail(*args: Any, **kwargs: Any) -> None:
         raise exception_class('test message')
 
-    with pytest.raises(exception_class):
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run(external_functions={'fail': fail})
+    inner = exc_info.value.exception()
+    assert isinstance(inner, exception_class)
 
 
 @pytest.mark.parametrize(
@@ -303,9 +314,11 @@ def test_external_function_exception_in_expression():
     def fail(*args: Any, **kwargs: Any) -> int:
         raise RuntimeError('mid-expression error')
 
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run(external_functions={'fail': fail})
-    assert exc_info.value.args[0] == snapshot('mid-expression error')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, RuntimeError)
+    assert inner.args[0] == snapshot('mid-expression error')
 
 
 def test_external_function_exception_after_successful_call():
@@ -323,9 +336,11 @@ a + b
     def fail(*args: Any, **kwargs: Any) -> int:
         raise ValueError('second call fails')
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run(external_functions={'success': success, 'fail': fail})
-    assert exc_info.value.args[0] == snapshot('second call fails')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, ValueError)
+    assert inner.args[0] == snapshot('second call fails')
 
 
 def test_external_function_exception_with_finally():

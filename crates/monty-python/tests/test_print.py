@@ -120,18 +120,22 @@ def test_print_callback_raises_value_error() -> None:
     """Test that ValueError raised in callback propagates correctly."""
     m = monty.Monty('print("hello")')
     callback = make_error_callback(ValueError('callback error'))
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run(print_callback=callback)
-    assert exc_info.value.args[0] == snapshot('callback error')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, ValueError)
+    assert inner.args[0] == snapshot('callback error')
 
 
 def test_print_callback_raises_type_error() -> None:
     """Test that TypeError raised in callback propagates correctly."""
     m = monty.Monty('print("hello")')
     callback = make_error_callback(TypeError('wrong type'))
-    with pytest.raises(TypeError) as exc_info:
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run(print_callback=callback)
-    assert exc_info.value.args[0] == snapshot('wrong type')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, TypeError)
+    assert inner.args[0] == snapshot('wrong type')
 
 
 def test_print_callback_raises_in_function() -> None:
@@ -144,9 +148,11 @@ greet("World")
 """
     m = monty.Monty(code)
     callback = make_error_callback(RuntimeError('io error'))
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run(print_callback=callback)
-    assert exc_info.value.args[0] == snapshot('io error')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, RuntimeError)
+    assert inner.args[0] == snapshot('io error')
 
 
 def test_print_callback_raises_in_nested_function() -> None:
@@ -161,9 +167,11 @@ outer()
 """
     m = monty.Monty(code)
     callback = make_error_callback(ValueError('nested error'))
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run(print_callback=callback)
-    assert exc_info.value.args[0] == snapshot('nested error')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, ValueError)
+    assert inner.args[0] == snapshot('nested error')
 
 
 def test_print_callback_raises_in_loop() -> None:
@@ -181,7 +189,9 @@ for i in range(5):
         if call_count >= 3:
             raise ValueError('stopped at 3')
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run(print_callback=callback)
-    assert exc_info.value.args[0] == snapshot('stopped at 3')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, ValueError)
+    assert inner.args[0] == snapshot('stopped at 3')
     assert call_count == snapshot(3)

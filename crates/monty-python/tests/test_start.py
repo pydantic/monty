@@ -247,10 +247,12 @@ def test_start_progress_resume_exception_propagates_uncaught():
     progress = m.start()
     assert isinstance(progress, monty.MontySnapshot)
 
-    # Resume with an exception that won't be caught
-    with pytest.raises(ValueError) as exc_info:
+    # Resume with an exception that won't be caught - wrapped in MontyRuntimeError
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
         progress.resume(exception=ValueError('uncaught error'))
-    assert exc_info.value.args[0] == snapshot('uncaught error')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, ValueError)
+    assert inner.args[0] == snapshot('uncaught error')
 
 
 def test_resume_none():

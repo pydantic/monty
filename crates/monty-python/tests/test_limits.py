@@ -47,8 +47,9 @@ recurse(10)
 """
     m = monty.Monty(code)
     limits = monty.ResourceLimits(max_recursion_depth=5)
-    with pytest.raises(RecursionError):
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run(limits=limits)
+    assert isinstance(exc_info.value.exception(), RecursionError)
 
 
 def test_recursion_limit_ok():
@@ -76,8 +77,9 @@ len(result)
 """
     m = monty.Monty(code)
     limits = monty.ResourceLimits(max_allocations=5)
-    with pytest.raises(MemoryError):
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run(limits=limits)
+    assert isinstance(exc_info.value.exception(), MemoryError)
 
 
 def test_memory_limit():
@@ -89,8 +91,9 @@ len(result)
 """
     m = monty.Monty(code)
     limits = monty.ResourceLimits(max_memory=100)
-    with pytest.raises(MemoryError):
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run(limits=limits)
+    assert isinstance(exc_info.value.exception(), MemoryError)
 
 
 def test_limits_with_inputs():
@@ -129,9 +132,11 @@ fib(35)
     old_handler = signal.signal(signal.SIGALRM, raise_potato)
     try:
         signal.alarm(1)  # Fire after 1 second
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(monty.MontyRuntimeError) as exc_info:
             m.run()
-        assert exc_info.value.args[0] == snapshot('potato')
+        inner = exc_info.value.exception()
+        assert isinstance(inner, ValueError)
+        assert inner.args[0] == snapshot('potato')
     finally:
         signal.alarm(0)  # Cancel any pending alarm
         signal.signal(signal.SIGALRM, old_handler)
@@ -162,8 +167,9 @@ fib(35)
         raised_keyboard_interrupt = False
         try:
             m.run()
-        except KeyboardInterrupt:
-            raised_keyboard_interrupt = True
+        except monty.MontyRuntimeError as e:
+            if isinstance(e.exception(), KeyboardInterrupt):
+                raised_keyboard_interrupt = True
 
         assert raised_keyboard_interrupt, 'Expected KeyboardInterrupt to be raised'
     finally:

@@ -12,6 +12,7 @@ mod limits;
 mod monty_cls;
 
 // Use `::monty` to refer to the external crate (not the pymodule)
+pub use exceptions::{MontyError, MontyRuntimeError, MontySyntaxError, PyFrame};
 pub use monty_cls::{PyMonty, PyMontyComplete, PyMontySnapshot};
 use pyo3::prelude::*;
 
@@ -21,6 +22,14 @@ mod monty {
     use pyo3::prelude::*;
 
     #[pymodule_export]
+    use super::MontyError;
+    #[pymodule_export]
+    use super::MontyRuntimeError;
+    #[pymodule_export]
+    use super::MontySyntaxError;
+    #[pymodule_export]
+    use super::PyFrame as Frame;
+    #[pymodule_export]
     use super::PyMonty as Monty;
     #[pymodule_export]
     use super::PyMontyComplete as MontyComplete;
@@ -28,10 +37,14 @@ mod monty {
     use super::PyMontySnapshot as MontySnapshot;
     use crate::limits::create_resource_limits_class;
 
-    /// Registers the ResourceLimits TypedDict in the module.
+    /// Registers ResourceLimits TypedDict.
     #[pymodule_init]
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
-        m.add("ResourceLimits", create_resource_limits_class(m.py())?)?;
+        let py = m.py();
+
+        // Add ResourceLimits TypedDict
+        m.add("ResourceLimits", create_resource_limits_class(py)?)?;
+
         Ok(())
     }
 }

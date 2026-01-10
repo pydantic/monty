@@ -2,7 +2,145 @@ from typing import Any, Callable, Literal, final, overload
 
 from typing_extensions import Self, TypedDict
 
-__all__ = ['Monty', 'MontyComplete', 'MontySnapshot', 'ResourceLimits']
+__all__ = [
+    'Monty',
+    'MontyComplete',
+    'MontySnapshot',
+    'ResourceLimits',
+    'MontyError',
+    'MontySyntaxError',
+    'MontyRuntimeError',
+    'Frame',
+]
+
+
+class MontyError(Exception):
+    """Base exception for all Monty interpreter errors.
+
+    Catching `MontyError` will catch both syntax and runtime errors from Monty.
+    """
+
+    def __new__(
+        cls,
+        exc_type_name: str,
+        message: str | None = None,
+    ) -> Self:
+        """Create a new MontyError.
+
+        Args:
+            exc_type_name: The exception type name (e.g., "ValueError")
+            message: The exception message
+        """
+
+    def __init__(
+        self,
+        exc_type_name: str,
+        message: str | None = None,
+    ) -> None: ...
+
+    def exception(self) -> BaseException:
+        """Returns the inner exception as a Python exception object."""
+
+    def display(self, show: Literal['traceback', 'type-msg', 'msg'] = 'traceback') -> str:
+        """Returns formatted exception string.
+
+        Args:
+            show: 'traceback' - full traceback with exception
+                  'type-msg' - 'ExceptionType: message' format
+                  'msg' - just the message
+        """
+
+    def __str__(self) -> str:
+        """Returns display('msg'), just the exception message."""
+
+
+@final
+class MontySyntaxError(MontyError):
+    """Raised when Python code has syntax errors or cannot be parsed by Monty.
+
+    Inherits exception(), display(), __str__() from MontyError.
+    """
+
+    def __new__(cls, message: str) -> Self:
+        """Create a new MontySyntaxError.
+
+        Args:
+            message: The syntax error message
+        """
+
+    def __init__(self, message: str) -> None: ...
+
+
+@final
+class MontyRuntimeError(MontyError):
+    """Raised when Monty code fails during execution.
+
+    Inherits exception(), display(), __str__() from MontyError.
+    Additionally provides traceback() for runtime errors.
+    """
+
+    def __new__(
+        cls,
+        exc_type_name: str,
+        message: str | None,
+        frames: list['Frame'],
+        display_str: str,
+        summary: str,
+    ) -> Self:
+        """Create a new MontyRuntimeError.
+
+        Args:
+            exc_type_name: The exception type name (e.g., "ValueError")
+            message: The exception message
+            frames: List of Frame objects for the traceback
+            display_str: Pre-computed full traceback display string
+            summary: Pre-computed summary ("ExcType: message")
+        """
+
+    def __init__(
+        self,
+        exc_type_name: str,
+        message: str | None,
+        frames: list['Frame'],
+        display_str: str,
+        summary: str,
+    ) -> None: ...
+
+    def traceback(self) -> list['Frame']:
+        """Returns the Monty traceback as a list of Frame objects."""
+
+
+@final
+class Frame:
+    """A single frame in a Monty traceback."""
+
+    @property
+    def filename(self) -> str:
+        """The filename where the code is located."""
+
+    @property
+    def line(self) -> int:
+        """Line number (1-based)."""
+
+    @property
+    def column(self) -> int:
+        """Column number (1-based)."""
+
+    @property
+    def end_line(self) -> int:
+        """End line number (1-based)."""
+
+    @property
+    def end_column(self) -> int:
+        """End column number (1-based)."""
+
+    @property
+    def function_name(self) -> str | None:
+        """The name of the function, or None for module-level code."""
+
+    @property
+    def source_line(self) -> str | None:
+        """The source code line for preview in the traceback."""
 
 @final
 class Monty:
@@ -32,7 +170,7 @@ class Monty:
             external_functions: List of external function names the code can call
 
         Raises:
-            SyntaxError: If the code cannot be parsed
+            MontySyntaxError: If the code cannot be parsed
         """
 
     def run(
@@ -56,7 +194,7 @@ class Monty:
             The result of the last expression in the code
 
         Raises:
-            Various Python exceptions matching what the code would raise
+            MontyRuntimeError: If the code raises an exception during execution
         """
 
     def start(
@@ -79,6 +217,9 @@ class Monty:
         Returns:
             MontySnapshot if an external function call is pending,
             MontyComplete if execution finished without external calls.
+
+        Raises:
+            MontyRuntimeError: If the code raises an exception during execution
         """
 
     def dump(self) -> bytes:
@@ -154,6 +295,7 @@ class MontySnapshot:
         Raises:
             TypeError: If both arguments are provided.
             RuntimeError: If execution has already completed.
+            MontyRuntimeError: If the code raises an exception during execution
         """
 
     @overload

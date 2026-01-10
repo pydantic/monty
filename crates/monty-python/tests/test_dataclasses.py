@@ -168,8 +168,9 @@ def test_dataclass_field_access_missing():
         name: str
 
     m = monty.Monty('x.age', inputs=['x'])
-    with pytest.raises(AttributeError):
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run(inputs={'x': Person(name='Alice')})
+    assert isinstance(exc_info.value.exception(), AttributeError)
 
 
 # === Repr ===
@@ -351,8 +352,11 @@ p.x = 100
 """
     m = monty.Monty(code, inputs=['p'])
 
-    with pytest.raises(FrozenInstanceError, match="cannot assign to field 'x'"):
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run(inputs={'p': Point(x=10, y=20)})
+    inner = exc_info.value.exception()
+    assert isinstance(inner, FrozenInstanceError)
+    assert inner.args[0] == snapshot("cannot assign to field 'x'")
 
 
 def test_frozen_instance_error_from_monty_caught_as_attribute_error():
@@ -366,9 +370,13 @@ def test_frozen_instance_error_from_monty_caught_as_attribute_error():
     code = 'p.x = 100'
     m = monty.Monty(code, inputs=['p'])
 
-    # Can catch with AttributeError
-    with pytest.raises(AttributeError):
+    # Wrapped in MontyRuntimeError, but inner exception is FrozenInstanceError
+    # which is a subclass of AttributeError
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run(inputs={'p': Point(x=10, y=20)})
+    inner = exc_info.value.exception()
+    assert isinstance(inner, AttributeError)
+    assert isinstance(inner, FrozenInstanceError)
 
 
 def test_frozen_instance_error_from_external_function():
@@ -399,8 +407,11 @@ def test_frozen_instance_error_from_external_function_propagates():
     def fail() -> NoReturn:
         raise FrozenInstanceError('test frozen error')
 
-    with pytest.raises(FrozenInstanceError, match='test frozen error'):
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run(external_functions={'fail': fail})
+    inner = exc_info.value.exception()
+    assert isinstance(inner, FrozenInstanceError)
+    assert inner.args[0] == snapshot('test frozen error')
 
 
 # === Equality ===
