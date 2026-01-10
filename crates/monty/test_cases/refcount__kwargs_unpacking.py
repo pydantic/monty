@@ -23,5 +23,6 @@ assert result2 is list_a, 'second call returns same object'
 # kwargs_dict: 1 ref
 # result: 5 refs (same object as list_a)
 # result2: 5 refs (same object as list_a)
+# receive_kwargs: 1 ref (function object in global namespace)
 result2
-# ref-counts={'list_a': 5, 'list_c': 2, 'kwargs_dict': 1, 'result': 5, 'result2': 5}
+# ref-counts={'list_a': 5, 'list_c': 2, 'kwargs_dict': 1, 'result': 5, 'result2': 5, 'receive_kwargs': 1}
