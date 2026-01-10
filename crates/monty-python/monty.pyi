@@ -18,25 +18,8 @@ class MontyError(Exception):
     """Base exception for all Monty interpreter errors.
 
     Catching `MontyError` will catch both syntax and runtime errors from Monty.
+    This exception is raised internally by Monty and cannot be constructed directly.
     """
-
-    def __new__(
-        cls,
-        exc_type_name: str,
-        message: str | None = None,
-    ) -> Self:
-        """Create a new MontyError.
-
-        Args:
-            exc_type_name: The exception type name (e.g., "ValueError")
-            message: The exception message
-        """
-
-    def __init__(
-        self,
-        exc_type_name: str,
-        message: str | None = None,
-    ) -> None: ...
 
     def exception(self) -> BaseException:
         """Returns the inner exception as a Python exception object."""
@@ -61,15 +44,6 @@ class MontySyntaxError(MontyError):
     Inherits exception(), display(), __str__() from MontyError.
     """
 
-    def __new__(cls, message: str) -> Self:
-        """Create a new MontySyntaxError.
-
-        Args:
-            message: The syntax error message
-        """
-
-    def __init__(self, message: str) -> None: ...
-
 
 @final
 class MontyRuntimeError(MontyError):
@@ -78,33 +52,6 @@ class MontyRuntimeError(MontyError):
     Inherits exception(), display(), __str__() from MontyError.
     Additionally provides traceback() for runtime errors.
     """
-
-    def __new__(
-        cls,
-        exc_type_name: str,
-        message: str | None,
-        frames: list['Frame'],
-        display_str: str,
-        summary: str,
-    ) -> Self:
-        """Create a new MontyRuntimeError.
-
-        Args:
-            exc_type_name: The exception type name (e.g., "ValueError")
-            message: The exception message
-            frames: List of Frame objects for the traceback
-            display_str: Pre-computed full traceback display string
-            summary: Pre-computed summary ("ExcType: message")
-        """
-
-    def __init__(
-        self,
-        exc_type_name: str,
-        message: str | None,
-        frames: list['Frame'],
-        display_str: str,
-        summary: str,
-    ) -> None: ...
 
     def traceback(self) -> list['Frame']:
         """Returns the Monty traceback as a list of Frame objects."""

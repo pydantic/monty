@@ -5,6 +5,7 @@
 //! - `monty_to_py`: Convert Monty's `MontyObject` back to Python objects for output
 
 use ::monty::MontyObject;
+use monty::MontyException;
 use pyo3::{
     exceptions::PyBaseException,
     prelude::*,
@@ -13,7 +14,7 @@ use pyo3::{
 
 use crate::{
     dataclass::{dataclass_to_monty, is_dataclass, PyMontyDataclass},
-    exceptions::{create_python_exception, exc_to_monty_object},
+    exceptions::{exc_monty_to_py, exc_to_monty_object},
 };
 
 /// Converts a Python object to Monty's `MontyObject` representation.
@@ -112,8 +113,8 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject) -> PyResult<Py<PyAny>> {
         }
         // Return the exception instance as a value (not raised)
         MontyObject::Exception { exc_type, arg } => {
-            let exc_type_name: &str = (*exc_type).into();
-            Ok(create_python_exception(py, exc_type_name, arg.as_deref()))
+            let exc = exc_monty_to_py(py, MontyException::new(*exc_type, arg.clone()));
+            Ok(exc.into_value(py).into_any())
         }
         MontyObject::Type(t) => {
             // Return Python's built-in type object

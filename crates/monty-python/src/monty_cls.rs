@@ -15,7 +15,7 @@ use pyo3::{
 
 use crate::{
     convert::{monty_to_py, py_to_monty},
-    exceptions::{exc_monty_to_py, exc_py_to_monty},
+    exceptions::{exc_py_to_monty, MontyError},
     external::ExternalFunctionRegistry,
     limits::{extract_limits, PySignalTracker},
 };
@@ -63,7 +63,7 @@ impl PyMonty {
 
         // Create the snapshot (parses the code)
         let runner = MontyRun::new(code, script_name, input_names.clone(), external_function_names.clone())
-            .map_err(|e| exc_monty_to_py(py, e))?;
+            .map_err(|e| MontyError::new_err(py, e))?;
 
         Ok(Self {
             runner,
@@ -149,7 +149,7 @@ impl PyMonty {
                 self.runner
                     .clone()
                     .start(input_values, $resource_tracker, &mut $print_output)
-                    .map_err(|e| exc_monty_to_py(py, e))?
+                    .map_err(|e| MontyError::new_err(py, e))?
             };
         }
 
@@ -279,7 +279,7 @@ impl PyMonty {
         if self.external_function_names.is_empty() {
             match self.runner.run(input_values, tracker, &mut print_output) {
                 Ok(v) => monty_to_py(py, &v),
-                Err(err) => Err(exc_monty_to_py(py, err)),
+                Err(err) => Err(MontyError::new_err(py, err)),
             }
         } else {
             // Clone the runner since start() consumes it - allows reuse of the parsed code
@@ -287,7 +287,7 @@ impl PyMonty {
                 .runner
                 .clone()
                 .start(input_values, tracker, &mut print_output)
-                .map_err(|e| exc_monty_to_py(py, e))?;
+                .map_err(|e| MontyError::new_err(py, e))?;
             execute_progress(py, progress, external_functions, &mut print_output)
         }
     }
@@ -423,7 +423,7 @@ impl PyMontySnapshot {
                 } else {
                     snapshot.run(external_result, &mut StdPrint)
                 };
-                EitherProgress::NoLimit(result.map_err(|e| exc_monty_to_py(py, e))?)
+                EitherProgress::NoLimit(result.map_err(|e| MontyError::new_err(py, e))?)
             }
             EitherSnapshot::Limited(snapshot) => {
                 let result = if let Some(print_callback) = &self.print_callback {
@@ -431,7 +431,7 @@ impl PyMontySnapshot {
                 } else {
                     snapshot.run(external_result, &mut StdPrint)
                 };
-                EitherProgress::Limited(result.map_err(|e| exc_monty_to_py(py, e))?)
+                EitherProgress::Limited(result.map_err(|e| MontyError::new_err(py, e))?)
             }
             EitherSnapshot::Done => return Err(PyRuntimeError::new_err("Progress already resumed")),
         };
@@ -594,7 +594,7 @@ fn execute_progress(
 
                 progress = state
                     .run(return_value, print_output)
-                    .map_err(|e| exc_monty_to_py(py, e))?;
+                    .map_err(|e| MontyError::new_err(py, e))?;
             }
         }
     }
