@@ -226,7 +226,7 @@ def test_syntax_error_str():
 
 
 def test_traceback_frames():
-    code = """
+    code = """\
 def inner():
     raise ValueError('error')
 
@@ -242,16 +242,50 @@ outer()
     assert isinstance(frames, list)
     assert len(frames) >= 2  # At least module level, outer(), and inner()
 
-    # Check frame properties
-    for frame in frames:
-        assert isinstance(frame, monty.Frame)
-        assert hasattr(frame, 'filename')
-        assert hasattr(frame, 'line')
-        assert hasattr(frame, 'column')
-        assert hasattr(frame, 'end_line')
-        assert hasattr(frame, 'end_column')
-        assert hasattr(frame, 'function_name')
-        assert hasattr(frame, 'source_line')
+    assert exc_info.value.display() == snapshot("""\
+Traceback (most recent call last):
+  File "main.py", line 7, in <module>
+    outer()
+    ~~~~~~~
+  File "main.py", line 5, in outer
+    inner()
+    ~~~~~~~
+  File "main.py", line 2, in inner
+    raise ValueError('error')
+ValueError: error\
+""")
+
+    assert [f.dict() for f in frames] == snapshot(
+        [
+            {
+                'filename': 'main.py',
+                'line': 7,
+                'column': 1,
+                'end_line': 7,
+                'end_column': 8,
+                'function_name': '<module>',
+                'source_line': 'outer()',
+            },
+            {
+                'filename': 'main.py',
+                'line': 5,
+                'column': 5,
+                'end_line': 5,
+                'end_column': 12,
+                'function_name': 'outer',
+                'source_line': '    inner()',
+            },
+            {
+                'filename': 'main.py',
+                'line': 2,
+                'column': 11,
+                'end_line': 2,
+                'end_column': 30,
+                'function_name': 'inner',
+                'source_line': "    raise ValueError('error')",
+            },
+        ]
+    )
 
 
 def test_frame_properties():
@@ -266,17 +300,28 @@ foo()
         m.run()
     frames = exc_info.value.traceback()
 
-    # Find the frame for 'foo'
-    foo_frame = None
-    for frame in frames:
-        if frame.function_name == 'foo':
-            foo_frame = frame
-            break
-
-    assert foo_frame is not None
-    assert foo_frame.filename == snapshot('main.py')
-    assert foo_frame.line > 0
-    assert foo_frame.column > 0
+    assert [f.dict() for f in frames] == snapshot(
+        [
+            {
+                'filename': 'main.py',
+                'line': 5,
+                'column': 1,
+                'end_line': 5,
+                'end_column': 6,
+                'function_name': '<module>',
+                'source_line': 'foo()',
+            },
+            {
+                'filename': 'main.py',
+                'line': 3,
+                'column': 11,
+                'end_line': 3,
+                'end_column': 29,
+                'function_name': 'foo',
+                'source_line': "    raise ValueError('test')",
+            },
+        ]
+    )
 
 
 # === Repr tests ===
@@ -286,16 +331,13 @@ def test_runtime_error_repr():
     m = monty.Monty("raise ValueError('test')")
     with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run()
-    r = repr(exc_info.value)
-    assert 'MontyRuntimeError' in r
-    assert 'ValueError' in r
+    assert repr(exc_info.value) == snapshot('MontyRuntimeError(ValueError: test)')
 
 
 def test_syntax_error_repr():
     with pytest.raises(monty.MontySyntaxError) as exc_info:
         monty.Monty('def')
-    r = repr(exc_info.value)
-    assert 'MontySyntaxError' in r
+    assert repr(exc_info.value) == snapshot('MontySyntaxError(Expected an identifier at byte range 3..3)')
 
 
 def test_frame_repr():
@@ -310,7 +352,4 @@ foo()
         m.run()
     frames = exc_info.value.traceback()
     frame = frames[0]
-    r = repr(frame)
-    assert 'Frame' in r
-    assert 'filename' in r
-    assert 'line' in r
+    assert repr(frame) == snapshot("Frame(filename='main.py', line=5, column=1, function_name='<module>')")

@@ -13,7 +13,6 @@ __all__ = [
     'Frame',
 ]
 
-
 class MontyError(Exception):
     """Base exception for all Monty interpreter errors.
 
@@ -36,14 +35,12 @@ class MontyError(Exception):
     def __str__(self) -> str:
         """Returns display('msg'), just the exception message."""
 
-
 @final
 class MontySyntaxError(MontyError):
     """Raised when Python code has syntax errors or cannot be parsed by Monty.
 
     Inherits exception(), display(), __str__() from MontyError.
     """
-
 
 @final
 class MontyRuntimeError(MontyError):
@@ -53,9 +50,8 @@ class MontyRuntimeError(MontyError):
     Additionally provides traceback() for runtime errors.
     """
 
-    def traceback(self) -> list['Frame']:
+    def traceback(self) -> list[Frame]:
         """Returns the Monty traceback as a list of Frame objects."""
-
 
 @final
 class Frame:
@@ -88,6 +84,9 @@ class Frame:
     @property
     def source_line(self) -> str | None:
         """The source code line for preview in the traceback."""
+
+    def dict(self) -> dict[str, int | str | None]:
+        """dict of attributes."""
 
 @final
 class Monty:

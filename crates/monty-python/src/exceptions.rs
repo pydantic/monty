@@ -16,7 +16,7 @@ use ::monty::{ExcType, MontyException, StackFrame};
 use pyo3::{
     exceptions,
     prelude::*,
-    types::{PyList, PyString},
+    types::{PyDict, PyList, PyString},
 };
 
 use crate::dataclass::get_frozen_instance_error;
@@ -250,6 +250,18 @@ pub struct PyFrame {
 
 #[pymethods]
 impl PyFrame {
+    fn dict(&self, py: Python<'_>) -> Py<PyDict> {
+        let dict = PyDict::new(py);
+        dict.set_item("filename", self.filename.clone()).unwrap();
+        dict.set_item("line", self.line).unwrap();
+        dict.set_item("column", self.column).unwrap();
+        dict.set_item("end_line", self.end_line).unwrap();
+        dict.set_item("end_column", self.end_column).unwrap();
+        dict.set_item("function_name", self.function_name.clone()).unwrap();
+        dict.set_item("source_line", self.source_line.clone()).unwrap();
+        dict.unbind()
+    }
+
     fn __repr__(&self) -> String {
         let func = self.function_name.as_ref().map_or("<module>".to_string(), Clone::clone);
         format!(

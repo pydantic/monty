@@ -3,7 +3,3 @@
 
 # Internal module exposed by PyO3 - not part of public API
 monty.monty
-
-# MontyError uses __new__ for construction which stubtest flags as "disjoint base"
-# This is intentional as it's a PyO3 exception class
-monty.MontyError
