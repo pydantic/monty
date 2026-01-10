@@ -275,6 +275,12 @@ pub enum Opcode {
     Reraise,
     /// Clear current_exception when exiting except block.
     ClearException,
+    /// Check if exception matches type for except clause.
+    ///
+    /// Stack: [..., exception, exc_type] -> [..., exception, bool]
+    /// Validates that exc_type is a valid exception type (ExcType or tuple of ExcTypes).
+    /// If invalid, raises TypeError. If valid, pushes True if exception matches, else False.
+    CheckExcMatch,
 
     // === Return ===
     /// Return TOS from function.

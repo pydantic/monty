@@ -11,7 +11,7 @@ use super::{
 };
 use crate::{
     args::{ArgExprs, Kwarg},
-    builtins::{Builtins, BuiltinsFunctions},
+    builtins::Builtins,
     callable::Callable,
     expressions::{Expr, ExprLoc, Identifier, Literal, NameScope, Node},
     fstring::{encode_format_spec, ConversionFlag, FStringPart, FormatSpec},
@@ -43,6 +43,13 @@ pub struct Compiler<'a> {
     /// start at `cell_base`, so we subtract this when emitting LoadCell/StoreCell
     /// to convert to the cells array index.
     cell_base: u16,
+
+    /// Stack of finally targets for handling returns inside try-finally.
+    ///
+    /// When a return statement is compiled inside a try-finally block, instead
+    /// of immediately returning, we store the return value and jump to the
+    /// finally block. The finally block will then execute the return.
+    finally_targets: Vec<FinallyTarget>,
 }
 
 /// Information about a loop for break/continue handling.
@@ -56,6 +63,15 @@ struct LoopInfo {
     break_jumps: Vec<JumpLabel>,
 }
 
+/// Tracks a finally block for handling returns inside try-finally.
+///
+/// When compiling a try-finally, we push a `FinallyTarget` to track jumps
+/// from return statements that need to go through the finally block.
+struct FinallyTarget {
+    /// Jump labels for returns inside the try block that need to go to finally.
+    return_jumps: Vec<JumpLabel>,
+}
+
 impl<'a> Compiler<'a> {
     /// Creates a new compiler with access to the string interner.
     fn new(interns: &'a Interns) -> Self {
@@ -64,6 +80,7 @@ impl<'a> Compiler<'a> {
             interns,
             loop_stack: Vec::new(),
             cell_base: 0,
+            finally_targets: Vec::new(),
         }
     }
 
@@ -74,6 +91,7 @@ impl<'a> Compiler<'a> {
             interns,
             loop_stack: Vec::new(),
             cell_base,
+            finally_targets: Vec::new(),
         }
     }
 
@@ -132,12 +150,12 @@ impl<'a> Compiler<'a> {
 
             Node::Return(expr) => {
                 self.compile_expr(expr);
-                self.code.emit(Opcode::ReturnValue);
+                self.compile_return();
             }
 
             Node::ReturnNone => {
                 self.code.emit(Opcode::LoadNone);
-                self.code.emit(Opcode::ReturnValue);
+                self.compile_return();
             }
 
             Node::Assign { target, object } => {
@@ -902,6 +920,23 @@ impl<'a> Compiler<'a> {
     // Exception Handling Compilation
     // ========================================================================
 
+    /// Compiles a return statement, handling finally blocks properly.
+    ///
+    /// If we're inside a try-finally block, the return value is kept on the stack
+    /// and we jump to a "finally with return" section that runs finally then returns.
+    /// Otherwise, we emit a direct `ReturnValue`.
+    fn compile_return(&mut self) {
+        if let Some(finally_target) = self.finally_targets.last_mut() {
+            // Inside a try-finally: jump to finally, then return
+            // Return value is already on stack
+            let jump = self.code.emit_jump(Opcode::Jump);
+            finally_target.return_jumps.push(jump);
+        } else {
+            // Normal return
+            self.code.emit(Opcode::ReturnValue);
+        }
+    }
+
     /// Compiles a try/except/else/finally block.
     ///
     /// The bytecode structure is:
@@ -926,6 +961,9 @@ impl<'a> Compiler<'a> {
     /// For finally blocks, exceptions that propagate through the handler dispatch
     /// (including RERAISE when no handler matches) are caught by a second exception
     /// entry that ensures finally runs before propagation.
+    ///
+    /// Returns inside try/except/else jump to a "finally with return" path that
+    /// runs the finally code then returns the value.
     fn compile_try(&mut self, try_block: &Try<Node>) {
         let has_finally = !try_block.finally.is_empty();
         let has_handlers = !try_block.handlers.is_empty();
@@ -933,6 +971,13 @@ impl<'a> Compiler<'a> {
 
         // Record stack depth at try entry (for unwinding on exception)
         let stack_depth = self.code.stack_depth();
+
+        // If there's a finally block, track returns inside try/handlers/else
+        if has_finally {
+            self.finally_targets.push(FinallyTarget {
+                return_jumps: Vec::new(),
+            });
+        }
 
         // === Compile try body ===
         let try_start = self.code.current_offset();
@@ -977,13 +1022,39 @@ impl<'a> Compiler<'a> {
             None
         };
 
+        // === Finally with return path ===
+        // Returns from try/handler/else come here (return value is on stack)
+        // Pop finally target and get the return jumps
+        let finally_with_return_start = if has_finally {
+            let finally_target = self.finally_targets.pop().expect("finally_targets should not be empty");
+            if finally_target.return_jumps.is_empty() {
+                None
+            } else {
+                let start = self.code.current_offset();
+                // Patch all return jumps to come here
+                for jump in finally_target.return_jumps {
+                    self.code.patch_jump(jump);
+                }
+                // Return value is on stack, run finally, then return (or continue to outer finally)
+                self.compile_block(&try_block.finally);
+                // Use compile_return() to handle nested try-finally correctly
+                // If there's an outer finally, this jumps there; otherwise it returns
+                self.compile_return();
+                Some(start)
+            }
+        } else {
+            None
+        };
+
         // === Else block (runs if no exception) ===
         self.code.patch_jump(after_try_jump);
+        let else_start = self.code.current_offset();
         if has_else {
             self.compile_block(&try_block.or_else);
         }
+        let else_end = self.code.current_offset();
 
-        // === Normal finally path (no exception pending) ===
+        // === Normal finally path (no exception pending, no return) ===
         // Patch all jumps from handlers to go here
         for jump in finally_jumps {
             self.code.patch_jump(jump);
@@ -1016,6 +1087,30 @@ impl<'a> Compiler<'a> {
                 stack_depth,
             ));
         }
+
+        // Entry 3: Finally with return -> finally cleanup
+        // If an exception occurs while running finally (in the return path), catch it
+        if let (Some(return_start), Some(cleanup_start)) = (finally_with_return_start, finally_cleanup_start) {
+            self.code.add_exception_entry(ExceptionEntry::new(
+                return_start as u32,
+                else_start as u32, // End at else_start (before else block)
+                cleanup_start as u32,
+                stack_depth,
+            ));
+        }
+
+        // Entry 4: Else block -> finally cleanup (only if has_finally and has_else)
+        // Exceptions in else block should go through finally
+        if has_else {
+            if let Some(cleanup_start) = finally_cleanup_start {
+                self.code.add_exception_entry(ExceptionEntry::new(
+                    else_start as u32,
+                    else_end as u32,
+                    cleanup_start as u32,
+                    stack_depth,
+                ));
+            }
+        }
     }
 
     /// Compiles the exception handlers for a try block.
@@ -1038,7 +1133,7 @@ impl<'a> Compiler<'a> {
                 // Typed handler: except ExcType: or except ExcType as e:
                 // Stack: [exception]
 
-                // Duplicate exception for isinstance check
+                // Duplicate exception for type check
                 self.code.emit(Opcode::Dup);
                 // Stack: [exception, exception]
 
@@ -1046,22 +1141,12 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(exc_type);
                 // Stack: [exception, exception, exc_type]
 
-                // Load isinstance function
-                let isinstance_idx = self
-                    .code
-                    .add_const(Value::Builtin(Builtins::Function(BuiltinsFunctions::Isinstance)));
-                self.code.emit_u16(Opcode::LoadConst, isinstance_idx);
-                // Stack: [exception, exception, exc_type, isinstance]
+                // Check if exception matches the type
+                // This validates exc_type is a valid exception type and performs the match
+                self.code.emit(Opcode::CheckExcMatch);
+                // Stack: [exception, bool]
 
-                // Rotate to get: [exception, isinstance, exception, exc_type]
-                // CallFunction 2 expects: [callable, arg0, arg1] at top
-                self.code.emit(Opcode::Rot3);
-                // Stack: [exception, isinstance, exception, exc_type]
-
-                // Now call isinstance(exception, exc_type)
-                self.code.emit_u8(Opcode::CallFunction, 2);
-
-                // Jump to next handler if isinstance returned False
+                // Jump to next handler if match returned False
                 let no_match_jump = self.code.emit_jump(Opcode::JumpIfFalse);
 
                 if is_last {

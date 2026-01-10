@@ -5,6 +5,7 @@
 
 use crate::{
     args::{ArgValues, KwargsValues},
+    builtins::Builtins,
     bytecode::{code::Code, op::Opcode},
     exception_private::{ExcType, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
     for_iterator::ForIterator,
@@ -15,7 +16,7 @@ use crate::{
     namespace::{NamespaceId, Namespaces, GLOBAL_NS_IDX},
     parse::CodeRange,
     resource::ResourceTracker,
-    types::{Dict, List, PyTrait, Set, Str, Tuple},
+    types::{Dict, List, PyTrait, Set, Str, Tuple, Type},
     value::{Attr, BitwiseOp, Value},
 };
 
@@ -874,6 +875,15 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     if let Some(exc) = self.exception_stack.pop() {
                         exc.drop_with_heap(self.heap);
                     }
+                }
+                Opcode::CheckExcMatch => {
+                    // Stack: [exception, exc_type] -> [exception, bool]
+                    let exc_type = self.pop();
+                    let exception = self.peek();
+                    let result = self.check_exc_match(exception, &exc_type);
+                    exc_type.drop_with_heap(self.heap);
+                    let result = result?;
+                    self.push(Value::Bool(result));
                 }
                 // Return
                 Opcode::ReturnValue => {
@@ -2592,5 +2602,41 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         let exception = exc.exc.clone();
         let heap_id = self.heap.allocate(HeapData::Exception(exception))?;
         Ok(Value::Ref(heap_id))
+    }
+
+    /// Checks if an exception matches an exception type for except clause matching.
+    ///
+    /// Validates that `exc_type` is a valid exception type (ExcType or tuple of ExcTypes).
+    /// Returns `Ok(true)` if exception matches, `Ok(false)` if not, or `Err` if exc_type is invalid.
+    fn check_exc_match(&self, exception: &Value, exc_type: &Value) -> Result<bool, RunError> {
+        let exc_type_enum = exception.py_type(Some(self.heap));
+        self.check_exc_match_inner(exc_type_enum, exc_type)
+    }
+
+    /// Inner recursive helper for check_exc_match that handles tuples.
+    fn check_exc_match_inner(&self, exc_type_enum: Type, exc_type: &Value) -> Result<bool, RunError> {
+        match exc_type {
+            // Valid exception type
+            Value::Builtin(Builtins::ExcType(handler_type)) => {
+                // Check if exception is an instance of handler_type
+                Ok(matches!(exc_type_enum, Type::Exception(et) if et.is_subclass_of(*handler_type)))
+            }
+            // Tuple of exception types
+            Value::Ref(id) => {
+                if let HeapData::Tuple(tuple) = self.heap.get(*id) {
+                    for v in tuple.as_vec() {
+                        if self.check_exc_match_inner(exc_type_enum, v)? {
+                            return Ok(true);
+                        }
+                    }
+                    Ok(false)
+                } else {
+                    // Not a tuple - invalid exception type
+                    Err(ExcType::except_invalid_type_error())
+                }
+            }
+            // Any other type is invalid for except clause
+            _ => Err(ExcType::except_invalid_type_error()),
+        }
     }
 }

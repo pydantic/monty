@@ -495,6 +495,14 @@ impl ExcType {
         exc_static!(Self::TypeError; "isinstance() arg 2 must be a type, a tuple of types, or a union").into()
     }
 
+    /// Creates a TypeError for invalid exception type in except clause.
+    ///
+    /// Matches CPython's format: `TypeError: catching classes that do not inherit from BaseException is not allowed`
+    #[must_use]
+    pub fn except_invalid_type_error() -> RunError {
+        exc_static!(Self::TypeError; "catching classes that do not inherit from BaseException is not allowed").into()
+    }
+
     /// Creates a ValueError for range() step argument being zero.
     ///
     /// Matches CPython's format: `ValueError: range() arg 3 must not be zero`
