@@ -48,16 +48,9 @@ enum BitwiseOp {
 }
 
 /// Result of VM execution.
-pub enum VMResult {
+pub enum VMSuccess {
     /// Execution completed successfully with a return value.
     Complete(Value),
-
-    /// Execution encountered an error.
-    ///
-    /// This can be a catchable exception (`RunError::Exc`), an uncatchable
-    /// resource limit error (`RunError::UncatchableExc`), or an internal
-    /// interpreter error (`RunError::Internal`).
-    Error(RunError),
 
     /// Execution paused for an external function call.
     ///
@@ -270,7 +263,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     }
 
     /// Pushes an initial frame for module-level code and runs the VM.
-    pub fn run_module(&mut self, code: &'a Code) -> VMResult {
+    pub fn run_module(&mut self, code: &'a Code) -> Result<VMSuccess, RunError> {
         self.frames.push(CallFrame::new_module(code, GLOBAL_NS_IDX));
         self.run()
     }
@@ -295,7 +288,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// Fetches opcodes from the current frame's bytecode and executes them.
     /// Returns when execution completes, an error occurs, or an external
     /// call is needed.
-    pub fn run(&mut self) -> VMResult {
+    pub fn run(&mut self) -> Result<VMSuccess, RunError> {
         loop {
             // Track instruction IP for exception table lookup
             self.instruction_ip = self.current_frame().ip;
@@ -309,7 +302,6 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let value = self.pop();
                     value.drop_with_heap(self.heap);
                 }
-
                 Opcode::Dup => {
                     // Copy without incrementing refcount first (avoids borrow conflict)
                     let value = self.peek().copy_for_extend();
@@ -319,13 +311,11 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     }
                     self.push(value);
                 }
-
                 Opcode::Rot2 => {
                     // Swap top two: [a, b] → [b, a]
                     let len = self.stack.len();
                     self.stack.swap(len - 1, len - 2);
                 }
-
                 Opcode::Rot3 => {
                     // Rotate top three: [a, b, c] → [c, a, b]
                     // Uses in-place rotation without cloning
@@ -334,10 +324,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Equivalent to: [..rest, a, b, c] → [..rest, c, a, b]
                     self.stack[len - 3..].rotate_right(1);
                 }
-
-                // ============================================================
                 // Constants & Literals
-                // ============================================================
                 Opcode::LoadConst => {
                     let idx = self.fetch_u16();
                     // Copy without incrementing refcount first (avoids borrow conflict)
@@ -348,160 +335,73 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     }
                     self.push(value);
                 }
-
-                Opcode::LoadNone => {
-                    self.push(Value::None);
-                }
-
-                Opcode::LoadTrue => {
-                    self.push(Value::Bool(true));
-                }
-
-                Opcode::LoadFalse => {
-                    self.push(Value::Bool(false));
-                }
-
+                Opcode::LoadNone => self.push(Value::None),
+                Opcode::LoadTrue => self.push(Value::Bool(true)),
+                Opcode::LoadFalse => self.push(Value::Bool(false)),
                 Opcode::LoadSmallInt => {
                     let n = self.fetch_i8();
                     self.push(Value::Int(i64::from(n)));
                 }
-
-                // ============================================================
                 // Variables - Specialized Local Loads (no operand)
-                // ============================================================
                 Opcode::LoadLocal0 => self.load_local(0),
                 Opcode::LoadLocal1 => self.load_local(1),
                 Opcode::LoadLocal2 => self.load_local(2),
                 Opcode::LoadLocal3 => self.load_local(3),
-
-                // ============================================================
                 // Variables - General Local Operations
-                // ============================================================
                 Opcode::LoadLocal => {
                     let slot = u16::from(self.fetch_u8());
                     self.load_local(slot);
                 }
-
                 Opcode::LoadLocalW => {
                     let slot = self.fetch_u16();
                     self.load_local(slot);
                 }
-
                 Opcode::StoreLocal => {
                     let slot = u16::from(self.fetch_u8());
                     self.store_local(slot);
                 }
-
                 Opcode::StoreLocalW => {
                     let slot = self.fetch_u16();
                     self.store_local(slot);
                 }
-
                 Opcode::DeleteLocal => {
                     let slot = u16::from(self.fetch_u8());
                     self.delete_local(slot);
                 }
-
-                // ============================================================
                 // Variables - Global Operations
-                // ============================================================
                 Opcode::LoadGlobal => {
                     let slot = self.fetch_u16();
                     self.load_global(slot);
                 }
-
                 Opcode::StoreGlobal => {
                     let slot = self.fetch_u16();
                     self.store_global(slot);
                 }
-
-                // ============================================================
                 // Variables - Cell Operations (closures)
-                // ============================================================
                 Opcode::LoadCell => {
                     let slot = self.fetch_u16();
                     self.load_cell(slot);
                 }
-
                 Opcode::StoreCell => {
                     let slot = self.fetch_u16();
                     self.store_cell(slot);
                 }
-
-                // ============================================================
                 // Binary Operations
-                // ============================================================
-                Opcode::BinaryAdd => {
-                    if let Err(e) = self.binary_add() {
-                        return VMResult::Error(e);
-                    }
-                }
-
-                Opcode::BinarySub => {
-                    if let Err(e) = self.binary_sub() {
-                        return VMResult::Error(e);
-                    }
-                }
-
-                Opcode::BinaryMul => {
-                    if let Err(e) = self.binary_mult() {
-                        return VMResult::Error(e);
-                    }
-                }
-
-                Opcode::BinaryDiv => {
-                    if let Err(e) = self.binary_div() {
-                        return VMResult::Error(e);
-                    }
-                }
-
-                Opcode::BinaryFloorDiv => {
-                    if let Err(e) = self.binary_floordiv() {
-                        return VMResult::Error(e);
-                    }
-                }
-
-                Opcode::BinaryMod => {
-                    self.binary_mod();
-                }
-
-                Opcode::BinaryPow => {
-                    if let Err(e) = self.binary_pow() {
-                        return VMResult::Error(e);
-                    }
-                }
-
+                Opcode::BinaryAdd => self.binary_add()?,
+                Opcode::BinarySub => self.binary_sub()?,
+                Opcode::BinaryMul => self.binary_mult()?,
+                Opcode::BinaryDiv => self.binary_div()?,
+                Opcode::BinaryFloorDiv => self.binary_floordiv()?,
+                Opcode::BinaryMod => self.binary_mod(),
+                Opcode::BinaryPow => self.binary_pow()?,
                 // Bitwise operations - only work on integers
-                Opcode::BinaryAnd => {
-                    if let Err(e) = self.binary_bitwise(BitwiseOp::And) {
-                        return VMResult::Error(e);
-                    }
-                }
-                Opcode::BinaryOr => {
-                    if let Err(e) = self.binary_bitwise(BitwiseOp::Or) {
-                        return VMResult::Error(e);
-                    }
-                }
-                Opcode::BinaryXor => {
-                    if let Err(e) = self.binary_bitwise(BitwiseOp::Xor) {
-                        return VMResult::Error(e);
-                    }
-                }
-                Opcode::BinaryLShift => {
-                    if let Err(e) = self.binary_bitwise(BitwiseOp::LShift) {
-                        return VMResult::Error(e);
-                    }
-                }
-                Opcode::BinaryRShift => {
-                    if let Err(e) = self.binary_bitwise(BitwiseOp::RShift) {
-                        return VMResult::Error(e);
-                    }
-                }
+                Opcode::BinaryAnd => self.binary_bitwise(BitwiseOp::And)?,
+                Opcode::BinaryOr => self.binary_bitwise(BitwiseOp::Or)?,
+                Opcode::BinaryXor => self.binary_bitwise(BitwiseOp::Xor)?,
+                Opcode::BinaryLShift => self.binary_bitwise(BitwiseOp::LShift)?,
+                Opcode::BinaryRShift => self.binary_bitwise(BitwiseOp::RShift)?,
                 Opcode::BinaryMatMul => todo!("BinaryMatMul not implemented"),
-
-                // ============================================================
                 // Comparison Operations
-                // ============================================================
                 Opcode::CompareEq => self.compare_eq(),
                 Opcode::CompareNe => self.compare_ne(),
                 Opcode::CompareLt => self.compare_ord(std::cmp::Ordering::is_lt),
@@ -510,27 +410,15 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::CompareGe => self.compare_ord(std::cmp::Ordering::is_ge),
                 Opcode::CompareIs => self.compare_is(false),
                 Opcode::CompareIsNot => self.compare_is(true),
-                Opcode::CompareIn => {
-                    if let Err(e) = self.compare_in(false) {
-                        return VMResult::Error(e);
-                    }
-                }
-                Opcode::CompareNotIn => {
-                    if let Err(e) = self.compare_in(true) {
-                        return VMResult::Error(e);
-                    }
-                }
-
-                // ============================================================
+                Opcode::CompareIn => self.compare_in(false)?,
+                Opcode::CompareNotIn => self.compare_in(true)?,
                 // Unary Operations
-                // ============================================================
                 Opcode::UnaryNot => {
                     let value = self.pop();
                     let result = !value.py_bool(self.heap, self.interns);
                     value.drop_with_heap(self.heap);
                     self.push(Value::Bool(result));
                 }
-
                 Opcode::UnaryNeg => {
                     // Unary minus - negate numeric value
                     let value = self.pop();
@@ -543,12 +431,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     value.drop_with_heap(self.heap);
                     match result {
                         Some(v) => self.push(v),
-                        None => {
-                            return VMResult::Error(ExcType::type_error("bad operand type for unary -"));
-                        }
+                        None => return Err(ExcType::type_error("bad operand type for unary -")),
                     }
                 }
-
                 Opcode::UnaryPos => {
                     // Unary plus - typically a no-op for numbers
                     let value = self.pop();
@@ -559,12 +444,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     value.drop_with_heap(self.heap);
                     match result {
                         Some(v) => self.push(v),
-                        None => {
-                            return VMResult::Error(ExcType::type_error("bad operand type for unary +"));
-                        }
+                        None => return Err(ExcType::type_error("bad operand type for unary +")),
                     }
                 }
-
                 Opcode::UnaryInvert => {
                     // Bitwise NOT
                     let value = self.pop();
@@ -577,119 +459,45 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     match result {
                         Some(v) => self.push(v),
                         None => {
-                            return VMResult::Error(ExcType::type_error("bad operand type for unary ~"));
+                            return Err(ExcType::type_error("bad operand type for unary ~"));
                         }
                     }
                 }
-
-                // ============================================================
                 // In-place Operations
-                // ============================================================
-                Opcode::InplaceAdd => {
-                    if let Err(e) = self.inplace_add() {
-                        return VMResult::Error(e);
-                    }
-                }
-
+                Opcode::InplaceAdd => self.inplace_add()?,
                 // Other in-place ops use the same logic as binary ops for now
-                Opcode::InplaceSub => {
-                    if let Err(e) = self.binary_sub() {
-                        return VMResult::Error(e);
-                    }
-                }
-
-                Opcode::InplaceMul => {
-                    if let Err(e) = self.binary_mult() {
-                        return VMResult::Error(e);
-                    }
-                }
-
-                Opcode::InplaceDiv => {
-                    if let Err(e) = self.binary_div() {
-                        return VMResult::Error(e);
-                    }
-                }
-
-                Opcode::InplaceFloorDiv => {
-                    if let Err(e) = self.binary_floordiv() {
-                        return VMResult::Error(e);
-                    }
-                }
-
-                Opcode::InplaceMod => {
-                    self.binary_mod();
-                }
-
-                Opcode::InplacePow => {
-                    if let Err(e) = self.binary_pow() {
-                        return VMResult::Error(e);
-                    }
-                }
-
-                Opcode::InplaceAnd => {
-                    if let Err(e) = self.binary_bitwise(BitwiseOp::And) {
-                        return VMResult::Error(e);
-                    }
-                }
-                Opcode::InplaceOr => {
-                    if let Err(e) = self.binary_bitwise(BitwiseOp::Or) {
-                        return VMResult::Error(e);
-                    }
-                }
-                Opcode::InplaceXor => {
-                    if let Err(e) = self.binary_bitwise(BitwiseOp::Xor) {
-                        return VMResult::Error(e);
-                    }
-                }
-                Opcode::InplaceLShift => {
-                    if let Err(e) = self.binary_bitwise(BitwiseOp::LShift) {
-                        return VMResult::Error(e);
-                    }
-                }
-                Opcode::InplaceRShift => {
-                    if let Err(e) = self.binary_bitwise(BitwiseOp::RShift) {
-                        return VMResult::Error(e);
-                    }
-                }
-
-                // ============================================================
+                Opcode::InplaceSub => self.binary_sub()?,
+                Opcode::InplaceMul => self.binary_mult()?,
+                Opcode::InplaceDiv => self.binary_div()?,
+                Opcode::InplaceFloorDiv => self.binary_floordiv()?,
+                Opcode::InplaceMod => self.binary_mod(),
+                Opcode::InplacePow => self.binary_pow()?,
+                Opcode::InplaceAnd => self.binary_bitwise(BitwiseOp::And)?,
+                Opcode::InplaceOr => self.binary_bitwise(BitwiseOp::Or)?,
+                Opcode::InplaceXor => self.binary_bitwise(BitwiseOp::Xor)?,
+                Opcode::InplaceLShift => self.binary_bitwise(BitwiseOp::LShift)?,
+                Opcode::InplaceRShift => self.binary_bitwise(BitwiseOp::RShift)?,
                 // Collection Building
-                // ============================================================
                 Opcode::BuildList => {
                     let count = self.fetch_u16() as usize;
-                    if let Err(e) = self.build_list(count) {
-                        return VMResult::Error(e);
-                    }
+                    self.build_list(count)?;
                 }
-
                 Opcode::BuildTuple => {
                     let count = self.fetch_u16() as usize;
-                    if let Err(e) = self.build_tuple(count) {
-                        return VMResult::Error(e);
-                    }
+                    self.build_tuple(count)?;
                 }
-
                 Opcode::BuildDict => {
                     let count = self.fetch_u16() as usize;
-                    if let Err(e) = self.build_dict(count) {
-                        return VMResult::Error(e);
-                    }
+                    self.build_dict(count)?;
                 }
-
                 Opcode::BuildSet => {
                     let count = self.fetch_u16() as usize;
-                    if let Err(e) = self.build_set(count) {
-                        return VMResult::Error(e);
-                    }
+                    self.build_set(count)?;
                 }
-
                 Opcode::BuildFString => {
                     todo!("BuildFString not implemented")
                 }
-
-                // ============================================================
                 // Subscript & Attribute
-                // ============================================================
                 Opcode::BinarySubscr => {
                     let index = self.pop();
                     let obj = self.pop();
@@ -698,10 +506,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     index.drop_with_heap(self.heap);
                     match result {
                         Ok(v) => self.push(v),
-                        Err(e) => return VMResult::Error(e),
+                        Err(e) => return Err(e),
                     }
                 }
-
                 Opcode::StoreSubscr => {
                     // Stack order: value, obj, index (TOS)
                     let index = self.pop();
@@ -709,11 +516,8 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let value = self.pop();
                     let result = obj.py_setitem(index, value, self.heap, self.interns);
                     obj.drop_with_heap(self.heap);
-                    if let Err(e) = result {
-                        return VMResult::Error(e);
-                    }
+                    result?;
                 }
-
                 Opcode::DeleteSubscr => {
                     // TODO: Implement py_delitem on Value
                     let index = self.pop();
@@ -722,7 +526,6 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     index.drop_with_heap(self.heap);
                     todo!("DeleteSubscr: py_delitem not yet implemented")
                 }
-
                 Opcode::LoadAttr => {
                     let name_idx = self.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
@@ -731,10 +534,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     obj.drop_with_heap(self.heap);
                     match result {
                         Ok(v) => self.push(v),
-                        Err(e) => return VMResult::Error(e),
+                        Err(e) => return Err(e),
                     }
                 }
-
                 Opcode::StoreAttr => {
                     let name_idx = self.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
@@ -742,23 +544,16 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let value = self.pop();
                     let result = self.set_attr(&obj, name_id, value);
                     obj.drop_with_heap(self.heap);
-                    if let Err(e) = result {
-                        return VMResult::Error(e);
-                    }
+                    result?;
                 }
-
                 Opcode::DeleteAttr => {
                     todo!("DeleteAttr not implemented")
                 }
-
-                // ============================================================
                 // Control Flow
-                // ============================================================
                 Opcode::Jump => {
                     let offset = self.fetch_i16();
                     self.jump_relative(offset);
                 }
-
                 Opcode::JumpIfTrue => {
                     let offset = self.fetch_i16();
                     let cond = self.pop();
@@ -767,7 +562,6 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     }
                     cond.drop_with_heap(self.heap);
                 }
-
                 Opcode::JumpIfFalse => {
                     let offset = self.fetch_i16();
                     let cond = self.pop();
@@ -776,7 +570,6 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     }
                     cond.drop_with_heap(self.heap);
                 }
-
                 Opcode::JumpIfTrueOrPop => {
                     let offset = self.fetch_i16();
                     if self.peek().py_bool(self.heap, self.interns) {
@@ -786,7 +579,6 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         value.drop_with_heap(self.heap);
                     }
                 }
-
                 Opcode::JumpIfFalseOrPop => {
                     let offset = self.fetch_i16();
                     if self.peek().py_bool(self.heap, self.interns) {
@@ -796,22 +588,18 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         self.jump_relative(offset);
                     }
                 }
-
-                // ============================================================
                 // Iteration
-                // ============================================================
                 Opcode::GetIter => {
                     let value = self.pop();
                     // Create a ForIterator from the value and store on heap
                     match ForIterator::new(value, self.heap, self.interns) {
                         Ok(iter) => match self.heap.allocate(HeapData::Iterator(iter)) {
                             Ok(heap_id) => self.push(Value::Ref(heap_id)),
-                            Err(e) => return VMResult::Error(e.into()),
+                            Err(e) => return Err(e.into()),
                         },
-                        Err(e) => return VMResult::Error(e),
+                        Err(e) => return Err(e),
                     }
                 }
-
                 Opcode::ForIter => {
                     let offset = self.fetch_i16();
                     // Peek at the iterator on TOS
@@ -822,7 +610,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                             self.heap.get_mut(heap_id),
                             HeapData::Iterator(ForIterator::placeholder()),
                         ) else {
-                            return VMResult::Error(RunError::internal("ForIter: expected iterator on stack"));
+                            return Err(RunError::internal("ForIter: expected iterator on stack"));
                         };
 
                         // Get next value from iterator
@@ -846,17 +634,14 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                                 // Error during iteration (e.g., dict size changed)
                                 let iter = self.pop();
                                 iter.drop_with_heap(self.heap);
-                                return VMResult::Error(e);
+                                return Err(e);
                             }
                         }
                     } else {
-                        return VMResult::Error(RunError::internal("ForIter: expected iterator ref on stack"));
+                        return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     }
                 }
-
-                // ============================================================
-                // Function Calls (Step 4)
-                // ============================================================
+                // Function Calls
                 Opcode::CallFunction => {
                     let arg_count = self.fetch_u8() as usize;
 
@@ -875,25 +660,23 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         }
                         Ok(CallResult::ExternalCall(ext_id, args_vec)) => {
                             // External function call - pause VM and return to caller
-                            return VMResult::ExternalCall {
+                            return Ok(VMSuccess::ExternalCall {
                                 ext_function_id: ext_id,
                                 args: args_vec,
-                            };
+                            });
                         }
                         Err(err) => {
                             // Try to handle the exception
                             if let Some(result) = self.handle_exception(err) {
-                                return result;
+                                return Err(result);
                             }
                             // Exception was handled, continue execution
                         }
                     }
                 }
-
                 Opcode::CallFunctionKw => {
                     todo!("CallFunctionKw (Step 4)")
                 }
-
                 Opcode::CallMethod => {
                     // CallMethod: u16 name_id, u8 arg_count
                     // Stack: [obj, arg1, arg2, ..., argN] -> [result]
@@ -913,20 +696,16 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         Err(err) => {
                             // Try to handle the exception
                             if let Some(result) = self.handle_exception(err) {
-                                return result;
+                                return Err(result);
                             }
                             // Exception was handled, continue execution
                         }
                     }
                 }
-
                 Opcode::CallExternal => {
                     todo!("CallExternal (Step 6)")
                 }
-
-                // ============================================================
                 // Function Definition (Step 4)
-                // ============================================================
                 Opcode::MakeFunction => {
                     let func_idx = self.fetch_u16();
                     let defaults_count = self.fetch_u8() as usize;
@@ -942,12 +721,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     };
 
                     // Create FunctionDefaults on heap and push reference
-                    match self.heap.allocate(HeapData::FunctionDefaults(func_id, defaults)) {
-                        Ok(heap_id) => self.push(Value::Ref(heap_id)),
-                        Err(e) => return VMResult::Error(e.into()),
-                    }
+                    let heap_id = self.heap.allocate(HeapData::FunctionDefaults(func_id, defaults))?;
+                    self.push(Value::Ref(heap_id));
                 }
-
                 Opcode::MakeClosure => {
                     let func_idx = self.fetch_u16();
                     let defaults_count = self.fetch_u8() as usize;
@@ -965,9 +741,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                                 cells.push(heap_id);
                             }
                             _ => {
-                                return VMResult::Error(RunError::internal(
-                                    "MakeClosure: expected cell reference on stack",
-                                ));
+                                return Err(RunError::internal("MakeClosure: expected cell reference on stack"));
                             }
                         }
                     }
@@ -984,28 +758,21 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     };
 
                     // Create Closure on heap and push reference
-                    match self.heap.allocate(HeapData::Closure(func_id, cells, defaults)) {
-                        Ok(heap_id) => self.push(Value::Ref(heap_id)),
-                        Err(e) => return VMResult::Error(e.into()),
-                    }
+                    let heap_id = self.heap.allocate(HeapData::Closure(func_id, cells, defaults))?;
+                    self.push(Value::Ref(heap_id));
                 }
-
-                // ============================================================
-                // Exception Handling (Step 5)
-                // ============================================================
+                // Exception Handling
                 Opcode::Raise => {
                     let exc = self.pop();
                     let error = self.make_exception(exc);
                     if let Some(result) = self.handle_exception(error) {
-                        return result;
+                        return Err(result);
                     }
                     // Exception was handled, continue execution
                 }
-
                 Opcode::RaiseFrom => {
                     todo!("RaiseFrom (Step 5)")
                 }
-
                 Opcode::Reraise => {
                     let error = if let Some(exc) = self.current_exception.take() {
                         self.make_exception(exc)
@@ -1018,48 +785,35 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         .into()
                     };
                     if let Some(result) = self.handle_exception(error) {
-                        return result;
+                        return Err(result);
                     }
                     // Exception was handled, continue execution
                 }
-
                 Opcode::ClearException => {
                     if let Some(exc) = self.current_exception.take() {
                         exc.drop_with_heap(self.heap);
                     }
                 }
-
-                // ============================================================
                 // Return
-                // ============================================================
                 Opcode::ReturnValue => {
                     let value = self.pop();
                     if self.frames.len() == 1 {
                         // Module-level return - we're done
-                        return VMResult::Complete(value);
+                        return Ok(VMSuccess::Complete(value));
                     }
                     // Pop current frame and push return value
                     self.pop_frame();
                     self.push(value);
                 }
-
-                // ============================================================
                 // Unpacking
-                // ============================================================
                 Opcode::UnpackSequence => {
                     let count = self.fetch_u8() as usize;
-                    if let Err(e) = self.unpack_sequence(count) {
-                        return VMResult::Error(e);
-                    }
+                    self.unpack_sequence(count)?;
                 }
-
                 Opcode::UnpackEx => {
                     todo!("UnpackEx not implemented")
                 }
-
-                // ============================================================
                 // Special
-                // ============================================================
                 Opcode::Nop => {
                     // No operation
                 }
@@ -1070,7 +824,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// Resumes execution after an external call completes.
     ///
     /// Pushes the return value onto the stack and continues execution.
-    pub fn resume(&mut self, result: Value) -> VMResult {
+    pub fn resume(&mut self, result: Value) -> Result<VMSuccess, RunError> {
         self.push(result);
         self.run()
     }
@@ -2262,12 +2016,12 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// 2. Pushes the exception value onto the stack
     /// 3. Sets `current_exception` for bare `raise`
     /// 4. Jumps to the handler code
-    fn handle_exception(&mut self, error: RunError) -> Option<VMResult> {
+    fn handle_exception(&mut self, error: RunError) -> Option<RunError> {
         // Only catchable exceptions can be handled
         let exc_info = match &error {
             RunError::Exc(exc) => exc.clone(),
             RunError::UncatchableExc(_) | RunError::Internal(_) => {
-                return Some(VMResult::Error(error));
+                return Some(error);
             }
         };
 
@@ -2275,7 +2029,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         let exc_value = self.create_exception_value(&exc_info);
         let exc_value = match exc_value {
             Ok(v) => v,
-            Err(e) => return Some(VMResult::Error(e)),
+            Err(e) => return Some(e),
         };
 
         // Search for handler in current and outer frames
@@ -2314,7 +2068,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             if self.frames.len() <= 1 {
                 // No more frames - exception is unhandled
                 exc_value.drop_with_heap(self.heap);
-                return Some(VMResult::Error(error));
+                return Some(error);
             }
 
             // Pop this frame and continue searching

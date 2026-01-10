@@ -20,4 +20,4 @@ mod vm;
 
 pub use code::Code;
 pub use compiler::Compiler;
-pub use vm::{VMResult, VMSnapshot, VM};
+pub use vm::{VMSnapshot, VMSuccess, VM};
