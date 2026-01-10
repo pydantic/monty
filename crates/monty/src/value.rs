@@ -908,6 +908,13 @@ impl Value {
         }
     }
 
+    pub fn ref_id(&self) -> Option<HeapId> {
+        match self {
+            Self::Ref(id) => Some(*id),
+            _ => None,
+        }
+    }
+
     /// Equivalent of Python's `is` operator.
     ///
     /// Compares value identity by comparing their IDs.

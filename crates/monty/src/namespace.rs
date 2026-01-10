@@ -574,11 +574,8 @@ impl Namespaces {
     /// This is used by garbage collection to find all root references. Any heap
     /// object reachable from these roots should not be collected.
     pub fn iter_heap_ids(&self) -> impl Iterator<Item = HeapId> + '_ {
-        self.stack.iter().flat_map(|namespace| {
-            namespace
-                .0
-                .iter()
-                .filter_map(|value| if let Value::Ref(id) = value { Some(*id) } else { None })
-        })
+        self.stack
+            .iter()
+            .flat_map(|namespace| namespace.0.iter().filter_map(Value::ref_id))
     }
 }

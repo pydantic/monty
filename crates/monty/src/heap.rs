@@ -969,10 +969,7 @@ impl<T: ResourceTracker> Heap<T> {
         let success = if let HeapData::List(list) = &source_data {
             // Copy items and track which refs need incrementing
             let items: Vec<Value> = list.as_vec().iter().map(Value::copy_for_extend).collect();
-            let ref_ids: Vec<HeapId> = items
-                .iter()
-                .filter_map(|obj| if let Value::Ref(id) = obj { Some(*id) } else { None })
-                .collect();
+            let ref_ids: Vec<HeapId> = items.iter().filter_map(Value::ref_id).collect();
 
             // Restore source data before mutating heap (inc_ref needs it)
             restore_data!(self, source_id, source_data, "iadd_extend_list");
@@ -1030,10 +1027,7 @@ impl<T: ResourceTracker> Heap<T> {
                 } else {
                     // Copy items and track which refs need incrementing
                     let items: Vec<Value> = list.as_vec().iter().map(Value::copy_for_extend).collect();
-                    let ref_ids: Vec<HeapId> = items
-                        .iter()
-                        .filter_map(|v| if let Value::Ref(id) = v { Some(*id) } else { None })
-                        .collect();
+                    let ref_ids: Vec<HeapId> = items.iter().filter_map(Value::ref_id).collect();
                     let original_len = items.len();
 
                     // Restore data before heap operations
@@ -1074,10 +1068,7 @@ impl<T: ResourceTracker> Heap<T> {
                 } else {
                     // Copy items and track which refs need incrementing
                     let items: Vec<Value> = tuple.as_vec().iter().map(Value::copy_for_extend).collect();
-                    let ref_ids: Vec<HeapId> = items
-                        .iter()
-                        .filter_map(|v| if let Value::Ref(id) = v { Some(*id) } else { None })
-                        .collect();
+                    let ref_ids: Vec<HeapId> = items.iter().filter_map(Value::ref_id).collect();
                     let original_len = items.len();
 
                     // Restore data before heap operations

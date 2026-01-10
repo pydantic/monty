@@ -6,7 +6,7 @@ use crate::{
     io::PrintWriter,
     resource::ResourceTracker,
     types::PyTrait,
-    value::{BitwiseOp, Value},
+    value::BitwiseOp,
 };
 
 impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
@@ -175,7 +175,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
         // Try in-place operation first (for mutable types like lists)
         // py_iadd takes owned `other` and mutates `self` in place
-        let lhs_id = if let Value::Ref(id) = &lhs { Some(*id) } else { None };
+        let lhs_id = lhs.ref_id();
 
         let succeeded = lhs.py_iadd(rhs.clone_with_heap(self.heap), self.heap, lhs_id, self.interns)?;
 

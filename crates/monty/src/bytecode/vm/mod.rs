@@ -1150,14 +1150,8 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// GC roots include values in namespaces, the operand stack, and exception stack.
     fn run_gc(&mut self) {
         // Collect roots from all reachable values
-        let stack_roots = self
-            .stack
-            .iter()
-            .filter_map(|v| if let Value::Ref(id) = v { Some(*id) } else { None });
-        let exc_roots = self
-            .exception_stack
-            .iter()
-            .filter_map(|v| if let Value::Ref(id) = v { Some(*id) } else { None });
+        let stack_roots = self.stack.iter().filter_map(Value::ref_id);
+        let exc_roots = self.exception_stack.iter().filter_map(Value::ref_id);
         let ns_roots = self.namespaces.iter_heap_ids();
 
         // Collect all roots into a vec to avoid lifetime issues
