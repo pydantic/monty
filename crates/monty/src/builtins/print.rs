@@ -2,12 +2,11 @@
 
 use crate::{
     args::{ArgValues, KwargsValues},
-    exception_private::{exc_err_fmt, exc_fmt, ExcType, RunError},
+    exception_private::{exc_err_fmt, exc_fmt, ExcType, RunError, RunResult},
     heap::{Heap, HeapData},
     intern::Interns,
     io::PrintWriter,
     resource::ResourceTracker,
-    run_frame::RunResult,
     types::PyTrait,
     value::Value,
 };

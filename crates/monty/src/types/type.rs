@@ -2,11 +2,10 @@ use strum::{Display, EnumString, IntoStaticStr};
 
 use crate::{
     args::ArgValues,
-    exception_private::ExcType,
+    exception_private::{ExcType, RunResult},
     heap::Heap,
     intern::Interns,
     resource::ResourceTracker,
-    run_frame::RunResult,
     types::{Bytes, Dict, FrozenSet, List, PyTrait, Range, Set, Str, Tuple},
     value::Value,
 };

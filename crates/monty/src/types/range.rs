@@ -9,11 +9,10 @@ use ahash::AHashSet;
 
 use crate::{
     args::ArgValues,
-    exception_private::ExcType,
+    exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::Interns,
     resource::ResourceTracker,
-    run_frame::RunResult,
     types::{PyTrait, Type},
     value::Value,
 };

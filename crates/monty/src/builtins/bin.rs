@@ -2,10 +2,9 @@
 
 use crate::{
     args::ArgValues,
-    exception_private::{exc_err_fmt, ExcType},
+    exception_private::{exc_err_fmt, ExcType, RunResult},
     heap::{Heap, HeapData},
     resource::ResourceTracker,
-    run_frame::RunResult,
     types::{PyTrait, Str},
     value::Value,
 };

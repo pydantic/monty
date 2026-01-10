@@ -10,12 +10,11 @@ use ahash::AHashSet;
 use super::{list::repr_sequence_fmt, PyTrait};
 use crate::{
     args::ArgValues,
-    exception_private::ExcType,
+    exception_private::{ExcType, RunResult},
     for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
     intern::Interns,
     resource::ResourceTracker,
-    run_frame::RunResult,
     types::Type,
     value::Value,
 };

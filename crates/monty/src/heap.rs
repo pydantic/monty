@@ -9,10 +9,9 @@ use ahash::AHashSet;
 
 use crate::{
     args::ArgValues,
-    exception_private::{ExcType, SimpleException},
+    exception_private::{ExcType, RunResult, SimpleException},
     intern::{FunctionId, Interns},
     resource::{ResourceError, ResourceTracker},
-    run_frame::RunResult,
     types::{Bytes, Dataclass, Dict, FrozenSet, List, PyTrait, Range, Set, Str, Tuple, Type},
     value::{Attr, Value},
 };

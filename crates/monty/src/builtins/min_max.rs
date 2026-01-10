@@ -4,12 +4,11 @@ use std::cmp::Ordering;
 
 use crate::{
     args::ArgValues,
-    exception_private::{exc_err_fmt, ExcType},
+    exception_private::{exc_err_fmt, ExcType, RunResult},
     for_iterator::ForIterator,
     heap::Heap,
     intern::Interns,
     resource::ResourceTracker,
-    run_frame::RunResult,
     types::PyTrait,
     value::Value,
 };

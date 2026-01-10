@@ -2,10 +2,10 @@
 
 use crate::{
     args::ArgValues,
+    exception_private::RunResult,
     heap::{Heap, HeapData},
     intern::Interns,
     resource::ResourceTracker,
-    run_frame::RunResult,
     types::PyTrait,
     value::Value,
 };

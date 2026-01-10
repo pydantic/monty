@@ -10,11 +10,7 @@ use crate::{parse::CodeRange, value::Value};
 ///
 /// This is the output of the bytecode compiler and the input to the VM.
 /// Each function has its own Code object; module-level code also gets one.
-///
-/// Note: `Clone` is not derived because `ConstPool` contains `Value` which requires
-/// `clone_with_heap()` for proper reference counting. Code objects are typically
-/// stored once and referenced, not cloned.
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Code {
     /// Raw bytecode instructions as a byte vector.
     ///
@@ -130,15 +126,19 @@ impl Code {
 ///
 /// Stores literal values referenced by `LoadConst` instructions. Strings are stored
 /// as `Value::InternString(StringId)` pointing to the global `Interns` table, not
-/// duplicated here.
-///
-/// Note: `Clone` is not derived because `Value` requires `clone_with_heap()` for
-/// proper reference counting. The constant pool owns its values and they are cloned
-/// on load via `clone_with_heap()`.
-#[derive(Debug, Default)]
+/// duplicated here. At runtime, constants are loaded via `clone_with_heap()` to
+/// handle reference counting properly.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ConstPool {
     /// The constant values, indexed by the operand of `LoadConst`.
     values: Vec<Value>,
+}
+
+impl Clone for ConstPool {
+    fn clone(&self) -> Self {
+        let values = self.values.iter().map(Value::clone_immediate).collect();
+        Self { values }
+    }
 }
 
 impl ConstPool {
@@ -189,7 +189,7 @@ impl ConstPool {
 ///
 /// The `range` covers the full expression (`a + b`), while `focus` points
 /// to the specific operator (`+`) that caused the error.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LocationEntry {
     /// Bytecode offset this entry applies to.
     ///
@@ -258,7 +258,7 @@ impl LocationEntry {
 /// 30: <handler code>       # exception handler starts here
 /// ```
 /// Entry: `{ start: 0, end: 24, handler: 30, stack_depth: 0 }`
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct ExceptionEntry {
     /// Start of protected bytecode range (inclusive).
     start: u32,

@@ -1,6 +1,6 @@
 //! Implementation of the id() builtin function.
 
-use crate::{args::ArgValues, heap::Heap, resource::ResourceTracker, run_frame::RunResult, value::Value};
+use crate::{args::ArgValues, exception_private::RunResult, heap::Heap, resource::ResourceTracker, value::Value};
 
 /// Implementation of the id() builtin function.
 ///

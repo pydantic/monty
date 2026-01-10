@@ -1,12 +1,11 @@
 use std::vec::IntoIter;
 
 use crate::{
-    exception_private::ExcType,
+    exception_private::{ExcType, RunResult},
     expressions::{ExprLoc, Identifier},
     heap::Heap,
     intern::{Interns, StringId},
     parse::ParseError,
-    run_frame::RunResult,
     types::Dict,
     value::Value,
     MontyObject, ResourceTracker,

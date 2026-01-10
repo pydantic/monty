@@ -28,6 +28,8 @@ lto = false
 [workspace.lints.rust]
 # codspeed cfg is set by codspeed-criterion-compat when running in CodSpeed environment
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(codspeed)'] }
+# TODO: remove once bytecode VM is fully integrated with all features from main
+dead_code = "allow"
 
 [workspace.lints.clippy]
 dbg_macro = "warn"

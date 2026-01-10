@@ -15,10 +15,12 @@ use crate::{
     operators::{CmpOperator, Operator},
     parse::CodeRange,
     resource::ResourceTracker,
-    run_frame::RunResult,
     types::{str::string_repr, PyTrait, Type},
     value::Value,
 };
+
+/// Result type alias for operations that can produce a runtime error.
+pub type RunResult<T> = Result<T, RunError>;
 
 /// Python exception types supported by the interpreter.
 ///
@@ -755,13 +757,6 @@ macro_rules! exc_fmt {
     };
 }
 pub(crate) use exc_fmt;
-
-macro_rules! exc_err_static {
-    ($error_type:expr; $msg:expr) => {
-        Err(crate::exception_private::exc_static!($error_type; $msg).into())
-    };
-}
-pub(crate) use exc_err_static;
 
 // TODO remove this, we should always set position before creating the Err
 macro_rules! exc_err_fmt {

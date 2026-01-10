@@ -1,17 +1,14 @@
 //! Public interface for running Monty code.
 use crate::{
-    exception_private::{ExcType, ExceptionRaise, RunError},
-    expressions::Node,
+    bytecode::{Code, Compiler, VMResult, VM},
     heap::Heap,
-    intern::{ExtFunctionId, Interns, StringId, MODULE_STRING_ID},
+    intern::{ExtFunctionId, Interns},
     io::{PrintWriter, StdPrint},
     namespace::Namespaces,
     object::MontyObject,
-    parse::{parse, CodeRange},
+    parse::parse,
     prepare::prepare,
     resource::{NoLimitTracker, ResourceTracker},
-    run_frame::{RunFrame, RunResult},
-    snapshot::{CodePosition, ExternalCall, FrameExit, FunctionFrame, NoSnapshotTracker, SnapshotTracker},
     value::Value,
     MontyException,
 };
@@ -62,7 +59,7 @@ impl MontyRun {
     /// Returns the code that was parsed to create this snapshot.
     #[must_use]
     pub fn code(&self) -> &str {
-        &self.executor.code
+        &self.executor.source_code
     }
 
     /// Executes the code and returns both the result and reference count data, used for testing only.
@@ -139,18 +136,11 @@ impl MontyRun {
     /// - A runtime error occurs during execution
     pub fn start<T: ResourceTracker>(
         self,
-        inputs: Vec<MontyObject>,
-        resource_tracker: T,
-        print: &mut impl PrintWriter,
+        _inputs: Vec<MontyObject>,
+        _resource_tracker: T,
+        _print: &mut impl PrintWriter,
     ) -> Result<RunProgress<T>, MontyException> {
-        let mut heap = Heap::new(self.executor.namespace_size, resource_tracker);
-
-        let namespaces = self.executor.prepare_namespaces(inputs, &mut heap)?;
-
-        // Start execution from index 0 (beginning of code)
-        let snapshot_tracker = SnapshotTracker::default();
-        self.executor
-            .run_from_position(heap, namespaces, snapshot_tracker, print)
+        todo!("Iterative execution with external calls (Step 6)")
     }
 }
 
@@ -187,6 +177,7 @@ impl<T: ResourceTracker> RunProgress<T> {
     /// Consumes the `RunProgress` and returns external function call info and state.
     ///
     /// Returns (function_name, positional_args, keyword_args, state).
+    #[must_use]
     #[allow(clippy::type_complexity)]
     pub fn into_function_call(
         self,
@@ -203,6 +194,7 @@ impl<T: ResourceTracker> RunProgress<T> {
     }
 
     /// Consumes the `RunProgress` and returns the final value.
+    #[must_use]
     pub fn into_complete(self) -> Option<MontyObject> {
         match self {
             RunProgress::Complete(value) => Some(value),
@@ -244,23 +236,14 @@ impl<T: ResourceTracker + serde::de::DeserializeOwned> RunProgress<T> {
 /// * `T` - Resource tracker implementation
 ///
 /// Serialization requires `T: Serialize + Deserialize`.
+///
+/// Note: This is a placeholder struct for the bytecode VM. External call resumption
+/// will be implemented in Step 6.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
 pub struct Snapshot<T: ResourceTracker> {
-    /// The underlying executor containing parsed AST and interns.
-    executor: Executor,
-    /// The heap for allocating runtime values.
-    heap: Heap<T>,
-    /// The namespace stack for variable storage.
-    namespaces: Namespaces,
-    /// Stack of execution positions for resuming inside nested control flow.
-    position_stack: Vec<CodePosition>,
-    /// Stack of suspended function frames (outermost first, innermost last).
-    /// Empty when external call is at module level.
-    call_stack: Vec<FunctionFrame>,
-    /// The source position of the external call that suspended execution.
-    /// Used to match return values to the correct call site when resuming.
-    ext_call_position: CodeRange,
+    /// Placeholder to satisfy the type parameter.
+    _marker: std::marker::PhantomData<T>,
 }
 
 /// Return value or exception from an external function.
@@ -294,233 +277,32 @@ impl<T: ResourceTracker> Snapshot<T> {
     /// * `print` - The print writer to use for output
     pub fn run(
         self,
-        result: impl Into<ExternalResult>,
-        print: &mut impl PrintWriter,
+        _result: impl Into<ExternalResult>,
+        _print: &mut impl PrintWriter,
     ) -> Result<RunProgress<T>, MontyException> {
-        match result.into() {
-            ExternalResult::Return(return_value) => self.run_return(return_value, print),
-            ExternalResult::Error(exception) => self.run_exception(exception, print),
-        }
-    }
-
-    /// Continues execution with the return value from the external function.
-    fn run_return(
-        mut self,
-        return_value: MontyObject,
-        print: &mut impl PrintWriter,
-    ) -> Result<RunProgress<T>, MontyException> {
-        // Convert MontyObject to Value
-        let value = return_value
-            .to_value(&mut self.heap, &self.executor.interns)
-            .map_err(|_| {
-                RunError::internal("invalid return value type")
-                    .into_python_exception(&self.executor.interns, &self.executor.code)
-            })?;
-
-        // Store the return value in func_return_values map by position.
-        // This allows position-based lookup which handles nested calls correctly.
-        // The map is cleared in clear_on_function_complete when function frames complete,
-        // which handles recursion (each frame gets fresh cached values).
-        self.namespaces.set_func_return_value(self.ext_call_position, value);
-
-        if self.call_stack.is_empty() {
-            // Module-level resume - continue execution from saved position
-            let snapshot_tracker = SnapshotTracker::new(self.position_stack);
-            self.executor
-                .run_from_position(self.heap, self.namespaces, snapshot_tracker, print)
-        } else {
-            // Resume inside function call stack
-            self.resume_call_stack(print)
-        }
-    }
-
-    /// Continues execution with the exception raised by the external function.
-    fn run_exception(
-        mut self,
-        exc: MontyException,
-        print: &mut impl PrintWriter,
-    ) -> Result<RunProgress<T>, MontyException> {
-        // Convert MontyException to ExceptionRaise and store as pending exception
-        let exc_raise: ExceptionRaise = exc.into();
-        self.namespaces.set_ext_exception(exc_raise);
-
-        if self.call_stack.is_empty() {
-            // Module-level resume - continue execution from saved position
-            let snapshot_tracker = SnapshotTracker::new(self.position_stack);
-            self.executor
-                .run_from_position(self.heap, self.namespaces, snapshot_tracker, print)
-        } else {
-            // Resume inside function call stack
-            self.resume_call_stack(print)
-        }
-    }
-
-    /// Resumes execution inside the function call stack.
-    ///
-    /// Pops the innermost function frame, continues execution, and propagates
-    /// the result up through the remaining call stack.
-    fn resume_call_stack(mut self, print: &mut impl PrintWriter) -> Result<RunProgress<T>, MontyException> {
-        // Pop the innermost frame (last in the list)
-        let frame = self.call_stack.pop().expect("call_stack should not be empty");
-
-        // Get the function definition
-        let function = self.executor.interns.get_function(frame.function_id);
-
-        // Use the function's saved positions, not the caller's position stack
-        let mut snapshot_tracker = SnapshotTracker::new(frame.saved_positions);
-
-        // Create a RunFrame for this function and continue execution
-        let mut run_frame = RunFrame::function_frame(
-            frame.namespace_idx,
-            frame.name_id,
-            &self.executor.interns,
-            &mut snapshot_tracker,
-            print,
-        );
-
-        // Execute from the saved position
-        let result = run_frame.execute(&mut self.namespaces, &mut self.heap, &function.body);
-
-        // Handle the result
-        match result {
-            Ok(Some(FrameExit::Return(return_value))) => {
-                // Function completed - clean up its namespace
-                self.namespaces.drop_with_heap(frame.namespace_idx, &mut self.heap);
-
-                // Clear all cached values since this function has consumed them.
-                // This clears func_return_values and argument_cache to prevent
-                // outer recursion levels from seeing inner levels' cached values.
-                self.namespaces.clear_on_function_complete(&mut self.heap);
-
-                // Store the return value in func_return_values map by position.
-                // This allows the caller to look it up when re-evaluating the call expression.
-                // Using the map (not the vec) ensures values persist across multiple resumes.
-                self.namespaces.set_func_return_value(frame.call_position, return_value);
-
-                if self.call_stack.is_empty() {
-                    // All functions completed, continue at module level
-                    // Use the caller's position_stack (module level), not the function's
-                    self.executor.run_from_position(
-                        self.heap,
-                        self.namespaces,
-                        SnapshotTracker::new(self.position_stack),
-                        print,
-                    )
-                } else {
-                    // More functions in the stack - continue with the next one
-                    // position_stack stays the same (it's the outermost caller's positions)
-                    self.resume_call_stack(print)
-                }
-            }
-            Ok(Some(FrameExit::ExternalCall(mut ext_call))) => {
-                // Another external call - push this frame back and pause
-                // Save the function's current positions
-                let saved_positions = snapshot_tracker.into_stack();
-                ext_call.push_frame(FunctionFrame {
-                    function_id: frame.function_id,
-                    namespace_idx: frame.namespace_idx,
-                    name_id: frame.name_id,
-                    captured_cell_count: frame.captured_cell_count,
-                    saved_positions,
-                    call_position: frame.call_position,
-                });
-                // Reverse ext_call.call_stack to outermost-first order (it was built with push)
-                ext_call.call_stack.reverse();
-                // Combine with remaining call stack (already outermost-first)
-                let mut new_call_stack = self.call_stack;
-                new_call_stack.append(&mut ext_call.call_stack);
-                ext_call.call_stack = new_call_stack;
-
-                let ext_call_position = ext_call.call_position;
-                let (args, kwargs) = ext_call.args.into_py_objects(&mut self.heap, &self.executor.interns);
-                Ok(RunProgress::FunctionCall {
-                    function_name: self.executor.interns.get_external_function_name(ext_call.function_id),
-                    args,
-                    kwargs,
-                    state: Snapshot {
-                        executor: self.executor,
-                        heap: self.heap,
-                        namespaces: self.namespaces,
-                        // Use the caller's position_stack (unchanged)
-                        position_stack: self.position_stack,
-                        call_stack: ext_call.call_stack,
-                        ext_call_position,
-                    },
-                })
-            }
-            Ok(None) => {
-                // Function completed with implicit None - clean up its namespace
-                self.namespaces.drop_with_heap(frame.namespace_idx, &mut self.heap);
-
-                // Clear all cached values since this function has consumed them.
-                // This clears func_return_values and argument_cache to prevent
-                // outer recursion levels from seeing inner levels' cached values.
-                self.namespaces.clear_on_function_complete(&mut self.heap);
-
-                // Store the return value (None) in func_return_values map by position.
-                // This allows the caller to look it up when re-evaluating the call expression.
-                self.namespaces.set_func_return_value(frame.call_position, Value::None);
-
-                if self.call_stack.is_empty() {
-                    // All functions completed, continue at module level
-                    // Use the caller's position_stack (module level), not the function's
-                    self.executor.run_from_position(
-                        self.heap,
-                        self.namespaces,
-                        SnapshotTracker::new(self.position_stack),
-                        print,
-                    )
-                } else {
-                    // More functions in the stack - continue with the next one
-                    // position_stack stays the same (it's the outermost caller's positions)
-                    self.resume_call_stack(print)
-                }
-            }
-            Err(mut e) => {
-                // Error occurred - add frames for the suspended call stack and clean up namespaces
-                self.namespaces.drop_with_heap(frame.namespace_idx, &mut self.heap);
-
-                // Add frame for where this function was called from.
-                // Derive caller name from parent frame (or <module> if no parent).
-                let caller_name = self.call_stack.last().map_or(MODULE_STRING_ID, |f| f.name_id);
-                add_suspended_frame_info(&mut e, caller_name, frame.call_position);
-
-                // Add frames for remaining call stack (innermost to outermost).
-                // Each frame's caller is the previous frame in the stack, or <module> for the outermost.
-                for (i, f) in self.call_stack.iter().enumerate().rev() {
-                    self.namespaces.drop_with_heap(f.namespace_idx, &mut self.heap);
-                    let caller_name = if i > 0 {
-                        self.call_stack[i - 1].name_id
-                    } else {
-                        MODULE_STRING_ID
-                    };
-                    add_suspended_frame_info(&mut e, caller_name, f.call_position);
-                }
-                #[cfg(feature = "ref-count-panic")]
-                self.namespaces.drop_global_with_heap(&mut self.heap);
-                Err(e.into_python_exception(&self.executor.interns, &self.executor.code))
-            }
-        }
+        todo!("Snapshot resumption (Step 6)")
     }
 }
 
 /// Lower level interface to parse code and run it to completion.
 ///
-/// This is an internal type used by [`MontyRun`]. It stores the compiled AST and source code
-/// for error reporting but does not support external functions or iterative execution.
+/// This is an internal type used by [`MontyRun`]. It stores the compiled bytecode and source code
+/// for error reporting.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Executor {
+    /// Number of slots needed in the global namespace.
     namespace_size: usize,
     /// Maps variable names to their indices in the namespace. Used for ref-count testing.
     #[cfg(feature = "ref-count-return")]
     name_map: ahash::AHashMap<String, crate::namespace::NamespaceId>,
-    nodes: Vec<Node>,
+    /// Compiled bytecode for the module.
+    module_code: Code,
     /// Interned strings used for looking up names and filenames during execution.
     interns: Interns,
-    /// ids to create values to inject into the the namespace to represent external functions.
+    /// IDs to create values to inject into the the namespace to represent external functions.
     external_function_ids: Vec<ExtFunctionId>,
     /// Source code for error reporting (extracting preview lines for tracebacks).
-    code: String,
+    source_code: String,
 }
 
 impl Executor {
@@ -535,17 +317,23 @@ impl Executor {
         let prepared = prepare(parse_result, input_names, &external_functions)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
 
-        // incrementing order matches the indexes used in intern::Interns::get_external_function_name
+        // Incrementing order matches the indexes used in intern::Interns::get_external_function_name
         let external_function_ids = (0..external_functions.len()).map(ExtFunctionId::new).collect();
+
+        // Create interns before compilation
+        let interns = Interns::new(prepared.interner, prepared.functions, external_functions);
+
+        // Compile the module to bytecode
+        let module_code = Compiler::compile_module(&prepared.nodes, &interns, prepared.namespace_size as u16);
 
         Ok(Self {
             namespace_size: prepared.namespace_size,
             #[cfg(feature = "ref-count-return")]
             name_map: prepared.name_map,
-            nodes: prepared.nodes,
-            interns: Interns::new(prepared.interner, prepared.functions, external_functions),
+            module_code,
+            interns,
             external_function_ids,
-            code,
+            source_code: code,
         })
     }
 
@@ -558,27 +346,31 @@ impl Executor {
     /// # Arguments
     /// * `inputs` - Values to fill the first N slots of the namespace
     /// * `resource_tracker` - Custom resource tracker implementation
-    /// * `print` - print print implementation
-    ///
+    /// * `_print` - Print implementation (not yet used by VM)
     fn run_with_tracker(
         &self,
         inputs: Vec<MontyObject>,
         resource_tracker: impl ResourceTracker,
-        print: &mut impl PrintWriter,
+        _print: &mut impl PrintWriter,
     ) -> Result<MontyObject, MontyException> {
         let mut heap = Heap::new(self.namespace_size, resource_tracker);
         let mut namespaces = self.prepare_namespaces(inputs, &mut heap)?;
 
-        let mut snapshot_tracker = NoSnapshotTracker;
-        let mut frame = RunFrame::module_frame(&self.interns, &mut snapshot_tracker, print);
-        let frame_exit_result = frame.execute(&mut namespaces, &mut heap, &self.nodes);
+        // Create and run VM
+        let mut vm = VM::new(&mut heap, &mut namespaces, &self.interns);
+        let result = vm.run_module(&self.module_code);
 
         // Clean up the global namespace before returning (only needed with ref-count-panic)
         #[cfg(feature = "ref-count-panic")]
         namespaces.drop_global_with_heap(&mut heap);
 
-        frame_exit_to_object(frame_exit_result, &mut heap, &self.interns)
-            .map_err(|e| e.into_python_exception(&self.interns, &self.code))
+        match result {
+            VMResult::Complete(value) => Ok(MontyObject::new(value, &mut heap, &self.interns)),
+            VMResult::Error(err) => Err(err.into_python_exception(&self.interns, &self.source_code)),
+            VMResult::ExternalCall { .. } => Err(MontyException::runtime_error(
+                "external function calls not supported by standard execution",
+            )),
+        }
     }
 
     /// Executes the code and returns both the result and reference count data, used for testing only.
@@ -598,19 +390,14 @@ impl Executor {
     fn run_ref_counts(&self, inputs: Vec<MontyObject>) -> Result<RefCountOutput, MontyException> {
         use std::collections::HashSet;
 
-        use crate::value::Value;
-
         let mut heap = Heap::new(self.namespace_size, NoLimitTracker::default());
         let mut namespaces = self.prepare_namespaces(inputs, &mut heap)?;
 
-        let mut snapshot_tracker = NoSnapshotTracker;
-        let mut print_writer = StdPrint;
-        let mut frame = RunFrame::module_frame(&self.interns, &mut snapshot_tracker, &mut print_writer);
-        // Use execute() instead of execute_py_object() so the return value stays alive
-        // while we compute refcounts
-        let frame_exit_result = frame.execute(&mut namespaces, &mut heap, &self.nodes);
+        // Create and run VM
+        let mut vm = VM::new(&mut heap, &mut namespaces, &self.interns);
+        let vm_result = vm.run_module(&self.module_code);
 
-        // Compute ref counts before consuming the heap - return value is still alive in frame_exit
+        // Compute ref counts before consuming the heap - return value is still alive
         let final_namespace = namespaces.into_global();
         let mut counts = ahash::AHashMap::new();
         let mut unique_ids = HashSet::new();
@@ -629,9 +416,14 @@ impl Executor {
             obj.drop_with_heap(&mut heap);
         }
 
-        // Now convert the return value to MontyObject (this drops the Value, decrementing refcount)
-        let py_object = frame_exit_to_object(frame_exit_result, &mut heap, &self.interns)
-            .map_err(|e| e.into_python_exception(&self.interns, &self.code))?;
+        // Now convert the VM result to MontyObject (this drops the Value, decrementing refcount)
+        let py_object = match vm_result {
+            VMResult::Complete(value) => Ok(MontyObject::new(value, &mut heap, &self.interns)),
+            VMResult::Error(err) => Err(err.into_python_exception(&self.interns, &self.source_code)),
+            VMResult::ExternalCall { .. } => Err(MontyException::runtime_error(
+                "external function calls not supported by standard execution",
+            )),
+        }?;
 
         Ok(RefCountOutput {
             py_object,
@@ -673,100 +465,6 @@ impl Executor {
             namespace.extend((0..extra).map(|_| Value::Undefined));
         }
         Ok(Namespaces::new(namespace))
-    }
-
-    /// Internal helper to run execution from a position stack.
-    ///
-    /// Shared by both `MontyRun` and `Snapshot::run`.
-    fn run_from_position<T: ResourceTracker>(
-        self,
-        mut heap: Heap<T>,
-        mut namespaces: Namespaces,
-        mut snapshot_tracker: SnapshotTracker,
-        print: &mut impl PrintWriter,
-    ) -> Result<RunProgress<T>, MontyException> {
-        let mut frame = RunFrame::module_frame(&self.interns, &mut snapshot_tracker, print);
-        let exit = match frame.execute(&mut namespaces, &mut heap, &self.nodes) {
-            Ok(exit) => exit,
-            Err(e) => {
-                // Clean up before propagating error (only needed with ref-count-panic)
-                #[cfg(feature = "ref-count-panic")]
-                namespaces.drop_global_with_heap(&mut heap);
-                return Err(e.into_python_exception(&self.interns, &self.code));
-            }
-        };
-
-        match exit {
-            None => {
-                // Clean up the global namespace before returning (only needed with ref-count-panic)
-                #[cfg(feature = "ref-count-panic")]
-                namespaces.drop_global_with_heap(&mut heap);
-
-                Ok(RunProgress::Complete(MontyObject::None))
-            }
-            Some(FrameExit::Return(return_value)) => {
-                // Clean up the global namespace before returning (only needed with ref-count-panic)
-                #[cfg(feature = "ref-count-panic")]
-                namespaces.drop_global_with_heap(&mut heap);
-
-                let py_object = MontyObject::new(return_value, &mut heap, &self.interns);
-                Ok(RunProgress::Complete(py_object))
-            }
-            Some(FrameExit::ExternalCall(ExternalCall {
-                function_id,
-                args,
-                mut call_stack,
-                call_position: ext_call_position,
-            })) => {
-                // Reverse call_stack so outermost is first, innermost is last.
-                // This allows pop() to return the innermost frame first during resume.
-                // Building with push() is O(1) per frame; reversing once is O(n) total.
-                call_stack.reverse();
-
-                let (args, kwargs) = args.into_py_objects(&mut heap, &self.interns);
-                Ok(RunProgress::FunctionCall {
-                    function_name: self.interns.get_external_function_name(function_id),
-                    args,
-                    kwargs,
-                    state: Snapshot {
-                        executor: self,
-                        heap,
-                        namespaces,
-                        position_stack: snapshot_tracker.into_stack(),
-                        call_stack,
-                        ext_call_position,
-                    },
-                })
-            }
-        }
-    }
-}
-
-/// Adds a stack frame to an exception for a suspended function.
-///
-/// When an exception propagates through the suspended call stack, we need to add
-/// frames for each function that was suspended. The `call_position` is where the
-/// function was called from (the call site in the calling function).
-fn add_suspended_frame_info(error: &mut RunError, name_id: StringId, call_position: CodeRange) {
-    match error {
-        RunError::Exc(exc) | RunError::UncatchableExc(exc) => {
-            exc.add_caller_frame(call_position, name_id);
-        }
-        RunError::Internal(_) => {}
-    }
-}
-
-fn frame_exit_to_object(
-    frame_exit_result: RunResult<Option<FrameExit>>,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<MontyObject> {
-    match frame_exit_result? {
-        Some(FrameExit::Return(return_value)) => Ok(MontyObject::new(return_value, heap, interns)),
-        Some(FrameExit::ExternalCall(_)) => {
-            Err(ExcType::not_implemented("external function calls not supported by standard execution.").into())
-        }
-        None => Ok(MontyObject::None),
     }
 }
 

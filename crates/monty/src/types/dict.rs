@@ -6,11 +6,10 @@ use hashbrown::{hash_table::Entry, HashTable};
 use super::{List, PyTrait, Tuple};
 use crate::{
     args::ArgValues,
-    exception_private::ExcType,
+    exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{attr, Interns},
     resource::ResourceTracker,
-    run_frame::RunResult,
     types::Type,
     value::{Attr, Value},
 };

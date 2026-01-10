@@ -3,10 +3,9 @@
 use super::Builtins;
 use crate::{
     args::ArgValues,
-    exception_private::ExcType,
+    exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData},
     resource::ResourceTracker,
-    run_frame::RunResult,
     types::{PyTrait, Type},
     value::Value,
 };

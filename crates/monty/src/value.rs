@@ -12,11 +12,10 @@ use ahash::AHashSet;
 use crate::{
     args::ArgValues,
     builtins::Builtins,
-    exception_private::{exc_err_fmt, ExcType},
+    exception_private::{exc_err_fmt, ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{BytesId, ExtFunctionId, FunctionId, Interns, StringId},
     resource::ResourceTracker,
-    run_frame::RunResult,
     types::{bytes::bytes_repr_fmt, str::string_repr_fmt, Dict, PyTrait, Type},
 };
 

@@ -6,12 +6,11 @@
 
 use crate::{
     args::{ArgValues, KwargsValues},
-    exception_private::{ExcType, SimpleException},
+    exception_private::{ExcType, RunResult, SimpleException},
     expressions::Identifier,
     heap::{Heap, HeapData},
     intern::{Interns, StringId},
     resource::ResourceTracker,
-    run_frame::RunResult,
     types::{Dict, Tuple},
     value::Value,
 };

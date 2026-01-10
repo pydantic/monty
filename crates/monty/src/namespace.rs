@@ -1,14 +1,12 @@
 use std::collections::HashMap;
 
 use crate::{
-    exception_private::{ExcType, ExceptionRaise, RunError},
+    exception_private::{ExcType, ExceptionRaise, RunError, RunResult},
     expressions::{Identifier, NameScope},
     heap::{Heap, HeapId},
     intern::Interns,
     parse::CodeRange,
     resource::{ResourceError, ResourceTracker},
-    run_frame::RunResult,
-    snapshot::ArgumentCache,
     value::Value,
 };
 
@@ -113,12 +111,6 @@ pub struct Namespaces {
     /// When set, the next call to `take_ext_return_value` will return this error,
     /// allowing it to propagate through try/except blocks.
     ext_exception: Option<ExceptionRaise>,
-    /// Cached partially-evaluated arguments from when an external call suspended.
-    ///
-    /// When evaluating arguments for a call and one of them triggers an external call,
-    /// we cache the already-evaluated arguments here. On resume, we restore from this
-    /// cache instead of re-evaluating arguments (which would cause duplicate side effects).
-    argument_cache: Option<ArgumentCache>,
     /// Cached return values from user-defined functions that completed after internal external calls.
     ///
     /// Unlike `ext_return_values` which uses index-based lookup for external calls, this map
@@ -139,7 +131,6 @@ impl Namespaces {
             ext_return_values: vec![],
             next_ext_return_value: 0,
             ext_exception: None,
-            argument_cache: None,
             func_return_values: HashMap::new(),
         }
     }
@@ -299,7 +290,6 @@ impl Namespaces {
         self.next_ext_return_value = 0;
         self.ext_exception = None;
         self.func_return_values.clear();
-        self.argument_cache = None;
     }
 
     /// Version with proper value dropping for ref-count-panic feature.
@@ -316,11 +306,6 @@ impl Namespaces {
         for (_, value) in self.func_return_values.drain() {
             value.drop_with_heap(heap);
         }
-        if let Some(cache) = self.argument_cache.take() {
-            for value in cache.evaluated_args {
-                value.drop_with_heap(heap);
-            }
-        }
     }
 
     /// Clears all cached return values after a statement completes.
@@ -334,7 +319,6 @@ impl Namespaces {
         self.next_ext_return_value = 0;
         self.ext_exception = None;
         self.func_return_values.clear();
-        self.argument_cache = None;
     }
 
     /// Clears all cached return values after a statement completes.
@@ -351,33 +335,6 @@ impl Namespaces {
         for (_, value) in self.func_return_values.drain() {
             value.drop_with_heap(heap);
         }
-        if let Some(cache) = self.argument_cache.take() {
-            for value in cache.evaluated_args {
-                value.drop_with_heap(heap);
-            }
-        }
-    }
-
-    /// Sets the argument cache for partially-evaluated arguments.
-    ///
-    /// Called when an external call suspends during argument evaluation to save
-    /// the already-evaluated arguments for later resumption.
-    pub fn set_argument_cache(&mut self, cache: ArgumentCache) {
-        self.argument_cache = Some(cache);
-    }
-
-    /// Takes the argument cache if it matches the given call position.
-    ///
-    /// Returns the cached partially-evaluated arguments if this is the correct
-    /// call site, allowing resumption without re-evaluating side effects.
-    /// Returns `None` if no cache exists or the position doesn't match.
-    pub fn take_argument_cache(&mut self, call_position: CodeRange) -> Option<ArgumentCache> {
-        if let Some(cache) = &self.argument_cache {
-            if cache.call_position == call_position {
-                return self.argument_cache.take();
-            }
-        }
-        None
     }
 
     /// Gets an immutable slice reference to a namespace by index.
@@ -478,12 +435,6 @@ impl Namespaces {
         // Clean up any cached function return values
         for value in std::mem::take(&mut self.func_return_values).into_values() {
             value.drop_with_heap(heap);
-        }
-        // Clean up any cached arguments
-        if let Some(cache) = self.argument_cache.take() {
-            for value in cache.evaluated_args {
-                value.drop_with_heap(heap);
-            }
         }
         // Clear any pending exception
         self.ext_exception = None;

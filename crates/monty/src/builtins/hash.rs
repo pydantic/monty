@@ -1,8 +1,13 @@
 //! Implementation of the hash() builtin function.
 
 use crate::{
-    args::ArgValues, exception_private::ExcType, heap::Heap, intern::Interns, resource::ResourceTracker,
-    run_frame::RunResult, types::PyTrait, value::Value,
+    args::ArgValues,
+    exception_private::{ExcType, RunResult},
+    heap::Heap,
+    intern::Interns,
+    resource::ResourceTracker,
+    types::PyTrait,
+    value::Value,
 };
 
 /// Implementation of the hash() builtin function.

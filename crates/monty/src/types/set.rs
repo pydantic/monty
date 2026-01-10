@@ -6,12 +6,11 @@ use hashbrown::HashTable;
 use super::PyTrait;
 use crate::{
     args::ArgValues,
-    exception_private::ExcType,
+    exception_private::{ExcType, RunResult},
     for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
     intern::{attr, Interns},
     resource::ResourceTracker,
-    run_frame::RunResult,
     types::Type,
     value::{Attr, Value},
 };

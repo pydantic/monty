@@ -5,11 +5,10 @@ use ahash::AHashSet;
 use super::{Dict, PyTrait};
 use crate::{
     args::ArgValues,
-    exception_private::ExcType,
+    exception_private::{ExcType, RunResult},
     heap::{Heap, HeapId},
     intern::Interns,
     resource::ResourceTracker,
-    run_frame::RunResult,
     types::Type,
     value::{Attr, Value},
 };

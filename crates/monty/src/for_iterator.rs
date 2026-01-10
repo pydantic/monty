@@ -11,11 +11,10 @@
 //! by `collect()` to materialize all items into a Vec.
 
 use crate::{
-    exception_private::ExcType,
+    exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{BytesId, Interns},
     resource::ResourceTracker,
-    run_frame::RunResult,
     types::{PyTrait, Range, Str},
     value::Value,
 };

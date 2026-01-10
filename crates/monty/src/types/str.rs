@@ -10,10 +10,10 @@ use ahash::AHashSet;
 use super::PyTrait;
 use crate::{
     args::ArgValues,
+    exception_private::RunResult,
     heap::{Heap, HeapData, HeapId},
     intern::Interns,
     resource::ResourceTracker,
-    run_frame::RunResult,
     types::Type,
     value::Value,
 };
