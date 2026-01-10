@@ -72,6 +72,11 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 let args_vec = args.into_vec();
                 Ok(CallResult::ExternalCall(ext_id, args_vec))
             }
+            Value::Function(func_id) => {
+                // User function without defaults or captured variables (inline representation)
+                self.call_user_function(func_id, Vec::new(), Vec::new(), args)?;
+                Ok(CallResult::UserFunction)
+            }
             Value::Ref(heap_id) => {
                 // Could be a closure or function - check heap and extract info.
                 // Two-phase approach to avoid borrow conflicts:

@@ -819,12 +819,17 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let defaults_count = self.fetch_u8() as usize;
                     let func_id = FunctionId::from_index(func_idx);
 
-                    // Pop default values from stack (drain maintains order: first pushed = first in vec)
-                    let defaults = self.pop_n(defaults_count);
+                    if defaults_count == 0 {
+                        // No defaults - use inline Value::Function (no heap allocation)
+                        self.push(Value::Function(func_id));
+                    } else {
+                        // Pop default values from stack (drain maintains order: first pushed = first in vec)
+                        let defaults = self.pop_n(defaults_count);
 
-                    // Create FunctionDefaults on heap and push reference
-                    let heap_id = self.heap.allocate(HeapData::FunctionDefaults(func_id, defaults))?;
-                    self.push(Value::Ref(heap_id));
+                        // Create FunctionDefaults on heap and push reference
+                        let heap_id = self.heap.allocate(HeapData::FunctionDefaults(func_id, defaults))?;
+                        self.push(Value::Ref(heap_id));
+                    }
                 }
                 Opcode::MakeClosure => {
                     let func_idx = self.fetch_u16();
