@@ -161,12 +161,17 @@ impl<'a> Compiler<'a> {
             }
 
             Node::AttrAssign {
-                object, attr, value, ..
+                object,
+                attr,
+                target_position,
+                value,
             } => {
                 // Stack order for StoreAttr: value, obj
                 self.compile_expr(value);
                 self.compile_expr(object);
                 let name_id = attr.string_id().expect("StoreAttr requires interned attr name");
+                // Set location to the target (e.g., `x.foo`) for proper caret in tracebacks
+                self.code.set_location(*target_position, None);
                 self.code.emit_u16(Opcode::StoreAttr, name_id.index() as u16);
             }
 

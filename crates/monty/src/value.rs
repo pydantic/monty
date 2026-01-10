@@ -1095,12 +1095,12 @@ impl Value {
             } else {
                 let type_name = heap.get(heap_id).py_type(Some(heap));
                 value.drop_with_heap(heap);
-                Err(ExcType::attribute_error(type_name, attr_name))
+                Err(ExcType::attribute_error_no_setattr(type_name, attr_name))
             }
         } else {
             let type_name = self.py_type(Some(heap));
             value.drop_with_heap(heap);
-            Err(ExcType::attribute_error(type_name, attr_name))
+            Err(ExcType::attribute_error_no_setattr(type_name, attr_name))
         }
     }
 

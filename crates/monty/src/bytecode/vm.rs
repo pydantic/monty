@@ -565,20 +565,12 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::LoadAttr => {
                     let name_idx = self.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
-                    let obj = self.pop();
-                    let result = obj.py_get_attr(name_id, self.heap, self.interns);
-                    obj.drop_with_heap(self.heap);
-                    self.push(result?);
+                    try_catch!(self, self.load_attr(name_id));
                 }
                 Opcode::StoreAttr => {
                     let name_idx = self.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
-                    let obj = self.pop();
-                    let value = self.pop();
-                    // py_set_attr takes ownership of value and drops it on error
-                    let result = obj.py_set_attr(name_id, value, self.heap, self.interns);
-                    obj.drop_with_heap(self.heap);
-                    result?;
+                    try_catch!(self, self.store_attr(name_id));
                 }
                 Opcode::DeleteAttr => {
                     todo!("DeleteAttr not implemented")
@@ -1149,6 +1141,29 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         let ns_slot = NamespaceId::new(slot as usize);
         let old_value = std::mem::replace(namespace.get_mut(ns_slot), value);
         old_value.drop_with_heap(self.heap);
+    }
+
+    /// Loads an attribute from an object and pushes it onto the stack.
+    ///
+    /// Returns an AttributeError if the attribute doesn't exist.
+    fn load_attr(&mut self, name_id: StringId) -> RunResult<()> {
+        let obj = self.pop();
+        let result = obj.py_get_attr(name_id, self.heap, self.interns);
+        obj.drop_with_heap(self.heap);
+        self.push(result?);
+        Ok(())
+    }
+
+    /// Stores a value as an attribute on an object.
+    ///
+    /// Returns an AttributeError if the attribute cannot be set.
+    fn store_attr(&mut self, name_id: StringId) -> RunResult<()> {
+        let obj = self.pop();
+        let value = self.pop();
+        // py_set_attr takes ownership of value and drops it on error
+        let result = obj.py_set_attr(name_id, value, self.heap, self.interns);
+        obj.drop_with_heap(self.heap);
+        result
     }
 
     /// Loads from a closure cell and pushes onto the stack.
