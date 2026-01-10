@@ -274,8 +274,18 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
             if let Err(e) = bind_result {
                 self.namespaces.drop_with_heap(namespace_idx, self.heap);
+                // Clean up defaults before returning error
+                for default in defaults {
+                    default.drop_with_heap(self.heap);
+                }
                 return Err(e);
             }
+        }
+
+        // Clean up defaults - they were copied into the namespace by bind()
+        // so we need to drop our ownership of the original refs
+        for default in defaults {
+            default.drop_with_heap(self.heap);
         }
 
         // Track created cell HeapIds for the frame

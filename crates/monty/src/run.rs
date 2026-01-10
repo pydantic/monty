@@ -199,6 +199,10 @@ impl MontyRun {
                 })
             }
             Err(err) => {
+                // Clean up the global namespace before returning (only needed with ref-count-panic)
+                #[cfg(feature = "ref-count-panic")]
+                namespaces.drop_global_with_heap(&mut heap);
+
                 // Convert to MontyException
                 Err(err.into_python_exception(&executor.interns, &executor.source_code))
             }
@@ -434,6 +438,10 @@ impl<T: ResourceTracker> Snapshot<T> {
                 })
             }
             Err(err) => {
+                // Clean up the global namespace before returning (only needed with ref-count-panic)
+                #[cfg(feature = "ref-count-panic")]
+                self.namespaces.drop_global_with_heap(&mut self.heap);
+
                 // Convert to MontyException
                 Err(err.into_python_exception(&self.executor.interns, &self.executor.source_code))
             }

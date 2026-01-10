@@ -62,39 +62,58 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         // Format with spec applied to original value type, or convert and format as string
         let formatted = if let Some(spec_value) = format_spec {
             // Get the parsed format spec
-            let spec = self.get_format_spec(&spec_value, &value)?;
+            let spec = match self.get_format_spec(&spec_value, &value) {
+                Ok(s) => s,
+                Err(e) => {
+                    // Clean up both values before returning error
+                    spec_value.drop_with_heap(self.heap);
+                    value.drop_with_heap(self.heap);
+                    return Err(e);
+                }
+            };
 
             // Format based on value type and conversion flag
-            let result = match conversion {
+            // Use a helper closure to handle errors with proper cleanup
+            let format_result: Result<String, RunError> = match conversion {
                 // No conversion - format original value
-                0 => format_with_spec(&value, &spec, self.heap, self.interns)?,
+                0 => format_with_spec(&value, &spec, self.heap, self.interns),
                 // !s - convert to str, format as string
                 1 => {
                     let s = value.py_str(self.heap, self.interns);
-                    format_string(&s, &spec)?
+                    format_string(&s, &spec).map_err(Into::into)
                 }
                 // !r - convert to repr, format as string
                 2 => {
                     let s = value.py_repr(self.heap, self.interns);
-                    format_string(&s, &spec)?
+                    format_string(&s, &spec).map_err(Into::into)
                 }
                 // !a - convert to ascii, format as string
                 3 => {
-                    let s = self.py_ascii(&value);
-                    format_string(&s, &spec)?
+                    let s = ascii_escape(&value.py_repr(self.heap, self.interns));
+                    format_string(&s, &spec).map_err(Into::into)
                 }
-                _ => format_with_spec(&value, &spec, self.heap, self.interns)?,
+                _ => format_with_spec(&value, &spec, self.heap, self.interns),
             };
 
-            spec_value.drop_with_heap(self.heap);
-            result
+            // Handle format errors with proper cleanup
+            match format_result {
+                Ok(result) => {
+                    spec_value.drop_with_heap(self.heap);
+                    result
+                }
+                Err(e) => {
+                    spec_value.drop_with_heap(self.heap);
+                    value.drop_with_heap(self.heap);
+                    return Err(e);
+                }
+            }
         } else {
             // No format spec - just convert based on conversion flag
             match conversion {
                 0 => value.py_str(self.heap, self.interns).into_owned(),
                 1 => value.py_str(self.heap, self.interns).into_owned(),
                 2 => value.py_repr(self.heap, self.interns).into_owned(),
-                3 => self.py_ascii(&value),
+                3 => ascii_escape(&value.py_repr(self.heap, self.interns)),
                 _ => value.py_str(self.heap, self.interns).into_owned(),
             }
         };
@@ -133,11 +152,5 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 })
             }
         }
-    }
-
-    /// Applies ASCII conversion (escapes non-ASCII characters).
-    fn py_ascii(&self, value: &Value) -> String {
-        let repr = value.py_repr(self.heap, self.interns);
-        ascii_escape(&repr)
     }
 }

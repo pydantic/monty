@@ -199,7 +199,16 @@ impl Dict {
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<Option<Value>> {
-        let (opt_index, hash) = self.find_index_hash(&key, heap, interns)?;
+        // Handle hash computation errors explicitly so we can drop key/value properly
+        let (opt_index, hash) = match self.find_index_hash(&key, heap, interns) {
+            Ok(result) => result,
+            Err(e) => {
+                // Drop the key and value before returning the error
+                key.drop_with_heap(heap);
+                value.drop_with_heap(heap);
+                return Err(e);
+            }
+        };
 
         let entry = DictEntry { key, value, hash };
         if let Some(index) = opt_index {

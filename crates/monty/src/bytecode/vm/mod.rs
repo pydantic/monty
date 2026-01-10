@@ -650,40 +650,41 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 }
                 Opcode::ForIter => {
                     let offset = self.fetch_i16();
-                    // Peek at the iterator on TOS
-                    let iter_ref = self.peek().copy_for_extend();
-                    if let Value::Ref(heap_id) = iter_ref {
-                        // Take the iterator out of the heap temporarily to avoid borrow conflict
-                        let HeapData::Iterator(mut iter) = std::mem::replace(
-                            self.heap.get_mut(heap_id),
-                            HeapData::Iterator(ForIterator::placeholder()),
-                        ) else {
-                            return Err(RunError::internal("ForIter: expected iterator on stack"));
-                        };
-
-                        // Get next value from iterator
-                        let next_result = iter.for_next(self.heap, self.interns);
-
-                        // Put the iterator back
-                        *self.heap.get_mut(heap_id) = HeapData::Iterator(iter);
-
-                        match next_result {
-                            Ok(Some(value)) => self.push(value),
-                            Ok(None) => {
-                                // Iterator exhausted - pop it and jump to end
-                                let iter = self.pop();
-                                iter.drop_with_heap(self.heap);
-                                self.jump_relative(offset);
-                            }
-                            Err(e) => {
-                                // Error during iteration (e.g., dict size changed)
-                                let iter = self.pop();
-                                iter.drop_with_heap(self.heap);
-                                catch!(self, e);
-                            }
-                        }
-                    } else {
+                    // Peek at the iterator on TOS and extract heap_id
+                    // We use pattern matching on a reference to avoid creating a Value copy
+                    // that would need to be cleaned up with drop_with_heap
+                    let Value::Ref(heap_id) = *self.peek() else {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
+                    };
+
+                    // Take the iterator out of the heap temporarily to avoid borrow conflict
+                    let HeapData::Iterator(mut iter) = std::mem::replace(
+                        self.heap.get_mut(heap_id),
+                        HeapData::Iterator(ForIterator::placeholder()),
+                    ) else {
+                        return Err(RunError::internal("ForIter: expected iterator on stack"));
+                    };
+
+                    // Get next value from iterator
+                    let next_result = iter.for_next(self.heap, self.interns);
+
+                    // Put the iterator back
+                    *self.heap.get_mut(heap_id) = HeapData::Iterator(iter);
+
+                    match next_result {
+                        Ok(Some(value)) => self.push(value),
+                        Ok(None) => {
+                            // Iterator exhausted - pop it and jump to end
+                            let iter = self.pop();
+                            iter.drop_with_heap(self.heap);
+                            self.jump_relative(offset);
+                        }
+                        Err(e) => {
+                            // Error during iteration (e.g., dict size changed)
+                            let iter = self.pop();
+                            iter.drop_with_heap(self.heap);
+                            catch!(self, e);
+                        }
                     }
                 }
                 // Function Calls
@@ -829,11 +830,17 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // We use individual pops which reverses order, so we need to reverse back
                     let mut cells = Vec::with_capacity(cell_count);
                     for _ in 0..cell_count {
-                        let cell_val = self.pop();
-                        match cell_val {
+                        #[allow(unused_mut)] // mut needed for dec_ref_forget when ref-count-panic feature is enabled
+                        let mut cell_val = self.pop();
+                        match &cell_val {
                             Value::Ref(heap_id) => {
-                                // Keep the reference - don't drop, Closure will own it
-                                cells.push(heap_id);
+                                // Keep the reference - the Closure will own the HeapId
+                                cells.push(*heap_id);
+                                // Mark the Value as dereferenced since Closure takes ownership
+                                // of the reference count (we don't call drop_with_heap because
+                                // we're not decrementing the refcount, just transferring it)
+                                #[cfg(feature = "ref-count-panic")]
+                                cell_val.dec_ref_forget();
                             }
                             _ => {
                                 return Err(RunError::internal("MakeClosure: expected cell reference on stack"));
@@ -1236,8 +1243,8 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// Returns a NameError if the cell value is undefined (free variable not bound).
     fn load_cell(&mut self, slot: u16) -> RunResult<()> {
         let cell_id = self.current_frame().cells[slot as usize];
-        // Copy without incrementing refcount first (avoids borrow conflict)
-        let value = self.heap.get_cell_value(cell_id).copy_for_extend();
+        // get_cell_value already clones with proper refcount via clone_with_heap
+        let value = self.heap.get_cell_value(cell_id);
 
         // Check for undefined value - raise NameError for unbound free variable
         if matches!(value, Value::Undefined) {
@@ -1245,10 +1252,6 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             return Err(self.free_var_error(name));
         }
 
-        // Now we can safely increment refcount and push
-        if let Value::Ref(id) = &value {
-            self.heap.inc_ref(*id);
-        }
         self.push(value);
         Ok(())
     }
