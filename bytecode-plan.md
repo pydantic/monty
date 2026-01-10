@@ -1486,11 +1486,21 @@ Opcode::Await,  // Pause current task, wait for TOS (another task or future)
 - [ ] Run in parallel with tree-walker for testing (requires Step 3)
 
 ### Step 3: VM Core
-- [ ] `VM` struct with stack and frames
-- [ ] Main dispatch loop (fetch opcode, fetch operands, execute)
-- [ ] All arithmetic/comparison ops
-- [ ] Variable load/store
-- [ ] Control flow (jumps)
+- [x] `VM` struct with stack and frames
+- [x] Main dispatch loop (fetch opcode, fetch operands, execute)
+- [x] All arithmetic/comparison ops (bitwise ops use `todo!()`)
+- [x] Variable load/store (local, global, cell)
+- [x] Control flow (jumps, conditionals)
+- [x] Collection building (list, tuple, dict, set)
+- [x] Subscript operations (get, set; delete uses `todo!()`)
+- [x] Sequence unpacking
+- [x] Basic exception handling (raise, reraise)
+
+Note: Some operations use `todo!()` pending implementation:
+- Bitwise operations (BinaryAnd, BinaryOr, BinaryXor, etc.)
+- Iteration (GetIter, ForIter) - needs HeapData::Iterator variant
+- Attribute access (LoadAttr, StoreAttr) - needs py_getattr/py_setattr on Value
+- Membership test (CompareIn, CompareNotIn) - needs py_contains on Value
 
 ### Step 4: Functions & Closures
 - [ ] Function calls
