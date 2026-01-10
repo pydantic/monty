@@ -36,17 +36,26 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Only sets the innermost frame if the exception doesn't already have one.
     /// Caller frames are added separately during exception propagation.
+    ///
+    /// Uses the `hide_caret` flag from `ExceptionRaise` to determine whether to show
+    /// the caret marker in the traceback. This flag is set by error creators that know
+    /// whether CPython would show a caret for this specific error type.
     fn attach_frame_to_error(&self, error: RunError) -> RunError {
         match error {
             RunError::Exc(mut exc) => {
                 if exc.frame.is_none() {
-                    exc.frame = Some(self.make_stack_frame());
+                    let mut frame = self.make_stack_frame();
+                    // Use the hide_caret flag from the error (set by error creators)
+                    frame.hide_caret = exc.hide_caret;
+                    exc.frame = Some(frame);
                 }
                 RunError::Exc(exc)
             }
             RunError::UncatchableExc(mut exc) => {
                 if exc.frame.is_none() {
-                    exc.frame = Some(self.make_stack_frame());
+                    let mut frame = self.make_stack_frame();
+                    frame.hide_caret = exc.hide_caret;
+                    exc.frame = Some(frame);
                 }
                 RunError::UncatchableExc(exc)
             }
