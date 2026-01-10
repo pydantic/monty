@@ -1,6 +1,7 @@
 //! Public interface for running Monty code.
 use crate::{
     bytecode::{Code, Compiler, VMSnapshot, VMSuccess, VM},
+    exception_private::RunError,
     heap::Heap,
     intern::{ExtFunctionId, Interns},
     io::{PrintWriter, StdPrint},
@@ -331,6 +332,17 @@ impl From<MontyException> for ExternalResult {
     }
 }
 
+/// Helper enum for resuming execution with either a return value or an exception.
+///
+/// Used by `Snapshot::run` to decide whether to call `VM::resume` (for normal returns)
+/// or `VM::resume_with_exception` (for external function errors).
+enum ResumeWith {
+    /// External function returned a value normally.
+    Value(Value),
+    /// External function raised an exception.
+    Exception(RunError),
+}
+
 impl<T: ResourceTracker> Snapshot<T> {
     /// Continues execution with the return value or exception from the external function.
     ///
@@ -350,16 +362,15 @@ impl<T: ResourceTracker> Snapshot<T> {
     ) -> Result<RunProgress<T>, MontyException> {
         let ext_result = result.into();
 
-        // Convert the return value to a Value first (needs mutable heap access)
-        let resume_value = match ext_result {
-            ExternalResult::Return(obj) => obj
-                .to_value(&mut self.heap, &self.executor.interns)
-                .map_err(|e| MontyException::runtime_error(format!("invalid return type: {e}")))?,
-            ExternalResult::Error(exc) => {
-                // TODO: Convert exception to runtime error and handle it in VM
-                // For now, return the error directly
-                return Err(exc);
-            }
+        // Convert return value or exception before creating VM (to avoid borrow conflicts)
+        let resume_with = match ext_result {
+            ExternalResult::Return(obj) => match obj.to_value(&mut self.heap, &self.executor.interns) {
+                Ok(value) => ResumeWith::Value(value),
+                Err(e) => {
+                    return Err(MontyException::runtime_error(format!("invalid return type: {e}")));
+                }
+            },
+            ExternalResult::Error(exc) => ResumeWith::Exception(exc.into()),
         };
 
         // Scope the VM borrow so we can move heap/namespaces after
@@ -374,8 +385,11 @@ impl<T: ResourceTracker> Snapshot<T> {
                 print,
             );
 
-            // Resume execution with the result
-            let vm_result = vm.resume(resume_value);
+            // Resume execution with the result or exception
+            let vm_result = match resume_with {
+                ResumeWith::Value(value) => vm.resume(value),
+                ResumeWith::Exception(error) => vm.resume_with_exception(error),
+            };
 
             // Handle the result - convert VM to snapshot if needed for external call
             if let Ok(VMSuccess::ExternalCall { .. }) = &vm_result {

@@ -922,6 +922,10 @@ impl<'a> Compiler<'a> {
     ///   <finally_body>
     /// end:
     /// ```
+    ///
+    /// For finally blocks, exceptions that propagate through the handler dispatch
+    /// (including RERAISE when no handler matches) are caught by a second exception
+    /// entry that ensures finally runs before propagation.
     fn compile_try(&mut self, try_block: &Try<Node>) {
         let has_finally = !try_block.finally.is_empty();
         let has_handlers = !try_block.handlers.is_empty();
@@ -952,13 +956,34 @@ impl<'a> Compiler<'a> {
             self.code.emit(Opcode::Reraise);
         }
 
+        // Mark end of handler dispatch (for finally exception entry)
+        let handler_dispatch_end = self.code.current_offset();
+
+        // === Finally cleanup handler (for exceptions during handler dispatch) ===
+        // This catches exceptions from RERAISE (and any other exceptions in handlers)
+        // and ensures finally runs before the exception propagates.
+        let finally_cleanup_start = if has_finally {
+            let cleanup_start = self.code.current_offset();
+            // Exception value is on stack (pushed by VM)
+            // We need to pop it, run finally, then reraise
+            // But we can't easily save the exception, so we use a different approach:
+            // The exception is already on the exception_stack from handle_exception,
+            // so we can just pop from operand stack, run finally, then reraise.
+            self.code.emit(Opcode::Pop); // Pop exception from operand stack
+            self.compile_block(&try_block.finally);
+            self.code.emit(Opcode::Reraise); // Re-raise from exception_stack
+            Some(cleanup_start)
+        } else {
+            None
+        };
+
         // === Else block (runs if no exception) ===
         self.code.patch_jump(after_try_jump);
         if has_else {
             self.compile_block(&try_block.or_else);
         }
 
-        // === Finally block (always runs) ===
+        // === Normal finally path (no exception pending) ===
         // Patch all jumps from handlers to go here
         for jump in finally_jumps {
             self.code.patch_jump(jump);
@@ -968,13 +993,26 @@ impl<'a> Compiler<'a> {
             self.compile_block(&try_block.finally);
         }
 
-        // === Add exception table entry ===
-        // The entry maps the try body to the handler dispatch
+        // === Add exception table entries ===
+        // Order matters: entries are searched in order, so inner entries must come first.
+
+        // Entry 1: Try body -> handler dispatch
         if has_handlers || has_finally {
             self.code.add_exception_entry(ExceptionEntry::new(
                 try_start as u32,
                 try_end as u32 + 3, // +3 to include the JUMP instruction
                 handler_start as u32,
+                stack_depth,
+            ));
+        }
+
+        // Entry 2: Handler dispatch -> finally cleanup (only if has_finally)
+        // This ensures finally runs when RERAISE is executed or any exception occurs in handlers
+        if let Some(cleanup_start) = finally_cleanup_start {
+            self.code.add_exception_entry(ExceptionEntry::new(
+                handler_start as u32,
+                handler_dispatch_end as u32,
+                cleanup_start as u32,
                 stack_depth,
             ));
         }

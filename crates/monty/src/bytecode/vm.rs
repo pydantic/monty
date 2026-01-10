@@ -220,8 +220,12 @@ pub struct VMSnapshot {
     /// Call frames (serializable form - stores FunctionId, not &Code).
     frames: Vec<SerializedFrame>,
 
-    /// Current exception being handled (if any).
-    current_exception: Option<Value>,
+    /// Stack of exceptions being handled for nested except blocks.
+    ///
+    /// When entering an except handler, the exception is pushed onto this stack.
+    /// When exiting via `ClearException`, the top is popped. This allows nested
+    /// except handlers to restore the outer exception context.
+    exception_stack: Vec<Value>,
 
     /// IP of the instruction that caused the pause (for exception handling).
     instruction_ip: usize,
@@ -255,11 +259,13 @@ pub struct VM<'a, T: ResourceTracker, P: PrintWriter> {
     /// Print output writer.
     print_writer: &'a mut P,
 
-    /// Current exception being handled (if any).
+    /// Stack of exceptions being handled for nested except blocks.
     ///
     /// Used by bare `raise` to re-raise the current exception.
-    /// Set when entering an except handler, cleared when exiting.
-    current_exception: Option<Value>,
+    /// When entering an except handler, the exception is pushed onto this stack.
+    /// When exiting via `ClearException`, the top is popped. This allows nested
+    /// except handlers to restore the outer exception context.
+    exception_stack: Vec<Value>,
 
     /// IP of the instruction being executed (for exception table lookup).
     ///
@@ -283,7 +289,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             namespaces,
             interns,
             print_writer,
-            current_exception: None,
+            exception_stack: Vec::new(),
             instruction_ip: 0,
         }
     }
@@ -299,8 +305,8 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// This method must be called before the VM goes out of scope to ensure
     /// proper reference counting cleanup for any exception values.
     pub fn cleanup(&mut self) {
-        // Drop current_exception if present
-        if let Some(exc) = self.current_exception.take() {
+        // Drop all exceptions in the exception stack
+        for exc in self.exception_stack.drain(..) {
             exc.drop_with_heap(self.heap);
         }
         // Stack should be empty, but clean up just in case
@@ -848,7 +854,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     todo!("RaiseFrom")
                 }
                 Opcode::Reraise => {
-                    let error = if let Some(exc) = self.current_exception.take() {
+                    // Pop the current exception from the stack to re-raise it
+                    // If caught, handle_exception will push it back
+                    let error = if let Some(exc) = self.exception_stack.pop() {
                         self.make_exception(exc, true) // is_raise=true for reraise
                     } else {
                         // No active exception - create a RuntimeError
@@ -861,7 +869,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     catch!(self, error);
                 }
                 Opcode::ClearException => {
-                    if let Some(exc) = self.current_exception.take() {
+                    // Pop the current exception from the stack
+                    // This restores the previous exception context (if any)
+                    if let Some(exc) = self.exception_stack.pop() {
                         exc.drop_with_heap(self.heap);
                     }
                 }
@@ -900,6 +910,20 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         self.run()
     }
 
+    /// Resumes execution after an external call raised an exception.
+    ///
+    /// Uses the exception handling mechanism to try to catch the exception.
+    /// If caught, continues execution at the handler. If not, propagates the error.
+    pub fn resume_with_exception(&mut self, error: RunError) -> Result<VMSuccess, RunError> {
+        // Use the normal exception handling mechanism
+        // handle_exception returns None if caught, Some(error) if not caught
+        if let Some(uncaught_error) = self.handle_exception(error) {
+            return Err(uncaught_error);
+        }
+        // Exception was caught, continue execution
+        self.run()
+    }
+
     /// Consumes the VM and creates a snapshot for pause/resume.
     ///
     /// **Ownership transfer:** This method takes `self` by value, consuming the VM.
@@ -914,7 +938,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             // (the VM owned them, now the snapshot owns them)
             stack: self.stack,
             frames: self.frames.into_iter().map(|f| f.serialize()).collect(),
-            current_exception: self.current_exception,
+            exception_stack: self.exception_stack,
             instruction_ip: self.instruction_ip,
         }
     }
@@ -972,7 +996,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             namespaces,
             interns,
             print_writer,
-            current_exception: snapshot.current_exception,
+            exception_stack: snapshot.exception_stack,
             instruction_ip: snapshot.instruction_ip,
         }
     }
@@ -2493,10 +2517,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 let exc_for_stack = exc_value.clone_with_heap(self.heap);
                 self.push(exc_for_stack);
 
-                // Set current_exception for bare raise
-                if let Some(old) = self.current_exception.replace(exc_value) {
-                    old.drop_with_heap(self.heap);
-                }
+                // Push exception onto the exception_stack for bare raise
+                // This allows nested except handlers to restore outer exception context
+                self.exception_stack.push(exc_value);
 
                 // Jump to handler
                 self.current_frame_mut().ip = handler_offset;
