@@ -40,11 +40,7 @@ mod monty {
     /// Registers ResourceLimits TypedDict.
     #[pymodule_init]
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
-        let py = m.py();
-
-        // Add ResourceLimits TypedDict
-        m.add("ResourceLimits", create_resource_limits_class(py)?)?;
-
+        m.add("ResourceLimits", create_resource_limits_class(m.py())?)?;
         Ok(())
     }
 }

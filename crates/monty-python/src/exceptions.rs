@@ -17,6 +17,7 @@ use pyo3::{
     exceptions,
     prelude::*,
     types::{PyDict, PyList, PyString},
+    PyTypeCheck,
 };
 
 use crate::dataclass::get_frozen_instance_error;
@@ -358,8 +359,6 @@ pub fn exc_to_monty_object(exc: &Bound<'_, exceptions::PyBaseException>) -> ::mo
 /// NOTE: order matters here as some exceptions are subclasses of others!
 /// In general we group exceptions by their type hierarchy to improve performance.
 fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
-    use pyo3::PyTypeCheck;
-
     // Exception hierarchy
     if exceptions::PyException::type_check(exc) {
         // put the most commonly used exceptions first
