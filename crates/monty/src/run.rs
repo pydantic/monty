@@ -321,7 +321,15 @@ impl Executor {
         let external_function_ids = (0..external_functions.len()).map(ExtFunctionId::new).collect();
 
         // Create interns before compilation
-        let interns = Interns::new(prepared.interner, prepared.functions, external_functions);
+        let mut interns = Interns::new(prepared.interner, prepared.functions, external_functions);
+
+        // Eagerly compile all function bodies to bytecode
+        for func_idx in 0..interns.function_count() {
+            let func_id = crate::intern::FunctionId::new(func_idx);
+            let func = interns.get_function(func_id);
+            let code = Compiler::compile_function(&func.body, &interns, func.namespace_size as u16);
+            interns.get_function_mut(func_id).code = Some(code);
+        }
 
         // Compile the module to bytecode
         let module_code = Compiler::compile_module(&prepared.nodes, &interns, prepared.namespace_size as u16);

@@ -120,6 +120,24 @@ impl Code {
     pub fn is_empty(&self) -> bool {
         self.bytecode.is_empty()
     }
+
+    /// Finds the location entry for a given bytecode offset.
+    ///
+    /// Location entries are recorded at instruction boundaries. This method finds
+    /// the most recent entry at or before the given offset.
+    ///
+    /// Returns `None` if the location table is empty or the offset is before
+    /// the first recorded location.
+    #[must_use]
+    pub fn location_for_offset(&self, offset: usize) -> Option<&LocationEntry> {
+        // Location entries are in order by bytecode offset.
+        // Find the last entry where bytecode_offset <= offset.
+        let offset_u32 = offset as u32;
+        self.location_table
+            .iter()
+            .rev()
+            .find(|entry| entry.bytecode_offset <= offset_u32)
+    }
 }
 
 /// Constant pool for a code object.

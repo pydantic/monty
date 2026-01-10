@@ -101,6 +101,15 @@ impl FunctionId {
         Self(index.try_into().expect("Invalid function id"))
     }
 
+    /// Creates a FunctionId from a raw index value.
+    ///
+    /// Used by the bytecode VM to reconstruct FunctionIds from operands stored
+    /// in bytecode. The caller is responsible for ensuring the index is valid.
+    #[inline]
+    pub fn from_index(index: u16) -> Self {
+        Self(u32::from(index))
+    }
+
     /// Returns the raw index value.
     #[inline]
     pub fn index(self) -> usize {
@@ -306,6 +315,24 @@ impl Interns {
     #[inline]
     pub fn get_function(&self, id: FunctionId) -> &Function {
         self.functions.get(id.index()).expect("Function not found")
+    }
+
+    /// Lookup a function mutably by its `FunctionId`.
+    ///
+    /// Used during eager compilation to set the compiled bytecode on each function.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `FunctionId` is invalid.
+    #[inline]
+    pub fn get_function_mut(&mut self, id: FunctionId) -> &mut Function {
+        self.functions.get_mut(id.index()).expect("Function not found")
+    }
+
+    /// Returns the number of functions stored.
+    #[inline]
+    pub fn function_count(&self) -> usize {
+        self.functions.len()
     }
 
     /// Lookup an external function name by its `ExtFunctionId`

@@ -1511,10 +1511,10 @@ Note: Some operations use `todo!()` pending implementation:
 
 ### Step 4: Functions & Closures
 - [x] Builtin function calls (print, len, range, etc.)
-- [ ] User-defined function calls
-- [ ] Return values
-- [ ] Closures with captured cells
-- [ ] Default parameters
+- [x] User-defined function calls
+- [x] Return values
+- [x] Closures with captured cells
+- [x] Default parameters
 
 ### Step 5: Exception Handling
 - [ ] Try/except/finally compilation

@@ -72,6 +72,22 @@ impl<'a> Compiler<'a> {
         compiler.code.build(num_locals)
     }
 
+    /// Compiles a function body to bytecode.
+    ///
+    /// Used during eager compilation to compile each function definition.
+    /// The function body is compiled to bytecode with an implicit `return None`
+    /// at the end if there's no explicit return statement.
+    pub fn compile_function(body: &[Node], interns: &Interns, num_locals: u16) -> Code {
+        let mut compiler = Compiler::new(interns);
+        compiler.compile_block(body);
+
+        // Implicit return None if no explicit return
+        compiler.code.emit(Opcode::LoadNone);
+        compiler.code.emit(Opcode::ReturnValue);
+
+        compiler.code.build(num_locals)
+    }
+
     /// Compiles a block of statements.
     fn compile_block(&mut self, nodes: &[Node]) {
         for node in nodes {
@@ -157,11 +173,34 @@ impl<'a> Compiler<'a> {
                 }
             }
 
-            Node::FunctionDef(_) => {
-                // Function definitions are handled during preparation
-                // and stored in interns. At runtime, we just need to
-                // create a function object if needed.
-                todo!("FunctionDef compilation (Step 4)")
+            Node::FunctionDef(func_id) => {
+                let func = self.interns.get_function(*func_id);
+
+                // 1. Compile and push default values (evaluated at definition time)
+                for default_expr in &func.default_exprs {
+                    self.compile_expr(default_expr);
+                }
+                let defaults_count = func.default_exprs.len() as u8;
+
+                // 2. Emit MakeFunction or MakeClosure (if has free vars)
+                if func.free_var_enclosing_slots.is_empty() {
+                    // MakeFunction: func_id (u16) + defaults_count (u8)
+                    self.code
+                        .emit_u16_u8(Opcode::MakeFunction, func_id.index() as u16, defaults_count);
+                } else {
+                    // Push captured cells from enclosing scope
+                    for &slot in &func.free_var_enclosing_slots {
+                        // Load the cell reference from the enclosing namespace
+                        self.code.emit_load_local(slot.index() as u16);
+                    }
+                    let cell_count = func.free_var_enclosing_slots.len() as u8;
+                    // MakeClosure: func_id (u16) + defaults_count (u8) + cell_count (u8)
+                    self.code
+                        .emit_u16_u8_u8(Opcode::MakeClosure, func_id.index() as u16, defaults_count, cell_count);
+                }
+
+                // 3. Store the function object to its name slot
+                self.compile_store(&func.name);
             }
 
             Node::Try(_) => {

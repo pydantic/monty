@@ -272,6 +272,12 @@ pub struct CodeLoc {
     pub column: u16,
 }
 
+impl Default for CodeLoc {
+    fn default() -> Self {
+        Self { line: 1, column: 1 }
+    }
+}
+
 impl CodeLoc {
     /// Creates a new CodeLoc from usize values.
     ///

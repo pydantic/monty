@@ -23,6 +23,18 @@ use crate::{
 // VM Result Types
 // ============================================================================
 
+/// Result of calling a function.
+///
+/// Distinguishes between builtin function calls (which return a value immediately)
+/// and user function calls (which push a frame and continue execution).
+enum CallResult {
+    /// Builtin function returned a value - push it onto the stack.
+    Builtin(Value),
+    /// User function call - frame was pushed, continue execution in VM loop.
+    /// The return value will be pushed by ReturnValue opcode.
+    UserFunction,
+}
+
 /// Result of VM execution.
 pub enum VMResult {
     /// Execution completed successfully with a return value.
@@ -711,7 +723,11 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
 
                     // Call the function and handle the result
                     match self.call_function(callable, args) {
-                        Ok(result) => self.push(result),
+                        Ok(CallResult::Builtin(result)) => self.push(result),
+                        Ok(CallResult::UserFunction) => {
+                            // Frame was pushed, continue execution in VM loop.
+                            // Return value will be pushed by ReturnValue opcode.
+                        }
                         Err(err) => return VMResult::Error(err),
                     }
                 }
@@ -732,11 +748,66 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 // Function Definition (Step 4)
                 // ============================================================
                 Opcode::MakeFunction => {
-                    todo!("MakeFunction (Step 4)")
+                    let func_idx = self.fetch_u16();
+                    let defaults_count = self.fetch_u8() as usize;
+                    let func_id = FunctionId::from_index(func_idx);
+
+                    // Pop default values from stack (they were pushed in order, so reverse)
+                    let defaults = if defaults_count > 0 {
+                        let mut defaults = self.pop_n(defaults_count);
+                        defaults.reverse();
+                        defaults
+                    } else {
+                        Vec::new()
+                    };
+
+                    // Create FunctionDefaults on heap and push reference
+                    match self.heap.allocate(HeapData::FunctionDefaults(func_id, defaults)) {
+                        Ok(heap_id) => self.push(Value::Ref(heap_id)),
+                        Err(e) => return VMResult::Error(e.into()),
+                    }
                 }
 
                 Opcode::MakeClosure => {
-                    todo!("MakeClosure (Step 4)")
+                    let func_idx = self.fetch_u16();
+                    let defaults_count = self.fetch_u8() as usize;
+                    let cell_count = self.fetch_u8() as usize;
+                    let func_id = FunctionId::from_index(func_idx);
+
+                    // Pop cells from stack (pushed after defaults, so on top)
+                    // Cells are Value::Ref pointing to HeapData::Cell
+                    let mut cells = Vec::with_capacity(cell_count);
+                    for _ in 0..cell_count {
+                        let cell_val = self.pop();
+                        match cell_val {
+                            Value::Ref(heap_id) => {
+                                // Keep the reference - don't drop, Closure will own it
+                                cells.push(heap_id);
+                            }
+                            _ => {
+                                return VMResult::Error(RunError::internal(
+                                    "MakeClosure: expected cell reference on stack",
+                                ));
+                            }
+                        }
+                    }
+                    // Reverse to get original order (first cell pushed is first in vector)
+                    cells.reverse();
+
+                    // Pop default values from stack (they were pushed in order, so reverse)
+                    let defaults = if defaults_count > 0 {
+                        let mut defaults = self.pop_n(defaults_count);
+                        defaults.reverse();
+                        defaults
+                    } else {
+                        Vec::new()
+                    };
+
+                    // Create Closure on heap and push reference
+                    match self.heap.allocate(HeapData::Closure(func_id, cells, defaults)) {
+                        Ok(heap_id) => self.push(Value::Ref(heap_id)),
+                        Err(e) => return VMResult::Error(e.into()),
+                    }
                 }
 
                 // ============================================================
@@ -908,12 +979,18 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     }
 
     /// Pops the current frame from the call stack.
+    ///
+    /// Cleans up the frame's stack region and namespace (except for global namespace).
     fn pop_frame(&mut self) {
         let frame = self.frames.pop().expect("no frame to pop");
-        // Clean up frame's stack region (locals are in namespace)
+        // Clean up frame's stack region
         while self.stack.len() > frame.stack_base {
             let value = self.stack.pop().unwrap();
             value.drop_with_heap(self.heap);
+        }
+        // Clean up the namespace (but not the global namespace)
+        if frame.namespace_idx != GLOBAL_NS_IDX {
+            self.namespaces.drop_with_heap(frame.namespace_idx, self.heap);
         }
     }
 
@@ -1383,35 +1460,169 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     }
 
     /// Calls a callable value with the given arguments.
-    fn call_function(&mut self, callable: Value, args: ArgValues) -> Result<Value, RunError> {
+    ///
+    /// Returns `CallResult::Builtin(value)` for builtin functions, or
+    /// `CallResult::UserFunction` for user functions (frame was pushed).
+    fn call_function(&mut self, callable: Value, args: ArgValues) -> Result<CallResult, RunError> {
         match callable {
             Value::Builtin(builtin) => {
                 // Call the builtin function
                 let result = builtin.call(self.heap, args, self.interns, self.print_writer)?;
-                Ok(result)
+                Ok(CallResult::Builtin(result))
             }
             Value::Ref(heap_id) => {
-                // Could be a closure or function - check heap
-                match self.heap.get(heap_id) {
-                    HeapData::Closure(_, _, _) | HeapData::FunctionDefaults(_, _) => {
-                        // Drop the callable ref
-                        callable.drop_with_heap(self.heap);
-                        // Drop args since we're not using them
-                        args.drop_with_heap(self.heap);
-                        todo!("User-defined function calls not yet implemented")
+                // Could be a closure or function - check heap and extract info.
+                // Two-phase approach to avoid borrow conflicts:
+                // 1. Copy data without incrementing refcounts
+                // 2. Increment refcounts after the borrow ends
+
+                // Phase 1: Copy data (func_id, cells, defaults) without refcount changes
+                let (func_id, cells, defaults) = match self.heap.get(heap_id) {
+                    HeapData::Closure(fid, cells, defaults) => {
+                        let cloned_cells = cells.clone();
+                        // Use copy_for_extend to avoid refcount increment during borrow
+                        let cloned_defaults: Vec<Value> = defaults.iter().map(Value::copy_for_extend).collect();
+                        (*fid, cloned_cells, cloned_defaults)
+                    }
+                    HeapData::FunctionDefaults(fid, defaults) => {
+                        let cloned_defaults: Vec<Value> = defaults.iter().map(Value::copy_for_extend).collect();
+                        (*fid, Vec::new(), cloned_defaults)
                     }
                     _ => {
                         callable.drop_with_heap(self.heap);
                         args.drop_with_heap(self.heap);
-                        Err(ExcType::type_error("object is not callable"))
+                        return Err(ExcType::type_error("object is not callable"));
+                    }
+                };
+
+                // Phase 2: Increment refcounts now that the heap borrow has ended
+                for &cell_id in &cells {
+                    self.heap.inc_ref(cell_id);
+                }
+                for default in &defaults {
+                    if let Value::Ref(id) = default {
+                        self.heap.inc_ref(*id);
                     }
                 }
+
+                // Drop the callable ref (cloned data has its own refcounts)
+                callable.drop_with_heap(self.heap);
+
+                // Call the user function
+                self.call_user_function(func_id, cells, defaults, args)?;
+                Ok(CallResult::UserFunction)
             }
             _ => {
                 args.drop_with_heap(self.heap);
                 Err(ExcType::type_error("object is not callable"))
             }
         }
+    }
+
+    /// Calls a user-defined function by pushing a new frame.
+    ///
+    /// Sets up the function's namespace with bound arguments, cell variables,
+    /// and free variables (captured from enclosing scope for closures).
+    fn call_user_function(
+        &mut self,
+        func_id: FunctionId,
+        cells: Vec<HeapId>,
+        defaults: Vec<Value>,
+        args: ArgValues,
+    ) -> Result<(), RunError> {
+        // Get call position BEFORE borrowing namespaces mutably
+        let call_position = self.current_position();
+
+        // Get function info (interns is a shared reference so no conflict)
+        let func = self.interns.get_function(func_id);
+        let namespace_size = func.namespace_size;
+        let param_count = func.signature.total_slots();
+        let cell_var_count = func.cell_var_count;
+        let cell_param_indices = func.cell_param_indices.clone();
+        let code = func.code.as_ref().expect("function should be compiled");
+
+        // 1. Create new namespace for function
+        let namespace_idx = self.namespaces.new_namespace(namespace_size, self.heap)?;
+
+        // 2. Bind arguments to parameters
+        {
+            let namespace = self.namespaces.get_mut(namespace_idx).mut_vec();
+            let bind_result = func
+                .signature
+                .bind(args, &defaults, self.heap, self.interns, func.name, namespace);
+
+            if let Err(e) = bind_result {
+                self.namespaces.drop_with_heap(namespace_idx, self.heap);
+                return Err(e);
+            }
+        }
+
+        // Track created cell HeapIds for the frame
+        let mut frame_cells: Vec<HeapId> = Vec::with_capacity(cell_var_count + cells.len());
+
+        // 3. Create cells for variables captured by nested functions
+        {
+            let namespace = self.namespaces.get_mut(namespace_idx).mut_vec();
+            for (i, maybe_param_idx) in cell_param_indices.iter().enumerate() {
+                let cell_slot = param_count + i;
+                let cell_value = if let Some(param_idx) = maybe_param_idx {
+                    // Cell is for a parameter - copy its value
+                    namespace[*param_idx].clone_with_heap(self.heap)
+                } else {
+                    Value::Undefined
+                };
+                let cell_id = self.heap.allocate(HeapData::Cell(cell_value))?;
+                frame_cells.push(cell_id);
+                // Extend namespace to fit cell if needed
+                while namespace.len() <= cell_slot {
+                    namespace.push(Value::Undefined);
+                }
+                namespace[cell_slot] = Value::Ref(cell_id);
+            }
+
+            // 4. Copy captured cells (free vars) into namespace
+            let free_var_start = param_count + cell_var_count;
+            for (i, &cell_id) in cells.iter().enumerate() {
+                self.heap.inc_ref(cell_id);
+                frame_cells.push(cell_id);
+                let slot = free_var_start + i;
+                // Extend namespace to fit free var if needed
+                while namespace.len() <= slot {
+                    namespace.push(Value::Undefined);
+                }
+                namespace[slot] = Value::Ref(cell_id);
+            }
+
+            // 5. Fill remaining slots with Undefined
+            while namespace.len() < namespace_size {
+                namespace.push(Value::Undefined);
+            }
+        }
+
+        // 6. Push new frame
+        self.frames.push(CallFrame::new_function(
+            code,
+            self.stack.len(),
+            namespace_idx,
+            func_id,
+            frame_cells,
+            call_position,
+        ));
+
+        Ok(())
+    }
+
+    /// Returns the current source position for traceback generation.
+    fn current_position(&self) -> CodeRange {
+        let frame = self.current_frame();
+        // Get the position from the current instruction (IP points to next instruction)
+        // Look up in location table
+        let ip = frame.ip.saturating_sub(1);
+        frame
+            .code
+            .location_for_offset(ip)
+            .map(super::code::LocationEntry::range)
+            .unwrap_or_default()
     }
 
     // ========================================================================

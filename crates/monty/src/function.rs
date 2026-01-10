@@ -1,6 +1,7 @@
 use std::fmt::Write;
 
 use crate::{
+    bytecode::Code,
     expressions::{ExprLoc, Identifier, Node},
     intern::{Interns, StringId},
     namespace::NamespaceId,
@@ -64,6 +65,11 @@ pub struct Function {
     /// Each group contains only the parameters that have defaults, in declaration order.
     /// The counts in `signature` indicate how many defaults exist for each group.
     pub default_exprs: Vec<ExprLoc>,
+    /// Compiled bytecode for this function.
+    ///
+    /// This is `None` until the function is compiled during the eager compilation phase
+    /// in `Executor::new()`. After compilation, it contains the bytecode for the function body.
+    pub code: Option<Code>,
 }
 
 impl Function {
@@ -98,6 +104,7 @@ impl Function {
             cell_var_count,
             cell_param_indices,
             default_exprs,
+            code: None,
         }
     }
 

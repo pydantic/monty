@@ -113,6 +113,27 @@ impl CodeBuilder {
         self.bytecode.extend_from_slice(&operand.to_le_bytes());
     }
 
+    /// Emits an instruction with a u16 operand followed by a u8 operand.
+    ///
+    /// Used for MakeFunction: func_id (u16) + defaults_count (u8)
+    pub fn emit_u16_u8(&mut self, op: Opcode, operand1: u16, operand2: u8) {
+        self.record_location();
+        self.bytecode.push(op as u8);
+        self.bytecode.extend_from_slice(&operand1.to_le_bytes());
+        self.bytecode.push(operand2);
+    }
+
+    /// Emits an instruction with a u16 operand followed by two u8 operands.
+    ///
+    /// Used for MakeClosure: func_id (u16) + defaults_count (u8) + cell_count (u8)
+    pub fn emit_u16_u8_u8(&mut self, op: Opcode, operand1: u16, operand2: u8, operand3: u8) {
+        self.record_location();
+        self.bytecode.push(op as u8);
+        self.bytecode.extend_from_slice(&operand1.to_le_bytes());
+        self.bytecode.push(operand2);
+        self.bytecode.push(operand3);
+    }
+
     /// Emits a forward jump instruction, returning a label to patch later.
     ///
     /// The jump offset is initially set to 0 and must be patched with
