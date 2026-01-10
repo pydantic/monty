@@ -26,4 +26,4 @@ pub use builder::{CodeBuilder, JumpLabel};
 pub use code::{Code, ConstPool, ExceptionEntry, LocationEntry};
 pub use compiler::Compiler;
 pub use op::Opcode;
-pub use vm::{CallFrame, VMResult, VM};
+pub use vm::{CallFrame, VMResult, VMSnapshot, VM};

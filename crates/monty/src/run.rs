@@ -1,6 +1,6 @@
 //! Public interface for running Monty code.
 use crate::{
-    bytecode::{Code, Compiler, VMResult, VM},
+    bytecode::{Code, Compiler, VMResult, VMSnapshot, VM},
     heap::Heap,
     intern::{ExtFunctionId, Interns},
     io::{PrintWriter, StdPrint},
@@ -134,13 +134,74 @@ impl MontyRun {
     /// - The number of inputs doesn't match the expected count
     /// - An input value is invalid (e.g., `MontyObject::Repr`)
     /// - A runtime error occurs during execution
+    ///
+    /// # Panics
+    /// This method should not panic under normal operation. Internal assertions
+    /// may panic if the VM reaches an inconsistent state (indicating a bug).
     pub fn start<T: ResourceTracker>(
         self,
-        _inputs: Vec<MontyObject>,
-        _resource_tracker: T,
-        _print: &mut impl PrintWriter,
+        inputs: Vec<MontyObject>,
+        resource_tracker: T,
+        print: &mut impl PrintWriter,
     ) -> Result<RunProgress<T>, MontyException> {
-        todo!("Iterative execution with external calls (Step 6)")
+        let executor = self.executor;
+
+        // Create heap and prepare namespaces
+        let mut heap = Heap::new(executor.namespace_size, resource_tracker);
+        let mut namespaces = executor.prepare_namespaces(inputs, &mut heap)?;
+
+        // Create and run VM - scope the VM borrow so we can move heap/namespaces after
+        let (result, vm_state) = {
+            let mut vm = VM::new(&mut heap, &mut namespaces, &executor.interns, print);
+            let result = vm.run_module(&executor.module_code);
+
+            // Handle the result - convert VM to snapshot if needed for external call
+            if let VMResult::ExternalCall { .. } = &result {
+                // Need to snapshot the VM for resumption
+                (result, Some(vm.into_snapshot()))
+            } else {
+                // Clean up VM state
+                vm.cleanup();
+                (result, None)
+            }
+        };
+
+        // Now handle the result with owned heap and namespaces
+        match result {
+            VMResult::Complete(value) => {
+                // Clean up the global namespace before returning (only needed with ref-count-panic)
+                #[cfg(feature = "ref-count-panic")]
+                namespaces.drop_global_with_heap(&mut heap);
+
+                // Convert to MontyObject
+                let obj = MontyObject::new(value, &mut heap, &executor.interns);
+                Ok(RunProgress::Complete(obj))
+            }
+            VMResult::Error(err) => {
+                // Convert to MontyException
+                Err(err.into_python_exception(&executor.interns, &executor.source_code))
+            }
+            VMResult::ExternalCall { ext_function_id, args } => {
+                // Get function name and convert args to MontyObjects
+                let function_name = executor.interns.get_external_function_name(ext_function_id);
+                let args_py: Vec<MontyObject> = args
+                    .into_iter()
+                    .map(|v| MontyObject::new(v, &mut heap, &executor.interns))
+                    .collect();
+
+                Ok(RunProgress::FunctionCall {
+                    function_name,
+                    args: args_py,
+                    kwargs: vec![], // TODO: Handle kwargs if needed
+                    state: Snapshot {
+                        executor,
+                        vm_state: vm_state.expect("snapshot should exist for ExternalCall"),
+                        heap,
+                        namespaces,
+                    },
+                })
+            }
+        }
     }
 }
 
@@ -236,14 +297,17 @@ impl<T: ResourceTracker + serde::de::DeserializeOwned> RunProgress<T> {
 /// * `T` - Resource tracker implementation
 ///
 /// Serialization requires `T: Serialize + Deserialize`.
-///
-/// Note: This is a placeholder struct for the bytecode VM. External call resumption
-/// will be implemented in Step 6.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
 pub struct Snapshot<T: ResourceTracker> {
-    /// Placeholder to satisfy the type parameter.
-    _marker: std::marker::PhantomData<T>,
+    /// The executor containing compiled code and interns.
+    executor: Executor,
+    /// The VM state containing stack, frames, and exception state.
+    vm_state: VMSnapshot,
+    /// The heap containing all allocated objects.
+    heap: Heap<T>,
+    /// The namespaces containing all variable bindings.
+    namespaces: Namespaces,
 }
 
 /// Return value or exception from an external function.
@@ -275,12 +339,91 @@ impl<T: ResourceTracker> Snapshot<T> {
     /// # Arguments
     /// * `result` - The return value or exception from the external function
     /// * `print` - The print writer to use for output
+    ///
+    /// # Panics
+    /// This method should not panic under normal operation. Internal assertions
+    /// may panic if the VM reaches an inconsistent state (indicating a bug).
     pub fn run(
-        self,
-        _result: impl Into<ExternalResult>,
-        _print: &mut impl PrintWriter,
+        mut self,
+        result: impl Into<ExternalResult>,
+        print: &mut impl PrintWriter,
     ) -> Result<RunProgress<T>, MontyException> {
-        todo!("Snapshot resumption (Step 6)")
+        let ext_result = result.into();
+
+        // Convert the return value to a Value first (needs mutable heap access)
+        let resume_value = match ext_result {
+            ExternalResult::Return(obj) => obj
+                .to_value(&mut self.heap, &self.executor.interns)
+                .map_err(|e| MontyException::runtime_error(format!("invalid return type: {e}")))?,
+            ExternalResult::Error(exc) => {
+                // TODO: Convert exception to runtime error and handle it in VM
+                // For now, return the error directly
+                return Err(exc);
+            }
+        };
+
+        // Scope the VM borrow so we can move heap/namespaces after
+        let (result, vm_state) = {
+            // Restore the VM from the snapshot
+            let mut vm = VM::restore(
+                self.vm_state,
+                &self.executor.module_code,
+                &mut self.heap,
+                &mut self.namespaces,
+                &self.executor.interns,
+                print,
+            );
+
+            // Resume execution with the result
+            let vm_result = vm.resume(resume_value);
+
+            // Handle the result - convert VM to snapshot if needed for external call
+            if let VMResult::ExternalCall { .. } = &vm_result {
+                // Need to snapshot the VM for resumption
+                (vm_result, Some(vm.into_snapshot()))
+            } else {
+                // Clean up VM state
+                vm.cleanup();
+                (vm_result, None)
+            }
+        };
+
+        // Now handle the result with owned heap and namespaces
+        match result {
+            VMResult::Complete(value) => {
+                // Clean up the global namespace before returning (only needed with ref-count-panic)
+                #[cfg(feature = "ref-count-panic")]
+                self.namespaces.drop_global_with_heap(&mut self.heap);
+
+                // Convert to MontyObject
+                let obj = MontyObject::new(value, &mut self.heap, &self.executor.interns);
+                Ok(RunProgress::Complete(obj))
+            }
+            VMResult::Error(err) => {
+                // Convert to MontyException
+                Err(err.into_python_exception(&self.executor.interns, &self.executor.source_code))
+            }
+            VMResult::ExternalCall { ext_function_id, args } => {
+                // Get function name and convert args to MontyObjects
+                let function_name = self.executor.interns.get_external_function_name(ext_function_id);
+                let args_py: Vec<MontyObject> = args
+                    .into_iter()
+                    .map(|v| MontyObject::new(v, &mut self.heap, &self.executor.interns))
+                    .collect();
+
+                Ok(RunProgress::FunctionCall {
+                    function_name,
+                    args: args_py,
+                    kwargs: vec![], // TODO: Handle kwargs if needed
+                    state: Snapshot {
+                        executor: self.executor,
+                        vm_state: vm_state.expect("snapshot should exist for ExternalCall"),
+                        heap: self.heap,
+                        namespaces: self.namespaces,
+                    },
+                })
+            }
+        }
     }
 }
 

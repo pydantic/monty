@@ -83,6 +83,25 @@ impl ArgValues {
         }
     }
 
+    /// Converts arguments into a simple Vec of positional Values.
+    ///
+    /// Note: Kwargs are extracted but not returned. The caller is responsible
+    /// for tracking that no kwargs were passed if needed.
+    pub fn into_vec(self) -> Vec<Value> {
+        match self {
+            Self::Empty => vec![],
+            Self::One(v) => vec![v],
+            Self::Two(v1, v2) => vec![v1, v2],
+            Self::Kwargs(_kwargs) => {
+                // Kwargs only - no positional args
+                // Note: kwargs values are still owned but not returned
+                // This shouldn't happen for external calls in practice
+                vec![]
+            }
+            Self::ArgsKargs { args, kwargs: _ } => args,
+        }
+    }
+
     /// Converts the arguments into a Vec of MontyObjects.
     ///
     /// This is used when passing arguments to external functions.

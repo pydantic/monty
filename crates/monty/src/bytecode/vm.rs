@@ -10,7 +10,7 @@ use crate::{
     exception_private::{ExcType, ExceptionRaise, RunError, SimpleException},
     for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
-    intern::{FunctionId, Interns, StringId},
+    intern::{ExtFunctionId, FunctionId, Interns, StringId},
     io::PrintWriter,
     namespace::{NamespaceId, Namespaces, GLOBAL_NS_IDX},
     parse::CodeRange,
@@ -25,14 +25,18 @@ use crate::{
 
 /// Result of calling a function.
 ///
-/// Distinguishes between builtin function calls (which return a value immediately)
-/// and user function calls (which push a frame and continue execution).
+/// Distinguishes between builtin function calls (which return a value immediately),
+/// user function calls (which push a frame and continue execution), and external
+/// function calls (which pause the VM).
 enum CallResult {
     /// Builtin function returned a value - push it onto the stack.
     Builtin(Value),
     /// User function call - frame was pushed, continue execution in VM loop.
     /// The return value will be pushed by ReturnValue opcode.
     UserFunction,
+    /// External function call - VM should pause and return to caller.
+    /// Contains (ext_function_id, args).
+    ExternalCall(ExtFunctionId, Vec<Value>),
 }
 
 /// Result of VM execution.
@@ -53,7 +57,7 @@ pub enum VMResult {
     /// with the result.
     ExternalCall {
         /// ID of the external function to call.
-        function_id: u16,
+        ext_function_id: ExtFunctionId,
         /// Arguments for the external function.
         args: Vec<Value>,
     },
@@ -125,6 +129,75 @@ impl<'code> CallFrame<'code> {
             call_position: Some(call_position),
         }
     }
+}
+
+// ============================================================================
+// VM Snapshot for Pause/Resume
+// ============================================================================
+
+/// Serializable representation of a call frame.
+///
+/// Cannot store `&Code` (a reference) - instead stores `FunctionId` to look up
+/// the pre-compiled Code object on resume. Module-level code uses `None`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SerializedFrame {
+    /// Which function's code this frame executes (None = module-level).
+    function_id: Option<FunctionId>,
+
+    /// Instruction pointer within this frame's bytecode.
+    ip: usize,
+
+    /// Base index into operand stack for this frame's locals.
+    stack_base: usize,
+
+    /// Namespace index for this frame's locals.
+    namespace_idx: NamespaceId,
+
+    /// Captured cells for closures (HeapIds remain valid after heap deserialization).
+    cells: Vec<HeapId>,
+
+    /// Call site position (for tracebacks).
+    call_position: Option<CodeRange>,
+}
+
+impl CallFrame<'_> {
+    /// Converts this frame to a serializable representation.
+    fn serialize(&self) -> SerializedFrame {
+        SerializedFrame {
+            function_id: self.function_id,
+            ip: self.ip,
+            stack_base: self.stack_base,
+            namespace_idx: self.namespace_idx,
+            cells: self.cells.clone(),
+            call_position: self.call_position,
+        }
+    }
+}
+
+/// VM state for pause/resume at external function calls.
+///
+/// **Ownership:** This struct OWNS the values (refcounts were already incremented).
+/// Must be used with the serialized Heap - HeapId values are indices into that heap.
+///
+/// **Usage:** When the VM pauses for an external call, call `into_snapshot()` to
+/// create this snapshot. The snapshot can be serialized and stored. On resume,
+/// use `restore()` to reconstruct the VM and continue execution.
+///
+/// Note: This struct does not implement `Clone` because `Value` uses manual
+/// reference counting. Snapshots transfer ownership - they are not copied.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct VMSnapshot {
+    /// Operand stack (may contain Value::Ref(HeapId) pointing to heap).
+    stack: Vec<Value>,
+
+    /// Call frames (serializable form - stores FunctionId, not &Code).
+    frames: Vec<SerializedFrame>,
+
+    /// Current exception being handled (if any).
+    current_exception: Option<Value>,
+
+    /// IP of the instruction that caused the pause (for exception handling).
+    instruction_ip: usize,
 }
 
 // ============================================================================
@@ -752,6 +825,13 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                             // Frame was pushed, continue execution in VM loop.
                             // Return value will be pushed by ReturnValue opcode.
                         }
+                        Ok(CallResult::ExternalCall(ext_id, args_vec)) => {
+                            // External function call - pause VM and return to caller
+                            return VMResult::ExternalCall {
+                                ext_function_id: ext_id,
+                                args: args_vec,
+                            };
+                        }
                         Err(err) => {
                             // Try to handle the exception
                             if let Some(result) = self.handle_exception(err) {
@@ -923,6 +1003,83 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     pub fn resume(&mut self, result: Value) -> VMResult {
         self.push(result);
         self.run()
+    }
+
+    /// Consumes the VM and creates a snapshot for pause/resume.
+    ///
+    /// **Ownership transfer:** This method takes `self` by value, consuming the VM.
+    /// The snapshot owns all Values (refcounts already correct from the live VM).
+    /// The heap and namespaces must be serialized alongside this snapshot.
+    ///
+    /// This is NOT a clone - it's a transfer. After calling this, the original VM
+    /// is gone and only the snapshot (+ serialized heap/namespaces) represents the state.
+    pub fn into_snapshot(self) -> VMSnapshot {
+        VMSnapshot {
+            // Move values directly - no clone, no refcount increment needed
+            // (the VM owned them, now the snapshot owns them)
+            stack: self.stack,
+            frames: self.frames.into_iter().map(|f| f.serialize()).collect(),
+            current_exception: self.current_exception,
+            instruction_ip: self.instruction_ip,
+        }
+    }
+
+    /// Reconstructs a VM from a snapshot.
+    ///
+    /// The heap and namespaces must already be deserialized. `FunctionId` values
+    /// in frames are used to look up pre-compiled `Code` objects from the `Interns`.
+    /// The `module_code` is used for frames with `function_id = None`.
+    ///
+    /// # Arguments
+    /// * `snapshot` - The VM snapshot to restore
+    /// * `module_code` - Compiled module code (for frames with function_id = None)
+    /// * `heap` - The deserialized heap
+    /// * `namespaces` - The deserialized namespaces
+    /// * `interns` - Interns for looking up function code
+    /// * `print_writer` - Writer for print output
+    pub fn restore(
+        snapshot: VMSnapshot,
+        module_code: &'a Code,
+        heap: &'a mut Heap<T>,
+        namespaces: &'a mut Namespaces,
+        interns: &'a Interns,
+        print_writer: &'a mut P,
+    ) -> Self {
+        // Reconstruct call frames from serialized form
+        let frames = snapshot
+            .frames
+            .into_iter()
+            .map(|sf| {
+                let code = match sf.function_id {
+                    Some(func_id) => interns
+                        .get_function(func_id)
+                        .code
+                        .as_ref()
+                        .expect("function should be compiled"),
+                    None => module_code,
+                };
+                CallFrame {
+                    code,
+                    ip: sf.ip,
+                    stack_base: sf.stack_base,
+                    namespace_idx: sf.namespace_idx,
+                    function_id: sf.function_id,
+                    cells: sf.cells,
+                    call_position: sf.call_position,
+                }
+            })
+            .collect();
+
+        Self {
+            stack: snapshot.stack,
+            frames,
+            heap,
+            namespaces,
+            interns,
+            print_writer,
+            current_exception: snapshot.current_exception,
+            instruction_ip: snapshot.instruction_ip,
+        }
     }
 
     // ========================================================================
@@ -1500,14 +1657,21 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
 
     /// Calls a callable value with the given arguments.
     ///
-    /// Returns `CallResult::Builtin(value)` for builtin functions, or
-    /// `CallResult::UserFunction` for user functions (frame was pushed).
+    /// Returns `CallResult::Builtin(value)` for builtin functions,
+    /// `CallResult::UserFunction` for user functions (frame was pushed), or
+    /// `CallResult::ExternalCall` for external functions (VM should pause).
     fn call_function(&mut self, callable: Value, args: ArgValues) -> Result<CallResult, RunError> {
         match callable {
             Value::Builtin(builtin) => {
                 // Call the builtin function
                 let result = builtin.call(self.heap, args, self.interns, self.print_writer)?;
                 Ok(CallResult::Builtin(result))
+            }
+            Value::ExtFunction(ext_id) => {
+                // External function - return to caller to execute
+                // Convert ArgValues to Vec<Value> for external call
+                let args_vec = args.into_vec();
+                Ok(CallResult::ExternalCall(ext_id, args_vec))
             }
             Value::Ref(heap_id) => {
                 // Could be a closure or function - check heap and extract info.

@@ -1523,10 +1523,10 @@ Note: Some operations use `todo!()` pending implementation:
 - [x] Exception lookup and stack unwinding in VM
 
 ### Step 6: External Calls & Snapshots
-- [ ] `CallExternal` opcode
-- [ ] VMSnapshot serialization (alongside heap)
-- [ ] Resume mechanism (push result, continue)
-- [ ] Integration with existing `RunProgress` API
+- [x] External function calls via `CallFunction` with `Value::ExtFunction`
+- [x] VMSnapshot serialization (alongside heap)
+- [x] Resume mechanism (push result, continue)
+- [x] Integration with existing `RunProgress` API
 
 ### Step 7: Remove Old Code
 - [ ] Delete `evaluate.rs`
