@@ -6,10 +6,10 @@
 use crate::{
     args::{ArgValues, KwargsValues},
     bytecode::{code::Code, op::Opcode},
-    exception_private::{ExcType, ExceptionRaise, RunError, SimpleException},
+    exception_private::{ExcType, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
     for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
-    intern::{ExtFunctionId, FunctionId, Interns, StringId},
+    intern::{ExtFunctionId, FunctionId, Interns, StringId, MODULE_STRING_ID},
     io::PrintWriter,
     namespace::{NamespaceId, Namespaces, GLOBAL_NS_IDX},
     parse::CodeRange,
@@ -343,18 +343,50 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     self.push(Value::Int(i64::from(n)));
                 }
                 // Variables - Specialized Local Loads (no operand)
-                Opcode::LoadLocal0 => self.load_local(0),
-                Opcode::LoadLocal1 => self.load_local(1),
-                Opcode::LoadLocal2 => self.load_local(2),
-                Opcode::LoadLocal3 => self.load_local(3),
+                Opcode::LoadLocal0 => {
+                    if let Err(e) = self.load_local(0) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::LoadLocal1 => {
+                    if let Err(e) = self.load_local(1) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::LoadLocal2 => {
+                    if let Err(e) = self.load_local(2) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::LoadLocal3 => {
+                    if let Err(e) = self.load_local(3) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
                 // Variables - General Local Operations
                 Opcode::LoadLocal => {
                     let slot = u16::from(self.fetch_u8());
-                    self.load_local(slot);
+                    if let Err(e) = self.load_local(slot) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
                 }
                 Opcode::LoadLocalW => {
                     let slot = self.fetch_u16();
-                    self.load_local(slot);
+                    if let Err(e) = self.load_local(slot) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
                 }
                 Opcode::StoreLocal => {
                     let slot = u16::from(self.fetch_u8());
@@ -371,7 +403,11 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 // Variables - Global Operations
                 Opcode::LoadGlobal => {
                     let slot = self.fetch_u16();
-                    self.load_global(slot);
+                    if let Err(e) = self.load_global(slot) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
                 }
                 Opcode::StoreGlobal => {
                     let slot = self.fetch_u16();
@@ -380,26 +416,102 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 // Variables - Cell Operations (closures)
                 Opcode::LoadCell => {
                     let slot = self.fetch_u16();
-                    self.load_cell(slot);
+                    if let Err(e) = self.load_cell(slot) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
                 }
                 Opcode::StoreCell => {
                     let slot = self.fetch_u16();
                     self.store_cell(slot);
                 }
-                // Binary Operations
-                Opcode::BinaryAdd => self.binary_add()?,
-                Opcode::BinarySub => self.binary_sub()?,
-                Opcode::BinaryMul => self.binary_mult()?,
-                Opcode::BinaryDiv => self.binary_div()?,
-                Opcode::BinaryFloorDiv => self.binary_floordiv()?,
-                Opcode::BinaryMod => self.binary_mod()?,
-                Opcode::BinaryPow => self.binary_pow()?,
+                // Binary Operations - route through exception handling for tracebacks
+                Opcode::BinaryAdd => {
+                    if let Err(e) = self.binary_add() {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::BinarySub => {
+                    if let Err(e) = self.binary_sub() {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::BinaryMul => {
+                    if let Err(e) = self.binary_mult() {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::BinaryDiv => {
+                    if let Err(e) = self.binary_div() {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::BinaryFloorDiv => {
+                    if let Err(e) = self.binary_floordiv() {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::BinaryMod => {
+                    if let Err(e) = self.binary_mod() {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::BinaryPow => {
+                    if let Err(e) = self.binary_pow() {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
                 // Bitwise operations - only work on integers
-                Opcode::BinaryAnd => self.binary_bitwise(BitwiseOp::And)?,
-                Opcode::BinaryOr => self.binary_bitwise(BitwiseOp::Or)?,
-                Opcode::BinaryXor => self.binary_bitwise(BitwiseOp::Xor)?,
-                Opcode::BinaryLShift => self.binary_bitwise(BitwiseOp::LShift)?,
-                Opcode::BinaryRShift => self.binary_bitwise(BitwiseOp::RShift)?,
+                Opcode::BinaryAnd => {
+                    if let Err(e) = self.binary_bitwise(BitwiseOp::And) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::BinaryOr => {
+                    if let Err(e) = self.binary_bitwise(BitwiseOp::Or) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::BinaryXor => {
+                    if let Err(e) = self.binary_bitwise(BitwiseOp::Xor) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::BinaryLShift => {
+                    if let Err(e) = self.binary_bitwise(BitwiseOp::LShift) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::BinaryRShift => {
+                    if let Err(e) = self.binary_bitwise(BitwiseOp::RShift) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
                 Opcode::BinaryMatMul => todo!("BinaryMatMul not implemented"),
                 // Comparison Operations
                 Opcode::CompareEq => self.compare_eq(),
@@ -410,9 +522,27 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::CompareGe => self.compare_ord(std::cmp::Ordering::is_ge),
                 Opcode::CompareIs => self.compare_is(false),
                 Opcode::CompareIsNot => self.compare_is(true),
-                Opcode::CompareIn => self.compare_in(false)?,
-                Opcode::CompareNotIn => self.compare_in(true)?,
-                Opcode::CompareModEq => self.compare_mod_eq()?,
+                Opcode::CompareIn => {
+                    if let Err(e) = self.compare_in(false) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::CompareNotIn => {
+                    if let Err(e) = self.compare_in(true) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::CompareModEq => {
+                    if let Err(e) = self.compare_mod_eq() {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
                 // Unary Operations
                 Opcode::UnaryNot => {
                     let value = self.pop();
@@ -431,9 +561,13 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         _ => None,
                     };
                     value.drop_with_heap(self.heap);
-                    match result {
-                        Some(v) => self.push(v),
-                        None => return Err(ExcType::unary_type_error("-", value_type)),
+                    if let Some(v) = result {
+                        self.push(v);
+                    } else {
+                        let err = ExcType::unary_type_error("-", value_type);
+                        if let Some(result) = self.handle_exception(err) {
+                            return Err(result);
+                        }
                     }
                 }
                 Opcode::UnaryPos => {
@@ -445,9 +579,13 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         _ => None,
                     };
                     value.drop_with_heap(self.heap);
-                    match result {
-                        Some(v) => self.push(v),
-                        None => return Err(ExcType::unary_type_error("+", value_type)),
+                    if let Some(v) = result {
+                        self.push(v);
+                    } else {
+                        let err = ExcType::unary_type_error("+", value_type);
+                        if let Some(result) = self.handle_exception(err) {
+                            return Err(result);
+                        }
                     }
                 }
                 Opcode::UnaryInvert => {
@@ -460,46 +598,138 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         _ => None,
                     };
                     value.drop_with_heap(self.heap);
-                    match result {
-                        Some(v) => self.push(v),
-                        None => return Err(ExcType::unary_type_error("~", value_type)),
+                    if let Some(v) = result {
+                        self.push(v);
+                    } else {
+                        let err = ExcType::unary_type_error("~", value_type);
+                        if let Some(result) = self.handle_exception(err) {
+                            return Err(result);
+                        }
                     }
                 }
-                // In-place Operations
-                Opcode::InplaceAdd => self.inplace_add()?,
+                // In-place Operations - route through exception handling
+                Opcode::InplaceAdd => {
+                    if let Err(e) = self.inplace_add() {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
                 // Other in-place ops use the same logic as binary ops for now
-                Opcode::InplaceSub => self.binary_sub()?,
-                Opcode::InplaceMul => self.binary_mult()?,
-                Opcode::InplaceDiv => self.binary_div()?,
-                Opcode::InplaceFloorDiv => self.binary_floordiv()?,
-                Opcode::InplaceMod => self.binary_mod()?,
-                Opcode::InplacePow => self.binary_pow()?,
-                Opcode::InplaceAnd => self.binary_bitwise(BitwiseOp::And)?,
-                Opcode::InplaceOr => self.binary_bitwise(BitwiseOp::Or)?,
-                Opcode::InplaceXor => self.binary_bitwise(BitwiseOp::Xor)?,
-                Opcode::InplaceLShift => self.binary_bitwise(BitwiseOp::LShift)?,
-                Opcode::InplaceRShift => self.binary_bitwise(BitwiseOp::RShift)?,
-                // Collection Building
+                Opcode::InplaceSub => {
+                    if let Err(e) = self.binary_sub() {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::InplaceMul => {
+                    if let Err(e) = self.binary_mult() {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::InplaceDiv => {
+                    if let Err(e) = self.binary_div() {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::InplaceFloorDiv => {
+                    if let Err(e) = self.binary_floordiv() {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::InplaceMod => {
+                    if let Err(e) = self.binary_mod() {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::InplacePow => {
+                    if let Err(e) = self.binary_pow() {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::InplaceAnd => {
+                    if let Err(e) = self.binary_bitwise(BitwiseOp::And) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::InplaceOr => {
+                    if let Err(e) = self.binary_bitwise(BitwiseOp::Or) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::InplaceXor => {
+                    if let Err(e) = self.binary_bitwise(BitwiseOp::Xor) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::InplaceLShift => {
+                    if let Err(e) = self.binary_bitwise(BitwiseOp::LShift) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                Opcode::InplaceRShift => {
+                    if let Err(e) = self.binary_bitwise(BitwiseOp::RShift) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
+                // Collection Building - route through exception handling
                 Opcode::BuildList => {
                     let count = self.fetch_u16() as usize;
-                    self.build_list(count)?;
+                    if let Err(e) = self.build_list(count) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
                 }
                 Opcode::BuildTuple => {
                     let count = self.fetch_u16() as usize;
-                    self.build_tuple(count)?;
+                    if let Err(e) = self.build_tuple(count) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
                 }
                 Opcode::BuildDict => {
                     let count = self.fetch_u16() as usize;
-                    self.build_dict(count)?;
+                    if let Err(e) = self.build_dict(count) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
                 }
                 Opcode::BuildSet => {
                     let count = self.fetch_u16() as usize;
-                    self.build_set(count)?;
+                    if let Err(e) = self.build_set(count) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
                 }
                 Opcode::BuildFString => {
                     todo!("BuildFString not implemented")
                 }
-                // Subscript & Attribute
+                // Subscript & Attribute - route through exception handling
                 Opcode::BinarySubscr => {
                     let index = self.pop();
                     let obj = self.pop();
@@ -508,7 +738,11 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     index.drop_with_heap(self.heap);
                     match result {
                         Ok(v) => self.push(v),
-                        Err(e) => return Err(e),
+                        Err(e) => {
+                            if let Some(result) = self.handle_exception(e) {
+                                return Err(result);
+                            }
+                        }
                     }
                 }
                 Opcode::StoreSubscr => {
@@ -588,16 +822,24 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         self.jump_relative(offset);
                     }
                 }
-                // Iteration
+                // Iteration - route through exception handling
                 Opcode::GetIter => {
                     let value = self.pop();
                     // Create a ForIterator from the value and store on heap
                     match ForIterator::new(value, self.heap, self.interns) {
                         Ok(iter) => match self.heap.allocate(HeapData::Iterator(iter)) {
                             Ok(heap_id) => self.push(Value::Ref(heap_id)),
-                            Err(e) => return Err(e.into()),
+                            Err(e) => {
+                                if let Some(result) = self.handle_exception(e.into()) {
+                                    return Err(result);
+                                }
+                            }
                         },
-                        Err(e) => return Err(e),
+                        Err(e) => {
+                            if let Some(result) = self.handle_exception(e) {
+                                return Err(result);
+                            }
+                        }
                     }
                 }
                 Opcode::ForIter => {
@@ -634,7 +876,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                                 // Error during iteration (e.g., dict size changed)
                                 let iter = self.pop();
                                 iter.drop_with_heap(self.heap);
-                                return Err(e);
+                                if let Some(result) = self.handle_exception(e) {
+                                    return Err(result);
+                                }
                             }
                         }
                     } else {
@@ -804,7 +1048,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 // Exception Handling
                 Opcode::Raise => {
                     let exc = self.pop();
-                    let error = self.make_exception(exc);
+                    let error = self.make_exception(exc, true); // is_raise=true, hide caret
                     if let Some(result) = self.handle_exception(error) {
                         return Err(result);
                     }
@@ -815,7 +1059,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 }
                 Opcode::Reraise => {
                     let error = if let Some(exc) = self.current_exception.take() {
-                        self.make_exception(exc)
+                        self.make_exception(exc, true) // is_raise=true for reraise
                     } else {
                         // No active exception - create a RuntimeError
                         SimpleException::new(
@@ -845,10 +1089,14 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     self.pop_frame();
                     self.push(value);
                 }
-                // Unpacking
+                // Unpacking - route through exception handling
                 Opcode::UnpackSequence => {
                     let count = self.fetch_u8() as usize;
-                    self.unpack_sequence(count)?;
+                    if let Err(e) = self.unpack_sequence(count) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
                 }
                 Opcode::UnpackEx => {
                     todo!("UnpackEx not implemented")
@@ -1066,16 +1314,35 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     // ========================================================================
 
     /// Loads a local variable and pushes it onto the stack.
-    fn load_local(&mut self, slot: u16) {
+    ///
+    /// Returns a NameError if the variable is undefined (never assigned).
+    fn load_local(&mut self, slot: u16) -> RunResult<()> {
         let ns_idx = self.current_frame().namespace_idx;
         let namespace = self.namespaces.get(ns_idx);
         // Copy without incrementing refcount first (avoids borrow conflict)
         let value = namespace.get(NamespaceId::new(slot as usize)).copy_for_extend();
+
+        // Check for undefined value - raise NameError if so
+        if matches!(value, Value::Undefined) {
+            let name = self.current_frame().code.local_name(slot);
+            return Err(self.name_error(slot, name));
+        }
+
         // Now we can safely increment refcount and push
         if let Value::Ref(id) = &value {
             self.heap.inc_ref(*id);
         }
         self.push(value);
+        Ok(())
+    }
+
+    /// Creates a NameError for an undefined variable.
+    fn name_error(&self, slot: u16, name: Option<StringId>) -> RunError {
+        let name_str = match name {
+            Some(id) => self.interns.get_str(id).to_string(),
+            None => format!("<local {slot}>"),
+        };
+        ExcType::name_error(&name_str).into()
     }
 
     /// Pops the top of stack and stores it in a local variable.
@@ -1098,15 +1365,26 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     }
 
     /// Loads a global variable and pushes it onto the stack.
-    fn load_global(&mut self, slot: u16) {
+    ///
+    /// Returns a NameError if the variable is undefined.
+    fn load_global(&mut self, slot: u16) -> RunResult<()> {
         let namespace = self.namespaces.get(GLOBAL_NS_IDX);
         // Copy without incrementing refcount first (avoids borrow conflict)
         let value = namespace.get(NamespaceId::new(slot as usize)).copy_for_extend();
+
+        // Check for undefined value - raise NameError if so
+        if matches!(value, Value::Undefined) {
+            // For globals, we'd need a global_names table too, but for now use a placeholder
+            let name = self.current_frame().code.local_name(slot);
+            return Err(self.name_error(slot, name));
+        }
+
         // Now we can safely increment refcount and push
         if let Value::Ref(id) = &value {
             self.heap.inc_ref(*id);
         }
         self.push(value);
+        Ok(())
     }
 
     /// Pops the top of stack and stores it in a global variable.
@@ -1119,15 +1397,35 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     }
 
     /// Loads from a closure cell and pushes onto the stack.
-    fn load_cell(&mut self, slot: u16) {
+    /// Loads from a closure cell and pushes onto the stack.
+    ///
+    /// Returns a NameError if the cell value is undefined (free variable not bound).
+    fn load_cell(&mut self, slot: u16) -> RunResult<()> {
         let cell_id = self.current_frame().cells[slot as usize];
         // Copy without incrementing refcount first (avoids borrow conflict)
         let value = self.heap.get_cell_value(cell_id).copy_for_extend();
+
+        // Check for undefined value - raise NameError for unbound free variable
+        if matches!(value, Value::Undefined) {
+            let name = self.current_frame().code.local_name(slot);
+            return Err(self.free_var_error(name));
+        }
+
         // Now we can safely increment refcount and push
         if let Value::Ref(id) = &value {
             self.heap.inc_ref(*id);
         }
         self.push(value);
+        Ok(())
+    }
+
+    /// Creates a NameError for an unbound free variable.
+    fn free_var_error(&self, name: Option<StringId>) -> RunError {
+        let name_str = match name {
+            Some(id) => self.interns.get_str(id).to_string(),
+            None => "<free var>".to_string(),
+        };
+        ExcType::name_error_free_variable(&name_str).into()
     }
 
     /// Pops the top of stack and stores it in a closure cell.
@@ -1827,6 +2125,47 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             .unwrap_or_default()
     }
 
+    /// Returns the current frame's name for traceback generation.
+    ///
+    /// Returns the function name for user-defined functions, or `<module>` for
+    /// module-level code.
+    fn current_frame_name(&self) -> StringId {
+        let frame = self.current_frame();
+        match frame.function_id {
+            Some(func_id) => self.interns.get_function(func_id).name.name_id,
+            None => MODULE_STRING_ID,
+        }
+    }
+
+    /// Creates a `RawStackFrame` for the current execution point.
+    ///
+    /// Used when raising exceptions to capture traceback information.
+    fn make_stack_frame(&self) -> RawStackFrame {
+        RawStackFrame::new(self.current_position(), self.current_frame_name(), None)
+    }
+
+    /// Attaches initial frame information to an error if it doesn't have any.
+    ///
+    /// Only sets the innermost frame if the exception doesn't already have one.
+    /// Caller frames are added separately during exception propagation.
+    fn attach_frame_to_error(&self, error: RunError) -> RunError {
+        match error {
+            RunError::Exc(mut exc) => {
+                if exc.frame.is_none() {
+                    exc.frame = Some(self.make_stack_frame());
+                }
+                RunError::Exc(exc)
+            }
+            RunError::UncatchableExc(mut exc) => {
+                if exc.frame.is_none() {
+                    exc.frame = Some(self.make_stack_frame());
+                }
+                RunError::UncatchableExc(exc)
+            }
+            RunError::Internal(_) => error,
+        }
+    }
+
     // ========================================================================
     // Exception Handling
     // ========================================================================
@@ -1834,26 +2173,44 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// Creates a RunError from a Value that should be an exception.
     ///
     /// Takes ownership of the exception value and drops it properly.
-    fn make_exception(&mut self, exc_value: Value) -> RunError {
-        // For now, create a simple exception. Full traceback support in Step 5.
-        if let Value::Ref(heap_id) = &exc_value {
+    /// The `is_raise` flag indicates if this is from a `raise` statement (hide caret).
+    fn make_exception(&mut self, exc_value: Value, is_raise: bool) -> RunError {
+        let simple_exc = if let Value::Ref(heap_id) = &exc_value {
             if let HeapData::Exception(exc) = self.heap.get(*heap_id) {
-                // Clone the exception and convert to RunError via ExceptionRaise
+                // Clone the exception
                 let exc_clone = exc.clone();
                 // Drop the value with proper heap cleanup
                 exc_value.drop_with_heap(self.heap);
-                let raise: ExceptionRaise = exc_clone.into();
-                return raise.into();
+                exc_clone
+            } else {
+                // Not an exception type
+                exc_value.drop_with_heap(self.heap);
+                SimpleException::new(
+                    ExcType::TypeError,
+                    Some("exceptions must derive from BaseException".to_string()),
+                )
             }
-        }
-        // Drop the value (even if not an exception)
-        exc_value.drop_with_heap(self.heap);
-        // Invalid exception value - create a TypeError
-        SimpleException::new(
-            ExcType::TypeError,
-            Some("exceptions must derive from BaseException".to_string()),
-        )
-        .into()
+        } else {
+            // Drop the value (even if not an exception)
+            exc_value.drop_with_heap(self.heap);
+            // Invalid exception value - create a TypeError
+            SimpleException::new(
+                ExcType::TypeError,
+                Some("exceptions must derive from BaseException".to_string()),
+            )
+        };
+
+        // Create frame with appropriate hide_caret setting
+        let frame = if is_raise {
+            RawStackFrame::from_raise(self.current_position(), self.current_frame_name())
+        } else {
+            self.make_stack_frame()
+        };
+
+        RunError::Exc(ExceptionRaise {
+            exc: simple_exc,
+            frame: Some(frame),
+        })
     }
 
     /// Handles an exception by searching for a handler in the exception table.
@@ -1867,13 +2224,20 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// 2. Pushes the exception value onto the stack
     /// 3. Sets `current_exception` for bare `raise`
     /// 4. Jumps to the handler code
-    fn handle_exception(&mut self, error: RunError) -> Option<RunError> {
+    fn handle_exception(&mut self, mut error: RunError) -> Option<RunError> {
+        // Ensure exception has initial frame info
+        error = self.attach_frame_to_error(error);
+
+        // For uncatchable exceptions (ResourceError like RecursionError),
+        // we still need to unwind the stack to collect all frames for the traceback
+        if matches!(error, RunError::UncatchableExc(_) | RunError::Internal(_)) {
+            return Some(self.unwind_for_traceback(error));
+        }
+
         // Only catchable exceptions can be handled
         let exc_info = match &error {
             RunError::Exc(exc) => exc.clone(),
-            RunError::UncatchableExc(_) | RunError::Internal(_) => {
-                return Some(error);
-            }
+            RunError::UncatchableExc(_) | RunError::Internal(_) => unreachable!(),
         };
 
         // Create exception value to push on stack
@@ -1922,14 +2286,55 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 return Some(error);
             }
 
-            // Pop this frame and continue searching
+            // Get the call site position before popping frame
+            // This is where the caller invoked the function that's failing
+            let call_position = self.current_frame().call_position;
+
+            // Pop this frame
             self.pop_frame();
-            // Update instruction_ip to the call site in the outer frame
+
+            // Add caller frame info to traceback (if we have call position)
+            if let Some(pos) = call_position {
+                let frame_name = self.current_frame_name();
+                match &mut error {
+                    RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name),
+                    RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name),
+                    RunError::Internal(_) => {}
+                }
+            }
+
+            // Update instruction_ip for the new frame
             self.instruction_ip = self
                 .current_frame()
                 .call_position
                 .map_or(0, |p| p.start().line as usize);
         }
+    }
+
+    /// Unwinds the call stack to collect all frames for a traceback.
+    ///
+    /// Used for uncatchable exceptions (like RecursionError) that can't be handled
+    /// but still need a complete traceback showing all active call frames.
+    fn unwind_for_traceback(&mut self, mut error: RunError) -> RunError {
+        // Pop frames and add caller frame info to the traceback
+        while self.frames.len() > 1 {
+            // Get the call site position before popping frame
+            let call_position = self.current_frame().call_position;
+
+            // Pop this frame (cleans up namespace, etc.)
+            self.pop_frame();
+
+            // Add caller frame info to traceback
+            if let Some(pos) = call_position {
+                let frame_name = self.current_frame_name();
+                match &mut error {
+                    RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name),
+                    RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name),
+                    RunError::Internal(_) => {}
+                }
+            }
+        }
+        error
     }
 
     /// Creates an exception Value from exception info.

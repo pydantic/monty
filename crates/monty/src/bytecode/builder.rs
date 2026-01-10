@@ -7,7 +7,7 @@ use super::{
     code::{Code, ConstPool, ExceptionEntry, LocationEntry},
     op::Opcode,
 };
-use crate::{parse::CodeRange, value::Value};
+use crate::{intern::StringId, parse::CodeRange, value::Value};
 
 /// Builder for emitting bytecode during compilation.
 ///
@@ -51,6 +51,12 @@ pub struct CodeBuilder {
 
     /// Maximum stack depth seen during compilation.
     max_stack_depth: u16,
+
+    /// Local variable names indexed by slot number.
+    ///
+    /// Populated during compilation to enable proper NameError messages
+    /// when accessing undefined local variables.
+    local_names: Vec<Option<StringId>>,
 }
 
 impl CodeBuilder {
@@ -214,6 +220,23 @@ impl CodeBuilder {
     /// Slots 0-3 use zero-operand opcodes (`LoadLocal0`, etc.) for efficiency.
     /// Slots 4-255 use `LoadLocal` with a u8 operand.
     /// Slots 256+ use `LoadLocalW` with a u16 operand.
+    /// Registers a local variable name for a given slot.
+    ///
+    /// This is called during compilation when we encounter a variable access.
+    /// The name is used to generate proper NameError messages.
+    pub fn register_local_name(&mut self, slot: u16, name: StringId) {
+        let slot_idx = slot as usize;
+        // Extend the vector if needed
+        if slot_idx >= self.local_names.len() {
+            self.local_names.resize(slot_idx + 1, None);
+        }
+        // Only set if not already set (first occurrence determines the name)
+        if self.local_names[slot_idx].is_none() {
+            self.local_names[slot_idx] = Some(name);
+        }
+    }
+
+    /// Emits a `LoadLocal` instruction, using specialized variants for common slots.
     pub fn emit_load_local(&mut self, slot: u16) {
         match slot {
             0 => self.emit(Opcode::LoadLocal0),
@@ -276,6 +299,10 @@ impl CodeBuilder {
     /// compiled bytecode and all metadata.
     #[must_use]
     pub fn build(self, num_locals: u16) -> Code {
+        // Convert local_names from Vec<Option<StringId>> to Vec<StringId>,
+        // using StringId::default() for slots with no recorded name
+        let local_names: Vec<StringId> = self.local_names.into_iter().map(Option::unwrap_or_default).collect();
+
         Code::new(
             self.bytecode,
             ConstPool::from_vec(self.constants),
@@ -283,6 +310,7 @@ impl CodeBuilder {
             self.exception_table,
             num_locals,
             self.max_stack_depth,
+            local_names,
         )
     }
 

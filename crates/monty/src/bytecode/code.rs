@@ -4,7 +4,7 @@
 //! bytecode instructions, a constant pool, source location information for tracebacks,
 //! and an exception handler table.
 
-use crate::{parse::CodeRange, value::Value};
+use crate::{intern::StringId, parse::CodeRange, value::Value};
 
 /// Compiled bytecode for a function or module.
 ///
@@ -48,6 +48,12 @@ pub struct Code {
     /// Used as a hint for pre-allocating the operand stack. Computed during
     /// compilation by tracking push/pop operations.
     stack_size: u16,
+
+    /// Local variable names for error messages.
+    ///
+    /// Maps slot indices to variable names. Used to generate proper NameError
+    /// messages when accessing undefined local variables (e.g., "name 'x' is not defined").
+    local_names: Vec<StringId>,
 }
 
 impl Code {
@@ -62,6 +68,7 @@ impl Code {
         exception_table: Vec<ExceptionEntry>,
         num_locals: u16,
         stack_size: u16,
+        local_names: Vec<StringId>,
     ) -> Self {
         Self {
             bytecode,
@@ -70,6 +77,7 @@ impl Code {
             exception_table,
             num_locals,
             stack_size,
+            local_names,
         }
     }
 
@@ -107,6 +115,14 @@ impl Code {
     #[must_use]
     pub fn stack_size(&self) -> u16 {
         self.stack_size
+    }
+
+    /// Returns the local variable name for a given slot index.
+    ///
+    /// Used to generate proper NameError messages when accessing undefined locals.
+    #[must_use]
+    pub fn local_name(&self, slot: u16) -> Option<StringId> {
+        self.local_names.get(slot as usize).copied()
     }
 
     /// Returns the length of the bytecode in bytes.

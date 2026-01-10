@@ -16,7 +16,7 @@ use crate::{
     expressions::{Expr, ExprLoc, Identifier, Literal, NameScope, Node},
     intern::Interns,
     operators::{CmpOperator, Operator},
-    parse::{ExceptHandler, Try},
+    parse::{CodeRange, ExceptHandler, Try},
     value::{Attr, Value},
 };
 
@@ -230,12 +230,14 @@ impl<'a> Compiler<'a> {
             }
 
             Expr::Op { left, op, right } => {
-                self.compile_binary_op(left, op, right);
+                self.compile_binary_op(left, op, right, expr_loc.position);
             }
 
             Expr::CmpOp { left, op, right } => {
                 self.compile_expr(left);
                 self.compile_expr(right);
+                // Restore the full comparison expression's position for traceback caret range
+                self.code.set_location(expr_loc.position, None);
                 // ModEq needs special handling - it has a constant operand
                 if let CmpOperator::ModEq(value) = op {
                     let const_idx = self.code.add_const(Value::Int(*value));
@@ -247,11 +249,15 @@ impl<'a> Compiler<'a> {
 
             Expr::Not(operand) => {
                 self.compile_expr(operand);
+                // Restore the full expression's position for traceback caret range
+                self.code.set_location(expr_loc.position, None);
                 self.code.emit(Opcode::UnaryNot);
             }
 
             Expr::UnaryMinus(operand) => {
                 self.compile_expr(operand);
+                // Restore the full expression's position for traceback caret range
+                self.code.set_location(expr_loc.position, None);
                 self.code.emit(Opcode::UnaryNeg);
             }
 
@@ -287,6 +293,8 @@ impl<'a> Compiler<'a> {
             Expr::Subscript { object, index } => {
                 self.compile_expr(object);
                 self.compile_expr(index);
+                // Restore the full subscript expression's position for traceback
+                self.code.set_location(expr_loc.position, None);
                 self.code.emit(Opcode::BinarySubscr);
             }
 
@@ -296,12 +304,14 @@ impl<'a> Compiler<'a> {
 
             Expr::AttrGet { object, attr } => {
                 self.compile_expr(object);
+                // Restore the full expression's position for traceback caret range
+                self.code.set_location(expr_loc.position, None);
                 let name_id = attr.string_id().expect("LoadAttr requires interned attr name");
                 self.code.emit_u16(Opcode::LoadAttr, name_id.index() as u16);
             }
 
             Expr::Call { callable, args } => {
-                self.compile_call(callable, args);
+                self.compile_call(callable, args, expr_loc.position);
             }
 
             Expr::AttrCall { object, attr, args } => {
@@ -366,15 +376,28 @@ impl<'a> Compiler<'a> {
         let slot = ident.namespace_id().index() as u16;
         match ident.scope {
             NameScope::Local => {
+                // Register the name for NameError messages
+                self.code.register_local_name(slot, ident.name_id);
                 self.code.emit_load_local(slot);
             }
             NameScope::Global => {
                 self.code.emit_u16(Opcode::LoadGlobal, slot);
             }
             NameScope::Cell => {
+                // Register the name for NameError messages (unbound free variable)
+                self.code.register_local_name(slot, ident.name_id);
                 self.code.emit_u16(Opcode::LoadCell, slot);
             }
         }
+    }
+
+    /// Compiles loading a variable with position tracking for proper traceback ranges.
+    ///
+    /// Sets the identifier's position before loading, so NameErrors show the correct caret.
+    fn compile_name_with_position(&mut self, ident: &Identifier) {
+        // Set the identifier's position for proper traceback caret range
+        self.code.set_location(ident.position, None);
+        self.compile_name(ident);
     }
 
     /// Compiles storing the top of stack to a variable.
@@ -382,6 +405,8 @@ impl<'a> Compiler<'a> {
         let slot = target.namespace_id().index() as u16;
         match target.scope {
             NameScope::Local => {
+                // Register the name for NameError messages
+                self.code.register_local_name(slot, target.name_id);
                 self.code.emit_store_local(slot);
             }
             NameScope::Global => {
@@ -398,7 +423,10 @@ impl<'a> Compiler<'a> {
     // ========================================================================
 
     /// Compiles a binary operation.
-    fn compile_binary_op(&mut self, left: &ExprLoc, op: &Operator, right: &ExprLoc) {
+    ///
+    /// `parent_pos` is the position of the full binary expression (e.g., `1 / 0`),
+    /// which we restore before emitting the opcode so tracebacks show the right range.
+    fn compile_binary_op(&mut self, left: &ExprLoc, op: &Operator, right: &ExprLoc, parent_pos: CodeRange) {
         match op {
             // Short-circuit AND: evaluate left, jump if falsy
             Operator::And => {
@@ -420,6 +448,8 @@ impl<'a> Compiler<'a> {
             _ => {
                 self.compile_expr(left);
                 self.compile_expr(right);
+                // Restore the full expression's position for traceback caret range
+                self.code.set_location(parent_pos, None);
                 self.code.emit(operator_to_opcode(op));
             }
         }
@@ -463,30 +493,36 @@ impl<'a> Compiler<'a> {
     /// Compiles a function call expression.
     ///
     /// Pushes the callable onto the stack, then all arguments, then emits CallFunction.
-    fn compile_call(&mut self, callable: &Callable, args: &ArgExprs) {
-        // Push the callable
+    /// The `call_pos` is the position of the full call expression for proper traceback caret.
+    fn compile_call(&mut self, callable: &Callable, args: &ArgExprs, call_pos: CodeRange) {
+        // Push the callable (use name position for NameError caret range)
         match callable {
             Callable::Builtin(builtin) => {
                 let idx = self.code.add_const(Value::Builtin(*builtin));
                 self.code.emit_u16(Opcode::LoadConst, idx);
             }
             Callable::Name(ident) => {
-                self.compile_name(ident);
+                // Use identifier position so NameError shows caret under just the name
+                self.compile_name_with_position(ident);
             }
         }
 
         // Compile arguments and emit the call
+        // Restore full call position before CallFunction for call-related errors
         match args {
             ArgExprs::Empty => {
+                self.code.set_location(call_pos, None);
                 self.code.emit_u8(Opcode::CallFunction, 0);
             }
             ArgExprs::One(arg) => {
                 self.compile_expr(arg);
+                self.code.set_location(call_pos, None);
                 self.code.emit_u8(Opcode::CallFunction, 1);
             }
             ArgExprs::Two(arg1, arg2) => {
                 self.compile_expr(arg1);
                 self.compile_expr(arg2);
+                self.code.set_location(call_pos, None);
                 self.code.emit_u8(Opcode::CallFunction, 2);
             }
             ArgExprs::Args(args) => {
@@ -495,6 +531,7 @@ impl<'a> Compiler<'a> {
                 }
                 // CallFunction takes u8 for arg count (max 255 positional args)
                 let arg_count = args.len().min(255) as u8;
+                self.code.set_location(call_pos, None);
                 self.code.emit_u8(Opcode::CallFunction, arg_count);
             }
             ArgExprs::Kwargs(kwargs) => {
@@ -504,6 +541,7 @@ impl<'a> Compiler<'a> {
                     self.compile_expr(&kwarg.value);
                     kwname_ids.push(kwarg.key.name_id.index() as u16);
                 }
+                self.code.set_location(call_pos, None);
                 self.code.emit_call_function_kw(0, &kwname_ids);
             }
             ArgExprs::ArgsKargs {
@@ -535,6 +573,7 @@ impl<'a> Compiler<'a> {
                     }
                 }
 
+                self.code.set_location(call_pos, None);
                 self.code.emit_call_function_kw(pos_count.min(255) as u8, &kwname_ids);
             }
         }
