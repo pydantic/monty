@@ -368,6 +368,9 @@ impl Executor {
         let mut vm = VM::new(&mut heap, &mut namespaces, &self.interns, print);
         let result = vm.run_module(&self.module_code);
 
+        // Clean up VM state before it goes out of scope
+        vm.cleanup();
+
         // Clean up the global namespace before returning (only needed with ref-count-panic)
         #[cfg(feature = "ref-count-panic")]
         namespaces.drop_global_with_heap(&mut heap);

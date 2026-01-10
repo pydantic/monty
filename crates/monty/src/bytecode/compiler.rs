@@ -6,16 +6,17 @@
 
 use super::{
     builder::{CodeBuilder, JumpLabel},
-    code::Code,
+    code::{Code, ExceptionEntry},
     op::Opcode,
 };
 use crate::{
     args::ArgExprs,
-    builtins::Builtins,
+    builtins::{Builtins, BuiltinsFunctions},
     callable::Callable,
     expressions::{Expr, ExprLoc, Identifier, Literal, NameScope, Node},
     intern::Interns,
     operators::{CmpOperator, Operator},
+    parse::{ExceptHandler, Try},
     value::Value,
 };
 
@@ -203,8 +204,8 @@ impl<'a> Compiler<'a> {
                 self.compile_store(&func.name);
             }
 
-            Node::Try(_) => {
-                todo!("Try/except compilation (Step 5)")
+            Node::Try(try_block) => {
+                self.compile_try(try_block);
             }
         }
     }
@@ -577,6 +578,222 @@ impl<'a> Compiler<'a> {
         // full f-string support requires changes to how f-strings are parsed.
         // For now, defer to runtime (or panic at compile time for f-strings).
         todo!("F-string compilation requires changes to f-string representation")
+    }
+
+    // ========================================================================
+    // Exception Handling Compilation
+    // ========================================================================
+
+    /// Compiles a try/except/else/finally block.
+    ///
+    /// The bytecode structure is:
+    /// ```text
+    /// <try_body>                     # protected range
+    /// JUMP to_else_or_finally        # skip handlers if no exception
+    /// handler_dispatch:              # exception pushed by VM
+    ///   # for each handler:
+    ///   <check exception type>
+    ///   <handler body>
+    ///   CLEAR_EXCEPTION
+    ///   JUMP to_finally
+    /// reraise:
+    ///   RERAISE                      # no handler matched
+    /// else_block:
+    ///   <else_body>
+    /// finally_block:
+    ///   <finally_body>
+    /// end:
+    /// ```
+    fn compile_try(&mut self, try_block: &Try<Node>) {
+        let has_finally = !try_block.finally.is_empty();
+        let has_handlers = !try_block.handlers.is_empty();
+        let has_else = !try_block.or_else.is_empty();
+
+        // Record stack depth at try entry (for unwinding on exception)
+        let stack_depth = self.code.stack_depth();
+
+        // === Compile try body ===
+        let try_start = self.code.current_offset();
+        self.compile_block(&try_block.body);
+        let try_end = self.code.current_offset();
+
+        // Jump to else/finally if no exception (skip handlers)
+        let after_try_jump = self.code.emit_jump(Opcode::Jump);
+
+        // === Handler dispatch starts here ===
+        let handler_start = self.code.current_offset();
+
+        // Track jumps that go to finally (for patching later)
+        let mut finally_jumps: Vec<JumpLabel> = Vec::new();
+
+        if has_handlers {
+            // Compile exception handlers
+            self.compile_exception_handlers(&try_block.handlers, &mut finally_jumps);
+        } else {
+            // No handlers - just reraise (this only happens with try-finally)
+            self.code.emit(Opcode::Reraise);
+        }
+
+        // === Else block (runs if no exception) ===
+        self.code.patch_jump(after_try_jump);
+        if has_else {
+            self.compile_block(&try_block.or_else);
+        }
+
+        // === Finally block (always runs) ===
+        // Patch all jumps from handlers to go here
+        for jump in finally_jumps {
+            self.code.patch_jump(jump);
+        }
+
+        if has_finally {
+            self.compile_block(&try_block.finally);
+        }
+
+        // === Add exception table entry ===
+        // The entry maps the try body to the handler dispatch
+        if has_handlers || has_finally {
+            self.code.add_exception_entry(ExceptionEntry::new(
+                try_start as u32,
+                try_end as u32 + 3, // +3 to include the JUMP instruction
+                handler_start as u32,
+                stack_depth,
+            ));
+        }
+    }
+
+    /// Compiles the exception handlers for a try block.
+    ///
+    /// Each handler checks if the exception matches its type, and if so,
+    /// executes the handler body. If no handler matches, the exception is re-raised.
+    fn compile_exception_handlers(&mut self, handlers: &[ExceptHandler<Node>], finally_jumps: &mut Vec<JumpLabel>) {
+        // Track jumps from non-matching handlers to next handler
+        let mut next_handler_jumps: Vec<JumpLabel> = Vec::new();
+
+        for (i, handler) in handlers.iter().enumerate() {
+            let is_last = i == handlers.len() - 1;
+
+            // Patch jumps from previous handler's non-match to here
+            for jump in next_handler_jumps.drain(..) {
+                self.code.patch_jump(jump);
+            }
+
+            if let Some(exc_type) = &handler.exc_type {
+                // Typed handler: except ExcType: or except ExcType as e:
+                // Stack: [exception]
+
+                // Duplicate exception for isinstance check
+                self.code.emit(Opcode::Dup);
+                // Stack: [exception, exception]
+
+                // Load the exception type to match against
+                self.compile_expr(exc_type);
+                // Stack: [exception, exception, exc_type]
+
+                // Load isinstance function
+                let isinstance_idx = self
+                    .code
+                    .add_const(Value::Builtin(Builtins::Function(BuiltinsFunctions::Isinstance)));
+                self.code.emit_u16(Opcode::LoadConst, isinstance_idx);
+                // Stack: [exception, exception, exc_type, isinstance]
+
+                // Rotate to get: [exception, isinstance, exception, exc_type]
+                // CallFunction 2 expects: [callable, arg0, arg1] at top
+                self.code.emit(Opcode::Rot3);
+                // Stack: [exception, isinstance, exception, exc_type]
+
+                // Now call isinstance(exception, exc_type)
+                self.code.emit_u8(Opcode::CallFunction, 2);
+
+                // Jump to next handler if isinstance returned False
+                let no_match_jump = self.code.emit_jump(Opcode::JumpIfFalse);
+
+                if is_last {
+                    // Last handler - if no match, reraise
+                    // But first we need to handle the exception var cleanup
+                } else {
+                    next_handler_jumps.push(no_match_jump);
+                }
+
+                // Exception matched! Bind to variable if needed
+                if let Some(name) = &handler.name {
+                    // Stack: [exception]
+                    // Store to variable (don't pop - we still need it for current_exception)
+                    self.code.emit(Opcode::Dup);
+                    self.compile_store(name);
+                }
+
+                // Compile handler body
+                self.compile_block(&handler.body);
+
+                // Delete exception variable (Python 3 behavior)
+                if let Some(name) = &handler.name {
+                    self.compile_delete(name);
+                }
+
+                // Clear current_exception
+                self.code.emit(Opcode::ClearException);
+
+                // Pop the exception from stack
+                self.code.emit(Opcode::Pop);
+
+                // Jump to finally
+                finally_jumps.push(self.code.emit_jump(Opcode::Jump));
+
+                // If this was last handler and no match, we need to reraise
+                if is_last {
+                    self.code.patch_jump(no_match_jump);
+                    self.code.emit(Opcode::Reraise);
+                }
+            } else {
+                // Bare except: catches everything
+                // Stack: [exception]
+
+                // Bind to variable if needed
+                if let Some(name) = &handler.name {
+                    self.code.emit(Opcode::Dup);
+                    self.compile_store(name);
+                }
+
+                // Compile handler body
+                self.compile_block(&handler.body);
+
+                // Delete exception variable
+                if let Some(name) = &handler.name {
+                    self.compile_delete(name);
+                }
+
+                // Clear current_exception
+                self.code.emit(Opcode::ClearException);
+
+                // Pop the exception from stack
+                self.code.emit(Opcode::Pop);
+
+                // Jump to finally
+                finally_jumps.push(self.code.emit_jump(Opcode::Jump));
+            }
+        }
+    }
+
+    /// Compiles deletion of a variable.
+    fn compile_delete(&mut self, target: &Identifier) {
+        let slot = target.namespace_id().index() as u16;
+        match target.scope {
+            NameScope::Local => {
+                if slot <= 255 {
+                    self.code.emit_u8(Opcode::DeleteLocal, slot as u8);
+                } else {
+                    // Wide variant not implemented yet
+                    todo!("DeleteLocalW for slot > 255");
+                }
+            }
+            NameScope::Global | NameScope::Cell => {
+                // Delete global/cell not commonly needed
+                // For now, just store Undefined
+                self.code.emit(Opcode::LoadNone);
+                self.compile_store(target);
+            }
+        }
     }
 }
 

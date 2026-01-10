@@ -160,6 +160,12 @@ pub struct VM<'a, T: ResourceTracker, P: PrintWriter> {
     /// Used by bare `raise` to re-raise the current exception.
     /// Set when entering an except handler, cleared when exiting.
     current_exception: Option<Value>,
+
+    /// IP of the instruction being executed (for exception table lookup).
+    ///
+    /// Updated at the start of each instruction before operands are fetched.
+    /// This allows us to find the correct exception handler when an error occurs.
+    instruction_ip: usize,
 }
 
 impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
@@ -178,6 +184,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             interns,
             print_writer,
             current_exception: None,
+            instruction_ip: 0,
         }
     }
 
@@ -187,6 +194,21 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         self.run()
     }
 
+    /// Cleans up VM state before the VM is dropped.
+    ///
+    /// This method must be called before the VM goes out of scope to ensure
+    /// proper reference counting cleanup for any exception values.
+    pub fn cleanup(&mut self) {
+        // Drop current_exception if present
+        if let Some(exc) = self.current_exception.take() {
+            exc.drop_with_heap(self.heap);
+        }
+        // Stack should be empty, but clean up just in case
+        for value in self.stack.drain(..) {
+            value.drop_with_heap(self.heap);
+        }
+    }
+
     /// Main execution loop.
     ///
     /// Fetches opcodes from the current frame's bytecode and executes them.
@@ -194,6 +216,8 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// call is needed.
     pub fn run(&mut self) -> VMResult {
         loop {
+            // Track instruction IP for exception table lookup
+            self.instruction_ip = self.current_frame().ip;
             let opcode = self.fetch_opcode();
 
             match opcode {
@@ -223,11 +247,11 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
 
                 Opcode::Rot3 => {
                     // Rotate top three: [a, b, c] → [c, a, b]
+                    // Uses in-place rotation without cloning
                     let len = self.stack.len();
-                    let c = self.stack[len - 1].clone_immediate();
-                    self.stack[len - 1] = self.stack[len - 2].clone_immediate();
-                    self.stack[len - 2] = self.stack[len - 3].clone_immediate();
-                    self.stack[len - 3] = c;
+                    // Move c out, then shift a→b→c, then put c at a's position
+                    // Equivalent to: [..rest, a, b, c] → [..rest, c, a, b]
+                    self.stack[len - 3..].rotate_right(1);
                 }
 
                 // ============================================================
@@ -728,7 +752,13 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                             // Frame was pushed, continue execution in VM loop.
                             // Return value will be pushed by ReturnValue opcode.
                         }
-                        Err(err) => return VMResult::Error(err),
+                        Err(err) => {
+                            // Try to handle the exception
+                            if let Some(result) = self.handle_exception(err) {
+                                return result;
+                            }
+                            // Exception was handled, continue execution
+                        }
                     }
                 }
 
@@ -815,7 +845,11 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 // ============================================================
                 Opcode::Raise => {
                     let exc = self.pop();
-                    return VMResult::Error(self.make_exception(exc));
+                    let error = self.make_exception(exc);
+                    if let Some(result) = self.handle_exception(error) {
+                        return result;
+                    }
+                    // Exception was handled, continue execution
                 }
 
                 Opcode::RaiseFrom => {
@@ -823,15 +857,20 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 }
 
                 Opcode::Reraise => {
-                    if let Some(exc) = self.current_exception.take() {
-                        return VMResult::Error(self.make_exception(exc));
+                    let error = if let Some(exc) = self.current_exception.take() {
+                        self.make_exception(exc)
+                    } else {
+                        // No active exception - create a RuntimeError
+                        SimpleException::new(
+                            ExcType::RuntimeError,
+                            Some("No active exception to reraise".to_string()),
+                        )
+                        .into()
+                    };
+                    if let Some(result) = self.handle_exception(error) {
+                        return result;
                     }
-                    // No active exception - create a RuntimeError
-                    let exc = SimpleException::new(
-                        ExcType::RuntimeError,
-                        Some("No active exception to re-raise".to_string()),
-                    );
-                    return VMResult::Error(exc.into());
+                    // Exception was handled, continue execution
                 }
 
                 Opcode::ClearException => {
@@ -1630,21 +1669,112 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     // ========================================================================
 
     /// Creates a RunError from a Value that should be an exception.
-    fn make_exception(&self, exc_value: Value) -> RunError {
+    ///
+    /// Takes ownership of the exception value and drops it properly.
+    fn make_exception(&mut self, exc_value: Value) -> RunError {
         // For now, create a simple exception. Full traceback support in Step 5.
         if let Value::Ref(heap_id) = &exc_value {
             if let HeapData::Exception(exc) = self.heap.get(*heap_id) {
                 // Clone the exception and convert to RunError via ExceptionRaise
                 let exc_clone = exc.clone();
+                // Drop the value with proper heap cleanup
+                exc_value.drop_with_heap(self.heap);
                 let raise: ExceptionRaise = exc_clone.into();
                 return raise.into();
             }
         }
+        // Drop the value (even if not an exception)
+        exc_value.drop_with_heap(self.heap);
         // Invalid exception value - create a TypeError
         SimpleException::new(
             ExcType::TypeError,
             Some("exceptions must derive from BaseException".to_string()),
         )
         .into()
+    }
+
+    /// Handles an exception by searching for a handler in the exception table.
+    ///
+    /// Returns:
+    /// - `Some(VMResult)` if the exception was not caught (should return from run loop)
+    /// - `None` if the exception was caught (continue execution)
+    ///
+    /// When an exception is caught:
+    /// 1. Unwinds the stack to the handler's expected depth
+    /// 2. Pushes the exception value onto the stack
+    /// 3. Sets `current_exception` for bare `raise`
+    /// 4. Jumps to the handler code
+    fn handle_exception(&mut self, error: RunError) -> Option<VMResult> {
+        // Only catchable exceptions can be handled
+        let exc_info = match &error {
+            RunError::Exc(exc) => exc.clone(),
+            RunError::UncatchableExc(_) | RunError::Internal(_) => {
+                return Some(VMResult::Error(error));
+            }
+        };
+
+        // Create exception value to push on stack
+        let exc_value = self.create_exception_value(&exc_info);
+        let exc_value = match exc_value {
+            Ok(v) => v,
+            Err(e) => return Some(VMResult::Error(e)),
+        };
+
+        // Search for handler in current and outer frames
+        loop {
+            let frame = self.current_frame();
+            let ip = self.instruction_ip as u32;
+
+            // Search exception table for a handler covering this IP
+            if let Some(entry) = frame.code.find_exception_handler(ip) {
+                // Found a handler! Unwind stack and jump to it.
+                let handler_offset = entry.handler() as usize;
+                let target_stack_depth = frame.stack_base + entry.stack_depth() as usize;
+
+                // Unwind stack to target depth (drop excess values)
+                while self.stack.len() > target_stack_depth {
+                    let value = self.stack.pop().unwrap();
+                    value.drop_with_heap(self.heap);
+                }
+
+                // Push exception value onto stack (handler expects it)
+                let exc_for_stack = exc_value.clone_with_heap(self.heap);
+                self.push(exc_for_stack);
+
+                // Set current_exception for bare raise
+                if let Some(old) = self.current_exception.replace(exc_value) {
+                    old.drop_with_heap(self.heap);
+                }
+
+                // Jump to handler
+                self.current_frame_mut().ip = handler_offset;
+
+                return None; // Continue execution at handler
+            }
+
+            // No handler in this frame - pop frame and try outer
+            if self.frames.len() <= 1 {
+                // No more frames - exception is unhandled
+                exc_value.drop_with_heap(self.heap);
+                return Some(VMResult::Error(error));
+            }
+
+            // Pop this frame and continue searching
+            self.pop_frame();
+            // Update instruction_ip to the call site in the outer frame
+            self.instruction_ip = self
+                .current_frame()
+                .call_position
+                .map_or(0, |p| p.start().line as usize);
+        }
+    }
+
+    /// Creates an exception Value from exception info.
+    ///
+    /// Allocates an Exception on the heap and returns a Value::Ref to it.
+    fn create_exception_value(&mut self, exc: &ExceptionRaise) -> Result<Value, RunError> {
+        let exception = exc.exc.clone();
+        let heap_id = self.heap.allocate(HeapData::Exception(exception))?;
+        Ok(Value::Ref(heap_id))
     }
 }

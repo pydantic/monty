@@ -1517,10 +1517,10 @@ Note: Some operations use `todo!()` pending implementation:
 - [x] Default parameters
 
 ### Step 5: Exception Handling
-- [ ] Try/except/finally compilation
-- [ ] Exception table generation (static, no runtime stack)
-- [ ] Raise/reraise opcodes
-- [ ] Exception lookup and stack unwinding in VM
+- [x] Try/except/finally compilation
+- [x] Exception table generation (static, no runtime stack)
+- [x] Raise/reraise opcodes
+- [x] Exception lookup and stack unwinding in VM
 
 ### Step 6: External Calls & Snapshots
 - [ ] `CallExternal` opcode

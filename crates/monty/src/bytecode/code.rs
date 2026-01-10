@@ -138,6 +138,18 @@ impl Code {
             .rev()
             .find(|entry| entry.bytecode_offset <= offset_u32)
     }
+
+    /// Finds an exception handler for the given bytecode offset.
+    ///
+    /// Searches the exception table for an entry whose protected range contains
+    /// the given offset. Returns the first (innermost) matching handler, since
+    /// entries are ordered innermost-first for nested try blocks.
+    ///
+    /// Returns `None` if no handler covers this offset.
+    #[must_use]
+    pub fn find_exception_handler(&self, offset: u32) -> Option<&ExceptionEntry> {
+        self.exception_table.iter().find(|entry| entry.contains(offset))
+    }
 }
 
 /// Constant pool for a code object.
