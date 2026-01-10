@@ -823,6 +823,25 @@ impl PyTrait for Value {
             _ => Err(ExcType::type_error_not_sub(self.py_type(Some(heap)))),
         }
     }
+
+    fn py_setitem(
+        &mut self,
+        key: Self,
+        value: Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<()> {
+        match self {
+            Value::Ref(id) => {
+                let id = *id;
+                heap.with_entry_mut(id, |heap, data| data.py_setitem(key, value, heap, interns))
+            }
+            _ => Err(ExcType::type_error(&format!(
+                "'{}' object does not support item assignment",
+                self.py_type(Some(heap))
+            ))),
+        }
+    }
 }
 
 impl Value {

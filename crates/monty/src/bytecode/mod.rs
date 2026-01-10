@@ -12,18 +12,12 @@
 //! - `compiler` - AST to bytecode compiler
 //! - `vm` - Virtual machine for bytecode execution
 
-// Allow unused items while the bytecode module is being built out.
-// These will be used once the VM is implemented.
-#![allow(dead_code, unused_imports)]
-
 mod builder;
 mod code;
 mod compiler;
 mod op;
 mod vm;
 
-pub use builder::{CodeBuilder, JumpLabel};
-pub use code::{Code, ConstPool, ExceptionEntry, LocationEntry};
+pub use code::Code;
 pub use compiler::Compiler;
-pub use op::Opcode;
-pub use vm::{CallFrame, VMResult, VMSnapshot, VM};
+pub use vm::{VMResult, VMSnapshot, VM};

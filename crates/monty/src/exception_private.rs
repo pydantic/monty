@@ -576,6 +576,23 @@ impl ExcType {
         exc_static!(Self::OverflowError; "cannot fit 'int' into an index-sized integer")
     }
 
+    /// Creates a ValueError for negative shift count in bitwise shift operations.
+    ///
+    /// Matches CPython's format: `ValueError: negative shift count`
+    #[must_use]
+    pub fn value_error_negative_shift_count() -> RunError {
+        exc_static!(Self::ValueError; "negative shift count").into()
+    }
+
+    /// Creates an OverflowError for shift count exceeding integer size.
+    ///
+    /// Matches CPython's format: `OverflowError: Python int too large to convert to C ssize_t`
+    /// Note: CPython uses this message because it tries to convert to ssize_t for the shift amount.
+    #[must_use]
+    pub fn overflow_shift_count() -> RunError {
+        exc_static!(Self::OverflowError; "Python int too large to convert to C ssize_t").into()
+    }
+
     /// Generates a consistent error for invalid `**kwargs` types.
     #[must_use]
     pub fn kwargs_type_error(callable_name: Option<&str>, type_: Type) -> SimpleException {

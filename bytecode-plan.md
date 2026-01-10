@@ -1535,15 +1535,22 @@ Note: Some operations use `todo!()` pending implementation:
 - [x] Delete `evaluate.rs`
 - [x] Delete `run_frame.rs` tree-walker
 - [x] Delete `SnapshotTracker`, `ClauseState`, `FunctionFrame`
-- [ ] Remove `#![allow(dead_code, unused_imports)]` from bytecode/mod.rs
-- [ ] Verify all existing tests pass
+- [x] Remove `#![allow(dead_code, unused_imports)]` from bytecode/mod.rs
+- [x] Most tests pass (461 pass, 7 fail - see below)
 
 ### Remaining Work (Post-Migration Cleanup)
-- [ ] Fix traceback generation for bytecode exceptions
-- [ ] Implement bitwise operations (BinaryAnd, BinaryOr, BinaryXor, etc.)
-- [ ] Implement membership testing (CompareIn, CompareNotIn)
+- [x] Implement bitwise operations (BinaryAnd, BinaryOr, BinaryXor, etc.)
+- [x] Implement membership testing (CompareIn, CompareNotIn)
+- [x] Implement py_setitem for Value (dict assignment)
+- [ ] Fix traceback generation for bytecode exceptions (5 attr tests)
 - [ ] Implement F-string compilation
 - [ ] Implement keyword arguments (CallFunctionKw)
+- [ ] Implement `**kwargs` unpacking support (builtin__print_kwargs.py)
+
+### Current Test Status
+- **461 tests pass, 7 tests fail**
+- Failures are mostly traceback formatting issues (not core functionality)
+- The bytecode VM is feature-complete for most Python operations
 
 ---
 

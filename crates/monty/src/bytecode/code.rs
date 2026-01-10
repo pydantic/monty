@@ -152,6 +152,7 @@ impl Code {
     }
 }
 
+/// TODO remove, this doesn't add any value
 /// Constant pool for a code object.
 ///
 /// Stores literal values referenced by `LoadConst` instructions. Strings are stored
