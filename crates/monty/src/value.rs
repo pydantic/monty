@@ -943,7 +943,53 @@ impl Value {
         Some(hasher.finish())
     }
 
-    /// TODO maybe replace with TryFrom
+    /// TODO this doesn't have many tests!!! also doesn't cover bytes
+    /// Checks if `item` is contained in `self` (the container).
+    ///
+    /// Implements Python's `in` operator for various container types:
+    /// - List/Tuple: linear search with equality
+    /// - Dict: key lookup
+    /// - Set/FrozenSet: element lookup
+    /// - Str: substring search
+    pub fn py_contains(
+        &self,
+        item: &Value,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<bool> {
+        match self {
+            Value::Ref(heap_id) => {
+                // Use with_entry_mut to temporarily take ownership of the container.
+                // This allows iterating over container elements while calling py_eq
+                // (which needs &mut Heap for comparing nested heap values).
+                heap.with_entry_mut(*heap_id, |heap, data| match data {
+                    HeapData::List(el) => Ok(el.as_vec().iter().any(|i| item.py_eq(i, heap, interns))),
+                    HeapData::Tuple(el) => Ok(el.as_vec().iter().any(|i| item.py_eq(i, heap, interns))),
+                    HeapData::Dict(dict) => dict.get(item, heap, interns).map(|m| m.is_some()),
+                    HeapData::Set(set) => set.contains(item, heap, interns),
+                    HeapData::FrozenSet(fset) => fset.contains(item, heap, interns),
+                    HeapData::Str(s) => str_contains(s.as_str(), item, heap, interns),
+                    other => {
+                        let type_name = other.py_type(Some(heap));
+                        Err(ExcType::type_error(&format!(
+                            "argument of type '{type_name}' is not iterable"
+                        )))
+                    }
+                })
+            }
+            Value::InternString(string_id) => {
+                let container_str = interns.get_str(*string_id);
+                str_contains(container_str, item, heap, interns)
+            }
+            _ => {
+                let type_name = self.py_type(Some(heap));
+                Err(ExcType::type_error(&format!(
+                    "argument of type '{type_name}' is not iterable"
+                )))
+            }
+        }
+    }
+
     pub fn as_int(&self) -> RunResult<i64> {
         match self {
             Self::Int(i) => Ok(*i),
@@ -1297,5 +1343,31 @@ fn i64_to_repeat_count(n: i64) -> RunResult<usize> {
         Err(ExcType::overflow_repeat_count().into())
     } else {
         Ok(n as usize)
+    }
+}
+
+/// Helper for substring containment check in strings.
+///
+/// Called by `py_contains` when the container is a string.
+/// The item must also be a string (either interned or heap-allocated).
+fn str_contains(
+    container_str: &str,
+    item: &Value,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<bool> {
+    match item {
+        Value::InternString(item_id) => {
+            let item_str = interns.get_str(*item_id);
+            Ok(container_str.contains(item_str))
+        }
+        Value::Ref(item_heap_id) => {
+            if let HeapData::Str(item_str) = heap.get(*item_heap_id) {
+                Ok(container_str.contains(item_str.as_str()))
+            } else {
+                Err(ExcType::type_error("'in <str>' requires string as left operand"))
+            }
+        }
+        _ => Err(ExcType::type_error("'in <str>' requires string as left operand")),
     }
 }

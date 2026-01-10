@@ -1361,25 +1361,18 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
 
     /// Identity comparison (is/is not).
     ///
-    /// Two values are identical if:
-    /// - Both are `None` (singleton)
-    /// - Both are the same boolean value (True/False are singletons)
-    /// - Both are `Ref` pointing to the same `HeapId`
-    /// - For small integers and interned strings, Python uses object caching,
-    ///   but we simplify by comparing values for immediate types.
+    /// Compares identity using `Value::is()` which compares IDs.
+    ///
+    /// Identity is determined by `Value::id()` which uses:
+    /// - Fixed IDs for singletons (None, True, False, Ellipsis)
+    /// - Interned string/bytes index for InternString/InternBytes
+    /// - HeapId for heap-allocated values (Ref)
+    /// - Value-based hashing for immediate types (Int, Float, Function, etc.)
     fn compare_is(&mut self, negate: bool) {
         let rhs = self.pop();
         let lhs = self.pop();
 
-        let result = match (&lhs, &rhs) {
-            // Singletons
-            (Value::None, Value::None) => true,
-            (Value::Bool(a), Value::Bool(b)) => a == b,
-            // Heap references - same identity if same HeapId
-            (Value::Ref(a), Value::Ref(b)) => a == b,
-            // Different types or different values are not identical
-            _ => false,
-        };
+        let result = lhs.is(&rhs);
 
         lhs.drop_with_heap(self.heap);
         rhs.drop_with_heap(self.heap);
@@ -1391,164 +1384,14 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         let container = self.pop(); // container (rhs)
         let item = self.pop(); // item to find (lhs)
 
-        let result = self.contains(&item, &container)?;
+        let result = container.py_contains(&item, self.heap, self.interns);
 
         item.drop_with_heap(self.heap);
         container.drop_with_heap(self.heap);
 
-        self.push(Value::Bool(if negate { !result } else { result }));
+        let contained = result?;
+        self.push(Value::Bool(if negate { !contained } else { contained }));
         Ok(())
-    }
-
-    /// TODO this should call methods on the types!
-    /// Check if item is contained in container.
-    ///
-    /// Handles different container types:
-    /// - List/Tuple: linear search with equality
-    /// - Dict: key lookup
-    /// - Set/FrozenSet: element lookup
-    /// - Str: substring search
-    fn contains(&mut self, item: &Value, container: &Value) -> Result<bool, RunError> {
-        match container {
-            Value::Ref(heap_id) => {
-                let heap_id = *heap_id;
-                match self.heap.get(heap_id) {
-                    HeapData::List(list) => {
-                        // Get the length first, then iterate by index to avoid borrow conflicts
-                        let len = list.len();
-                        for i in 0..len {
-                            // Re-borrow heap each iteration, copy element for comparison
-                            let elem = match self.heap.get(heap_id) {
-                                HeapData::List(l) => l.as_vec().get(i).map(Value::copy_for_extend),
-                                _ => unreachable!(),
-                            };
-                            if let Some(elem) = elem {
-                                let found = item.py_eq(&elem, self.heap, self.interns);
-                                // Don't drop elem - it's a borrowed copy, not owned.
-                                // Value has a Drop impl only with ref-count-panic feature.
-                                #[allow(clippy::forget_non_drop)]
-                                std::mem::forget(elem);
-                                if found {
-                                    return Ok(true);
-                                }
-                            }
-                        }
-                        Ok(false)
-                    }
-                    HeapData::Tuple(tuple) => {
-                        // Get the length first, then iterate by index to avoid borrow conflicts
-                        let len = tuple.as_vec().len();
-                        for i in 0..len {
-                            // Re-borrow heap each iteration, copy element for comparison
-                            let elem = match self.heap.get(heap_id) {
-                                HeapData::Tuple(t) => t.as_vec().get(i).map(Value::copy_for_extend),
-                                _ => unreachable!(),
-                            };
-                            if let Some(elem) = elem {
-                                let found = item.py_eq(&elem, self.heap, self.interns);
-                                // Don't drop elem - it's a borrowed copy, not owned.
-                                // Value has a Drop impl only with ref-count-panic feature.
-                                #[allow(clippy::forget_non_drop)]
-                                std::mem::forget(elem);
-                                if found {
-                                    return Ok(true);
-                                }
-                            }
-                        }
-                        Ok(false)
-                    }
-                    HeapData::Dict(_) => {
-                        // Check if item is a key in dict
-                        self.heap.with_entry_mut(heap_id, |heap, data| {
-                            if let HeapData::Dict(dict) = data {
-                                match dict.get(item, heap, self.interns) {
-                                    Ok(Some(_)) => Ok(true),
-                                    Ok(None) => Ok(false),
-                                    Err(e) => Err(e),
-                                }
-                            } else {
-                                unreachable!("type changed during borrow")
-                            }
-                        })
-                    }
-                    HeapData::Set(_) => {
-                        // Check if item is in set
-                        self.heap.with_entry_mut(heap_id, |heap, data| {
-                            if let HeapData::Set(set) = data {
-                                set.contains(item, heap, self.interns)
-                            } else {
-                                unreachable!("type changed during borrow")
-                            }
-                        })
-                    }
-                    HeapData::FrozenSet(_) => {
-                        // Check if item is in frozenset
-                        self.heap.with_entry_mut(heap_id, |heap, data| {
-                            if let HeapData::FrozenSet(fset) = data {
-                                fset.contains(item, heap, self.interns)
-                            } else {
-                                unreachable!("type changed during borrow")
-                            }
-                        })
-                    }
-                    HeapData::Str(s) => {
-                        // Substring check for str in str
-                        match item {
-                            Value::InternString(item_id) => {
-                                let item_str = self.interns.get_str(*item_id);
-                                Ok(s.as_str().contains(item_str))
-                            }
-                            Value::Ref(item_heap_id) => {
-                                if let HeapData::Str(item_str) = self.heap.get(*item_heap_id) {
-                                    Ok(s.as_str().contains(item_str.as_str()))
-                                } else {
-                                    let type_name = container.py_type(Some(self.heap));
-                                    Err(ExcType::type_error(&format!(
-                                        "'in <{type_name}>' requires string as left operand"
-                                    )))
-                                }
-                            }
-                            _ => {
-                                let type_name = container.py_type(Some(self.heap));
-                                Err(ExcType::type_error(&format!(
-                                    "'in <{type_name}>' requires string as left operand"
-                                )))
-                            }
-                        }
-                    }
-                    other => {
-                        let type_name = other.py_type(Some(self.heap));
-                        Err(ExcType::type_error(&format!(
-                            "argument of type '{type_name}' is not iterable"
-                        )))
-                    }
-                }
-            }
-            Value::InternString(string_id) => {
-                // Substring check for str in str
-                let container_str = self.interns.get_str(*string_id);
-                match item {
-                    Value::InternString(item_id) => {
-                        let item_str = self.interns.get_str(*item_id);
-                        Ok(container_str.contains(item_str))
-                    }
-                    Value::Ref(item_heap_id) => {
-                        if let HeapData::Str(item_str) = self.heap.get(*item_heap_id) {
-                            Ok(container_str.contains(item_str.as_str()))
-                        } else {
-                            Err(ExcType::type_error("'in <str>' requires string as left operand"))
-                        }
-                    }
-                    _ => Err(ExcType::type_error("'in <str>' requires string as left operand")),
-                }
-            }
-            _ => {
-                let type_name = container.py_type(Some(self.heap));
-                Err(ExcType::type_error(&format!(
-                    "argument of type '{type_name}' is not iterable"
-                )))
-            }
-        }
     }
 
     // ========================================================================
