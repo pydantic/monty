@@ -299,7 +299,9 @@ pub fn encode_format_spec(spec: &ParsedFormatSpec) -> u64 {
 
 /// Decodes a u64 back into a ParsedFormatSpec.
 ///
-/// This reverses the encoding done by `encode_format_spec`.
+/// Reverses the bit-packing done by `encode_format_spec`. Used by the VM
+/// when executing `FormatValue` to retrieve the format specification from
+/// the constant pool (where it's stored as a negative integer marker).
 pub fn decode_format_spec(encoded: u64) -> ParsedFormatSpec {
     let fill = (encoded & 0xFF) as u8 as char;
     let align_bits = (encoded >> 8) & 0x07;
@@ -364,9 +366,13 @@ pub fn decode_format_spec(encoded: u64) -> ParsedFormatSpec {
 // Formatting functions
 // ============================================================================
 
-/// Formats a string with a format spec.
+/// Formats a string value according to a format specification.
 ///
-/// Handles string truncation (via precision), alignment, and padding.
+/// Applies the following transformations in order:
+/// 1. Truncation: If `precision` is set, limits the string to that many characters
+/// 2. Alignment: Pads to `width` using `fill` character (default left-aligned for strings)
+///
+/// Returns an error if `=` alignment is used (sign-aware padding only valid for numbers).
 pub fn format_string(value: &str, spec: &ParsedFormatSpec) -> Result<String, FormatError> {
     // Handle precision (string truncation)
     let value = if let Some(prec) = spec.precision {
@@ -387,9 +393,12 @@ pub fn format_string(value: &str, spec: &ParsedFormatSpec) -> Result<String, For
     Ok(pad_string(&value, spec.width, align, spec.fill))
 }
 
-/// Formats an integer with a format spec.
+/// Formats an integer in decimal with a format specification.
 ///
-/// Handles sign, zero-padding, and alignment.
+/// Applies the following:
+/// - Sign prefix based on `sign` spec: `+` (always show), `-` (negatives only), ` ` (space for positive)
+/// - Zero-padding: When `zero_pad` is true or `=` alignment, inserts zeros between sign and digits
+/// - Alignment: Right-aligned by default for numbers, pads to `width` with `fill` character
 pub fn format_int(n: i64, spec: &ParsedFormatSpec) -> String {
     let is_negative = n < 0;
     let abs_str = n.abs().to_string();
@@ -425,7 +434,11 @@ pub fn format_int(n: i64, spec: &ParsedFormatSpec) -> String {
     }
 }
 
-/// Formats an integer in a different base (binary, octal, hex).
+/// Formats an integer in binary (base 2), octal (base 8), or hexadecimal (base 16).
+///
+/// Used for format types `b`, `o`, `x`, and `X`. The sign is prepended for negative numbers.
+/// Does not include base prefixes like `0b`, `0o`, `0x` (those require the `#` flag which
+/// is not yet implemented). Returns an error for invalid base values.
 pub fn format_int_base(n: i64, base: u32, spec: &ParsedFormatSpec) -> Result<String, FormatError> {
     let is_negative = n < 0;
     let abs_val = n.unsigned_abs();
@@ -444,7 +457,11 @@ pub fn format_int_base(n: i64, base: u32, spec: &ParsedFormatSpec) -> Result<Str
     Ok(pad_string(&value, spec.width, align, spec.fill))
 }
 
-/// Formats an integer as a Unicode character.
+/// Formats an integer as a Unicode character (format type `c`).
+///
+/// Converts the integer to its corresponding Unicode code point. Valid range is 0 to 0x10FFFF.
+/// Returns `Overflow` error if out of range, `ValueError` if not a valid Unicode scalar value
+/// (e.g., surrogate code points). Left-aligned by default like strings.
 pub fn format_char(n: i64, spec: &ParsedFormatSpec) -> Result<String, FormatError> {
     if !(0..=0x0010_FFFF).contains(&n) {
         return Err(FormatError::Overflow("%c arg not in range(0x110000)".to_owned()));
@@ -455,7 +472,11 @@ pub fn format_char(n: i64, spec: &ParsedFormatSpec) -> Result<String, FormatErro
     Ok(pad_string(&value, spec.width, align, spec.fill))
 }
 
-/// Formats a float with :f/:F format (fixed-point notation).
+/// Formats a float in fixed-point notation (format types `f` and `F`).
+///
+/// Always includes a decimal point with `precision` digits after it (default 6).
+/// Handles sign prefix, zero-padding between sign and digits when `zero_pad` or `=` alignment.
+/// Right-aligned by default. NaN and infinity are formatted as `nan`/`inf` (or `NAN`/`INF` for `F`).
 pub fn format_float_f(f: f64, spec: &ParsedFormatSpec) -> String {
     let precision = spec.precision.unwrap_or(6);
     let is_negative = f.is_sign_negative() && !f.is_nan();
@@ -491,7 +512,11 @@ pub fn format_float_f(f: f64, spec: &ParsedFormatSpec) -> String {
     }
 }
 
-/// Formats a float with :e/:E format (exponential notation).
+/// Formats a float in exponential/scientific notation (format types `e` and `E`).
+///
+/// Produces output like `1.234568e+03` with `precision` digits after decimal (default 6).
+/// The `uppercase` parameter controls whether to use `E` or `e` for the exponent marker.
+/// Exponent is always formatted with a sign and at least 2 digits (Python convention).
 pub fn format_float_e(f: f64, spec: &ParsedFormatSpec, uppercase: bool) -> String {
     let precision = spec.precision.unwrap_or(6);
     let is_negative = f.is_sign_negative() && !f.is_nan();
@@ -521,9 +546,14 @@ pub fn format_float_e(f: f64, spec: &ParsedFormatSpec, uppercase: bool) -> Strin
     pad_string(&value, spec.width, align, spec.fill)
 }
 
-/// Formats a float with :g/:G format (general format).
+/// Formats a float in "general" format (format types `g` and `G`).
 ///
-/// Uses exponential notation if exponent < -4 or >= precision, otherwise fixed.
+/// Chooses between fixed-point and exponential notation based on the magnitude:
+/// - Uses exponential if exponent < -4 or >= precision
+/// - Otherwise uses fixed-point notation
+///
+/// Unlike `f` and `e` formats, trailing zeros are stripped from the result.
+/// Default precision is 6, but minimum is 1 significant digit.
 pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
     let precision = spec.precision.unwrap_or(6).max(1);
     let is_negative = f.is_sign_negative() && !f.is_nan();
@@ -564,7 +594,10 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
     pad_string(&value, spec.width, align, spec.fill)
 }
 
-/// Formats a float as a percentage.
+/// Formats a float as a percentage (format type `%`).
+///
+/// Multiplies the value by 100 and appends a `%` sign. Uses fixed-point notation
+/// with `precision` decimal places (default 6). For example, `0.1234` becomes `12.340000%`.
 pub fn format_float_percent(f: f64, spec: &ParsedFormatSpec) -> String {
     let precision = spec.precision.unwrap_or(6);
     let percent_val = f * 100.0;
@@ -639,7 +672,11 @@ fn pad_string(value: &str, width: usize, align: char, fill: char) -> String {
     }
 }
 
-/// Strips trailing zeros from a float string (for :g format).
+/// Strips trailing zeros from a decimal float string.
+///
+/// Used by the `:g` format to remove insignificant trailing zeros.
+/// Also removes the decimal point if all fractional digits are stripped.
+/// Has no effect if the string doesn't contain a decimal point.
 fn strip_trailing_zeros(s: &str) -> String {
     if !s.contains('.') {
         return s.to_owned();
@@ -652,7 +689,11 @@ fn strip_trailing_zeros(s: &str) -> String {
     }
 }
 
-/// Strips trailing zeros from exponential notation (for :g format).
+/// Strips trailing zeros from a float in exponential notation.
+///
+/// Splits the string at `e` or `E`, strips zeros from the mantissa part,
+/// then recombines with the exponent. Also normalizes the exponent format
+/// to Python's convention (sign and at least 2 digits).
 fn strip_trailing_zeros_exp(s: &str) -> String {
     if let Some(e_pos) = s.find(['e', 'E']) {
         let (mantissa, exp_part) = s.split_at(e_pos);
