@@ -45,7 +45,7 @@ def test_monty_dump_load_preserves_external_functions():
 def test_monty_load_invalid_data():
     with pytest.raises(ValueError) as exc_info:
         monty.Monty.load(b'invalid data')
-    assert str(exc_info.value) == snapshot('Serde Deserialization Error')
+    assert str(exc_info.value) == snapshot('Hit the end of buffer, expected more data')
 
 
 def test_progress_dump_load_roundtrip():

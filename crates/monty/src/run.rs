@@ -179,17 +179,14 @@ impl MontyRun {
                 Ok(RunProgress::Complete(obj))
             }
             Ok(VMSuccess::ExternalCall { ext_function_id, args }) => {
-                // Get function name and convert args to MontyObjects
+                // Get function name and convert args to MontyObjects (includes both positional and kwargs)
                 let function_name = executor.interns.get_external_function_name(ext_function_id);
-                let args_py: Vec<MontyObject> = args
-                    .into_iter()
-                    .map(|v| MontyObject::new(v, &mut heap, &executor.interns))
-                    .collect();
+                let (args_py, kwargs_py) = args.into_py_objects(&mut heap, &executor.interns);
 
                 Ok(RunProgress::FunctionCall {
                     function_name,
                     args: args_py,
-                    kwargs: vec![], // TODO: Handle kwargs if needed
+                    kwargs: kwargs_py,
                     state: Snapshot {
                         executor,
                         vm_state: vm_state.expect("snapshot should exist for ExternalCall"),
@@ -418,17 +415,14 @@ impl<T: ResourceTracker> Snapshot<T> {
                 Ok(RunProgress::Complete(obj))
             }
             Ok(VMSuccess::ExternalCall { ext_function_id, args }) => {
-                // Get function name and convert args to MontyObjects
+                // Get function name and convert args to MontyObjects (includes both positional and kwargs)
                 let function_name = self.executor.interns.get_external_function_name(ext_function_id);
-                let args_py: Vec<MontyObject> = args
-                    .into_iter()
-                    .map(|v| MontyObject::new(v, &mut self.heap, &self.executor.interns))
-                    .collect();
+                let (args_py, kwargs_py) = args.into_py_objects(&mut self.heap, &self.executor.interns);
 
                 Ok(RunProgress::FunctionCall {
                     function_name,
                     args: args_py,
-                    kwargs: vec![], // TODO: Handle kwargs if needed
+                    kwargs: kwargs_py,
                     state: Snapshot {
                         executor: self.executor,
                         vm_state: vm_state.expect("snapshot should exist for ExternalCall"),

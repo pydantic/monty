@@ -68,9 +68,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             }
             Value::ExtFunction(ext_id) => {
                 // External function - return to caller to execute
-                // Convert ArgValues to Vec<Value> for external call
-                let args_vec = args.into_vec();
-                Ok(CallResult::ExternalCall(ext_id, args_vec))
+                // Preserve full ArgValues to keep both positional and keyword arguments
+                Ok(CallResult::ExternalCall(ext_id, args))
             }
             Value::Function(func_id) => {
                 // User function without defaults or captured variables (inline representation)

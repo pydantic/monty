@@ -7,6 +7,7 @@
       "Bash(timeout 15s cargo:*)",
       "Bash(RUST_BACKTRACE=1 cargo:*)",
       "Bash(make:*)",
+      "Bash(INLINE_SNAPSHOT_DEFAULT_FLAGS=disable make:*)",
       "Bash(mkdir:*)",
       "Bash(uv:*)",
       "Bash(echo:*)",

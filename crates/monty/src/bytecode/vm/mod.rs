@@ -75,8 +75,8 @@ enum CallResult {
     /// The return value will be pushed by ReturnValue opcode.
     UserFunction,
     /// External function call - VM should pause and return to caller.
-    /// Contains (ext_function_id, args).
-    ExternalCall(ExtFunctionId, Vec<Value>),
+    /// Contains (ext_function_id, args) where args preserves both positional and keyword arguments.
+    ExternalCall(ExtFunctionId, ArgValues),
 }
 
 /// Result of VM execution.
@@ -91,8 +91,8 @@ pub enum VMSuccess {
     ExternalCall {
         /// ID of the external function to call.
         ext_function_id: ExtFunctionId,
-        /// Arguments for the external function.
-        args: Vec<Value>,
+        /// Arguments for the external function (includes both positional and keyword args).
+        args: ArgValues,
     },
 }
 
@@ -708,10 +708,10 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     match self.call_function(callable, args) {
                         Ok(CallResult::Builtin(result)) => self.push(result),
                         Ok(CallResult::UserFunction) => {} // Frame pushed, continue in VM loop
-                        Ok(CallResult::ExternalCall(ext_id, args_vec)) => {
+                        Ok(CallResult::ExternalCall(ext_id, ext_args)) => {
                             return Ok(VMSuccess::ExternalCall {
                                 ext_function_id: ext_id,
-                                args: args_vec,
+                                args: ext_args,
                             });
                         }
                         Err(err) => catch!(self, err),
@@ -756,10 +756,10 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     match self.call_function(callable, args) {
                         Ok(CallResult::Builtin(result)) => self.push(result),
                         Ok(CallResult::UserFunction) => {} // Frame pushed, continue
-                        Ok(CallResult::ExternalCall(ext_id, args_vec)) => {
+                        Ok(CallResult::ExternalCall(ext_id, ext_args)) => {
                             return Ok(VMSuccess::ExternalCall {
                                 ext_function_id: ext_id,
-                                args: args_vec,
+                                args: ext_args,
                             });
                         }
                         Err(err) => catch!(self, err),
@@ -804,10 +804,10 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     match self.call_function_ex(callable, args_tuple, kwargs) {
                         Ok(CallResult::Builtin(result)) => self.push(result),
                         Ok(CallResult::UserFunction) => {} // Frame pushed, continue
-                        Ok(CallResult::ExternalCall(ext_id, args_vec)) => {
+                        Ok(CallResult::ExternalCall(ext_id, ext_args)) => {
                             return Ok(VMSuccess::ExternalCall {
                                 ext_function_id: ext_id,
-                                args: args_vec,
+                                args: ext_args,
                             });
                         }
                         Err(err) => catch!(self, err),
