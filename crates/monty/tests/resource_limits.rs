@@ -40,8 +40,8 @@ result
 ";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
 
-    // Allocations: list (1) + range (1) + str(0)...str(8) (9) = 11
-    let limits = ResourceLimits::new().max_allocations(11);
+    // Allocations: list (1) + range (1) + iterator (1) + str(0)...str(8) (9) = 12
+    let limits = ResourceLimits::new().max_allocations(12);
     let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
 
     // Should succeed

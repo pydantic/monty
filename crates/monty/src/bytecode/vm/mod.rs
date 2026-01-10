@@ -328,6 +328,13 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// call is needed.
     pub fn run(&mut self) -> Result<VMSuccess, RunError> {
         loop {
+            // Check time limit and trigger GC if needed at each instruction.
+            // For NoLimitTracker, these are inlined no-ops that compile away.
+            self.heap.tracker_mut().check_time()?;
+            if self.heap.tracker().should_gc() {
+                self.run_gc();
+            }
+
             // Track instruction IP for exception table lookup
             self.instruction_ip = self.current_frame().ip;
             let opcode = self.fetch_opcode();
@@ -1136,6 +1143,27 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     fn jump_relative(&mut self, offset: i16) {
         let frame = self.current_frame_mut();
         frame.ip = (frame.ip as isize + offset as isize) as usize;
+    }
+
+    /// Runs garbage collection with proper GC roots.
+    ///
+    /// GC roots include values in namespaces, the operand stack, and exception stack.
+    fn run_gc(&mut self) {
+        // Collect roots from all reachable values
+        let stack_roots = self
+            .stack
+            .iter()
+            .filter_map(|v| if let Value::Ref(id) = v { Some(*id) } else { None });
+        let exc_roots = self
+            .exception_stack
+            .iter()
+            .filter_map(|v| if let Value::Ref(id) = v { Some(*id) } else { None });
+        let ns_roots = self.namespaces.iter_heap_ids();
+
+        // Collect all roots into a vec to avoid lifetime issues
+        let roots: Vec<HeapId> = stack_roots.chain(exc_roots).chain(ns_roots).collect();
+
+        self.heap.collect_garbage(|| roots.into_iter());
     }
 
     /// Returns the current source position for traceback generation.
