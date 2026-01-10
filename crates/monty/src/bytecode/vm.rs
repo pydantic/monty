@@ -2434,29 +2434,35 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// Takes ownership of the exception value and drops it properly.
     /// The `is_raise` flag indicates if this is from a `raise` statement (hide caret).
     fn make_exception(&mut self, exc_value: Value, is_raise: bool) -> RunError {
-        let simple_exc = if let Value::Ref(heap_id) = &exc_value {
-            if let HeapData::Exception(exc) = self.heap.get(*heap_id) {
-                // Clone the exception
-                let exc_clone = exc.clone();
-                // Drop the value with proper heap cleanup
-                exc_value.drop_with_heap(self.heap);
-                exc_clone
-            } else {
-                // Not an exception type
+        let simple_exc = match &exc_value {
+            // Exception instance on heap
+            Value::Ref(heap_id) => {
+                if let HeapData::Exception(exc) = self.heap.get(*heap_id) {
+                    // Clone the exception
+                    let exc_clone = exc.clone();
+                    // Drop the value with proper heap cleanup
+                    exc_value.drop_with_heap(self.heap);
+                    exc_clone
+                } else {
+                    // Not an exception type
+                    exc_value.drop_with_heap(self.heap);
+                    SimpleException::new(
+                        ExcType::TypeError,
+                        Some("exceptions must derive from BaseException".to_string()),
+                    )
+                }
+            }
+            // Exception type (e.g., `raise ValueError` instead of `raise ValueError()`)
+            // Instantiate with no message
+            Value::Builtin(Builtins::ExcType(exc_type)) => SimpleException::new(*exc_type, None),
+            // Invalid exception value
+            _ => {
                 exc_value.drop_with_heap(self.heap);
                 SimpleException::new(
                     ExcType::TypeError,
                     Some("exceptions must derive from BaseException".to_string()),
                 )
             }
-        } else {
-            // Drop the value (even if not an exception)
-            exc_value.drop_with_heap(self.heap);
-            // Invalid exception value - create a TypeError
-            SimpleException::new(
-                ExcType::TypeError,
-                Some("exceptions must derive from BaseException".to_string()),
-            )
         };
 
         // Create frame with appropriate hide_caret setting
