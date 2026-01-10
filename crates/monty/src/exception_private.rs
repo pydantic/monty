@@ -160,9 +160,17 @@ impl ExcType {
         Ok(Value::Ref(heap_id))
     }
 
+    /// Creates an AttributeError for when an attribute is not found (GET operation).
+    ///
+    /// Sets `hide_caret: true` because CPython doesn't show carets for attribute GET errors.
     #[must_use]
     pub fn attribute_error(type_: Type, attr: &str) -> RunError {
-        exc_fmt!(Self::AttributeError; "'{type_}' object has no attribute '{attr}'").into()
+        let exc = exc_fmt!(Self::AttributeError; "'{type_}' object has no attribute '{attr}'");
+        RunError::Exc(ExceptionRaise {
+            exc,
+            frame: None,
+            hide_caret: true, // CPython doesn't show carets for attribute GET errors
+        })
     }
 
     /// Creates an AttributeError for a dataclass method that requires external call integration.
@@ -174,12 +182,18 @@ impl ExcType {
         exc_fmt!(Self::AttributeError; "'{class_name}' object method '{method_name}' requires external call (not yet implemented)").into()
     }
 
-    /// Creates an AttributeError for when a specific attribute is not found on an object.
+    /// Creates an AttributeError for when a specific attribute is not found (GET operation).
     ///
     /// Matches CPython's format: `AttributeError: 'ClassName' object has no attribute 'attr_name'`
+    /// Sets `hide_caret: true` because CPython doesn't show carets for attribute GET errors.
     #[must_use]
     pub fn attribute_error_not_found(class_name: &str, attr_name: &str) -> RunError {
-        exc_fmt!(Self::AttributeError; "'{class_name}' object has no attribute '{attr_name}'").into()
+        let exc = exc_fmt!(Self::AttributeError; "'{class_name}' object has no attribute '{attr_name}'");
+        RunError::Exc(ExceptionRaise {
+            exc,
+            frame: None,
+            hide_caret: true, // CPython doesn't show carets for attribute GET errors
+        })
     }
 
     /// Creates an AttributeError for attribute assignment on types that don't support it.
@@ -747,6 +761,7 @@ impl SimpleException {
         ExceptionRaise {
             exc: self,
             frame: Some(frame),
+            hide_caret: false,
         }
     }
 
@@ -754,6 +769,7 @@ impl SimpleException {
         ExceptionRaise {
             exc: self,
             frame: Some(RawStackFrame::from_position(position)),
+            hide_caret: false,
         }
     }
 
@@ -847,11 +863,22 @@ pub struct ExceptionRaise {
     pub exc: SimpleException,
     /// The stack frame where the exception was raised (first in vec is closest "bottom" frame).
     pub frame: Option<RawStackFrame>,
+    /// Whether to hide the caret marker when creating the stack frame.
+    ///
+    /// CPython doesn't show carets for attribute GET errors, but does show them
+    /// for attribute SET errors. This flag allows error creators to specify
+    /// whether the caret should be hidden.
+    #[serde(default)]
+    pub hide_caret: bool,
 }
 
 impl From<SimpleException> for ExceptionRaise {
     fn from(exc: SimpleException) -> Self {
-        ExceptionRaise { exc, frame: None }
+        ExceptionRaise {
+            exc,
+            frame: None,
+            hide_caret: false,
+        }
     }
 }
 
@@ -860,6 +887,7 @@ impl From<MontyException> for ExceptionRaise {
         Self {
             exc: exc.into(),
             frame: None,
+            hide_caret: false,
         }
     }
 }

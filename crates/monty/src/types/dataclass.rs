@@ -122,6 +122,8 @@ impl Dataclass {
     /// The caller transfers ownership of both `name` and `value`. Returns the
     /// old value if the attribute existed (caller must drop it), or None if this
     /// is a new attribute.
+    ///
+    /// Returns `FrozenInstanceError` if the dataclass is frozen.
     pub fn set_attr(
         &mut self,
         name: Value,
@@ -129,6 +131,17 @@ impl Dataclass {
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<Option<Value>> {
+        if self.frozen {
+            // Get attribute name for error message
+            let attr_name = match &name {
+                Value::InternString(id) => interns.get_str(*id).to_string(),
+                _ => "<unknown>".to_string(),
+            };
+            // Drop the values we were given ownership of
+            name.drop_with_heap(heap);
+            value.drop_with_heap(heap);
+            return Err(ExcType::frozen_instance_error(&attr_name));
+        }
         self.attrs.set(name, value, heap, interns)
     }
 

@@ -1036,8 +1036,8 @@ impl Value {
                         match dc.get_attr(&name_value, heap, interns) {
                             Ok(Some(value)) => Ok(value.clone_with_heap(heap)),
                             Ok(None) => {
-                                let type_name = dc.py_type(Some(heap));
-                                Err(ExcType::attribute_error(type_name, attr_name))
+                                // Use the dataclass's actual name for the error message
+                                Err(ExcType::attribute_error_not_found(dc.name(), attr_name))
                             }
                             Err(e) => Err(e),
                         }
