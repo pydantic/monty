@@ -204,7 +204,7 @@ impl<'a> Parser<'a> {
                 line_ends.push(i);
             }
         }
-        let mut interner = InternerBuilder::new();
+        let mut interner = InternerBuilder::new(code);
         let filename_id = interner.intern(filename);
         Self {
             line_ends,

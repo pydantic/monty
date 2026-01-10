@@ -146,7 +146,7 @@ impl ExtFunctionId {
 #[derive(Debug, Default)]
 pub struct InternerBuilder {
     /// Maps strings to their indices for deduplication during interning.
-    map: AHashMap<String, StringId>,
+    string_map: AHashMap<String, StringId>,
     /// Storage for interned interns, indexed by `StringId`.
     strings: Vec<String>,
     /// Storage for interned bytes literals, indexed by `BytesId`.
@@ -157,11 +157,22 @@ pub struct InternerBuilder {
 impl InternerBuilder {
     /// Creates a new string interner with pre-interned strings.
     ///
+    /// # Arguments
+    /// * `code` - The code being parsed, used for a very rough guess at how many strings will be interned.
+    ///
     /// Pre-interns:
     /// - Index 0: `"<module>"` for module-level code
     /// - Indices 1-20: Known attribute names (append, insert, get, etc.)
-    pub fn new() -> Self {
-        let mut interner = Self::default();
+    pub fn new(code: &str) -> Self {
+        // very rough guess of the number of strings that will need to be interned
+        // Dividing by 2 since each string has open+close quotes.
+        // This overcounts (escaped quotes, triple quotes) but for capacity that's fine
+        let string_count_guess = 21 + (code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1);
+        let mut interner = Self {
+            string_map: AHashMap::with_capacity(string_count_guess),
+            strings: Vec::with_capacity(string_count_guess),
+            bytes: Vec::new(),
+        };
 
         // Index 0: "<module>" for module-level code
         let id = interner.intern("<module>");
@@ -220,13 +231,11 @@ impl InternerBuilder {
     /// If the string was already interned, returns the existing `StringId`.
     /// Otherwise, stores the string and returns a new `StringId`.
     pub fn intern(&mut self, s: &str) -> StringId {
-        if let Some(&id) = self.map.get(s) {
-            return id;
-        }
-        let id = StringId(self.strings.len().try_into().expect("StringId overflow"));
-        self.strings.push(s.to_owned());
-        self.map.insert(s.to_owned(), id);
-        id
+        *self.string_map.entry(s.to_owned()).or_insert_with(|| {
+            let id = StringId(self.strings.len().try_into().expect("StringId overflow"));
+            self.strings.push(s.to_owned());
+            id
+        })
     }
 
     /// Interns bytes, returning its `BytesId`.

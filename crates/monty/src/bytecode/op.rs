@@ -183,6 +183,21 @@ pub enum Opcode {
     FormatValue,
     /// Pop n parts, concatenate for f-string. Operand: u16 count.
     BuildFString,
+    /// Pop iterable, pop list, extend list with iterable items.
+    ///
+    /// Used for `*args` unpacking: builds a list of positional args,
+    /// then extends it with unpacked iterables.
+    ListExtend,
+    /// Pop TOS (list), push tuple containing the same elements.
+    ///
+    /// Used after building the args list to create the final args tuple
+    /// for `CallFunctionEx`.
+    ListToTuple,
+    /// Pop mapping, pop dict, update dict with mapping. Operand: u16 func_name_id.
+    ///
+    /// Used for `**kwargs` unpacking. The func_name_id is used for error messages
+    /// when the mapping contains non-string keys.
+    DictMerge,
 
     // === Subscript & Attribute ===
     /// a[b]: pop index, pop obj, push result.
@@ -213,6 +228,18 @@ pub enum Opcode {
     CallMethod,
     /// External call (pauses VM). Operands: u16 func_id, u8 arg_count.
     CallExternal,
+    /// Call with *args tuple and **kwargs dict. Operand: u8 flags.
+    ///
+    /// Flags:
+    /// - bit 0: has kwargs dict on stack
+    ///
+    /// Stack layout (bottom to top):
+    /// - callable
+    /// - args tuple
+    /// - kwargs dict (if flag bit 0 set)
+    ///
+    /// Used for calls with `*args` and/or `**kwargs` unpacking.
+    CallFunctionEx,
 
     // === Control Flow ===
     /// Unconditional relative jump. Operand: i16 offset.

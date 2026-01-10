@@ -10,7 +10,7 @@ use super::{
     op::Opcode,
 };
 use crate::{
-    args::ArgExprs,
+    args::{ArgExprs, Kwarg},
     builtins::{Builtins, BuiltinsFunctions},
     callable::Callable,
     expressions::{Expr, ExprLoc, Identifier, Literal, NameScope, Node},
@@ -581,33 +581,113 @@ impl<'a> Compiler<'a> {
                 kwargs,
                 var_kwargs,
             } => {
-                // Mixed positional and keyword arguments
+                // Mixed positional and keyword arguments - may include *args or **kwargs unpacking
                 if var_args.is_some() || var_kwargs.is_some() {
-                    // *args and **kwargs unpacking not yet supported
-                    todo!("*args and **kwargs unpacking not yet implemented")
-                }
-
-                // Compile positional args
-                let pos_count = args.as_ref().map_or(0, Vec::len);
-                if let Some(args) = args {
-                    for arg in args {
-                        self.compile_expr(arg);
+                    // Use CallFunctionEx for unpacking
+                    self.compile_call_with_unpacking(
+                        callable,
+                        args.as_ref(),
+                        var_args.as_ref(),
+                        kwargs.as_ref(),
+                        var_kwargs.as_ref(),
+                        call_pos,
+                    );
+                } else {
+                    // No unpacking - use CallFunctionKw for efficiency
+                    // Compile positional args
+                    let pos_count = args.as_ref().map_or(0, Vec::len);
+                    if let Some(args) = args {
+                        for arg in args {
+                            self.compile_expr(arg);
+                        }
                     }
-                }
 
-                // Compile kwarg values and collect names
-                let mut kwname_ids = Vec::new();
-                if let Some(kwargs) = kwargs {
-                    for kwarg in kwargs {
-                        self.compile_expr(&kwarg.value);
-                        kwname_ids.push(kwarg.key.name_id.index() as u16);
+                    // Compile kwarg values and collect names
+                    let mut kwname_ids = Vec::new();
+                    if let Some(kwargs) = kwargs {
+                        for kwarg in kwargs {
+                            self.compile_expr(&kwarg.value);
+                            kwname_ids.push(kwarg.key.name_id.index() as u16);
+                        }
                     }
-                }
 
-                self.code.set_location(call_pos, None);
-                self.code.emit_call_function_kw(pos_count.min(255) as u8, &kwname_ids);
+                    self.code.set_location(call_pos, None);
+                    self.code.emit_call_function_kw(pos_count.min(255) as u8, &kwname_ids);
+                }
             }
         }
+    }
+
+    /// Compiles a function call with `*args` and/or `**kwargs` unpacking.
+    ///
+    /// This generates bytecode to build an args tuple and kwargs dict dynamically,
+    /// then calls the function using `CallFunctionEx`.
+    ///
+    /// Stack layout for call:
+    /// - callable (already on stack)
+    /// - args tuple
+    /// - kwargs dict (if present)
+    fn compile_call_with_unpacking(
+        &mut self,
+        callable: &Callable,
+        args: Option<&Vec<ExprLoc>>,
+        var_args: Option<&ExprLoc>,
+        kwargs: Option<&Vec<Kwarg>>,
+        var_kwargs: Option<&ExprLoc>,
+        call_pos: CodeRange,
+    ) {
+        // Get function name for error messages (0xFFFF for builtins)
+        let func_name_id = match callable {
+            Callable::Name(ident) => ident.name_id.index() as u16,
+            Callable::Builtin(_) => 0xFFFF,
+        };
+
+        // 1. Build args tuple
+        // Push regular positional args and build list
+        let pos_count = args.map_or(0, Vec::len);
+        if let Some(args) = args {
+            for arg in args {
+                self.compile_expr(arg);
+            }
+        }
+        self.code.emit_u16(Opcode::BuildList, pos_count as u16);
+
+        // Extend with *args if present
+        if let Some(var_args_expr) = var_args {
+            self.compile_expr(var_args_expr);
+            self.code.emit(Opcode::ListExtend);
+        }
+
+        // Convert list to tuple
+        self.code.emit(Opcode::ListToTuple);
+
+        // 2. Build kwargs dict (if we have kwargs or var_kwargs)
+        let has_kwargs = kwargs.is_some() || var_kwargs.is_some();
+        if has_kwargs {
+            // Build dict from regular kwargs
+            let kw_count = kwargs.map_or(0, Vec::len);
+            if let Some(kwargs) = kwargs {
+                for kwarg in kwargs {
+                    // Push key as interned string constant
+                    let key_const = self.code.add_const(Value::InternString(kwarg.key.name_id));
+                    self.code.emit_u16(Opcode::LoadConst, key_const);
+                    // Push value
+                    self.compile_expr(&kwarg.value);
+                }
+            }
+            self.code.emit_u16(Opcode::BuildDict, kw_count as u16);
+
+            // Merge **kwargs if present
+            if let Some(var_kwargs_expr) = var_kwargs {
+                self.compile_expr(var_kwargs_expr);
+                self.code.emit_u16(Opcode::DictMerge, func_name_id);
+            }
+        }
+
+        // 3. Call the function
+        self.code.set_location(call_pos, None);
+        let flags = u8::from(has_kwargs);
+        self.code.emit_u8(Opcode::CallFunctionEx, flags);
     }
 
     /// Compiles a method call on an object.
@@ -1109,7 +1189,7 @@ mod tests {
 
     /// Creates an empty Interns for testing.
     fn test_interns() -> Interns {
-        let builder = InternerBuilder::new();
+        let builder = InternerBuilder::default();
         Interns::new(builder, Vec::new(), Vec::new())
     }
 

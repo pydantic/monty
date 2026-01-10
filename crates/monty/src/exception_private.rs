@@ -401,12 +401,36 @@ impl ExcType {
         exc_fmt!(Self::TypeError; "{name}() got multiple values for argument '{param}'").into()
     }
 
+    /// Creates a TypeError for duplicate keyword argument.
+    ///
+    /// Matches CPython's format: `{name}() got multiple values for keyword argument '{key}'`
+    #[must_use]
+    pub fn type_error_multiple_values(name: &str, key: &str) -> RunError {
+        exc_fmt!(Self::TypeError; "{name}() got multiple values for keyword argument '{key}'").into()
+    }
+
     /// Creates a TypeError for unexpected keyword argument.
     ///
     /// Matches CPython's format: `{name}() got an unexpected keyword argument '{key}'`
     #[must_use]
     pub fn type_error_unexpected_keyword(name: &str, key: &str) -> RunError {
         exc_fmt!(Self::TypeError; "{name}() got an unexpected keyword argument '{key}'").into()
+    }
+
+    /// Creates a TypeError for **kwargs argument that is not a mapping.
+    ///
+    /// Matches CPython's format: `{name}() argument after ** must be a mapping, not {type_name}`
+    #[must_use]
+    pub fn type_error_kwargs_not_mapping(name: &str, type_name: &str) -> RunError {
+        exc_fmt!(Self::TypeError; "{name}() argument after ** must be a mapping, not {type_name}").into()
+    }
+
+    /// Creates a TypeError for **kwargs with non-string keys.
+    ///
+    /// Matches CPython's format: `{name}() keywords must be strings`
+    #[must_use]
+    pub fn type_error_kwargs_nonstring_key() -> RunError {
+        SimpleException::new(Self::TypeError, Some("keywords must be strings".to_string())).into()
     }
 
     /// Creates a simple TypeError with a custom message.

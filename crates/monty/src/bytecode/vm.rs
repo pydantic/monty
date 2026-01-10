@@ -533,6 +533,16 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let count = self.fetch_u16() as usize;
                     try_catch!(self, self.build_fstring(count));
                 }
+                Opcode::ListExtend => {
+                    try_catch!(self, self.list_extend());
+                }
+                Opcode::ListToTuple => {
+                    try_catch!(self, self.list_to_tuple());
+                }
+                Opcode::DictMerge => {
+                    let func_name_id = self.fetch_u16();
+                    try_catch!(self, self.dict_merge(func_name_id));
+                }
                 // Subscript & Attribute - route through exception handling
                 Opcode::BinarySubscr => {
                     let index = self.pop();
@@ -756,6 +766,32 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 }
                 Opcode::CallExternal => {
                     todo!("CallExternal")
+                }
+                Opcode::CallFunctionEx => {
+                    let flags = self.fetch_u8();
+                    let has_kwargs = (flags & 0x01) != 0;
+
+                    // Pop kwargs dict if present
+                    let kwargs = if has_kwargs { Some(self.pop()) } else { None };
+
+                    // Pop args tuple
+                    let args_tuple = self.pop();
+
+                    // Pop callable
+                    let callable = self.pop();
+
+                    // Call the function with unpacked args
+                    match self.call_function_ex(callable, args_tuple, kwargs) {
+                        Ok(CallResult::Builtin(result)) => self.push(result),
+                        Ok(CallResult::UserFunction) => {} // Frame pushed, continue
+                        Ok(CallResult::ExternalCall(ext_id, args_vec)) => {
+                            return Ok(VMSuccess::ExternalCall {
+                                ext_function_id: ext_id,
+                                args: args_vec,
+                            });
+                        }
+                        Err(err) => catch!(self, err),
+                    }
                 }
                 // Function Definition
                 Opcode::MakeFunction => {
@@ -1574,6 +1610,214 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         Ok(())
     }
 
+    /// Extends a list with items from an iterable.
+    ///
+    /// Stack: [list, iterable] -> [list]
+    /// Pops the iterable, extends the list in place, leaves list on stack.
+    fn list_extend(&mut self) -> Result<(), RunError> {
+        let iterable = self.pop();
+        let list_ref = self.pop();
+
+        // Two-phase approach to avoid borrow conflicts:
+        // Phase 1: Copy items without refcount changes
+        let copied_items: Vec<Value> = match &iterable {
+            Value::Ref(id) => match self.heap.get(*id) {
+                HeapData::List(list) => list.as_vec().iter().map(Value::copy_for_extend).collect(),
+                HeapData::Tuple(tuple) => tuple.as_vec().iter().map(Value::copy_for_extend).collect(),
+                HeapData::Set(set) => set.storage().iter().map(Value::copy_for_extend).collect(),
+                HeapData::Dict(dict) => dict.iter().map(|(k, _)| Value::copy_for_extend(k)).collect(),
+                HeapData::Str(s) => {
+                    // Need to allocate strings for each character
+                    let chars: Vec<char> = s.as_str().chars().collect();
+                    let mut items = Vec::with_capacity(chars.len());
+                    for c in chars {
+                        let heap_id = self.heap.allocate(HeapData::Str(Str::new(c.to_string())))?;
+                        items.push(Value::Ref(heap_id));
+                    }
+                    items
+                }
+                _ => {
+                    let type_ = iterable.py_type(Some(self.heap));
+                    iterable.drop_with_heap(self.heap);
+                    list_ref.drop_with_heap(self.heap);
+                    return Err(ExcType::type_error_not_iterable(type_));
+                }
+            },
+            Value::InternString(id) => {
+                let s = self.interns.get_str(*id);
+                let chars: Vec<char> = s.chars().collect();
+                let mut items = Vec::with_capacity(chars.len());
+                for c in chars {
+                    let heap_id = self.heap.allocate(HeapData::Str(Str::new(c.to_string())))?;
+                    items.push(Value::Ref(heap_id));
+                }
+                items
+            }
+            _ => {
+                let type_ = iterable.py_type(Some(self.heap));
+                iterable.drop_with_heap(self.heap);
+                list_ref.drop_with_heap(self.heap);
+                return Err(ExcType::type_error_not_iterable(type_));
+            }
+        };
+
+        // Phase 2: Increment refcounts now that the borrow has ended
+        for item in &copied_items {
+            if let Value::Ref(id) = item {
+                self.heap.inc_ref(*id);
+            }
+        }
+
+        // Extend the list
+        if let Value::Ref(id) = &list_ref {
+            if let HeapData::List(list) = self.heap.get_mut(*id) {
+                list.as_vec_mut().extend(copied_items);
+            }
+        }
+
+        iterable.drop_with_heap(self.heap);
+        self.push(list_ref);
+        Ok(())
+    }
+
+    /// Converts a list to a tuple.
+    ///
+    /// Stack: [list] -> [tuple]
+    fn list_to_tuple(&mut self) -> Result<(), RunError> {
+        let list_ref = self.pop();
+
+        // Phase 1: Copy items without refcount changes
+        let copied_items: Vec<Value> = if let Value::Ref(id) = &list_ref {
+            if let HeapData::List(list) = self.heap.get(*id) {
+                list.as_vec().iter().map(Value::copy_for_extend).collect()
+            } else {
+                return Err(RunError::internal("ListToTuple: expected list"));
+            }
+        } else {
+            return Err(RunError::internal("ListToTuple: expected list ref"));
+        };
+
+        // Phase 2: Increment refcounts now that the borrow has ended
+        for item in &copied_items {
+            if let Value::Ref(id) = item {
+                self.heap.inc_ref(*id);
+            }
+        }
+
+        list_ref.drop_with_heap(self.heap);
+
+        let tuple = Tuple::new(copied_items);
+        let heap_id = self.heap.allocate(HeapData::Tuple(tuple))?;
+        self.push(Value::Ref(heap_id));
+        Ok(())
+    }
+
+    /// Merges a mapping into a dict for **kwargs unpacking.
+    ///
+    /// Stack: [dict, mapping] -> [dict]
+    /// Validates that mapping is a dict and that keys are strings.
+    fn dict_merge(&mut self, func_name_id: u16) -> Result<(), RunError> {
+        let mapping = self.pop();
+        let dict_ref = self.pop();
+
+        // Get function name for error messages
+        let func_name = if func_name_id == 0xFFFF {
+            "<unknown>".to_string()
+        } else {
+            self.interns.get_str(StringId::from_index(func_name_id)).to_string()
+        };
+
+        // Two-phase approach: copy items first, then inc refcounts
+        // Phase 1: Copy key-value pairs without refcount changes
+        // Check that mapping is a dict (Ref pointing to Dict)
+        let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = &mapping {
+            if let HeapData::Dict(dict) = self.heap.get(*id) {
+                dict.iter()
+                    .map(|(k, v)| (Value::copy_for_extend(k), Value::copy_for_extend(v)))
+                    .collect()
+            } else {
+                let type_name = mapping.py_type(Some(self.heap)).to_string();
+                mapping.drop_with_heap(self.heap);
+                dict_ref.drop_with_heap(self.heap);
+                return Err(ExcType::type_error_kwargs_not_mapping(&func_name, &type_name));
+            }
+        } else {
+            let type_name = mapping.py_type(Some(self.heap)).to_string();
+            mapping.drop_with_heap(self.heap);
+            dict_ref.drop_with_heap(self.heap);
+            return Err(ExcType::type_error_kwargs_not_mapping(&func_name, &type_name));
+        };
+
+        // Phase 2: Increment refcounts now that the borrow has ended
+        for (key, value) in &copied_items {
+            if let Value::Ref(id) = key {
+                self.heap.inc_ref(*id);
+            }
+            if let Value::Ref(id) = value {
+                self.heap.inc_ref(*id);
+            }
+        }
+
+        // Merge into the dict, validating string keys
+        let dict_id = if let Value::Ref(id) = &dict_ref {
+            *id
+        } else {
+            mapping.drop_with_heap(self.heap);
+            dict_ref.drop_with_heap(self.heap);
+            return Err(RunError::internal("DictMerge: expected dict ref"));
+        };
+
+        for (key, value) in copied_items {
+            // Validate key is a string (InternString or heap-allocated Str)
+            let is_string = match &key {
+                Value::InternString(_) => true,
+                Value::Ref(id) => matches!(self.heap.get(*id), HeapData::Str(_)),
+                _ => false,
+            };
+            if !is_string {
+                key.drop_with_heap(self.heap);
+                value.drop_with_heap(self.heap);
+                mapping.drop_with_heap(self.heap);
+                dict_ref.drop_with_heap(self.heap);
+                return Err(ExcType::type_error_kwargs_nonstring_key());
+            }
+
+            // Get the string key for error messages (needed before moving key into closure)
+            let key_str = match &key {
+                Value::InternString(id) => self.interns.get_str(*id).to_string(),
+                Value::Ref(id) => {
+                    if let HeapData::Str(s) = self.heap.get(*id) {
+                        s.as_str().to_string()
+                    } else {
+                        "<unknown>".to_string()
+                    }
+                }
+                _ => "<unknown>".to_string(),
+            };
+
+            // Use with_entry_mut to avoid borrow conflict: takes data out temporarily
+            let result = self.heap.with_entry_mut(dict_id, |heap, data| {
+                if let HeapData::Dict(dict) = data {
+                    dict.set(key, value, heap, self.interns)
+                } else {
+                    Err(RunError::internal("DictMerge: entry is not a Dict"))
+                }
+            });
+
+            // If set returned Some, the key already existed (duplicate kwarg)
+            if let Some(old_value) = result? {
+                old_value.drop_with_heap(self.heap);
+                mapping.drop_with_heap(self.heap);
+                dict_ref.drop_with_heap(self.heap);
+                return Err(ExcType::type_error_multiple_values(&func_name, &key_str));
+            }
+        }
+
+        mapping.drop_with_heap(self.heap);
+        self.push(dict_ref);
+        Ok(())
+    }
+
     /// Formats a value for f-string interpolation.
     ///
     /// Flags encoding:
@@ -1879,6 +2123,125 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Err(ExcType::type_error("object is not callable"))
             }
         }
+    }
+
+    /// Calls a function with unpacked args tuple and optional kwargs dict.
+    ///
+    /// This is used for `f(*args)` and `f(**kwargs)` style calls.
+    fn call_function_ex(
+        &mut self,
+        callable: Value,
+        args_tuple: Value,
+        kwargs: Option<Value>,
+    ) -> Result<CallResult, RunError> {
+        // Two-phase approach for extracting positional args to avoid borrow conflicts
+        // Phase 1: Copy items without refcount changes
+        let copied_args: Vec<Value> = if let Value::Ref(id) = &args_tuple {
+            if let HeapData::Tuple(tuple) = self.heap.get(*id) {
+                tuple.as_vec().iter().map(Value::copy_for_extend).collect()
+            } else {
+                callable.drop_with_heap(self.heap);
+                args_tuple.drop_with_heap(self.heap);
+                if let Some(k) = kwargs {
+                    k.drop_with_heap(self.heap);
+                }
+                return Err(RunError::internal("CallFunctionEx: expected tuple for args"));
+            }
+        } else {
+            callable.drop_with_heap(self.heap);
+            args_tuple.drop_with_heap(self.heap);
+            if let Some(k) = kwargs {
+                k.drop_with_heap(self.heap);
+            }
+            return Err(RunError::internal("CallFunctionEx: expected tuple ref for args"));
+        };
+
+        // Phase 2: Increment refcounts for positional args
+        for arg in &copied_args {
+            if let Value::Ref(id) = arg {
+                self.heap.inc_ref(*id);
+            }
+        }
+
+        // Build ArgValues from positional args and optional kwargs
+        let args = if let Some(kwargs_ref) = kwargs {
+            // Extract kwargs dict items with two-phase approach
+            // Phase 1: Copy items
+            let copied_kwargs: Vec<(Value, Value)> = if let Value::Ref(id) = &kwargs_ref {
+                if let HeapData::Dict(dict) = self.heap.get(*id) {
+                    dict.iter()
+                        .map(|(k, v)| (Value::copy_for_extend(k), Value::copy_for_extend(v)))
+                        .collect()
+                } else {
+                    callable.drop_with_heap(self.heap);
+                    args_tuple.drop_with_heap(self.heap);
+                    kwargs_ref.drop_with_heap(self.heap);
+                    for arg in copied_args {
+                        arg.drop_with_heap(self.heap);
+                    }
+                    return Err(RunError::internal("CallFunctionEx: expected dict for kwargs"));
+                }
+            } else {
+                callable.drop_with_heap(self.heap);
+                args_tuple.drop_with_heap(self.heap);
+                kwargs_ref.drop_with_heap(self.heap);
+                for arg in copied_args {
+                    arg.drop_with_heap(self.heap);
+                }
+                return Err(RunError::internal("CallFunctionEx: expected dict ref for kwargs"));
+            };
+
+            // Phase 2: Increment refcounts for kwargs
+            for (k, v) in &copied_kwargs {
+                if let Value::Ref(id) = k {
+                    self.heap.inc_ref(*id);
+                }
+                if let Value::Ref(id) = v {
+                    self.heap.inc_ref(*id);
+                }
+            }
+
+            // Clean up the kwargs dict ref (we cloned the contents)
+            kwargs_ref.drop_with_heap(self.heap);
+
+            let kwargs_values = if copied_kwargs.is_empty() {
+                KwargsValues::Empty
+            } else {
+                let kwargs_dict = Dict::from_pairs(copied_kwargs, self.heap, self.interns)?;
+                KwargsValues::Dict(kwargs_dict)
+            };
+
+            if copied_args.is_empty() && matches!(kwargs_values, KwargsValues::Empty) {
+                ArgValues::Empty
+            } else if copied_args.is_empty() {
+                ArgValues::Kwargs(kwargs_values)
+            } else {
+                ArgValues::ArgsKargs {
+                    args: copied_args,
+                    kwargs: kwargs_values,
+                }
+            }
+        } else {
+            // No kwargs
+            match copied_args.len() {
+                0 => ArgValues::Empty,
+                1 => ArgValues::One(copied_args.into_iter().next().unwrap()),
+                2 => {
+                    let mut iter = copied_args.into_iter();
+                    ArgValues::Two(iter.next().unwrap(), iter.next().unwrap())
+                }
+                _ => ArgValues::ArgsKargs {
+                    args: copied_args,
+                    kwargs: KwargsValues::Empty,
+                },
+            }
+        };
+
+        // Clean up the args tuple ref (we cloned the contents)
+        args_tuple.drop_with_heap(self.heap);
+
+        // Now call the function with the built ArgValues
+        self.call_function(callable, args)
     }
 
     /// Calls a user-defined function by pushing a new frame.
