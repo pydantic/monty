@@ -121,6 +121,11 @@ pub enum Opcode {
     CompareIn,
     /// Not membership: a not in b.
     CompareNotIn,
+    /// Modulo equality: a % b == k (operand: u16 constant index for k).
+    ///
+    /// This is an optimization for patterns like `x % 3 == 0` which are common
+    /// in Python code. Pops b then a, computes `a % b`, then compares with k.
+    CompareModEq,
 
     // === Unary Operations (no operand) ===
     /// Logical not: not a.

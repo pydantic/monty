@@ -612,6 +612,31 @@ impl ExcType {
         };
         SimpleException::new(ExcType::TypeError, Some(message))
     }
+
+    /// Creates a TypeError for unsupported binary operations.
+    ///
+    /// For `+` with str/list on the left side, uses CPython's special format:
+    /// `can only concatenate {type} (not "{other}") to {type}`
+    ///
+    /// For other cases, uses the generic format:
+    /// `unsupported operand type(s) for {op}: '{left}' and '{right}'`
+    #[must_use]
+    pub fn binary_type_error(op: &str, lhs_type: Type, rhs_type: Type) -> RunError {
+        let message = if op == "+" && (lhs_type == Type::Str || lhs_type == Type::List) {
+            format!("can only concatenate {lhs_type} (not \"{rhs_type}\") to {lhs_type}")
+        } else {
+            format!("unsupported operand type(s) for {op}: '{lhs_type}' and '{rhs_type}'")
+        };
+        exc_fmt!(Self::TypeError; "{message}").into()
+    }
+
+    /// Creates a TypeError for unsupported unary operations.
+    ///
+    /// Uses CPython's format: `bad operand type for unary {op}: '{type}'`
+    #[must_use]
+    pub fn unary_type_error(op: &str, value_type: Type) -> RunError {
+        exc_fmt!(Self::TypeError; "bad operand type for unary {op}: '{value_type}'").into()
+    }
 }
 
 /// Simple lightweight representation of an exception.

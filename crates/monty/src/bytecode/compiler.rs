@@ -236,7 +236,13 @@ impl<'a> Compiler<'a> {
             Expr::CmpOp { left, op, right } => {
                 self.compile_expr(left);
                 self.compile_expr(right);
-                self.code.emit(cmp_operator_to_opcode(op));
+                // ModEq needs special handling - it has a constant operand
+                if let CmpOperator::ModEq(value) = op {
+                    let const_idx = self.code.add_const(Value::Int(*value));
+                    self.code.emit_u16(Opcode::CompareModEq, const_idx);
+                } else {
+                    self.code.emit(cmp_operator_to_opcode(op));
+                }
             }
 
             Expr::Not(operand) => {
@@ -900,7 +906,8 @@ fn cmp_operator_to_opcode(op: &CmpOperator) -> Opcode {
         CmpOperator::IsNot => Opcode::CompareIsNot,
         CmpOperator::In => Opcode::CompareIn,
         CmpOperator::NotIn => Opcode::CompareNotIn,
-        CmpOperator::ModEq(_) => todo!("ModEq requires special handling"),
+        // ModEq is handled specially at the call site (needs constant operand)
+        CmpOperator::ModEq(_) => unreachable!("ModEq handled at call site"),
     }
 }
 

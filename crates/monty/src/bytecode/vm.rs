@@ -392,7 +392,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::BinaryMul => self.binary_mult()?,
                 Opcode::BinaryDiv => self.binary_div()?,
                 Opcode::BinaryFloorDiv => self.binary_floordiv()?,
-                Opcode::BinaryMod => self.binary_mod(),
+                Opcode::BinaryMod => self.binary_mod()?,
                 Opcode::BinaryPow => self.binary_pow()?,
                 // Bitwise operations - only work on integers
                 Opcode::BinaryAnd => self.binary_bitwise(BitwiseOp::And)?,
@@ -412,6 +412,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::CompareIsNot => self.compare_is(true),
                 Opcode::CompareIn => self.compare_in(false)?,
                 Opcode::CompareNotIn => self.compare_in(true)?,
+                Opcode::CompareModEq => self.compare_mod_eq()?,
                 // Unary Operations
                 Opcode::UnaryNot => {
                     let value = self.pop();
@@ -422,6 +423,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::UnaryNeg => {
                     // Unary minus - negate numeric value
                     let value = self.pop();
+                    let value_type = value.py_type(Some(self.heap));
                     let result = match &value {
                         Value::Int(n) => Some(Value::Int(-n)),
                         Value::Float(f) => Some(Value::Float(-f)),
@@ -431,12 +433,13 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     value.drop_with_heap(self.heap);
                     match result {
                         Some(v) => self.push(v),
-                        None => return Err(ExcType::type_error("bad operand type for unary -")),
+                        None => return Err(ExcType::unary_type_error("-", value_type)),
                     }
                 }
                 Opcode::UnaryPos => {
                     // Unary plus - typically a no-op for numbers
                     let value = self.pop();
+                    let value_type = value.py_type(Some(self.heap));
                     let result = match &value {
                         Value::Int(_) | Value::Float(_) | Value::Bool(_) => Some(value.clone_immediate()),
                         _ => None,
@@ -444,12 +447,13 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     value.drop_with_heap(self.heap);
                     match result {
                         Some(v) => self.push(v),
-                        None => return Err(ExcType::type_error("bad operand type for unary +")),
+                        None => return Err(ExcType::unary_type_error("+", value_type)),
                     }
                 }
                 Opcode::UnaryInvert => {
                     // Bitwise NOT
                     let value = self.pop();
+                    let value_type = value.py_type(Some(self.heap));
                     let result = match &value {
                         Value::Int(n) => Some(Value::Int(!n)),
                         Value::Bool(b) => Some(Value::Int(!i64::from(*b))),
@@ -458,9 +462,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     value.drop_with_heap(self.heap);
                     match result {
                         Some(v) => self.push(v),
-                        None => {
-                            return Err(ExcType::type_error("bad operand type for unary ~"));
-                        }
+                        None => return Err(ExcType::unary_type_error("~", value_type)),
                     }
                 }
                 // In-place Operations
@@ -470,7 +472,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::InplaceMul => self.binary_mult()?,
                 Opcode::InplaceDiv => self.binary_div()?,
                 Opcode::InplaceFloorDiv => self.binary_floordiv()?,
-                Opcode::InplaceMod => self.binary_mod(),
+                Opcode::InplaceMod => self.binary_mod()?,
                 Opcode::InplacePow => self.binary_pow()?,
                 Opcode::InplaceAnd => self.binary_bitwise(BitwiseOp::And)?,
                 Opcode::InplaceOr => self.binary_bitwise(BitwiseOp::Or)?,
@@ -1103,6 +1105,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     fn binary_add(&mut self) -> Result<(), RunError> {
         let rhs = self.pop();
         let lhs = self.pop();
+        // Capture types before operation for error messages
+        let lhs_type = lhs.py_type(Some(self.heap));
+        let rhs_type = rhs.py_type(Some(self.heap));
         let result = lhs.py_add(&rhs, self.heap, self.interns);
         lhs.drop_with_heap(self.heap);
         rhs.drop_with_heap(self.heap);
@@ -1111,7 +1116,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 self.push(v);
                 Ok(())
             }
-            Ok(None) => Err(ExcType::type_error("unsupported operand type(s) for +")),
+            Ok(None) => Err(ExcType::binary_type_error("+", lhs_type, rhs_type)),
             Err(e) => Err(e.into()),
         }
     }
@@ -1120,6 +1125,8 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     fn binary_sub(&mut self) -> Result<(), RunError> {
         let rhs = self.pop();
         let lhs = self.pop();
+        let lhs_type = lhs.py_type(Some(self.heap));
+        let rhs_type = rhs.py_type(Some(self.heap));
         let result = lhs.py_sub(&rhs, self.heap);
         lhs.drop_with_heap(self.heap);
         rhs.drop_with_heap(self.heap);
@@ -1128,7 +1135,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 self.push(v);
                 Ok(())
             }
-            Ok(None) => Err(ExcType::type_error("unsupported operand type(s) for -")),
+            Ok(None) => Err(ExcType::binary_type_error("-", lhs_type, rhs_type)),
             Err(e) => Err(e.into()),
         }
     }
@@ -1137,6 +1144,8 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     fn binary_mult(&mut self) -> Result<(), RunError> {
         let rhs = self.pop();
         let lhs = self.pop();
+        let lhs_type = lhs.py_type(Some(self.heap));
+        let rhs_type = rhs.py_type(Some(self.heap));
         let result = lhs.py_mult(&rhs, self.heap, self.interns);
         lhs.drop_with_heap(self.heap);
         rhs.drop_with_heap(self.heap);
@@ -1145,7 +1154,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 self.push(v);
                 Ok(())
             }
-            Ok(None) => Err(ExcType::type_error("unsupported operand type(s) for *")),
+            Ok(None) => Err(ExcType::binary_type_error("*", lhs_type, rhs_type)),
             Err(e) => Err(e),
         }
     }
@@ -1154,6 +1163,8 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     fn binary_div(&mut self) -> Result<(), RunError> {
         let rhs = self.pop();
         let lhs = self.pop();
+        let lhs_type = lhs.py_type(Some(self.heap));
+        let rhs_type = rhs.py_type(Some(self.heap));
         let result = lhs.py_div(&rhs, self.heap);
         lhs.drop_with_heap(self.heap);
         rhs.drop_with_heap(self.heap);
@@ -1162,7 +1173,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 self.push(v);
                 Ok(())
             }
-            Ok(None) => Err(ExcType::type_error("unsupported operand type(s) for /")),
+            Ok(None) => Err(ExcType::binary_type_error("/", lhs_type, rhs_type)),
             Err(e) => Err(e),
         }
     }
@@ -1171,6 +1182,8 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     fn binary_floordiv(&mut self) -> Result<(), RunError> {
         let rhs = self.pop();
         let lhs = self.pop();
+        let lhs_type = lhs.py_type(Some(self.heap));
+        let rhs_type = rhs.py_type(Some(self.heap));
         let result = lhs.py_floordiv(&rhs, self.heap);
         lhs.drop_with_heap(self.heap);
         rhs.drop_with_heap(self.heap);
@@ -1179,21 +1192,26 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 self.push(v);
                 Ok(())
             }
-            Ok(None) => Err(ExcType::type_error("unsupported operand type(s) for //")),
+            Ok(None) => Err(ExcType::binary_type_error("//", lhs_type, rhs_type)),
             Err(e) => Err(e),
         }
     }
 
-    /// Binary modulo (no Result, just Option).
-    fn binary_mod(&mut self) {
+    /// Binary modulo with proper refcount handling.
+    fn binary_mod(&mut self) -> Result<(), RunError> {
         let rhs = self.pop();
         let lhs = self.pop();
+        let lhs_type = lhs.py_type(Some(self.heap));
+        let rhs_type = rhs.py_type(Some(self.heap));
         let result = lhs.py_mod(&rhs);
         lhs.drop_with_heap(self.heap);
         rhs.drop_with_heap(self.heap);
         match result {
-            Some(v) => self.push(v),
-            None => self.push(Value::None), // Type error - simplified for now
+            Some(v) => {
+                self.push(v);
+                Ok(())
+            }
+            None => Err(ExcType::binary_type_error("%", lhs_type, rhs_type)),
         }
     }
 
@@ -1201,6 +1219,8 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     fn binary_pow(&mut self) -> Result<(), RunError> {
         let rhs = self.pop();
         let lhs = self.pop();
+        let lhs_type = lhs.py_type(Some(self.heap));
+        let rhs_type = rhs.py_type(Some(self.heap));
         let result = lhs.py_pow(&rhs, self.heap);
         lhs.drop_with_heap(self.heap);
         rhs.drop_with_heap(self.heap);
@@ -1209,7 +1229,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 self.push(v);
                 Ok(())
             }
-            Ok(None) => Err(ExcType::type_error("unsupported operand type(s) for **")),
+            Ok(None) => Err(ExcType::binary_type_error("**", lhs_type, rhs_type)),
             Err(e) => Err(e),
         }
     }
@@ -1220,6 +1240,10 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     fn binary_bitwise(&mut self, op: BitwiseOp) -> Result<(), RunError> {
         let rhs = self.pop();
         let lhs = self.pop();
+
+        // Capture types before any operations for error messages
+        let lhs_type = lhs.py_type(Some(self.heap));
+        let rhs_type = rhs.py_type(Some(self.heap));
 
         // Get integer values from lhs and rhs
         let lhs_int = match &lhs {
@@ -1279,9 +1303,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 BitwiseOp::LShift => "<<",
                 BitwiseOp::RShift => ">>",
             };
-            Err(ExcType::type_error(&format!(
-                "unsupported operand type(s) for {op_str}"
-            )))
+            Err(ExcType::binary_type_error(op_str, lhs_type, rhs_type))
         }
     }
 
@@ -1292,6 +1314,10 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     fn inplace_add(&mut self) -> Result<(), RunError> {
         let rhs = self.pop();
         let mut lhs = self.pop();
+
+        // Capture types early for error messages (needed if fallback fails)
+        let lhs_type = lhs.py_type(Some(self.heap));
+        let rhs_type = rhs.py_type(Some(self.heap));
 
         // Try in-place operation first (for mutable types like lists)
         // py_iadd takes owned `other` and mutates `self` in place
@@ -1314,7 +1340,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     self.push(v);
                     Ok(())
                 }
-                Ok(None) => Err(ExcType::type_error("unsupported operand type(s) for +=")),
+                Ok(None) => Err(ExcType::binary_type_error("+=", lhs_type, rhs_type)),
                 Err(e) => Err(e.into()),
             }
         }
@@ -1390,6 +1416,44 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         let contained = result?;
         self.push(Value::Bool(if negate { !contained } else { contained }));
         Ok(())
+    }
+
+    /// Modulo equality comparison: a % b == k
+    ///
+    /// This is an optimization for patterns like `x % 3 == 0`. The constant k
+    /// is stored in the constant pool and referenced by the u16 operand.
+    fn compare_mod_eq(&mut self) -> Result<(), RunError> {
+        let const_idx = self.fetch_u16();
+        let k = self.current_frame().code.constants().get(const_idx).copy_for_extend();
+
+        let rhs = self.pop(); // divisor (b)
+        let lhs = self.pop(); // dividend (a)
+
+        // Compute a % b
+        let mod_result = match (&lhs, &rhs) {
+            (Value::Int(a), Value::Int(b)) => {
+                if *b == 0 {
+                    lhs.drop_with_heap(self.heap);
+                    rhs.drop_with_heap(self.heap);
+                    return Err(ExcType::zero_division().into());
+                }
+                Some(Value::Int(a.rem_euclid(*b)))
+            }
+            _ => None,
+        };
+
+        lhs.drop_with_heap(self.heap);
+        rhs.drop_with_heap(self.heap);
+
+        match mod_result {
+            Some(result) => {
+                // Compare with k
+                let is_equal = result.py_eq(&k, self.heap, self.interns);
+                self.push(Value::Bool(is_equal));
+                Ok(())
+            }
+            None => Err(ExcType::type_error("unsupported operand type(s) for %")),
+        }
     }
 
     // ========================================================================
