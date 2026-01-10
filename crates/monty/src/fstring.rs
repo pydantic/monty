@@ -1,10 +1,10 @@
-//! F-string type definitions.
+//! F-string type definitions and formatting functions.
 //!
-//! This module contains the AST types for f-strings (formatted string literals).
+//! This module contains the AST types for f-strings (formatted string literals)
+//! and the runtime formatting functions used by the bytecode VM.
+//!
 //! F-strings can contain literal text and interpolated expressions with optional
 //! conversion flags (`!s`, `!r`, `!a`) and format specifications.
-//!
-//! Runtime evaluation of f-strings is handled by the bytecode VM.
 
 use std::str::FromStr;
 
@@ -37,13 +37,14 @@ pub enum ConversionFlag {
 ///
 /// F-strings are composed of literal text segments and interpolated expressions.
 /// For example, `f"Hello {name}!"` has three parts:
-/// - `Literal("Hello ")`
+/// - `Literal(interned_hello)` (StringId for "Hello ")
 /// - `Interpolation { expr: name, ... }`
-/// - `Literal("!")`
+/// - `Literal(interned_exclaim)` (StringId for "!")
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum FStringPart {
     /// Literal text segment (e.g., "Hello " in `f"Hello {name}"`)
-    Literal(String),
+    /// The StringId references the interned string in the Interns table.
+    Literal(StringId),
     /// Interpolated expression with optional conversion and format spec
     Interpolation {
         /// The expression to evaluate
@@ -210,4 +211,490 @@ impl FromStr for ParsedFormatSpec {
 
         Ok(result)
     }
+}
+
+// ============================================================================
+// Format errors
+// ============================================================================
+
+/// Error type for format specification failures.
+///
+/// These errors are returned from formatting functions and should be converted
+/// to appropriate Python exceptions (usually ValueError) by the VM.
+#[derive(Debug, Clone)]
+pub enum FormatError {
+    /// Invalid alignment for the given type (e.g., '=' alignment on strings).
+    InvalidAlignment(String),
+    /// Value out of range (e.g., character code > 0x10FFFF).
+    Overflow(String),
+    /// Generic value error (e.g., invalid base, invalid Unicode).
+    ValueError(String),
+}
+
+impl std::fmt::Display for FormatError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidAlignment(msg) | Self::Overflow(msg) | Self::ValueError(msg) => {
+                write!(f, "{msg}")
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Format spec encoding/decoding for bytecode
+// ============================================================================
+
+/// Encodes a ParsedFormatSpec into a u64 for storage in bytecode constants.
+///
+/// Encoding layout (fits in 48 bits):
+/// - bits 0-7: fill character (as ASCII, default space=32)
+/// - bits 8-10: align (0=none, 1='<', 2='>', 3='^', 4='=')
+/// - bits 11-12: sign (0=none, 1='+', 2='-', 3=' ')
+/// - bit 13: zero_pad
+/// - bits 14-29: width (16 bits, max 65535)
+/// - bits 30-45: precision (16 bits, using 0xFFFF as "no precision")
+/// - bits 46-50: type_char (0=none, 1-15=explicit type mapping: b,c,d,e,E,f,F,g,G,n,o,s,x,X,%)
+pub fn encode_format_spec(spec: &ParsedFormatSpec) -> u64 {
+    let fill = spec.fill as u64;
+    let align = match spec.align {
+        None => 0u64,
+        Some('<') => 1,
+        Some('>') => 2,
+        Some('^') => 3,
+        Some('=') => 4,
+        Some(_) => 0,
+    };
+    let sign = match spec.sign {
+        None => 0u64,
+        Some('+') => 1,
+        Some('-') => 2,
+        Some(' ') => 3,
+        Some(_) => 0,
+    };
+    let zero_pad = u64::from(spec.zero_pad);
+    let width = spec.width as u64;
+    let precision = spec.precision.map_or(0xFFFFu64, |p| p as u64);
+    let type_char = spec.type_char.map_or(0u64, |c| match c {
+        'b' => 1,
+        'c' => 2,
+        'd' => 3,
+        'e' => 4,
+        'E' => 5,
+        'f' => 6,
+        'F' => 7,
+        'g' => 8,
+        'G' => 9,
+        'n' => 10,
+        'o' => 11,
+        's' => 12,
+        'x' => 13,
+        'X' => 14,
+        '%' => 15,
+        _ => 0,
+    });
+
+    fill | (align << 8) | (sign << 11) | (zero_pad << 13) | (width << 14) | (precision << 30) | (type_char << 46)
+}
+
+/// Decodes a u64 back into a ParsedFormatSpec.
+///
+/// This reverses the encoding done by `encode_format_spec`.
+pub fn decode_format_spec(encoded: u64) -> ParsedFormatSpec {
+    let fill = (encoded & 0xFF) as u8 as char;
+    let align_bits = (encoded >> 8) & 0x07;
+    let sign_bits = (encoded >> 11) & 0x03;
+    let zero_pad = ((encoded >> 13) & 0x01) != 0;
+    let width = ((encoded >> 14) & 0xFFFF) as usize;
+    let precision_raw = ((encoded >> 30) & 0xFFFF) as usize;
+    let type_bits = ((encoded >> 46) & 0x1F) as u8;
+
+    let align = match align_bits {
+        1 => Some('<'),
+        2 => Some('>'),
+        3 => Some('^'),
+        4 => Some('='),
+        _ => None,
+    };
+
+    let sign = match sign_bits {
+        1 => Some('+'),
+        2 => Some('-'),
+        3 => Some(' '),
+        _ => None,
+    };
+
+    let precision = if precision_raw == 0xFFFF {
+        None
+    } else {
+        Some(precision_raw)
+    };
+
+    let type_char = match type_bits {
+        1 => Some('b'),
+        2 => Some('c'),
+        3 => Some('d'),
+        4 => Some('e'),
+        5 => Some('E'),
+        6 => Some('f'),
+        7 => Some('F'),
+        8 => Some('g'),
+        9 => Some('G'),
+        10 => Some('n'),
+        11 => Some('o'),
+        12 => Some('s'),
+        13 => Some('x'),
+        14 => Some('X'),
+        15 => Some('%'),
+        _ => None,
+    };
+
+    ParsedFormatSpec {
+        fill,
+        align,
+        sign,
+        zero_pad,
+        width,
+        precision,
+        type_char,
+    }
+}
+
+// ============================================================================
+// Formatting functions
+// ============================================================================
+
+/// Formats a string with a format spec.
+///
+/// Handles string truncation (via precision), alignment, and padding.
+pub fn format_string(value: &str, spec: &ParsedFormatSpec) -> Result<String, FormatError> {
+    // Handle precision (string truncation)
+    let value = if let Some(prec) = spec.precision {
+        value.chars().take(prec).collect::<String>()
+    } else {
+        value.to_owned()
+    };
+
+    // Validate alignment for strings (= is only for numbers)
+    if spec.align == Some('=') {
+        return Err(FormatError::InvalidAlignment(
+            "'=' alignment not allowed in string format specifier".to_owned(),
+        ));
+    }
+
+    // Default alignment for strings is left ('<')
+    let align = spec.align.unwrap_or('<');
+    Ok(pad_string(&value, spec.width, align, spec.fill))
+}
+
+/// Formats an integer with a format spec.
+///
+/// Handles sign, zero-padding, and alignment.
+pub fn format_int(n: i64, spec: &ParsedFormatSpec) -> String {
+    let is_negative = n < 0;
+    let abs_str = n.abs().to_string();
+
+    // Build the sign prefix
+    let sign = if is_negative {
+        "-"
+    } else {
+        match spec.sign {
+            Some('+') => "+",
+            Some(' ') => " ",
+            _ => "",
+        }
+    };
+
+    // Default alignment for numbers is right ('>')
+    let align = spec.align.unwrap_or('>');
+
+    // Handle sign-aware zero-padding or regular padding
+    if spec.zero_pad || align == '=' {
+        let fill = if spec.zero_pad { '0' } else { spec.fill };
+        let total_len = sign.len() + abs_str.len();
+        if spec.width > total_len {
+            let padding = spec.width - total_len;
+            let pad_str: String = std::iter::repeat_n(fill, padding).collect();
+            format!("{sign}{pad_str}{abs_str}")
+        } else {
+            format!("{sign}{abs_str}")
+        }
+    } else {
+        let value = format!("{sign}{abs_str}");
+        pad_string(&value, spec.width, align, spec.fill)
+    }
+}
+
+/// Formats an integer in a different base (binary, octal, hex).
+pub fn format_int_base(n: i64, base: u32, spec: &ParsedFormatSpec) -> Result<String, FormatError> {
+    let is_negative = n < 0;
+    let abs_val = n.unsigned_abs();
+
+    let abs_str = match base {
+        2 => format!("{abs_val:b}"),
+        8 => format!("{abs_val:o}"),
+        16 => format!("{abs_val:x}"),
+        _ => return Err(FormatError::ValueError("Invalid base".to_owned())),
+    };
+
+    let sign = if is_negative { "-" } else { "" };
+    let value = format!("{sign}{abs_str}");
+
+    let align = spec.align.unwrap_or('>');
+    Ok(pad_string(&value, spec.width, align, spec.fill))
+}
+
+/// Formats an integer as a Unicode character.
+pub fn format_char(n: i64, spec: &ParsedFormatSpec) -> Result<String, FormatError> {
+    if !(0..=0x0010_FFFF).contains(&n) {
+        return Err(FormatError::Overflow("%c arg not in range(0x110000)".to_owned()));
+    }
+    let c = char::from_u32(n as u32).ok_or_else(|| FormatError::ValueError("Invalid Unicode code point".to_owned()))?;
+    let value = c.to_string();
+    let align = spec.align.unwrap_or('<');
+    Ok(pad_string(&value, spec.width, align, spec.fill))
+}
+
+/// Formats a float with :f/:F format (fixed-point notation).
+pub fn format_float_f(f: f64, spec: &ParsedFormatSpec) -> String {
+    let precision = spec.precision.unwrap_or(6);
+    let is_negative = f.is_sign_negative() && !f.is_nan();
+    let abs_val = f.abs();
+
+    let abs_str = format!("{abs_val:.precision$}");
+
+    let sign = if is_negative {
+        "-"
+    } else {
+        match spec.sign {
+            Some('+') => "+",
+            Some(' ') => " ",
+            _ => "",
+        }
+    };
+
+    let align = spec.align.unwrap_or('>');
+
+    if spec.zero_pad || align == '=' {
+        let fill = if spec.zero_pad { '0' } else { spec.fill };
+        let total_len = sign.len() + abs_str.len();
+        if spec.width > total_len {
+            let padding = spec.width - total_len;
+            let pad_str: String = std::iter::repeat_n(fill, padding).collect();
+            format!("{sign}{pad_str}{abs_str}")
+        } else {
+            format!("{sign}{abs_str}")
+        }
+    } else {
+        let value = format!("{sign}{abs_str}");
+        pad_string(&value, spec.width, align, spec.fill)
+    }
+}
+
+/// Formats a float with :e/:E format (exponential notation).
+pub fn format_float_e(f: f64, spec: &ParsedFormatSpec, uppercase: bool) -> String {
+    let precision = spec.precision.unwrap_or(6);
+    let is_negative = f.is_sign_negative() && !f.is_nan();
+    let abs_val = f.abs();
+
+    let abs_str = if uppercase {
+        format!("{abs_val:.precision$E}")
+    } else {
+        format!("{abs_val:.precision$e}")
+    };
+
+    // Fix exponent format to match Python (e+03 not e3)
+    let abs_str = fix_exp_format(&abs_str);
+
+    let sign = if is_negative {
+        "-"
+    } else {
+        match spec.sign {
+            Some('+') => "+",
+            Some(' ') => " ",
+            _ => "",
+        }
+    };
+
+    let value = format!("{sign}{abs_str}");
+    let align = spec.align.unwrap_or('>');
+    pad_string(&value, spec.width, align, spec.fill)
+}
+
+/// Formats a float with :g/:G format (general format).
+///
+/// Uses exponential notation if exponent < -4 or >= precision, otherwise fixed.
+pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
+    let precision = spec.precision.unwrap_or(6).max(1);
+    let is_negative = f.is_sign_negative() && !f.is_nan();
+    let abs_val = f.abs();
+
+    // Python's g format: use exponential if exponent < -4 or >= precision
+    let exp = if abs_val == 0.0 {
+        0
+    } else {
+        abs_val.log10().floor() as i32
+    };
+
+    let abs_str = if exp < -4 || exp >= precision as i32 {
+        // Use exponential notation
+        let exp_prec = precision.saturating_sub(1);
+        let formatted = format!("{abs_val:.exp_prec$e}");
+        // Python strips trailing zeros from the mantissa
+        strip_trailing_zeros_exp(&formatted)
+    } else {
+        // Use fixed notation
+        let sig_digits = (precision as i32 - exp - 1).max(0) as usize;
+        let formatted = format!("{abs_val:.sig_digits$}");
+        strip_trailing_zeros(&formatted)
+    };
+
+    let sign = if is_negative {
+        "-"
+    } else {
+        match spec.sign {
+            Some('+') => "+",
+            Some(' ') => " ",
+            _ => "",
+        }
+    };
+
+    let value = format!("{sign}{abs_str}");
+    let align = spec.align.unwrap_or('>');
+    pad_string(&value, spec.width, align, spec.fill)
+}
+
+/// Formats a float as a percentage.
+pub fn format_float_percent(f: f64, spec: &ParsedFormatSpec) -> String {
+    let precision = spec.precision.unwrap_or(6);
+    let percent_val = f * 100.0;
+    let is_negative = percent_val.is_sign_negative() && !percent_val.is_nan();
+    let abs_val = percent_val.abs();
+
+    let abs_str = format!("{abs_val:.precision$}%");
+
+    let sign = if is_negative {
+        "-"
+    } else {
+        match spec.sign {
+            Some('+') => "+",
+            Some(' ') => " ",
+            _ => "",
+        }
+    };
+
+    let value = format!("{sign}{abs_str}");
+    let align = spec.align.unwrap_or('>');
+    pad_string(&value, spec.width, align, spec.fill)
+}
+
+// ============================================================================
+// Helper functions
+// ============================================================================
+
+/// Pads a string to a given width with alignment.
+///
+/// Alignment options:
+/// - '<': left-align (pad on right)
+/// - '>': right-align (pad on left)
+/// - '^': center (pad both sides)
+fn pad_string(value: &str, width: usize, align: char, fill: char) -> String {
+    let value_len = value.chars().count();
+    if width <= value_len {
+        return value.to_owned();
+    }
+
+    let padding = width - value_len;
+
+    match align {
+        '<' => {
+            let mut s = value.to_owned();
+            for _ in 0..padding {
+                s.push(fill);
+            }
+            s
+        }
+        '>' => {
+            let mut s = String::new();
+            for _ in 0..padding {
+                s.push(fill);
+            }
+            s.push_str(value);
+            s
+        }
+        '^' => {
+            let left_pad = padding / 2;
+            let right_pad = padding - left_pad;
+            let mut s = String::new();
+            for _ in 0..left_pad {
+                s.push(fill);
+            }
+            s.push_str(value);
+            for _ in 0..right_pad {
+                s.push(fill);
+            }
+            s
+        }
+        _ => value.to_owned(),
+    }
+}
+
+/// Strips trailing zeros from a float string (for :g format).
+fn strip_trailing_zeros(s: &str) -> String {
+    if !s.contains('.') {
+        return s.to_owned();
+    }
+    let trimmed = s.trim_end_matches('0');
+    if let Some(stripped) = trimmed.strip_suffix('.') {
+        stripped.to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+/// Strips trailing zeros from exponential notation (for :g format).
+fn strip_trailing_zeros_exp(s: &str) -> String {
+    if let Some(e_pos) = s.find(['e', 'E']) {
+        let (mantissa, exp_part) = s.split_at(e_pos);
+        let trimmed_mantissa = strip_trailing_zeros(mantissa);
+        let fixed_exp = fix_exp_format(exp_part);
+        format!("{trimmed_mantissa}{fixed_exp}")
+    } else {
+        strip_trailing_zeros(s)
+    }
+}
+
+/// Converts Rust's exponential format to Python's format.
+///
+/// Rust produces "e3" or "e-3" but Python expects "e+03" or "e-03".
+/// This function ensures the exponent has:
+/// 1. A sign character ('+' or '-')
+/// 2. At least 2 digits
+fn fix_exp_format(s: &str) -> String {
+    // Find the 'e' or 'E' marker
+    let Some(e_pos) = s.find(['e', 'E']) else {
+        return s.to_owned();
+    };
+
+    let (before_e, e_and_rest) = s.split_at(e_pos);
+    let e_char = e_and_rest.chars().next().unwrap();
+    let exp_part = &e_and_rest[1..];
+
+    // Parse the exponent sign and value
+    let (sign, digits) = if let Some(stripped) = exp_part.strip_prefix('-') {
+        ('-', stripped)
+    } else if let Some(stripped) = exp_part.strip_prefix('+') {
+        ('+', stripped)
+    } else {
+        ('+', exp_part)
+    };
+
+    // Ensure at least 2 digits
+    let padded_digits = if digits.len() < 2 {
+        format!("{digits:0>2}")
+    } else {
+        digits.to_owned()
+    };
+
+    format!("{before_e}{e_char}{sign}{padded_digits}")
 }

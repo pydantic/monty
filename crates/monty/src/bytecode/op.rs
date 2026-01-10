@@ -172,6 +172,15 @@ pub enum Opcode {
     BuildDict,
     /// Pop n items, build set. Operand: u16 count.
     BuildSet,
+    /// Format a value for f-string interpolation. Operand: u8 flags.
+    ///
+    /// Flags encoding:
+    /// - bits 0-1: conversion (0=none, 1=str, 2=repr, 3=ascii)
+    /// - bit 2: has format spec on stack (pop fmt_spec first, then value)
+    /// - bit 3: has static format spec (operand includes u16 const_id after flags)
+    ///
+    /// Pops the value (and optionally format spec), pushes the formatted string.
+    FormatValue,
     /// Pop n parts, concatenate for f-string. Operand: u16 count.
     BuildFString,
 

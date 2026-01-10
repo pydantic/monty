@@ -8,13 +8,17 @@ use crate::{
     bytecode::{code::Code, op::Opcode},
     exception_private::{ExcType, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
     for_iterator::ForIterator,
+    fstring::{
+        decode_format_spec, format_char, format_float_e, format_float_f, format_float_g, format_float_percent,
+        format_int, format_int_base, format_string, ParsedFormatSpec,
+    },
     heap::{Heap, HeapData, HeapId},
     intern::{ExtFunctionId, FunctionId, Interns, StringId, MODULE_STRING_ID},
     io::PrintWriter,
     namespace::{NamespaceId, Namespaces, GLOBAL_NS_IDX},
     parse::CodeRange,
     resource::ResourceTracker,
-    types::{Dict, List, PyTrait, Set, Tuple},
+    types::{Dict, List, PyTrait, Set, Str, Tuple, Type},
     value::{Attr, Value},
 };
 
@@ -726,8 +730,21 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         }
                     }
                 }
+                Opcode::FormatValue => {
+                    let flags = self.fetch_u8();
+                    if let Err(e) = self.format_value(flags) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
+                }
                 Opcode::BuildFString => {
-                    todo!("BuildFString not implemented")
+                    let count = self.fetch_u16() as usize;
+                    if let Err(e) = self.build_fstring(count) {
+                        if let Some(result) = self.handle_exception(e) {
+                            return Err(result);
+                        }
+                    }
                 }
                 // Subscript & Attribute - route through exception handling
                 Opcode::BinarySubscr => {
@@ -1840,6 +1857,204 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         let heap_id = self.heap.allocate(HeapData::Set(set))?;
         self.push(Value::Ref(heap_id));
         Ok(())
+    }
+
+    /// Builds an f-string by concatenating n string parts from the stack.
+    fn build_fstring(&mut self, count: usize) -> Result<(), RunError> {
+        let parts = self.pop_n(count);
+        let mut result = String::new();
+
+        for part in parts {
+            // Each part should be a string (interned or heap-allocated)
+            let part_str = part.py_str(self.heap, self.interns);
+            result.push_str(&part_str);
+            part.drop_with_heap(self.heap);
+        }
+
+        let heap_id = self.heap.allocate(HeapData::Str(Str::new(result)))?;
+        self.push(Value::Ref(heap_id));
+        Ok(())
+    }
+
+    /// Formats a value for f-string interpolation.
+    ///
+    /// Flags encoding:
+    /// - bits 0-1: conversion (0=none, 1=str, 2=repr, 3=ascii)
+    /// - bit 2: has format spec on stack
+    ///
+    /// Python f-string formatting order:
+    /// 1. Apply format spec to original value (type-specific formatting)
+    /// 2. Apply conversion flag to the result
+    ///
+    /// However, conversion flags like !s, !r, !a are applied BEFORE formatting
+    /// if the value would be repr'd. The key insight is:
+    /// - No conversion: format the original value type
+    /// - !s conversion: convert to str first, then format as string
+    /// - !r conversion: convert to repr first, then format as string
+    /// - !a conversion: convert to ascii repr first, then format as string
+    fn format_value(&mut self, flags: u8) -> Result<(), RunError> {
+        let conversion = flags & 0x03;
+        let has_format_spec = (flags & 0x04) != 0;
+
+        // Pop format spec if present (pushed before value, so popped after)
+        let format_spec = if has_format_spec {
+            let spec_value = self.pop();
+            Some(spec_value)
+        } else {
+            None
+        };
+
+        let value = self.pop();
+
+        // Format with spec applied to original value type, or convert and format as string
+        let formatted = if let Some(spec_value) = format_spec {
+            // Get the parsed format spec
+            let spec = self.get_format_spec(&spec_value, &value)?;
+
+            // Format based on value type and conversion flag
+            let result = match conversion {
+                // No conversion - format original value
+                0 => self.format_with_spec(&value, &spec)?,
+                // !s - convert to str, format as string
+                1 => {
+                    let s = value.py_str(self.heap, self.interns);
+                    format_string(&s, &spec)?
+                }
+                // !r - convert to repr, format as string
+                2 => {
+                    let s = value.py_repr(self.heap, self.interns);
+                    format_string(&s, &spec)?
+                }
+                // !a - convert to ascii, format as string
+                3 => {
+                    let s = self.py_ascii(&value);
+                    format_string(&s, &spec)?
+                }
+                _ => self.format_with_spec(&value, &spec)?,
+            };
+
+            spec_value.drop_with_heap(self.heap);
+            result
+        } else {
+            // No format spec - just convert based on conversion flag
+            match conversion {
+                0 => value.py_str(self.heap, self.interns).into_owned(),
+                1 => value.py_str(self.heap, self.interns).into_owned(),
+                2 => value.py_repr(self.heap, self.interns).into_owned(),
+                3 => self.py_ascii(&value),
+                _ => value.py_str(self.heap, self.interns).into_owned(),
+            }
+        };
+
+        value.drop_with_heap(self.heap);
+
+        let heap_id = self.heap.allocate(HeapData::Str(Str::new(formatted)))?;
+        self.push(Value::Ref(heap_id));
+        Ok(())
+    }
+
+    /// Gets a ParsedFormatSpec from a format spec value.
+    ///
+    /// The `value_for_error` parameter is used to include the value type in error messages.
+    fn get_format_spec(&self, spec_value: &Value, value_for_error: &Value) -> Result<ParsedFormatSpec, RunError> {
+        match spec_value {
+            Value::Int(n) if *n < 0 => {
+                // Decode the encoded format spec
+                let encoded = ((-*n) - 1) as u64;
+                Ok(decode_format_spec(encoded))
+            }
+            _ => {
+                // Dynamic format spec - parse the string
+                let spec_str = spec_value.py_str(self.heap, self.interns);
+                let value_type = value_for_error.py_type(Some(self.heap));
+                spec_str.parse::<ParsedFormatSpec>().map_err(|invalid| {
+                    RunError::Exc(
+                        SimpleException::new(
+                            ExcType::ValueError,
+                            Some(format!(
+                                "Invalid format specifier '{invalid}' for object of type '{value_type}'"
+                            )),
+                        )
+                        .into(),
+                    )
+                })
+            }
+        }
+    }
+
+    /// Formats a value with a format spec, applying type-appropriate formatting.
+    fn format_with_spec(&self, value: &Value, spec: &ParsedFormatSpec) -> Result<String, RunError> {
+        let value_type = value.py_type(Some(self.heap));
+
+        match (value, spec.type_char) {
+            // Integer formatting
+            (Value::Int(n), None | Some('d')) => Ok(format_int(*n, spec)),
+            (Value::Int(n), Some('b')) => Ok(format_int_base(*n, 2, spec)?),
+            (Value::Int(n), Some('o')) => Ok(format_int_base(*n, 8, spec)?),
+            (Value::Int(n), Some('x')) => Ok(format_int_base(*n, 16, spec)?),
+            (Value::Int(n), Some('X')) => Ok(format_int_base(*n, 16, spec)?.to_uppercase()),
+            (Value::Int(n), Some('c')) => Ok(format_char(*n, spec)?),
+
+            // Float formatting
+            (Value::Float(f), None | Some('g' | 'G')) => Ok(format_float_g(*f, spec)),
+            (Value::Float(f), Some('f' | 'F')) => Ok(format_float_f(*f, spec)),
+            (Value::Float(f), Some('e')) => Ok(format_float_e(*f, spec, false)),
+            (Value::Float(f), Some('E')) => Ok(format_float_e(*f, spec, true)),
+            (Value::Float(f), Some('%')) => Ok(format_float_percent(*f, spec)),
+
+            // Int to float formatting (Python allows this)
+            (Value::Int(n), Some('f' | 'F')) => Ok(format_float_f(*n as f64, spec)),
+            (Value::Int(n), Some('e')) => Ok(format_float_e(*n as f64, spec, false)),
+            (Value::Int(n), Some('E')) => Ok(format_float_e(*n as f64, spec, true)),
+            (Value::Int(n), Some('g' | 'G')) => Ok(format_float_g(*n as f64, spec)),
+            (Value::Int(n), Some('%')) => Ok(format_float_percent(*n as f64, spec)),
+
+            // String formatting (including InternString and heap strings)
+            (_, None | Some('s')) if value_type == Type::Str => {
+                let s = value.py_str(self.heap, self.interns);
+                Ok(format_string(&s, spec)?)
+            }
+
+            // Bool as int
+            (Value::Bool(b), Some('d')) => Ok(format_int(i64::from(*b), spec)),
+
+            // No type specifier: convert to string and format
+            (_, None) => {
+                let s = value.py_str(self.heap, self.interns);
+                Ok(format_string(&s, spec)?)
+            }
+
+            // Type mismatch errors
+            (_, Some(c)) => Err(SimpleException::new(
+                ExcType::ValueError,
+                Some(format!("Unknown format code '{c}' for object of type '{value_type}'")),
+            )
+            .into()),
+        }
+    }
+
+    /// Applies ASCII conversion (escapes non-ASCII characters).
+    fn py_ascii(&self, value: &Value) -> String {
+        use std::fmt::Write;
+        let repr = value.py_repr(self.heap, self.interns);
+        let mut result = String::new();
+        for c in repr.chars() {
+            if c.is_ascii() {
+                result.push(c);
+            } else {
+                // Escape non-ASCII characters
+                let code = c as u32;
+                if code <= 0xFF {
+                    write!(result, "\\x{code:02x}")
+                } else if code <= 0xFFFF {
+                    write!(result, "\\u{code:04x}")
+                } else {
+                    write!(result, "\\U{code:08x}")
+                }
+                .expect("string write should be infallible");
+            }
+        }
+        result
     }
 
     // ========================================================================

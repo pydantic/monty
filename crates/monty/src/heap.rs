@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
@@ -308,7 +309,15 @@ impl PyTrait for HeapData {
             Self::Iterator(_) => write!(f, "<iterator>"),
         }
     }
-    // py_str is always the same as py_repr which is the default impl
+
+    fn py_str(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Cow<'static, str> {
+        match self {
+            // Strings return their value directly without quotes
+            Self::Str(s) => s.py_str(heap, interns),
+            // All other types use repr
+            _ => self.py_repr(heap, interns),
+        }
+    }
 
     fn py_add(
         &self,

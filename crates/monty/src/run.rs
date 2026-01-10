@@ -470,7 +470,8 @@ impl Executor {
         for func_idx in 0..interns.function_count() {
             let func_id = crate::intern::FunctionId::new(func_idx);
             let func = interns.get_function(func_id);
-            let code = Compiler::compile_function(&func.body, &interns, func.namespace_size as u16);
+            let cell_base = func.signature.total_slots() as u16;
+            let code = Compiler::compile_function(&func.body, &interns, func.namespace_size as u16, cell_base);
             interns.get_function_mut(func_id).code = Some(code);
         }
 

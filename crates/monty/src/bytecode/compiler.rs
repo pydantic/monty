@@ -14,6 +14,7 @@ use crate::{
     builtins::{Builtins, BuiltinsFunctions},
     callable::Callable,
     expressions::{Expr, ExprLoc, Identifier, Literal, NameScope, Node},
+    fstring::{encode_format_spec, ConversionFlag, FStringPart, FormatSpec},
     intern::Interns,
     operators::{CmpOperator, Operator},
     parse::{CodeRange, ExceptHandler, Try},
@@ -35,6 +36,13 @@ pub struct Compiler<'a> {
     /// Loop stack for break/continue handling.
     /// Each entry tracks the loop start offset and pending break jumps.
     loop_stack: Vec<LoopInfo>,
+
+    /// Base namespace slot for cell variables.
+    ///
+    /// For functions, this is the parameter count. Cell/free variable namespace slots
+    /// start at `cell_base`, so we subtract this when emitting LoadCell/StoreCell
+    /// to convert to the cells array index.
+    cell_base: u16,
 }
 
 /// Information about a loop for break/continue handling.
@@ -50,11 +58,22 @@ struct LoopInfo {
 
 impl<'a> Compiler<'a> {
     /// Creates a new compiler with access to the string interner.
-    pub fn new(interns: &'a Interns) -> Self {
+    fn new(interns: &'a Interns) -> Self {
         Self {
             code: CodeBuilder::new(),
             interns,
             loop_stack: Vec::new(),
+            cell_base: 0,
+        }
+    }
+
+    /// Creates a new compiler with a specific cell base offset.
+    fn new_with_cell_base(interns: &'a Interns, cell_base: u16) -> Self {
+        Self {
+            code: CodeBuilder::new(),
+            interns,
+            loop_stack: Vec::new(),
+            cell_base,
         }
     }
 
@@ -78,8 +97,11 @@ impl<'a> Compiler<'a> {
     /// Used during eager compilation to compile each function definition.
     /// The function body is compiled to bytecode with an implicit `return None`
     /// at the end if there's no explicit return statement.
-    pub fn compile_function(body: &[Node], interns: &Interns, num_locals: u16) -> Code {
-        let mut compiler = Compiler::new(interns);
+    ///
+    /// The `cell_base` parameter is the number of parameter slots, used to convert
+    /// cell variable namespace slots to cells array indices.
+    pub fn compile_function(body: &[Node], interns: &Interns, num_locals: u16, cell_base: u16) -> Code {
+        let mut compiler = Compiler::new_with_cell_base(interns, cell_base);
         compiler.compile_block(body);
 
         // Implicit return None if no explicit return
@@ -384,9 +406,11 @@ impl<'a> Compiler<'a> {
                 self.code.emit_u16(Opcode::LoadGlobal, slot);
             }
             NameScope::Cell => {
+                // Convert namespace slot to cells array index
+                let cell_index = slot.saturating_sub(self.cell_base);
                 // Register the name for NameError messages (unbound free variable)
-                self.code.register_local_name(slot, ident.name_id);
-                self.code.emit_u16(Opcode::LoadCell, slot);
+                self.code.register_local_name(cell_index, ident.name_id);
+                self.code.emit_u16(Opcode::LoadCell, cell_index);
             }
         }
     }
@@ -413,7 +437,9 @@ impl<'a> Compiler<'a> {
                 self.code.emit_u16(Opcode::StoreGlobal, slot);
             }
             NameScope::Cell => {
-                self.code.emit_u16(Opcode::StoreCell, slot);
+                // Convert namespace slot to cells array index
+                let cell_index = slot.saturating_sub(self.cell_base);
+                self.code.emit_u16(Opcode::StoreCell, cell_index);
             }
         }
     }
@@ -689,17 +715,102 @@ impl<'a> Compiler<'a> {
         self.code.patch_jump(skip_jump);
     }
 
-    /// Compiles f-string parts, returning the number of parts.
+    /// Compiles f-string parts, returning the number of string parts to concatenate.
     ///
-    /// Note: F-string literal parts contain raw `String`s rather than `StringId`s,
-    /// so full f-string support requires either interning during compilation or
-    /// a different representation. Deferred for now.
-    fn compile_fstring_parts(&mut self, _parts: &[crate::fstring::FStringPart]) -> u16 {
-        // F-string literals are stored as raw Strings (not StringIds) in FStringPart::Literal.
-        // Since we can't intern new strings during compilation (Interns is read-only),
-        // full f-string support requires changes to how f-strings are parsed.
-        // For now, defer to runtime (or panic at compile time for f-strings).
-        todo!("F-string compilation requires changes to f-string representation")
+    /// Each part is compiled to leave a string value on the stack:
+    /// - `Literal(StringId)`: Push the interned string directly
+    /// - `Interpolation`: Compile expr, emit FormatValue to convert to string
+    fn compile_fstring_parts(&mut self, parts: &[FStringPart]) -> u16 {
+        let mut count = 0u16;
+
+        for part in parts {
+            match part {
+                FStringPart::Literal(string_id) => {
+                    // Push the interned string as a constant
+                    let const_idx = self.code.add_const(Value::InternString(*string_id));
+                    self.code.emit_u16(Opcode::LoadConst, const_idx);
+                    count += 1;
+                }
+                FStringPart::Interpolation {
+                    expr,
+                    conversion,
+                    format_spec,
+                    debug_prefix,
+                } => {
+                    // If debug prefix present, push it first
+                    if let Some(prefix_id) = debug_prefix {
+                        let const_idx = self.code.add_const(Value::InternString(*prefix_id));
+                        self.code.emit_u16(Opcode::LoadConst, const_idx);
+                        count += 1;
+                    }
+
+                    // Compile the expression
+                    self.compile_expr(expr);
+
+                    // For debug expressions without explicit conversion, Python uses repr by default
+                    let effective_conversion = if debug_prefix.is_some() && matches!(conversion, ConversionFlag::None) {
+                        ConversionFlag::Repr
+                    } else {
+                        *conversion
+                    };
+
+                    // Emit FormatValue with appropriate flags
+                    let flags = self.compile_format_value(effective_conversion, format_spec.as_ref());
+                    self.code.emit_u8(Opcode::FormatValue, flags);
+                    count += 1;
+                }
+            }
+        }
+
+        count
+    }
+
+    /// Compiles format value flags and optionally pushes format spec to stack.
+    ///
+    /// Returns the flags byte encoding conversion and format spec presence.
+    /// If a format spec is present, it's pushed to the stack before the value.
+    fn compile_format_value(&mut self, conversion: ConversionFlag, format_spec: Option<&FormatSpec>) -> u8 {
+        // Conversion flag: bits 0-1
+        let conv_bits = match conversion {
+            ConversionFlag::None => 0,
+            ConversionFlag::Str => 1,
+            ConversionFlag::Repr => 2,
+            ConversionFlag::Ascii => 3,
+        };
+
+        match format_spec {
+            None => conv_bits,
+            Some(FormatSpec::Static(parsed)) => {
+                // Static format spec - push a marker constant with the parsed spec info
+                // We store this as a special format spec value in the constant pool
+                // The VM will recognize this and use the pre-parsed spec
+                let const_idx = self.add_format_spec_const(parsed);
+                self.code.emit_u16(Opcode::LoadConst, const_idx);
+                conv_bits | 0x04 // has format spec on stack
+            }
+            Some(FormatSpec::Dynamic(dynamic_parts)) => {
+                // Compile dynamic format spec parts to build a format spec string
+                // Then parse it at runtime
+                let part_count = self.compile_fstring_parts(dynamic_parts);
+                if part_count > 1 {
+                    self.code.emit_u16(Opcode::BuildFString, part_count);
+                }
+                // Format spec string is now on stack
+                conv_bits | 0x04 // has format spec on stack
+            }
+        }
+    }
+
+    /// Adds a format spec to the constant pool as an encoded integer.
+    ///
+    /// Uses the encoding from `fstring::encode_format_spec` and stores it as
+    /// a negative integer to distinguish from regular ints.
+    fn add_format_spec_const(&mut self, spec: &crate::fstring::ParsedFormatSpec) -> u16 {
+        let encoded = encode_format_spec(spec);
+        // Use negative to distinguish from regular ints (format spec marker)
+        // We negate and subtract 1 to ensure it's negative and recoverable
+        let marker = -((encoded as i64) + 1);
+        self.code.add_const(Value::Int(marker))
     }
 
     // ========================================================================

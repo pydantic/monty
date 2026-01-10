@@ -10,6 +10,7 @@ use crate::{
     args::ArgValues,
     exception_public::{MontyException, StackFrame},
     expressions::ExprLoc,
+    fstring::FormatError,
     heap::{Heap, HeapData},
     intern::{Interns, StringId},
     operators::{CmpOperator, Operator},
@@ -994,6 +995,16 @@ impl From<SimpleException> for RunError {
 impl From<MontyException> for RunError {
     fn from(exc: MontyException) -> Self {
         Self::Exc(exc.into())
+    }
+}
+
+impl From<FormatError> for RunError {
+    fn from(err: FormatError) -> Self {
+        let exc_type = match &err {
+            FormatError::Overflow(_) => ExcType::OverflowError,
+            FormatError::InvalidAlignment(_) | FormatError::ValueError(_) => ExcType::ValueError,
+        };
+        Self::Exc(SimpleException::new(exc_type, Some(err.to_string())).into())
     }
 }
 
