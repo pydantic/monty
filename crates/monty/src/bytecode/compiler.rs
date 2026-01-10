@@ -4,6 +4,8 @@
 //! and emits bytecode instructions using `CodeBuilder`. It handles variable scoping,
 //! control flow, and expression evaluation order following Python semantics.
 
+use std::borrow::Cow;
+
 use super::{
     builder::{CodeBuilder, JumpLabel},
     code::{Code, ExceptionEntry},
@@ -13,6 +15,8 @@ use crate::{
     args::{ArgExprs, Kwarg},
     builtins::Builtins,
     callable::Callable,
+    exception_private::ExcType,
+    exception_public::{MontyException, StackFrame},
     expressions::{Expr, ExprLoc, Identifier, Literal, NameScope, Node},
     fstring::{encode_format_spec, ConversionFlag, FStringPart, FormatSpec},
     intern::Interns,
@@ -20,6 +24,13 @@ use crate::{
     parse::{CodeRange, ExceptHandler, Try},
     value::{Attr, Value},
 };
+
+/// Maximum number of arguments allowed in a function call.
+///
+/// This limit comes from the bytecode format: `CallFunction` and `CallMethod`
+/// use a u8 operand for the argument count, so max 255. Python itself has no
+/// such limit but we need one for our bytecode encoding.
+const MAX_CALL_ARGS: usize = 255;
 
 /// Compiles prepared AST nodes to bytecode.
 ///
@@ -97,17 +108,18 @@ impl<'a> Compiler<'a> {
 
     /// Compiles module-level code (a sequence of statements).
     ///
-    /// Returns a Code object for the module. The module implicitly returns
-    /// the value of the last expression, or None if empty.
-    pub fn compile_module(nodes: &[Node], interns: &Interns, num_locals: u16) -> Code {
+    /// Returns a Code object for the module, or a compile error if limits
+    /// were exceeded. The module implicitly returns the value of the last
+    /// expression, or None if empty.
+    pub fn compile_module(nodes: &[Node], interns: &Interns, num_locals: u16) -> Result<Code, CompileError> {
         let mut compiler = Compiler::new(interns);
-        compiler.compile_block(nodes);
+        compiler.compile_block(nodes)?;
 
         // Module returns None if no explicit return
         compiler.code.emit(Opcode::LoadNone);
         compiler.code.emit(Opcode::ReturnValue);
 
-        compiler.code.build(num_locals)
+        Ok(compiler.code.build(num_locals))
     }
 
     /// Compiles a function body to bytecode.
@@ -118,22 +130,28 @@ impl<'a> Compiler<'a> {
     ///
     /// The `cell_base` parameter is the number of parameter slots, used to convert
     /// cell variable namespace slots to cells array indices.
-    pub fn compile_function(body: &[Node], interns: &Interns, num_locals: u16, cell_base: u16) -> Code {
+    pub fn compile_function(
+        body: &[Node],
+        interns: &Interns,
+        num_locals: u16,
+        cell_base: u16,
+    ) -> Result<Code, CompileError> {
         let mut compiler = Compiler::new_with_cell_base(interns, cell_base);
-        compiler.compile_block(body);
+        compiler.compile_block(body)?;
 
         // Implicit return None if no explicit return
         compiler.code.emit(Opcode::LoadNone);
         compiler.code.emit(Opcode::ReturnValue);
 
-        compiler.code.build(num_locals)
+        Ok(compiler.code.build(num_locals))
     }
 
     /// Compiles a block of statements.
-    fn compile_block(&mut self, nodes: &[Node]) {
+    fn compile_block(&mut self, nodes: &[Node]) -> Result<(), CompileError> {
         for node in nodes {
-            self.compile_stmt(node);
+            self.compile_stmt(node)?;
         }
+        Ok(())
     }
 
     // ========================================================================
@@ -141,15 +159,15 @@ impl<'a> Compiler<'a> {
     // ========================================================================
 
     /// Compiles a single statement.
-    fn compile_stmt(&mut self, node: &Node) {
+    fn compile_stmt(&mut self, node: &Node) -> Result<(), CompileError> {
         match node {
             Node::Expr(expr) => {
-                self.compile_expr(expr);
+                self.compile_expr(expr)?;
                 self.code.emit(Opcode::Pop); // Discard result
             }
 
             Node::Return(expr) => {
-                self.compile_expr(expr);
+                self.compile_expr(expr)?;
                 self.compile_return();
             }
 
@@ -159,22 +177,22 @@ impl<'a> Compiler<'a> {
             }
 
             Node::Assign { target, object } => {
-                self.compile_expr(object);
+                self.compile_expr(object)?;
                 self.compile_store(target);
             }
 
             Node::OpAssign { target, op, object } => {
                 self.compile_name(target);
-                self.compile_expr(object);
+                self.compile_expr(object)?;
                 self.code.emit(operator_to_inplace_opcode(op));
                 self.compile_store(target);
             }
 
             Node::SubscriptAssign { target, index, value } => {
                 // Stack order for StoreSubscr: value, obj, index
-                self.compile_expr(value);
+                self.compile_expr(value)?;
                 self.compile_name(target);
-                self.compile_expr(index);
+                self.compile_expr(index)?;
                 self.code.emit(Opcode::StoreSubscr);
             }
 
@@ -185,8 +203,8 @@ impl<'a> Compiler<'a> {
                 value,
             } => {
                 // Stack order for StoreAttr: value, obj
-                self.compile_expr(value);
-                self.compile_expr(object);
+                self.compile_expr(value)?;
+                self.compile_expr(object)?;
                 let name_id = attr.string_id().expect("StoreAttr requires interned attr name");
                 // Set location to the target (e.g., `x.foo`) for proper caret in tracebacks
                 self.code.set_location(*target_position, None);
@@ -194,7 +212,7 @@ impl<'a> Compiler<'a> {
             }
 
             Node::If { test, body, or_else } => {
-                self.compile_if(test, body, or_else);
+                self.compile_if(test, body, or_else)?;
             }
 
             Node::For {
@@ -203,16 +221,16 @@ impl<'a> Compiler<'a> {
                 body,
                 or_else,
             } => {
-                self.compile_for(target, iter, body, or_else);
+                self.compile_for(target, iter, body, or_else)?;
             }
 
             Node::Assert { test, msg } => {
-                self.compile_assert(test, msg.as_ref());
+                self.compile_assert(test, msg.as_ref())?;
             }
 
             Node::Raise(expr) => {
                 if let Some(exc) = expr {
-                    self.compile_expr(exc);
+                    self.compile_expr(exc)?;
                     self.code.emit(Opcode::Raise);
                 } else {
                     self.code.emit(Opcode::Reraise);
@@ -221,10 +239,25 @@ impl<'a> Compiler<'a> {
 
             Node::FunctionDef(func_id) => {
                 let func = self.interns.get_function(*func_id);
+                let func_pos = func.name.position;
+
+                // Check bytecode operand limits
+                if func.default_exprs.len() > MAX_CALL_ARGS {
+                    return Err(CompileError::new(
+                        format!("more than {MAX_CALL_ARGS} default parameter values"),
+                        func_pos,
+                    ));
+                }
+                if func.free_var_enclosing_slots.len() > MAX_CALL_ARGS {
+                    return Err(CompileError::new(
+                        format!("more than {MAX_CALL_ARGS} closure variables"),
+                        func_pos,
+                    ));
+                }
 
                 // 1. Compile and push default values (evaluated at definition time)
                 for default_expr in &func.default_exprs {
-                    self.compile_expr(default_expr);
+                    self.compile_expr(default_expr)?;
                 }
                 let defaults_count = func.default_exprs.len() as u8;
 
@@ -250,9 +283,10 @@ impl<'a> Compiler<'a> {
             }
 
             Node::Try(try_block) => {
-                self.compile_try(try_block);
+                self.compile_try(try_block)?;
             }
         }
+        Ok(())
     }
 
     // ========================================================================
@@ -260,7 +294,7 @@ impl<'a> Compiler<'a> {
     // ========================================================================
 
     /// Compiles an expression, leaving its value on the stack.
-    fn compile_expr(&mut self, expr_loc: &ExprLoc) {
+    fn compile_expr(&mut self, expr_loc: &ExprLoc) -> Result<(), CompileError> {
         // Set source location for traceback info
         self.code.set_location(expr_loc.position, None);
 
@@ -275,12 +309,12 @@ impl<'a> Compiler<'a> {
             }
 
             Expr::Op { left, op, right } => {
-                self.compile_binary_op(left, op, right, expr_loc.position);
+                self.compile_binary_op(left, op, right, expr_loc.position)?;
             }
 
             Expr::CmpOp { left, op, right } => {
-                self.compile_expr(left);
-                self.compile_expr(right);
+                self.compile_expr(left)?;
+                self.compile_expr(right)?;
                 // Restore the full comparison expression's position for traceback caret range
                 self.code.set_location(expr_loc.position, None);
                 // ModEq needs special handling - it has a constant operand
@@ -293,14 +327,14 @@ impl<'a> Compiler<'a> {
             }
 
             Expr::Not(operand) => {
-                self.compile_expr(operand);
+                self.compile_expr(operand)?;
                 // Restore the full expression's position for traceback caret range
                 self.code.set_location(expr_loc.position, None);
                 self.code.emit(Opcode::UnaryNot);
             }
 
             Expr::UnaryMinus(operand) => {
-                self.compile_expr(operand);
+                self.compile_expr(operand)?;
                 // Restore the full expression's position for traceback caret range
                 self.code.set_location(expr_loc.position, None);
                 self.code.emit(Opcode::UnaryNeg);
@@ -308,47 +342,47 @@ impl<'a> Compiler<'a> {
 
             Expr::List(elements) => {
                 for elem in elements {
-                    self.compile_expr(elem);
+                    self.compile_expr(elem)?;
                 }
                 self.code.emit_u16(Opcode::BuildList, elements.len() as u16);
             }
 
             Expr::Tuple(elements) => {
                 for elem in elements {
-                    self.compile_expr(elem);
+                    self.compile_expr(elem)?;
                 }
                 self.code.emit_u16(Opcode::BuildTuple, elements.len() as u16);
             }
 
             Expr::Dict(pairs) => {
                 for (key, value) in pairs {
-                    self.compile_expr(key);
-                    self.compile_expr(value);
+                    self.compile_expr(key)?;
+                    self.compile_expr(value)?;
                 }
                 self.code.emit_u16(Opcode::BuildDict, pairs.len() as u16);
             }
 
             Expr::Set(elements) => {
                 for elem in elements {
-                    self.compile_expr(elem);
+                    self.compile_expr(elem)?;
                 }
                 self.code.emit_u16(Opcode::BuildSet, elements.len() as u16);
             }
 
             Expr::Subscript { object, index } => {
-                self.compile_expr(object);
-                self.compile_expr(index);
+                self.compile_expr(object)?;
+                self.compile_expr(index)?;
                 // Restore the full subscript expression's position for traceback
                 self.code.set_location(expr_loc.position, None);
                 self.code.emit(Opcode::BinarySubscr);
             }
 
             Expr::IfElse { test, body, orelse } => {
-                self.compile_if_else_expr(test, body, orelse);
+                self.compile_if_else_expr(test, body, orelse)?;
             }
 
             Expr::AttrGet { object, attr } => {
-                self.compile_expr(object);
+                self.compile_expr(object)?;
                 // Restore the full expression's position for traceback caret range
                 self.code.set_location(expr_loc.position, None);
                 let name_id = attr.string_id().expect("LoadAttr requires interned attr name");
@@ -356,23 +390,24 @@ impl<'a> Compiler<'a> {
             }
 
             Expr::Call { callable, args } => {
-                self.compile_call(callable, args, expr_loc.position);
+                self.compile_call(callable, args, expr_loc.position)?;
             }
 
             Expr::AttrCall { object, attr, args } => {
                 // Compile the object (will be on the stack)
-                self.compile_expr(object);
+                self.compile_expr(object)?;
 
                 // Compile the method call arguments and emit CallMethod
-                self.compile_method_call(attr, args);
+                self.compile_method_call(attr, args, expr_loc.position)?;
             }
 
             Expr::FString(parts) => {
                 // Compile each part and build the f-string
-                let part_count = self.compile_fstring_parts(parts);
+                let part_count = self.compile_fstring_parts(parts)?;
                 self.code.emit_u16(Opcode::BuildFString, part_count);
             }
         }
+        Ok(())
     }
 
     // ========================================================================
@@ -475,33 +510,40 @@ impl<'a> Compiler<'a> {
     ///
     /// `parent_pos` is the position of the full binary expression (e.g., `1 / 0`),
     /// which we restore before emitting the opcode so tracebacks show the right range.
-    fn compile_binary_op(&mut self, left: &ExprLoc, op: &Operator, right: &ExprLoc, parent_pos: CodeRange) {
+    fn compile_binary_op(
+        &mut self,
+        left: &ExprLoc,
+        op: &Operator,
+        right: &ExprLoc,
+        parent_pos: CodeRange,
+    ) -> Result<(), CompileError> {
         match op {
             // Short-circuit AND: evaluate left, jump if falsy
             Operator::And => {
-                self.compile_expr(left);
+                self.compile_expr(left)?;
                 let end_jump = self.code.emit_jump(Opcode::JumpIfFalseOrPop);
-                self.compile_expr(right);
+                self.compile_expr(right)?;
                 self.code.patch_jump(end_jump);
             }
 
             // Short-circuit OR: evaluate left, jump if truthy
             Operator::Or => {
-                self.compile_expr(left);
+                self.compile_expr(left)?;
                 let end_jump = self.code.emit_jump(Opcode::JumpIfTrueOrPop);
-                self.compile_expr(right);
+                self.compile_expr(right)?;
                 self.code.patch_jump(end_jump);
             }
 
             // Regular binary operators
             _ => {
-                self.compile_expr(left);
-                self.compile_expr(right);
+                self.compile_expr(left)?;
+                self.compile_expr(right)?;
                 // Restore the full expression's position for traceback caret range
                 self.code.set_location(parent_pos, None);
                 self.code.emit(operator_to_opcode(op));
             }
         }
+        Ok(())
     }
 
     // ========================================================================
@@ -509,41 +551,43 @@ impl<'a> Compiler<'a> {
     // ========================================================================
 
     /// Compiles an if/else statement.
-    fn compile_if(&mut self, test: &ExprLoc, body: &[Node], or_else: &[Node]) {
-        self.compile_expr(test);
+    fn compile_if(&mut self, test: &ExprLoc, body: &[Node], or_else: &[Node]) -> Result<(), CompileError> {
+        self.compile_expr(test)?;
 
         if or_else.is_empty() {
             // Simple if without else
             let end_jump = self.code.emit_jump(Opcode::JumpIfFalse);
-            self.compile_block(body);
+            self.compile_block(body)?;
             self.code.patch_jump(end_jump);
         } else {
             // If with else
             let else_jump = self.code.emit_jump(Opcode::JumpIfFalse);
-            self.compile_block(body);
+            self.compile_block(body)?;
             let end_jump = self.code.emit_jump(Opcode::Jump);
             self.code.patch_jump(else_jump);
-            self.compile_block(or_else);
+            self.compile_block(or_else)?;
             self.code.patch_jump(end_jump);
         }
+        Ok(())
     }
 
     /// Compiles a ternary conditional expression.
-    fn compile_if_else_expr(&mut self, test: &ExprLoc, body: &ExprLoc, orelse: &ExprLoc) {
-        self.compile_expr(test);
+    fn compile_if_else_expr(&mut self, test: &ExprLoc, body: &ExprLoc, orelse: &ExprLoc) -> Result<(), CompileError> {
+        self.compile_expr(test)?;
         let else_jump = self.code.emit_jump(Opcode::JumpIfFalse);
-        self.compile_expr(body);
+        self.compile_expr(body)?;
         let end_jump = self.code.emit_jump(Opcode::Jump);
         self.code.patch_jump(else_jump);
-        self.compile_expr(orelse);
+        self.compile_expr(orelse)?;
         self.code.patch_jump(end_jump);
+        Ok(())
     }
 
     /// Compiles a function call expression.
     ///
     /// Pushes the callable onto the stack, then all arguments, then emits CallFunction.
     /// The `call_pos` is the position of the full call expression for proper traceback caret.
-    fn compile_call(&mut self, callable: &Callable, args: &ArgExprs, call_pos: CodeRange) {
+    fn compile_call(&mut self, callable: &Callable, args: &ArgExprs, call_pos: CodeRange) -> Result<(), CompileError> {
         // Push the callable (use name position for NameError caret range)
         match callable {
             Callable::Builtin(builtin) => {
@@ -564,30 +608,43 @@ impl<'a> Compiler<'a> {
                 self.code.emit_u8(Opcode::CallFunction, 0);
             }
             ArgExprs::One(arg) => {
-                self.compile_expr(arg);
+                self.compile_expr(arg)?;
                 self.code.set_location(call_pos, None);
                 self.code.emit_u8(Opcode::CallFunction, 1);
             }
             ArgExprs::Two(arg1, arg2) => {
-                self.compile_expr(arg1);
-                self.compile_expr(arg2);
+                self.compile_expr(arg1)?;
+                self.compile_expr(arg2)?;
                 self.code.set_location(call_pos, None);
                 self.code.emit_u8(Opcode::CallFunction, 2);
             }
             ArgExprs::Args(args) => {
-                for arg in args {
-                    self.compile_expr(arg);
+                // Check argument count limit before compiling
+                if args.len() > MAX_CALL_ARGS {
+                    return Err(CompileError::new(
+                        format!("more than {MAX_CALL_ARGS} positional arguments in function call"),
+                        call_pos,
+                    ));
                 }
-                // CallFunction takes u8 for arg count (max 255 positional args)
-                let arg_count = args.len().min(255) as u8;
+                for arg in args {
+                    self.compile_expr(arg)?;
+                }
+                let arg_count = args.len() as u8;
                 self.code.set_location(call_pos, None);
                 self.code.emit_u8(Opcode::CallFunction, arg_count);
             }
             ArgExprs::Kwargs(kwargs) => {
+                // Check keyword argument count limit
+                if kwargs.len() > MAX_CALL_ARGS {
+                    return Err(CompileError::new(
+                        format!("more than {MAX_CALL_ARGS} keyword arguments in function call"),
+                        call_pos,
+                    ));
+                }
                 // Keyword-only call: compile kwarg values and emit CallFunctionKw
                 let mut kwname_ids = Vec::with_capacity(kwargs.len());
                 for kwarg in kwargs {
-                    self.compile_expr(&kwarg.value);
+                    self.compile_expr(&kwarg.value)?;
                     kwname_ids.push(kwarg.key.name_id.index() as u16);
                 }
                 self.code.set_location(call_pos, None);
@@ -601,7 +658,8 @@ impl<'a> Compiler<'a> {
             } => {
                 // Mixed positional and keyword arguments - may include *args or **kwargs unpacking
                 if var_args.is_some() || var_kwargs.is_some() {
-                    // Use CallFunctionEx for unpacking
+                    // Use CallFunctionEx for unpacking - no limit on this path since
+                    // args are built into a tuple dynamically at runtime
                     self.compile_call_with_unpacking(
                         callable,
                         args.as_ref(),
@@ -609,14 +667,30 @@ impl<'a> Compiler<'a> {
                         kwargs.as_ref(),
                         var_kwargs.as_ref(),
                         call_pos,
-                    );
+                    )?;
                 } else {
                     // No unpacking - use CallFunctionKw for efficiency
-                    // Compile positional args
+                    // Check limits before compiling
                     let pos_count = args.as_ref().map_or(0, Vec::len);
+                    let kw_count = kwargs.as_ref().map_or(0, Vec::len);
+
+                    if pos_count > MAX_CALL_ARGS {
+                        return Err(CompileError::new(
+                            format!("more than {MAX_CALL_ARGS} positional arguments in function call"),
+                            call_pos,
+                        ));
+                    }
+                    if kw_count > MAX_CALL_ARGS {
+                        return Err(CompileError::new(
+                            format!("more than {MAX_CALL_ARGS} keyword arguments in function call"),
+                            call_pos,
+                        ));
+                    }
+
+                    // Compile positional args
                     if let Some(args) = args {
                         for arg in args {
-                            self.compile_expr(arg);
+                            self.compile_expr(arg)?;
                         }
                     }
 
@@ -624,16 +698,17 @@ impl<'a> Compiler<'a> {
                     let mut kwname_ids = Vec::new();
                     if let Some(kwargs) = kwargs {
                         for kwarg in kwargs {
-                            self.compile_expr(&kwarg.value);
+                            self.compile_expr(&kwarg.value)?;
                             kwname_ids.push(kwarg.key.name_id.index() as u16);
                         }
                     }
 
                     self.code.set_location(call_pos, None);
-                    self.code.emit_call_function_kw(pos_count.min(255) as u8, &kwname_ids);
+                    self.code.emit_call_function_kw(pos_count as u8, &kwname_ids);
                 }
             }
         }
+        Ok(())
     }
 
     /// Compiles a function call with `*args` and/or `**kwargs` unpacking.
@@ -653,7 +728,7 @@ impl<'a> Compiler<'a> {
         kwargs: Option<&Vec<Kwarg>>,
         var_kwargs: Option<&ExprLoc>,
         call_pos: CodeRange,
-    ) {
+    ) -> Result<(), CompileError> {
         // Get function name for error messages (0xFFFF for builtins)
         let func_name_id = match callable {
             Callable::Name(ident) => ident.name_id.index() as u16,
@@ -665,14 +740,14 @@ impl<'a> Compiler<'a> {
         let pos_count = args.map_or(0, Vec::len);
         if let Some(args) = args {
             for arg in args {
-                self.compile_expr(arg);
+                self.compile_expr(arg)?;
             }
         }
         self.code.emit_u16(Opcode::BuildList, pos_count as u16);
 
         // Extend with *args if present
         if let Some(var_args_expr) = var_args {
-            self.compile_expr(var_args_expr);
+            self.compile_expr(var_args_expr)?;
             self.code.emit(Opcode::ListExtend);
         }
 
@@ -690,14 +765,14 @@ impl<'a> Compiler<'a> {
                     let key_const = self.code.add_const(Value::InternString(kwarg.key.name_id));
                     self.code.emit_u16(Opcode::LoadConst, key_const);
                     // Push value
-                    self.compile_expr(&kwarg.value);
+                    self.compile_expr(&kwarg.value)?;
                 }
             }
             self.code.emit_u16(Opcode::BuildDict, kw_count as u16);
 
             // Merge **kwargs if present
             if let Some(var_kwargs_expr) = var_kwargs {
-                self.compile_expr(var_kwargs_expr);
+                self.compile_expr(var_kwargs_expr)?;
                 self.code.emit_u16(Opcode::DictMerge, func_name_id);
             }
         }
@@ -706,13 +781,14 @@ impl<'a> Compiler<'a> {
         self.code.set_location(call_pos, None);
         let flags = u8::from(has_kwargs);
         self.code.emit_u8(Opcode::CallFunctionEx, flags);
+        Ok(())
     }
 
     /// Compiles a method call on an object.
     ///
     /// The object should already be on the stack. This compiles the arguments
     /// and emits a CallMethod opcode with the method name and arg count.
-    fn compile_method_call(&mut self, attr: &Attr, args: &ArgExprs) {
+    fn compile_method_call(&mut self, attr: &Attr, args: &ArgExprs, call_pos: CodeRange) -> Result<(), CompileError> {
         // Get the interned attribute name
         let name_id = attr.string_id().expect("CallMethod requires interned attr name");
 
@@ -722,19 +798,26 @@ impl<'a> Compiler<'a> {
                 self.code.emit_u16_u8(Opcode::CallMethod, name_id.index() as u16, 0);
             }
             ArgExprs::One(arg) => {
-                self.compile_expr(arg);
+                self.compile_expr(arg)?;
                 self.code.emit_u16_u8(Opcode::CallMethod, name_id.index() as u16, 1);
             }
             ArgExprs::Two(arg1, arg2) => {
-                self.compile_expr(arg1);
-                self.compile_expr(arg2);
+                self.compile_expr(arg1)?;
+                self.compile_expr(arg2)?;
                 self.code.emit_u16_u8(Opcode::CallMethod, name_id.index() as u16, 2);
             }
             ArgExprs::Args(args) => {
-                for arg in args {
-                    self.compile_expr(arg);
+                // Check argument count limit
+                if args.len() > MAX_CALL_ARGS {
+                    return Err(CompileError::new(
+                        format!("more than {MAX_CALL_ARGS} arguments in method call"),
+                        call_pos,
+                    ));
                 }
-                let arg_count = args.len().min(255) as u8;
+                for arg in args {
+                    self.compile_expr(arg)?;
+                }
+                let arg_count = args.len() as u8;
                 self.code
                     .emit_u16_u8(Opcode::CallMethod, name_id.index() as u16, arg_count);
             }
@@ -743,12 +826,19 @@ impl<'a> Compiler<'a> {
                 todo!("Method calls with keyword arguments not yet implemented")
             }
         }
+        Ok(())
     }
 
     /// Compiles a for loop.
-    fn compile_for(&mut self, target: &Identifier, iter: &ExprLoc, body: &[Node], or_else: &[Node]) {
+    fn compile_for(
+        &mut self,
+        target: &Identifier,
+        iter: &ExprLoc,
+        body: &[Node],
+        or_else: &[Node],
+    ) -> Result<(), CompileError> {
         // Compile iterator expression
-        self.compile_expr(iter);
+        self.compile_expr(iter)?;
         // Convert to iterator
         self.code.emit(Opcode::GetIter);
 
@@ -768,7 +858,7 @@ impl<'a> Compiler<'a> {
         self.compile_store(target);
 
         // Compile body
-        self.compile_block(body);
+        self.compile_block(body)?;
 
         // Jump back to loop start
         self.code.emit_jump_to(Opcode::Jump, loop_start);
@@ -784,8 +874,10 @@ impl<'a> Compiler<'a> {
 
         // Compile else block (runs if loop completed without break)
         if !or_else.is_empty() {
-            self.compile_block(or_else);
+            self.compile_block(or_else)?;
         }
+
+        Ok(())
     }
 
     // ========================================================================
@@ -793,9 +885,9 @@ impl<'a> Compiler<'a> {
     // ========================================================================
 
     /// Compiles an assert statement.
-    fn compile_assert(&mut self, test: &ExprLoc, msg: Option<&ExprLoc>) {
+    fn compile_assert(&mut self, test: &ExprLoc, msg: Option<&ExprLoc>) -> Result<(), CompileError> {
         // Compile test
-        self.compile_expr(test);
+        self.compile_expr(test)?;
         // Jump over raise if truthy
         let skip_jump = self.code.emit_jump(Opcode::JumpIfTrue);
 
@@ -807,7 +899,7 @@ impl<'a> Compiler<'a> {
 
         if let Some(msg_expr) = msg {
             // Call AssertionError(msg)
-            self.compile_expr(msg_expr);
+            self.compile_expr(msg_expr)?;
             self.code.emit_u8(Opcode::CallFunction, 1);
         } else {
             // Call AssertionError()
@@ -816,6 +908,7 @@ impl<'a> Compiler<'a> {
 
         self.code.emit(Opcode::Raise);
         self.code.patch_jump(skip_jump);
+        Ok(())
     }
 
     /// Compiles f-string parts, returning the number of string parts to concatenate.
@@ -823,7 +916,7 @@ impl<'a> Compiler<'a> {
     /// Each part is compiled to leave a string value on the stack:
     /// - `Literal(StringId)`: Push the interned string directly
     /// - `Interpolation`: Compile expr, emit FormatValue to convert to string
-    fn compile_fstring_parts(&mut self, parts: &[FStringPart]) -> u16 {
+    fn compile_fstring_parts(&mut self, parts: &[FStringPart]) -> Result<u16, CompileError> {
         let mut count = 0u16;
 
         for part in parts {
@@ -848,7 +941,7 @@ impl<'a> Compiler<'a> {
                     }
 
                     // Compile the expression
-                    self.compile_expr(expr);
+                    self.compile_expr(expr)?;
 
                     // For debug expressions without explicit conversion, Python uses repr by default
                     let effective_conversion = if debug_prefix.is_some() && matches!(conversion, ConversionFlag::None) {
@@ -858,21 +951,25 @@ impl<'a> Compiler<'a> {
                     };
 
                     // Emit FormatValue with appropriate flags
-                    let flags = self.compile_format_value(effective_conversion, format_spec.as_ref());
+                    let flags = self.compile_format_value(effective_conversion, format_spec.as_ref())?;
                     self.code.emit_u8(Opcode::FormatValue, flags);
                     count += 1;
                 }
             }
         }
 
-        count
+        Ok(count)
     }
 
     /// Compiles format value flags and optionally pushes format spec to stack.
     ///
     /// Returns the flags byte encoding conversion and format spec presence.
     /// If a format spec is present, it's pushed to the stack before the value.
-    fn compile_format_value(&mut self, conversion: ConversionFlag, format_spec: Option<&FormatSpec>) -> u8 {
+    fn compile_format_value(
+        &mut self,
+        conversion: ConversionFlag,
+        format_spec: Option<&FormatSpec>,
+    ) -> Result<u8, CompileError> {
         // Conversion flag: bits 0-1
         let conv_bits = match conversion {
             ConversionFlag::None => 0,
@@ -882,24 +979,24 @@ impl<'a> Compiler<'a> {
         };
 
         match format_spec {
-            None => conv_bits,
+            None => Ok(conv_bits),
             Some(FormatSpec::Static(parsed)) => {
                 // Static format spec - push a marker constant with the parsed spec info
                 // We store this as a special format spec value in the constant pool
                 // The VM will recognize this and use the pre-parsed spec
                 let const_idx = self.add_format_spec_const(parsed);
                 self.code.emit_u16(Opcode::LoadConst, const_idx);
-                conv_bits | 0x04 // has format spec on stack
+                Ok(conv_bits | 0x04) // has format spec on stack
             }
             Some(FormatSpec::Dynamic(dynamic_parts)) => {
                 // Compile dynamic format spec parts to build a format spec string
                 // Then parse it at runtime
-                let part_count = self.compile_fstring_parts(dynamic_parts);
+                let part_count = self.compile_fstring_parts(dynamic_parts)?;
                 if part_count > 1 {
                     self.code.emit_u16(Opcode::BuildFString, part_count);
                 }
                 // Format spec string is now on stack
-                conv_bits | 0x04 // has format spec on stack
+                Ok(conv_bits | 0x04) // has format spec on stack
             }
         }
     }
@@ -964,7 +1061,7 @@ impl<'a> Compiler<'a> {
     ///
     /// Returns inside try/except/else jump to a "finally with return" path that
     /// runs the finally code then returns the value.
-    fn compile_try(&mut self, try_block: &Try<Node>) {
+    fn compile_try(&mut self, try_block: &Try<Node>) -> Result<(), CompileError> {
         let has_finally = !try_block.finally.is_empty();
         let has_handlers = !try_block.handlers.is_empty();
         let has_else = !try_block.or_else.is_empty();
@@ -981,7 +1078,7 @@ impl<'a> Compiler<'a> {
 
         // === Compile try body ===
         let try_start = self.code.current_offset();
-        self.compile_block(&try_block.body);
+        self.compile_block(&try_block.body)?;
         let try_end = self.code.current_offset();
 
         // Jump to else/finally if no exception (skip handlers)
@@ -995,7 +1092,7 @@ impl<'a> Compiler<'a> {
 
         if has_handlers {
             // Compile exception handlers
-            self.compile_exception_handlers(&try_block.handlers, &mut finally_jumps);
+            self.compile_exception_handlers(&try_block.handlers, &mut finally_jumps)?;
         } else {
             // No handlers - just reraise (this only happens with try-finally)
             self.code.emit(Opcode::Reraise);
@@ -1015,7 +1112,7 @@ impl<'a> Compiler<'a> {
             // The exception is already on the exception_stack from handle_exception,
             // so we can just pop from operand stack, run finally, then reraise.
             self.code.emit(Opcode::Pop); // Pop exception from operand stack
-            self.compile_block(&try_block.finally);
+            self.compile_block(&try_block.finally)?;
             self.code.emit(Opcode::Reraise); // Re-raise from exception_stack
             Some(cleanup_start)
         } else {
@@ -1036,7 +1133,7 @@ impl<'a> Compiler<'a> {
                     self.code.patch_jump(jump);
                 }
                 // Return value is on stack, run finally, then return (or continue to outer finally)
-                self.compile_block(&try_block.finally);
+                self.compile_block(&try_block.finally)?;
                 // Use compile_return() to handle nested try-finally correctly
                 // If there's an outer finally, this jumps there; otherwise it returns
                 self.compile_return();
@@ -1050,7 +1147,7 @@ impl<'a> Compiler<'a> {
         self.code.patch_jump(after_try_jump);
         let else_start = self.code.current_offset();
         if has_else {
-            self.compile_block(&try_block.or_else);
+            self.compile_block(&try_block.or_else)?;
         }
         let else_end = self.code.current_offset();
 
@@ -1061,7 +1158,7 @@ impl<'a> Compiler<'a> {
         }
 
         if has_finally {
-            self.compile_block(&try_block.finally);
+            self.compile_block(&try_block.finally)?;
         }
 
         // === Add exception table entries ===
@@ -1111,13 +1208,19 @@ impl<'a> Compiler<'a> {
                 ));
             }
         }
+
+        Ok(())
     }
 
     /// Compiles the exception handlers for a try block.
     ///
     /// Each handler checks if the exception matches its type, and if so,
     /// executes the handler body. If no handler matches, the exception is re-raised.
-    fn compile_exception_handlers(&mut self, handlers: &[ExceptHandler<Node>], finally_jumps: &mut Vec<JumpLabel>) {
+    fn compile_exception_handlers(
+        &mut self,
+        handlers: &[ExceptHandler<Node>],
+        finally_jumps: &mut Vec<JumpLabel>,
+    ) -> Result<(), CompileError> {
         // Track jumps from non-matching handlers to next handler
         let mut next_handler_jumps: Vec<JumpLabel> = Vec::new();
 
@@ -1138,7 +1241,7 @@ impl<'a> Compiler<'a> {
                 // Stack: [exception, exception]
 
                 // Load the exception type to match against
-                self.compile_expr(exc_type);
+                self.compile_expr(exc_type)?;
                 // Stack: [exception, exception, exc_type]
 
                 // Check if exception matches the type
@@ -1165,7 +1268,7 @@ impl<'a> Compiler<'a> {
                 }
 
                 // Compile handler body
-                self.compile_block(&handler.body);
+                self.compile_block(&handler.body)?;
 
                 // Delete exception variable (Python 3 behavior)
                 if let Some(name) = &handler.name {
@@ -1197,7 +1300,7 @@ impl<'a> Compiler<'a> {
                 }
 
                 // Compile handler body
-                self.compile_block(&handler.body);
+                self.compile_block(&handler.body)?;
 
                 // Delete exception variable
                 if let Some(name) = &handler.name {
@@ -1214,6 +1317,8 @@ impl<'a> Compiler<'a> {
                 finally_jumps.push(self.code.emit_jump(Opcode::Jump));
             }
         }
+
+        Ok(())
     }
 
     /// Compiles deletion of a variable.
@@ -1235,6 +1340,37 @@ impl<'a> Compiler<'a> {
                 self.compile_store(target);
             }
         }
+    }
+}
+
+/// Error that can occur during bytecode compilation.
+///
+/// These are typically limit violations that can't be represented in the bytecode
+/// format (e.g., too many arguments, too many local variables).
+#[derive(Debug, Clone)]
+pub struct CompileError {
+    /// Error message describing what limit was exceeded.
+    message: Cow<'static, str>,
+    /// Source location where the error occurred.
+    position: CodeRange,
+}
+
+impl CompileError {
+    /// Creates a new compile error with the given message and position.
+    fn new(message: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
+        Self {
+            message: message.into(),
+            position,
+        }
+    }
+
+    /// Converts this compile error into a Python SyntaxError exception.
+    pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
+        MontyException::new_full(
+            ExcType::SyntaxError,
+            Some(self.message.into_owned()),
+            vec![StackFrame::from_position(self.position, filename, source)],
+        )
     }
 }
 
@@ -1320,7 +1456,7 @@ mod tests {
     #[test]
     fn test_compiler_creates_code() {
         let interns = test_interns();
-        let code = Compiler::compile_module(&[], &interns, 0);
+        let code = Compiler::compile_module(&[], &interns, 0).unwrap();
         // Empty module should have LoadNone + ReturnValue
         assert_eq!(code.bytecode().len(), 2);
         assert_eq!(code.bytecode()[0], Opcode::LoadNone as u8);

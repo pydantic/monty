@@ -485,12 +485,14 @@ impl Executor {
             let func_id = crate::intern::FunctionId::new(func_idx);
             let func = interns.get_function(func_id);
             let cell_base = func.signature.total_slots() as u16;
-            let code = Compiler::compile_function(&func.body, &interns, func.namespace_size as u16, cell_base);
+            let code = Compiler::compile_function(&func.body, &interns, func.namespace_size as u16, cell_base)
+                .map_err(|e| e.into_python_exc(script_name, &code))?;
             interns.get_function_mut(func_id).code = Some(code);
         }
 
         // Compile the module to bytecode
-        let module_code = Compiler::compile_module(&prepared.nodes, &interns, prepared.namespace_size as u16);
+        let module_code = Compiler::compile_module(&prepared.nodes, &interns, prepared.namespace_size as u16)
+            .map_err(|e| e.into_python_exc(script_name, &code))?;
 
         Ok(Self {
             namespace_size: prepared.namespace_size,

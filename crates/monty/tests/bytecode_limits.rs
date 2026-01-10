@@ -1,18 +1,15 @@
 //! Tests for bytecode operand overflow limits.
 //!
 //! These tests verify that the bytecode compiler handles cases where operands
-//! exceed the u8/u16 limits of the bytecode encoding. The compiler should either:
-//! - Emit wide instructions (e.g., `LoadLocalW` instead of `LoadLocal`)
-//! - Return a compile-time error with a clear message
+//! exceed the u8/u16 limits of the bytecode encoding:
 //!
-//! Most likely overflow scenarios (u8 = 256 limit):
-//! - Local variable slots: 256+ locals in a function
-//! - Function argument counts: 256+ positional args
-//! - Keyword argument counts: 256+ keyword args
+//! - Local variable slots: Use wide instructions (u16), so up to 65535 locals work
+//! - Function call arguments: Limited to 255 (u8 operand) - returns SyntaxError if exceeded
+//! - Keyword argument counts: Limited to 255 (u8 operand) - returns SyntaxError if exceeded
 
 use std::fmt::Write;
 
-use monty::MontyRun;
+use monty::{ExcType, MontyRun};
 
 /// Generates Python code with N local variables in a function.
 ///
@@ -81,6 +78,23 @@ fn generate_many_parameters(count: usize) -> String {
     code
 }
 
+/// Asserts that a MontyRun result is a SyntaxError with a message containing the expected text.
+fn assert_syntax_error(result: Result<MontyRun, monty::MontyException>, expected_msg: &str) {
+    let err = result.expect_err("expected SyntaxError");
+    assert_eq!(
+        err.exc_type(),
+        ExcType::SyntaxError,
+        "expected SyntaxError, got {:?}: {:?}",
+        err.exc_type(),
+        err.message()
+    );
+    let msg = err.message().expect("SyntaxError should have message");
+    assert!(
+        msg.contains(expected_msg),
+        "expected message containing '{expected_msg}', got: {msg}"
+    );
+}
+
 mod local_variable_limits {
     use super::*;
 
@@ -98,10 +112,13 @@ mod local_variable_limits {
 
     #[test]
     fn locals_at_u8_boundary_succeeds() {
-        // 256 locals (slots 0-255) - boundary case for u8
+        // 256 locals (slots 0-255) - uses wide instructions for slot 255+
         let code = generate_many_locals(256);
         let result = MontyRun::new(code, "test.py", vec![], vec![]);
-        assert!(result.is_ok(), "256 locals should compile successfully");
+        assert!(
+            result.is_ok(),
+            "256 locals should compile successfully (wide instructions)"
+        );
 
         let run = result.unwrap();
         let result = run.run_no_limits(vec![]);
@@ -109,7 +126,7 @@ mod local_variable_limits {
     }
 
     #[test]
-    fn locals_exceeding_u8_requires_wide_instructions() {
+    fn locals_exceeding_u8_uses_wide_instructions() {
         // 257 locals requires LoadLocalW/StoreLocalW for slot 256
         let code = generate_many_locals(257);
         let result = MontyRun::new(code, "test.py", vec![], vec![]);
@@ -149,40 +166,19 @@ mod function_argument_limits {
     }
 
     #[test]
-    fn positional_args_at_u8_boundary() {
-        // 256 positional args - boundary case for u8
+    fn positional_args_at_u8_boundary_returns_syntax_error() {
+        // 256 positional args - exceeds u8 limit, should return SyntaxError
         let code = generate_many_positional_args(256);
         let result = MontyRun::new(code, "test.py", vec![], vec![]);
-        // Should either compile with wide encoding or return a clear error
-        if let Ok(run) = result {
-            let result = run.run_no_limits(vec![]);
-            assert!(
-                result.is_ok(),
-                "256 positional args should run if it compiles: {:?}",
-                result.err()
-            );
-        }
-        // If it errors, that's also acceptable - just shouldn't panic or corrupt
+        assert_syntax_error(result, "more than 255 positional arguments");
     }
 
     #[test]
-    fn positional_args_exceeding_u8_limit() {
-        // 257 positional args - exceeds u8 capacity
+    fn positional_args_exceeding_u8_limit_returns_syntax_error() {
+        // 257 positional args - clearly exceeds u8 capacity
         let code = generate_many_positional_args(257);
         let result = MontyRun::new(code, "test.py", vec![], vec![]);
-        // Should either handle gracefully or return a compile error
-        // Must NOT panic or produce incorrect results
-        if let Ok(run) = result {
-            let exec_result = run.run_no_limits(vec![]);
-            // If it runs, it should return the correct count
-            if let Ok(value) = exec_result {
-                // The function returns len(args), which should be 257
-                assert!(
-                    format!("{value:?}").contains("257"),
-                    "should return 257 args, got {value:?}"
-                );
-            }
-        }
+        assert_syntax_error(result, "more than 255 positional arguments");
     }
 }
 
@@ -202,36 +198,19 @@ mod keyword_argument_limits {
     }
 
     #[test]
-    fn keyword_args_at_u8_boundary() {
-        // 256 keyword args - boundary case for u8
+    fn keyword_args_at_u8_boundary_returns_syntax_error() {
+        // 256 keyword args - exceeds u8 limit, should return SyntaxError
         let code = generate_many_keyword_args(256);
         let result = MontyRun::new(code, "test.py", vec![], vec![]);
-        // Should either compile with wide encoding or return a clear error
-        if let Ok(run) = result {
-            let result = run.run_no_limits(vec![]);
-            assert!(
-                result.is_ok(),
-                "256 keyword args should run if it compiles: {:?}",
-                result.err()
-            );
-        }
+        assert_syntax_error(result, "more than 255 keyword arguments");
     }
 
     #[test]
-    fn keyword_args_exceeding_u8_limit() {
-        // 257 keyword args - exceeds u8 capacity
+    fn keyword_args_exceeding_u8_limit_returns_syntax_error() {
+        // 257 keyword args - clearly exceeds u8 capacity
         let code = generate_many_keyword_args(257);
         let result = MontyRun::new(code, "test.py", vec![], vec![]);
-        // Should either handle gracefully or return a compile error
-        if let Ok(run) = result {
-            let exec_result = run.run_no_limits(vec![]);
-            if let Ok(value) = exec_result {
-                assert!(
-                    format!("{value:?}").contains("257"),
-                    "should return 257 kwargs, got {value:?}"
-                );
-            }
-        }
+        assert_syntax_error(result, "more than 255 keyword arguments");
     }
 }
 
@@ -240,7 +219,7 @@ mod function_parameter_limits {
 
     #[test]
     fn parameters_under_u8_limit_succeeds() {
-        // 255 parameters should work
+        // 255 parameters should work - both definition and call
         let code = generate_many_parameters(255);
         let result = MontyRun::new(code, "test.py", vec![], vec![]);
         assert!(result.is_ok(), "255 parameters should compile successfully");
@@ -251,34 +230,19 @@ mod function_parameter_limits {
     }
 
     #[test]
-    fn parameters_at_u8_boundary() {
-        // 256 parameters - boundary case
+    fn parameters_at_u8_boundary_returns_syntax_error_for_call() {
+        // 256 parameters - the function definition uses locals (wide instructions ok),
+        // but the call site has 256 positional args which exceeds the limit
         let code = generate_many_parameters(256);
         let result = MontyRun::new(code, "test.py", vec![], vec![]);
-        if let Ok(run) = result {
-            let result = run.run_no_limits(vec![]);
-            assert!(
-                result.is_ok(),
-                "256 parameters should run if it compiles: {:?}",
-                result.err()
-            );
-        }
+        assert_syntax_error(result, "more than 255 positional arguments");
     }
 
     #[test]
-    fn parameters_exceeding_u8_limit() {
-        // 257 parameters - exceeds u8, needs wide local slots
+    fn parameters_exceeding_u8_limit_returns_syntax_error_for_call() {
+        // 257 parameters - same issue, call site has too many args
         let code = generate_many_parameters(257);
         let result = MontyRun::new(code, "test.py", vec![], vec![]);
-        if let Ok(run) = result {
-            let exec_result = run.run_no_limits(vec![]);
-            if let Ok(value) = exec_result {
-                // The function returns p256, which should be 256
-                assert!(
-                    format!("{value:?}").contains("256"),
-                    "should return p256=256, got {value:?}"
-                );
-            }
-        }
+        assert_syntax_error(result, "more than 255 positional arguments");
     }
 }
