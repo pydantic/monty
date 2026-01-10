@@ -244,7 +244,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Sets up the function's namespace with bound arguments, cell variables,
     /// and free variables (captured from enclosing scope for closures).
-    pub(super) fn call_user_function(
+    fn call_user_function(
         &mut self,
         func_id: FunctionId,
         cells: Vec<HeapId>,

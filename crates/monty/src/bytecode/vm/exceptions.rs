@@ -7,31 +7,17 @@ use crate::{
     heap::HeapData,
     intern::{StringId, MODULE_STRING_ID},
     io::PrintWriter,
-    parse::CodeRange,
     resource::ResourceTracker,
     types::{PyTrait, Type},
     value::Value,
 };
 
 impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
-    /// Returns the current source position for traceback generation.
-    pub(super) fn current_position(&self) -> CodeRange {
-        let frame = self.current_frame();
-        // Get the position from the current instruction (IP points to next instruction)
-        // Look up in location table
-        let ip = frame.ip.saturating_sub(1);
-        frame
-            .code
-            .location_for_offset(ip)
-            .map(super::super::code::LocationEntry::range)
-            .unwrap_or_default()
-    }
-
     /// Returns the current frame's name for traceback generation.
     ///
     /// Returns the function name for user-defined functions, or `<module>` for
     /// module-level code.
-    pub(super) fn current_frame_name(&self) -> StringId {
+    fn current_frame_name(&self) -> StringId {
         let frame = self.current_frame();
         match frame.function_id {
             Some(func_id) => self.interns.get_function(func_id).name.name_id,
@@ -42,7 +28,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// Creates a `RawStackFrame` for the current execution point.
     ///
     /// Used when raising exceptions to capture traceback information.
-    pub(super) fn make_stack_frame(&self) -> RawStackFrame {
+    fn make_stack_frame(&self) -> RawStackFrame {
         RawStackFrame::new(self.current_position(), self.current_frame_name(), None)
     }
 
@@ -50,7 +36,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Only sets the innermost frame if the exception doesn't already have one.
     /// Caller frames are added separately during exception propagation.
-    pub(super) fn attach_frame_to_error(&self, error: RunError) -> RunError {
+    fn attach_frame_to_error(&self, error: RunError) -> RunError {
         match error {
             RunError::Exc(mut exc) => {
                 if exc.frame.is_none() {
@@ -67,10 +53,6 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             RunError::Internal(_) => error,
         }
     }
-
-    // ========================================================================
-    // Exception Handling
-    // ========================================================================
 
     /// Creates a RunError from a Value that should be an exception.
     ///

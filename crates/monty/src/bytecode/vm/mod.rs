@@ -1131,6 +1131,19 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         frame.ip = (frame.ip as isize + offset as isize) as usize;
     }
 
+    /// Returns the current source position for traceback generation.
+    pub(super) fn current_position(&self) -> CodeRange {
+        let frame = self.current_frame();
+        // Get the position from the current instruction (IP points to next instruction)
+        // Look up in location table
+        let ip = frame.ip.saturating_sub(1);
+        frame
+            .code
+            .location_for_offset(ip)
+            .map(crate::bytecode::code::LocationEntry::range)
+            .unwrap_or_default()
+    }
+
     // ========================================================================
     // Variable Operations
     // ========================================================================
