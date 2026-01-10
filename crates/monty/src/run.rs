@@ -346,18 +346,18 @@ impl Executor {
     /// # Arguments
     /// * `inputs` - Values to fill the first N slots of the namespace
     /// * `resource_tracker` - Custom resource tracker implementation
-    /// * `_print` - Print implementation (not yet used by VM)
+    /// * `print` - Print implementation for print() output
     fn run_with_tracker(
         &self,
         inputs: Vec<MontyObject>,
         resource_tracker: impl ResourceTracker,
-        _print: &mut impl PrintWriter,
+        print: &mut impl PrintWriter,
     ) -> Result<MontyObject, MontyException> {
         let mut heap = Heap::new(self.namespace_size, resource_tracker);
         let mut namespaces = self.prepare_namespaces(inputs, &mut heap)?;
 
         // Create and run VM
-        let mut vm = VM::new(&mut heap, &mut namespaces, &self.interns);
+        let mut vm = VM::new(&mut heap, &mut namespaces, &self.interns, print);
         let result = vm.run_module(&self.module_code);
 
         // Clean up the global namespace before returning (only needed with ref-count-panic)
@@ -393,8 +393,9 @@ impl Executor {
         let mut heap = Heap::new(self.namespace_size, NoLimitTracker::default());
         let mut namespaces = self.prepare_namespaces(inputs, &mut heap)?;
 
-        // Create and run VM
-        let mut vm = VM::new(&mut heap, &mut namespaces, &self.interns);
+        // Create and run VM with StdPrint for output
+        let mut print = StdPrint;
+        let mut vm = VM::new(&mut heap, &mut namespaces, &self.interns, &mut print);
         let vm_result = vm.run_module(&self.module_code);
 
         // Compute ref counts before consuming the heap - return value is still alive

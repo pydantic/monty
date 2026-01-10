@@ -77,6 +77,37 @@ impl ForIterator {
         self.value.drop_with_heap(heap);
     }
 
+    /// Creates a placeholder iterator for use during heap manipulation.
+    ///
+    /// This is used by the VM's ForIter opcode when we need to temporarily
+    /// remove an iterator from the heap (using `std::mem::replace`) to avoid
+    /// borrow conflicts while calling `for_next()`.
+    ///
+    /// The placeholder is an exhausted Range iterator that yields no values.
+    pub fn placeholder() -> Self {
+        Self {
+            index: 0,
+            iter_value: ForIterValue::Range {
+                start: 0,
+                step: 1,
+                len: 0,
+            },
+            value: Value::None,
+        }
+    }
+
+    /// Collects HeapIds from this iterator for reference counting cleanup.
+    pub fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        self.value.py_dec_ref_ids(stack);
+    }
+
+    /// Returns a reference to the underlying value being iterated.
+    ///
+    /// Used by GC to traverse heap references held by the iterator.
+    pub fn value(&self) -> &Value {
+        &self.value
+    }
+
     /// Returns the next item from the iterator, advancing the internal index.
     ///
     /// Returns `Ok(None)` when the iterator is exhausted.
@@ -413,12 +444,13 @@ impl ForIterValue {
                 len: frozenset.len(),
             }),
             HeapData::Range(range) => Some(Self::from_range(range)),
-            // Closures, FunctionDefaults, Cells, Exceptions, and Dataclasses are not iterable
+            // Closures, FunctionDefaults, Cells, Exceptions, Dataclasses, and Iterators are not iterable
             HeapData::Closure(_, _, _)
             | HeapData::FunctionDefaults(_, _)
             | HeapData::Cell(_)
             | HeapData::Exception(_)
-            | HeapData::Dataclass(_) => None,
+            | HeapData::Dataclass(_)
+            | HeapData::Iterator(_) => None,
         }
     }
 }

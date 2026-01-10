@@ -377,6 +377,10 @@ impl MontyObject {
                             frozen: dc.is_frozen(),
                         }
                     }
+                    HeapData::Iterator(_) => {
+                        // Iterators are internal objects - represent as a type string
+                        Self::Repr("<iterator>".to_owned())
+                    }
                 };
 
                 // Remove from visited set after processing

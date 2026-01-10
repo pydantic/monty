@@ -46,6 +46,8 @@ pub enum Type {
     #[strum(serialize = "builtin_function_or_method")]
     BuiltinFunction,
     Cell,
+    #[strum(serialize = "iterator")]
+    Iterator,
     /// used when we can't infer the type, this should be removed or very rare
     Unknown,
 }

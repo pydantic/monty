@@ -10,6 +10,7 @@ use ahash::AHashSet;
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult, SimpleException},
+    for_iterator::ForIterator,
     intern::{FunctionId, Interns},
     resource::{ResourceError, ResourceTracker},
     types::{Bytes, Dataclass, Dict, FrozenSet, List, PyTrait, Range, Set, Str, Tuple, Type},
@@ -80,6 +81,11 @@ pub enum HeapData {
     /// Contains a class name, a Dict of field name -> value mappings, and a set
     /// of method names that trigger external function calls when invoked.
     Dataclass(Dataclass),
+    /// An iterator for for-loop iteration.
+    ///
+    /// Created by the `GetIter` opcode, advanced by `ForIter`. Stores iteration
+    /// state for lists, tuples, strings, ranges, dicts, and sets.
+    Iterator(ForIterator),
 }
 
 impl HeapData {
@@ -135,9 +141,11 @@ impl HeapData {
             }
             // Dataclass hashability depends on the mutable flag
             Self::Dataclass(dc) => dc.compute_hash(heap, interns),
-            // Mutable types and exceptions cannot be hashed
+            // Mutable types, exceptions, and iterators cannot be hashed
             // (Cell is handled specially in get_or_compute_hash)
-            Self::List(_) | Self::Dict(_) | Self::Set(_) | Self::Cell(_) | Self::Exception(_) => None,
+            Self::List(_) | Self::Dict(_) | Self::Set(_) | Self::Cell(_) | Self::Exception(_) | Self::Iterator(_) => {
+                None
+            }
         }
     }
 }
@@ -161,6 +169,7 @@ impl PyTrait for HeapData {
             Self::Range(_) => Type::Range,
             Self::Exception(e) => e.py_type(),
             Self::Dataclass(dc) => dc.py_type(heap),
+            Self::Iterator(_) => Type::Iterator,
         }
     }
 
@@ -179,6 +188,7 @@ impl PyTrait for HeapData {
             Self::Range(_) => std::mem::size_of::<Range>(),
             Self::Exception(e) => std::mem::size_of::<SimpleException>() + e.arg().map_or(0, String::len),
             Self::Dataclass(dc) => dc.py_estimate_size(),
+            Self::Iterator(_) => std::mem::size_of::<ForIterator>(),
         }
     }
 
@@ -192,12 +202,13 @@ impl PyTrait for HeapData {
             Self::Set(s) => PyTrait::py_len(s, heap, interns),
             Self::FrozenSet(fs) => PyTrait::py_len(fs, heap, interns),
             Self::Range(r) => Some(r.len()),
-            // Cells, Exceptions, and Dataclasses don't have length
+            // Cells, Exceptions, Dataclasses, and Iterators don't have length
             Self::Cell(_)
             | Self::Closure(_, _, _)
             | Self::FunctionDefaults(_, _)
             | Self::Exception(_)
-            | Self::Dataclass(_) => None,
+            | Self::Dataclass(_)
+            | Self::Iterator(_) => None,
         }
     }
 
@@ -214,8 +225,10 @@ impl PyTrait for HeapData {
             (Self::FunctionDefaults(a_id, _), Self::FunctionDefaults(b_id, _)) => *a_id == *b_id,
             (Self::Range(a), Self::Range(b)) => a.py_eq(b, heap, interns),
             (Self::Dataclass(a), Self::Dataclass(b)) => a.py_eq(b, heap, interns),
-            // Cells and Exceptions compare by identity only (handled at Value level via HeapId comparison)
-            (Self::Cell(_), Self::Cell(_)) | (Self::Exception(_), Self::Exception(_)) => false,
+            // Cells, Exceptions, and Iterators compare by identity only (handled at Value level via HeapId comparison)
+            (Self::Cell(_), Self::Cell(_))
+            | (Self::Exception(_), Self::Exception(_))
+            | (Self::Iterator(_), Self::Iterator(_)) => false,
             _ => false, // Different types are never equal
         }
     }
@@ -245,6 +258,7 @@ impl PyTrait for HeapData {
             }
             Self::Cell(v) => v.py_dec_ref_ids(stack),
             Self::Dataclass(dc) => dc.py_dec_ref_ids(stack),
+            Self::Iterator(iter) => iter.py_dec_ref_ids(stack),
             // Range and Exception have no nested heap references
             Self::Range(_) | Self::Exception(_) => {}
         }
@@ -264,6 +278,7 @@ impl PyTrait for HeapData {
             Self::Range(r) => r.py_bool(heap, interns),
             Self::Exception(_) => true, // Exceptions are always truthy
             Self::Dataclass(dc) => dc.py_bool(heap, interns),
+            Self::Iterator(_) => true, // Iterators are always truthy
         }
     }
 
@@ -290,6 +305,7 @@ impl PyTrait for HeapData {
             Self::Range(r) => r.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Exception(e) => e.py_repr_fmt(f),
             Self::Dataclass(dc) => dc.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::Iterator(_) => write!(f, "<iterator>"),
         }
     }
     // py_str is always the same as py_repr which is the default impl
@@ -456,8 +472,12 @@ impl HashState {
                     Self::Unhashable
                 }
             }
-            // Mutable containers and exceptions are unhashable
-            HeapData::List(_) | HeapData::Dict(_) | HeapData::Set(_) | HeapData::Exception(_) => Self::Unhashable,
+            // Mutable containers, exceptions, and iterators are unhashable
+            HeapData::List(_)
+            | HeapData::Dict(_)
+            | HeapData::Set(_)
+            | HeapData::Exception(_)
+            | HeapData::Iterator(_) => Self::Unhashable,
         }
     }
 }
@@ -1232,6 +1252,12 @@ impl<T: ResourceTracker> Heap<T> {
                     if let Value::Ref(id) = v {
                         work_list.push(*id);
                     }
+                }
+            }
+            HeapData::Iterator(iter) => {
+                // Iterator holds a reference to the iterable being iterated
+                if let Value::Ref(id) = iter.value() {
+                    work_list.push(*id);
                 }
             }
         }

@@ -4,10 +4,14 @@
 //! and a call stack for function frames. Each frame owns its instruction pointer (IP).
 
 use crate::{
+    args::ArgValues,
+    builtins::Builtins,
     bytecode::{code::Code, op::Opcode},
     exception_private::{ExcType, ExceptionRaise, RunError, SimpleException},
+    for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
     intern::{FunctionId, Interns, StringId},
+    io::PrintWriter,
     namespace::{NamespaceId, Namespaces, GLOBAL_NS_IDX},
     parse::CodeRange,
     resource::ResourceTracker,
@@ -120,7 +124,7 @@ impl<'code> CallFrame<'code> {
 /// Executes compiled bytecode using a stack-based execution model.
 /// The instruction pointer (IP) lives in each `CallFrame`, not here,
 /// to avoid sync bugs on call/return.
-pub struct VM<'a, T: ResourceTracker> {
+pub struct VM<'a, T: ResourceTracker, P: PrintWriter> {
     /// Operand stack - values being computed.
     stack: Vec<Value>,
 
@@ -136,6 +140,9 @@ pub struct VM<'a, T: ResourceTracker> {
     /// Interned strings/bytes.
     interns: &'a Interns,
 
+    /// Print output writer.
+    print_writer: &'a mut P,
+
     /// Current exception being handled (if any).
     ///
     /// Used by bare `raise` to re-raise the current exception.
@@ -143,15 +150,21 @@ pub struct VM<'a, T: ResourceTracker> {
     current_exception: Option<Value>,
 }
 
-impl<'a, T: ResourceTracker> VM<'a, T> {
+impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// Creates a new VM with the given runtime context.
-    pub fn new(heap: &'a mut Heap<T>, namespaces: &'a mut Namespaces, interns: &'a Interns) -> Self {
+    pub fn new(
+        heap: &'a mut Heap<T>,
+        namespaces: &'a mut Namespaces,
+        interns: &'a Interns,
+        print_writer: &'a mut P,
+    ) -> Self {
         Self {
             stack: Vec::with_capacity(64),
             frames: Vec::with_capacity(16),
             heap,
             namespaces,
             interns,
+            print_writer,
             current_exception: None,
         }
     }
@@ -631,23 +644,76 @@ impl<'a, T: ResourceTracker> VM<'a, T> {
                 // Iteration
                 // ============================================================
                 Opcode::GetIter => {
-                    // TODO: Add HeapData::Iterator variant and implement iterator allocation
                     let value = self.pop();
-                    value.drop_with_heap(self.heap);
-                    todo!("GetIter: iterator heap support not yet implemented")
+                    // Create a ForIterator from the value and store on heap
+                    match ForIterator::new(value, self.heap, self.interns) {
+                        Ok(iter) => match self.heap.allocate(HeapData::Iterator(iter)) {
+                            Ok(heap_id) => self.push(Value::Ref(heap_id)),
+                            Err(e) => return VMResult::Error(e.into()),
+                        },
+                        Err(e) => return VMResult::Error(e),
+                    }
                 }
 
                 Opcode::ForIter => {
-                    // TODO: Implement iterator advancement once HeapData::Iterator exists
-                    let _offset = self.fetch_i16();
-                    todo!("ForIter: iterator heap support not yet implemented")
+                    let offset = self.fetch_i16();
+                    // Peek at the iterator on TOS
+                    let iter_ref = self.peek().copy_for_extend();
+                    if let Value::Ref(heap_id) = iter_ref {
+                        // Take the iterator out of the heap temporarily to avoid borrow conflict
+                        let HeapData::Iterator(mut iter) = std::mem::replace(
+                            self.heap.get_mut(heap_id),
+                            HeapData::Iterator(ForIterator::placeholder()),
+                        ) else {
+                            return VMResult::Error(RunError::internal("ForIter: expected iterator on stack"));
+                        };
+
+                        // Get next value from iterator
+                        let next_result = iter.for_next(self.heap, self.interns);
+
+                        // Put the iterator back
+                        *self.heap.get_mut(heap_id) = HeapData::Iterator(iter);
+
+                        match next_result {
+                            Ok(Some(value)) => {
+                                // Push the next value
+                                self.push(value);
+                            }
+                            Ok(None) => {
+                                // Iterator exhausted - pop it and jump to end
+                                let iter = self.pop();
+                                iter.drop_with_heap(self.heap);
+                                self.jump_relative(offset);
+                            }
+                            Err(e) => {
+                                // Error during iteration (e.g., dict size changed)
+                                let iter = self.pop();
+                                iter.drop_with_heap(self.heap);
+                                return VMResult::Error(e);
+                            }
+                        }
+                    } else {
+                        return VMResult::Error(RunError::internal("ForIter: expected iterator ref on stack"));
+                    }
                 }
 
                 // ============================================================
                 // Function Calls (Step 4)
                 // ============================================================
                 Opcode::CallFunction => {
-                    todo!("CallFunction (Step 4)")
+                    let arg_count = self.fetch_u8() as usize;
+
+                    // Pop arguments in reverse order (TOS is last arg)
+                    let args = self.pop_n_args(arg_count);
+
+                    // Pop the callable
+                    let callable = self.pop();
+
+                    // Call the function and handle the result
+                    match self.call_function(callable, args) {
+                        Ok(result) => self.push(result),
+                        Err(err) => return VMResult::Error(err),
+                    }
                 }
 
                 Opcode::CallFunctionKw => {
@@ -1290,6 +1356,62 @@ impl<'a, T: ResourceTracker> VM<'a, T> {
             self.push(item);
         }
         Ok(())
+    }
+
+    // ========================================================================
+    // Function Call Helpers
+    // ========================================================================
+
+    /// Pops n arguments from the stack and wraps them in ArgValues.
+    fn pop_n_args(&mut self, n: usize) -> ArgValues {
+        match n {
+            0 => ArgValues::Empty,
+            1 => ArgValues::One(self.pop()),
+            2 => {
+                let b = self.pop();
+                let a = self.pop();
+                ArgValues::Two(a, b)
+            }
+            _ => {
+                let args = self.pop_n(n);
+                ArgValues::ArgsKargs {
+                    args,
+                    kwargs: crate::args::KwargsValues::Empty,
+                }
+            }
+        }
+    }
+
+    /// Calls a callable value with the given arguments.
+    fn call_function(&mut self, callable: Value, args: ArgValues) -> Result<Value, RunError> {
+        match callable {
+            Value::Builtin(builtin) => {
+                // Call the builtin function
+                let result = builtin.call(self.heap, args, self.interns, self.print_writer)?;
+                Ok(result)
+            }
+            Value::Ref(heap_id) => {
+                // Could be a closure or function - check heap
+                match self.heap.get(heap_id) {
+                    HeapData::Closure(_, _, _) | HeapData::FunctionDefaults(_, _) => {
+                        // Drop the callable ref
+                        callable.drop_with_heap(self.heap);
+                        // Drop args since we're not using them
+                        args.drop_with_heap(self.heap);
+                        todo!("User-defined function calls not yet implemented")
+                    }
+                    _ => {
+                        callable.drop_with_heap(self.heap);
+                        args.drop_with_heap(self.heap);
+                        Err(ExcType::type_error("object is not callable"))
+                    }
+                }
+            }
+            _ => {
+                args.drop_with_heap(self.heap);
+                Err(ExcType::type_error("object is not callable"))
+            }
+        }
     }
 
     // ========================================================================

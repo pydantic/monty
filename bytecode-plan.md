@@ -1498,12 +1498,20 @@ Opcode::Await,  // Pause current task, wait for TOS (another task or future)
 
 Note: Some operations use `todo!()` pending implementation:
 - Bitwise operations (BinaryAnd, BinaryOr, BinaryXor, etc.)
-- Iteration (GetIter, ForIter) - needs HeapData::Iterator variant
 - Attribute access (LoadAttr, StoreAttr) - needs py_getattr/py_setattr on Value
 - Membership test (CompareIn, CompareNotIn) - needs py_contains on Value
 
+### Step 3.5: Iteration & Print Support
+- [x] `HeapData::Iterator` variant for storing `ForIterator` on heap
+- [x] `GetIter` opcode - creates iterator and stores on heap
+- [x] `ForIter` opcode - advances iterator or jumps to end when exhausted
+- [x] `print_writer` parameter added to VM for print output
+- [x] `CallFunction` opcode - calls builtin functions (print, len, etc.)
+- [x] `Expr::Call` compilation - emits callable + args + CallFunction
+
 ### Step 4: Functions & Closures
-- [ ] Function calls
+- [x] Builtin function calls (print, len, range, etc.)
+- [ ] User-defined function calls
 - [ ] Return values
 - [ ] Closures with captured cells
 - [ ] Default parameters

@@ -10,7 +10,9 @@ use super::{
     op::Opcode,
 };
 use crate::{
+    args::ArgExprs,
     builtins::Builtins,
+    callable::Callable,
     expressions::{Expr, ExprLoc, Identifier, Literal, NameScope, Node},
     intern::Interns,
     operators::{CmpOperator, Operator},
@@ -252,8 +254,8 @@ impl<'a> Compiler<'a> {
                 self.code.emit_u16(Opcode::LoadAttr, name_id.index() as u16);
             }
 
-            Expr::Call { .. } => {
-                todo!("Call compilation (Step 4)")
+            Expr::Call { callable, args } => {
+                self.compile_call(callable, args);
             }
 
             Expr::AttrCall { .. } => {
@@ -406,6 +408,50 @@ impl<'a> Compiler<'a> {
         self.code.patch_jump(else_jump);
         self.compile_expr(orelse);
         self.code.patch_jump(end_jump);
+    }
+
+    /// Compiles a function call expression.
+    ///
+    /// Pushes the callable onto the stack, then all arguments, then emits CallFunction.
+    fn compile_call(&mut self, callable: &Callable, args: &ArgExprs) {
+        // Push the callable
+        match callable {
+            Callable::Builtin(builtin) => {
+                let idx = self.code.add_const(Value::Builtin(*builtin));
+                self.code.emit_u16(Opcode::LoadConst, idx);
+            }
+            Callable::Name(ident) => {
+                self.compile_name(ident);
+            }
+        }
+
+        // Compile arguments and emit the call
+        match args {
+            ArgExprs::Empty => {
+                self.code.emit_u8(Opcode::CallFunction, 0);
+            }
+            ArgExprs::One(arg) => {
+                self.compile_expr(arg);
+                self.code.emit_u8(Opcode::CallFunction, 1);
+            }
+            ArgExprs::Two(arg1, arg2) => {
+                self.compile_expr(arg1);
+                self.compile_expr(arg2);
+                self.code.emit_u8(Opcode::CallFunction, 2);
+            }
+            ArgExprs::Args(args) => {
+                for arg in args {
+                    self.compile_expr(arg);
+                }
+                // CallFunction takes u8 for arg count (max 255 positional args)
+                let arg_count = args.len().min(255) as u8;
+                self.code.emit_u8(Opcode::CallFunction, arg_count);
+            }
+            ArgExprs::Kwargs(_) | ArgExprs::ArgsKargs { .. } => {
+                // Keyword arguments require CallFunctionKw opcode
+                todo!("Keyword argument calls (CallFunctionKw) not yet implemented")
+            }
+        }
     }
 
     /// Compiles a for loop.
