@@ -990,6 +990,97 @@ impl Value {
         }
     }
 
+    /// Gets an attribute from this value.
+    ///
+    /// Currently only Dataclass objects support attribute access.
+    /// Returns AttributeError for other types.
+    pub fn py_get_attr(
+        &self,
+        name_id: StringId,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<Value> {
+        let attr_name = interns.get_str(name_id);
+
+        if let Value::Ref(heap_id) = self {
+            let heap_id = *heap_id;
+            let is_dataclass = matches!(heap.get(heap_id), HeapData::Dataclass(_));
+
+            if is_dataclass {
+                let name_value = Value::InternString(name_id);
+                heap.with_entry_mut(heap_id, |heap, data| {
+                    if let HeapData::Dataclass(dc) = data {
+                        match dc.get_attr(&name_value, heap, interns) {
+                            Ok(Some(value)) => Ok(value.clone_with_heap(heap)),
+                            Ok(None) => {
+                                let type_name = dc.py_type(Some(heap));
+                                Err(ExcType::attribute_error(type_name, attr_name))
+                            }
+                            Err(e) => Err(e),
+                        }
+                    } else {
+                        unreachable!("type changed during borrow")
+                    }
+                })
+            } else {
+                let type_name = heap.get(heap_id).py_type(Some(heap));
+                Err(ExcType::attribute_error(type_name, attr_name))
+            }
+        } else {
+            let type_name = self.py_type(Some(heap));
+            Err(ExcType::attribute_error(type_name, attr_name))
+        }
+    }
+
+    /// Sets an attribute on this value.
+    ///
+    /// Currently only Dataclass objects support attribute setting.
+    /// Returns AttributeError for other types.
+    ///
+    /// Takes ownership of `value` and drops it on error.
+    /// On success, drops the old attribute value if one existed.
+    pub fn py_set_attr(
+        &self,
+        name_id: StringId,
+        value: Value,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<()> {
+        let attr_name = interns.get_str(name_id);
+
+        if let Value::Ref(heap_id) = self {
+            let heap_id = *heap_id;
+            let is_dataclass = matches!(heap.get(heap_id), HeapData::Dataclass(_));
+
+            if is_dataclass {
+                let name_value = Value::InternString(name_id);
+                heap.with_entry_mut(heap_id, |heap, data| {
+                    if let HeapData::Dataclass(dc) = data {
+                        match dc.set_attr(name_value, value, heap, interns) {
+                            Ok(old_value) => {
+                                if let Some(old) = old_value {
+                                    old.drop_with_heap(heap);
+                                }
+                                Ok(())
+                            }
+                            Err(e) => Err(e),
+                        }
+                    } else {
+                        unreachable!("type changed during borrow")
+                    }
+                })
+            } else {
+                let type_name = heap.get(heap_id).py_type(Some(heap));
+                value.drop_with_heap(heap);
+                Err(ExcType::attribute_error(type_name, attr_name))
+            }
+        } else {
+            let type_name = self.py_type(Some(heap));
+            value.drop_with_heap(heap);
+            Err(ExcType::attribute_error(type_name, attr_name))
+        }
+    }
+
     pub fn as_int(&self) -> RunResult<i64> {
         match self {
             Self::Int(i) => Ok(*i),

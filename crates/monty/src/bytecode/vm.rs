@@ -530,19 +530,17 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let name_idx = self.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
                     let obj = self.pop();
-                    let result = self.get_attr(&obj, name_id);
+                    let result = obj.py_get_attr(name_id, self.heap, self.interns);
                     obj.drop_with_heap(self.heap);
-                    match result {
-                        Ok(v) => self.push(v),
-                        Err(e) => return Err(e),
-                    }
+                    self.push(result?);
                 }
                 Opcode::StoreAttr => {
                     let name_idx = self.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
                     let obj = self.pop();
                     let value = self.pop();
-                    let result = self.set_attr(&obj, name_id, value);
+                    // py_set_attr takes ownership of value and drops it on error
+                    let result = obj.py_set_attr(name_id, value, self.heap, self.interns);
                     obj.drop_with_heap(self.heap);
                     result?;
                 }
@@ -1402,7 +1400,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     fn build_list(&mut self, count: usize) -> Result<(), RunError> {
         let items = self.pop_n(count);
         let list = List::new(items);
-        let heap_id = self.heap.allocate(HeapData::List(list)).map_err(RunError::from)?;
+        let heap_id = self.heap.allocate(HeapData::List(list))?;
         self.push(Value::Ref(heap_id));
         Ok(())
     }
@@ -1411,7 +1409,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     fn build_tuple(&mut self, count: usize) -> Result<(), RunError> {
         let items = self.pop_n(count);
         let tuple = Tuple::new(items);
-        let heap_id = self.heap.allocate(HeapData::Tuple(tuple)).map_err(RunError::from)?;
+        let heap_id = self.heap.allocate(HeapData::Tuple(tuple))?;
         self.push(Value::Ref(heap_id));
         Ok(())
     }
@@ -1425,7 +1423,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         while let (Some(key), Some(value)) = (iter.next(), iter.next()) {
             dict.set(key, value, self.heap, self.interns)?;
         }
-        let heap_id = self.heap.allocate(HeapData::Dict(dict)).map_err(RunError::from)?;
+        let heap_id = self.heap.allocate(HeapData::Dict(dict))?;
         self.push(Value::Ref(heap_id));
         Ok(())
     }
@@ -1437,103 +1435,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         for item in items {
             set.add(item, self.heap, self.interns)?;
         }
-        let heap_id = self.heap.allocate(HeapData::Set(set)).map_err(RunError::from)?;
+        let heap_id = self.heap.allocate(HeapData::Set(set))?;
         self.push(Value::Ref(heap_id));
         Ok(())
-    }
-
-    // ========================================================================
-    // Attribute Access
-    // ========================================================================
-
-    /// Gets an attribute from an object.
-    ///
-    /// Currently only Dataclass objects support attribute access. For other types,
-    /// returns AttributeError.
-    fn get_attr(&mut self, obj: &Value, name_id: StringId) -> Result<Value, RunError> {
-        let attr_name = self.interns.get_str(name_id);
-
-        if let Value::Ref(heap_id) = obj {
-            let heap_id = *heap_id;
-            // Check if heap object is a Dataclass (need to check type first)
-            let is_dataclass = matches!(self.heap.get(heap_id), HeapData::Dataclass(_));
-
-            if is_dataclass {
-                // Use with_entry_mut to get mutable access to the dataclass
-                let name_value = Value::InternString(name_id);
-                self.heap.with_entry_mut(heap_id, |heap, data| {
-                    if let HeapData::Dataclass(dc) = data {
-                        match dc.get_attr(&name_value, heap, self.interns) {
-                            Ok(Some(value)) => {
-                                // Clone the value and increment its refcount
-                                Ok(value.clone_with_heap(heap))
-                            }
-                            Ok(None) => {
-                                // Attribute not found
-                                let type_name = dc.py_type(Some(heap));
-                                Err(ExcType::attribute_error(type_name, attr_name))
-                            }
-                            Err(e) => Err(e),
-                        }
-                    } else {
-                        unreachable!("type changed during borrow")
-                    }
-                })
-            } else {
-                // Other heap types don't support attribute access
-                let type_name = self.heap.get(heap_id).py_type(Some(self.heap));
-                Err(ExcType::attribute_error(type_name, attr_name))
-            }
-        } else {
-            // Non-heap values don't support attribute access
-            let type_name = obj.py_type(Some(self.heap));
-            Err(ExcType::attribute_error(type_name, attr_name))
-        }
-    }
-
-    /// Sets an attribute on an object.
-    ///
-    /// Currently only Dataclass objects support attribute setting. For other types,
-    /// returns AttributeError.
-    fn set_attr(&mut self, obj: &Value, name_id: StringId, value: Value) -> Result<(), RunError> {
-        let attr_name = self.interns.get_str(name_id);
-
-        if let Value::Ref(heap_id) = obj {
-            let heap_id = *heap_id;
-            // Check if heap object is a Dataclass (need to check type first)
-            let is_dataclass = matches!(self.heap.get(heap_id), HeapData::Dataclass(_));
-
-            if is_dataclass {
-                // Use with_entry_mut to get mutable access to the dataclass
-                let name_value = Value::InternString(name_id);
-                self.heap.with_entry_mut(heap_id, |heap, data| {
-                    if let HeapData::Dataclass(dc) = data {
-                        match dc.set_attr(name_value, value, heap, self.interns) {
-                            Ok(old_value) => {
-                                // Drop old value if there was one
-                                if let Some(old) = old_value {
-                                    old.drop_with_heap(heap);
-                                }
-                                Ok(())
-                            }
-                            Err(e) => Err(e),
-                        }
-                    } else {
-                        unreachable!("type changed during borrow")
-                    }
-                })
-            } else {
-                // Other heap types don't support attribute setting
-                let type_name = self.heap.get(heap_id).py_type(Some(self.heap));
-                value.drop_with_heap(self.heap);
-                Err(ExcType::attribute_error(type_name, attr_name))
-            }
-        } else {
-            // Non-heap values don't support attribute setting
-            let type_name = obj.py_type(Some(self.heap));
-            value.drop_with_heap(self.heap);
-            Err(ExcType::attribute_error(type_name, attr_name))
-        }
     }
 
     // ========================================================================
