@@ -661,6 +661,31 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
     pad_string(&value, spec.width, align, spec.fill)
 }
 
+/// Applies ASCII conversion to a string (escapes non-ASCII characters).
+///
+/// Used for the `!a` conversion flag in f-strings. Takes a string (typically a repr)
+/// and escapes all non-ASCII characters using `\xNN`, `\uNNNN`, or `\UNNNNNNNN`.
+pub fn ascii_escape(s: &str) -> String {
+    use std::fmt::Write;
+    let mut result = String::new();
+    for c in s.chars() {
+        if c.is_ascii() {
+            result.push(c);
+        } else {
+            let code = c as u32;
+            if code <= 0xFF {
+                write!(result, "\\x{code:02x}")
+            } else if code <= 0xFFFF {
+                write!(result, "\\u{code:04x}")
+            } else {
+                write!(result, "\\U{code:08x}")
+            }
+            .expect("string write should be infallible");
+        }
+    }
+    result
+}
+
 /// Formats a float as a percentage (format type `%`).
 ///
 /// Multiplies the value by 100 and appends a `%` sign. Uses fixed-point notation

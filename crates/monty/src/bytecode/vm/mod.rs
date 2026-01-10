@@ -1,0 +1,1258 @@
+//! Bytecode virtual machine for executing compiled Python code.
+//!
+//! The VM uses a stack-based execution model with an operand stack for computation
+//! and a call stack for function frames. Each frame owns its instruction pointer (IP).
+
+mod binary;
+mod call;
+mod collections;
+mod compare;
+mod exceptions;
+mod format;
+
+use crate::{
+    args::{ArgValues, KwargsValues},
+    bytecode::{code::Code, op::Opcode},
+    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    for_iterator::ForIterator,
+    heap::{Heap, HeapData, HeapId},
+    intern::{ExtFunctionId, FunctionId, Interns, StringId},
+    io::PrintWriter,
+    namespace::{NamespaceId, Namespaces, GLOBAL_NS_IDX},
+    parse::CodeRange,
+    resource::ResourceTracker,
+    types::PyTrait,
+    value::{BitwiseOp, Value},
+};
+
+// ============================================================================
+// Exception Handling Macro
+// ============================================================================
+
+/// Tries an operation and handles any exception using the VM's exception handler.
+///
+/// If the operation returns an error, passes it to `handle_exception`. If the
+/// exception is caught by a Python handler, execution continues. Otherwise,
+/// returns the error from the enclosing function.
+///
+/// This macro is used throughout the VM dispatch loop to handle operations
+/// that may raise Python exceptions (e.g., `NameError`, `TypeError`).
+macro_rules! try_catch {
+    ($self:expr, $expr:expr) => {
+        if let Err(e) = $expr {
+            catch!($self, e);
+        }
+    };
+}
+
+/// Handles an already-created exception using the VM's exception handler.
+///
+/// If the exception is caught by a Python handler, execution continues.
+/// Otherwise, returns the error from the enclosing function.
+///
+/// Use this when you have an error value directly (not wrapped in `Result`).
+macro_rules! catch {
+    ($self:expr, $err:expr) => {
+        if let Some(result) = $self.handle_exception($err) {
+            return Err(result);
+        }
+    };
+}
+
+// ============================================================================
+// VM Result Types
+// ============================================================================
+
+/// Result of calling a function.
+///
+/// Distinguishes between builtin function calls (which return a value immediately),
+/// user function calls (which push a frame and continue execution), and external
+/// function calls (which pause the VM).
+enum CallResult {
+    /// Builtin function returned a value - push it onto the stack.
+    Builtin(Value),
+    /// User function call - frame was pushed, continue execution in VM loop.
+    /// The return value will be pushed by ReturnValue opcode.
+    UserFunction,
+    /// External function call - VM should pause and return to caller.
+    /// Contains (ext_function_id, args).
+    ExternalCall(ExtFunctionId, Vec<Value>),
+}
+
+/// Result of VM execution.
+pub enum VMSuccess {
+    /// Execution completed successfully with a return value.
+    Complete(Value),
+
+    /// Execution paused for an external function call.
+    ///
+    /// The caller should execute the external function and call `resume()`
+    /// with the result.
+    ExternalCall {
+        /// ID of the external function to call.
+        ext_function_id: ExtFunctionId,
+        /// Arguments for the external function.
+        args: Vec<Value>,
+    },
+}
+
+// ============================================================================
+// Call Frame
+// ============================================================================
+
+/// A single function activation record.
+///
+/// Each frame represents one level in the call stack and owns its own
+/// instruction pointer. This design avoids sync bugs on call/return.
+pub struct CallFrame<'code> {
+    /// Bytecode being executed.
+    code: &'code Code,
+
+    /// Instruction pointer within this frame's bytecode.
+    ip: usize,
+
+    /// Base index into operand stack for this frame.
+    ///
+    /// Used to identify where this frame's stack region begins.
+    stack_base: usize,
+
+    /// Namespace index for this frame's locals.
+    namespace_idx: NamespaceId,
+
+    /// Function ID (for tracebacks). None for module-level code.
+    function_id: Option<FunctionId>,
+
+    /// Captured cells for closures.
+    cells: Vec<HeapId>,
+
+    /// Call site position (for tracebacks).
+    call_position: Option<CodeRange>,
+}
+
+impl<'code> CallFrame<'code> {
+    /// Creates a new call frame for module-level code.
+    pub fn new_module(code: &'code Code, namespace_idx: NamespaceId) -> Self {
+        Self {
+            code,
+            ip: 0,
+            stack_base: 0,
+            namespace_idx,
+            function_id: None,
+            cells: Vec::new(),
+            call_position: None,
+        }
+    }
+
+    /// Creates a new call frame for a function call.
+    pub fn new_function(
+        code: &'code Code,
+        stack_base: usize,
+        namespace_idx: NamespaceId,
+        function_id: FunctionId,
+        cells: Vec<HeapId>,
+        call_position: CodeRange,
+    ) -> Self {
+        Self {
+            code,
+            ip: 0,
+            stack_base,
+            namespace_idx,
+            function_id: Some(function_id),
+            cells,
+            call_position: Some(call_position),
+        }
+    }
+}
+
+// ============================================================================
+// VM Snapshot for Pause/Resume
+// ============================================================================
+
+/// Serializable representation of a call frame.
+///
+/// Cannot store `&Code` (a reference) - instead stores `FunctionId` to look up
+/// the pre-compiled Code object on resume. Module-level code uses `None`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SerializedFrame {
+    /// Which function's code this frame executes (None = module-level).
+    function_id: Option<FunctionId>,
+
+    /// Instruction pointer within this frame's bytecode.
+    ip: usize,
+
+    /// Base index into operand stack for this frame's locals.
+    stack_base: usize,
+
+    /// Namespace index for this frame's locals.
+    namespace_idx: NamespaceId,
+
+    /// Captured cells for closures (HeapIds remain valid after heap deserialization).
+    cells: Vec<HeapId>,
+
+    /// Call site position (for tracebacks).
+    call_position: Option<CodeRange>,
+}
+
+impl CallFrame<'_> {
+    /// Converts this frame to a serializable representation.
+    fn serialize(&self) -> SerializedFrame {
+        SerializedFrame {
+            function_id: self.function_id,
+            ip: self.ip,
+            stack_base: self.stack_base,
+            namespace_idx: self.namespace_idx,
+            cells: self.cells.clone(),
+            call_position: self.call_position,
+        }
+    }
+}
+
+/// VM state for pause/resume at external function calls.
+///
+/// **Ownership:** This struct OWNS the values (refcounts were already incremented).
+/// Must be used with the serialized Heap - HeapId values are indices into that heap.
+///
+/// **Usage:** When the VM pauses for an external call, call `into_snapshot()` to
+/// create this snapshot. The snapshot can be serialized and stored. On resume,
+/// use `restore()` to reconstruct the VM and continue execution.
+///
+/// Note: This struct does not implement `Clone` because `Value` uses manual
+/// reference counting. Snapshots transfer ownership - they are not copied.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct VMSnapshot {
+    /// Operand stack (may contain Value::Ref(HeapId) pointing to heap).
+    stack: Vec<Value>,
+
+    /// Call frames (serializable form - stores FunctionId, not &Code).
+    frames: Vec<SerializedFrame>,
+
+    /// Stack of exceptions being handled for nested except blocks.
+    ///
+    /// When entering an except handler, the exception is pushed onto this stack.
+    /// When exiting via `ClearException`, the top is popped. This allows nested
+    /// except handlers to restore the outer exception context.
+    exception_stack: Vec<Value>,
+
+    /// IP of the instruction that caused the pause (for exception handling).
+    instruction_ip: usize,
+}
+
+// ============================================================================
+// Virtual Machine
+// ============================================================================
+
+/// The bytecode virtual machine.
+///
+/// Executes compiled bytecode using a stack-based execution model.
+/// The instruction pointer (IP) lives in each `CallFrame`, not here,
+/// to avoid sync bugs on call/return.
+pub struct VM<'a, T: ResourceTracker, P: PrintWriter> {
+    /// Operand stack - values being computed.
+    stack: Vec<Value>,
+
+    /// Call stack - function frames (each frame has its own IP).
+    frames: Vec<CallFrame<'a>>,
+
+    /// Heap for reference-counted objects.
+    heap: &'a mut Heap<T>,
+
+    /// Namespace stack for variable storage.
+    namespaces: &'a mut Namespaces,
+
+    /// Interned strings/bytes.
+    interns: &'a Interns,
+
+    /// Print output writer.
+    print_writer: &'a mut P,
+
+    /// Stack of exceptions being handled for nested except blocks.
+    ///
+    /// Used by bare `raise` to re-raise the current exception.
+    /// When entering an except handler, the exception is pushed onto this stack.
+    /// When exiting via `ClearException`, the top is popped. This allows nested
+    /// except handlers to restore the outer exception context.
+    exception_stack: Vec<Value>,
+
+    /// IP of the instruction being executed (for exception table lookup).
+    ///
+    /// Updated at the start of each instruction before operands are fetched.
+    /// This allows us to find the correct exception handler when an error occurs.
+    instruction_ip: usize,
+}
+
+impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
+    /// Creates a new VM with the given runtime context.
+    pub fn new(
+        heap: &'a mut Heap<T>,
+        namespaces: &'a mut Namespaces,
+        interns: &'a Interns,
+        print_writer: &'a mut P,
+    ) -> Self {
+        Self {
+            stack: Vec::with_capacity(64),
+            frames: Vec::with_capacity(16),
+            heap,
+            namespaces,
+            interns,
+            print_writer,
+            exception_stack: Vec::new(),
+            instruction_ip: 0,
+        }
+    }
+
+    /// Pushes an initial frame for module-level code and runs the VM.
+    pub fn run_module(&mut self, code: &'a Code) -> Result<VMSuccess, RunError> {
+        self.frames.push(CallFrame::new_module(code, GLOBAL_NS_IDX));
+        self.run()
+    }
+
+    /// Cleans up VM state before the VM is dropped.
+    ///
+    /// This method must be called before the VM goes out of scope to ensure
+    /// proper reference counting cleanup for any exception values.
+    pub fn cleanup(&mut self) {
+        // Drop all exceptions in the exception stack
+        for exc in self.exception_stack.drain(..) {
+            exc.drop_with_heap(self.heap);
+        }
+        // Stack should be empty, but clean up just in case
+        for value in self.stack.drain(..) {
+            value.drop_with_heap(self.heap);
+        }
+    }
+
+    /// Main execution loop.
+    ///
+    /// Fetches opcodes from the current frame's bytecode and executes them.
+    /// Returns when execution completes, an error occurs, or an external
+    /// call is needed.
+    pub fn run(&mut self) -> Result<VMSuccess, RunError> {
+        loop {
+            // Track instruction IP for exception table lookup
+            self.instruction_ip = self.current_frame().ip;
+            let opcode = self.fetch_opcode();
+
+            match opcode {
+                // ============================================================
+                // Stack Operations
+                // ============================================================
+                Opcode::Pop => {
+                    let value = self.pop();
+                    value.drop_with_heap(self.heap);
+                }
+                Opcode::Dup => {
+                    // Copy without incrementing refcount first (avoids borrow conflict)
+                    let value = self.peek().copy_for_extend();
+                    // Now we can safely increment refcount and push
+                    if let Value::Ref(id) = &value {
+                        self.heap.inc_ref(*id);
+                    }
+                    self.push(value);
+                }
+                Opcode::Rot2 => {
+                    // Swap top two: [a, b] → [b, a]
+                    let len = self.stack.len();
+                    self.stack.swap(len - 1, len - 2);
+                }
+                Opcode::Rot3 => {
+                    // Rotate top three: [a, b, c] → [c, a, b]
+                    // Uses in-place rotation without cloning
+                    let len = self.stack.len();
+                    // Move c out, then shift a→b→c, then put c at a's position
+                    // Equivalent to: [..rest, a, b, c] → [..rest, c, a, b]
+                    self.stack[len - 3..].rotate_right(1);
+                }
+                // Constants & Literals
+                Opcode::LoadConst => {
+                    let idx = self.fetch_u16();
+                    // Copy without incrementing refcount first (avoids borrow conflict)
+                    let value = self.current_frame().code.constants().get(idx).copy_for_extend();
+                    // Now we can safely increment refcount and push
+                    if let Value::Ref(id) = &value {
+                        self.heap.inc_ref(*id);
+                    }
+                    self.push(value);
+                }
+                Opcode::LoadNone => self.push(Value::None),
+                Opcode::LoadTrue => self.push(Value::Bool(true)),
+                Opcode::LoadFalse => self.push(Value::Bool(false)),
+                Opcode::LoadSmallInt => {
+                    let n = self.fetch_i8();
+                    self.push(Value::Int(i64::from(n)));
+                }
+                // Variables - Specialized Local Loads (no operand)
+                Opcode::LoadLocal0 => try_catch!(self, self.load_local(0)),
+                Opcode::LoadLocal1 => try_catch!(self, self.load_local(1)),
+                Opcode::LoadLocal2 => try_catch!(self, self.load_local(2)),
+                Opcode::LoadLocal3 => try_catch!(self, self.load_local(3)),
+                // Variables - General Local Operations
+                Opcode::LoadLocal => {
+                    let slot = u16::from(self.fetch_u8());
+                    try_catch!(self, self.load_local(slot));
+                }
+                Opcode::LoadLocalW => {
+                    let slot = self.fetch_u16();
+                    try_catch!(self, self.load_local(slot));
+                }
+                Opcode::StoreLocal => {
+                    let slot = u16::from(self.fetch_u8());
+                    self.store_local(slot);
+                }
+                Opcode::StoreLocalW => {
+                    let slot = self.fetch_u16();
+                    self.store_local(slot);
+                }
+                Opcode::DeleteLocal => {
+                    let slot = u16::from(self.fetch_u8());
+                    self.delete_local(slot);
+                }
+                // Variables - Global Operations
+                Opcode::LoadGlobal => {
+                    let slot = self.fetch_u16();
+                    try_catch!(self, self.load_global(slot));
+                }
+                Opcode::StoreGlobal => {
+                    let slot = self.fetch_u16();
+                    self.store_global(slot);
+                }
+                // Variables - Cell Operations (closures)
+                Opcode::LoadCell => {
+                    let slot = self.fetch_u16();
+                    try_catch!(self, self.load_cell(slot));
+                }
+                Opcode::StoreCell => {
+                    let slot = self.fetch_u16();
+                    self.store_cell(slot);
+                }
+                // Binary Operations - route through exception handling for tracebacks
+                Opcode::BinaryAdd => try_catch!(self, self.binary_add()),
+                Opcode::BinarySub => try_catch!(self, self.binary_sub()),
+                Opcode::BinaryMul => try_catch!(self, self.binary_mult()),
+                Opcode::BinaryDiv => try_catch!(self, self.binary_div()),
+                Opcode::BinaryFloorDiv => try_catch!(self, self.binary_floordiv()),
+                Opcode::BinaryMod => try_catch!(self, self.binary_mod()),
+                Opcode::BinaryPow => try_catch!(self, self.binary_pow()),
+                // Bitwise operations - only work on integers
+                Opcode::BinaryAnd => try_catch!(self, self.binary_bitwise(BitwiseOp::And)),
+                Opcode::BinaryOr => try_catch!(self, self.binary_bitwise(BitwiseOp::Or)),
+                Opcode::BinaryXor => try_catch!(self, self.binary_bitwise(BitwiseOp::Xor)),
+                Opcode::BinaryLShift => try_catch!(self, self.binary_bitwise(BitwiseOp::LShift)),
+                Opcode::BinaryRShift => try_catch!(self, self.binary_bitwise(BitwiseOp::RShift)),
+                Opcode::BinaryMatMul => todo!("BinaryMatMul not implemented"),
+                // Comparison Operations
+                Opcode::CompareEq => self.compare_eq(),
+                Opcode::CompareNe => self.compare_ne(),
+                Opcode::CompareLt => self.compare_ord(std::cmp::Ordering::is_lt),
+                Opcode::CompareLe => self.compare_ord(std::cmp::Ordering::is_le),
+                Opcode::CompareGt => self.compare_ord(std::cmp::Ordering::is_gt),
+                Opcode::CompareGe => self.compare_ord(std::cmp::Ordering::is_ge),
+                Opcode::CompareIs => self.compare_is(false),
+                Opcode::CompareIsNot => self.compare_is(true),
+                Opcode::CompareIn => try_catch!(self, self.compare_in(false)),
+                Opcode::CompareNotIn => try_catch!(self, self.compare_in(true)),
+                Opcode::CompareModEq => try_catch!(self, self.compare_mod_eq()),
+                // Unary Operations
+                Opcode::UnaryNot => {
+                    let value = self.pop();
+                    let result = !value.py_bool(self.heap, self.interns);
+                    value.drop_with_heap(self.heap);
+                    self.push(Value::Bool(result));
+                }
+                Opcode::UnaryNeg => {
+                    // Unary minus - negate numeric value
+                    let value = self.pop();
+                    let value_type = value.py_type(Some(self.heap));
+                    let result = match &value {
+                        Value::Int(n) => Some(Value::Int(-n)),
+                        Value::Float(f) => Some(Value::Float(-f)),
+                        Value::Bool(b) => Some(Value::Int(if *b { -1 } else { 0 })),
+                        _ => None,
+                    };
+                    value.drop_with_heap(self.heap);
+                    if let Some(v) = result {
+                        self.push(v);
+                    } else {
+                        catch!(self, ExcType::unary_type_error("-", value_type));
+                    }
+                }
+                Opcode::UnaryPos => {
+                    // Unary plus - typically a no-op for numbers
+                    let value = self.pop();
+                    let value_type = value.py_type(Some(self.heap));
+                    let result = match &value {
+                        Value::Int(_) | Value::Float(_) | Value::Bool(_) => Some(value.clone_immediate()),
+                        _ => None,
+                    };
+                    value.drop_with_heap(self.heap);
+                    if let Some(v) = result {
+                        self.push(v);
+                    } else {
+                        catch!(self, ExcType::unary_type_error("+", value_type));
+                    }
+                }
+                Opcode::UnaryInvert => {
+                    // Bitwise NOT
+                    let value = self.pop();
+                    let value_type = value.py_type(Some(self.heap));
+                    let result = match &value {
+                        Value::Int(n) => Some(Value::Int(!n)),
+                        Value::Bool(b) => Some(Value::Int(!i64::from(*b))),
+                        _ => None,
+                    };
+                    value.drop_with_heap(self.heap);
+                    if let Some(v) = result {
+                        self.push(v);
+                    } else {
+                        catch!(self, ExcType::unary_type_error("~", value_type));
+                    }
+                }
+                // In-place Operations - route through exception handling
+                Opcode::InplaceAdd => try_catch!(self, self.inplace_add()),
+                // Other in-place ops use the same logic as binary ops for now
+                Opcode::InplaceSub => try_catch!(self, self.binary_sub()),
+                Opcode::InplaceMul => try_catch!(self, self.binary_mult()),
+                Opcode::InplaceDiv => try_catch!(self, self.binary_div()),
+                Opcode::InplaceFloorDiv => try_catch!(self, self.binary_floordiv()),
+                Opcode::InplaceMod => try_catch!(self, self.binary_mod()),
+                Opcode::InplacePow => try_catch!(self, self.binary_pow()),
+                Opcode::InplaceAnd => try_catch!(self, self.binary_bitwise(BitwiseOp::And)),
+                Opcode::InplaceOr => try_catch!(self, self.binary_bitwise(BitwiseOp::Or)),
+                Opcode::InplaceXor => try_catch!(self, self.binary_bitwise(BitwiseOp::Xor)),
+                Opcode::InplaceLShift => try_catch!(self, self.binary_bitwise(BitwiseOp::LShift)),
+                Opcode::InplaceRShift => try_catch!(self, self.binary_bitwise(BitwiseOp::RShift)),
+                // Collection Building - route through exception handling
+                Opcode::BuildList => {
+                    let count = self.fetch_u16() as usize;
+                    try_catch!(self, self.build_list(count));
+                }
+                Opcode::BuildTuple => {
+                    let count = self.fetch_u16() as usize;
+                    try_catch!(self, self.build_tuple(count));
+                }
+                Opcode::BuildDict => {
+                    let count = self.fetch_u16() as usize;
+                    try_catch!(self, self.build_dict(count));
+                }
+                Opcode::BuildSet => {
+                    let count = self.fetch_u16() as usize;
+                    try_catch!(self, self.build_set(count));
+                }
+                Opcode::FormatValue => {
+                    let flags = self.fetch_u8();
+                    try_catch!(self, self.format_value(flags));
+                }
+                Opcode::BuildFString => {
+                    let count = self.fetch_u16() as usize;
+                    try_catch!(self, self.build_fstring(count));
+                }
+                Opcode::ListExtend => {
+                    try_catch!(self, self.list_extend());
+                }
+                Opcode::ListToTuple => {
+                    try_catch!(self, self.list_to_tuple());
+                }
+                Opcode::DictMerge => {
+                    let func_name_id = self.fetch_u16();
+                    try_catch!(self, self.dict_merge(func_name_id));
+                }
+                // Subscript & Attribute - route through exception handling
+                Opcode::BinarySubscr => {
+                    let index = self.pop();
+                    let obj = self.pop();
+                    let result = obj.py_getitem(&index, self.heap, self.interns);
+                    obj.drop_with_heap(self.heap);
+                    index.drop_with_heap(self.heap);
+                    match result {
+                        Ok(v) => self.push(v),
+                        Err(e) => catch!(self, e),
+                    }
+                }
+                Opcode::StoreSubscr => {
+                    // Stack order: value, obj, index (TOS)
+                    let index = self.pop();
+                    let mut obj = self.pop();
+                    let value = self.pop();
+                    let result = obj.py_setitem(index, value, self.heap, self.interns);
+                    obj.drop_with_heap(self.heap);
+                    result?;
+                }
+                Opcode::DeleteSubscr => {
+                    // TODO: Implement py_delitem on Value
+                    let index = self.pop();
+                    let obj = self.pop();
+                    obj.drop_with_heap(self.heap);
+                    index.drop_with_heap(self.heap);
+                    todo!("DeleteSubscr: py_delitem not yet implemented")
+                }
+                Opcode::LoadAttr => {
+                    let name_idx = self.fetch_u16();
+                    let name_id = StringId::from_index(name_idx);
+                    try_catch!(self, self.load_attr(name_id));
+                }
+                Opcode::StoreAttr => {
+                    let name_idx = self.fetch_u16();
+                    let name_id = StringId::from_index(name_idx);
+                    try_catch!(self, self.store_attr(name_id));
+                }
+                Opcode::DeleteAttr => {
+                    todo!("DeleteAttr not implemented")
+                }
+                // Control Flow
+                Opcode::Jump => {
+                    let offset = self.fetch_i16();
+                    self.jump_relative(offset);
+                }
+                Opcode::JumpIfTrue => {
+                    let offset = self.fetch_i16();
+                    let cond = self.pop();
+                    if cond.py_bool(self.heap, self.interns) {
+                        self.jump_relative(offset);
+                    }
+                    cond.drop_with_heap(self.heap);
+                }
+                Opcode::JumpIfFalse => {
+                    let offset = self.fetch_i16();
+                    let cond = self.pop();
+                    if !cond.py_bool(self.heap, self.interns) {
+                        self.jump_relative(offset);
+                    }
+                    cond.drop_with_heap(self.heap);
+                }
+                Opcode::JumpIfTrueOrPop => {
+                    let offset = self.fetch_i16();
+                    if self.peek().py_bool(self.heap, self.interns) {
+                        self.jump_relative(offset);
+                    } else {
+                        let value = self.pop();
+                        value.drop_with_heap(self.heap);
+                    }
+                }
+                Opcode::JumpIfFalseOrPop => {
+                    let offset = self.fetch_i16();
+                    if self.peek().py_bool(self.heap, self.interns) {
+                        let value = self.pop();
+                        value.drop_with_heap(self.heap);
+                    } else {
+                        self.jump_relative(offset);
+                    }
+                }
+                // Iteration - route through exception handling
+                Opcode::GetIter => {
+                    let value = self.pop();
+                    // Create a ForIterator from the value and store on heap
+                    match ForIterator::new(value, self.heap, self.interns) {
+                        Ok(iter) => match self.heap.allocate(HeapData::Iterator(iter)) {
+                            Ok(heap_id) => self.push(Value::Ref(heap_id)),
+                            Err(e) => catch!(self, e.into()),
+                        },
+                        Err(e) => catch!(self, e),
+                    }
+                }
+                Opcode::ForIter => {
+                    let offset = self.fetch_i16();
+                    // Peek at the iterator on TOS
+                    let iter_ref = self.peek().copy_for_extend();
+                    if let Value::Ref(heap_id) = iter_ref {
+                        // Take the iterator out of the heap temporarily to avoid borrow conflict
+                        let HeapData::Iterator(mut iter) = std::mem::replace(
+                            self.heap.get_mut(heap_id),
+                            HeapData::Iterator(ForIterator::placeholder()),
+                        ) else {
+                            return Err(RunError::internal("ForIter: expected iterator on stack"));
+                        };
+
+                        // Get next value from iterator
+                        let next_result = iter.for_next(self.heap, self.interns);
+
+                        // Put the iterator back
+                        *self.heap.get_mut(heap_id) = HeapData::Iterator(iter);
+
+                        match next_result {
+                            Ok(Some(value)) => self.push(value),
+                            Ok(None) => {
+                                // Iterator exhausted - pop it and jump to end
+                                let iter = self.pop();
+                                iter.drop_with_heap(self.heap);
+                                self.jump_relative(offset);
+                            }
+                            Err(e) => {
+                                // Error during iteration (e.g., dict size changed)
+                                let iter = self.pop();
+                                iter.drop_with_heap(self.heap);
+                                catch!(self, e);
+                            }
+                        }
+                    } else {
+                        return Err(RunError::internal("ForIter: expected iterator ref on stack"));
+                    }
+                }
+                // Function Calls
+                Opcode::CallFunction => {
+                    let arg_count = self.fetch_u8() as usize;
+
+                    // Pop arguments in reverse order (TOS is last arg)
+                    let args = self.pop_n_args(arg_count);
+
+                    // Pop the callable
+                    let callable = self.pop();
+
+                    // Call the function and handle the result
+                    match self.call_function(callable, args) {
+                        Ok(CallResult::Builtin(result)) => self.push(result),
+                        Ok(CallResult::UserFunction) => {} // Frame pushed, continue in VM loop
+                        Ok(CallResult::ExternalCall(ext_id, args_vec)) => {
+                            return Ok(VMSuccess::ExternalCall {
+                                ext_function_id: ext_id,
+                                args: args_vec,
+                            });
+                        }
+                        Err(err) => catch!(self, err),
+                    }
+                }
+                Opcode::CallFunctionKw => {
+                    // Fetch operands: pos_count, kw_count, then kw_count name indices
+                    let pos_count = self.fetch_u8() as usize;
+                    let kw_count = self.fetch_u8() as usize;
+
+                    // Read keyword name StringIds
+                    let mut kwname_ids = Vec::with_capacity(kw_count);
+                    for _ in 0..kw_count {
+                        kwname_ids.push(StringId::from_index(self.fetch_u16()));
+                    }
+
+                    // Pop keyword values (TOS is last kwarg value)
+                    let kw_values = self.pop_n(kw_count);
+
+                    // Pop positional arguments
+                    let pos_args = self.pop_n(pos_count);
+
+                    // Pop the callable
+                    let callable = self.pop();
+
+                    // Build kwargs as Vec<(StringId, Value)>
+                    let kwargs_inline: Vec<(StringId, Value)> = kwname_ids.into_iter().zip(kw_values).collect();
+
+                    // Build ArgValues with both positional and keyword args
+                    let args = if pos_args.is_empty() && kwargs_inline.is_empty() {
+                        ArgValues::Empty
+                    } else if pos_args.is_empty() {
+                        ArgValues::Kwargs(KwargsValues::Inline(kwargs_inline))
+                    } else {
+                        ArgValues::ArgsKargs {
+                            args: pos_args,
+                            kwargs: KwargsValues::Inline(kwargs_inline),
+                        }
+                    };
+
+                    // Call the function and handle the result
+                    match self.call_function(callable, args) {
+                        Ok(CallResult::Builtin(result)) => self.push(result),
+                        Ok(CallResult::UserFunction) => {} // Frame pushed, continue
+                        Ok(CallResult::ExternalCall(ext_id, args_vec)) => {
+                            return Ok(VMSuccess::ExternalCall {
+                                ext_function_id: ext_id,
+                                args: args_vec,
+                            });
+                        }
+                        Err(err) => catch!(self, err),
+                    }
+                }
+                Opcode::CallMethod => {
+                    // CallMethod: u16 name_id, u8 arg_count
+                    // Stack: [obj, arg1, arg2, ..., argN] -> [result]
+                    let name_idx = self.fetch_u16();
+                    let arg_count = self.fetch_u8() as usize;
+                    let name_id = StringId::from_index(name_idx);
+
+                    // Pop arguments in reverse order (TOS is last arg)
+                    let args = self.pop_n_args(arg_count);
+
+                    // Pop the object
+                    let obj = self.pop();
+
+                    // Call the method on the object
+                    match self.call_method(obj, name_id, args) {
+                        Ok(result) => self.push(result),
+                        Err(err) => catch!(self, err),
+                    }
+                }
+                Opcode::CallExternal => {
+                    todo!("CallExternal")
+                }
+                Opcode::CallFunctionEx => {
+                    let flags = self.fetch_u8();
+                    let has_kwargs = (flags & 0x01) != 0;
+
+                    // Pop kwargs dict if present
+                    let kwargs = if has_kwargs { Some(self.pop()) } else { None };
+
+                    // Pop args tuple
+                    let args_tuple = self.pop();
+
+                    // Pop callable
+                    let callable = self.pop();
+
+                    // Call the function with unpacked args
+                    match self.call_function_ex(callable, args_tuple, kwargs) {
+                        Ok(CallResult::Builtin(result)) => self.push(result),
+                        Ok(CallResult::UserFunction) => {} // Frame pushed, continue
+                        Ok(CallResult::ExternalCall(ext_id, args_vec)) => {
+                            return Ok(VMSuccess::ExternalCall {
+                                ext_function_id: ext_id,
+                                args: args_vec,
+                            });
+                        }
+                        Err(err) => catch!(self, err),
+                    }
+                }
+                // Function Definition
+                Opcode::MakeFunction => {
+                    let func_idx = self.fetch_u16();
+                    let defaults_count = self.fetch_u8() as usize;
+                    let func_id = FunctionId::from_index(func_idx);
+
+                    // Pop default values from stack (drain maintains order: first pushed = first in vec)
+                    let defaults = self.pop_n(defaults_count);
+
+                    // Create FunctionDefaults on heap and push reference
+                    let heap_id = self.heap.allocate(HeapData::FunctionDefaults(func_id, defaults))?;
+                    self.push(Value::Ref(heap_id));
+                }
+                Opcode::MakeClosure => {
+                    let func_idx = self.fetch_u16();
+                    let defaults_count = self.fetch_u8() as usize;
+                    let cell_count = self.fetch_u8() as usize;
+                    let func_id = FunctionId::from_index(func_idx);
+
+                    // Pop cells from stack (pushed after defaults, so on top)
+                    // Cells are Value::Ref pointing to HeapData::Cell
+                    // We use individual pops which reverses order, so we need to reverse back
+                    let mut cells = Vec::with_capacity(cell_count);
+                    for _ in 0..cell_count {
+                        let cell_val = self.pop();
+                        match cell_val {
+                            Value::Ref(heap_id) => {
+                                // Keep the reference - don't drop, Closure will own it
+                                cells.push(heap_id);
+                            }
+                            _ => {
+                                return Err(RunError::internal("MakeClosure: expected cell reference on stack"));
+                            }
+                        }
+                    }
+                    // Reverse to get original order (individual pops reverse the order)
+                    cells.reverse();
+
+                    // Pop default values from stack (drain maintains order: first pushed = first in vec)
+                    let defaults = self.pop_n(defaults_count);
+
+                    // Create Closure on heap and push reference
+                    let heap_id = self.heap.allocate(HeapData::Closure(func_id, cells, defaults))?;
+                    self.push(Value::Ref(heap_id));
+                }
+                // Exception Handling
+                Opcode::Raise => {
+                    let exc = self.pop();
+                    let error = self.make_exception(exc, true); // is_raise=true, hide caret
+                    catch!(self, error);
+                }
+                Opcode::RaiseFrom => {
+                    todo!("RaiseFrom")
+                }
+                Opcode::Reraise => {
+                    // Pop the current exception from the stack to re-raise it
+                    // If caught, handle_exception will push it back
+                    let error = if let Some(exc) = self.exception_stack.pop() {
+                        self.make_exception(exc, true) // is_raise=true for reraise
+                    } else {
+                        // No active exception - create a RuntimeError
+                        SimpleException::new(
+                            ExcType::RuntimeError,
+                            Some("No active exception to reraise".to_string()),
+                        )
+                        .into()
+                    };
+                    catch!(self, error);
+                }
+                Opcode::ClearException => {
+                    // Pop the current exception from the stack
+                    // This restores the previous exception context (if any)
+                    if let Some(exc) = self.exception_stack.pop() {
+                        exc.drop_with_heap(self.heap);
+                    }
+                }
+                Opcode::CheckExcMatch => {
+                    // Stack: [exception, exc_type] -> [exception, bool]
+                    let exc_type = self.pop();
+                    let exception = self.peek();
+                    let result = self.check_exc_match(exception, &exc_type);
+                    exc_type.drop_with_heap(self.heap);
+                    let result = result?;
+                    self.push(Value::Bool(result));
+                }
+                // Return
+                Opcode::ReturnValue => {
+                    let value = self.pop();
+                    if self.frames.len() == 1 {
+                        // Module-level return - we're done
+                        return Ok(VMSuccess::Complete(value));
+                    }
+                    // Pop current frame and push return value
+                    self.pop_frame();
+                    self.push(value);
+                }
+                // Unpacking - route through exception handling
+                Opcode::UnpackSequence => {
+                    let count = self.fetch_u8() as usize;
+                    try_catch!(self, self.unpack_sequence(count));
+                }
+                Opcode::UnpackEx => {
+                    todo!("UnpackEx not implemented")
+                }
+                // Special
+                Opcode::Nop => {
+                    // No operation
+                }
+            }
+        }
+    }
+
+    /// Resumes execution after an external call completes.
+    ///
+    /// Pushes the return value onto the stack and continues execution.
+    pub fn resume(&mut self, result: Value) -> Result<VMSuccess, RunError> {
+        self.push(result);
+        self.run()
+    }
+
+    /// Resumes execution after an external call raised an exception.
+    ///
+    /// Uses the exception handling mechanism to try to catch the exception.
+    /// If caught, continues execution at the handler. If not, propagates the error.
+    pub fn resume_with_exception(&mut self, error: RunError) -> Result<VMSuccess, RunError> {
+        // Use the normal exception handling mechanism
+        // handle_exception returns None if caught, Some(error) if not caught
+        if let Some(uncaught_error) = self.handle_exception(error) {
+            return Err(uncaught_error);
+        }
+        // Exception was caught, continue execution
+        self.run()
+    }
+
+    /// Consumes the VM and creates a snapshot for pause/resume.
+    ///
+    /// **Ownership transfer:** This method takes `self` by value, consuming the VM.
+    /// The snapshot owns all Values (refcounts already correct from the live VM).
+    /// The heap and namespaces must be serialized alongside this snapshot.
+    ///
+    /// This is NOT a clone - it's a transfer. After calling this, the original VM
+    /// is gone and only the snapshot (+ serialized heap/namespaces) represents the state.
+    pub fn into_snapshot(self) -> VMSnapshot {
+        VMSnapshot {
+            // Move values directly - no clone, no refcount increment needed
+            // (the VM owned them, now the snapshot owns them)
+            stack: self.stack,
+            frames: self.frames.into_iter().map(|f| f.serialize()).collect(),
+            exception_stack: self.exception_stack,
+            instruction_ip: self.instruction_ip,
+        }
+    }
+
+    /// Reconstructs a VM from a snapshot.
+    ///
+    /// The heap and namespaces must already be deserialized. `FunctionId` values
+    /// in frames are used to look up pre-compiled `Code` objects from the `Interns`.
+    /// The `module_code` is used for frames with `function_id = None`.
+    ///
+    /// # Arguments
+    /// * `snapshot` - The VM snapshot to restore
+    /// * `module_code` - Compiled module code (for frames with function_id = None)
+    /// * `heap` - The deserialized heap
+    /// * `namespaces` - The deserialized namespaces
+    /// * `interns` - Interns for looking up function code
+    /// * `print_writer` - Writer for print output
+    pub fn restore(
+        snapshot: VMSnapshot,
+        module_code: &'a Code,
+        heap: &'a mut Heap<T>,
+        namespaces: &'a mut Namespaces,
+        interns: &'a Interns,
+        print_writer: &'a mut P,
+    ) -> Self {
+        // Reconstruct call frames from serialized form
+        let frames = snapshot
+            .frames
+            .into_iter()
+            .map(|sf| {
+                let code = match sf.function_id {
+                    Some(func_id) => interns
+                        .get_function(func_id)
+                        .code
+                        .as_ref()
+                        .expect("function should be compiled"),
+                    None => module_code,
+                };
+                CallFrame {
+                    code,
+                    ip: sf.ip,
+                    stack_base: sf.stack_base,
+                    namespace_idx: sf.namespace_idx,
+                    function_id: sf.function_id,
+                    cells: sf.cells,
+                    call_position: sf.call_position,
+                }
+            })
+            .collect();
+
+        Self {
+            stack: snapshot.stack,
+            frames,
+            heap,
+            namespaces,
+            interns,
+            print_writer,
+            exception_stack: snapshot.exception_stack,
+            instruction_ip: snapshot.instruction_ip,
+        }
+    }
+
+    // ========================================================================
+    // Fetch Helpers
+    // ========================================================================
+
+    /// Fetches the next byte from current frame's bytecode and advances IP.
+    #[inline]
+    fn fetch_byte(&mut self) -> u8 {
+        let frame = self.current_frame_mut();
+        let byte = frame.code.bytecode()[frame.ip];
+        frame.ip += 1;
+        byte
+    }
+
+    /// Fetches and decodes the next opcode.
+    #[inline]
+    fn fetch_opcode(&mut self) -> Opcode {
+        let byte = self.fetch_byte();
+        Opcode::try_from(byte).expect("invalid opcode in bytecode")
+    }
+
+    /// Fetches a u8 operand.
+    #[inline]
+    fn fetch_u8(&mut self) -> u8 {
+        self.fetch_byte()
+    }
+
+    /// Fetches an i8 operand.
+    #[inline]
+    fn fetch_i8(&mut self) -> i8 {
+        self.fetch_byte() as i8
+    }
+
+    /// Fetches a u16 operand (little-endian).
+    #[inline]
+    pub(super) fn fetch_u16(&mut self) -> u16 {
+        let lo = self.fetch_byte();
+        let hi = self.fetch_byte();
+        u16::from_le_bytes([lo, hi])
+    }
+
+    /// Fetches an i16 operand (little-endian).
+    #[inline]
+    fn fetch_i16(&mut self) -> i16 {
+        let lo = self.fetch_byte();
+        let hi = self.fetch_byte();
+        i16::from_le_bytes([lo, hi])
+    }
+
+    // ========================================================================
+    // Stack Operations
+    // ========================================================================
+
+    /// Pushes a value onto the operand stack.
+    #[inline]
+    pub(super) fn push(&mut self, value: Value) {
+        self.stack.push(value);
+    }
+
+    /// Pops a value from the operand stack.
+    #[inline]
+    pub(super) fn pop(&mut self) -> Value {
+        self.stack.pop().expect("stack underflow")
+    }
+
+    /// Peeks at the top of the operand stack without removing it.
+    #[inline]
+    pub(super) fn peek(&self) -> &Value {
+        self.stack.last().expect("stack underflow")
+    }
+
+    /// Pops n values from the stack in reverse order (first popped is last in vec).
+    pub(super) fn pop_n(&mut self, n: usize) -> Vec<Value> {
+        let start = self.stack.len() - n;
+        self.stack.drain(start..).collect()
+    }
+
+    // ========================================================================
+    // Frame Operations
+    // ========================================================================
+
+    /// Returns a reference to the current (topmost) call frame.
+    #[inline]
+    pub(super) fn current_frame(&self) -> &CallFrame<'a> {
+        self.frames.last().expect("no active frame")
+    }
+
+    /// Returns a mutable reference to the current call frame.
+    #[inline]
+    pub(super) fn current_frame_mut(&mut self) -> &mut CallFrame<'a> {
+        self.frames.last_mut().expect("no active frame")
+    }
+
+    /// Pops the current frame from the call stack.
+    ///
+    /// Cleans up the frame's stack region and namespace (except for global namespace).
+    pub(super) fn pop_frame(&mut self) {
+        let frame = self.frames.pop().expect("no frame to pop");
+        // Clean up frame's stack region
+        while self.stack.len() > frame.stack_base {
+            let value = self.stack.pop().unwrap();
+            value.drop_with_heap(self.heap);
+        }
+        // Clean up the namespace (but not the global namespace)
+        if frame.namespace_idx != GLOBAL_NS_IDX {
+            self.namespaces.drop_with_heap(frame.namespace_idx, self.heap);
+        }
+    }
+
+    /// Applies a relative jump offset to the current frame's IP.
+    #[inline]
+    fn jump_relative(&mut self, offset: i16) {
+        let frame = self.current_frame_mut();
+        frame.ip = (frame.ip as isize + offset as isize) as usize;
+    }
+
+    // ========================================================================
+    // Variable Operations
+    // ========================================================================
+
+    /// Loads a local variable and pushes it onto the stack.
+    ///
+    /// Returns a NameError if the variable is undefined (never assigned).
+    fn load_local(&mut self, slot: u16) -> RunResult<()> {
+        let ns_idx = self.current_frame().namespace_idx;
+        let namespace = self.namespaces.get(ns_idx);
+        // Copy without incrementing refcount first (avoids borrow conflict)
+        let value = namespace.get(NamespaceId::new(slot as usize)).copy_for_extend();
+
+        // Check for undefined value - raise NameError if so
+        if matches!(value, Value::Undefined) {
+            let name = self.current_frame().code.local_name(slot);
+            return Err(self.name_error(slot, name));
+        }
+
+        // Now we can safely increment refcount and push
+        if let Value::Ref(id) = &value {
+            self.heap.inc_ref(*id);
+        }
+        self.push(value);
+        Ok(())
+    }
+
+    /// Creates a NameError for an undefined variable.
+    fn name_error(&self, slot: u16, name: Option<StringId>) -> RunError {
+        let name_str = match name {
+            Some(id) => self.interns.get_str(id).to_string(),
+            None => format!("<local {slot}>"),
+        };
+        ExcType::name_error(&name_str).into()
+    }
+
+    /// Pops the top of stack and stores it in a local variable.
+    fn store_local(&mut self, slot: u16) {
+        let value = self.pop();
+        let ns_idx = self.current_frame().namespace_idx;
+        let namespace = self.namespaces.get_mut(ns_idx);
+        let ns_slot = NamespaceId::new(slot as usize);
+        let old_value = std::mem::replace(namespace.get_mut(ns_slot), value);
+        old_value.drop_with_heap(self.heap);
+    }
+
+    /// Deletes a local variable (sets it to Undefined).
+    fn delete_local(&mut self, slot: u16) {
+        let ns_idx = self.current_frame().namespace_idx;
+        let namespace = self.namespaces.get_mut(ns_idx);
+        let ns_slot = NamespaceId::new(slot as usize);
+        let old_value = std::mem::replace(namespace.get_mut(ns_slot), Value::Undefined);
+        old_value.drop_with_heap(self.heap);
+    }
+
+    /// Loads a global variable and pushes it onto the stack.
+    ///
+    /// Returns a NameError if the variable is undefined.
+    fn load_global(&mut self, slot: u16) -> RunResult<()> {
+        let namespace = self.namespaces.get(GLOBAL_NS_IDX);
+        // Copy without incrementing refcount first (avoids borrow conflict)
+        let value = namespace.get(NamespaceId::new(slot as usize)).copy_for_extend();
+
+        // Check for undefined value - raise NameError if so
+        if matches!(value, Value::Undefined) {
+            // For globals, we'd need a global_names table too, but for now use a placeholder
+            let name = self.current_frame().code.local_name(slot);
+            return Err(self.name_error(slot, name));
+        }
+
+        // Now we can safely increment refcount and push
+        if let Value::Ref(id) = &value {
+            self.heap.inc_ref(*id);
+        }
+        self.push(value);
+        Ok(())
+    }
+
+    /// Pops the top of stack and stores it in a global variable.
+    fn store_global(&mut self, slot: u16) {
+        let value = self.pop();
+        let namespace = self.namespaces.get_mut(GLOBAL_NS_IDX);
+        let ns_slot = NamespaceId::new(slot as usize);
+        let old_value = std::mem::replace(namespace.get_mut(ns_slot), value);
+        old_value.drop_with_heap(self.heap);
+    }
+
+    /// Loads from a closure cell and pushes onto the stack.
+    ///
+    /// Returns a NameError if the cell value is undefined (free variable not bound).
+    fn load_cell(&mut self, slot: u16) -> RunResult<()> {
+        let cell_id = self.current_frame().cells[slot as usize];
+        // Copy without incrementing refcount first (avoids borrow conflict)
+        let value = self.heap.get_cell_value(cell_id).copy_for_extend();
+
+        // Check for undefined value - raise NameError for unbound free variable
+        if matches!(value, Value::Undefined) {
+            let name = self.current_frame().code.local_name(slot);
+            return Err(self.free_var_error(name));
+        }
+
+        // Now we can safely increment refcount and push
+        if let Value::Ref(id) = &value {
+            self.heap.inc_ref(*id);
+        }
+        self.push(value);
+        Ok(())
+    }
+
+    /// Creates a NameError for an unbound free variable.
+    fn free_var_error(&self, name: Option<StringId>) -> RunError {
+        let name_str = match name {
+            Some(id) => self.interns.get_str(id).to_string(),
+            None => "<free var>".to_string(),
+        };
+        ExcType::name_error_free_variable(&name_str).into()
+    }
+
+    /// Pops the top of stack and stores it in a closure cell.
+    fn store_cell(&mut self, slot: u16) {
+        let value = self.pop();
+        let cell_id = self.current_frame().cells[slot as usize];
+        self.heap.set_cell_value(cell_id, value);
+    }
+}
