@@ -82,11 +82,9 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// Modulo equality comparison: a % b == k
     ///
     /// This is an optimization for patterns like `x % 3 == 0`. The constant k
-    /// is stored in the constant pool and referenced by the u16 operand.
-    pub(super) fn compare_mod_eq(&mut self) -> Result<(), RunError> {
-        let const_idx = self.fetch_u16();
-        let k = self.current_frame().code.constants().get(const_idx);
-
+    /// is provided by the caller (fetched from the constant pool using the
+    /// cached code reference in the run loop).
+    pub(super) fn compare_mod_eq(&mut self, k: &Value) -> Result<(), RunError> {
         let rhs = self.pop(); // divisor (b)
         let lhs = self.pop(); // dividend (a)
 

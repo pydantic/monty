@@ -10,6 +10,8 @@ mod compare;
 mod exceptions;
 mod format;
 
+use std::cmp::Ordering;
+
 use call::CallResult;
 
 use crate::{
@@ -27,34 +29,121 @@ use crate::{
     value::{BitwiseOp, Value},
 };
 
-/// Tries an operation and handles any exception using the VM's exception handler.
+/// Tries an operation and handles exceptions, reloading cached frame state.
 ///
-/// If the operation returns an error, passes it to `handle_exception`. If the
-/// exception is caught by a Python handler, execution continues. Otherwise,
-/// returns the error from the enclosing function.
-///
-/// This macro is used throughout the VM dispatch loop to handle operations
-/// that may raise Python exceptions (e.g., `NameError`, `TypeError`).
-macro_rules! try_catch {
-    ($self:expr, $expr:expr) => {
+/// Use this in the main run loop where `cached_code` and `cached_ip`
+/// are used. After catching an exception, reloads the cache since the handler
+/// may be in a different frame.
+macro_rules! try_catch_sync {
+    ($self:expr, $ip:ident, $code:ident, $expr:expr) => {
         if let Err(e) = $expr {
-            catch!($self, e);
+            if let Some(result) = $self.handle_exception(e) {
+                return Err(result);
+            }
+            // Exception was caught - handler may be in different frame, reload cache
+            let frame = $self.frames.last().expect("no frame");
+            $code = frame.code;
+            $ip = frame.ip;
         }
     };
 }
 
-/// Handles an already-created exception using the VM's exception handler.
+/// Handles an exception and reloads cached frame state if caught.
 ///
-/// If the exception is caught by a Python handler, execution continues.
-/// Otherwise, returns the error from the enclosing function.
+/// Use this in the main run loop where `cached_code` and `cached_ip`
+/// are used. After catching an exception, reloads the cache since the handler
+/// may be in a different frame.
 ///
-/// Use this when you have an error value directly (not wrapped in `Result`).
-macro_rules! catch {
-    ($self:expr, $err:expr) => {
+/// Wrapped in a block to allow use in match arm expressions.
+macro_rules! catch_sync {
+    ($self:expr, $ip:ident, $code:ident, $err:expr) => {{
         if let Some(result) = $self.handle_exception($err) {
             return Err(result);
         }
+        // Exception was caught - handler may be in different frame, reload cache
+        let frame = $self.frames.last().expect("no frame");
+        $code = frame.code;
+        $ip = frame.ip;
+    }};
+}
+
+/// Fetches a byte from bytecode using cached code/ip, advancing ip.
+///
+/// Used in the run loop for fast operand fetching without frame access.
+macro_rules! fetch_byte {
+    ($code:expr, $ip:expr) => {{
+        let byte = $code.bytecode()[$ip];
+        $ip += 1;
+        byte
+    }};
+}
+
+/// Fetches a u8 operand using cached code/ip.
+macro_rules! fetch_u8 {
+    ($code:expr, $ip:expr) => {
+        fetch_byte!($code, $ip)
     };
+}
+
+/// Fetches an i8 operand using cached code/ip.
+macro_rules! fetch_i8 {
+    ($code:expr, $ip:expr) => {{
+        i8::from_ne_bytes([fetch_byte!($code, $ip)])
+    }};
+}
+
+/// Fetches a u16 operand (little-endian) using cached code/ip.
+macro_rules! fetch_u16 {
+    ($code:expr, $ip:expr) => {{
+        let lo = $code.bytecode()[$ip];
+        let hi = $code.bytecode()[$ip + 1];
+        $ip += 2;
+        u16::from_le_bytes([lo, hi])
+    }};
+}
+
+/// Fetches an i16 operand (little-endian) using cached code/ip.
+macro_rules! fetch_i16 {
+    ($code:expr, $ip:expr) => {{
+        let lo = $code.bytecode()[$ip];
+        let hi = $code.bytecode()[$ip + 1];
+        $ip += 2;
+        i16::from_le_bytes([lo, hi])
+    }};
+}
+
+/// Reloads cached frame state from the current frame.
+///
+/// Call this after any operation that modifies the frame stack (calls, returns,
+/// exception handling).
+macro_rules! reload_cache {
+    ($self:expr, $ip:ident, $code:ident) => {{
+        let frame = $self.frames.last().expect("no frame");
+        $code = frame.code;
+        $ip = frame.ip;
+    }};
+}
+
+/// Syncs the cached IP back to the current frame.
+///
+/// Call this before any operation that needs the frame's IP to be accurate
+/// (e.g., before pushing a new frame for function calls).
+macro_rules! sync_ip {
+    ($self:expr, $ip:expr) => {
+        $self.frames.last_mut().expect("no frame").ip = $ip;
+    };
+}
+
+/// Applies a relative jump offset to the cached IP.
+///
+/// Uses checked arithmetic to safely compute the new IP, panicking if the
+/// jump would result in a negative or overflowing instruction pointer.
+macro_rules! jump_relative {
+    ($ip:expr, $offset:expr) => {{
+        let ip_i64 = i64::try_from($ip).expect("instruction pointer exceeds i64");
+        let new_ip = ip_i64 + i64::from($offset);
+        $ip = usize::try_from(new_ip).expect("jump resulted in negative or overflowing IP");
+    }};
 }
 
 /// Result of VM execution.
@@ -296,18 +385,35 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// Fetches opcodes from the current frame's bytecode and executes them.
     /// Returns when execution completes, an error occurs, or an external
     /// call is needed.
+    ///
+    /// Uses locally cached `code` and `ip` variables to avoid repeated
+    /// `frames.last_mut().expect()` calls during operand fetching. The cache
+    /// is reloaded after any operation that modifies the frame stack.
     pub fn run(&mut self) -> Result<FrameExit, RunError> {
+        // Cache frame state locally to avoid repeated frames.last_mut() calls.
+        // The Code reference has lifetime 'a (lives in Interns), independent of frame borrow.
+        let mut cached_code: &Code = self.frames.last().expect("no frame").code;
+        let mut cached_ip: usize = self.frames.last().expect("no frame").ip;
+
         loop {
             // Check time limit and trigger GC if needed at each instruction.
             // For NoLimitTracker, these are inlined no-ops that compile away.
             self.heap.tracker_mut().check_time()?;
             if self.heap.tracker().should_gc() {
+                // Sync IP before GC for safety
+                sync_ip!(self, cached_ip);
                 self.run_gc();
             }
 
             // Track instruction IP for exception table lookup
-            self.instruction_ip = self.current_frame().ip;
-            let opcode = self.fetch_opcode();
+            self.instruction_ip = cached_ip;
+
+            // Fetch opcode using cached values (no frame access)
+            let opcode = {
+                let byte = cached_code.bytecode()[cached_ip];
+                cached_ip += 1;
+                Opcode::try_from(byte).expect("invalid opcode in bytecode")
+            };
 
             match opcode {
                 // ============================================================
@@ -341,9 +447,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 }
                 // Constants & Literals
                 Opcode::LoadConst => {
-                    let idx = self.fetch_u16();
+                    let idx = fetch_u16!(cached_code, cached_ip);
                     // Copy without incrementing refcount first (avoids borrow conflict)
-                    let value = self.current_frame().code.constants().get(idx).copy_for_extend();
+                    let value = cached_code.constants().get(idx).copy_for_extend();
                     // Now we can safely increment refcount and push
                     if let Value::Ref(id) = &value {
                         self.heap.inc_ref(*id);
@@ -354,80 +460,88 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::LoadTrue => self.push(Value::Bool(true)),
                 Opcode::LoadFalse => self.push(Value::Bool(false)),
                 Opcode::LoadSmallInt => {
-                    let n = self.fetch_i8();
+                    let n = fetch_i8!(cached_code, cached_ip);
                     self.push(Value::Int(i64::from(n)));
                 }
                 // Variables - Specialized Local Loads (no operand)
-                Opcode::LoadLocal0 => try_catch!(self, self.load_local(0)),
-                Opcode::LoadLocal1 => try_catch!(self, self.load_local(1)),
-                Opcode::LoadLocal2 => try_catch!(self, self.load_local(2)),
-                Opcode::LoadLocal3 => try_catch!(self, self.load_local(3)),
+                Opcode::LoadLocal0 => try_catch_sync!(self, cached_ip, cached_code, self.load_local(0)),
+                Opcode::LoadLocal1 => try_catch_sync!(self, cached_ip, cached_code, self.load_local(1)),
+                Opcode::LoadLocal2 => try_catch_sync!(self, cached_ip, cached_code, self.load_local(2)),
+                Opcode::LoadLocal3 => try_catch_sync!(self, cached_ip, cached_code, self.load_local(3)),
                 // Variables - General Local Operations
                 Opcode::LoadLocal => {
-                    let slot = u16::from(self.fetch_u8());
-                    try_catch!(self, self.load_local(slot));
+                    let slot = u16::from(fetch_u8!(cached_code, cached_ip));
+                    try_catch_sync!(self, cached_ip, cached_code, self.load_local(slot));
                 }
                 Opcode::LoadLocalW => {
-                    let slot = self.fetch_u16();
-                    try_catch!(self, self.load_local(slot));
+                    let slot = fetch_u16!(cached_code, cached_ip);
+                    try_catch_sync!(self, cached_ip, cached_code, self.load_local(slot));
                 }
                 Opcode::StoreLocal => {
-                    let slot = u16::from(self.fetch_u8());
+                    let slot = u16::from(fetch_u8!(cached_code, cached_ip));
                     self.store_local(slot);
                 }
                 Opcode::StoreLocalW => {
-                    let slot = self.fetch_u16();
+                    let slot = fetch_u16!(cached_code, cached_ip);
                     self.store_local(slot);
                 }
                 Opcode::DeleteLocal => {
-                    let slot = u16::from(self.fetch_u8());
+                    let slot = u16::from(fetch_u8!(cached_code, cached_ip));
                     self.delete_local(slot);
                 }
                 // Variables - Global Operations
                 Opcode::LoadGlobal => {
-                    let slot = self.fetch_u16();
-                    try_catch!(self, self.load_global(slot));
+                    let slot = fetch_u16!(cached_code, cached_ip);
+                    try_catch_sync!(self, cached_ip, cached_code, self.load_global(slot));
                 }
                 Opcode::StoreGlobal => {
-                    let slot = self.fetch_u16();
+                    let slot = fetch_u16!(cached_code, cached_ip);
                     self.store_global(slot);
                 }
                 // Variables - Cell Operations (closures)
                 Opcode::LoadCell => {
-                    let slot = self.fetch_u16();
-                    try_catch!(self, self.load_cell(slot));
+                    let slot = fetch_u16!(cached_code, cached_ip);
+                    try_catch_sync!(self, cached_ip, cached_code, self.load_cell(slot));
                 }
                 Opcode::StoreCell => {
-                    let slot = self.fetch_u16();
+                    let slot = fetch_u16!(cached_code, cached_ip);
                     self.store_cell(slot);
                 }
                 // Binary Operations - route through exception handling for tracebacks
-                Opcode::BinaryAdd => try_catch!(self, self.binary_add()),
-                Opcode::BinarySub => try_catch!(self, self.binary_sub()),
-                Opcode::BinaryMul => try_catch!(self, self.binary_mult()),
-                Opcode::BinaryDiv => try_catch!(self, self.binary_div()),
-                Opcode::BinaryFloorDiv => try_catch!(self, self.binary_floordiv()),
-                Opcode::BinaryMod => try_catch!(self, self.binary_mod()),
-                Opcode::BinaryPow => try_catch!(self, self.binary_pow()),
+                Opcode::BinaryAdd => try_catch_sync!(self, cached_ip, cached_code, self.binary_add()),
+                Opcode::BinarySub => try_catch_sync!(self, cached_ip, cached_code, self.binary_sub()),
+                Opcode::BinaryMul => try_catch_sync!(self, cached_ip, cached_code, self.binary_mult()),
+                Opcode::BinaryDiv => try_catch_sync!(self, cached_ip, cached_code, self.binary_div()),
+                Opcode::BinaryFloorDiv => try_catch_sync!(self, cached_ip, cached_code, self.binary_floordiv()),
+                Opcode::BinaryMod => try_catch_sync!(self, cached_ip, cached_code, self.binary_mod()),
+                Opcode::BinaryPow => try_catch_sync!(self, cached_ip, cached_code, self.binary_pow()),
                 // Bitwise operations - only work on integers
-                Opcode::BinaryAnd => try_catch!(self, self.binary_bitwise(BitwiseOp::And)),
-                Opcode::BinaryOr => try_catch!(self, self.binary_bitwise(BitwiseOp::Or)),
-                Opcode::BinaryXor => try_catch!(self, self.binary_bitwise(BitwiseOp::Xor)),
-                Opcode::BinaryLShift => try_catch!(self, self.binary_bitwise(BitwiseOp::LShift)),
-                Opcode::BinaryRShift => try_catch!(self, self.binary_bitwise(BitwiseOp::RShift)),
+                Opcode::BinaryAnd => try_catch_sync!(self, cached_ip, cached_code, self.binary_bitwise(BitwiseOp::And)),
+                Opcode::BinaryOr => try_catch_sync!(self, cached_ip, cached_code, self.binary_bitwise(BitwiseOp::Or)),
+                Opcode::BinaryXor => try_catch_sync!(self, cached_ip, cached_code, self.binary_bitwise(BitwiseOp::Xor)),
+                Opcode::BinaryLShift => {
+                    try_catch_sync!(self, cached_ip, cached_code, self.binary_bitwise(BitwiseOp::LShift));
+                }
+                Opcode::BinaryRShift => {
+                    try_catch_sync!(self, cached_ip, cached_code, self.binary_bitwise(BitwiseOp::RShift));
+                }
                 Opcode::BinaryMatMul => todo!("BinaryMatMul not implemented"),
                 // Comparison Operations
                 Opcode::CompareEq => self.compare_eq(),
                 Opcode::CompareNe => self.compare_ne(),
-                Opcode::CompareLt => self.compare_ord(std::cmp::Ordering::is_lt),
-                Opcode::CompareLe => self.compare_ord(std::cmp::Ordering::is_le),
-                Opcode::CompareGt => self.compare_ord(std::cmp::Ordering::is_gt),
-                Opcode::CompareGe => self.compare_ord(std::cmp::Ordering::is_ge),
+                Opcode::CompareLt => self.compare_ord(Ordering::is_lt),
+                Opcode::CompareLe => self.compare_ord(Ordering::is_le),
+                Opcode::CompareGt => self.compare_ord(Ordering::is_gt),
+                Opcode::CompareGe => self.compare_ord(Ordering::is_ge),
                 Opcode::CompareIs => self.compare_is(false),
                 Opcode::CompareIsNot => self.compare_is(true),
-                Opcode::CompareIn => try_catch!(self, self.compare_in(false)),
-                Opcode::CompareNotIn => try_catch!(self, self.compare_in(true)),
-                Opcode::CompareModEq => try_catch!(self, self.compare_mod_eq()),
+                Opcode::CompareIn => try_catch_sync!(self, cached_ip, cached_code, self.compare_in(false)),
+                Opcode::CompareNotIn => try_catch_sync!(self, cached_ip, cached_code, self.compare_in(true)),
+                Opcode::CompareModEq => {
+                    let const_idx = fetch_u16!(cached_code, cached_ip);
+                    let k = cached_code.constants().get(const_idx);
+                    try_catch_sync!(self, cached_ip, cached_code, self.compare_mod_eq(k));
+                }
                 // Unary Operations
                 Opcode::UnaryNot => {
                     let value = self.pop();
@@ -449,7 +563,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     if let Some(v) = result {
                         self.push(v);
                     } else {
-                        catch!(self, ExcType::unary_type_error("-", value_type));
+                        catch_sync!(self, cached_ip, cached_code, ExcType::unary_type_error("-", value_type));
                     }
                 }
                 Opcode::UnaryPos => {
@@ -464,7 +578,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     if let Some(v) = result {
                         self.push(v);
                     } else {
-                        catch!(self, ExcType::unary_type_error("+", value_type));
+                        catch_sync!(self, cached_ip, cached_code, ExcType::unary_type_error("+", value_type));
                     }
                 }
                 Opcode::UnaryInvert => {
@@ -480,57 +594,65 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     if let Some(v) = result {
                         self.push(v);
                     } else {
-                        catch!(self, ExcType::unary_type_error("~", value_type));
+                        catch_sync!(self, cached_ip, cached_code, ExcType::unary_type_error("~", value_type));
                     }
                 }
                 // In-place Operations - route through exception handling
-                Opcode::InplaceAdd => try_catch!(self, self.inplace_add()),
+                Opcode::InplaceAdd => try_catch_sync!(self, cached_ip, cached_code, self.inplace_add()),
                 // Other in-place ops use the same logic as binary ops for now
-                Opcode::InplaceSub => try_catch!(self, self.binary_sub()),
-                Opcode::InplaceMul => try_catch!(self, self.binary_mult()),
-                Opcode::InplaceDiv => try_catch!(self, self.binary_div()),
-                Opcode::InplaceFloorDiv => try_catch!(self, self.binary_floordiv()),
-                Opcode::InplaceMod => try_catch!(self, self.binary_mod()),
-                Opcode::InplacePow => try_catch!(self, self.binary_pow()),
-                Opcode::InplaceAnd => try_catch!(self, self.binary_bitwise(BitwiseOp::And)),
-                Opcode::InplaceOr => try_catch!(self, self.binary_bitwise(BitwiseOp::Or)),
-                Opcode::InplaceXor => try_catch!(self, self.binary_bitwise(BitwiseOp::Xor)),
-                Opcode::InplaceLShift => try_catch!(self, self.binary_bitwise(BitwiseOp::LShift)),
-                Opcode::InplaceRShift => try_catch!(self, self.binary_bitwise(BitwiseOp::RShift)),
+                Opcode::InplaceSub => try_catch_sync!(self, cached_ip, cached_code, self.binary_sub()),
+                Opcode::InplaceMul => try_catch_sync!(self, cached_ip, cached_code, self.binary_mult()),
+                Opcode::InplaceDiv => try_catch_sync!(self, cached_ip, cached_code, self.binary_div()),
+                Opcode::InplaceFloorDiv => try_catch_sync!(self, cached_ip, cached_code, self.binary_floordiv()),
+                Opcode::InplaceMod => try_catch_sync!(self, cached_ip, cached_code, self.binary_mod()),
+                Opcode::InplacePow => try_catch_sync!(self, cached_ip, cached_code, self.binary_pow()),
+                Opcode::InplaceAnd => {
+                    try_catch_sync!(self, cached_ip, cached_code, self.binary_bitwise(BitwiseOp::And));
+                }
+                Opcode::InplaceOr => try_catch_sync!(self, cached_ip, cached_code, self.binary_bitwise(BitwiseOp::Or)),
+                Opcode::InplaceXor => {
+                    try_catch_sync!(self, cached_ip, cached_code, self.binary_bitwise(BitwiseOp::Xor));
+                }
+                Opcode::InplaceLShift => {
+                    try_catch_sync!(self, cached_ip, cached_code, self.binary_bitwise(BitwiseOp::LShift));
+                }
+                Opcode::InplaceRShift => {
+                    try_catch_sync!(self, cached_ip, cached_code, self.binary_bitwise(BitwiseOp::RShift));
+                }
                 // Collection Building - route through exception handling
                 Opcode::BuildList => {
-                    let count = usize::from(self.fetch_u16());
-                    try_catch!(self, self.build_list(count));
+                    let count = usize::from(fetch_u16!(cached_code, cached_ip));
+                    try_catch_sync!(self, cached_ip, cached_code, self.build_list(count));
                 }
                 Opcode::BuildTuple => {
-                    let count = usize::from(self.fetch_u16());
-                    try_catch!(self, self.build_tuple(count));
+                    let count = usize::from(fetch_u16!(cached_code, cached_ip));
+                    try_catch_sync!(self, cached_ip, cached_code, self.build_tuple(count));
                 }
                 Opcode::BuildDict => {
-                    let count = usize::from(self.fetch_u16());
-                    try_catch!(self, self.build_dict(count));
+                    let count = usize::from(fetch_u16!(cached_code, cached_ip));
+                    try_catch_sync!(self, cached_ip, cached_code, self.build_dict(count));
                 }
                 Opcode::BuildSet => {
-                    let count = usize::from(self.fetch_u16());
-                    try_catch!(self, self.build_set(count));
+                    let count = usize::from(fetch_u16!(cached_code, cached_ip));
+                    try_catch_sync!(self, cached_ip, cached_code, self.build_set(count));
                 }
                 Opcode::FormatValue => {
-                    let flags = self.fetch_u8();
-                    try_catch!(self, self.format_value(flags));
+                    let flags = fetch_u8!(cached_code, cached_ip);
+                    try_catch_sync!(self, cached_ip, cached_code, self.format_value(flags));
                 }
                 Opcode::BuildFString => {
-                    let count = usize::from(self.fetch_u16());
-                    try_catch!(self, self.build_fstring(count));
+                    let count = usize::from(fetch_u16!(cached_code, cached_ip));
+                    try_catch_sync!(self, cached_ip, cached_code, self.build_fstring(count));
                 }
                 Opcode::ListExtend => {
-                    try_catch!(self, self.list_extend());
+                    try_catch_sync!(self, cached_ip, cached_code, self.list_extend());
                 }
                 Opcode::ListToTuple => {
-                    try_catch!(self, self.list_to_tuple());
+                    try_catch_sync!(self, cached_ip, cached_code, self.list_to_tuple());
                 }
                 Opcode::DictMerge => {
-                    let func_name_id = self.fetch_u16();
-                    try_catch!(self, self.dict_merge(func_name_id));
+                    let func_name_id = fetch_u16!(cached_code, cached_ip);
+                    try_catch_sync!(self, cached_ip, cached_code, self.dict_merge(func_name_id));
                 }
                 // Subscript & Attribute - route through exception handling
                 Opcode::BinarySubscr => {
@@ -541,7 +663,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     index.drop_with_heap(self.heap);
                     match result {
                         Ok(v) => self.push(v),
-                        Err(e) => catch!(self, e),
+                        Err(e) => catch_sync!(self, cached_ip, cached_code, e),
                     }
                 }
                 Opcode::StoreSubscr => {
@@ -562,55 +684,55 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     todo!("DeleteSubscr: py_delitem not yet implemented")
                 }
                 Opcode::LoadAttr => {
-                    let name_idx = self.fetch_u16();
+                    let name_idx = fetch_u16!(cached_code, cached_ip);
                     let name_id = StringId::from_index(name_idx);
-                    try_catch!(self, self.load_attr(name_id));
+                    try_catch_sync!(self, cached_ip, cached_code, self.load_attr(name_id));
                 }
                 Opcode::StoreAttr => {
-                    let name_idx = self.fetch_u16();
+                    let name_idx = fetch_u16!(cached_code, cached_ip);
                     let name_id = StringId::from_index(name_idx);
-                    try_catch!(self, self.store_attr(name_id));
+                    try_catch_sync!(self, cached_ip, cached_code, self.store_attr(name_id));
                 }
                 Opcode::DeleteAttr => {
                     todo!("DeleteAttr not implemented")
                 }
-                // Control Flow
+                // Control Flow - use cached_ip directly for jumps
                 Opcode::Jump => {
-                    let offset = self.fetch_i16();
-                    self.jump_relative(offset);
+                    let offset = fetch_i16!(cached_code, cached_ip);
+                    jump_relative!(cached_ip, offset);
                 }
                 Opcode::JumpIfTrue => {
-                    let offset = self.fetch_i16();
+                    let offset = fetch_i16!(cached_code, cached_ip);
                     let cond = self.pop();
                     if cond.py_bool(self.heap, self.interns) {
-                        self.jump_relative(offset);
+                        jump_relative!(cached_ip, offset);
                     }
                     cond.drop_with_heap(self.heap);
                 }
                 Opcode::JumpIfFalse => {
-                    let offset = self.fetch_i16();
+                    let offset = fetch_i16!(cached_code, cached_ip);
                     let cond = self.pop();
                     if !cond.py_bool(self.heap, self.interns) {
-                        self.jump_relative(offset);
+                        jump_relative!(cached_ip, offset);
                     }
                     cond.drop_with_heap(self.heap);
                 }
                 Opcode::JumpIfTrueOrPop => {
-                    let offset = self.fetch_i16();
+                    let offset = fetch_i16!(cached_code, cached_ip);
                     if self.peek().py_bool(self.heap, self.interns) {
-                        self.jump_relative(offset);
+                        jump_relative!(cached_ip, offset);
                     } else {
                         let value = self.pop();
                         value.drop_with_heap(self.heap);
                     }
                 }
                 Opcode::JumpIfFalseOrPop => {
-                    let offset = self.fetch_i16();
+                    let offset = fetch_i16!(cached_code, cached_ip);
                     if self.peek().py_bool(self.heap, self.interns) {
                         let value = self.pop();
                         value.drop_with_heap(self.heap);
                     } else {
-                        self.jump_relative(offset);
+                        jump_relative!(cached_ip, offset);
                     }
                 }
                 // Iteration - route through exception handling
@@ -620,13 +742,13 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     match ForIterator::new(value, self.heap, self.interns) {
                         Ok(iter) => match self.heap.allocate(HeapData::Iterator(iter)) {
                             Ok(heap_id) => self.push(Value::Ref(heap_id)),
-                            Err(e) => catch!(self, e.into()),
+                            Err(e) => catch_sync!(self, cached_ip, cached_code, e.into()),
                         },
-                        Err(e) => catch!(self, e),
+                        Err(e) => catch_sync!(self, cached_ip, cached_code, e),
                     }
                 }
                 Opcode::ForIter => {
-                    let offset = self.fetch_i16();
+                    let offset = fetch_i16!(cached_code, cached_ip);
                     // Peek at the iterator on TOS and extract heap_id
                     let Value::Ref(heap_id) = *self.peek() else {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
@@ -640,19 +762,22 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                             // Iterator exhausted - pop it and jump to end
                             let iter = self.pop();
                             iter.drop_with_heap(self.heap);
-                            self.jump_relative(offset);
+                            jump_relative!(cached_ip, offset);
                         }
                         Err(e) => {
                             // Error during iteration (e.g., dict size changed)
                             let iter = self.pop();
                             iter.drop_with_heap(self.heap);
-                            catch!(self, e);
+                            catch_sync!(self, cached_ip, cached_code, e);
                         }
                     }
                 }
-                // Function Calls
+                // Function Calls - sync IP before call, reload cache after frame changes
                 Opcode::CallFunction => {
-                    let arg_count = usize::from(self.fetch_u8());
+                    let arg_count = usize::from(fetch_u8!(cached_code, cached_ip));
+
+                    // Sync IP before call (call_function may access frame for traceback)
+                    sync_ip!(self, cached_ip);
 
                     // Pop arguments in reverse order (TOS is last arg)
                     let args = self.pop_n_args(arg_count);
@@ -663,26 +788,39 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Call the function and handle the result
                     match self.call_function(callable, args) {
                         Ok(CallResult::Builtin(result)) => self.push(result),
-                        Ok(CallResult::UserFunction) => {} // Frame pushed, continue in VM loop
+                        Ok(CallResult::UserFunction) => {
+                            // Frame pushed - reload cache from new frame
+                            reload_cache!(self, cached_ip, cached_code);
+                        }
                         Ok(CallResult::ExternalCall(ext_id, ext_args)) => {
                             return Ok(FrameExit::ExternalCall {
                                 ext_function_id: ext_id,
                                 args: ext_args,
                             });
                         }
-                        Err(err) => catch!(self, err),
+                        Err(err) => {
+                            // IP already synced above
+                            if let Some(result) = self.handle_exception(err) {
+                                return Err(result);
+                            }
+                            // Exception caught - reload cache
+                            reload_cache!(self, cached_ip, cached_code);
+                        }
                     }
                 }
                 Opcode::CallFunctionKw => {
                     // Fetch operands: pos_count, kw_count, then kw_count name indices
-                    let pos_count = usize::from(self.fetch_u8());
-                    let kw_count = usize::from(self.fetch_u8());
+                    let pos_count = usize::from(fetch_u8!(cached_code, cached_ip));
+                    let kw_count = usize::from(fetch_u8!(cached_code, cached_ip));
 
                     // Read keyword name StringIds
                     let mut kwname_ids = Vec::with_capacity(kw_count);
                     for _ in 0..kw_count {
-                        kwname_ids.push(StringId::from_index(self.fetch_u16()));
+                        kwname_ids.push(StringId::from_index(fetch_u16!(cached_code, cached_ip)));
                     }
+
+                    // Sync IP before call (call_function may access frame for traceback)
+                    sync_ip!(self, cached_ip);
 
                     // Pop keyword values (TOS is last kwarg value)
                     let kw_values = self.pop_n(kw_count);
@@ -711,22 +849,35 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Call the function and handle the result
                     match self.call_function(callable, args) {
                         Ok(CallResult::Builtin(result)) => self.push(result),
-                        Ok(CallResult::UserFunction) => {} // Frame pushed, continue
+                        Ok(CallResult::UserFunction) => {
+                            // Frame pushed - reload cache from new frame
+                            reload_cache!(self, cached_ip, cached_code);
+                        }
                         Ok(CallResult::ExternalCall(ext_id, ext_args)) => {
                             return Ok(FrameExit::ExternalCall {
                                 ext_function_id: ext_id,
                                 args: ext_args,
                             });
                         }
-                        Err(err) => catch!(self, err),
+                        Err(err) => {
+                            // IP already synced above
+                            if let Some(result) = self.handle_exception(err) {
+                                return Err(result);
+                            }
+                            // Exception caught - reload cache
+                            reload_cache!(self, cached_ip, cached_code);
+                        }
                     }
                 }
                 Opcode::CallMethod => {
                     // CallMethod: u16 name_id, u8 arg_count
                     // Stack: [obj, arg1, arg2, ..., argN] -> [result]
-                    let name_idx = self.fetch_u16();
-                    let arg_count = usize::from(self.fetch_u8());
+                    let name_idx = fetch_u16!(cached_code, cached_ip);
+                    let arg_count = usize::from(fetch_u8!(cached_code, cached_ip));
                     let name_id = StringId::from_index(name_idx);
+
+                    // Sync IP before call (call_method may access frame for traceback)
+                    sync_ip!(self, cached_ip);
 
                     // Pop arguments in reverse order (TOS is last arg)
                     let args = self.pop_n_args(arg_count);
@@ -737,15 +888,18 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Call the method on the object
                     match self.call_method(obj, name_id, args) {
                         Ok(result) => self.push(result),
-                        Err(err) => catch!(self, err),
+                        Err(err) => catch_sync!(self, cached_ip, cached_code, err),
                     }
                 }
                 Opcode::CallExternal => {
                     todo!("CallExternal")
                 }
                 Opcode::CallFunctionEx => {
-                    let flags = self.fetch_u8();
+                    let flags = fetch_u8!(cached_code, cached_ip);
                     let has_kwargs = (flags & 0x01) != 0;
+
+                    // Sync IP before call
+                    sync_ip!(self, cached_ip);
 
                     // Pop kwargs dict if present
                     let kwargs = if has_kwargs { Some(self.pop()) } else { None };
@@ -759,20 +913,30 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Call the function with unpacked args
                     match self.call_function_ex(callable, args_tuple, kwargs) {
                         Ok(CallResult::Builtin(result)) => self.push(result),
-                        Ok(CallResult::UserFunction) => {} // Frame pushed, continue
+                        Ok(CallResult::UserFunction) => {
+                            // Frame pushed - reload cache from new frame
+                            reload_cache!(self, cached_ip, cached_code);
+                        }
                         Ok(CallResult::ExternalCall(ext_id, ext_args)) => {
                             return Ok(FrameExit::ExternalCall {
                                 ext_function_id: ext_id,
                                 args: ext_args,
                             });
                         }
-                        Err(err) => catch!(self, err),
+                        Err(err) => {
+                            // IP already synced above
+                            if let Some(result) = self.handle_exception(err) {
+                                return Err(result);
+                            }
+                            // Exception caught - reload cache
+                            reload_cache!(self, cached_ip, cached_code);
+                        }
                     }
                 }
                 // Function Definition
                 Opcode::MakeFunction => {
-                    let func_idx = self.fetch_u16();
-                    let defaults_count = usize::from(self.fetch_u8());
+                    let func_idx = fetch_u16!(cached_code, cached_ip);
+                    let defaults_count = usize::from(fetch_u8!(cached_code, cached_ip));
                     let func_id = FunctionId::from_index(func_idx);
 
                     if defaults_count == 0 {
@@ -788,9 +952,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     }
                 }
                 Opcode::MakeClosure => {
-                    let func_idx = self.fetch_u16();
-                    let defaults_count = usize::from(self.fetch_u8());
-                    let cell_count = usize::from(self.fetch_u8());
+                    let func_idx = fetch_u16!(cached_code, cached_ip);
+                    let defaults_count = usize::from(fetch_u8!(cached_code, cached_ip));
+                    let cell_count = usize::from(fetch_u8!(cached_code, cached_ip));
                     let func_id = FunctionId::from_index(func_idx);
 
                     // Pop cells from stack (pushed after defaults, so on top)
@@ -829,7 +993,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::Raise => {
                     let exc = self.pop();
                     let error = self.make_exception(exc, true); // is_raise=true, hide caret
-                    catch!(self, error);
+                    catch_sync!(self, cached_ip, cached_code, error);
                 }
                 Opcode::RaiseFrom => {
                     todo!("RaiseFrom")
@@ -847,7 +1011,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         )
                         .into()
                     };
-                    catch!(self, error);
+                    catch_sync!(self, cached_ip, cached_code, error);
                 }
                 Opcode::ClearException => {
                     // Pop the current exception from the stack
@@ -865,7 +1029,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let result = result?;
                     self.push(Value::Bool(result));
                 }
-                // Return
+                // Return - reload cache after popping frame
                 Opcode::ReturnValue => {
                     let value = self.pop();
                     if self.frames.len() == 1 {
@@ -875,11 +1039,13 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Pop current frame and push return value
                     self.pop_frame();
                     self.push(value);
+                    // Reload cache from parent frame
+                    reload_cache!(self, cached_ip, cached_code);
                 }
                 // Unpacking - route through exception handling
                 Opcode::UnpackSequence => {
-                    let count = usize::from(self.fetch_u8());
-                    try_catch!(self, self.unpack_sequence(count));
+                    let count = usize::from(fetch_u8!(cached_code, cached_ip));
+                    try_catch_sync!(self, cached_ip, cached_code, self.unpack_sequence(count));
                 }
                 Opcode::UnpackEx => {
                     todo!("UnpackEx not implemented")
@@ -988,55 +1154,6 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     }
 
     // ========================================================================
-    // Fetch Helpers
-    // ========================================================================
-
-    /// Fetches the next byte from current frame's bytecode and advances IP.
-    #[inline]
-    fn fetch_byte(&mut self) -> u8 {
-        let frame = self.current_frame_mut();
-        let byte = frame.code.bytecode()[frame.ip];
-        frame.ip += 1;
-        byte
-    }
-
-    /// Fetches and decodes the next opcode.
-    #[inline]
-    fn fetch_opcode(&mut self) -> Opcode {
-        let byte = self.fetch_byte();
-        Opcode::try_from(byte).expect("invalid opcode in bytecode")
-    }
-
-    /// Fetches a u8 operand.
-    #[inline]
-    fn fetch_u8(&mut self) -> u8 {
-        self.fetch_byte()
-    }
-
-    /// Fetches an i8 operand.
-    #[inline]
-    fn fetch_i8(&mut self) -> i8 {
-        // Reinterpret u8 as i8 for signed bytecode operand
-        i8::from_ne_bytes([self.fetch_byte()])
-    }
-
-    /// Fetches a u16 operand (little-endian).
-    #[inline]
-    pub(super) fn fetch_u16(&mut self) -> u16 {
-        let lo = self.fetch_byte();
-        let hi = self.fetch_byte();
-        u16::from_le_bytes([lo, hi])
-    }
-
-    /// Fetches an i16 operand (little-endian).
-    #[inline]
-    fn fetch_i16(&mut self) -> i16 {
-        let lo = self.fetch_byte();
-        let hi = self.fetch_byte();
-        i16::from_le_bytes([lo, hi])
-    }
-
-    // ========================================================================
     // Stack Operations
     // ========================================================================
 
@@ -1096,16 +1213,6 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         }
     }
 
-    /// Applies a relative jump offset to the current frame's IP.
-    #[inline]
-    fn jump_relative(&mut self, offset: i16) {
-        let frame = self.current_frame_mut();
-        // Safely compute new IP: convert ip to i64, add offset, then convert back
-        let ip_i64 = i64::try_from(frame.ip).expect("instruction pointer exceeds i64");
-        let new_ip = ip_i64 + i64::from(offset);
-        frame.ip = usize::try_from(new_ip).expect("jump resulted in negative or overflowing IP");
-    }
-
     /// Runs garbage collection with proper GC roots.
     ///
     /// GC roots include values in namespaces, the operand stack, and exception stack.
@@ -1122,14 +1229,16 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     }
 
     /// Returns the current source position for traceback generation.
+    ///
+    /// Uses `instruction_ip` which is set at the start of each instruction in the run loop,
+    /// ensuring accurate position tracking even when using cached IP for bytecode fetching.
     pub(super) fn current_position(&self) -> CodeRange {
         let frame = self.current_frame();
-        // Get the position from the current instruction (IP points to next instruction)
-        // Look up in location table
-        let ip = frame.ip.saturating_sub(1);
+        // Use instruction_ip which points to the start of the current instruction
+        // (set at the beginning of each loop iteration in run())
         frame
             .code
-            .location_for_offset(ip)
+            .location_for_offset(self.instruction_ip)
             .map(crate::bytecode::code::LocationEntry::range)
             .unwrap_or_default()
     }
