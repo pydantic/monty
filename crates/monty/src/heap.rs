@@ -1280,7 +1280,7 @@ impl<T: ResourceTracker> Heap<T> {
             // Add children to work list
             if let Some(Some(entry)) = self.entries.get(idx) {
                 if let Some(ref data) = entry.data {
-                    self.collect_child_ids(data, &mut work_list);
+                    collect_child_ids(data, &mut work_list);
                 }
             }
         }
@@ -1311,93 +1311,93 @@ impl<T: ResourceTracker> Heap<T> {
         // Notify tracker that GC is complete
         self.tracker.on_gc_complete();
     }
+}
 
-    /// Collects child HeapIds from a HeapData value for GC traversal.
-    fn collect_child_ids(&self, data: &HeapData, work_list: &mut Vec<HeapId>) {
-        match data {
-            // Leaf types with no heap references
-            HeapData::Str(_) | HeapData::Bytes(_) | HeapData::Range(_) | HeapData::Exception(_) => {}
-            HeapData::List(list) => {
-                for value in list.as_vec() {
-                    if let Value::Ref(id) = value {
-                        work_list.push(*id);
-                    }
-                }
-            }
-            HeapData::Tuple(tuple) => {
-                for value in tuple.as_vec() {
-                    if let Value::Ref(id) = value {
-                        work_list.push(*id);
-                    }
-                }
-            }
-            HeapData::Dict(dict) => {
-                // Iterate through all entries to collect heap references
-                for (k, v) in dict {
-                    if let Value::Ref(id) = k {
-                        work_list.push(*id);
-                    }
-                    if let Value::Ref(id) = v {
-                        work_list.push(*id);
-                    }
-                }
-            }
-            HeapData::Set(set) => {
-                for value in set.storage().iter() {
-                    if let Value::Ref(id) = value {
-                        work_list.push(*id);
-                    }
-                }
-            }
-            HeapData::FrozenSet(frozenset) => {
-                for value in frozenset.storage().iter() {
-                    if let Value::Ref(id) = value {
-                        work_list.push(*id);
-                    }
-                }
-            }
-            HeapData::Closure(_, cells, defaults) => {
-                // Add captured cells to work list
-                for cell_id in cells {
-                    work_list.push(*cell_id);
-                }
-                // Add default values that are heap references
-                for default in defaults {
-                    if let Value::Ref(id) = default {
-                        work_list.push(*id);
-                    }
-                }
-            }
-            HeapData::FunctionDefaults(_, defaults) => {
-                // Add default values that are heap references
-                for default in defaults {
-                    if let Value::Ref(id) = default {
-                        work_list.push(*id);
-                    }
-                }
-            }
-            HeapData::Cell(value) => {
-                // Cell can contain a reference to another heap value
+/// Collects child HeapIds from a HeapData value for GC traversal.
+fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
+    match data {
+        // Leaf types with no heap references
+        HeapData::Str(_) | HeapData::Bytes(_) | HeapData::Range(_) | HeapData::Exception(_) => {}
+        HeapData::List(list) => {
+            for value in list.as_vec() {
                 if let Value::Ref(id) = value {
                     work_list.push(*id);
                 }
             }
-            HeapData::Dataclass(dc) => {
-                // Dataclass attrs are stored in a Dict - iterate through entries
-                for (k, v) in dc.attrs() {
-                    if let Value::Ref(id) = k {
-                        work_list.push(*id);
-                    }
-                    if let Value::Ref(id) = v {
-                        work_list.push(*id);
-                    }
-                }
-            }
-            HeapData::Iterator(iter) => {
-                // Iterator holds a reference to the iterable being iterated
-                if let Value::Ref(id) = iter.value() {
+        }
+        HeapData::Tuple(tuple) => {
+            for value in tuple.as_vec() {
+                if let Value::Ref(id) = value {
                     work_list.push(*id);
                 }
+            }
+        }
+        HeapData::Dict(dict) => {
+            // Iterate through all entries to collect heap references
+            for (k, v) in dict {
+                if let Value::Ref(id) = k {
+                    work_list.push(*id);
+                }
+                if let Value::Ref(id) = v {
+                    work_list.push(*id);
+                }
+            }
+        }
+        HeapData::Set(set) => {
+            for value in set.storage().iter() {
+                if let Value::Ref(id) = value {
+                    work_list.push(*id);
+                }
+            }
+        }
+        HeapData::FrozenSet(frozenset) => {
+            for value in frozenset.storage().iter() {
+                if let Value::Ref(id) = value {
+                    work_list.push(*id);
+                }
+            }
+        }
+        HeapData::Closure(_, cells, defaults) => {
+            // Add captured cells to work list
+            for cell_id in cells {
+                work_list.push(*cell_id);
+            }
+            // Add default values that are heap references
+            for default in defaults {
+                if let Value::Ref(id) = default {
+                    work_list.push(*id);
+                }
+            }
+        }
+        HeapData::FunctionDefaults(_, defaults) => {
+            // Add default values that are heap references
+            for default in defaults {
+                if let Value::Ref(id) = default {
+                    work_list.push(*id);
+                }
+            }
+        }
+        HeapData::Cell(value) => {
+            // Cell can contain a reference to another heap value
+            if let Value::Ref(id) = value {
+                work_list.push(*id);
+            }
+        }
+        HeapData::Dataclass(dc) => {
+            // Dataclass attrs are stored in a Dict - iterate through entries
+            for (k, v) in dc.attrs() {
+                if let Value::Ref(id) = k {
+                    work_list.push(*id);
+                }
+                if let Value::Ref(id) = v {
+                    work_list.push(*id);
+                }
+            }
+        }
+        HeapData::Iterator(iter) => {
+            // Iterator holds a reference to the iterable being iterated
+            if let Value::Ref(id) = iter.value() {
+                work_list.push(*id);
             }
         }
     }
