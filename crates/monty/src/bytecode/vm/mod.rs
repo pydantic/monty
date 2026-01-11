@@ -628,27 +628,13 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::ForIter => {
                     let offset = self.fetch_i16();
                     // Peek at the iterator on TOS and extract heap_id
-                    // We use pattern matching on a reference to avoid creating a Value copy
-                    // that would need to be cleaned up with drop_with_heap
                     let Value::Ref(heap_id) = *self.peek() else {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
 
-                    // Take the iterator out of the heap temporarily to avoid borrow conflict
-                    let HeapData::Iterator(mut iter) = std::mem::replace(
-                        self.heap.get_mut(heap_id),
-                        HeapData::Iterator(ForIterator::placeholder()),
-                    ) else {
-                        return Err(RunError::internal("ForIter: expected iterator on stack"));
-                    };
-
-                    // Get next value from iterator
-                    let next_result = iter.for_next(self.heap, self.interns);
-
-                    // Put the iterator back
-                    *self.heap.get_mut(heap_id) = HeapData::Iterator(iter);
-
-                    match next_result {
+                    // Use advance_iterator which avoids std::mem::replace overhead
+                    // by using a two-phase approach: read state, get value, update index
+                    match self.heap.advance_iterator(heap_id, self.interns) {
                         Ok(Some(value)) => self.push(value),
                         Ok(None) => {
                             // Iterator exhausted - pop it and jump to end
