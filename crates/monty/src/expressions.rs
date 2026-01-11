@@ -316,7 +316,7 @@ pub struct PreparedFunctionDef {
     /// The function signature with parameter names and default counts.
     pub signature: Signature,
     /// The prepared function body with resolved names.
-    pub body: Vec<Node<PreparedFunctionDef>>,
+    pub body: Vec<Node<Self>>,
     /// Number of local variable slots needed in the namespace.
     pub namespace_size: usize,
     /// Enclosing namespace slots for variables captured from enclosing scopes.

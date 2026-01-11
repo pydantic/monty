@@ -917,7 +917,7 @@ pub struct RawStackFrame {
     pub position: CodeRange,
     /// The name of the frame (function name StringId, or None for module-level code).
     pub frame_name: Option<StringId>,
-    pub parent: Option<Box<RawStackFrame>>,
+    pub parent: Option<Box<Self>>,
     /// Whether to hide the caret marker in the traceback for this frame.
     ///
     /// Set to `true` for:
