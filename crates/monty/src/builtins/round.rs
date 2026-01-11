@@ -108,20 +108,19 @@ fn bankers_round(value: f64) -> f64 {
     }
 }
 
-/// Converts f64 to i64, clamping to i64 bounds if out of range.
+/// Converts `f64` to `i64` using saturating float-to-int casting.
 ///
-/// This matches Python's behavior where very large floats truncate to the
-/// maximum/minimum representable integer.
+/// Monty uses `i64` for integer values, so float-to-int conversion must pick a
+/// bounded representation:
+/// - Values outside the `i64` range saturate to `i64::MIN`/`i64::MAX`
+/// - `NaN` converts to `0`
+///
+/// This behavior is provided by Rust's `as` casting rules for float-to-int.
 fn f64_to_i64(value: f64) -> i64 {
-    // Handle special cases
-    if value.is_nan() {
-        return 0;
-    }
-    // Clamp and convert; the truncation is intentional for rounding
-    let clamped = value.clamp(i64::MIN as f64, i64::MAX as f64).trunc();
-    // SAFETY for clippy: clamped is guaranteed to be in [i64::MIN, i64::MAX]
-    // after the clamp() call, so truncation cannot overflow
-    #[expect(clippy::cast_possible_truncation, reason = "clamped to i64 range")]
-    let result = clamped as i64;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "intentional truncation; float-to-int casts saturate and map NaN to 0"
+    )]
+    let result = value as i64;
     result
 }
