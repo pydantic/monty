@@ -114,9 +114,11 @@ pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
                     Ok(Value::Float(b.powf(*e as f64)))
                 }
             }
-            _ => {
-                exc_err_fmt!(ExcType::TypeError; "unsupported operand type(s) for ** or pow(): '{}' and '{}'", base.py_type(Some(heap)), exp.py_type(Some(heap)))
-            }
+            _ => Err(ExcType::binary_type_error(
+                "** or pow()",
+                base.py_type(Some(heap)),
+                exp.py_type(Some(heap)),
+            )),
         }
     };
 

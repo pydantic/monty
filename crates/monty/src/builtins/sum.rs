@@ -52,11 +52,11 @@ pub fn builtin_sum(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
                 accumulator = new_value;
             }
             Ok(None) => {
-                // Types don't support addition
+                // Types don't support addition - use binary_type_error for consistent messages
                 let acc_type = accumulator.py_type(Some(heap));
                 accumulator.drop_with_heap(heap);
                 iter.drop_with_heap(heap);
-                return exc_err_fmt!(ExcType::TypeError; "unsupported operand type(s) for +: '{}' and '{}'", acc_type, item_type);
+                return Err(ExcType::binary_type_error("+", acc_type, item_type));
             }
             Err(e) => {
                 accumulator.drop_with_heap(heap);

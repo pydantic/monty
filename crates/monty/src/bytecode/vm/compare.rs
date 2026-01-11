@@ -85,35 +85,25 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// is stored in the constant pool and referenced by the u16 operand.
     pub(super) fn compare_mod_eq(&mut self) -> Result<(), RunError> {
         let const_idx = self.fetch_u16();
-        let k = self.current_frame().code.constants().get(const_idx).copy_for_extend();
+        let k = self.current_frame().code.constants().get(const_idx);
 
         let rhs = self.pop(); // divisor (b)
         let lhs = self.pop(); // dividend (a)
 
         // Compute a % b
-        let mod_result = match (&lhs, &rhs) {
-            (Value::Int(a), Value::Int(b)) => {
-                if *b == 0 {
-                    lhs.drop_with_heap(self.heap);
-                    rhs.drop_with_heap(self.heap);
-                    return Err(ExcType::zero_division().into());
-                }
-                Some(Value::Int(a.rem_euclid(*b)))
-            }
+        let mod_result = match k {
+            Value::Int(k) => lhs.py_mod_eq(&rhs, *k),
             _ => None,
         };
 
         lhs.drop_with_heap(self.heap);
         rhs.drop_with_heap(self.heap);
 
-        match mod_result {
-            Some(result) => {
-                // Compare with k
-                let is_equal = result.py_eq(&k, self.heap, self.interns);
-                self.push(Value::Bool(is_equal));
-                Ok(())
-            }
-            None => Err(ExcType::type_error("unsupported operand type(s) for %")),
+        if let Some(is_equal) = mod_result {
+            self.push(Value::Bool(is_equal));
+            Ok(())
+        } else {
+            Err(ExcType::type_error("unsupported operand type(s) for %"))
         }
     }
 

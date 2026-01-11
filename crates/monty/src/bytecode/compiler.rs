@@ -69,7 +69,7 @@ pub struct Compiler<'a> {
 /// so this is currently unused but included for future use.
 struct LoopInfo {
     /// Bytecode offset of loop start (for continue).
-    start: usize,
+    _start: usize,
     /// Jump labels that need patching to loop end (for break).
     break_jumps: Vec<JumpLabel>,
 }
@@ -847,7 +847,7 @@ impl<'a> Compiler<'a> {
 
         // Push loop info for break/continue (future use)
         self.loop_stack.push(LoopInfo {
-            start: loop_start,
+            _start: loop_start,
             break_jumps: Vec::new(),
         });
 

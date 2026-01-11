@@ -138,7 +138,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 self.push(v);
                 Ok(())
             }
-            Ok(None) => Err(ExcType::binary_type_error("**", lhs_type, rhs_type)),
+            Ok(None) => Err(ExcType::binary_type_error("** or pow()", lhs_type, rhs_type)),
             Err(e) => Err(e),
         }
     }

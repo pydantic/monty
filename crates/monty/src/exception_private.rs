@@ -9,11 +9,10 @@ use strum::{Display, EnumString, IntoStaticStr};
 use crate::{
     args::ArgValues,
     exception_public::{MontyException, StackFrame},
-    expressions::ExprLoc,
     fstring::FormatError,
     heap::{Heap, HeapData},
     intern::{Interns, StringId},
-    operators::{CmpOperator, Operator},
+    operators::CmpOperator,
     parse::CodeRange,
     resource::ResourceTracker,
     types::{str::string_repr, PyTrait, Type},
@@ -662,14 +661,14 @@ impl ExcType {
 
     /// Creates a TypeError for unsupported binary operations.
     ///
-    /// For `+` with str/list on the left side, uses CPython's special format:
+    /// For `+` or `+=` with str/list on the left side, uses CPython's special format:
     /// `can only concatenate {type} (not "{other}") to {type}`
     ///
     /// For other cases, uses the generic format:
     /// `unsupported operand type(s) for {op}: '{left}' and '{right}'`
     #[must_use]
     pub fn binary_type_error(op: &str, lhs_type: Type, rhs_type: Type) -> RunError {
-        let message = if op == "+" && (lhs_type == Type::Str || lhs_type == Type::List) {
+        let message = if (op == "+" || op == "+=") && (lhs_type == Type::Str || lhs_type == Type::List) {
             format!("can only concatenate {lhs_type} (not \"{rhs_type}\") to {lhs_type}")
         } else {
             format!("unsupported operand type(s) for {op}: '{lhs_type}' and '{rhs_type}'")
@@ -683,6 +682,12 @@ impl ExcType {
     #[must_use]
     pub fn unary_type_error(op: &str, value_type: Type) -> RunError {
         exc_fmt!(Self::TypeError; "bad operand type for unary {op}: '{value_type}'").into()
+    }
+
+    #[must_use]
+    pub fn cmp_type_error<T>(op: &CmpOperator, left_type: Type, right_type: Type) -> RunError {
+        exc_fmt!(ExcType::TypeError; "'{op}' not supported between instances of '{left_type}' and '{right_type}'")
+            .into()
     }
 }
 
@@ -772,67 +777,6 @@ impl SimpleException {
             hide_caret: false,
         }
     }
-
-    /// Creates a TypeError for binary operator type mismatches.
-    ///
-    /// For `+` with str/list on the left side, uses CPython's special format:
-    /// `can only concatenate {type} (not "{other}") to {type}`
-    ///
-    /// For other cases, uses the generic format:
-    /// `unsupported operand type(s) for {op}: '{left}' and '{right}'`
-    pub(crate) fn operand_type_error<T>(
-        left: &ExprLoc,
-        op: &Operator,
-        right: &ExprLoc,
-        left_type: Type,
-        right_type: Type,
-    ) -> RunResult<T> {
-        let new_position = left.position.extend(&right.position);
-
-        // CPython uses a special message for str/list + operations
-        let message = if *op == Operator::Add && (left_type == Type::Str || left_type == Type::List) {
-            format!("can only concatenate {left_type} (not \"{right_type}\") to {left_type}")
-        } else {
-            format!("unsupported operand type(s) for {op}: '{left_type}' and '{right_type}'")
-        };
-
-        Err(SimpleException::new(ExcType::TypeError, Some(message))
-            .with_position(new_position)
-            .into())
-    }
-
-    pub(crate) fn cmp_type_error<T>(
-        left: &ExprLoc,
-        op: &CmpOperator,
-        right: &ExprLoc,
-        left_type: Type,
-        right_type: Type,
-    ) -> RunResult<T> {
-        let new_position = left.position.extend(&right.position);
-
-        let e =
-            exc_fmt!(ExcType::TypeError; "'{op}' not supported between instances of '{left_type}' and '{right_type}'");
-
-        Err(e.with_position(new_position).into())
-    }
-
-    /// Creates a TypeError for augmented assignment operator type mismatches (e.g., `+=`).
-    ///
-    /// For `+=` with str/list on the left side, uses CPython's special format:
-    /// `can only concatenate {type} (not "{other}") to {type}`
-    ///
-    /// For other cases, uses the generic format:
-    /// `unsupported operand type(s) for {op}: '{left}' and '{right}'`
-    ///
-    /// Returns a `SimpleException` without frame info - caller should add the frame.
-    pub(crate) fn augmented_assign_type_error(op: &Operator, left_type: Type, right_type: Type) -> Self {
-        let message = if *op == Operator::Add && (left_type == Type::Str || left_type == Type::List) {
-            format!("can only concatenate {left_type} (not \"{right_type}\") to {left_type}")
-        } else {
-            format!("unsupported operand type(s) for {op}: '{left_type}' and '{right_type}'")
-        };
-        Self::new(ExcType::TypeError, Some(message))
-    }
 }
 
 macro_rules! exc_static {
@@ -913,13 +857,6 @@ impl ExceptionRaise {
     /// the function name, which gets filled in as the error propagates.
     pub(crate) fn add_caller_frame(&mut self, position: CodeRange, name: StringId) {
         self.add_caller_frame_inner(position, name, false);
-    }
-
-    /// Like `add_caller_frame`, but suppresses caret display in the traceback.
-    ///
-    /// Used for errors where CPython doesn't show carets (e.g., AttributeError).
-    pub(crate) fn add_caller_frame_no_caret(&mut self, position: CodeRange, name: StringId) {
-        self.add_caller_frame_inner(position, name, true);
     }
 
     fn add_caller_frame_inner(&mut self, position: CodeRange, name: StringId, hide_caret: bool) {
@@ -1082,24 +1019,6 @@ impl RunError {
 
     pub fn internal(msg: impl Into<Cow<'static, str>>) -> Self {
         Self::Internal(msg.into())
-    }
-
-    /// Sets the frame on the exception.
-    ///
-    /// Used when an exception is raised from code that doesn't have access to position
-    /// information (like `ForIterator::for_next`) but the caller does.
-    pub(crate) fn set_frame(self, frame: RawStackFrame) -> Self {
-        match self {
-            Self::Exc(mut exc) => {
-                exc.frame = Some(frame);
-                Self::Exc(exc)
-            }
-            Self::UncatchableExc(mut exc) => {
-                exc.frame = Some(frame);
-                Self::UncatchableExc(exc)
-            }
-            Self::Internal(_) => self, // Internal errors don't have frames
-        }
     }
 }
 

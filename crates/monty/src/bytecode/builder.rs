@@ -76,15 +76,6 @@ impl CodeBuilder {
         self.current_focus = focus;
     }
 
-    /// Clears the current source location.
-    ///
-    /// Use this when emitting synthetic instructions that don't correspond
-    /// to any source code.
-    pub fn clear_location(&mut self) {
-        self.current_location = None;
-        self.current_focus = None;
-    }
-
     /// Emits a no-operand instruction.
     pub fn emit(&mut self, op: Opcode) {
         self.record_location();
@@ -107,13 +98,6 @@ impl CodeBuilder {
 
     /// Emits an instruction with a u16 operand (little-endian).
     pub fn emit_u16(&mut self, op: Opcode, operand: u16) {
-        self.record_location();
-        self.bytecode.push(op as u8);
-        self.bytecode.extend_from_slice(&operand.to_le_bytes());
-    }
-
-    /// Emits an instruction with an i16 operand (little-endian).
-    pub fn emit_i16(&mut self, op: Opcode, operand: i16) {
         self.record_location();
         self.bytecode.push(op as u8);
         self.bytecode.extend_from_slice(&operand.to_le_bytes());
@@ -278,15 +262,6 @@ impl CodeBuilder {
         self.exception_table.push(entry);
     }
 
-    /// Adjusts the tracked stack depth by the given delta.
-    ///
-    /// Call this after emitting instructions to track stack usage.
-    /// Positive delta means items were pushed, negative means popped.
-    pub fn adjust_stack(&mut self, delta: i16) {
-        self.current_stack_depth = (self.current_stack_depth as i16 + delta) as u16;
-        self.max_stack_depth = self.max_stack_depth.max(self.current_stack_depth);
-    }
-
     /// Returns the current tracked stack depth.
     #[must_use]
     pub fn stack_depth(&self) -> u16 {
@@ -332,14 +307,6 @@ impl CodeBuilder {
 /// Pass this to `patch_jump()` once the target location is known.
 #[derive(Debug, Clone, Copy)]
 pub struct JumpLabel(usize);
-
-impl JumpLabel {
-    /// Returns the bytecode offset where the jump was emitted.
-    #[must_use]
-    pub fn offset(self) -> usize {
-        self.0
-    }
-}
 
 #[cfg(test)]
 mod tests {
