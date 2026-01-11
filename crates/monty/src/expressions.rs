@@ -304,37 +304,6 @@ pub enum Node<F> {
     Try(Try<Node<F>>),
 }
 
-impl<F> Node<F> {
-    /// Returns the source code position of this node, if available.
-    ///
-    /// Most nodes have position info through their expressions. Some nodes
-    /// like `ReturnNone`, `Pass`, `Global`, `Nonlocal` don't have inherent position
-    /// info or return the declaration position.
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn position(&self) -> Option<CodeRange> {
-        match self {
-            Self::Pass => None,
-            Self::Expr(expr) => Some(expr.position),
-            Self::Return(expr) => Some(expr.position),
-            Self::ReturnNone => None,
-            Self::Raise(Some(expr)) => Some(expr.position),
-            Self::Raise(None) => None,
-            Self::Assert { test, .. } => Some(test.position),
-            Self::Assign { object, .. } => Some(object.position),
-            Self::OpAssign { object, .. } => Some(object.position),
-            Self::SubscriptAssign { value, .. } => Some(value.position),
-            Self::AttrAssign { value, .. } => Some(value.position),
-            Self::For { iter, .. } => Some(iter.position),
-            Self::If { test, .. } => Some(test.position),
-            Self::FunctionDef(_) => None,
-            Self::Global { position, .. } => Some(*position),
-            Self::Nonlocal { position, .. } => Some(*position),
-            Self::Try(try_) => try_.body.first().and_then(Node::position),
-        }
-    }
-}
-
 /// A prepared function definition with resolved names and scope information.
 ///
 /// This is created during the prepare phase and contains everything needed to
@@ -373,15 +342,6 @@ pub struct PreparedFunctionDef {
     /// Each group contains only the parameters that have defaults, in declaration order.
     /// The counts in `signature` indicate how many defaults exist for each group.
     pub default_exprs: Vec<ExprLoc>,
-}
-
-impl PreparedFunctionDef {
-    /// Returns true if this function has any free variables (is a closure).
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn is_closure(&self) -> bool {
-        !self.free_var_enclosing_slots.is_empty()
-    }
 }
 
 /// Type alias for prepared AST nodes (output of prepare phase).

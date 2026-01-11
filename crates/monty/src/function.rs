@@ -110,12 +110,6 @@ impl Function {
         self.defaults_count > 0
     }
 
-    /// Returns true if this function has any free variables (is a closure).
-    #[must_use]
-    pub fn is_closure(&self) -> bool {
-        !self.free_var_enclosing_slots.is_empty()
-    }
-
     /// Returns true if this function is equal to another function.
     ///
     /// We assume functions are equal if they have the same name and position.
