@@ -748,7 +748,7 @@ impl Set {
         }
 
         // Fall back to creating a temporary set from the iterable
-        let temp_set = Set::from_iterable(other, heap, interns)?;
+        let temp_set = Self::from_iterable(other, heap, interns)?;
         self.0.update(&temp_set.0, heap, interns)?;
         temp_set.0.drop_all_values(heap);
         Ok(())
@@ -760,14 +760,14 @@ impl Set {
         other: Value,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<Set> {
+    ) -> RunResult<Self> {
         let other_storage = Self::get_storage_from_value(other, heap, interns)?;
         let result_storage = self.0.union(&other_storage, heap, interns)?;
         // Clean up other_storage if it was created from a non-set
         for entry in other_storage.entries {
             entry.value.drop_with_heap(heap);
         }
-        Ok(Set(result_storage))
+        Ok(Self(result_storage))
     }
 
     /// Returns a new set with elements common to both this set and an iterable.
@@ -776,13 +776,13 @@ impl Set {
         other: Value,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<Set> {
+    ) -> RunResult<Self> {
         let other_storage = Self::get_storage_from_value(other, heap, interns)?;
         let result_storage = self.0.intersection(&other_storage, heap, interns)?;
         for entry in other_storage.entries {
             entry.value.drop_with_heap(heap);
         }
-        Ok(Set(result_storage))
+        Ok(Self(result_storage))
     }
 
     /// Returns a new set with elements in this set but not in an iterable.
@@ -791,13 +791,13 @@ impl Set {
         other: Value,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<Set> {
+    ) -> RunResult<Self> {
         let other_storage = Self::get_storage_from_value(other, heap, interns)?;
         let result_storage = self.0.difference(&other_storage, heap, interns)?;
         for entry in other_storage.entries {
             entry.value.drop_with_heap(heap);
         }
-        Ok(Set(result_storage))
+        Ok(Self(result_storage))
     }
 
     /// Returns a new set with elements in either set but not both.
@@ -806,13 +806,13 @@ impl Set {
         other: Value,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<Set> {
+    ) -> RunResult<Self> {
         let other_storage = Self::get_storage_from_value(other, heap, interns)?;
         let result_storage = self.0.symmetric_difference(&other_storage, heap, interns)?;
         for entry in other_storage.entries {
             entry.value.drop_with_heap(heap);
         }
-        Ok(Set(result_storage))
+        Ok(Self(result_storage))
     }
 
     /// Checks if this set is a subset of an iterable.
@@ -842,7 +842,7 @@ impl Set {
         }
 
         // Handle all other iterables (list, tuple, range, str, bytes, dict, etc.)
-        let temp = Set::from_iterable(other.clone_with_heap(heap), heap, interns)?;
+        let temp = Self::from_iterable(other.clone_with_heap(heap), heap, interns)?;
         let result = self.0.is_subset(&temp.0, heap, interns);
         temp.0.drop_all_values(heap);
         result
@@ -875,7 +875,7 @@ impl Set {
         }
 
         // Handle all other iterables (list, tuple, range, str, bytes, dict, etc.)
-        let temp = Set::from_iterable(other.clone_with_heap(heap), heap, interns)?;
+        let temp = Self::from_iterable(other.clone_with_heap(heap), heap, interns)?;
         let result = self.0.is_superset(&temp.0, heap, interns);
         temp.0.drop_all_values(heap);
         result
@@ -908,7 +908,7 @@ impl Set {
         }
 
         // Handle all other iterables (list, tuple, range, str, bytes, dict, etc.)
-        let temp = Set::from_iterable(other.clone_with_heap(heap), heap, interns)?;
+        let temp = Self::from_iterable(other.clone_with_heap(heap), heap, interns)?;
         let result = self.0.is_disjoint(&temp.0, heap, interns);
         temp.0.drop_all_values(heap);
         result
@@ -939,7 +939,7 @@ impl Set {
         }
 
         // Convert iterable to set
-        let temp_set = Set::from_iterable(value, heap, interns)?;
+        let temp_set = Self::from_iterable(value, heap, interns)?;
         Ok(temp_set.0)
     }
 }

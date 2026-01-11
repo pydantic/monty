@@ -122,7 +122,7 @@ impl MontySyntaxError {
     #[must_use]
     pub fn new_err(py: Python<'_>, exc: MontyException) -> PyErr {
         let base_error = MontyError::new(exc);
-        let init = PyClassInitializer::from(base_error).add_subclass(MontySyntaxError);
+        let init = PyClassInitializer::from(base_error).add_subclass(Self);
         match Py::new(py, init) {
             Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
             Err(e) => e,
@@ -170,7 +170,7 @@ impl MontyRuntimeError {
 
         let base_error = MontyError::new(exc);
         // Create the MontyRuntimeError with proper initialization
-        let runtime_error = MontyRuntimeError { frames };
+        let runtime_error = Self { frames };
 
         let init = pyo3::PyClassInitializer::from(base_error).add_subclass(runtime_error);
         match Py::new(py, init) {

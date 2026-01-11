@@ -26,11 +26,13 @@ strip = false
 lto = false
 
 [workspace.lints.rust]
+warnings = "deny"
 # codspeed cfg is set by codspeed-criterion-compat when running in CodSpeed environment
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(codspeed)'] }
 
 [workspace.lints.clippy]
 dbg_macro = "warn"
+use_self = "warn"
 
 # in general we lint against the pedantic group, but we will whitelist
 # certain lints which we don't want to enforce (for now)

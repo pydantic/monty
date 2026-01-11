@@ -66,14 +66,14 @@ impl Tuple {
         let value = args.get_zero_one_arg("tuple")?;
         match value {
             None => {
-                let heap_id = heap.allocate(HeapData::Tuple(Tuple::new(Vec::new())))?;
+                let heap_id = heap.allocate(HeapData::Tuple(Self::new(Vec::new())))?;
                 Ok(Value::Ref(heap_id))
             }
             Some(v) => {
                 let mut iter = ForIterator::new(v, heap, interns)?;
                 let items = iter.collect(heap, interns)?;
                 iter.drop_with_heap(heap);
-                let heap_id = heap.allocate(HeapData::Tuple(Tuple::new(items)))?;
+                let heap_id = heap.allocate(HeapData::Tuple(Self::new(items)))?;
                 Ok(Value::Ref(heap_id))
             }
         }

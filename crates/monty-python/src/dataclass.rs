@@ -253,7 +253,7 @@ impl PyMontyDataclass {
     /// Equality comparison.
     fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
         // Check if other is also a PyMontyDataclass
-        if let Ok(other_dc) = other.extract::<PyRef<'_, PyMontyDataclass>>() {
+        if let Ok(other_dc) = other.extract::<PyRef<'_, Self>>() {
             if self.name != other_dc.name {
                 return Ok(false);
             }

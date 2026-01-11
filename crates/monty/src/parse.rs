@@ -1003,7 +1003,7 @@ impl CodeRange {
         self.preview_line
     }
 
-    pub fn extend(&self, end: &CodeRange) -> Self {
+    pub fn extend(&self, end: &Self) -> Self {
         Self {
             filename: self.filename,
             preview_line: if self.start.line == end.end.line {
@@ -1045,12 +1045,12 @@ impl ParseError {
 impl ParseError {
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
         match self {
-            ParseError::Syntax { msg, position } => MontyException::new_full(
+            Self::Syntax { msg, position } => MontyException::new_full(
                 ExcType::SyntaxError,
                 Some(msg.into_owned()),
                 vec![StackFrame::from_position(position, filename, source)],
             ),
-            ParseError::NotImplemented(msg) => MontyException::new(
+            Self::NotImplemented(msg) => MontyException::new(
                 ExcType::NotImplementedError,
                 Some(format!("The monty syntax parser does not yet support {msg}")),
             ),

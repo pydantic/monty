@@ -116,14 +116,14 @@ impl List {
         let value = args.get_zero_one_arg("list")?;
         match value {
             None => {
-                let heap_id = heap.allocate(HeapData::List(List::new(Vec::new())))?;
+                let heap_id = heap.allocate(HeapData::List(Self::new(Vec::new())))?;
                 Ok(Value::Ref(heap_id))
             }
             Some(v) => {
                 let mut iter = ForIterator::new(v, heap, interns)?;
                 let items = iter.collect(heap, interns)?;
                 iter.drop_with_heap(heap);
-                let heap_id = heap.allocate(HeapData::List(List::new(items)))?;
+                let heap_id = heap.allocate(HeapData::List(Self::new(items)))?;
                 Ok(Value::Ref(heap_id))
             }
         }
@@ -217,7 +217,7 @@ impl PyTrait for List {
         let mut result: Vec<Value> = self.0.iter().map(|obj| obj.clone_with_heap(heap)).collect();
         let other_cloned: Vec<Value> = other.0.iter().map(|obj| obj.clone_with_heap(heap)).collect();
         result.extend(other_cloned);
-        let id = heap.allocate(HeapData::List(List::new(result)))?;
+        let id = heap.allocate(HeapData::List(Self::new(result)))?;
         Ok(Some(Value::Ref(id)))
     }
 

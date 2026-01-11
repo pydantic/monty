@@ -120,12 +120,12 @@ impl Range {
             0 => Err(ExcType::type_error_at_least("range", 1, 0)),
             1 => {
                 let stop = positional[0].as_int()?;
-                Ok(Range::from_stop(stop))
+                Ok(Self::from_stop(stop))
             }
             2 => {
                 let start = positional[0].as_int()?;
                 let stop = positional[1].as_int()?;
-                Ok(Range::from_start_stop(start, stop))
+                Ok(Self::from_start_stop(start, stop))
             }
             3 => {
                 let start = positional[0].as_int()?;
@@ -134,7 +134,7 @@ impl Range {
                 if step == 0 {
                     Err(ExcType::value_error_range_step_zero())
                 } else {
-                    Ok(Range::new(start, stop, step))
+                    Ok(Self::new(start, stop, step))
                 }
             }
             n => Err(ExcType::type_error_at_most("range", 3, n)),
@@ -254,6 +254,6 @@ impl PyTrait for Range {
     }
 
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Range>()
+        std::mem::size_of::<Self>()
     }
 }

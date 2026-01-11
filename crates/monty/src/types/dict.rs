@@ -355,7 +355,7 @@ impl Dict {
         let value = args.get_zero_one_arg("dict")?;
         match value {
             None => {
-                let heap_id = heap.allocate(HeapData::Dict(Dict::new()))?;
+                let heap_id = heap.allocate(HeapData::Dict(Self::new()))?;
                 Ok(Value::Ref(heap_id))
             }
             Some(v) => {
@@ -390,7 +390,7 @@ impl Dict {
                 }
                 v.drop_with_heap(heap);
 
-                let new_dict = Dict::from_pairs(pairs, heap, interns)?;
+                let new_dict = Self::from_pairs(pairs, heap, interns)?;
                 let result = heap.allocate(HeapData::Dict(new_dict))?;
                 Ok(Value::Ref(result))
             }

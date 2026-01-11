@@ -302,22 +302,22 @@ impl MontyObject {
                     HeapData::List(list) => Self::List(
                         list.as_vec()
                             .iter()
-                            .map(|obj| MontyObject::from_value_inner(obj, heap, visited, interns))
+                            .map(|obj| Self::from_value_inner(obj, heap, visited, interns))
                             .collect(),
                     ),
                     HeapData::Tuple(tuple) => Self::Tuple(
                         tuple
                             .as_vec()
                             .iter()
-                            .map(|obj| MontyObject::from_value_inner(obj, heap, visited, interns))
+                            .map(|obj| Self::from_value_inner(obj, heap, visited, interns))
                             .collect(),
                     ),
                     HeapData::Dict(dict) => Self::Dict(DictPairs(
                         dict.into_iter()
                             .map(|(k, v)| {
                                 (
-                                    MontyObject::from_value_inner(k, heap, visited, interns),
-                                    MontyObject::from_value_inner(v, heap, visited, interns),
+                                    Self::from_value_inner(k, heap, visited, interns),
+                                    Self::from_value_inner(v, heap, visited, interns),
                                 )
                             })
                             .collect(),
@@ -325,20 +325,20 @@ impl MontyObject {
                     HeapData::Set(set) => Self::Set(
                         set.storage()
                             .iter()
-                            .map(|obj| MontyObject::from_value_inner(obj, heap, visited, interns))
+                            .map(|obj| Self::from_value_inner(obj, heap, visited, interns))
                             .collect(),
                     ),
                     HeapData::FrozenSet(frozenset) => Self::FrozenSet(
                         frozenset
                             .storage()
                             .iter()
-                            .map(|obj| MontyObject::from_value_inner(obj, heap, visited, interns))
+                            .map(|obj| Self::from_value_inner(obj, heap, visited, interns))
                             .collect(),
                     ),
                     // Cells are internal closure implementation details
                     HeapData::Cell(inner) => {
                         // Show the cell's contents
-                        MontyObject::from_value_inner(inner, heap, visited, interns)
+                        Self::from_value_inner(inner, heap, visited, interns)
                     }
                     HeapData::Closure(..) | HeapData::FunctionDefaults(..) => {
                         Self::Repr(object.py_repr(heap, interns).into_owned())
@@ -360,8 +360,8 @@ impl MontyObject {
                                 .into_iter()
                                 .map(|(k, v)| {
                                     (
-                                        MontyObject::from_value_inner(k, heap, visited, interns),
-                                        MontyObject::from_value_inner(v, heap, visited, interns),
+                                        Self::from_value_inner(k, heap, visited, interns),
+                                        Self::from_value_inner(v, heap, visited, interns),
                                     )
                                 })
                                 .collect(),
@@ -677,8 +677,8 @@ impl PartialEq for MontyObject {
 
 impl Eq for MontyObject {}
 
-impl AsRef<MontyObject> for MontyObject {
-    fn as_ref(&self) -> &MontyObject {
+impl AsRef<Self> for MontyObject {
+    fn as_ref(&self) -> &Self {
         self
     }
 }
@@ -772,7 +772,7 @@ impl TryFrom<&MontyObject> for f64 {
     fn try_from(value: &MontyObject) -> Result<Self, Self::Error> {
         match value {
             MontyObject::Float(f) => Ok(*f),
-            MontyObject::Int(i) => Ok(*i as f64),
+            MontyObject::Int(i) => Ok(*i as Self),
             _ => Err(ConversionError::new("float", value.type_name())),
         }
     }
@@ -815,13 +815,13 @@ pub struct DictPairs(Vec<(MontyObject, MontyObject)>);
 
 impl From<Vec<(MontyObject, MontyObject)>> for DictPairs {
     fn from(pairs: Vec<(MontyObject, MontyObject)>) -> Self {
-        DictPairs(pairs)
+        Self(pairs)
     }
 }
 
 impl From<IndexMap<MontyObject, MontyObject>> for DictPairs {
     fn from(map: IndexMap<MontyObject, MontyObject>) -> Self {
-        DictPairs(map.into_iter().collect())
+        Self(map.into_iter().collect())
     }
 }
 
@@ -850,7 +850,7 @@ impl<'a> IntoIterator for &'a DictPairs {
 
 impl FromIterator<(MontyObject, MontyObject)> for DictPairs {
     fn from_iter<T: IntoIterator<Item = (MontyObject, MontyObject)>>(iter: T) -> Self {
-        DictPairs(iter.into_iter().collect())
+        Self(iter.into_iter().collect())
     }
 }
 

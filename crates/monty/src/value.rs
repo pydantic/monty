@@ -92,7 +92,7 @@ pub enum Value {
 #[cfg(feature = "ref-count-panic")]
 impl Drop for Value {
     fn drop(&mut self) {
-        if let Value::Ref(id) = self {
+        if let Self::Ref(id) = self {
             panic!("Value::Ref({id:?}) dropped without calling drop_with_heap() - this is a reference counting bug");
         }
     }
@@ -235,7 +235,7 @@ impl PyTrait for Value {
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        if let Value::Ref(id) = self {
+        if let Self::Ref(id) = self {
             stack.push(*id);
             // Mark as Dereferenced to prevent Drop panic
             #[cfg(feature = "ref-count-panic")]
@@ -327,20 +327,20 @@ impl PyTrait for Value {
         interns: &Interns,
     ) -> Result<Option<Value>, crate::resource::ResourceError> {
         match (self, other) {
-            (Self::Int(v1), Self::Int(v2)) => Ok(Some(Value::Int(v1 + v2))),
-            (Self::Float(v1), Self::Float(v2)) => Ok(Some(Value::Float(v1 + v2))),
+            (Self::Int(v1), Self::Int(v2)) => Ok(Some(Self::Int(v1 + v2))),
+            (Self::Float(v1), Self::Float(v2)) => Ok(Some(Self::Float(v1 + v2))),
             (Self::Ref(id1), Self::Ref(id2)) => {
                 heap.with_two(*id1, *id2, |heap, left, right| left.py_add(right, heap, interns))
             }
             (Self::InternString(s1), Self::InternString(s2)) => {
                 let concat = format!("{}{}", interns.get_str(*s1), interns.get_str(*s2));
-                Ok(Some(Value::Ref(heap.allocate(HeapData::Str(concat.into()))?)))
+                Ok(Some(Self::Ref(heap.allocate(HeapData::Str(concat.into()))?)))
             }
             // for strings we need to account for the fact they might be either interned or not
             (Self::InternString(string_id), Self::Ref(id2)) => {
                 if let HeapData::Str(s2) = heap.get(*id2) {
                     let concat = format!("{}{}", interns.get_str(*string_id), s2.as_str());
-                    Ok(Some(Value::Ref(heap.allocate(HeapData::Str(concat.into()))?)))
+                    Ok(Some(Self::Ref(heap.allocate(HeapData::Str(concat.into()))?)))
                 } else {
                     Ok(None)
                 }
@@ -348,7 +348,7 @@ impl PyTrait for Value {
             (Self::Ref(id1), Self::InternString(string_id)) => {
                 if let HeapData::Str(s1) = heap.get(*id1) {
                     let concat = format!("{}{}", s1.as_str(), interns.get_str(*string_id));
-                    Ok(Some(Value::Ref(heap.allocate(HeapData::Str(concat.into()))?)))
+                    Ok(Some(Self::Ref(heap.allocate(HeapData::Str(concat.into()))?)))
                 } else {
                     Ok(None)
                 }
@@ -360,7 +360,7 @@ impl PyTrait for Value {
                 let mut b = Vec::with_capacity(bytes1.len() + bytes2.len());
                 b.extend_from_slice(bytes1);
                 b.extend_from_slice(bytes2);
-                Ok(Some(Value::Ref(heap.allocate(HeapData::Bytes(b.into()))?)))
+                Ok(Some(Self::Ref(heap.allocate(HeapData::Bytes(b.into()))?)))
             }
             (Self::InternBytes(bytes_id), Self::Ref(id2)) => {
                 if let HeapData::Bytes(b2) = heap.get(*id2) {
@@ -368,7 +368,7 @@ impl PyTrait for Value {
                     let mut b = Vec::with_capacity(bytes1.len() + b2.len());
                     b.extend_from_slice(bytes1);
                     b.extend_from_slice(b2);
-                    Ok(Some(Value::Ref(heap.allocate(HeapData::Bytes(b.into()))?)))
+                    Ok(Some(Self::Ref(heap.allocate(HeapData::Bytes(b.into()))?)))
                 } else {
                     Ok(None)
                 }
@@ -379,7 +379,7 @@ impl PyTrait for Value {
                     let mut b = Vec::with_capacity(b1.len() + bytes2.len());
                     b.extend_from_slice(b1);
                     b.extend_from_slice(bytes2);
-                    Ok(Some(Value::Ref(heap.allocate(HeapData::Bytes(b.into()))?)))
+                    Ok(Some(Self::Ref(heap.allocate(HeapData::Bytes(b.into()))?)))
                 } else {
                     Ok(None)
                 }
@@ -394,17 +394,17 @@ impl PyTrait for Value {
         _heap: &mut Heap<impl ResourceTracker>,
     ) -> Result<Option<Self>, crate::resource::ResourceError> {
         match (self, other) {
-            (Self::Int(v1), Self::Int(v2)) => Ok(Some(Value::Int(v1 - v2))),
+            (Self::Int(v1), Self::Int(v2)) => Ok(Some(Self::Int(v1 - v2))),
             _ => Ok(None),
         }
     }
 
     fn py_mod(&self, other: &Self) -> Option<Self> {
         match (self, other) {
-            (Self::Int(v1), Self::Int(v2)) => Some(Value::Int(v1 % v2)),
-            (Self::Float(v1), Self::Float(v2)) => Some(Value::Float(v1 % v2)),
-            (Self::Float(v1), Self::Int(v2)) => Some(Value::Float(v1 % (*v2 as f64))),
-            (Self::Int(v1), Self::Float(v2)) => Some(Value::Float((*v1 as f64) % v2)),
+            (Self::Int(v1), Self::Int(v2)) => Some(Self::Int(v1 % v2)),
+            (Self::Float(v1), Self::Float(v2)) => Some(Self::Float(v1 % v2)),
+            (Self::Float(v1), Self::Int(v2)) => Some(Self::Float(v1 % (*v2 as f64))),
+            (Self::Int(v1), Self::Float(v2)) => Some(Self::Float((*v1 as f64) % v2)),
             _ => None,
         }
     }
@@ -428,22 +428,22 @@ impl PyTrait for Value {
     ) -> Result<bool, crate::resource::ResourceError> {
         match (&self, &other) {
             (Self::Int(v1), Self::Int(v2)) => {
-                *self = Value::Int(*v1 + v2);
+                *self = Self::Int(*v1 + v2);
                 Ok(true)
             }
             (Self::Float(v1), Self::Float(v2)) => {
-                *self = Value::Float(*v1 + *v2);
+                *self = Self::Float(*v1 + *v2);
                 Ok(true)
             }
             (Self::InternString(s1), Self::InternString(s2)) => {
                 let concat = format!("{}{}", interns.get_str(*s1), interns.get_str(*s2));
-                *self = Value::Ref(heap.allocate(HeapData::Str(concat.into()))?);
+                *self = Self::Ref(heap.allocate(HeapData::Str(concat.into()))?);
                 Ok(true)
             }
             (Self::InternString(string_id), Self::Ref(id2)) => {
                 let result = if let HeapData::Str(s2) = heap.get(*id2) {
                     let concat = format!("{}{}", interns.get_str(*string_id), s2.as_str());
-                    *self = Value::Ref(heap.allocate(HeapData::Str(concat.into()))?);
+                    *self = Self::Ref(heap.allocate(HeapData::Str(concat.into()))?);
                     true
                 } else {
                     false
@@ -467,7 +467,7 @@ impl PyTrait for Value {
                 let mut b = Vec::with_capacity(bytes1.len() + bytes2.len());
                 b.extend_from_slice(bytes1);
                 b.extend_from_slice(bytes2);
-                *self = Value::Ref(heap.allocate(HeapData::Bytes(b.into()))?);
+                *self = Self::Ref(heap.allocate(HeapData::Bytes(b.into()))?);
                 Ok(true)
             }
             (Self::InternBytes(bytes_id), Self::Ref(id2)) => {
@@ -476,7 +476,7 @@ impl PyTrait for Value {
                     let mut b = Vec::with_capacity(bytes1.len() + b2.len());
                     b.extend_from_slice(bytes1);
                     b.extend_from_slice(b2);
-                    *self = Value::Ref(heap.allocate(HeapData::Bytes(b.into()))?);
+                    *self = Self::Ref(heap.allocate(HeapData::Bytes(b.into()))?);
                     true
                 } else {
                     false
@@ -515,48 +515,48 @@ impl PyTrait for Value {
             (Self::Int(a), Self::Int(b)) => {
                 // Use checked_mul to handle overflow, fall back to float
                 match a.checked_mul(*b) {
-                    Some(result) => Ok(Some(Value::Int(result))),
-                    None => Ok(Some(Value::Float(*a as f64 * *b as f64))),
+                    Some(result) => Ok(Some(Self::Int(result))),
+                    None => Ok(Some(Self::Float(*a as f64 * *b as f64))),
                 }
             }
-            (Self::Float(a), Self::Float(b)) => Ok(Some(Value::Float(a * b))),
-            (Self::Int(a), Self::Float(b)) => Ok(Some(Value::Float(*a as f64 * b))),
-            (Self::Float(a), Self::Int(b)) => Ok(Some(Value::Float(a * *b as f64))),
+            (Self::Float(a), Self::Float(b)) => Ok(Some(Self::Float(a * b))),
+            (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 * b))),
+            (Self::Float(a), Self::Int(b)) => Ok(Some(Self::Float(a * *b as f64))),
 
             // Bool numeric multiplication (True=1, False=0)
             (Self::Bool(a), Self::Int(b)) => {
                 let a_int = i64::from(*a);
-                Ok(Some(Value::Int(a_int * b)))
+                Ok(Some(Self::Int(a_int * b)))
             }
             (Self::Int(a), Self::Bool(b)) => {
                 let b_int = i64::from(*b);
-                Ok(Some(Value::Int(a * b_int)))
+                Ok(Some(Self::Int(a * b_int)))
             }
             (Self::Bool(a), Self::Float(b)) => {
                 let a_float = if *a { 1.0 } else { 0.0 };
-                Ok(Some(Value::Float(a_float * b)))
+                Ok(Some(Self::Float(a_float * b)))
             }
             (Self::Float(a), Self::Bool(b)) => {
                 let b_float = if *b { 1.0 } else { 0.0 };
-                Ok(Some(Value::Float(a * b_float)))
+                Ok(Some(Self::Float(a * b_float)))
             }
             (Self::Bool(a), Self::Bool(b)) => {
                 let result = i64::from(*a) * i64::from(*b);
-                Ok(Some(Value::Int(result)))
+                Ok(Some(Self::Int(result)))
             }
 
             // String repetition: "ab" * 3 or 3 * "ab"
             (Self::InternString(s), Self::Int(n)) | (Self::Int(n), Self::InternString(s)) => {
                 let count = i64_to_repeat_count(*n)?;
                 let result = interns.get_str(*s).repeat(count);
-                Ok(Some(Value::Ref(heap.allocate(HeapData::Str(result.into()))?)))
+                Ok(Some(Self::Ref(heap.allocate(HeapData::Str(result.into()))?)))
             }
 
             // Bytes repetition: b"ab" * 3 or 3 * b"ab"
             (Self::InternBytes(b), Self::Int(n)) | (Self::Int(n), Self::InternBytes(b)) => {
                 let count = i64_to_repeat_count(*n)?;
                 let result: Vec<u8> = interns.get_bytes(*b).repeat(count);
-                Ok(Some(Value::Ref(heap.allocate(HeapData::Bytes(result.into()))?)))
+                Ok(Some(Self::Ref(heap.allocate(HeapData::Bytes(result.into()))?)))
             }
 
             // Heap string repetition: heap_str * int or int * heap_str
@@ -576,28 +576,28 @@ impl PyTrait for Value {
                 if *b == 0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    Ok(Some(Value::Float(*a as f64 / *b as f64)))
+                    Ok(Some(Self::Float(*a as f64 / *b as f64)))
                 }
             }
             (Self::Float(a), Self::Float(b)) => {
                 if *b == 0.0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    Ok(Some(Value::Float(a / b)))
+                    Ok(Some(Self::Float(a / b)))
                 }
             }
             (Self::Int(a), Self::Float(b)) => {
                 if *b == 0.0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    Ok(Some(Value::Float(*a as f64 / b)))
+                    Ok(Some(Self::Float(*a as f64 / b)))
                 }
             }
             (Self::Float(a), Self::Int(b)) => {
                 if *b == 0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    Ok(Some(Value::Float(a / *b as f64)))
+                    Ok(Some(Self::Float(a / *b as f64)))
                 }
             }
             // Bool division (True=1, False=0)
@@ -605,12 +605,12 @@ impl PyTrait for Value {
                 if *b == 0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    Ok(Some(Value::Float(f64::from(*a) / *b as f64)))
+                    Ok(Some(Self::Float(f64::from(*a) / *b as f64)))
                 }
             }
             (Self::Int(a), Self::Bool(b)) => {
                 if *b {
-                    Ok(Some(Value::Float(*a as f64))) // a / 1 = a
+                    Ok(Some(Self::Float(*a as f64))) // a / 1 = a
                 } else {
                     Err(ExcType::zero_division().into())
                 }
@@ -619,19 +619,19 @@ impl PyTrait for Value {
                 if *b == 0.0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    Ok(Some(Value::Float(f64::from(*a) / b)))
+                    Ok(Some(Self::Float(f64::from(*a) / b)))
                 }
             }
             (Self::Float(a), Self::Bool(b)) => {
                 if *b {
-                    Ok(Some(Value::Float(*a))) // a / 1.0 = a
+                    Ok(Some(Self::Float(*a))) // a / 1.0 = a
                 } else {
                     Err(ExcType::zero_division().into())
                 }
             }
             (Self::Bool(a), Self::Bool(b)) => {
                 if *b {
-                    Ok(Some(Value::Float(f64::from(*a)))) // a / 1 = a
+                    Ok(Some(Self::Float(f64::from(*a)))) // a / 1 = a
                 } else {
                     Err(ExcType::zero_division().into())
                 }
@@ -653,7 +653,7 @@ impl PyTrait for Value {
                     let r = a % b;
                     // If there's a remainder and signs differ, round down (toward -∞)
                     let result = if r != 0 && (*a < 0) != (*b < 0) { d - 1 } else { d };
-                    Ok(Some(Value::Int(result)))
+                    Ok(Some(Self::Int(result)))
                 }
             }
             // Float floor division returns float
@@ -661,21 +661,21 @@ impl PyTrait for Value {
                 if *b == 0.0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    Ok(Some(Value::Float((a / b).floor())))
+                    Ok(Some(Self::Float((a / b).floor())))
                 }
             }
             (Self::Int(a), Self::Float(b)) => {
                 if *b == 0.0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    Ok(Some(Value::Float((*a as f64 / b).floor())))
+                    Ok(Some(Self::Float((*a as f64 / b).floor())))
                 }
             }
             (Self::Float(a), Self::Int(b)) => {
                 if *b == 0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    Ok(Some(Value::Float((a / *b as f64).floor())))
+                    Ok(Some(Self::Float((a / *b as f64).floor())))
                 }
             }
             // Bool floor division (True=1, False=0)
@@ -688,12 +688,12 @@ impl PyTrait for Value {
                     let d = a_int / b;
                     let r = a_int % b;
                     let result = if r != 0 && (a_int < 0) != (*b < 0) { d - 1 } else { d };
-                    Ok(Some(Value::Int(result)))
+                    Ok(Some(Self::Int(result)))
                 }
             }
             (Self::Int(a), Self::Bool(b)) => {
                 if *b {
-                    Ok(Some(Value::Int(*a))) // a // 1 = a
+                    Ok(Some(Self::Int(*a))) // a // 1 = a
                 } else {
                     Err(ExcType::zero_division().into())
                 }
@@ -702,19 +702,19 @@ impl PyTrait for Value {
                 if *b == 0.0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    Ok(Some(Value::Float((f64::from(*a) / b).floor())))
+                    Ok(Some(Self::Float((f64::from(*a) / b).floor())))
                 }
             }
             (Self::Float(a), Self::Bool(b)) => {
                 if *b {
-                    Ok(Some(Value::Float(a.floor()))) // a // 1.0 = floor(a)
+                    Ok(Some(Self::Float(a.floor()))) // a // 1.0 = floor(a)
                 } else {
                     Err(ExcType::zero_division().into())
                 }
             }
             (Self::Bool(a), Self::Bool(b)) => {
                 if *b {
-                    Ok(Some(Value::Int(i64::from(*a)))) // a // 1 = a
+                    Ok(Some(Self::Int(i64::from(*a)))) // a // 1 = a
                 } else {
                     Err(ExcType::zero_division().into())
                 }
@@ -733,19 +733,19 @@ impl PyTrait for Value {
                     // Note: exp > u32::MAX would overflow, so we use float for large exponents
                     if let Ok(exp_u32) = u32::try_from(*exp) {
                         match base.checked_pow(exp_u32) {
-                            Some(result) => Ok(Some(Value::Int(result))),
-                            None => Ok(Some(Value::Float((*base as f64).powf(*exp as f64)))),
+                            Some(result) => Ok(Some(Self::Int(result))),
+                            None => Ok(Some(Self::Float((*base as f64).powf(*exp as f64)))),
                         }
                     } else {
-                        Ok(Some(Value::Float((*base as f64).powf(*exp as f64))))
+                        Ok(Some(Self::Float((*base as f64).powf(*exp as f64))))
                     }
                 } else {
                     // Negative exponent: return float
                     // Use powi if exp fits in i32, otherwise use powf
                     if let Ok(exp_i32) = i32::try_from(*exp) {
-                        Ok(Some(Value::Float((*base as f64).powi(exp_i32))))
+                        Ok(Some(Self::Float((*base as f64).powi(exp_i32))))
                     } else {
-                        Ok(Some(Value::Float((*base as f64).powf(*exp as f64))))
+                        Ok(Some(Self::Float((*base as f64).powf(*exp as f64))))
                     }
                 }
             }
@@ -753,14 +753,14 @@ impl PyTrait for Value {
                 if *base == 0.0 && *exp < 0.0 {
                     Err(ExcType::zero_pow_negative().into())
                 } else {
-                    Ok(Some(Value::Float(base.powf(*exp))))
+                    Ok(Some(Self::Float(base.powf(*exp))))
                 }
             }
             (Self::Int(base), Self::Float(exp)) => {
                 if *base == 0 && *exp < 0.0 {
                     Err(ExcType::zero_pow_negative().into())
                 } else {
-                    Ok(Some(Value::Float((*base as f64).powf(*exp))))
+                    Ok(Some(Self::Float((*base as f64).powf(*exp))))
                 }
             }
             (Self::Float(base), Self::Int(exp)) => {
@@ -768,10 +768,10 @@ impl PyTrait for Value {
                     Err(ExcType::zero_pow_negative().into())
                 } else if let Ok(exp_i32) = i32::try_from(*exp) {
                     // Use powi if exp fits in i32
-                    Ok(Some(Value::Float(base.powi(exp_i32))))
+                    Ok(Some(Self::Float(base.powi(exp_i32))))
                 } else {
                     // Fall back to powf for exponents outside i32 range
-                    Ok(Some(Value::Float(base.powf(*exp as f64))))
+                    Ok(Some(Self::Float(base.powf(*exp as f64))))
                 }
             }
             // Bool power operations (True=1, False=0)
@@ -783,27 +783,27 @@ impl PyTrait for Value {
                     // Positive exponent: 1**n=1, 0**n=0 (for n>0), 0**0=1
                     if let Ok(exp_u32) = u32::try_from(*exp) {
                         match base_int.checked_pow(exp_u32) {
-                            Some(result) => Ok(Some(Value::Int(result))),
-                            None => Ok(Some(Value::Float((base_int as f64).powf(*exp as f64)))),
+                            Some(result) => Ok(Some(Self::Int(result))),
+                            None => Ok(Some(Self::Float((base_int as f64).powf(*exp as f64)))),
                         }
                     } else {
-                        Ok(Some(Value::Float((base_int as f64).powf(*exp as f64))))
+                        Ok(Some(Self::Float((base_int as f64).powf(*exp as f64))))
                     }
                 } else {
                     // Negative exponent: return float (1**-n=1.0)
                     if let Ok(exp_i32) = i32::try_from(*exp) {
-                        Ok(Some(Value::Float((base_int as f64).powi(exp_i32))))
+                        Ok(Some(Self::Float((base_int as f64).powi(exp_i32))))
                     } else {
-                        Ok(Some(Value::Float((base_int as f64).powf(*exp as f64))))
+                        Ok(Some(Self::Float((base_int as f64).powf(*exp as f64))))
                     }
                 }
             }
             (Self::Int(base), Self::Bool(exp)) => {
                 // n ** True = n, n ** False = 1
                 if *exp {
-                    Ok(Some(Value::Int(*base)))
+                    Ok(Some(Self::Int(*base)))
                 } else {
-                    Ok(Some(Value::Int(1)))
+                    Ok(Some(Self::Int(1)))
                 }
             }
             (Self::Bool(base), Self::Float(exp)) => {
@@ -811,15 +811,15 @@ impl PyTrait for Value {
                 if base_float == 0.0 && *exp < 0.0 {
                     Err(ExcType::zero_pow_negative().into())
                 } else {
-                    Ok(Some(Value::Float(base_float.powf(*exp))))
+                    Ok(Some(Self::Float(base_float.powf(*exp))))
                 }
             }
             (Self::Float(base), Self::Bool(exp)) => {
                 // base ** True = base, base ** False = 1.0
                 if *exp {
-                    Ok(Some(Value::Float(*base)))
+                    Ok(Some(Self::Float(*base)))
                 } else {
-                    Ok(Some(Value::Float(1.0)))
+                    Ok(Some(Self::Float(1.0)))
                 }
             }
             (Self::Bool(base), Self::Bool(exp)) => {
@@ -827,9 +827,9 @@ impl PyTrait for Value {
                 let base_int = i64::from(*base);
                 let exp_int = i64::from(*exp);
                 if exp_int == 0 {
-                    Ok(Some(Value::Int(1))) // anything ** 0 = 1
+                    Ok(Some(Self::Int(1))) // anything ** 0 = 1
                 } else {
-                    Ok(Some(Value::Int(base_int))) // base ** 1 = base
+                    Ok(Some(Self::Int(base_int))) // base ** 1 = base
                 }
             }
             _ => Ok(None),
@@ -838,7 +838,7 @@ impl PyTrait for Value {
 
     fn py_getitem(&self, key: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
         match self {
-            Value::Ref(id) => {
+            Self::Ref(id) => {
                 // Need to take entry out to allow mutable heap access
                 let id = *id;
                 heap.with_entry_mut(id, |heap, data| data.py_getitem(key, heap, interns))
@@ -855,7 +855,7 @@ impl PyTrait for Value {
         interns: &Interns,
     ) -> RunResult<()> {
         match self {
-            Value::Ref(id) => {
+            Self::Ref(id) => {
                 let id = *id;
                 heap.with_entry_mut(id, |heap, data| data.py_setitem(key, value, heap, interns))
             }
@@ -983,12 +983,12 @@ impl Value {
     /// - Str: substring search
     pub fn py_contains(
         &self,
-        item: &Value,
+        item: &Self,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<bool> {
         match self {
-            Value::Ref(heap_id) => {
+            Self::Ref(heap_id) => {
                 // Use with_entry_mut to temporarily take ownership of the container.
                 // This allows iterating over container elements while calling py_eq
                 // (which needs &mut Heap for comparing nested heap values).
@@ -1007,7 +1007,7 @@ impl Value {
                     }
                 })
             }
-            Value::InternString(string_id) => {
+            Self::InternString(string_id) => {
                 let container_str = interns.get_str(*string_id);
                 str_contains(container_str, item, heap, interns)
             }
@@ -1029,15 +1029,15 @@ impl Value {
         name_id: StringId,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<Value> {
+    ) -> RunResult<Self> {
         let attr_name = interns.get_str(name_id);
 
-        if let Value::Ref(heap_id) = self {
+        if let Self::Ref(heap_id) = self {
             let heap_id = *heap_id;
             let is_dataclass = matches!(heap.get(heap_id), HeapData::Dataclass(_));
 
             if is_dataclass {
-                let name_value = Value::InternString(name_id);
+                let name_value = Self::InternString(name_id);
                 heap.with_entry_mut(heap_id, |heap, data| {
                     if let HeapData::Dataclass(dc) = data {
                         match dc.get_attr(&name_value, heap, interns) {
@@ -1072,18 +1072,18 @@ impl Value {
     pub fn py_set_attr(
         &self,
         name_id: StringId,
-        value: Value,
+        value: Self,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<()> {
         let attr_name = interns.get_str(name_id);
 
-        if let Value::Ref(heap_id) = self {
+        if let Self::Ref(heap_id) = self {
             let heap_id = *heap_id;
             let is_dataclass = matches!(heap.get(heap_id), HeapData::Dataclass(_));
 
             if is_dataclass {
-                let name_value = Value::InternString(name_id);
+                let name_value = Self::InternString(name_id);
                 heap.with_entry_mut(heap_id, |heap, data| {
                     if let HeapData::Dataclass(dc) = data {
                         match dc.set_attr(name_value, value, heap, interns) {
@@ -1128,25 +1128,20 @@ impl Value {
     /// - Negative shift counts raise `ValueError`
     /// - Left shifts > 63 raise `OverflowError`
     /// - Right shifts > 63 return 0 (or -1 for negative numbers)
-    pub fn py_bitwise(
-        &self,
-        other: &Self,
-        op: BitwiseOp,
-        heap: &Heap<impl ResourceTracker>,
-    ) -> Result<Value, RunError> {
+    pub fn py_bitwise(&self, other: &Self, op: BitwiseOp, heap: &Heap<impl ResourceTracker>) -> Result<Self, RunError> {
         // Capture types for error messages
         let lhs_type = self.py_type(Some(heap));
         let rhs_type = other.py_type(Some(heap));
 
         // Get integer values from lhs and rhs
         let lhs_int = match self {
-            Value::Int(i) => Some(*i),
-            Value::Bool(b) => Some(i64::from(*b)),
+            Self::Int(i) => Some(*i),
+            Self::Bool(b) => Some(i64::from(*b)),
             _ => None,
         };
         let rhs_int = match other {
-            Value::Int(i) => Some(*i),
-            Value::Bool(b) => Some(i64::from(*b)),
+            Self::Int(i) => Some(*i),
+            Self::Bool(b) => Some(i64::from(*b)),
             _ => None,
         };
 
@@ -1182,7 +1177,7 @@ impl Value {
                     }
                 }
             };
-            Ok(Value::Int(result))
+            Ok(Self::Int(result))
         } else {
             Err(ExcType::binary_type_error(op.as_str(), lhs_type, rhs_type))
         }
@@ -1198,7 +1193,7 @@ impl Value {
         attr: &Attr,
         args: ArgValues,
         interns: &Interns,
-    ) -> RunResult<Value> {
+    ) -> RunResult<Self> {
         if let Self::Ref(id) = self {
             heap.call_attr(*id, attr, args, interns)
         } else {
@@ -1246,7 +1241,7 @@ impl Value {
     pub fn drop_with_heap(mut self, heap: &mut Heap<impl ResourceTracker>) {
         #[cfg(feature = "ref-count-panic")]
         {
-            let old = std::mem::replace(&mut self, Value::Dereferenced);
+            let old = std::mem::replace(&mut self, Self::Dereferenced);
             if let Self::Ref(id) = &old {
                 heap.dec_ref(*id);
                 std::mem::forget(old);
@@ -1306,7 +1301,7 @@ impl Value {
     /// This should be called from `py_dec_ref_ids` methods only
     #[cfg(feature = "ref-count-panic")]
     pub fn dec_ref_forget(&mut self) {
-        let old = std::mem::replace(self, Value::Dereferenced);
+        let old = std::mem::replace(self, Self::Dereferenced);
         std::mem::forget(old);
     }
 
@@ -1316,7 +1311,7 @@ impl Value {
     /// consumes `self` but does NOT handle reference counting - the caller
     /// must ensure proper cleanup if needed.
     pub fn into_dict(self, heap: &mut Heap<impl ResourceTracker>) -> Result<&Dict, &'static str> {
-        let Value::Ref(id) = self else {
+        let Self::Ref(id) = self else {
             return Err("into_dict, value must be a Ref");
         };
         match heap.get(id) {
@@ -1331,8 +1326,8 @@ impl Value {
     /// objects, otherwise returns `None`.
     pub fn as_either_str<T: ResourceTracker>(&self, heap: &mut Heap<T>) -> Option<EitherStr> {
         match self {
-            Value::InternString(id) => Some(EitherStr::Interned(*id)),
-            Value::Ref(heap_id) => match heap.get(*heap_id) {
+            Self::InternString(id) => Some(EitherStr::Interned(*id)),
+            Self::Ref(heap_id) => match heap.get(*heap_id) {
                 HeapData::Str(s) => Some(EitherStr::Heap(s.as_str().to_owned())),
                 _ => None,
             },

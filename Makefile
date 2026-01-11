@@ -46,8 +46,8 @@ format: format-rs format-py ## Format Rust code, this does not format Python cod
 .PHONY: lint-rs
 lint-rs:  ## Lint Rust code with clippy and import checks
 	@cargo clippy --version
-	cargo clippy --workspace --tests --bench main -- -D warnings -A incomplete_features
-	cargo clippy --workspace --tests --all-features -- -D warnings -A incomplete_features
+	cargo clippy --workspace --tests --bench main
+	cargo clippy --workspace --tests --all-features
 	uv run scripts/check_imports.py
 
 .PHONY: lint-py

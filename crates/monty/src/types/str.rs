@@ -51,12 +51,12 @@ impl Str {
         let value = args.get_zero_one_arg("str")?;
         match value {
             None => {
-                let heap_id = heap.allocate(HeapData::Str(Str::new(String::new())))?;
+                let heap_id = heap.allocate(HeapData::Str(Self::new(String::new())))?;
                 Ok(Value::Ref(heap_id))
             }
             Some(v) => {
                 let s = v.py_str(heap, interns).into_owned();
-                let heap_id = heap.allocate(HeapData::Str(Str::new(s)))?;
+                let heap_id = heap.allocate(HeapData::Str(Self::new(s)))?;
                 v.drop_with_heap(heap);
                 Ok(Value::Ref(heap_id))
             }

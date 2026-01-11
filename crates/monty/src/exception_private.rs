@@ -646,7 +646,7 @@ impl ExcType {
             Some(name) => format!("{name}() argument after ** must be a mapping, not {type_}"),
             None => format!("argument after ** must be a mapping, not {type_}"),
         };
-        SimpleException::new(ExcType::TypeError, Some(message))
+        SimpleException::new(Self::TypeError, Some(message))
     }
 
     /// Generates the duplicate keyword argument error.
@@ -656,7 +656,7 @@ impl ExcType {
             Some(name) => format!("{name}() got multiple values for keyword argument '{key}'"),
             None => format!("got multiple values for keyword argument '{key}'"),
         };
-        SimpleException::new(ExcType::TypeError, Some(message))
+        SimpleException::new(Self::TypeError, Some(message))
     }
 
     /// Creates a TypeError for unsupported binary operations.
@@ -686,8 +686,7 @@ impl ExcType {
 
     #[must_use]
     pub fn cmp_type_error<T>(op: &CmpOperator, left_type: Type, right_type: Type) -> RunError {
-        exc_fmt!(ExcType::TypeError; "'{op}' not supported between instances of '{left_type}' and '{right_type}'")
-            .into()
+        exc_fmt!(Self::TypeError; "'{op}' not supported between instances of '{left_type}' and '{right_type}'").into()
     }
 }
 
@@ -719,7 +718,7 @@ impl SimpleException {
     /// Creates a new exception with the given type and optional argument message.
     #[must_use]
     pub fn new(exc_type: ExcType, arg: Option<String>) -> Self {
-        SimpleException { exc_type, arg }
+        Self { exc_type, arg }
     }
 
     #[must_use]
@@ -818,7 +817,7 @@ pub struct ExceptionRaise {
 
 impl From<SimpleException> for ExceptionRaise {
     fn from(exc: SimpleException) -> Self {
-        ExceptionRaise {
+        Self {
             exc,
             frame: None,
             hide_caret: false,
@@ -928,7 +927,7 @@ pub struct RawStackFrame {
 }
 
 impl RawStackFrame {
-    pub(crate) fn new(position: CodeRange, frame_name: StringId, parent: Option<&RawStackFrame>) -> Self {
+    pub(crate) fn new(position: CodeRange, frame_name: StringId, parent: Option<&Self>) -> Self {
         Self {
             position,
             frame_name: Some(frame_name),

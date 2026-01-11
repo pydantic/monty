@@ -308,7 +308,7 @@ impl EitherProgress {
         print_callback: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let (function_name, args, kwargs, snapshot) = match self {
-            EitherProgress::NoLimit(p) => match p {
+            Self::NoLimit(p) => match p {
                 RunProgress::Complete(result) => return PyMontyComplete::create(py, &result),
                 RunProgress::FunctionCall {
                     function_name,
@@ -317,7 +317,7 @@ impl EitherProgress {
                     state,
                 } => (function_name, args, kwargs, EitherSnapshot::NoLimit(state)),
             },
-            EitherProgress::Limited(p) => match p {
+            Self::Limited(p) => match p {
                 RunProgress::Complete(result) => return PyMontyComplete::create(py, &result),
                 RunProgress::FunctionCall {
                     function_name,

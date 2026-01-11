@@ -246,13 +246,13 @@ impl<T: ResourceTracker> RunProgress<T> {
         self,
     ) -> Option<(String, Vec<MontyObject>, Vec<(MontyObject, MontyObject)>, Snapshot<T>)> {
         match self {
-            RunProgress::FunctionCall {
+            Self::FunctionCall {
                 function_name,
                 args,
                 kwargs,
                 state,
             } => Some((function_name, args, kwargs, state)),
-            RunProgress::Complete(_) => None,
+            Self::Complete(_) => None,
         }
     }
 
@@ -260,8 +260,8 @@ impl<T: ResourceTracker> RunProgress<T> {
     #[must_use]
     pub fn into_complete(self) -> Option<MontyObject> {
         match self {
-            RunProgress::Complete(value) => Some(value),
-            RunProgress::FunctionCall { .. } => None,
+            Self::Complete(value) => Some(value),
+            Self::FunctionCall { .. } => None,
         }
     }
 }
@@ -323,13 +323,13 @@ pub enum ExternalResult {
 
 impl From<MontyObject> for ExternalResult {
     fn from(value: MontyObject) -> Self {
-        ExternalResult::Return(value)
+        Self::Return(value)
     }
 }
 
 impl From<MontyException> for ExternalResult {
     fn from(exception: MontyException) -> Self {
-        ExternalResult::Error(exception)
+        Self::Error(exception)
     }
 }
 
@@ -423,7 +423,7 @@ impl<T: ResourceTracker> Snapshot<T> {
                     function_name,
                     args: args_py,
                     kwargs: kwargs_py,
-                    state: Snapshot {
+                    state: Self {
                         executor: self.executor,
                         vm_state: vm_state.expect("snapshot should exist for ExternalCall"),
                         heap: self.heap,

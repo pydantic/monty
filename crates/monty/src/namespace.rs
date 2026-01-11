@@ -14,7 +14,7 @@ pub struct NamespaceId(u32);
 
 impl NamespaceId {
     pub fn new(index: usize) -> Self {
-        NamespaceId(index.try_into().expect("Invalid namespace id"))
+        Self(index.try_into().expect("Invalid namespace id"))
     }
 
     /// Returns the raw index value.
@@ -35,7 +35,7 @@ pub struct Namespace(Vec<Value>);
 
 impl Namespace {
     fn with_capacity(capacity: usize) -> Self {
-        Namespace(Vec::with_capacity(capacity))
+        Self(Vec::with_capacity(capacity))
     }
 
     pub fn get(&self, index: NamespaceId) -> &Value {

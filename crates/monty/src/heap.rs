@@ -951,7 +951,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// The data is automatically restored after the closure completes.
     pub fn with_entry_mut<F, R>(&mut self, id: HeapId, f: F) -> R
     where
-        F: FnOnce(&mut Heap<T>, &mut HeapData) -> R,
+        F: FnOnce(&mut Self, &mut HeapData) -> R,
     {
         // Take data out in a block so the borrow of self.entries ends
         let mut data = take_data!(self, id, "with_entry_mut");
@@ -969,7 +969,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// finishes executing.
     pub fn with_two<F, R>(&mut self, left: HeapId, right: HeapId, f: F) -> R
     where
-        F: FnOnce(&mut Heap<T>, &HeapData, &HeapData) -> R,
+        F: FnOnce(&mut Self, &HeapData, &HeapData) -> R,
     {
         if left == right {
             // Same value - take data once and pass it twice

@@ -62,12 +62,8 @@ impl Expectation {
     /// Returns the expected value string
     fn expected_value(&self) -> &str {
         match self {
-            Expectation::Raise(s)
-            | Expectation::ReturnStr(s)
-            | Expectation::Return(s)
-            | Expectation::ReturnType(s)
-            | Expectation::Traceback(s) => s,
-            Expectation::RefCounts(_) | Expectation::NoException => "",
+            Self::Raise(s) | Self::ReturnStr(s) | Self::Return(s) | Self::ReturnType(s) | Self::Traceback(s) => s,
+            Self::RefCounts(_) | Self::NoException => "",
         }
     }
 }

@@ -52,7 +52,7 @@ impl Bytes {
         let value = args.get_zero_one_arg("bytes")?;
         match value {
             None => {
-                let heap_id = heap.allocate(HeapData::Bytes(Bytes::new(Vec::new())))?;
+                let heap_id = heap.allocate(HeapData::Bytes(Self::new(Vec::new())))?;
                 Ok(Value::Ref(heap_id))
             }
             Some(v) => {
@@ -63,19 +63,19 @@ impl Bytes {
                         }
                         let size = usize::try_from(*n).expect("bytes count validated non-negative");
                         let bytes = vec![0u8; size];
-                        heap.allocate(HeapData::Bytes(Bytes::new(bytes)))
+                        heap.allocate(HeapData::Bytes(Self::new(bytes)))
                     }
                     Value::InternString(string_id) => {
                         let s = interns.get_str(*string_id);
-                        heap.allocate(HeapData::Bytes(Bytes::new(s.as_bytes().to_vec())))
+                        heap.allocate(HeapData::Bytes(Self::new(s.as_bytes().to_vec())))
                     }
                     Value::InternBytes(bytes_id) => {
                         let b = interns.get_bytes(*bytes_id);
-                        heap.allocate(HeapData::Bytes(Bytes::new(b.to_vec())))
+                        heap.allocate(HeapData::Bytes(Self::new(b.to_vec())))
                     }
                     Value::Ref(id) => match heap.get(*id) {
-                        HeapData::Str(s) => heap.allocate(HeapData::Bytes(Bytes::new(s.as_str().as_bytes().to_vec()))),
-                        HeapData::Bytes(b) => heap.allocate(HeapData::Bytes(Bytes::new(b.as_slice().to_vec()))),
+                        HeapData::Str(s) => heap.allocate(HeapData::Bytes(Self::new(s.as_str().as_bytes().to_vec()))),
+                        HeapData::Bytes(b) => heap.allocate(HeapData::Bytes(Self::new(b.as_slice().to_vec()))),
                         _ => {
                             let err = ExcType::type_error_bytes_init(v.py_type(Some(heap)));
                             v.drop_with_heap(heap);

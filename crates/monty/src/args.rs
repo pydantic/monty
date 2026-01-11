@@ -200,8 +200,8 @@ impl KwargsValues {
         interns: &Interns,
     ) -> Vec<(MontyObject, MontyObject)> {
         match self {
-            KwargsValues::Empty => vec![],
-            KwargsValues::Inline(kvs) => kvs
+            Self::Empty => vec![],
+            Self::Inline(kvs) => kvs
                 .into_iter()
                 .map(|(k, v)| {
                     let key = MontyObject::String(interns.get_str(k).to_owned());
@@ -209,7 +209,7 @@ impl KwargsValues {
                     (key, value)
                 })
                 .collect(),
-            KwargsValues::Dict(dict) => dict
+            Self::Dict(dict) => dict
                 .into_iter()
                 .map(|(k, v)| (MontyObject::new(k, heap, interns), MontyObject::new(v, heap, interns)))
                 .collect(),
