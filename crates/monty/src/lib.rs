@@ -20,6 +20,7 @@ mod prepare;
 mod resource;
 mod run;
 mod signature;
+mod type_checking;
 mod types;
 mod value;
 
@@ -32,4 +33,5 @@ pub use crate::{
     object::{InvalidInputError, MontyObject},
     resource::{LimitedTracker, NoLimitTracker, ResourceError, ResourceLimits, ResourceTracker},
     run::{ExternalResult, MontyRun, RunProgress, Snapshot},
+    type_checking::run_type_checking,
 };
