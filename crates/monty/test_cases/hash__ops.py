@@ -1,3 +1,9 @@
+# === Hash returns int type ===
+assert isinstance(hash(42), int), 'hash returns int type'
+assert isinstance(hash('hello'), int), 'hash of str returns int'
+assert isinstance(hash((1, 2, 3)), int), 'hash of tuple returns int'
+assert isinstance(hash(3.14), int), 'hash of float returns int'
+
 # === Hash consistency for same values ===
 assert hash(42) == hash(42), 'int hash consistent'
 assert hash(-1) == hash(-1), 'negative int hash consistent'

@@ -80,3 +80,44 @@ assert list({'a': 1, 'b': 2}) == ['a', 'b'], 'list from dict yields keys'
 assert list('héllo') == ['h', 'é', 'l', 'l', 'o'], 'list from string with accented char'
 assert list('日本') == ['日', '本'], 'list from string with CJK chars'
 assert list('a🎉b') == ['a', '🎉', 'b'], 'list from string with emoji'
+
+# === list.append() ===
+lst = []
+lst.append(1)
+assert lst == [1], 'append to empty'
+lst.append(2)
+assert lst == [1, 2], 'append to non-empty'
+lst.append(lst)  # append self creates cycle
+assert len(lst) == 3, 'append self increases length'
+
+# === list.insert() ===
+# Basic insert at various positions
+lst = [1, 2, 3]
+lst.insert(0, 'a')
+assert lst == ['a', 1, 2, 3], 'insert at beginning'
+
+lst = [1, 2, 3]
+lst.insert(1, 'a')
+assert lst == [1, 'a', 2, 3], 'insert in middle'
+
+lst = [1, 2, 3]
+lst.insert(3, 'a')
+assert lst == [1, 2, 3, 'a'], 'insert at end'
+
+# Insert beyond length appends
+lst = [1, 2, 3]
+lst.insert(100, 'a')
+assert lst == [1, 2, 3, 'a'], 'insert beyond length appends'
+
+# Insert with negative index
+lst = [1, 2, 3]
+lst.insert(-1, 'a')
+assert lst == [1, 2, 'a', 3], 'insert at -1 (before last)'
+
+lst = [1, 2, 3]
+lst.insert(-2, 'a')
+assert lst == [1, 'a', 2, 3], 'insert at -2'
+
+lst = [1, 2, 3]
+lst.insert(-100, 'a')
+assert lst == ['a', 1, 2, 3], 'insert very negative clamps to 0'

@@ -1,3 +1,9 @@
+# === id() returns int type ===
+assert isinstance(id(None), int), 'id returns int type'
+assert isinstance(id([]), int), 'id of list returns int'
+assert isinstance(id('hello'), int), 'id of str returns int'
+assert isinstance(id(42), int), 'id of int returns int'
+
 # === Identity operator (is) ===
 assert (True is True) == True, 'is True'
 assert (False is False) == True, 'is False'

@@ -267,12 +267,23 @@ impl PyTrait for List {
             }
             attr::INSERT => {
                 let (index_obj, item) = args.get_two_args("insert")?;
-                // Python's insert() treats negative indices as 0 and indices > len as len
+                // Python's insert() handles negative indices by adding len
+                // If still negative after adding len, clamps to 0
+                // If >= len, appends to end
                 let index_i64 = index_obj.as_int()?;
+                let len = self.0.len();
+                let len_i64 = i64::try_from(len).expect("list length exceeds i64::MAX");
                 let index = if index_i64 < 0 {
-                    0
+                    // Negative index: add length, clamp to 0 if still negative
+                    let adjusted = index_i64 + len_i64;
+                    if adjusted < 0 {
+                        0
+                    } else {
+                        usize::try_from(adjusted).expect("adjusted index fits in usize")
+                    }
                 } else {
-                    usize::try_from(index_i64).unwrap_or(self.0.len())
+                    // Positive index: clamp to len if too large
+                    usize::try_from(index_i64).unwrap_or(len)
                 };
                 self.insert(heap, index, item);
                 Ok(Value::None)

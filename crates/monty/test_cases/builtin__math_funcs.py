@@ -30,6 +30,17 @@ assert round(True, -1) == 0, 'round True with negative digits behaves like int'
 assert round(True, 2) == 1, 'round True with positive digits returns int'
 assert round(False, -3) == 0, 'round False with negative digits stays zero'
 
+# round edge cases with extreme values
+assert isinstance(round(1e15), int), 'round large float returns int'
+assert isinstance(round(-1e15), int), 'round large negative float returns int'
+assert round(0.0) == 0, 'round(0.0) is zero'
+assert round(-0.0) == 0, 'round(-0.0) is zero'
+
+# round with float result (ndigits specified)
+assert isinstance(round(1.5, 1), float), 'round with ndigits returns float'
+assert round(1.25, 1) == 1.2, 'round 1.25 to 1 decimal (bankers rounding)'
+assert round(1.35, 1) == 1.4, 'round 1.35 to 1 decimal'
+
 # === divmod() ===
 # Basic divmod operations
 assert divmod(17, 5) == (3, 2), 'divmod 17, 5'

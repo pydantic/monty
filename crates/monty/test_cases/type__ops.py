@@ -99,6 +99,15 @@ assert int(3.0) == 3, 'int(whole float)'
 assert int(True) == 1, 'int(True)'
 assert int(False) == 0, 'int(False)'
 
+# int() with extreme float values (should clamp to i64 range in Monty)
+# Note: Python uses arbitrary precision; Monty clamps to i64
+assert isinstance(int(1e18), int), 'int(large float) returns int'
+assert isinstance(int(-1e18), int), 'int(large negative float) returns int'
+assert int(0.0) == 0, 'int(0.0) is zero'
+assert int(-0.0) == 0, 'int(-0.0) is zero'
+assert int(0.9) == 0, 'int(0.9) truncates to 0'
+assert int(-0.9) == 0, 'int(-0.9) truncates to 0'
+
 # === float() constructor ===
 assert float() == 0.0, 'float() default'
 assert float(42) == 42.0, 'float(int)'
