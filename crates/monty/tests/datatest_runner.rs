@@ -814,7 +814,7 @@ fn run_traceback_script(path: &Path, iter_mode: bool) -> String {
     })
 }
 
-fn format_traceback(py: Python<'_>, exc: PyErr) -> String {
+fn format_traceback(py: Python<'_>, exc: &PyErr) -> String {
     let run_traceback = import_run_traceback(py);
     let exc_value = exc.value(py);
     let return_value = run_traceback
@@ -914,7 +914,7 @@ fn try_run_cpython_test(
                     test_name: test_name.clone(),
                     kind: "CPython unexpected exception".to_string(),
                     expected: "no exception".to_string(),
-                    actual: format_traceback(py, e),
+                    actual: format_traceback(py, &e),
                 });
             }
             if matches!(expectation, Expectation::Raise(_)) {
@@ -924,7 +924,7 @@ fn try_run_cpython_test(
                 test_name: test_name.clone(),
                 kind: "CPython unexpected exception".to_string(),
                 expected: "success".to_string(),
-                actual: format_traceback(py, e),
+                actual: format_traceback(py, &e),
             });
         }
 
@@ -959,7 +959,7 @@ fn try_run_cpython_test(
                             test_name: test_name.clone(),
                             kind: "CPython unexpected exception".to_string(),
                             expected: "no exception".to_string(),
-                            actual: format_traceback(py, e),
+                            actual: format_traceback(py, &e),
                         });
                     }
                     if matches!(expectation, Expectation::Raise(_)) {
@@ -970,7 +970,7 @@ fn try_run_cpython_test(
                         test_name: test_name.clone(),
                         kind: "CPython unexpected exception".to_string(),
                         expected: "success".to_string(),
-                        actual: format_traceback(py, e),
+                        actual: format_traceback(py, &e),
                     })
                 }
             }

@@ -134,7 +134,7 @@ impl<T: ResourceTracker> PySignalTracker<T> {
         if self.check_counter.is_multiple_of(SIGNAL_CHECK_INTERVAL) {
             Python::attach(|py| {
                 py.check_signals()
-                    .map_err(|e| ResourceError::Exception(exc_py_to_monty(py, e)))
+                    .map_err(|e| ResourceError::Exception(exc_py_to_monty(py, &e)))
             })?;
         }
         Ok(())

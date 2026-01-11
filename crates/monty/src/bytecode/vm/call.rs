@@ -89,7 +89,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             }
             Value::Function(func_id) => {
                 // User function without defaults or captured variables (inline representation)
-                self.call_user_function(func_id, Vec::new(), Vec::new(), args)?;
+                self.call_user_function(func_id, &[], Vec::new(), args)?;
                 Ok(CallResult::UserFunction)
             }
             Value::Ref(heap_id) => {
@@ -131,7 +131,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 callable.drop_with_heap(self.heap);
 
                 // Call the user function
-                self.call_user_function(func_id, cells, defaults, args)?;
+                self.call_user_function(func_id, &cells, defaults, args)?;
                 Ok(CallResult::UserFunction)
             }
             _ => {
@@ -267,7 +267,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     fn call_user_function(
         &mut self,
         func_id: FunctionId,
-        cells: Vec<HeapId>,
+        cells: &[HeapId],
         defaults: Vec<Value>,
         args: ArgValues,
     ) -> Result<(), RunError> {

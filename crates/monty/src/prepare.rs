@@ -349,7 +349,7 @@ impl<'i> Prepare<'i> {
                     new_nodes.push(Node::If { test, body, or_else });
                 }
                 Node::FunctionDef(RawFunctionDef { name, signature, body }) => {
-                    let func_node = self.prepare_function_def(name, signature, body)?;
+                    let func_node = self.prepare_function_def(name, &signature, body)?;
                     new_nodes.push(func_node);
                 }
                 Node::Global { names, position } => {
@@ -621,7 +621,7 @@ impl<'i> Prepare<'i> {
     fn prepare_function_def(
         &mut self,
         name: Identifier,
-        parsed_sig: ParsedSignature,
+        parsed_sig: &ParsedSignature,
         body: Vec<ParseNode>,
     ) -> Result<PreparedNode, ParseError> {
         // Register the function name in the current scope

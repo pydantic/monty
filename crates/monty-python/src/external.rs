@@ -46,7 +46,7 @@ impl<'py> ExternalFunctionRegistry<'py> {
     ) -> ExternalResult {
         match self.call_inner(function_name, args, kwargs) {
             Ok(result) => ExternalResult::Return(result),
-            Err(err) => ExternalResult::Error(exc_py_to_monty(self.py, err)),
+            Err(err) => ExternalResult::Error(exc_py_to_monty(self.py, &err)),
         }
     }
 

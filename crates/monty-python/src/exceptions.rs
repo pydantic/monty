@@ -132,6 +132,7 @@ impl MontySyntaxError {
 
 #[pymethods]
 impl MontySyntaxError {
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
     fn __repr__(slf: PyRef<'_, Self>) -> String {
         let parent = slf.as_super();
         if let Some(msg) = parent.message() {
@@ -193,6 +194,7 @@ impl MontyRuntimeError {
     ///
     /// Overrides the base class to provide the full traceback when show='traceback'.
     #[pyo3(signature = (show = "traceback"))]
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
     fn display(slf: PyRef<'_, Self>, show: &str) -> PyResult<String> {
         match show {
             "traceback" => Ok(slf.as_super().exc.to_string()),
@@ -204,10 +206,12 @@ impl MontyRuntimeError {
         }
     }
 
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
     fn __str__(slf: PyRef<'_, Self>) -> String {
         slf.as_super().message().unwrap_or_default().to_string()
     }
 
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
     fn __repr__(slf: PyRef<'_, Self>) -> String {
         let parent = slf.as_super();
         let exc_type_name = parent.exc_type();
@@ -338,7 +342,7 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
 /// Converts a python exception to monty.
 ///
 /// Used when resuming execution with an exception from Python.
-pub fn exc_py_to_monty(py: Python<'_>, py_err: PyErr) -> MontyException {
+pub fn exc_py_to_monty(py: Python<'_>, py_err: &PyErr) -> MontyException {
     let exc = py_err.value(py);
     let exc_type = py_err_to_exc_type(exc);
     let arg = exc.str().ok().map(|s| s.to_string_lossy().into_owned());

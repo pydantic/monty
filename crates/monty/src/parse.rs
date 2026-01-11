@@ -197,7 +197,7 @@ impl<'a> Parser<'a> {
             Some(expr) => Some(self.parse_expression(*expr)?),
             None => None,
         };
-        let name = h.name.map(|n| self.identifier(n.id, n.range));
+        let name = h.name.map(|n| self.identifier(&n.id, n.range));
         let body = self.parse_statements(h.body)?;
         Ok(ExceptHandler { exc_type, name, body })
     }
@@ -234,7 +234,7 @@ impl<'a> Parser<'a> {
                     var_kwargs,
                 };
 
-                let name = self.identifier(function.name.id, function.name.range);
+                let name = self.identifier(&function.name.id, function.name.range);
                 // Parse function body recursively
                 let body = self.parse_statements(function.body)?;
 
@@ -542,7 +542,7 @@ impl<'a> Parser<'a> {
                             Callable::Builtin(builtin)
                         } else {
                             // Name will be looked up in the namespace at runtime
-                            let ident = self.identifier(id, range);
+                            let ident = self.identifier(&id, range);
                             Callable::Name(ident)
                         };
                         Ok(ExprLoc::new(
@@ -570,7 +570,7 @@ impl<'a> Parser<'a> {
                     )),
                 }
             }
-            AstExpr::FString(ast::ExprFString { value, range, .. }) => self.parse_fstring(value, range),
+            AstExpr::FString(ast::ExprFString { value, range, .. }) => self.parse_fstring(&value, range),
             AstExpr::TString(_) => Err(ParseError::not_implemented("template strings (t-interns)")),
             AstExpr::StringLiteral(ast::ExprStringLiteral { value, range, .. }) => {
                 let string_id = self.interner.intern(&value.to_string());
@@ -638,7 +638,7 @@ impl<'a> Parser<'a> {
                 let expr = if let Ok(builtin) = name.parse::<Builtins>() {
                     Expr::Builtin(builtin)
                 } else {
-                    Expr::Name(self.identifier(id, range))
+                    Expr::Name(self.identifier(&id, range))
                 };
                 Ok(ExprLoc::new(position, expr))
             }
@@ -674,7 +674,7 @@ impl<'a> Parser<'a> {
         for kwarg in keywords {
             if let Some(key) = kwarg.arg {
                 // Regular kwarg: key=value
-                let key = self.identifier(key.id, key.range);
+                let key = self.identifier(&key.id, key.range);
                 let value = self.parse_expression(kwarg.value)?;
                 kwargs.push(Kwarg { key, value });
             } else {
@@ -691,7 +691,7 @@ impl<'a> Parser<'a> {
 
     fn parse_identifier(&mut self, ast: AstExpr) -> Result<Identifier, ParseError> {
         match ast {
-            AstExpr::Name(ast::ExprName { id, range, .. }) => Ok(self.identifier(id, range)),
+            AstExpr::Name(ast::ExprName { id, range, .. }) => Ok(self.identifier(&id, range)),
             other => Err(ParseError::syntax(
                 format!("Expected name, got {other:?}"),
                 self.convert_range(other.range()),
@@ -699,8 +699,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn identifier(&mut self, id: Name, range: TextRange) -> Identifier {
-        let string_id = self.interner.intern(&id);
+    fn identifier(&mut self, id: &Name, range: TextRange) -> Identifier {
+        let string_id = self.interner.intern(id);
         Identifier::new(string_id, self.convert_range(range))
     }
 
@@ -728,10 +728,10 @@ impl<'a> Parser<'a> {
     /// F-strings in ruff AST are represented as `FStringValue` containing
     /// `FStringPart`s, which can be either literal strings or `FString`
     /// interpolated sections. Each `FString` contains `InterpolatedStringElements`.
-    fn parse_fstring(&mut self, value: ast::FStringValue, range: TextRange) -> Result<ExprLoc, ParseError> {
+    fn parse_fstring(&mut self, value: &ast::FStringValue, range: TextRange) -> Result<ExprLoc, ParseError> {
         let mut parts = Vec::new();
 
-        for fstring_part in &value {
+        for fstring_part in value {
             match fstring_part {
                 ast::FStringPart::Literal(lit) => {
                     // Literal string segment - intern for use at runtime
