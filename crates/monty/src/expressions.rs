@@ -264,7 +264,7 @@ pub enum Node<F> {
     /// this sets the field value. Returns an error for immutable objects.
     /// Supports chained attribute access on the left-hand side.
     AttrAssign {
-        object: Box<ExprLoc>,
+        object: ExprLoc,
         attr: Attr,
         target_position: CodeRange,
         value: ExprLoc,

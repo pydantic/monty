@@ -382,7 +382,7 @@ impl<'a> Parser<'a> {
             }),
             // Attribute assignment like obj.attr = value (supports chained like a.b.c = value)
             AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => Ok(Node::AttrAssign {
-                object: Box::new(self.parse_expression(*value)?),
+                object: self.parse_expression(*value)?,
                 attr: Attr::Interned(self.interner.intern(attr.id())),
                 target_position: self.convert_range(range),
                 value: self.parse_expression(rhs)?,

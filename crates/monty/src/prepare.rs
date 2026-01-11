@@ -317,7 +317,7 @@ impl<'i> Prepare<'i> {
                     value,
                 } => {
                     // AttrAssign doesn't assign to the object itself, just modifies its attribute
-                    let object = Box::new(self.prepare_expression(*object)?);
+                    let object = self.prepare_expression(object)?;
                     let value = self.prepare_expression(value)?;
                     new_nodes.push(Node::AttrAssign {
                         object,
