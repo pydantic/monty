@@ -172,7 +172,8 @@ impl ForIterator {
                 if self.index >= *len {
                     IterState::Exhausted
                 } else {
-                    let value = *start + (self.index as i64) * *step;
+                    let idx = i64::try_from(self.index).expect("iterator index exceeds i64::MAX");
+                    let value = *start + idx * *step;
                     IterState::Range(value)
                 }
             }
@@ -299,7 +300,8 @@ impl ForIterator {
                 if self.index >= *len {
                     return Ok(None);
                 }
-                let value = *start + (self.index as i64) * *step;
+                let idx = i64::try_from(self.index).expect("iterator index exceeds i64::MAX");
+                let value = *start + idx * *step;
                 self.index += 1;
                 Ok(Some(Value::Int(value)))
             }

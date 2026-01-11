@@ -731,8 +731,8 @@ impl PyTrait for Value {
                 } else if *exp >= 0 {
                     // Positive exponent: try to return int, fall back to float on overflow
                     // Note: exp > u32::MAX would overflow, so we use float for large exponents
-                    if *exp <= i64::from(u32::MAX) {
-                        match base.checked_pow(*exp as u32) {
+                    if let Ok(exp_u32) = u32::try_from(*exp) {
+                        match base.checked_pow(exp_u32) {
                             Some(result) => Ok(Some(Value::Int(result))),
                             None => Ok(Some(Value::Float((*base as f64).powf(*exp as f64)))),
                         }
@@ -781,8 +781,8 @@ impl PyTrait for Value {
                     Err(ExcType::zero_pow_negative().into())
                 } else if *exp >= 0 {
                     // Positive exponent: 1**n=1, 0**n=0 (for n>0), 0**0=1
-                    if *exp <= i64::from(u32::MAX) {
-                        match base_int.checked_pow(*exp as u32) {
+                    if let Ok(exp_u32) = u32::try_from(*exp) {
+                        match base_int.checked_pow(exp_u32) {
                             Some(result) => Ok(Some(Value::Int(result))),
                             None => Ok(Some(Value::Float((base_int as f64).powf(*exp as f64)))),
                         }
@@ -1484,7 +1484,11 @@ pub fn heap_tagged_id(heap_id: HeapId) -> usize {
 fn int_value_id(value: i64) -> usize {
     let mut hasher = DefaultHasher::new();
     value.hash(&mut hasher);
-    INT_ID_TAG | (hasher.finish() as usize & INT_ID_MASK)
+    let hash_u64 = hasher.finish();
+    // Mask to usize range before conversion to handle 32-bit platforms
+    let masked = hash_u64 & (usize::MAX as u64);
+    let hash_usize = usize::try_from(masked).expect("masked value fits in usize");
+    INT_ID_TAG | (hash_usize & INT_ID_MASK)
 }
 
 /// Computes a deterministic ID for an f64 float value.
@@ -1493,7 +1497,11 @@ fn int_value_id(value: i64) -> usize {
 fn float_value_id(value: f64) -> usize {
     let mut hasher = DefaultHasher::new();
     value.to_bits().hash(&mut hasher);
-    FLOAT_ID_TAG | (hasher.finish() as usize & FLOAT_ID_MASK)
+    let hash_u64 = hasher.finish();
+    // Mask to usize range before conversion to handle 32-bit platforms
+    let masked = hash_u64 & (usize::MAX as u64);
+    let hash_usize = usize::try_from(masked).expect("masked value fits in usize");
+    FLOAT_ID_TAG | (hash_usize & FLOAT_ID_MASK)
 }
 
 /// Computes a deterministic ID for a builtin based on its discriminant.
@@ -1506,7 +1514,11 @@ fn builtin_value_id(b: Builtins) -> usize {
         Builtins::ExcType(exc) => discriminant(exc).hash(&mut hasher),
         Builtins::Type(t) => discriminant(t).hash(&mut hasher),
     }
-    BUILTIN_ID_TAG | (hasher.finish() as usize & BUILTIN_ID_MASK)
+    let hash_u64 = hasher.finish();
+    // Mask to usize range before conversion to handle 32-bit platforms
+    let masked = hash_u64 & (usize::MAX as u64);
+    let hash_usize = usize::try_from(masked).expect("masked value fits in usize");
+    BUILTIN_ID_TAG | (hash_usize & BUILTIN_ID_MASK)
 }
 
 /// Computes a deterministic ID for a function based on its id.
@@ -1529,10 +1541,8 @@ fn ext_function_value_id(f_id: ExtFunctionId) -> usize {
 fn i64_to_repeat_count(n: i64) -> RunResult<usize> {
     if n <= 0 {
         Ok(0)
-    } else if n as u64 > usize::MAX as u64 {
-        Err(ExcType::overflow_repeat_count().into())
     } else {
-        Ok(n as usize)
+        usize::try_from(n).map_err(|_| ExcType::overflow_repeat_count().into())
     }
 }
 

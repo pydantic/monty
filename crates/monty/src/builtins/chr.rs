@@ -20,7 +20,7 @@ pub fn builtin_chr(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
         Value::Int(n) => {
             if *n < 0 || *n > 0x0010_FFFF {
                 exc_err_fmt!(ExcType::ValueError; "chr() arg not in range(0x110000)")
-            } else if let Some(c) = char::from_u32(*n as u32) {
+            } else if let Some(c) = char::from_u32(u32::try_from(*n).expect("chr() range check failed")) {
                 let s = c.to_string();
                 let heap_id = heap.allocate(HeapData::Str(Str::new(s)))?;
                 Ok(Value::Ref(heap_id))

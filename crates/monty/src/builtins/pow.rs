@@ -58,7 +58,11 @@ pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
                     exc_err_fmt!(ExcType::ValueError; "pow() 2nd argument cannot be negative when 3rd argument specified")
                 } else {
                     // Use modular exponentiation
-                    let result = mod_pow(*b, *e as u64, *m_val);
+                    let result = mod_pow(
+                        *b,
+                        u64::try_from(*e).expect("pow exponent >= 0 but failed u64 conversion"),
+                        *m_val,
+                    );
                     Ok(Value::Int(result))
                 }
             }
@@ -152,7 +156,8 @@ fn mod_pow(base: i64, exp: u64, modulo: i64) -> i64 {
     }
 
     // Convert back to signed, handling negative modulo
-    let result_i64 = result as i64;
+    // result < modulo_u <= i64::MAX as u128, so this conversion is safe
+    let result_i64 = i64::try_from(result).expect("mod_pow result exceeds i64::MAX");
     if modulo < 0 && result_i64 > 0 {
         result_i64 + modulo
     } else {

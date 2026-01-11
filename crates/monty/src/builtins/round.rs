@@ -48,8 +48,11 @@ pub fn builtin_round(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
                     Ok(Value::Int(*n))
                 } else {
                     // Negative digits: round to tens, hundreds, etc. using banker's rounding
-                    let factor = 10_i64.saturating_pow((-d) as u32);
-                    let rounded = bankers_round(*n as f64 / factor as f64) as i64 * factor;
+                    // -d is positive since d < 0; use try_from to safely convert
+                    let exp = u32::try_from(-d).unwrap_or(u32::MAX);
+                    let factor = 10_i64.saturating_pow(exp);
+                    let rounded_f = bankers_round(*n as f64 / factor as f64);
+                    let rounded = f64_to_i64(rounded_f) * factor;
                     Ok(Value::Int(rounded))
                 }
             } else {
@@ -60,13 +63,15 @@ pub fn builtin_round(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
         Value::Float(f) => {
             if let Some(d) = digits {
                 // Round to d decimal places using banker's rounding
-                let multiplier = 10_f64.powi(d as i32);
+                // Clamp exponent to i32 range for powi
+                let exp = i32::try_from(d).unwrap_or(if d > 0 { i32::MAX } else { i32::MIN });
+                let multiplier = 10_f64.powi(exp);
                 let scaled = f * multiplier;
                 let rounded = bankers_round(scaled) / multiplier;
                 Ok(Value::Float(rounded))
             } else {
                 // No digits: round to nearest integer and return int (banker's rounding)
-                Ok(Value::Int(bankers_round(*f) as i64))
+                Ok(Value::Int(f64_to_i64(bankers_round(*f))))
             }
         }
         _ => {
@@ -95,10 +100,28 @@ fn bankers_round(value: f64) -> f64 {
         floor + 1.0
     } else {
         // Exactly 0.5 - round to even
-        if floor as i64 % 2 == 0 {
+        if f64_to_i64(floor) % 2 == 0 {
             floor
         } else {
             floor + 1.0
         }
     }
+}
+
+/// Converts f64 to i64, clamping to i64 bounds if out of range.
+///
+/// This matches Python's behavior where very large floats truncate to the
+/// maximum/minimum representable integer.
+fn f64_to_i64(value: f64) -> i64 {
+    // Handle special cases
+    if value.is_nan() {
+        return 0;
+    }
+    // Clamp and convert; the truncation is intentional for rounding
+    let clamped = value.clamp(i64::MIN as f64, i64::MAX as f64).trunc();
+    // SAFETY for clippy: clamped is guaranteed to be in [i64::MIN, i64::MAX]
+    // after the clamp() call, so truncation cannot overflow
+    #[expect(clippy::cast_possible_truncation, reason = "clamped to i64 range")]
+    let result = clamped as i64;
+    result
 }

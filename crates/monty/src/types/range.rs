@@ -67,14 +67,16 @@ impl Range {
     pub fn len(&self) -> usize {
         if self.step > 0 {
             if self.stop > self.start {
-                ((self.stop - self.start - 1) / self.step + 1) as usize
+                let len_i64 = (self.stop - self.start - 1) / self.step + 1;
+                usize::try_from(len_i64).expect("range length guaranteed non-negative")
             } else {
                 0
             }
         } else {
             // step < 0
             if self.start > self.stop {
-                ((self.start - self.stop - 1) / (-self.step) + 1) as usize
+                let len_i64 = (self.start - self.stop - 1) / (-self.step) + 1;
+                usize::try_from(len_i64).expect("range length guaranteed non-negative")
             } else {
                 0
             }
@@ -188,12 +190,14 @@ impl Iterator for RangeIter {
     fn size_hint(&self) -> (usize, Option<usize>) {
         let len = if self.step > 0 {
             if self.stop > self.current {
-                ((self.stop - self.current - 1) / self.step + 1) as usize
+                let len_i64 = (self.stop - self.current - 1) / self.step + 1;
+                usize::try_from(len_i64).expect("range length guaranteed non-negative")
             } else {
                 0
             }
         } else if self.current > self.stop {
-            ((self.current - self.stop - 1) / (-self.step) + 1) as usize
+            let len_i64 = (self.current - self.stop - 1) / (-self.step) + 1;
+            usize::try_from(len_i64).expect("range length guaranteed non-negative")
         } else {
             0
         };

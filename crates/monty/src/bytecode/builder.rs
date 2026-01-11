@@ -93,7 +93,8 @@ impl CodeBuilder {
     pub fn emit_i8(&mut self, op: Opcode, operand: i8) {
         self.record_location();
         self.bytecode.push(op as u8);
-        self.bytecode.push(operand as u8);
+        // Reinterpret i8 as u8 for bytecode encoding
+        self.bytecode.push(operand.to_ne_bytes()[0]);
     }
 
     /// Emits an instruction with a u16 operand (little-endian).
@@ -134,7 +135,8 @@ impl CodeBuilder {
         self.record_location();
         self.bytecode.push(Opcode::CallFunctionKw as u8);
         self.bytecode.push(pos_count);
-        self.bytecode.push(kwname_ids.len() as u8);
+        self.bytecode
+            .push(u8::try_from(kwname_ids.len()).expect("keyword count exceeds u8"));
         for &name_id in kwname_ids {
             self.bytecode.extend_from_slice(&name_id.to_le_bytes());
         }
@@ -168,7 +170,9 @@ impl CodeBuilder {
     pub fn patch_jump(&mut self, label: JumpLabel) {
         let target = self.bytecode.len();
         // Offset is relative to position after the jump instruction (opcode + i16 = 3 bytes)
-        let raw_offset = target as i64 - label.0 as i64 - 3;
+        let target_i64 = i64::try_from(target).expect("bytecode target exceeds i64");
+        let label_i64 = i64::try_from(label.0).expect("bytecode label exceeds i64");
+        let raw_offset = target_i64 - label_i64 - 3;
         let offset =
             i16::try_from(raw_offset).expect("jump offset exceeds i16 range (-32768..32767); function too large");
         let bytes = offset.to_le_bytes();
@@ -184,7 +188,9 @@ impl CodeBuilder {
         self.record_location();
         let current = self.bytecode.len();
         // Offset is relative to position after this instruction (current + 3)
-        let raw_offset = target as i64 - (current as i64 + 3);
+        let target_i64 = i64::try_from(target).expect("bytecode target exceeds i64");
+        let current_i64 = i64::try_from(current).expect("bytecode offset exceeds i64");
+        let raw_offset = target_i64 - (current_i64 + 3);
         let offset =
             i16::try_from(raw_offset).expect("jump offset exceeds i16 range (-32768..32767); function too large");
         self.bytecode.push(op as u8);
@@ -227,7 +233,7 @@ impl CodeBuilder {
             1 => self.emit(Opcode::LoadLocal1),
             2 => self.emit(Opcode::LoadLocal2),
             3 => self.emit(Opcode::LoadLocal3),
-            s if s <= 255 => self.emit_u8(Opcode::LoadLocal, s as u8),
+            s if s <= 255 => self.emit_u8(Opcode::LoadLocal, u8::try_from(s).expect("slot <= 255 validated")),
             s => self.emit_u16(Opcode::LoadLocalW, s),
         }
     }
@@ -235,7 +241,7 @@ impl CodeBuilder {
     /// Emits `StoreLocal`, using wide variant for slots > 255.
     pub fn emit_store_local(&mut self, slot: u16) {
         if slot <= 255 {
-            self.emit_u8(Opcode::StoreLocal, slot as u8);
+            self.emit_u8(Opcode::StoreLocal, u8::try_from(slot).expect("slot <= 255 validated"));
         } else {
             self.emit_u16(Opcode::StoreLocalW, slot);
         }
@@ -250,9 +256,9 @@ impl CodeBuilder {
     #[must_use]
     pub fn add_const(&mut self, value: Value) -> u16 {
         let idx = self.constants.len();
-        u16::try_from(idx).expect("constant pool exceeds u16 range (65535); too many constants");
+        let idx_u16 = u16::try_from(idx).expect("constant pool exceeds u16 range (65535); too many constants");
         self.constants.push(value);
-        idx as u16
+        idx_u16
     }
 
     /// Adds an exception handler entry.
@@ -292,11 +298,9 @@ impl CodeBuilder {
     /// Records the current location in the location table if set.
     fn record_location(&mut self) {
         if let Some(range) = self.current_location {
-            self.location_table.push(LocationEntry::new(
-                self.bytecode.len() as u32,
-                range,
-                self.current_focus,
-            ));
+            let offset = u32::try_from(self.bytecode.len()).expect("bytecode length exceeds u32");
+            self.location_table
+                .push(LocationEntry::new(offset, range, self.current_focus));
         }
     }
 }

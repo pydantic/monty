@@ -863,7 +863,7 @@ impl<'a> Parser<'a> {
 
         // Store line number for single-line ranges, None for multi-line
         let preview_line = if start_line_no == end_line_no {
-            Some(start_line_no as u32)
+            Some(u32::try_from(start_line_no).expect("line number exceeds u32"))
         } else {
             None
         };

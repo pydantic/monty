@@ -19,5 +19,12 @@ pub fn builtin_id(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Run
     } else {
         value.drop_with_heap(heap);
     }
-    Ok(Value::Int(id as i64))
+    // Python's id() returns a signed integer; reinterpret bits for large values
+    // On 64-bit: large addresses wrap to negative; on 32-bit: always fits positive
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "Python id() returns signed; wrapping intentional"
+    )]
+    let id_i64 = id as i64;
+    Ok(Value::Int(id_i64))
 }

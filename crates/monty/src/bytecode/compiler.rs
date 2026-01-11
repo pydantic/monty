@@ -248,7 +248,10 @@ impl<'a> Compiler<'a> {
                 let name_id = attr.string_id().expect("StoreAttr requires interned attr name");
                 // Set location to the target (e.g., `x.foo`) for proper caret in tracebacks
                 self.code.set_location(*target_position, None);
-                self.code.emit_u16(Opcode::StoreAttr, name_id.index() as u16);
+                self.code.emit_u16(
+                    Opcode::StoreAttr,
+                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
+                );
             }
 
             Node::If { test, body, or_else } => {
@@ -428,14 +431,20 @@ impl<'a> Compiler<'a> {
                 for elem in elements {
                     self.compile_expr(elem)?;
                 }
-                self.code.emit_u16(Opcode::BuildList, elements.len() as u16);
+                self.code.emit_u16(
+                    Opcode::BuildList,
+                    u16::try_from(elements.len()).expect("elements count exceeds u16"),
+                );
             }
 
             Expr::Tuple(elements) => {
                 for elem in elements {
                     self.compile_expr(elem)?;
                 }
-                self.code.emit_u16(Opcode::BuildTuple, elements.len() as u16);
+                self.code.emit_u16(
+                    Opcode::BuildTuple,
+                    u16::try_from(elements.len()).expect("elements count exceeds u16"),
+                );
             }
 
             Expr::Dict(pairs) => {
@@ -443,14 +452,20 @@ impl<'a> Compiler<'a> {
                     self.compile_expr(key)?;
                     self.compile_expr(value)?;
                 }
-                self.code.emit_u16(Opcode::BuildDict, pairs.len() as u16);
+                self.code.emit_u16(
+                    Opcode::BuildDict,
+                    u16::try_from(pairs.len()).expect("pairs count exceeds u16"),
+                );
             }
 
             Expr::Set(elements) => {
                 for elem in elements {
                     self.compile_expr(elem)?;
                 }
-                self.code.emit_u16(Opcode::BuildSet, elements.len() as u16);
+                self.code.emit_u16(
+                    Opcode::BuildSet,
+                    u16::try_from(elements.len()).expect("elements count exceeds u16"),
+                );
             }
 
             Expr::Subscript { object, index } => {
@@ -470,7 +485,10 @@ impl<'a> Compiler<'a> {
                 // Restore the full expression's position for traceback caret range
                 self.code.set_location(expr_loc.position, None);
                 let name_id = attr.string_id().expect("LoadAttr requires interned attr name");
-                self.code.emit_u16(Opcode::LoadAttr, name_id.index() as u16);
+                self.code.emit_u16(
+                    Opcode::LoadAttr,
+                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
+                );
             }
 
             Expr::Call { callable, args } => {
@@ -537,7 +555,7 @@ impl<'a> Compiler<'a> {
 
     /// Compiles loading a variable onto the stack.
     fn compile_name(&mut self, ident: &Identifier) {
-        let slot = ident.namespace_id().index() as u16;
+        let slot = u16::try_from(ident.namespace_id().index()).expect("local slot exceeds u16");
         match ident.scope {
             NameScope::Local => {
                 // Register the name for NameError messages
@@ -568,7 +586,7 @@ impl<'a> Compiler<'a> {
 
     /// Compiles storing the top of stack to a variable.
     fn compile_store(&mut self, target: &Identifier) {
-        let slot = target.namespace_id().index() as u16;
+        let slot = u16::try_from(target.namespace_id().index()).expect("local slot exceeds u16");
         match target.scope {
             NameScope::Local => {
                 // Register the name for NameError messages
@@ -718,7 +736,7 @@ impl<'a> Compiler<'a> {
                 for arg in args {
                     self.compile_expr(arg)?;
                 }
-                let arg_count = args.len() as u8;
+                let arg_count = u8::try_from(args.len()).expect("argument count exceeds u8");
                 self.code.set_location(call_pos, None);
                 self.code.emit_u8(Opcode::CallFunction, arg_count);
             }
@@ -734,7 +752,7 @@ impl<'a> Compiler<'a> {
                 let mut kwname_ids = Vec::with_capacity(kwargs.len());
                 for kwarg in kwargs {
                     self.compile_expr(&kwarg.value)?;
-                    kwname_ids.push(kwarg.key.name_id.index() as u16);
+                    kwname_ids.push(u16::try_from(kwarg.key.name_id.index()).expect("name index exceeds u16"));
                 }
                 self.code.set_location(call_pos, None);
                 self.code.emit_call_function_kw(0, &kwname_ids);
@@ -788,12 +806,15 @@ impl<'a> Compiler<'a> {
                     if let Some(kwargs) = kwargs {
                         for kwarg in kwargs {
                             self.compile_expr(&kwarg.value)?;
-                            kwname_ids.push(kwarg.key.name_id.index() as u16);
+                            kwname_ids.push(u16::try_from(kwarg.key.name_id.index()).expect("name index exceeds u16"));
                         }
                     }
 
                     self.code.set_location(call_pos, None);
-                    self.code.emit_call_function_kw(pos_count as u8, &kwname_ids);
+                    self.code.emit_call_function_kw(
+                        u8::try_from(pos_count).expect("positional arg count exceeds u8"),
+                        &kwname_ids,
+                    );
                 }
             }
         }
@@ -820,7 +841,7 @@ impl<'a> Compiler<'a> {
     ) -> Result<(), CompileError> {
         // Get function name for error messages (0xFFFF for builtins)
         let func_name_id = match callable {
-            Callable::Name(ident) => ident.name_id.index() as u16,
+            Callable::Name(ident) => u16::try_from(ident.name_id.index()).expect("name index exceeds u16"),
             Callable::Builtin(_) => 0xFFFF,
         };
 
@@ -832,7 +853,10 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(arg)?;
             }
         }
-        self.code.emit_u16(Opcode::BuildList, pos_count as u16);
+        self.code.emit_u16(
+            Opcode::BuildList,
+            u16::try_from(pos_count).expect("positional arg count exceeds u16"),
+        );
 
         // Extend with *args if present
         if let Some(var_args_expr) = var_args {
@@ -857,7 +881,10 @@ impl<'a> Compiler<'a> {
                     self.compile_expr(&kwarg.value)?;
                 }
             }
-            self.code.emit_u16(Opcode::BuildDict, kw_count as u16);
+            self.code.emit_u16(
+                Opcode::BuildDict,
+                u16::try_from(kw_count).expect("keyword count exceeds u16"),
+            );
 
             // Merge **kwargs if present
             if let Some(var_kwargs_expr) = var_kwargs {
@@ -884,16 +911,28 @@ impl<'a> Compiler<'a> {
         // Compile arguments based on the argument type
         match args {
             ArgExprs::Empty => {
-                self.code.emit_u16_u8(Opcode::CallMethod, name_id.index() as u16, 0);
+                self.code.emit_u16_u8(
+                    Opcode::CallMethod,
+                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
+                    0,
+                );
             }
             ArgExprs::One(arg) => {
                 self.compile_expr(arg)?;
-                self.code.emit_u16_u8(Opcode::CallMethod, name_id.index() as u16, 1);
+                self.code.emit_u16_u8(
+                    Opcode::CallMethod,
+                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
+                    1,
+                );
             }
             ArgExprs::Two(arg1, arg2) => {
                 self.compile_expr(arg1)?;
                 self.compile_expr(arg2)?;
-                self.code.emit_u16_u8(Opcode::CallMethod, name_id.index() as u16, 2);
+                self.code.emit_u16_u8(
+                    Opcode::CallMethod,
+                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
+                    2,
+                );
             }
             ArgExprs::Args(args) => {
                 // Check argument count limit
@@ -906,9 +945,12 @@ impl<'a> Compiler<'a> {
                 for arg in args {
                     self.compile_expr(arg)?;
                 }
-                let arg_count = args.len() as u8;
-                self.code
-                    .emit_u16_u8(Opcode::CallMethod, name_id.index() as u16, arg_count);
+                let arg_count = u8::try_from(args.len()).expect("argument count exceeds u8");
+                self.code.emit_u16_u8(
+                    Opcode::CallMethod,
+                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
+                    arg_count,
+                );
             }
             ArgExprs::Kwargs(_) | ArgExprs::ArgsKargs { .. } => {
                 // TODO: Need CallMethodKw for keyword arguments
@@ -1098,7 +1140,8 @@ impl<'a> Compiler<'a> {
         let encoded = encode_format_spec(spec);
         // Use negative to distinguish from regular ints (format spec marker)
         // We negate and subtract 1 to ensure it's negative and recoverable
-        let marker = -((encoded as i64) + 1);
+        let encoded_i64 = i64::try_from(encoded).expect("format spec encoding exceeds i64::MAX");
+        let marker = -(encoded_i64 + 1);
         self.code.add_const(Value::Int(marker))
     }
 
@@ -1256,9 +1299,9 @@ impl<'a> Compiler<'a> {
         // Entry 1: Try body -> handler dispatch
         if has_handlers || has_finally {
             self.code.add_exception_entry(ExceptionEntry::new(
-                try_start as u32,
-                try_end as u32 + 3, // +3 to include the JUMP instruction
-                handler_start as u32,
+                u32::try_from(try_start).expect("bytecode offset exceeds u32"),
+                u32::try_from(try_end).expect("bytecode offset exceeds u32") + 3, // +3 to include the JUMP instruction
+                u32::try_from(handler_start).expect("bytecode offset exceeds u32"),
                 stack_depth,
             ));
         }
@@ -1267,9 +1310,9 @@ impl<'a> Compiler<'a> {
         // This ensures finally runs when RERAISE is executed or any exception occurs in handlers
         if let Some(cleanup_start) = finally_cleanup_start {
             self.code.add_exception_entry(ExceptionEntry::new(
-                handler_start as u32,
-                handler_dispatch_end as u32,
-                cleanup_start as u32,
+                u32::try_from(handler_start).expect("bytecode offset exceeds u32"),
+                u32::try_from(handler_dispatch_end).expect("bytecode offset exceeds u32"),
+                u32::try_from(cleanup_start).expect("bytecode offset exceeds u32"),
                 stack_depth,
             ));
         }
@@ -1278,9 +1321,9 @@ impl<'a> Compiler<'a> {
         // If an exception occurs while running finally (in the return path), catch it
         if let (Some(return_start), Some(cleanup_start)) = (finally_with_return_start, finally_cleanup_start) {
             self.code.add_exception_entry(ExceptionEntry::new(
-                return_start as u32,
-                else_start as u32, // End at else_start (before else block)
-                cleanup_start as u32,
+                u32::try_from(return_start).expect("bytecode offset exceeds u32"),
+                u32::try_from(else_start).expect("bytecode offset exceeds u32"), // End at else_start (before else block)
+                u32::try_from(cleanup_start).expect("bytecode offset exceeds u32"),
                 stack_depth,
             ));
         }
@@ -1290,9 +1333,9 @@ impl<'a> Compiler<'a> {
         if has_else {
             if let Some(cleanup_start) = finally_cleanup_start {
                 self.code.add_exception_entry(ExceptionEntry::new(
-                    else_start as u32,
-                    else_end as u32,
-                    cleanup_start as u32,
+                    u32::try_from(else_start).expect("bytecode offset exceeds u32"),
+                    u32::try_from(else_end).expect("bytecode offset exceeds u32"),
+                    u32::try_from(cleanup_start).expect("bytecode offset exceeds u32"),
                     stack_depth,
                 ));
             }
@@ -1412,11 +1455,12 @@ impl<'a> Compiler<'a> {
 
     /// Compiles deletion of a variable.
     fn compile_delete(&mut self, target: &Identifier) {
-        let slot = target.namespace_id().index() as u16;
+        let slot = u16::try_from(target.namespace_id().index()).expect("local slot exceeds u16");
         match target.scope {
             NameScope::Local => {
                 if slot <= 255 {
-                    self.code.emit_u8(Opcode::DeleteLocal, slot as u8);
+                    self.code
+                        .emit_u8(Opcode::DeleteLocal, u8::try_from(slot).expect("slot <= 255 validated"));
                 } else {
                     // Wide variant not implemented yet
                     todo!("DeleteLocalW for slot > 255");

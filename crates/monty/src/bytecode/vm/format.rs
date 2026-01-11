@@ -131,8 +131,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     fn get_format_spec(&self, spec_value: &Value, value_for_error: &Value) -> Result<ParsedFormatSpec, RunError> {
         match spec_value {
             Value::Int(n) if *n < 0 => {
-                // Decode the encoded format spec
-                let encoded = ((-*n) - 1) as u64;
+                // Decode the encoded format spec; n < 0 ensures (-n - 1) >= 0
+                let encoded = u64::try_from((-*n) - 1).expect("format spec encoding validated non-negative");
                 Ok(decode_format_spec(encoded))
             }
             _ => {

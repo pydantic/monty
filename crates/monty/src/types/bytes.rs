@@ -61,7 +61,8 @@ impl Bytes {
                         if *n < 0 {
                             return Err(ExcType::value_error_negative_bytes_count());
                         }
-                        let bytes = vec![0u8; *n as usize];
+                        let size = usize::try_from(*n).expect("bytes count validated non-negative");
+                        let bytes = vec![0u8; size];
                         heap.allocate(HeapData::Bytes(Bytes::new(bytes)))
                     }
                     Value::InternString(string_id) => {

@@ -93,7 +93,7 @@ impl Type {
                     Some(v) => {
                         let result = match &v {
                             Value::Int(i) => Ok(Value::Int(*i)),
-                            Value::Float(f) => Ok(Value::Int(*f as i64)),
+                            Value::Float(f) => Ok(Value::Int(f64_to_i64_truncate(*f))),
                             Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
                             _ => Err(ExcType::type_error_int_conversion(v.py_type(Some(heap)))),
                         };
@@ -133,5 +133,26 @@ impl Type {
             // Non-callable types - raise TypeError
             _ => Err(ExcType::type_error_not_callable(self)),
         }
+    }
+}
+
+/// Truncates f64 to i64 with clamping for out-of-range values.
+///
+/// Python's `int(float)` truncates toward zero. For values outside i64 range,
+/// we clamp to i64::MAX/MIN (Python would use arbitrary precision ints, which
+/// we don't support).
+fn f64_to_i64_truncate(value: f64) -> i64 {
+    // trunc() rounds toward zero, matching Python's int(float) behavior
+    let truncated = value.trunc();
+    if truncated >= i64::MAX as f64 {
+        i64::MAX
+    } else if truncated <= i64::MIN as f64 {
+        i64::MIN
+    } else {
+        // SAFETY for clippy: truncated is guaranteed to be in (i64::MIN, i64::MAX)
+        // after the bounds checks above, so truncation cannot overflow
+        #[expect(clippy::cast_possible_truncation, reason = "bounds checked above")]
+        let result = truncated as i64;
+        result
     }
 }

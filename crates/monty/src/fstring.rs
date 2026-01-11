@@ -533,7 +533,8 @@ pub fn format_char(n: i64, spec: &ParsedFormatSpec) -> Result<String, FormatErro
     if !(0..=0x0010_FFFF).contains(&n) {
         return Err(FormatError::Overflow("%c arg not in range(0x110000)".to_owned()));
     }
-    let c = char::from_u32(n as u32).ok_or_else(|| FormatError::ValueError("Invalid Unicode code point".to_owned()))?;
+    let n_u32 = u32::try_from(n).expect("format_char n validated in 0..=0x10FFFF range");
+    let c = char::from_u32(n_u32).ok_or_else(|| FormatError::ValueError("Invalid Unicode code point".to_owned()))?;
     let value = c.to_string();
     let align = spec.align.unwrap_or('<');
     Ok(pad_string(&value, spec.width, align, spec.fill))
@@ -630,18 +631,22 @@ pub fn format_float_g(f: f64, spec: &ParsedFormatSpec) -> String {
     let exp = if abs_val == 0.0 {
         0
     } else {
-        abs_val.log10().floor() as i32
+        // log10 of valid floats fits in i32; floor() returns a finite f64
+        f64_to_i32_trunc(abs_val.log10().floor())
     };
 
-    let abs_str = if exp < -4 || exp >= precision as i32 {
+    // precision is typically small (default 6), safe to convert to i32
+    let prec_i32 = i32::try_from(precision).unwrap_or(i32::MAX);
+    let abs_str = if exp < -4 || exp >= prec_i32 {
         // Use exponential notation
         let exp_prec = precision.saturating_sub(1);
         let formatted = format!("{abs_val:.exp_prec$e}");
         // Python strips trailing zeros from the mantissa
         strip_trailing_zeros_exp(&formatted)
     } else {
-        // Use fixed notation
-        let sig_digits = (precision as i32 - exp - 1).max(0) as usize;
+        // Use fixed notation - result is non-negative due to .max(0)
+        let sig_digits_i32 = (prec_i32 - exp - 1).max(0);
+        let sig_digits = usize::try_from(sig_digits_i32).expect("sig_digits guaranteed non-negative");
         let formatted = format!("{abs_val:.sig_digits$}");
         strip_trailing_zeros(&formatted)
     };
@@ -830,4 +835,21 @@ fn fix_exp_format(s: &str) -> String {
     };
 
     format!("{before_e}{e_char}{sign}{padded_digits}")
+}
+
+/// Truncates f64 to i32 with clamping for out-of-range values.
+///
+/// Used for exponent calculations where the result should fit in i32.
+fn f64_to_i32_trunc(value: f64) -> i32 {
+    if value >= f64::from(i32::MAX) {
+        i32::MAX
+    } else if value <= f64::from(i32::MIN) {
+        i32::MIN
+    } else {
+        // SAFETY for clippy: value is guaranteed to be in (i32::MIN, i32::MAX)
+        // after the bounds checks above, so truncation cannot overflow
+        #[expect(clippy::cast_possible_truncation, reason = "bounds checked above")]
+        let result = value as i32;
+        result
+    }
 }

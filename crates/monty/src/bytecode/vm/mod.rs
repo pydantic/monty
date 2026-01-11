@@ -499,19 +499,19 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::InplaceRShift => try_catch!(self, self.binary_bitwise(BitwiseOp::RShift)),
                 // Collection Building - route through exception handling
                 Opcode::BuildList => {
-                    let count = self.fetch_u16() as usize;
+                    let count = usize::from(self.fetch_u16());
                     try_catch!(self, self.build_list(count));
                 }
                 Opcode::BuildTuple => {
-                    let count = self.fetch_u16() as usize;
+                    let count = usize::from(self.fetch_u16());
                     try_catch!(self, self.build_tuple(count));
                 }
                 Opcode::BuildDict => {
-                    let count = self.fetch_u16() as usize;
+                    let count = usize::from(self.fetch_u16());
                     try_catch!(self, self.build_dict(count));
                 }
                 Opcode::BuildSet => {
-                    let count = self.fetch_u16() as usize;
+                    let count = usize::from(self.fetch_u16());
                     try_catch!(self, self.build_set(count));
                 }
                 Opcode::FormatValue => {
@@ -519,7 +519,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     try_catch!(self, self.format_value(flags));
                 }
                 Opcode::BuildFString => {
-                    let count = self.fetch_u16() as usize;
+                    let count = usize::from(self.fetch_u16());
                     try_catch!(self, self.build_fstring(count));
                 }
                 Opcode::ListExtend => {
@@ -652,7 +652,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 }
                 // Function Calls
                 Opcode::CallFunction => {
-                    let arg_count = self.fetch_u8() as usize;
+                    let arg_count = usize::from(self.fetch_u8());
 
                     // Pop arguments in reverse order (TOS is last arg)
                     let args = self.pop_n_args(arg_count);
@@ -675,8 +675,8 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 }
                 Opcode::CallFunctionKw => {
                     // Fetch operands: pos_count, kw_count, then kw_count name indices
-                    let pos_count = self.fetch_u8() as usize;
-                    let kw_count = self.fetch_u8() as usize;
+                    let pos_count = usize::from(self.fetch_u8());
+                    let kw_count = usize::from(self.fetch_u8());
 
                     // Read keyword name StringIds
                     let mut kwname_ids = Vec::with_capacity(kw_count);
@@ -725,7 +725,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // CallMethod: u16 name_id, u8 arg_count
                     // Stack: [obj, arg1, arg2, ..., argN] -> [result]
                     let name_idx = self.fetch_u16();
-                    let arg_count = self.fetch_u8() as usize;
+                    let arg_count = usize::from(self.fetch_u8());
                     let name_id = StringId::from_index(name_idx);
 
                     // Pop arguments in reverse order (TOS is last arg)
@@ -772,7 +772,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 // Function Definition
                 Opcode::MakeFunction => {
                     let func_idx = self.fetch_u16();
-                    let defaults_count = self.fetch_u8() as usize;
+                    let defaults_count = usize::from(self.fetch_u8());
                     let func_id = FunctionId::from_index(func_idx);
 
                     if defaults_count == 0 {
@@ -789,8 +789,8 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 }
                 Opcode::MakeClosure => {
                     let func_idx = self.fetch_u16();
-                    let defaults_count = self.fetch_u8() as usize;
-                    let cell_count = self.fetch_u8() as usize;
+                    let defaults_count = usize::from(self.fetch_u8());
+                    let cell_count = usize::from(self.fetch_u8());
                     let func_id = FunctionId::from_index(func_idx);
 
                     // Pop cells from stack (pushed after defaults, so on top)
@@ -878,7 +878,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 }
                 // Unpacking - route through exception handling
                 Opcode::UnpackSequence => {
-                    let count = self.fetch_u8() as usize;
+                    let count = usize::from(self.fetch_u8());
                     try_catch!(self, self.unpack_sequence(count));
                 }
                 Opcode::UnpackEx => {
@@ -1016,7 +1016,8 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// Fetches an i8 operand.
     #[inline]
     fn fetch_i8(&mut self) -> i8 {
-        self.fetch_byte() as i8
+        // Reinterpret u8 as i8 for signed bytecode operand
+        i8::from_ne_bytes([self.fetch_byte()])
     }
 
     /// Fetches a u16 operand (little-endian).
@@ -1099,7 +1100,10 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     #[inline]
     fn jump_relative(&mut self, offset: i16) {
         let frame = self.current_frame_mut();
-        frame.ip = (frame.ip as isize + offset as isize) as usize;
+        // Safely compute new IP: convert ip to i64, add offset, then convert back
+        let ip_i64 = i64::try_from(frame.ip).expect("instruction pointer exceeds i64");
+        let new_ip = ip_i64 + i64::from(offset);
+        frame.ip = usize::try_from(new_ip).expect("jump resulted in negative or overflowing IP");
     }
 
     /// Runs garbage collection with proper GC roots.
@@ -1141,7 +1145,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         let ns_idx = self.current_frame().namespace_idx;
         let namespace = self.namespaces.get(ns_idx);
         // Copy without incrementing refcount first (avoids borrow conflict)
-        let value = namespace.get(NamespaceId::new(slot as usize)).copy_for_extend();
+        let value = namespace.get(NamespaceId::new(usize::from(slot))).copy_for_extend();
 
         // Check for undefined value - raise NameError if so
         if matches!(value, Value::Undefined) {
@@ -1171,7 +1175,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         let value = self.pop();
         let ns_idx = self.current_frame().namespace_idx;
         let namespace = self.namespaces.get_mut(ns_idx);
-        let ns_slot = NamespaceId::new(slot as usize);
+        let ns_slot = NamespaceId::new(usize::from(slot));
         let old_value = std::mem::replace(namespace.get_mut(ns_slot), value);
         old_value.drop_with_heap(self.heap);
     }
@@ -1180,7 +1184,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     fn delete_local(&mut self, slot: u16) {
         let ns_idx = self.current_frame().namespace_idx;
         let namespace = self.namespaces.get_mut(ns_idx);
-        let ns_slot = NamespaceId::new(slot as usize);
+        let ns_slot = NamespaceId::new(usize::from(slot));
         let old_value = std::mem::replace(namespace.get_mut(ns_slot), Value::Undefined);
         old_value.drop_with_heap(self.heap);
     }
@@ -1191,7 +1195,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     fn load_global(&mut self, slot: u16) -> RunResult<()> {
         let namespace = self.namespaces.get(GLOBAL_NS_IDX);
         // Copy without incrementing refcount first (avoids borrow conflict)
-        let value = namespace.get(NamespaceId::new(slot as usize)).copy_for_extend();
+        let value = namespace.get(NamespaceId::new(usize::from(slot))).copy_for_extend();
 
         // Check for undefined value - raise NameError if so
         if matches!(value, Value::Undefined) {
@@ -1212,7 +1216,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     fn store_global(&mut self, slot: u16) {
         let value = self.pop();
         let namespace = self.namespaces.get_mut(GLOBAL_NS_IDX);
-        let ns_slot = NamespaceId::new(slot as usize);
+        let ns_slot = NamespaceId::new(usize::from(slot));
         let old_value = std::mem::replace(namespace.get_mut(ns_slot), value);
         old_value.drop_with_heap(self.heap);
     }
@@ -1221,7 +1225,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     ///
     /// Returns a NameError if the cell value is undefined (free variable not bound).
     fn load_cell(&mut self, slot: u16) -> RunResult<()> {
-        let cell_id = self.current_frame().cells[slot as usize];
+        let cell_id = self.current_frame().cells[usize::from(slot)];
         // get_cell_value already clones with proper refcount via clone_with_heap
         let value = self.heap.get_cell_value(cell_id);
 
@@ -1247,7 +1251,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// Pops the top of stack and stores it in a closure cell.
     fn store_cell(&mut self, slot: u16) {
         let value = self.pop();
-        let cell_id = self.current_frame().cells[slot as usize];
+        let cell_id = self.current_frame().cells[usize::from(slot)];
         self.heap.set_cell_value(cell_id, value);
     }
 }

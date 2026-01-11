@@ -148,7 +148,7 @@ impl Code {
     pub fn location_for_offset(&self, offset: usize) -> Option<&LocationEntry> {
         // Location entries are in order by bytecode offset.
         // Find the last entry where bytecode_offset <= offset.
-        let offset_u32 = offset as u32;
+        let offset_u32 = u32::try_from(offset).expect("bytecode offset exceeds u32");
         self.location_table
             .iter()
             .rev()

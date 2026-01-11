@@ -150,13 +150,13 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         // Search for handler in current and outer frames
         loop {
             let frame = self.current_frame();
-            let ip = self.instruction_ip as u32;
+            let ip = u32::try_from(self.instruction_ip).expect("instruction IP exceeds u32");
 
             // Search exception table for a handler covering this IP
             if let Some(entry) = frame.code.find_exception_handler(ip) {
                 // Found a handler! Unwind stack and jump to it.
-                let handler_offset = entry.handler() as usize;
-                let target_stack_depth = frame.stack_base + entry.stack_depth() as usize;
+                let handler_offset = usize::try_from(entry.handler()).expect("handler offset exceeds usize");
+                let target_stack_depth = frame.stack_base + usize::from(entry.stack_depth());
 
                 // Unwind stack to target depth (drop excess values)
                 while self.stack.len() > target_stack_depth {
@@ -206,7 +206,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             self.instruction_ip = self
                 .current_frame()
                 .call_position
-                .map_or(0, |p| p.start().line as usize);
+                .map_or(0, |p| usize::from(p.start().line));
         }
     }
 

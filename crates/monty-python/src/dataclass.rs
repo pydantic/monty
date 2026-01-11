@@ -286,7 +286,17 @@ impl PyMontyDataclass {
                 value_hash.hash(&mut hasher);
             }
         }
-        Ok(hasher.finish() as isize)
+        // Python's hash returns a signed integer; reinterpret bits for large values
+        let hash_u64 = hasher.finish();
+        #[cfg(target_pointer_width = "64")]
+        let hash_isize = isize::from_ne_bytes(hash_u64.to_ne_bytes());
+        #[cfg(not(target_pointer_width = "64"))]
+        let hash_isize = {
+            // On 32-bit: truncate to lower 32 bits, then reinterpret as i32 -> isize
+            let hash_u32 = hash_u64 as u32;
+            i32::from_ne_bytes(hash_u32.to_ne_bytes()) as isize
+        };
+        Ok(hash_isize)
     }
 }
 
