@@ -21,10 +21,6 @@ use crate::{
 /// - A mapping from variable names to their namespace indices (for ref-count testing)
 /// - The transformed AST nodes with all names resolved, ready for compilation
 /// - The string interner containing all interned identifiers and filenames
-///
-/// Function definitions are now stored inline in the AST as `PreparedFunctionDef` nodes,
-/// rather than in a separate `Vec<Function>`. This provides type safety by ensuring
-/// function bodies always exist until compilation.
 pub struct PrepareResult {
     /// Number of items in the namespace (at module level, this IS the global namespace)
     pub namespace_size: usize,

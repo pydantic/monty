@@ -130,7 +130,7 @@ pub(crate) fn parse(code: &str, filename: &str) -> Result<ParseResult, ParseErro
     }
 }
 
-/// Parser for converting ruff AST to Monty's intermediate ParsedNode representation.
+/// Parser for converting ruff AST to Monty's intermediate ParseNode representation.
 ///
 /// Holds references to the source code and owns a string interner for names.
 /// The filename is interned once at construction and reused for all CodeRanges.

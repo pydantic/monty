@@ -227,7 +227,7 @@ impl ExprLoc {
 /// An AST node parameterized by the function definition type.
 ///
 /// This generic enum represents statements in both parsed and prepared forms:
-/// - `Node<RawFunctionDef>` (aka `ParsedNode`): Output of the parser, contains unprepared function bodies
+/// - `Node<RawFunctionDef>` (aka `ParseNode`): Output of the parser, contains unprepared function bodies
 /// - `Node<PreparedFunctionDef>` (aka `PreparedNode`): Output of prepare phase, has resolved names
 ///
 /// Some variants (`Pass`, `Global`, `Nonlocal`) only appear in parsed form and are filtered
