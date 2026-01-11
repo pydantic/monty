@@ -2,8 +2,8 @@ use strum::{Display, EnumString, IntoStaticStr};
 
 use crate::{
     args::ArgValues,
-    exception_private::{ExcType, RunResult},
-    heap::Heap,
+    exception_private::{exc_fmt, ExcType, RunResult},
+    heap::{Heap, HeapData},
     intern::Interns,
     resource::ResourceTracker,
     types::{Bytes, Dict, FrozenSet, List, PyTrait, Range, Set, Str, Tuple},
@@ -111,6 +111,13 @@ impl Type {
                             Value::Float(f) => Ok(Value::Float(*f)),
                             Value::Int(i) => Ok(Value::Float(*i as f64)),
                             Value::Bool(b) => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
+                            Value::InternString(string_id) => {
+                                Ok(Value::Float(parse_f64_from_str(interns.get_str(*string_id))?))
+                            }
+                            Value::Ref(heap_id) => match heap.get(*heap_id) {
+                                HeapData::Str(s) => Ok(Value::Float(parse_f64_from_str(s.as_str())?)),
+                                _ => Err(ExcType::type_error_float_conversion(v.py_type(Some(heap)))),
+                            },
                             _ => Err(ExcType::type_error_float_conversion(v.py_type(Some(heap)))),
                         };
                         v.drop_with_heap(heap);
@@ -155,4 +162,38 @@ fn f64_to_i64_truncate(value: f64) -> i64 {
         let result = truncated as i64;
         result
     }
+}
+
+/// Parses a Python `float()` string argument into an `f64`.
+///
+/// This supports:
+/// - Leading/trailing whitespace (e.g. `"  1.5  "`)
+/// - The special values `inf`, `-inf`, `infinity`, and `nan` (case-insensitive)
+///
+/// Underscore digit separators are not currently supported.
+fn parse_f64_from_str(value: &str) -> RunResult<f64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(value_error_could_not_convert_string_to_float(value));
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    let parsed = match lower.as_str() {
+        "inf" | "+inf" | "infinity" | "+infinity" => f64::INFINITY,
+        "-inf" | "-infinity" => f64::NEG_INFINITY,
+        "nan" | "+nan" => f64::NAN,
+        "-nan" => -f64::NAN,
+        _ => trimmed
+            .parse::<f64>()
+            .map_err(|_| value_error_could_not_convert_string_to_float(value))?,
+    };
+
+    Ok(parsed)
+}
+
+/// Creates the `ValueError` raised by `float()` when a string cannot be parsed.
+///
+/// Matches CPython's message format: `could not convert string to float: '...'`.
+fn value_error_could_not_convert_string_to_float(value: &str) -> crate::exception_private::RunError {
+    exc_fmt!(ExcType::ValueError; "could not convert string to float: '{value}'").into()
 }

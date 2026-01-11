@@ -12,17 +12,24 @@ assert abs(False) == 0, 'abs of False'
 # Basic round operations
 assert round(2.5) == 2, 'round 2.5 (bankers rounding)'
 assert round(3.5) == 4, 'round 3.5 (bankers rounding)'
+assert round(0.5) == 0, 'round 0.5 (bankers rounding)'
+assert round(-0.5) == 0, 'round -0.5 (bankers rounding)'
 assert round(2.4) == 2, 'round 2.4'
 assert round(2.6) == 3, 'round 2.6'
 assert round(-2.5) == -2, 'round -2.5'
+assert round(-1.5) == -2, 'round -1.5 (bankers rounding)'
 assert round(5) == 5, 'round integer'
 
 # round with ndigits
 assert round(3.14159, 2) == 3.14, 'round to 2 digits'
 assert round(3.14159, 0) == 3.0, 'round to 0 digits returns float'
+assert repr(round(-0.4, 0)) == '-0.0', 'round(-0.4, 0) preserves negative zero sign'
+assert repr(round(-0.5, 0)) == '-0.0', 'round(-0.5, 0) preserves negative zero sign'
 assert round(1234, -2) == 1200, 'round int to nearest 100'
 assert round(1250, -2) == 1200, 'round 1250 to nearest 100 (bankers)'
 assert round(1350, -2) == 1400, 'round 1350 to nearest 100'
+assert round(15, -1) == 20, 'round 15 to nearest 10 (bankers)'
+assert round(25, -1) == 20, 'round 25 to nearest 10 (bankers)'
 
 # round with None
 assert round(2.5, None) == 2, 'round with None ndigits'
@@ -30,11 +37,59 @@ assert round(True, -1) == 0, 'round True with negative digits behaves like int'
 assert round(True, 2) == 1, 'round True with positive digits returns int'
 assert round(False, -3) == 0, 'round False with negative digits stays zero'
 
+# round type errors
+threw = False
+try:
+    round(1.2, 1.5)
+except TypeError:
+    threw = True
+assert threw, 'round with non-int ndigits raises TypeError'
+
 # round edge cases with extreme values
 assert isinstance(round(1e15), int), 'round large float returns int'
 assert isinstance(round(-1e15), int), 'round large negative float returns int'
 assert round(0.0) == 0, 'round(0.0) is zero'
 assert round(-0.0) == 0, 'round(-0.0) is zero'
+
+# round special float values (infinity / NaN)
+inf = float('inf')
+neg_inf = float('-inf')
+nan = float('nan')
+
+threw = False
+try:
+    round(inf)
+except OverflowError:
+    threw = True
+assert threw, 'round(inf) raises OverflowError'
+
+threw = False
+try:
+    round(neg_inf)
+except OverflowError:
+    threw = True
+assert threw, 'round(-inf) raises OverflowError'
+
+threw = False
+try:
+    round(nan)
+except ValueError:
+    threw = True
+assert threw, 'round(nan) raises ValueError'
+
+r = round(inf, 0)
+assert r == inf, 'round(inf, 0) returns inf'
+
+r = round(neg_inf, 0)
+assert r == neg_inf, 'round(-inf, 0) returns -inf'
+
+r = round(nan, 0)
+assert r != r, 'round(nan, 0) returns NaN'
+
+# round with extreme ndigits values
+assert round(1.23, 10**6) == 1.23, 'round with huge positive ndigits returns original float'
+assert round(1.23, -(10**6)) == 0.0, 'round with huge negative ndigits returns zero'
+assert repr(round(-1.23, -(10**6))) == '-0.0', 'round with huge negative ndigits preserves signed zero'
 
 # round with float result (ndigits specified)
 assert isinstance(round(1.5, 1), float), 'round with ndigits returns float'

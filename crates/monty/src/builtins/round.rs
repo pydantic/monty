@@ -62,16 +62,17 @@ pub fn builtin_round(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
         }
         Value::Float(f) => {
             if let Some(d) = digits {
-                // Round to d decimal places using banker's rounding
-                // Clamp exponent to i32 range for powi
-                let exp = i32::try_from(d).unwrap_or(if d > 0 { i32::MAX } else { i32::MIN });
-                let multiplier = 10_f64.powi(exp);
-                let scaled = f * multiplier;
-                let rounded = bankers_round(scaled) / multiplier;
-                Ok(Value::Float(rounded))
+                // Round to `d` decimal places using banker's rounding.
+                Ok(Value::Float(round_float_to_digits(*f, d)))
             } else {
                 // No digits: round to nearest integer and return int (banker's rounding)
-                Ok(Value::Int(f64_to_i64(bankers_round(*f))))
+                if f.is_nan() {
+                    exc_err_fmt!(ExcType::ValueError; "cannot convert float NaN to integer")
+                } else if f.is_infinite() {
+                    exc_err_fmt!(ExcType::OverflowError; "cannot convert float infinity to integer")
+                } else {
+                    Ok(Value::Int(f64_to_i64(bankers_round(*f))))
+                }
             }
         }
         _ => {
@@ -105,6 +106,50 @@ fn bankers_round(value: f64) -> f64 {
         } else {
             floor + 1.0
         }
+    }
+}
+
+/// Rounds a finite float to a given number of decimal digits using banker's rounding.
+///
+/// This is used for `round(x, ndigits)` where Python always returns a float.
+///
+/// For large `ndigits` values where scaling by `10**ndigits` would overflow/underflow `f64`,
+/// CPython returns either the original value (large positive `ndigits`) or a signed zero
+/// (large negative `ndigits`). We mirror that behavior and also preserve the sign of `0.0`.
+fn round_float_to_digits(value: f64, digits: i64) -> f64 {
+    if !value.is_finite() {
+        return value;
+    }
+
+    let rounded = if digits >= 0 {
+        let Ok(exp) = i32::try_from(digits) else {
+            return value;
+        };
+        let multiplier = 10_f64.powi(exp);
+        if !multiplier.is_finite() {
+            return value;
+        }
+        let scaled = value * multiplier;
+        if !scaled.is_finite() {
+            return value;
+        }
+        bankers_round(scaled) / multiplier
+    } else {
+        let Ok(exp) = i32::try_from(digits) else {
+            return 0.0_f64.copysign(value);
+        };
+        let multiplier = 10_f64.powi(exp);
+        if multiplier == 0.0 {
+            return 0.0_f64.copysign(value);
+        }
+        let scaled = value * multiplier;
+        bankers_round(scaled) / multiplier
+    };
+
+    if rounded == 0.0 {
+        0.0_f64.copysign(value)
+    } else {
+        rounded
     }
 }
 
