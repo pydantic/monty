@@ -321,14 +321,10 @@ impl<'a> Compiler<'a> {
         // 1. Compile the function body recursively
         // Take ownership of functions for the recursive compile, then restore
         let functions = std::mem::take(&mut self.functions);
-        let cell_base = func_def.signature.param_count() as u16;
-        let (body_code, mut functions) = Self::compile_function_body(
-            &func_def.body,
-            self.interns,
-            functions,
-            func_def.namespace_size as u16,
-            cell_base,
-        )?;
+        let cell_base = u16::try_from(func_def.signature.param_count()).expect("function parameter count exceeds u16");
+        let namespace_size = u16::try_from(func_def.namespace_size).expect("function namespace size exceeds u16");
+        let (body_code, mut functions) =
+            Self::compile_function_body(&func_def.body, self.interns, functions, namespace_size, cell_base)?;
 
         // 2. Create the compiled Function and add to the vector
         let func_id = functions.len();
@@ -351,23 +347,26 @@ impl<'a> Compiler<'a> {
         for default_expr in &func_def.default_exprs {
             self.compile_expr(default_expr)?;
         }
-        let defaults_count = func_def.default_exprs.len() as u8;
+        let defaults_count =
+            u8::try_from(func_def.default_exprs.len()).expect("function default argument count exceeds u8");
+        let func_id_u16 = u16::try_from(func_id).expect("function count exceeds u16");
 
         // 4. Emit MakeFunction or MakeClosure (if has free vars)
         if func_def.free_var_enclosing_slots.is_empty() {
             // MakeFunction: func_id (u16) + defaults_count (u8)
-            self.code
-                .emit_u16_u8(Opcode::MakeFunction, func_id as u16, defaults_count);
+            self.code.emit_u16_u8(Opcode::MakeFunction, func_id_u16, defaults_count);
         } else {
             // Push captured cells from enclosing scope
             for &slot in &func_def.free_var_enclosing_slots {
                 // Load the cell reference from the enclosing namespace
-                self.code.emit_load_local(slot.index() as u16);
+                let slot_u16 = u16::try_from(slot.index()).expect("closure slot index exceeds u16");
+                self.code.emit_load_local(slot_u16);
             }
-            let cell_count = func_def.free_var_enclosing_slots.len() as u8;
+            let cell_count =
+                u8::try_from(func_def.free_var_enclosing_slots.len()).expect("closure cell count exceeds u8");
             // MakeClosure: func_id (u16) + defaults_count (u8) + cell_count (u8)
             self.code
-                .emit_u16_u8_u8(Opcode::MakeClosure, func_id as u16, defaults_count, cell_count);
+                .emit_u16_u8_u8(Opcode::MakeClosure, func_id_u16, defaults_count, cell_count);
         }
 
         // 5. Store the function object to its name slot

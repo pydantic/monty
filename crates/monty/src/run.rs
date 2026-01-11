@@ -483,7 +483,8 @@ impl Executor {
         let mut interns = Interns::new(prepared.interner, Vec::new(), external_functions);
 
         // Compile the module to bytecode, which also compiles all nested functions
-        let compile_result = Compiler::compile_module(&prepared.nodes, &interns, prepared.namespace_size as u16)
+        let namespace_size_u16 = u16::try_from(prepared.namespace_size).expect("module namespace size exceeds u16");
+        let compile_result = Compiler::compile_module(&prepared.nodes, &interns, namespace_size_u16)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
 
         // Set the compiled functions in the interns
