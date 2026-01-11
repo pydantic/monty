@@ -2,17 +2,18 @@ use std::fmt::Write;
 
 use crate::{
     bytecode::Code,
-    expressions::{ExprLoc, Identifier, Node},
+    expressions::Identifier,
     intern::{Interns, StringId},
     namespace::NamespaceId,
     signature::Signature,
 };
 
-/// Stores a function definition.
+/// A compiled function ready for execution.
 ///
-/// Contains everything needed to execute a user-defined function: the body AST,
-/// initial namespace layout, and captured closure cells. Functions are stored
-/// on the heap and referenced via HeapId.
+/// This is created during the compilation phase from a `PreparedFunctionDef`.
+/// Contains everything needed to execute a user-defined function: compiled bytecode,
+/// metadata, and closure information. Functions are stored on the heap and
+/// referenced via HeapId.
 ///
 /// # Namespace Layout
 ///
@@ -38,8 +39,6 @@ pub struct Function {
     pub name: Identifier,
     /// The function signature.
     pub signature: Signature,
-    /// The prepared function body AST nodes.
-    pub body: Vec<Node>,
     /// Size of the initial namespace (number of local variable slots).
     pub namespace_size: usize,
     /// Enclosing namespace slots for variables captured from enclosing scopes.
@@ -59,59 +58,56 @@ pub struct Function {
     /// (index 0..cell_var_count), and contains `Some(param_index)` if that cell is for
     /// a parameter, or `None` otherwise.
     pub cell_param_indices: Vec<Option<usize>>,
-    /// Prepared default value expressions, evaluated at function definition time.
+    /// Number of default parameter values.
     ///
-    /// Layout: `[pos_defaults...][arg_defaults...][kwarg_defaults...]`
-    /// Each group contains only the parameters that have defaults, in declaration order.
-    /// The counts in `signature` indicate how many defaults exist for each group.
-    pub default_exprs: Vec<ExprLoc>,
-    /// Compiled bytecode for this function.
-    ///
-    /// This is `None` until the function is compiled during the eager compilation phase
-    /// in `Executor::new()`. After compilation, it contains the bytecode for the function body.
-    pub code: Option<Code>,
+    /// At function definition time, this many default values are evaluated and stored
+    /// in a separate defaults array. The signature indicates how these map to parameters.
+    pub defaults_count: usize,
+    /// Compiled bytecode for this function body.
+    pub code: Code,
 }
 
 impl Function {
-    /// Create a new function definition.
+    /// Create a new compiled function.
+    ///
+    /// This is typically called by the bytecode compiler after compiling a `PreparedFunctionDef`.
     ///
     /// # Arguments
     /// * `name` - The function name identifier
     /// * `signature` - The function signature with parameter names and defaults
-    /// * `body` - The prepared function body AST
     /// * `namespace_size` - Number of local variable slots needed
     /// * `free_var_enclosing_slots` - Enclosing namespace slots for captured variables
     /// * `cell_var_count` - Number of cells to create for variables captured by nested functions
     /// * `cell_param_indices` - Maps cell indices to parameter indices for captured parameters
-    /// * `default_exprs` - Prepared default value expressions for parameters
+    /// * `defaults_count` - Number of default parameter values
+    /// * `code` - The compiled bytecode for the function body
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: Identifier,
         signature: Signature,
-        body: Vec<Node>,
         namespace_size: usize,
         free_var_enclosing_slots: Vec<NamespaceId>,
         cell_var_count: usize,
         cell_param_indices: Vec<Option<usize>>,
-        default_exprs: Vec<ExprLoc>,
+        defaults_count: usize,
+        code: Code,
     ) -> Self {
         Self {
             name,
             signature,
-            body,
             namespace_size,
             free_var_enclosing_slots,
             cell_var_count,
             cell_param_indices,
-            default_exprs,
-            code: None,
+            defaults_count,
+            code,
         }
     }
 
     /// Returns true if this function has any default parameter values.
     #[must_use]
     pub fn has_defaults(&self) -> bool {
-        !self.default_exprs.is_empty()
+        self.defaults_count > 0
     }
 
     /// Returns true if this function has any free variables (is a closure).

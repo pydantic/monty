@@ -1,8 +1,12 @@
 //! Bytecode compiler for transforming AST to bytecode.
 //!
-//! The compiler traverses the prepared AST (`Node` and `Expr` types from `expressions.rs`)
+//! The compiler traverses the prepared AST (`PreparedNode` and `Expr` types from `expressions.rs`)
 //! and emits bytecode instructions using `CodeBuilder`. It handles variable scoping,
 //! control flow, and expression evaluation order following Python semantics.
+//!
+//! Functions are compiled recursively: when a `PreparedFunctionDef` is encountered,
+//! its body is compiled to bytecode and a `Function` struct is created. All compiled
+//! functions are collected and returned along with the module code.
 
 use std::borrow::Cow;
 
@@ -17,8 +21,9 @@ use crate::{
     callable::Callable,
     exception_private::ExcType,
     exception_public::{MontyException, StackFrame},
-    expressions::{Expr, ExprLoc, Identifier, Literal, NameScope, Node},
+    expressions::{Expr, ExprLoc, Identifier, Literal, NameScope, PreparedFunctionDef, PreparedNode},
     fstring::{encode_format_spec, ConversionFlag, FStringPart, FormatSpec},
+    function::Function,
     intern::Interns,
     operators::{CmpOperator, Operator},
     parse::{CodeRange, ExceptHandler, Try},
@@ -37,12 +42,24 @@ const MAX_CALL_ARGS: usize = 255;
 /// The compiler traverses the AST and emits bytecode instructions using
 /// `CodeBuilder`. It handles variable scoping, control flow, and expression
 /// evaluation order following Python semantics.
+///
+/// Functions are compiled recursively and collected in the `functions` vector.
+/// When a `PreparedFunctionDef` is encountered, its body is compiled first,
+/// creating a `Function` struct that is added to the vector. The index of the
+/// function in this vector becomes the operand for MakeFunction/MakeClosure opcodes.
 pub struct Compiler<'a> {
     /// Current code being built.
     code: CodeBuilder,
 
     /// Reference to interns for string/function lookups.
     interns: &'a Interns,
+
+    /// Compiled functions, indexed by their position in this vector.
+    ///
+    /// Functions are added in the order they are encountered during compilation.
+    /// Nested functions are compiled before their containing function's code
+    /// finishes, so inner functions have lower indices.
+    functions: Vec<Function>,
 
     /// Loop stack for break/continue handling.
     /// Each entry tracks the loop start offset and pending break jumps.
@@ -83,12 +100,21 @@ struct FinallyTarget {
     return_jumps: Vec<JumpLabel>,
 }
 
+/// Result of module compilation: the module code and all compiled functions.
+pub struct CompileResult {
+    /// The compiled module code.
+    pub code: Code,
+    /// All functions compiled during module compilation, indexed by their function ID.
+    pub functions: Vec<Function>,
+}
+
 impl<'a> Compiler<'a> {
     /// Creates a new compiler with access to the string interner.
-    fn new(interns: &'a Interns) -> Self {
+    fn new(interns: &'a Interns, functions: Vec<Function>) -> Self {
         Self {
             code: CodeBuilder::new(),
             interns,
+            functions,
             loop_stack: Vec::new(),
             cell_base: 0,
             finally_targets: Vec::new(),
@@ -96,10 +122,11 @@ impl<'a> Compiler<'a> {
     }
 
     /// Creates a new compiler with a specific cell base offset.
-    fn new_with_cell_base(interns: &'a Interns, cell_base: u16) -> Self {
+    fn new_with_cell_base(interns: &'a Interns, functions: Vec<Function>, cell_base: u16) -> Self {
         Self {
             code: CodeBuilder::new(),
             interns,
+            functions,
             loop_stack: Vec::new(),
             cell_base,
             finally_targets: Vec::new(),
@@ -108,46 +135,57 @@ impl<'a> Compiler<'a> {
 
     /// Compiles module-level code (a sequence of statements).
     ///
-    /// Returns a Code object for the module, or a compile error if limits
-    /// were exceeded. The module implicitly returns the value of the last
-    /// expression, or None if empty.
-    pub fn compile_module(nodes: &[Node], interns: &Interns, num_locals: u16) -> Result<Code, CompileError> {
-        let mut compiler = Compiler::new(interns);
+    /// Returns the compiled module Code and all compiled Functions, or a compile
+    /// error if limits were exceeded. The module implicitly returns the value
+    /// of the last expression, or None if empty.
+    pub fn compile_module(
+        nodes: &[PreparedNode],
+        interns: &Interns,
+        num_locals: u16,
+    ) -> Result<CompileResult, CompileError> {
+        let mut compiler = Compiler::new(interns, Vec::new());
         compiler.compile_block(nodes)?;
 
         // Module returns None if no explicit return
         compiler.code.emit(Opcode::LoadNone);
         compiler.code.emit(Opcode::ReturnValue);
 
-        Ok(compiler.code.build(num_locals))
+        Ok(CompileResult {
+            code: compiler.code.build(num_locals),
+            functions: compiler.functions,
+        })
     }
 
-    /// Compiles a function body to bytecode.
+    /// Compiles a function body to bytecode, returning the Code and any nested functions.
     ///
-    /// Used during eager compilation to compile each function definition.
-    /// The function body is compiled to bytecode with an implicit `return None`
-    /// at the end if there's no explicit return statement.
+    /// Used internally when compiling function definitions. The function body is
+    /// compiled to bytecode with an implicit `return None` at the end if there's
+    /// no explicit return statement.
     ///
     /// The `cell_base` parameter is the number of parameter slots, used to convert
     /// cell variable namespace slots to cells array indices.
-    pub fn compile_function(
-        body: &[Node],
+    ///
+    /// The `functions` parameter receives any previously compiled functions, and
+    /// any nested functions found in the body will be added to it.
+    fn compile_function_body(
+        body: &[PreparedNode],
         interns: &Interns,
+        functions: Vec<Function>,
         num_locals: u16,
         cell_base: u16,
-    ) -> Result<Code, CompileError> {
-        let mut compiler = Compiler::new_with_cell_base(interns, cell_base);
+    ) -> Result<(Code, Vec<Function>), CompileError> {
+        let mut compiler = Compiler::new_with_cell_base(interns, functions, cell_base);
         compiler.compile_block(body)?;
 
         // Implicit return None if no explicit return
         compiler.code.emit(Opcode::LoadNone);
         compiler.code.emit(Opcode::ReturnValue);
 
-        Ok(compiler.code.build(num_locals))
+        Ok((compiler.code.build(num_locals), compiler.functions))
     }
 
     /// Compiles a block of statements.
-    fn compile_block(&mut self, nodes: &[Node]) -> Result<(), CompileError> {
+    fn compile_block(&mut self, nodes: &[PreparedNode]) -> Result<(), CompileError> {
         for node in nodes {
             self.compile_stmt(node)?;
         }
@@ -159,7 +197,9 @@ impl<'a> Compiler<'a> {
     // ========================================================================
 
     /// Compiles a single statement.
-    fn compile_stmt(&mut self, node: &Node) -> Result<(), CompileError> {
+    fn compile_stmt(&mut self, node: &PreparedNode) -> Result<(), CompileError> {
+        // Node is an alias, use qualified path for matching
+        use crate::expressions::Node;
         match node {
             Node::Expr(expr) => {
                 self.compile_expr(expr)?;
@@ -237,55 +277,99 @@ impl<'a> Compiler<'a> {
                 }
             }
 
-            Node::FunctionDef(func_id) => {
-                let func = self.interns.get_function(*func_id);
-                let func_pos = func.name.position;
-
-                // Check bytecode operand limits
-                if func.default_exprs.len() > MAX_CALL_ARGS {
-                    return Err(CompileError::new(
-                        format!("more than {MAX_CALL_ARGS} default parameter values"),
-                        func_pos,
-                    ));
-                }
-                if func.free_var_enclosing_slots.len() > MAX_CALL_ARGS {
-                    return Err(CompileError::new(
-                        format!("more than {MAX_CALL_ARGS} closure variables"),
-                        func_pos,
-                    ));
-                }
-
-                // 1. Compile and push default values (evaluated at definition time)
-                for default_expr in &func.default_exprs {
-                    self.compile_expr(default_expr)?;
-                }
-                let defaults_count = func.default_exprs.len() as u8;
-
-                // 2. Emit MakeFunction or MakeClosure (if has free vars)
-                if func.free_var_enclosing_slots.is_empty() {
-                    // MakeFunction: func_id (u16) + defaults_count (u8)
-                    self.code
-                        .emit_u16_u8(Opcode::MakeFunction, func_id.index() as u16, defaults_count);
-                } else {
-                    // Push captured cells from enclosing scope
-                    for &slot in &func.free_var_enclosing_slots {
-                        // Load the cell reference from the enclosing namespace
-                        self.code.emit_load_local(slot.index() as u16);
-                    }
-                    let cell_count = func.free_var_enclosing_slots.len() as u8;
-                    // MakeClosure: func_id (u16) + defaults_count (u8) + cell_count (u8)
-                    self.code
-                        .emit_u16_u8_u8(Opcode::MakeClosure, func_id.index() as u16, defaults_count, cell_count);
-                }
-
-                // 3. Store the function object to its name slot
-                self.compile_store(&func.name);
+            Node::FunctionDef(func_def) => {
+                self.compile_function_def(func_def)?;
             }
 
             Node::Try(try_block) => {
                 self.compile_try(try_block)?;
             }
+
+            // These are handled during the prepare phase and produce no bytecode
+            Node::Pass | Node::Global { .. } | Node::Nonlocal { .. } => {}
         }
+        Ok(())
+    }
+
+    /// Compiles a function definition.
+    ///
+    /// This involves:
+    /// 1. Recursively compiling the function body to bytecode
+    /// 2. Creating a Function struct with the compiled Code
+    /// 3. Adding the Function to the compiler's functions vector
+    /// 4. Emitting bytecode to evaluate defaults and create the function at runtime
+    fn compile_function_def(&mut self, func_def: &PreparedFunctionDef) -> Result<(), CompileError> {
+        let func_pos = func_def.name.position;
+
+        // Check bytecode operand limits
+        if func_def.default_exprs.len() > MAX_CALL_ARGS {
+            return Err(CompileError::new(
+                format!("more than {MAX_CALL_ARGS} default parameter values"),
+                func_pos,
+            ));
+        }
+        if func_def.free_var_enclosing_slots.len() > MAX_CALL_ARGS {
+            return Err(CompileError::new(
+                format!("more than {MAX_CALL_ARGS} closure variables"),
+                func_pos,
+            ));
+        }
+
+        // 1. Compile the function body recursively
+        // Take ownership of functions for the recursive compile, then restore
+        let functions = std::mem::take(&mut self.functions);
+        let cell_base = func_def.signature.param_count() as u16;
+        let (body_code, mut functions) = Self::compile_function_body(
+            &func_def.body,
+            self.interns,
+            functions,
+            func_def.namespace_size as u16,
+            cell_base,
+        )?;
+
+        // 2. Create the compiled Function and add to the vector
+        let func_id = functions.len();
+        let function = Function::new(
+            func_def.name,
+            func_def.signature.clone(),
+            func_def.namespace_size,
+            func_def.free_var_enclosing_slots.clone(),
+            func_def.cell_var_count,
+            func_def.cell_param_indices.clone(),
+            func_def.default_exprs.len(),
+            body_code,
+        );
+        functions.push(function);
+
+        // Restore functions to self
+        self.functions = functions;
+
+        // 3. Compile and push default values (evaluated at definition time)
+        for default_expr in &func_def.default_exprs {
+            self.compile_expr(default_expr)?;
+        }
+        let defaults_count = func_def.default_exprs.len() as u8;
+
+        // 4. Emit MakeFunction or MakeClosure (if has free vars)
+        if func_def.free_var_enclosing_slots.is_empty() {
+            // MakeFunction: func_id (u16) + defaults_count (u8)
+            self.code
+                .emit_u16_u8(Opcode::MakeFunction, func_id as u16, defaults_count);
+        } else {
+            // Push captured cells from enclosing scope
+            for &slot in &func_def.free_var_enclosing_slots {
+                // Load the cell reference from the enclosing namespace
+                self.code.emit_load_local(slot.index() as u16);
+            }
+            let cell_count = func_def.free_var_enclosing_slots.len() as u8;
+            // MakeClosure: func_id (u16) + defaults_count (u8) + cell_count (u8)
+            self.code
+                .emit_u16_u8_u8(Opcode::MakeClosure, func_id as u16, defaults_count, cell_count);
+        }
+
+        // 5. Store the function object to its name slot
+        self.compile_store(&func_def.name);
+
         Ok(())
     }
 
@@ -551,7 +635,12 @@ impl<'a> Compiler<'a> {
     // ========================================================================
 
     /// Compiles an if/else statement.
-    fn compile_if(&mut self, test: &ExprLoc, body: &[Node], or_else: &[Node]) -> Result<(), CompileError> {
+    fn compile_if(
+        &mut self,
+        test: &ExprLoc,
+        body: &[PreparedNode],
+        or_else: &[PreparedNode],
+    ) -> Result<(), CompileError> {
         self.compile_expr(test)?;
 
         if or_else.is_empty() {
@@ -834,8 +923,8 @@ impl<'a> Compiler<'a> {
         &mut self,
         target: &Identifier,
         iter: &ExprLoc,
-        body: &[Node],
-        or_else: &[Node],
+        body: &[PreparedNode],
+        or_else: &[PreparedNode],
     ) -> Result<(), CompileError> {
         // Compile iterator expression
         self.compile_expr(iter)?;
@@ -1061,7 +1150,7 @@ impl<'a> Compiler<'a> {
     ///
     /// Returns inside try/except/else jump to a "finally with return" path that
     /// runs the finally code then returns the value.
-    fn compile_try(&mut self, try_block: &Try<Node>) -> Result<(), CompileError> {
+    fn compile_try(&mut self, try_block: &Try<PreparedNode>) -> Result<(), CompileError> {
         let has_finally = !try_block.finally.is_empty();
         let has_handlers = !try_block.handlers.is_empty();
         let has_else = !try_block.or_else.is_empty();
@@ -1218,7 +1307,7 @@ impl<'a> Compiler<'a> {
     /// executes the handler body. If no handler matches, the exception is re-raised.
     fn compile_exception_handlers(
         &mut self,
-        handlers: &[ExceptHandler<Node>],
+        handlers: &[ExceptHandler<PreparedNode>],
         finally_jumps: &mut Vec<JumpLabel>,
     ) -> Result<(), CompileError> {
         // Track jumps from non-matching handlers to next handler
@@ -1456,10 +1545,10 @@ mod tests {
     #[test]
     fn test_compiler_creates_code() {
         let interns = test_interns();
-        let code = Compiler::compile_module(&[], &interns, 0).unwrap();
+        let result = Compiler::compile_module(&[], &interns, 0).unwrap();
         // Empty module should have LoadNone + ReturnValue
-        assert_eq!(code.bytecode().len(), 2);
-        assert_eq!(code.bytecode()[0], Opcode::LoadNone as u8);
-        assert_eq!(code.bytecode()[1], Opcode::ReturnValue as u8);
+        assert_eq!(result.code.bytecode().len(), 2);
+        assert_eq!(result.code.bytecode()[0], Opcode::LoadNone as u8);
+        assert_eq!(result.code.bytecode()[1], Opcode::ReturnValue as u8);
     }
 }

@@ -479,28 +479,21 @@ impl Executor {
         // Incrementing order matches the indexes used in intern::Interns::get_external_function_name
         let external_function_ids = (0..external_functions.len()).map(ExtFunctionId::new).collect();
 
-        // Create interns before compilation
-        let mut interns = Interns::new(prepared.interner, prepared.functions, external_functions);
+        // Create interns with empty functions (functions will be set after compilation)
+        let mut interns = Interns::new(prepared.interner, Vec::new(), external_functions);
 
-        // Eagerly compile all function bodies to bytecode
-        for func_idx in 0..interns.function_count() {
-            let func_id = crate::intern::FunctionId::new(func_idx);
-            let func = interns.get_function(func_id);
-            let cell_base = func.signature.total_slots() as u16;
-            let code = Compiler::compile_function(&func.body, &interns, func.namespace_size as u16, cell_base)
-                .map_err(|e| e.into_python_exc(script_name, &code))?;
-            interns.get_function_mut(func_id).code = Some(code);
-        }
-
-        // Compile the module to bytecode
-        let module_code = Compiler::compile_module(&prepared.nodes, &interns, prepared.namespace_size as u16)
+        // Compile the module to bytecode, which also compiles all nested functions
+        let compile_result = Compiler::compile_module(&prepared.nodes, &interns, prepared.namespace_size as u16)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
+
+        // Set the compiled functions in the interns
+        interns.set_functions(compile_result.functions);
 
         Ok(Self {
             namespace_size: prepared.namespace_size,
             #[cfg(feature = "ref-count-return")]
             name_map: prepared.name_map,
-            module_code,
+            module_code: compile_result.code,
             interns,
             external_function_ids,
             code,

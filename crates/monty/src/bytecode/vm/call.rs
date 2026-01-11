@@ -280,7 +280,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         let param_count = func.signature.total_slots();
         let cell_var_count = func.cell_var_count;
         let cell_param_indices = func.cell_param_indices.clone();
-        let code = func.code.as_ref().expect("function should be compiled");
+        let code = &func.code;
 
         // 1. Create new namespace for function
         let namespace_idx = self.namespaces.new_namespace(namespace_size, self.heap)?;

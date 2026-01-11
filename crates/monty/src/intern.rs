@@ -356,4 +356,12 @@ impl Interns {
             .expect("External function not found")
             .clone()
     }
+
+    /// Sets the compiled functions.
+    ///
+    /// This is called after compilation to populate the functions that were
+    /// compiled from `PreparedFunctionDef` nodes.
+    pub fn set_functions(&mut self, functions: Vec<Function>) {
+        self.functions = functions;
+    }
 }

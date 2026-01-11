@@ -13,7 +13,7 @@ use crate::{
     callable::Callable,
     exception_private::ExcType,
     exception_public::{CodeLoc, MontyException},
-    expressions::{Expr, ExprLoc, Identifier, Literal},
+    expressions::{Expr, ExprLoc, Identifier, Literal, Node},
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
     operators::{CmpOperator, Operator},
@@ -64,79 +64,27 @@ impl ParsedSignature {
     }
 }
 
-/// Parsed AST node, intermediate representation between ruff AST and prepared nodes.
+/// A raw (unprepared) function definition from the parser.
 ///
-/// These nodes are created during parsing and then transformed during the prepare phase
-/// into `Node` variants with resolved names and scope information.
+/// Contains the function name, signature, and body as parsed AST nodes.
+/// During the prepare phase, this is transformed into `PreparedFunctionDef`
+/// with resolved names and scope information.
 #[derive(Debug, Clone)]
-pub enum ParseNode {
-    Pass,
-    Expr(ExprLoc),
-    Return(ExprLoc),
-    ReturnNone,
-    Raise(Option<ExprLoc>),
-    Assert {
-        test: ExprLoc,
-        msg: Option<ExprLoc>,
-    },
-    Assign {
-        target: Identifier,
-        object: ExprLoc,
-    },
-    OpAssign {
-        target: Identifier,
-        op: Operator,
-        object: ExprLoc,
-    },
-    SubscriptAssign {
-        target: Identifier,
-        index: ExprLoc,
-        value: ExprLoc,
-    },
-    AttrAssign {
-        object: Box<ExprLoc>,
-        attr: Attr,
-        target_position: CodeRange,
-        value: ExprLoc,
-    },
-    For {
-        target: Identifier,
-        iter: ExprLoc,
-        body: Vec<ParseNode>,
-        or_else: Vec<ParseNode>,
-    },
-    If {
-        test: ExprLoc,
-        body: Vec<ParseNode>,
-        or_else: Vec<ParseNode>,
-    },
-    FunctionDef {
-        name: Identifier,
-        signature: ParsedSignature,
-        body: Vec<ParseNode>,
-    },
-    /// Global variable declaration.
-    ///
-    /// Declares that the listed names refer to module-level (global) variables,
-    /// allowing functions to read and write them instead of creating local variables.
-    Global {
-        position: CodeRange,
-        names: Vec<StringId>,
-    },
-    /// Nonlocal variable declaration.
-    ///
-    /// Declares that the listed names refer to variables in enclosing function scopes,
-    /// allowing nested functions to read and write them instead of creating local variables.
-    Nonlocal {
-        position: CodeRange,
-        names: Vec<StringId>,
-    },
-    /// Try/except/else/finally block.
-    ///
-    /// Handles Python exception handling with optional else (runs if no exception)
-    /// and finally (always runs) blocks.
-    Try(Try<ParseNode>),
+pub struct RawFunctionDef {
+    /// The function name identifier (not yet resolved to a namespace index).
+    pub name: Identifier,
+    /// The parsed function signature with parameter names and default expressions.
+    pub signature: ParsedSignature,
+    /// The unprepared function body (names not yet resolved).
+    pub body: Vec<ParsedNode>,
 }
+
+/// Type alias for parsed AST nodes (output of the parser).
+///
+/// This uses `Node<RawFunctionDef>` where function definitions contain their
+/// full unprepared body. After the prepare phase, this becomes `PreparedNode`
+/// (aka `Node<PreparedFunctionDef>`).
+pub type ParsedNode = Node<RawFunctionDef>;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Try<N> {
@@ -163,7 +111,7 @@ pub struct ExceptHandler<N> {
 /// Result of parsing: the AST nodes and the string interner with all interned names.
 #[derive(Debug)]
 pub struct ParseResult {
-    pub nodes: Vec<ParseNode>,
+    pub nodes: Vec<ParsedNode>,
     pub interner: InternerBuilder,
 }
 
@@ -182,7 +130,7 @@ pub(crate) fn parse(code: &str, filename: &str) -> Result<ParseResult, ParseErro
     }
 }
 
-/// Parser for converting ruff AST to Monty's intermediate ParseNode representation.
+/// Parser for converting ruff AST to Monty's intermediate ParsedNode representation.
 ///
 /// Holds references to the source code and owns a string interner for names.
 /// The filename is interned once at construction and reused for all CodeRanges.
@@ -214,19 +162,19 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_statements(&mut self, statements: Vec<Stmt>) -> Result<Vec<ParseNode>, ParseError> {
+    fn parse_statements(&mut self, statements: Vec<Stmt>) -> Result<Vec<ParsedNode>, ParseError> {
         statements.into_iter().map(|f| self.parse_statement(f)).collect()
     }
 
-    fn parse_elif_else_clauses(&mut self, clauses: Vec<ElifElseClause>) -> Result<Vec<ParseNode>, ParseError> {
-        let mut tail: Vec<ParseNode> = Vec::new();
+    fn parse_elif_else_clauses(&mut self, clauses: Vec<ElifElseClause>) -> Result<Vec<ParsedNode>, ParseError> {
+        let mut tail: Vec<ParsedNode> = Vec::new();
         for clause in clauses.into_iter().rev() {
             match clause.test {
                 Some(test) => {
                     let test = self.parse_expression(test)?;
                     let body = self.parse_statements(clause.body)?;
                     let or_else = tail;
-                    let nested = ParseNode::If { test, body, or_else };
+                    let nested = Node::If { test, body, or_else };
                     tail = vec![nested];
                 }
                 None => {
@@ -243,7 +191,7 @@ impl<'a> Parser<'a> {
     fn parse_except_handler(
         &mut self,
         handler: ruff_python_ast::ExceptHandler,
-    ) -> Result<ExceptHandler<ParseNode>, ParseError> {
+    ) -> Result<ExceptHandler<ParsedNode>, ParseError> {
         let ruff_python_ast::ExceptHandler::ExceptHandler(h) = handler;
         let exc_type = match h.type_ {
             Some(expr) => Some(self.parse_expression(*expr)?),
@@ -254,7 +202,7 @@ impl<'a> Parser<'a> {
         Ok(ExceptHandler { exc_type, name, body })
     }
 
-    fn parse_statement(&mut self, statement: Stmt) -> Result<ParseNode, ParseError> {
+    fn parse_statement(&mut self, statement: Stmt) -> Result<ParsedNode, ParseError> {
         match statement {
             Stmt::FunctionDef(function) => {
                 if function.is_async {
@@ -290,26 +238,26 @@ impl<'a> Parser<'a> {
                 // Parse function body recursively
                 let body = self.parse_statements(function.body)?;
 
-                Ok(ParseNode::FunctionDef { name, signature, body })
+                Ok(Node::FunctionDef(RawFunctionDef { name, signature, body }))
             }
             Stmt::ClassDef(_) => Err(ParseError::not_implemented("class definitions")),
             Stmt::Return(ast::StmtReturn { value, .. }) => match value {
-                Some(value) => Ok(ParseNode::Return(self.parse_expression(*value)?)),
-                None => Ok(ParseNode::ReturnNone),
+                Some(value) => Ok(Node::Return(self.parse_expression(*value)?)),
+                None => Ok(Node::ReturnNone),
             },
             Stmt::Delete(_) => Err(ParseError::not_implemented("the 'del' statement")),
             Stmt::TypeAlias(_) => Err(ParseError::not_implemented("type aliases")),
             Stmt::Assign(ast::StmtAssign {
                 targets, value, range, ..
             }) => self.parse_assignment(first(targets, self.convert_range(range))?, *value),
-            Stmt::AugAssign(ast::StmtAugAssign { target, op, value, .. }) => Ok(ParseNode::OpAssign {
+            Stmt::AugAssign(ast::StmtAugAssign { target, op, value, .. }) => Ok(Node::OpAssign {
                 target: self.parse_identifier(*target)?,
                 op: convert_op(op),
                 object: self.parse_expression(*value)?,
             }),
             Stmt::AnnAssign(ast::StmtAnnAssign { target, value, .. }) => match value {
                 Some(value) => self.parse_assignment(*target, *value),
-                None => Ok(ParseNode::Pass),
+                None => Ok(Node::Pass),
             },
             Stmt::For(ast::StmtFor {
                 is_async,
@@ -322,7 +270,7 @@ impl<'a> Parser<'a> {
                 if is_async {
                     return Err(ParseError::not_implemented("async for loops"));
                 }
-                Ok(ParseNode::For {
+                Ok(Node::For {
                     target: self.parse_identifier(*target)?,
                     iter: self.parse_expression(*iter)?,
                     body: self.parse_statements(body)?,
@@ -339,7 +287,7 @@ impl<'a> Parser<'a> {
                 let test = self.parse_expression(*test)?;
                 let body = self.parse_statements(body)?;
                 let or_else = self.parse_elif_else_clauses(elif_else_clauses)?;
-                Ok(ParseNode::If { test, body, or_else })
+                Ok(Node::If { test, body, or_else })
             }
             Stmt::With(ast::StmtWith { is_async, .. }) => {
                 if is_async {
@@ -350,12 +298,12 @@ impl<'a> Parser<'a> {
             }
             Stmt::Match(_) => Err(ParseError::not_implemented("pattern matching (match statements)")),
             Stmt::Raise(ast::StmtRaise { exc, .. }) => {
-                // TODO add cause to ParseNode::Raise
+                // TODO add cause to Node::Raise
                 let expr = match exc {
                     Some(expr) => Some(self.parse_expression(*expr)?),
                     None => None,
                 };
-                Ok(ParseNode::Raise(expr))
+                Ok(Node::Raise(expr))
             }
             Stmt::Try(ast::StmtTry {
                 body,
@@ -375,7 +323,7 @@ impl<'a> Parser<'a> {
                         .collect::<Result<Vec<_>, _>>()?;
                     let or_else = self.parse_statements(orelse)?;
                     let finally = self.parse_statements(finalbody)?;
-                    Ok(ParseNode::Try(Try {
+                    Ok(Node::Try(Try {
                         body,
                         handlers,
                         or_else,
@@ -389,7 +337,7 @@ impl<'a> Parser<'a> {
                     Some(m) => Some(self.parse_expression(*m)?),
                     None => None,
                 };
-                Ok(ParseNode::Assert { test, msg })
+                Ok(Node::Assert { test, msg })
             }
             Stmt::Import(_) => Err(ParseError::not_implemented("import statements")),
             Stmt::ImportFrom(_) => Err(ParseError::not_implemented("from...import statements")),
@@ -398,7 +346,7 @@ impl<'a> Parser<'a> {
                     .iter()
                     .map(|id| self.interner.intern(&self.code[id.range]))
                     .collect();
-                Ok(ParseNode::Global {
+                Ok(Node::Global {
                     position: self.convert_range(range),
                     names,
                 })
@@ -408,13 +356,13 @@ impl<'a> Parser<'a> {
                     .iter()
                     .map(|id| self.interner.intern(&self.code[id.range]))
                     .collect();
-                Ok(ParseNode::Nonlocal {
+                Ok(Node::Nonlocal {
                     position: self.convert_range(range),
                     names,
                 })
             }
-            Stmt::Expr(ast::StmtExpr { value, .. }) => self.parse_expression(*value).map(ParseNode::Expr),
-            Stmt::Pass(_) => Ok(ParseNode::Pass),
+            Stmt::Expr(ast::StmtExpr { value, .. }) => self.parse_expression(*value).map(Node::Expr),
+            Stmt::Pass(_) => Ok(Node::Pass),
             Stmt::Break(_) => Err(ParseError::not_implemented("break statements")),
             Stmt::Continue(_) => Err(ParseError::not_implemented("continue statements")),
             Stmt::IpyEscapeCommand(_) => Err(ParseError::not_implemented("IPython escape commands")),
@@ -424,23 +372,23 @@ impl<'a> Parser<'a> {
     /// `lhs = rhs` -> `lhs, rhs`
     /// Handles simple assignments (x = value), subscript assignments (dict[key] = value),
     /// and attribute assignments (obj.attr = value)
-    fn parse_assignment(&mut self, lhs: AstExpr, rhs: AstExpr) -> Result<ParseNode, ParseError> {
+    fn parse_assignment(&mut self, lhs: AstExpr, rhs: AstExpr) -> Result<ParsedNode, ParseError> {
         match lhs {
             // Subscript assignment like dict[key] = value
-            AstExpr::Subscript(ast::ExprSubscript { value, slice, .. }) => Ok(ParseNode::SubscriptAssign {
+            AstExpr::Subscript(ast::ExprSubscript { value, slice, .. }) => Ok(Node::SubscriptAssign {
                 target: self.parse_identifier(*value)?,
                 index: self.parse_expression(*slice)?,
                 value: self.parse_expression(rhs)?,
             }),
             // Attribute assignment like obj.attr = value (supports chained like a.b.c = value)
-            AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => Ok(ParseNode::AttrAssign {
+            AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => Ok(Node::AttrAssign {
                 object: Box::new(self.parse_expression(*value)?),
                 attr: Attr::Interned(self.interner.intern(attr.id())),
                 target_position: self.convert_range(range),
                 value: self.parse_expression(rhs)?,
             }),
             // Simple identifier assignment like x = value
-            _ => Ok(ParseNode::Assign {
+            _ => Ok(Node::Assign {
                 target: self.parse_identifier(lhs)?,
                 object: self.parse_expression(rhs)?,
             }),

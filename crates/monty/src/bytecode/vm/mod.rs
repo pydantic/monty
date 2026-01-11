@@ -960,11 +960,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             .into_iter()
             .map(|sf| {
                 let code = match sf.function_id {
-                    Some(func_id) => interns
-                        .get_function(func_id)
-                        .code
-                        .as_ref()
-                        .expect("function should be compiled"),
+                    Some(func_id) => &interns.get_function(func_id).code,
                     None => module_code,
                 };
                 CallFrame {

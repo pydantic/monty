@@ -5,23 +5,26 @@ use ahash::{AHashMap, AHashSet};
 use crate::{
     args::ArgExprs,
     callable::Callable,
-    expressions::{Expr, ExprLoc, Identifier, Literal, NameScope, Node},
+    expressions::{Expr, ExprLoc, Identifier, Literal, NameScope, Node, PreparedFunctionDef, PreparedNode},
     fstring::{FStringPart, FormatSpec},
-    function::Function,
-    intern::{FunctionId, InternerBuilder, StringId},
+    intern::{InternerBuilder, StringId},
     namespace::NamespaceId,
     operators::{CmpOperator, Operator},
-    parse::{ExceptHandler, ParseError, ParseNode, ParseResult, ParsedSignature, Try},
+    parse::{ExceptHandler, ParseError, ParseResult, ParsedNode, ParsedSignature, RawFunctionDef, Try},
     signature::Signature,
 };
 
-/// Result of the prepare phase, containing everything needed to execute code.
+/// Result of the prepare phase, containing everything needed to compile and execute code.
 ///
 /// This struct holds the outputs of name resolution and AST transformation:
-/// - The initial namespace with placeholder values for each variable
+/// - The namespace size (number of slots needed at module level)
 /// - A mapping from variable names to their namespace indices (for ref-count testing)
-/// - The transformed AST nodes ready for execution
+/// - The transformed AST nodes with all names resolved, ready for compilation
 /// - The string interner containing all interned identifiers and filenames
+///
+/// Function definitions are now stored inline in the AST as `PreparedFunctionDef` nodes,
+/// rather than in a separate `Vec<Function>`. This provides type safety by ensuring
+/// function bodies always exist until compilation.
 pub struct PrepareResult {
     /// Number of items in the namespace (at module level, this IS the global namespace)
     pub namespace_size: usize,
@@ -31,14 +34,13 @@ pub struct PrepareResult {
     #[cfg(feature = "ref-count-return")]
     pub name_map: AHashMap<String, NamespaceId>,
     /// The prepared AST nodes with all names resolved to namespace indices.
-    pub nodes: Vec<Node>,
+    /// Function definitions are inline as `PreparedFunctionDef` variants.
+    pub nodes: Vec<PreparedNode>,
     /// The string interner containing all interned identifiers and filenames.
     pub interner: InternerBuilder,
-    /// The functions defined in the module.
-    pub functions: Vec<Function>,
 }
 
-/// Prepares parsed nodes for execution by resolving names and building the initial namespace.
+/// Prepares parsed nodes for compilation by resolving names and building the initial namespace.
 ///
 /// The namespace will be converted to runtime Objects when execution begins and the heap is available.
 /// At module level, the local namespace IS the global namespace.
@@ -48,11 +50,10 @@ pub(crate) fn prepare(
     external_functions: &[String],
 ) -> Result<PrepareResult, ParseError> {
     let ParseResult { nodes, interner } = parse_result;
-    let mut functions = Vec::new();
-    let mut p = Prepare::new_module(input_names, external_functions, &interner, &mut functions);
+    let mut p = Prepare::new_module(input_names, external_functions, &interner);
     let mut prepared_nodes = p.prepare_nodes(nodes)?;
 
-    // In the root frame,the last expression is implicitly returned
+    // In the root frame, the last expression is implicitly returned
     // if it's not None. This matches Python REPL behavior where the last expression
     // value is displayed/returned.
     if let Some(Node::Expr(expr_loc)) = prepared_nodes.last() {
@@ -69,16 +70,14 @@ pub(crate) fn prepare(
         name_map: p.name_map,
         nodes: prepared_nodes,
         interner,
-        functions,
     })
 }
 
-/// State machine for the preparation phase that transforms parsed AST nodes into an executable form.
+/// State machine for the preparation phase that transforms parsed AST nodes into a prepared form.
 ///
 /// This struct maintains the mapping between variable names and their namespace indices,
-/// builds the initial namespace with Literals (pre-runtime), and handles scope resolution.
-/// The preparation phase is crucial for converting string-based name lookups into efficient
-/// integer-indexed namespace access during execution.
+/// and handles scope resolution. The preparation phase is crucial for converting string-based
+/// name lookups into efficient integer-indexed namespace access during compilation and execution.
 ///
 /// For functions, this struct also tracks:
 /// - Which variables are declared `global` (should resolve to module namespace)
@@ -89,8 +88,6 @@ pub(crate) fn prepare(
 struct Prepare<'i> {
     /// Reference to the string interner for looking up names in error messages.
     interner: &'i InternerBuilder,
-    /// container for functions
-    functions: &'i mut Vec<Function>,
     /// Maps variable names to their indices in this scope's namespace vector
     name_map: AHashMap<String, NamespaceId>,
     /// Number of items in the namespace
@@ -133,16 +130,10 @@ impl<'i> Prepare<'i> {
     /// since all variables are already in the global namespace.
     ///
     /// # Arguments
-    /// * `capacity` - Expected number of nodes, used to preallocate the name map
     /// * `input_names` - Names that should be pre-registered in the namespace (e.g., external variables)
+    /// * `external_functions` - Names of external functions to pre-register
     /// * `interner` - Reference to the string interner for looking up names
-    /// * `functions` - Reference to the functions container
-    fn new_module(
-        input_names: Vec<String>,
-        external_functions: &[String],
-        interner: &'i InternerBuilder,
-        functions: &'i mut Vec<Function>,
-    ) -> Self {
+    fn new_module(input_names: Vec<String>, external_functions: &[String], interner: &'i InternerBuilder) -> Self {
         let mut name_map = AHashMap::with_capacity(input_names.len() + external_functions.len());
         for (index, name) in external_functions.iter().enumerate() {
             name_map.insert(name.clone(), NamespaceId::new(index));
@@ -163,7 +154,6 @@ impl<'i> Prepare<'i> {
             enclosing_locals: None,
             free_var_map: AHashMap::new(),
             cell_var_map: AHashMap::new(),
-            functions,
         }
     }
 
@@ -193,7 +183,6 @@ impl<'i> Prepare<'i> {
         enclosing_locals: Option<AHashSet<String>>,
         cell_var_names: AHashSet<String>,
         interner: &'i InternerBuilder,
-        functions: &'i mut Vec<Function>,
     ) -> Self {
         let mut name_map = AHashMap::with_capacity(capacity);
         for (index, string_id) in params.iter().enumerate() {
@@ -242,7 +231,6 @@ impl<'i> Prepare<'i> {
             enclosing_locals,
             free_var_map,
             cell_var_map,
-            functions,
         }
     }
 
@@ -255,17 +243,17 @@ impl<'i> Prepare<'i> {
     /// - Validates that names used in attribute calls are already defined
     ///
     /// # Returns
-    /// A vector of prepared nodes ready for execution
-    fn prepare_nodes(&mut self, nodes: Vec<ParseNode>) -> Result<Vec<Node>, ParseError> {
+    /// A vector of prepared nodes ready for compilation
+    fn prepare_nodes(&mut self, nodes: Vec<ParsedNode>) -> Result<Vec<PreparedNode>, ParseError> {
         let nodes_len = nodes.len();
         let mut new_nodes = Vec::with_capacity(nodes_len);
         for node in nodes {
             match node {
-                ParseNode::Pass => (),
-                ParseNode::Expr(expr) => new_nodes.push(Node::Expr(self.prepare_expression(expr)?)),
-                ParseNode::Return(expr) => new_nodes.push(Node::Return(self.prepare_expression(expr)?)),
-                ParseNode::ReturnNone => new_nodes.push(Node::ReturnNone),
-                ParseNode::Raise(exc) => {
+                Node::Pass => (),
+                Node::Expr(expr) => new_nodes.push(Node::Expr(self.prepare_expression(expr)?)),
+                Node::Return(expr) => new_nodes.push(Node::Return(self.prepare_expression(expr)?)),
+                Node::ReturnNone => new_nodes.push(Node::ReturnNone),
+                Node::Raise(exc) => {
                     let expr = match exc {
                         Some(expr) => {
                             match expr.expr {
@@ -295,7 +283,7 @@ impl<'i> Prepare<'i> {
                     };
                     new_nodes.push(Node::Raise(expr));
                 }
-                ParseNode::Assert { test, msg } => {
+                Node::Assert { test, msg } => {
                     let test = self.prepare_expression(test)?;
                     let msg = match msg {
                         Some(m) => Some(self.prepare_expression(m)?),
@@ -303,7 +291,7 @@ impl<'i> Prepare<'i> {
                     };
                     new_nodes.push(Node::Assert { test, msg });
                 }
-                ParseNode::Assign { target, object } => {
+                Node::Assign { target, object } => {
                     let object = self.prepare_expression(object)?;
                     // Track that this name was assigned before we call get_id
                     self.names_assigned_in_order
@@ -311,7 +299,7 @@ impl<'i> Prepare<'i> {
                     let (target, _) = self.get_id(target);
                     new_nodes.push(Node::Assign { target, object });
                 }
-                ParseNode::OpAssign { target, op, object } => {
+                Node::OpAssign { target, op, object } => {
                     // Track that this name was assigned
                     self.names_assigned_in_order
                         .insert(self.interner.get_str(target.name_id).to_string());
@@ -319,14 +307,14 @@ impl<'i> Prepare<'i> {
                     let object = self.prepare_expression(object)?;
                     new_nodes.push(Node::OpAssign { target, op, object });
                 }
-                ParseNode::SubscriptAssign { target, index, value } => {
+                Node::SubscriptAssign { target, index, value } => {
                     // SubscriptAssign doesn't assign to the target itself, just modifies it
                     let target = self.get_id(target).0;
                     let index = self.prepare_expression(index)?;
                     let value = self.prepare_expression(value)?;
                     new_nodes.push(Node::SubscriptAssign { target, index, value });
                 }
-                ParseNode::AttrAssign {
+                Node::AttrAssign {
                     object,
                     attr,
                     target_position,
@@ -342,7 +330,7 @@ impl<'i> Prepare<'i> {
                         value,
                     });
                 }
-                ParseNode::For {
+                Node::For {
                     target,
                     iter,
                     body,
@@ -358,17 +346,17 @@ impl<'i> Prepare<'i> {
                         or_else: self.prepare_nodes(or_else)?,
                     });
                 }
-                ParseNode::If { test, body, or_else } => {
+                Node::If { test, body, or_else } => {
                     let test = self.prepare_expression(test)?;
                     let body = self.prepare_nodes(body)?;
                     let or_else = self.prepare_nodes(or_else)?;
                     new_nodes.push(Node::If { test, body, or_else });
                 }
-                ParseNode::FunctionDef { name, signature, body } => {
+                Node::FunctionDef(RawFunctionDef { name, signature, body }) => {
                     let func_node = self.prepare_function_def(name, signature, body)?;
                     new_nodes.push(func_node);
                 }
-                ParseNode::Global { names, position } => {
+                Node::Global { names, position } => {
                     // At module level, `global` is a no-op since all variables are already global.
                     // In functions, the global declarations are already collected in the first pass
                     // (see prepare_function_def), so this is also a no-op at this point.
@@ -394,7 +382,7 @@ impl<'i> Prepare<'i> {
                     }
                     // Global statements don't produce any runtime nodes
                 }
-                ParseNode::Nonlocal { names, position } => {
+                Node::Nonlocal { names, position } => {
                     // Nonlocal can only be used inside a function, not at module level
                     if self.is_module_scope {
                         return Err(ParseError::syntax(
@@ -438,7 +426,7 @@ impl<'i> Prepare<'i> {
                     }
                     // Nonlocal statements don't produce any runtime nodes
                 }
-                ParseNode::Try(Try {
+                Node::Try(Try {
                     body,
                     handlers,
                     or_else,
@@ -466,7 +454,10 @@ impl<'i> Prepare<'i> {
     /// Prepares an exception handler by resolving names in the exception type and body.
     ///
     /// The exception variable (if present) is treated as an assigned name in the current scope.
-    fn prepare_except_handler(&mut self, handler: ExceptHandler<ParseNode>) -> Result<ExceptHandler<Node>, ParseError> {
+    fn prepare_except_handler(
+        &mut self,
+        handler: ExceptHandler<ParsedNode>,
+    ) -> Result<ExceptHandler<PreparedNode>, ParseError> {
         let exc_type = match handler.exc_type {
             Some(expr) => Some(self.prepare_expression(expr)?),
             None => None,
@@ -635,8 +626,8 @@ impl<'i> Prepare<'i> {
         &mut self,
         name: Identifier,
         parsed_sig: ParsedSignature,
-        body: Vec<ParseNode>,
-    ) -> Result<Node, ParseError> {
+        body: Vec<ParsedNode>,
+    ) -> Result<PreparedNode, ParseError> {
         // Register the function name in the current scope
         let (name, _) = self.get_id(name);
 
@@ -681,7 +672,6 @@ impl<'i> Prepare<'i> {
             Some(enclosing_locals),
             scope_info.cell_var_names,
             self.interner,
-            self.functions,
         );
 
         // Prepare the function body
@@ -806,20 +796,17 @@ impl<'i> Prepare<'i> {
             }
         }
 
-        let function_id = FunctionId::new(self.functions.len());
-        self.functions.push(Function::new(
+        // Return the prepared function definition inline in the AST
+        Ok(Node::FunctionDef(PreparedFunctionDef {
             name,
             signature,
-            prepared_body,
+            body: prepared_body,
             namespace_size,
             free_var_enclosing_slots,
             cell_var_count,
             cell_param_indices,
             default_exprs,
-        ));
-
-        // Return the final FunctionDef node
-        Ok(Node::FunctionDef(function_id))
+        }))
     }
 
     /// Resolves an identifier to its namespace index and scope, creating a new entry if needed.
@@ -1052,7 +1039,7 @@ struct FunctionScopeInfo {
 /// This information is used to determine whether each name reference should resolve
 /// to the local namespace, global namespace, or an enclosing scope via cells.
 fn collect_function_scope_info(
-    nodes: &[ParseNode],
+    nodes: &[ParsedNode],
     params: &[StringId],
     interner: &InternerBuilder,
 ) -> FunctionScopeInfo {
@@ -1095,36 +1082,36 @@ fn collect_function_scope_info(
 
 /// Helper to collect scope info from a single node.
 fn collect_scope_info_from_node(
-    node: &ParseNode,
+    node: &ParsedNode,
     global_names: &mut AHashSet<String>,
     nonlocal_names: &mut AHashSet<String>,
     assigned_names: &mut AHashSet<String>,
     interner: &InternerBuilder,
 ) {
     match node {
-        ParseNode::Global { names, .. } => {
+        Node::Global { names, .. } => {
             for string_id in names {
                 global_names.insert(interner.get_str(*string_id).to_string());
             }
         }
-        ParseNode::Nonlocal { names, .. } => {
+        Node::Nonlocal { names, .. } => {
             for string_id in names {
                 nonlocal_names.insert(interner.get_str(*string_id).to_string());
             }
         }
-        ParseNode::Assign { target, .. } => {
+        Node::Assign { target, .. } => {
             assigned_names.insert(interner.get_str(target.name_id).to_string());
         }
-        ParseNode::OpAssign { target, .. } => {
+        Node::OpAssign { target, .. } => {
             assigned_names.insert(interner.get_str(target.name_id).to_string());
         }
-        ParseNode::SubscriptAssign { .. } => {
+        Node::SubscriptAssign { .. } => {
             // Subscript assignment doesn't create a new name, it modifies existing container
         }
-        ParseNode::AttrAssign { .. } => {
+        Node::AttrAssign { .. } => {
             // Attribute assignment doesn't create a new name, it modifies existing object
         }
-        ParseNode::For {
+        Node::For {
             target, body, or_else, ..
         } => {
             // For loop target is assigned
@@ -1137,7 +1124,7 @@ fn collect_scope_info_from_node(
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
             }
         }
-        ParseNode::If { body, or_else, .. } => {
+        Node::If { body, or_else, .. } => {
             // Recurse into branches
             for n in body {
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
@@ -1146,12 +1133,12 @@ fn collect_scope_info_from_node(
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
             }
         }
-        ParseNode::FunctionDef { name, .. } => {
+        Node::FunctionDef(RawFunctionDef { name, .. }) => {
             // Function definition creates a local binding for the function name
             // But we don't recurse into the function body - that's a separate scope
             assigned_names.insert(interner.get_str(name.name_id).to_string());
         }
-        ParseNode::Try(Try {
+        Node::Try(Try {
             body,
             handlers,
             or_else,
@@ -1178,12 +1165,7 @@ fn collect_scope_info_from_node(
             }
         }
         // These don't create new names
-        ParseNode::Pass
-        | ParseNode::Expr(_)
-        | ParseNode::Return(_)
-        | ParseNode::ReturnNone
-        | ParseNode::Raise(_)
-        | ParseNode::Assert { .. } => {}
+        Node::Pass | Node::Expr(_) | Node::Return(_) | Node::ReturnNone | Node::Raise(_) | Node::Assert { .. } => {}
     }
 }
 
@@ -1193,13 +1175,13 @@ fn collect_scope_info_from_node(
 /// references. Any name that is in `our_locals` and referenced by the nested function
 /// (not as a local of the nested function) becomes a cell_var.
 fn collect_cell_vars_from_node(
-    node: &ParseNode,
+    node: &ParsedNode,
     our_locals: &AHashSet<String>,
     cell_vars: &mut AHashSet<String>,
     interner: &InternerBuilder,
 ) {
     match node {
-        ParseNode::FunctionDef { signature, body, .. } => {
+        Node::FunctionDef(RawFunctionDef { signature, body, .. }) => {
             // Find what names are referenced inside this nested function
             let mut referenced = AHashSet::new();
             for n in body {
@@ -1236,7 +1218,7 @@ fn collect_cell_vars_from_node(
             }
         }
         // Recurse into control flow structures
-        ParseNode::For { body, or_else, .. } => {
+        Node::For { body, or_else, .. } => {
             for n in body {
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }
@@ -1244,7 +1226,7 @@ fn collect_cell_vars_from_node(
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }
         }
-        ParseNode::If { body, or_else, .. } => {
+        Node::If { body, or_else, .. } => {
             for n in body {
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }
@@ -1252,7 +1234,7 @@ fn collect_cell_vars_from_node(
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }
         }
-        ParseNode::Try(Try {
+        Node::Try(Try {
             body,
             handlers,
             or_else,
@@ -1281,36 +1263,40 @@ fn collect_cell_vars_from_node(
 /// Collects all names referenced (read) in a node and its descendants.
 ///
 /// This is used to find what names a nested function references from enclosing scopes.
-fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSet<String>, interner: &InternerBuilder) {
+fn collect_referenced_names_from_node(
+    node: &ParsedNode,
+    referenced: &mut AHashSet<String>,
+    interner: &InternerBuilder,
+) {
     match node {
-        ParseNode::Expr(expr) => collect_referenced_names_from_expr(expr, referenced, interner),
-        ParseNode::Return(expr) => collect_referenced_names_from_expr(expr, referenced, interner),
-        ParseNode::Raise(Some(expr)) => collect_referenced_names_from_expr(expr, referenced, interner),
-        ParseNode::Raise(None) => {}
-        ParseNode::Assert { test, msg } => {
+        Node::Expr(expr) => collect_referenced_names_from_expr(expr, referenced, interner),
+        Node::Return(expr) => collect_referenced_names_from_expr(expr, referenced, interner),
+        Node::Raise(Some(expr)) => collect_referenced_names_from_expr(expr, referenced, interner),
+        Node::Raise(None) => {}
+        Node::Assert { test, msg } => {
             collect_referenced_names_from_expr(test, referenced, interner);
             if let Some(m) = msg {
                 collect_referenced_names_from_expr(m, referenced, interner);
             }
         }
-        ParseNode::Assign { object, .. } => {
+        Node::Assign { object, .. } => {
             collect_referenced_names_from_expr(object, referenced, interner);
         }
-        ParseNode::OpAssign { target, object, .. } => {
+        Node::OpAssign { target, object, .. } => {
             // OpAssign reads the target before writing
             referenced.insert(interner.get_str(target.name_id).to_string());
             collect_referenced_names_from_expr(object, referenced, interner);
         }
-        ParseNode::SubscriptAssign { target, index, value } => {
+        Node::SubscriptAssign { target, index, value } => {
             referenced.insert(interner.get_str(target.name_id).to_string());
             collect_referenced_names_from_expr(index, referenced, interner);
             collect_referenced_names_from_expr(value, referenced, interner);
         }
-        ParseNode::AttrAssign { object, value, .. } => {
+        Node::AttrAssign { object, value, .. } => {
             collect_referenced_names_from_expr(object, referenced, interner);
             collect_referenced_names_from_expr(value, referenced, interner);
         }
-        ParseNode::For {
+        Node::For {
             iter, body, or_else, ..
         } => {
             collect_referenced_names_from_expr(iter, referenced, interner);
@@ -1321,7 +1307,7 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
                 collect_referenced_names_from_node(n, referenced, interner);
             }
         }
-        ParseNode::If { test, body, or_else } => {
+        Node::If { test, body, or_else } => {
             collect_referenced_names_from_expr(test, referenced, interner);
             for n in body {
                 collect_referenced_names_from_node(n, referenced, interner);
@@ -1330,10 +1316,10 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
                 collect_referenced_names_from_node(n, referenced, interner);
             }
         }
-        ParseNode::FunctionDef { .. } => {
+        Node::FunctionDef(_) => {
             // Don't recurse into nested function bodies - they have their own scope
         }
-        ParseNode::Try(Try {
+        Node::Try(Try {
             body,
             handlers,
             or_else,
@@ -1358,7 +1344,7 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
                 collect_referenced_names_from_node(n, referenced, interner);
             }
         }
-        ParseNode::Pass | ParseNode::ReturnNone | ParseNode::Global { .. } | ParseNode::Nonlocal { .. } => {}
+        Node::Pass | Node::ReturnNone | Node::Global { .. } | Node::Nonlocal { .. } => {}
     }
 }
 

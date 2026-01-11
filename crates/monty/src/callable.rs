@@ -19,6 +19,7 @@ impl Callable {
     /// Returns true if this Callable is equal to another Callable.
     ///
     /// We assume functions with the same name and position in code are equal.
+    #[allow(dead_code)]
     pub fn py_eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Builtin(b1), Self::Builtin(b2)) => b1 == b2,
@@ -27,6 +28,7 @@ impl Callable {
         }
     }
 
+    #[allow(dead_code)]
     pub fn py_type(&self) -> Type {
         match self {
             Self::Builtin(b) => b.py_type(),
@@ -38,6 +40,7 @@ impl Callable {
     ///
     /// For builtins, returns the builtin name (e.g., "print", "len") as a static str.
     /// For named callables, returns the function name from interns.
+    #[allow(dead_code)]
     pub fn name<'a>(&self, interns: &'a Interns) -> &'a str {
         match self {
             Self::Builtin(Builtins::Function(f)) => (*f).into(),

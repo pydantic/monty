@@ -3,10 +3,11 @@ use crate::{
     builtins::Builtins,
     callable::Callable,
     fstring::FStringPart,
-    intern::{BytesId, FunctionId, StringId},
+    intern::{BytesId, StringId},
     namespace::NamespaceId,
     operators::{CmpOperator, Operator},
     parse::{CodeRange, Try},
+    signature::Signature,
     value::{Attr, Value},
 };
 
@@ -223,9 +224,18 @@ impl ExprLoc {
     }
 }
 
-/// A prepared AST node ready for execution.
+/// An AST node parameterized by the function definition type.
+///
+/// This generic enum represents statements in both parsed and prepared forms:
+/// - `Node<RawFunctionDef>` (aka `ParsedNode`): Output of the parser, contains unprepared function bodies
+/// - `Node<PreparedFunctionDef>` (aka `PreparedNode`): Output of prepare phase, has resolved names
+///
+/// Some variants (`Pass`, `Global`, `Nonlocal`) only appear in parsed form and are filtered
+/// out during the prepare phase.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum Node {
+pub enum Node<F> {
+    /// No-op statement. Only present in parsed form, filtered out during prepare.
+    Pass,
     Expr(ExprLoc),
     Return(ExprLoc),
     ReturnNone,
@@ -262,30 +272,49 @@ pub enum Node {
     For {
         target: Identifier,
         iter: ExprLoc,
-        body: Vec<Node>,
-        or_else: Vec<Node>,
+        body: Vec<Node<F>>,
+        or_else: Vec<Node<F>>,
     },
     If {
         test: ExprLoc,
-        body: Vec<Node>,
-        or_else: Vec<Node>,
+        body: Vec<Node<F>>,
+        or_else: Vec<Node<F>>,
     },
-    FunctionDef(FunctionId),
+    FunctionDef(F),
+    /// Global variable declaration. Only present in parsed form, consumed during prepare.
+    ///
+    /// Declares that the listed names refer to module-level (global) variables,
+    /// allowing functions to read and write them instead of creating local variables.
+    Global {
+        position: CodeRange,
+        names: Vec<StringId>,
+    },
+    /// Nonlocal variable declaration. Only present in parsed form, consumed during prepare.
+    ///
+    /// Declares that the listed names refer to variables in enclosing function scopes,
+    /// allowing nested functions to read and write them instead of creating local variables.
+    Nonlocal {
+        position: CodeRange,
+        names: Vec<StringId>,
+    },
     /// Try/except/else/finally block.
     ///
     /// Executes body, catches matching exceptions with handlers, runs else if no exception,
     /// and always runs finally.
-    Try(Try<Node>),
+    Try(Try<Node<F>>),
 }
 
-impl Node {
+impl<F> Node<F> {
     /// Returns the source code position of this node, if available.
     ///
     /// Most nodes have position info through their expressions. Some nodes
-    /// like `ReturnNone` don't have inherent position info and return `None`.
+    /// like `ReturnNone`, `Pass`, `Global`, `Nonlocal` don't have inherent position
+    /// info or return the declaration position.
     #[must_use]
+    #[allow(dead_code)]
     pub fn position(&self) -> Option<CodeRange> {
         match self {
+            Self::Pass => None,
             Self::Expr(expr) => Some(expr.position),
             Self::Return(expr) => Some(expr.position),
             Self::ReturnNone => None,
@@ -299,7 +328,61 @@ impl Node {
             Self::For { iter, .. } => Some(iter.position),
             Self::If { test, .. } => Some(test.position),
             Self::FunctionDef(_) => None,
+            Self::Global { position, .. } => Some(*position),
+            Self::Nonlocal { position, .. } => Some(*position),
             Self::Try(try_) => try_.body.first().and_then(Node::position),
         }
     }
 }
+
+/// A prepared function definition with resolved names and scope information.
+///
+/// This is created during the prepare phase and contains everything needed to
+/// compile the function to bytecode. The function body has all names resolved
+/// to namespace indices with proper scoping.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PreparedFunctionDef {
+    /// The function name identifier with resolved namespace index.
+    pub name: Identifier,
+    /// The function signature with parameter names and default counts.
+    pub signature: Signature,
+    /// The prepared function body with resolved names.
+    pub body: Vec<Node<PreparedFunctionDef>>,
+    /// Number of local variable slots needed in the namespace.
+    pub namespace_size: usize,
+    /// Enclosing namespace slots for variables captured from enclosing scopes.
+    ///
+    /// At definition time: look up cell HeapId from enclosing namespace at each slot.
+    /// At call time: captured cells are pushed sequentially (our slots are implicit).
+    pub free_var_enclosing_slots: Vec<NamespaceId>,
+    /// Number of cell variables (captured by nested functions).
+    ///
+    /// At call time, this many cells are created and pushed right after params.
+    /// Their slots are implicitly params.len()..params.len()+cell_var_count.
+    pub cell_var_count: usize,
+    /// Maps cell variable indices to their corresponding parameter indices, if any.
+    ///
+    /// When a parameter is also captured by nested functions (cell variable), its value
+    /// must be copied into the cell after binding. Each entry corresponds to a cell
+    /// (index 0..cell_var_count), and contains `Some(param_index)` if that cell is for
+    /// a parameter, or `None` otherwise.
+    pub cell_param_indices: Vec<Option<usize>>,
+    /// Prepared default value expressions, evaluated at function definition time.
+    ///
+    /// Layout: `[pos_defaults...][arg_defaults...][kwarg_defaults...]`
+    /// Each group contains only the parameters that have defaults, in declaration order.
+    /// The counts in `signature` indicate how many defaults exist for each group.
+    pub default_exprs: Vec<ExprLoc>,
+}
+
+impl PreparedFunctionDef {
+    /// Returns true if this function has any free variables (is a closure).
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn is_closure(&self) -> bool {
+        !self.free_var_enclosing_slots.is_empty()
+    }
+}
+
+/// Type alias for prepared AST nodes (output of prepare phase).
+pub type PreparedNode = Node<PreparedFunctionDef>;
