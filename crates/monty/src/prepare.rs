@@ -10,7 +10,7 @@ use crate::{
     intern::{InternerBuilder, StringId},
     namespace::NamespaceId,
     operators::{CmpOperator, Operator},
-    parse::{ExceptHandler, ParseError, ParseResult, ParsedNode, ParsedSignature, RawFunctionDef, Try},
+    parse::{ExceptHandler, ParseError, ParseNode, ParseResult, ParsedSignature, RawFunctionDef, Try},
     signature::Signature,
 };
 
@@ -244,7 +244,7 @@ impl<'i> Prepare<'i> {
     ///
     /// # Returns
     /// A vector of prepared nodes ready for compilation
-    fn prepare_nodes(&mut self, nodes: Vec<ParsedNode>) -> Result<Vec<PreparedNode>, ParseError> {
+    fn prepare_nodes(&mut self, nodes: Vec<ParseNode>) -> Result<Vec<PreparedNode>, ParseError> {
         let nodes_len = nodes.len();
         let mut new_nodes = Vec::with_capacity(nodes_len);
         for node in nodes {
@@ -456,7 +456,7 @@ impl<'i> Prepare<'i> {
     /// The exception variable (if present) is treated as an assigned name in the current scope.
     fn prepare_except_handler(
         &mut self,
-        handler: ExceptHandler<ParsedNode>,
+        handler: ExceptHandler<ParseNode>,
     ) -> Result<ExceptHandler<PreparedNode>, ParseError> {
         let exc_type = match handler.exc_type {
             Some(expr) => Some(self.prepare_expression(expr)?),
@@ -626,7 +626,7 @@ impl<'i> Prepare<'i> {
         &mut self,
         name: Identifier,
         parsed_sig: ParsedSignature,
-        body: Vec<ParsedNode>,
+        body: Vec<ParseNode>,
     ) -> Result<PreparedNode, ParseError> {
         // Register the function name in the current scope
         let (name, _) = self.get_id(name);
@@ -1039,7 +1039,7 @@ struct FunctionScopeInfo {
 /// This information is used to determine whether each name reference should resolve
 /// to the local namespace, global namespace, or an enclosing scope via cells.
 fn collect_function_scope_info(
-    nodes: &[ParsedNode],
+    nodes: &[ParseNode],
     params: &[StringId],
     interner: &InternerBuilder,
 ) -> FunctionScopeInfo {
@@ -1082,7 +1082,7 @@ fn collect_function_scope_info(
 
 /// Helper to collect scope info from a single node.
 fn collect_scope_info_from_node(
-    node: &ParsedNode,
+    node: &ParseNode,
     global_names: &mut AHashSet<String>,
     nonlocal_names: &mut AHashSet<String>,
     assigned_names: &mut AHashSet<String>,
@@ -1175,7 +1175,7 @@ fn collect_scope_info_from_node(
 /// references. Any name that is in `our_locals` and referenced by the nested function
 /// (not as a local of the nested function) becomes a cell_var.
 fn collect_cell_vars_from_node(
-    node: &ParsedNode,
+    node: &ParseNode,
     our_locals: &AHashSet<String>,
     cell_vars: &mut AHashSet<String>,
     interner: &InternerBuilder,
@@ -1263,11 +1263,7 @@ fn collect_cell_vars_from_node(
 /// Collects all names referenced (read) in a node and its descendants.
 ///
 /// This is used to find what names a nested function references from enclosing scopes.
-fn collect_referenced_names_from_node(
-    node: &ParsedNode,
-    referenced: &mut AHashSet<String>,
-    interner: &InternerBuilder,
-) {
+fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSet<String>, interner: &InternerBuilder) {
     match node {
         Node::Expr(expr) => collect_referenced_names_from_expr(expr, referenced, interner),
         Node::Return(expr) => collect_referenced_names_from_expr(expr, referenced, interner),

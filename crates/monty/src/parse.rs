@@ -76,7 +76,7 @@ pub struct RawFunctionDef {
     /// The parsed function signature with parameter names and default expressions.
     pub signature: ParsedSignature,
     /// The unprepared function body (names not yet resolved).
-    pub body: Vec<ParsedNode>,
+    pub body: Vec<ParseNode>,
 }
 
 /// Type alias for parsed AST nodes (output of the parser).
@@ -84,7 +84,7 @@ pub struct RawFunctionDef {
 /// This uses `Node<RawFunctionDef>` where function definitions contain their
 /// full unprepared body. After the prepare phase, this becomes `PreparedNode`
 /// (aka `Node<PreparedFunctionDef>`).
-pub type ParsedNode = Node<RawFunctionDef>;
+pub type ParseNode = Node<RawFunctionDef>;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Try<N> {
@@ -111,7 +111,7 @@ pub struct ExceptHandler<N> {
 /// Result of parsing: the AST nodes and the string interner with all interned names.
 #[derive(Debug)]
 pub struct ParseResult {
-    pub nodes: Vec<ParsedNode>,
+    pub nodes: Vec<ParseNode>,
     pub interner: InternerBuilder,
 }
 
@@ -162,12 +162,12 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_statements(&mut self, statements: Vec<Stmt>) -> Result<Vec<ParsedNode>, ParseError> {
+    fn parse_statements(&mut self, statements: Vec<Stmt>) -> Result<Vec<ParseNode>, ParseError> {
         statements.into_iter().map(|f| self.parse_statement(f)).collect()
     }
 
-    fn parse_elif_else_clauses(&mut self, clauses: Vec<ElifElseClause>) -> Result<Vec<ParsedNode>, ParseError> {
-        let mut tail: Vec<ParsedNode> = Vec::new();
+    fn parse_elif_else_clauses(&mut self, clauses: Vec<ElifElseClause>) -> Result<Vec<ParseNode>, ParseError> {
+        let mut tail: Vec<ParseNode> = Vec::new();
         for clause in clauses.into_iter().rev() {
             match clause.test {
                 Some(test) => {
@@ -191,7 +191,7 @@ impl<'a> Parser<'a> {
     fn parse_except_handler(
         &mut self,
         handler: ruff_python_ast::ExceptHandler,
-    ) -> Result<ExceptHandler<ParsedNode>, ParseError> {
+    ) -> Result<ExceptHandler<ParseNode>, ParseError> {
         let ruff_python_ast::ExceptHandler::ExceptHandler(h) = handler;
         let exc_type = match h.type_ {
             Some(expr) => Some(self.parse_expression(*expr)?),
@@ -202,7 +202,7 @@ impl<'a> Parser<'a> {
         Ok(ExceptHandler { exc_type, name, body })
     }
 
-    fn parse_statement(&mut self, statement: Stmt) -> Result<ParsedNode, ParseError> {
+    fn parse_statement(&mut self, statement: Stmt) -> Result<ParseNode, ParseError> {
         match statement {
             Stmt::FunctionDef(function) => {
                 if function.is_async {
@@ -372,7 +372,7 @@ impl<'a> Parser<'a> {
     /// `lhs = rhs` -> `lhs, rhs`
     /// Handles simple assignments (x = value), subscript assignments (dict[key] = value),
     /// and attribute assignments (obj.attr = value)
-    fn parse_assignment(&mut self, lhs: AstExpr, rhs: AstExpr) -> Result<ParsedNode, ParseError> {
+    fn parse_assignment(&mut self, lhs: AstExpr, rhs: AstExpr) -> Result<ParseNode, ParseError> {
         match lhs {
             // Subscript assignment like dict[key] = value
             AstExpr::Subscript(ast::ExprSubscript { value, slice, .. }) => Ok(Node::SubscriptAssign {
