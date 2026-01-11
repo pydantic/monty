@@ -83,15 +83,15 @@ pub enum MontyObject {
     /// Python bytes object.
     Bytes(Vec<u8>),
     /// Python list (mutable sequence).
-    List(Vec<MontyObject>),
+    List(Vec<Self>),
     /// Python tuple (immutable sequence).
-    Tuple(Vec<MontyObject>),
+    Tuple(Vec<Self>),
     /// Python dictionary (insertion-ordered mapping).
     Dict(DictPairs),
     /// Python set (mutable, unordered collection of unique elements).
-    Set(Vec<MontyObject>),
+    Set(Vec<Self>),
     /// Python frozenset (immutable, unordered collection of unique elements).
-    FrozenSet(Vec<MontyObject>),
+    FrozenSet(Vec<Self>),
     /// Python exception with type and optional message argument.
     Exception {
         /// The exception type (e.g., `ValueError`, `TypeError`).

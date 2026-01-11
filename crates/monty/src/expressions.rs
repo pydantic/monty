@@ -272,13 +272,13 @@ pub enum Node<F> {
     For {
         target: Identifier,
         iter: ExprLoc,
-        body: Vec<Node<F>>,
-        or_else: Vec<Node<F>>,
+        body: Vec<Self>,
+        or_else: Vec<Self>,
     },
     If {
         test: ExprLoc,
-        body: Vec<Node<F>>,
-        or_else: Vec<Node<F>>,
+        body: Vec<Self>,
+        or_else: Vec<Self>,
     },
     FunctionDef(F),
     /// Global variable declaration. Only present in parsed form, consumed during prepare.
@@ -301,7 +301,7 @@ pub enum Node<F> {
     ///
     /// Executes body, catches matching exceptions with handlers, runs else if no exception,
     /// and always runs finally.
-    Try(Try<Node<F>>),
+    Try(Try<Self>),
 }
 
 /// A prepared function definition with resolved names and scope information.
