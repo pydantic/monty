@@ -1,6 +1,4 @@
 import sys
-from _typeshed import AnnotationForm, MaybeNone, SupportsKeysAndGetItem
-from _typeshed.importlib import LoaderProtocol
 from collections.abc import (
     AsyncGenerator,
     Awaitable,
@@ -17,56 +15,59 @@ from collections.abc import (
 )
 from importlib.machinery import ModuleSpec
 from typing import Any, ClassVar, Literal, TypeVar, final, overload
+
+from _typeshed import AnnotationForm, MaybeNone, SupportsKeysAndGetItem
+from _typeshed.importlib import LoaderProtocol
 from typing_extensions import ParamSpec, Self, TypeAliasType, TypeVarTuple, deprecated, disjoint_base
 
 if sys.version_info >= (3, 14):
     from _typeshed import AnnotateFunc
 
 __all__ = [
-    "FunctionType",
-    "LambdaType",
-    "CodeType",
-    "MappingProxyType",
-    "SimpleNamespace",
-    "GeneratorType",
-    "CoroutineType",
-    "AsyncGeneratorType",
-    "MethodType",
-    "BuiltinFunctionType",
-    "ModuleType",
-    "TracebackType",
-    "FrameType",
-    "GetSetDescriptorType",
-    "MemberDescriptorType",
-    "new_class",
-    "prepare_class",
-    "DynamicClassAttribute",
-    "coroutine",
-    "BuiltinMethodType",
-    "ClassMethodDescriptorType",
-    "MethodDescriptorType",
-    "MethodWrapperType",
-    "WrapperDescriptorType",
-    "resolve_bases",
-    "CellType",
-    "GenericAlias",
+    'FunctionType',
+    'LambdaType',
+    'CodeType',
+    'MappingProxyType',
+    'SimpleNamespace',
+    'GeneratorType',
+    'CoroutineType',
+    'AsyncGeneratorType',
+    'MethodType',
+    'BuiltinFunctionType',
+    'ModuleType',
+    'TracebackType',
+    'FrameType',
+    'GetSetDescriptorType',
+    'MemberDescriptorType',
+    'new_class',
+    'prepare_class',
+    'DynamicClassAttribute',
+    'coroutine',
+    'BuiltinMethodType',
+    'ClassMethodDescriptorType',
+    'MethodDescriptorType',
+    'MethodWrapperType',
+    'WrapperDescriptorType',
+    'resolve_bases',
+    'CellType',
+    'GenericAlias',
 ]
 
 if sys.version_info >= (3, 10):
-    __all__ += ["EllipsisType", "NoneType", "NotImplementedType", "UnionType"]
+    __all__ += ['EllipsisType', 'NoneType', 'NotImplementedType', 'UnionType']
 
 if sys.version_info >= (3, 12):
-    __all__ += ["get_original_bases"]
+    __all__ += ['get_original_bases']
 
 if sys.version_info >= (3, 13):
-    __all__ += ["CapsuleType"]
+    __all__ += ['CapsuleType']
 
 # Note, all classes "defined" here require special handling.
 
-_T1 = TypeVar("_T1")
-_T2 = TypeVar("_T2")
-_KT_co = TypeVar("_KT_co", covariant=True)
-_VT_co = TypeVar("_VT_co", covariant=True)
+_T1 = TypeVar('_T1')
+_T2 = TypeVar('_T2')
+_KT_co = TypeVar('_KT_co', covariant=True)
+_VT_co = TypeVar('_VT_co', covariant=True)
 
 # Make sure this class definition stays roughly in line with `builtins.function`
 @final
@@ -151,7 +152,7 @@ class CodeType:
     def co_firstlineno(self) -> int: ...
     if sys.version_info >= (3, 10):
         @property
-        @deprecated("Deprecated since Python 3.10; will be removed in Python 3.15. Use `CodeType.co_lines()` instead.")
+        @deprecated('Deprecated since Python 3.10; will be removed in Python 3.15. Use `CodeType.co_lines()` instead.')
         def co_lnotab(self) -> bytes: ...
     else:
         @property
@@ -391,9 +392,9 @@ class CellType:
     __hash__: ClassVar[None]  # type: ignore[assignment]
     cell_contents: Any
 
-_YieldT_co = TypeVar("_YieldT_co", covariant=True)
-_SendT_contra = TypeVar("_SendT_contra", contravariant=True, default=None)
-_ReturnT_co = TypeVar("_ReturnT_co", covariant=True, default=None)
+_YieldT_co = TypeVar('_YieldT_co', covariant=True)
+_SendT_contra = TypeVar('_SendT_contra', contravariant=True, default=None)
+_ReturnT_co = TypeVar('_ReturnT_co', covariant=True, default=None)
 
 @final
 class GeneratorType(Generator[_YieldT_co, _SendT_contra, _ReturnT_co]):
@@ -451,8 +452,8 @@ class AsyncGeneratorType(AsyncGenerator[_YieldT_co, _SendT_contra]):
     def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
 
 # Non-default variations to accommodate coroutines
-_SendT_nd_contra = TypeVar("_SendT_nd_contra", contravariant=True)
-_ReturnT_nd_co = TypeVar("_ReturnT_nd_co", covariant=True)
+_SendT_nd_contra = TypeVar('_SendT_nd_contra', contravariant=True)
+_ReturnT_nd_co = TypeVar('_ReturnT_nd_co', covariant=True)
 
 @final
 class CoroutineType(Coroutine[_YieldT_co, _SendT_nd_contra, _ReturnT_nd_co]):
@@ -670,9 +671,9 @@ class DynamicClassAttribute(property):
     def setter(self, fset: Callable[[Any, Any], object]) -> DynamicClassAttribute: ...
     def deleter(self, fdel: Callable[[Any], object]) -> DynamicClassAttribute: ...
 
-_Fn = TypeVar("_Fn", bound=Callable[..., object])
-_R = TypeVar("_R")
-_P = ParamSpec("_P")
+_Fn = TypeVar('_Fn', bound=Callable[..., object])
+_R = TypeVar('_R')
+_P = ParamSpec('_P')
 
 # it's not really an Awaitable, but can be used in an await expression. Real type: Generator & Awaitable
 @overload

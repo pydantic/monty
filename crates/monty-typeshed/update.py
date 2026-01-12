@@ -108,13 +108,11 @@ DEPENDENCY_FILES = [
     'io.pyi',
     'abc.pyi',
     # Other imports in builtins.pyi
-    '_ast.pyi',
     '_sitebuiltins.pyi',
 ]
 
 # Dependency directories (copied recursively)
 DEPENDENCY_DIRS = [
-    '_typeshed',
     'collections',
     'os',
     'sys',

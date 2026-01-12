@@ -1,14 +1,15 @@
-import _typeshed
 import sys
-from _typeshed import SupportsWrite
 from collections.abc import Callable
 from typing import Any, Literal, TypeVar
+
+import _typeshed
+from _typeshed import SupportsWrite
 from typing_extensions import Concatenate, ParamSpec, deprecated
 
-_T = TypeVar("_T")
-_R_co = TypeVar("_R_co", covariant=True)
-_FuncT = TypeVar("_FuncT", bound=Callable[..., Any])
-_P = ParamSpec("_P")
+_T = TypeVar('_T')
+_R_co = TypeVar('_R_co', covariant=True)
+_FuncT = TypeVar('_FuncT', bound=Callable[..., Any])
+_P = ParamSpec('_P')
 
 # These definitions have special processing in mypy
 class ABCMeta(type):
@@ -28,17 +29,17 @@ class ABCMeta(type):
     def register(cls: ABCMeta, subclass: type[_T]) -> type[_T]: ...
 
 def abstractmethod(funcobj: _FuncT) -> _FuncT: ...
-@deprecated("Deprecated since Python 3.3. Use `@classmethod` stacked on top of `@abstractmethod` instead.")
+@deprecated('Deprecated since Python 3.3. Use `@classmethod` stacked on top of `@abstractmethod` instead.')
 class abstractclassmethod(classmethod[_T, _P, _R_co]):
     __isabstractmethod__: Literal[True]
     def __init__(self, callable: Callable[Concatenate[type[_T], _P], _R_co]) -> None: ...
 
-@deprecated("Deprecated since Python 3.3. Use `@staticmethod` stacked on top of `@abstractmethod` instead.")
+@deprecated('Deprecated since Python 3.3. Use `@staticmethod` stacked on top of `@abstractmethod` instead.')
 class abstractstaticmethod(staticmethod[_P, _R_co]):
     __isabstractmethod__: Literal[True]
     def __init__(self, callable: Callable[_P, _R_co]) -> None: ...
 
-@deprecated("Deprecated since Python 3.3. Use `@property` stacked on top of `@abstractmethod` instead.")
+@deprecated('Deprecated since Python 3.3. Use `@property` stacked on top of `@abstractmethod` instead.')
 class abstractproperty(property):
     __isabstractmethod__: Literal[True]
 

@@ -23,37 +23,37 @@ from _io import (
 from typing import Final, Protocol, TypeVar
 
 __all__ = [
-    "BlockingIOError",
-    "open",
-    "open_code",
-    "IOBase",
-    "RawIOBase",
-    "FileIO",
-    "BytesIO",
-    "StringIO",
-    "BufferedIOBase",
-    "BufferedReader",
-    "BufferedWriter",
-    "BufferedRWPair",
-    "BufferedRandom",
-    "TextIOBase",
-    "TextIOWrapper",
-    "UnsupportedOperation",
-    "SEEK_SET",
-    "SEEK_CUR",
-    "SEEK_END",
+    'BlockingIOError',
+    'open',
+    'open_code',
+    'IOBase',
+    'RawIOBase',
+    'FileIO',
+    'BytesIO',
+    'StringIO',
+    'BufferedIOBase',
+    'BufferedReader',
+    'BufferedWriter',
+    'BufferedRWPair',
+    'BufferedRandom',
+    'TextIOBase',
+    'TextIOWrapper',
+    'UnsupportedOperation',
+    'SEEK_SET',
+    'SEEK_CUR',
+    'SEEK_END',
 ]
 
 if sys.version_info >= (3, 14):
-    __all__ += ["Reader", "Writer"]
+    __all__ += ['Reader', 'Writer']
 
 if sys.version_info >= (3, 11):
     from _io import text_encoding as text_encoding
 
-    __all__ += ["DEFAULT_BUFFER_SIZE", "IncrementalNewlineDecoder", "text_encoding"]
+    __all__ += ['DEFAULT_BUFFER_SIZE', 'IncrementalNewlineDecoder', 'text_encoding']
 
-_T_co = TypeVar("_T_co", covariant=True)
-_T_contra = TypeVar("_T_contra", contravariant=True)
+_T_co = TypeVar('_T_co', covariant=True)
+_T_contra = TypeVar('_T_contra', contravariant=True)
 
 SEEK_SET: Final = 0
 SEEK_CUR: Final = 1

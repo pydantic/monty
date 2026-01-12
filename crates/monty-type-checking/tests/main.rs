@@ -2,7 +2,7 @@ use monty_type_checking::{type_check, TypeCheckingConfig};
 use ruff_db::diagnostic::DiagnosticFormat;
 
 #[test]
-fn test_type_checking_success() {
+fn type_checking_success() {
     let code = r"
 def add(x: int, y: int) -> int:
     return x + y
@@ -15,7 +15,7 @@ result = add(1, 2)
 }
 
 #[test]
-fn test_type_checking_error() {
+fn type_checking_error() {
     let code = r"
 def add(x: int, y: int) -> int:
     return x + y
@@ -51,7 +51,7 @@ info: rule `invalid-argument-type` is enabled by default
 }
 
 #[test]
-fn test_type_checking_error_concise() {
+fn type_checking_error_concise() {
     let code = r"
 def add(x: int, y: int) -> int:
     return x + y
@@ -67,5 +67,20 @@ result = add(1, '2')
     assert_eq!(
         error_diagnostics,
         "main.py:5:17: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal[\"2\"]`\n"
+    );
+}
+
+#[test]
+fn missing_stdlib_datetime() {
+    let code = "import datetime\nprint(datetime.datetime.now())";
+
+    let config = TypeCheckingConfig::default().format(DiagnosticFormat::Concise);
+    let result = type_check(code, Some(config)).unwrap();
+    assert!(result.is_some());
+
+    let error_diagnostics = result.unwrap();
+    assert_eq!(
+        error_diagnostics,
+        "main.py:1:8: error[unresolved-import] Cannot resolve imported module `datetime`\n"
     );
 }

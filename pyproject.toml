@@ -19,8 +19,8 @@ dev = [
 line-length = 120
 include = [
     "scripts/**/*.py",
-    "crates/monty/test_cases/**/*.py",
-    "crates/monty-python/**/*.py",
+    "crates/**/*.py",
+    "crates/**/*.pyi",
 ]
 # Exclude files with intentional syntax errors (used for testing parse error handling)
 extend-exclude = [
@@ -54,6 +54,10 @@ known-first-party = ["monty"]
     "F811", # Redefinition of unused variable
     "F821", # traceback undefined call test intentionally uses undefined name
     "F841", # unused variable - needed for testing exception variable cleanup
+]
+"crates/monty-typeshed/vendor/typeshed/stdlib/**/*.pyi" = [
+    "F403", # unable to detect undefined names
+    "F821", # Undefined name
 ]
 
 [tool.ruff.format]
@@ -97,8 +101,8 @@ reportUnusedVariable = false
 
 [tool.codespell]
 # Ref: https://github.com/codespell-project/codespell#using-a-config-file
-ignore-words-list = 'crate,NotIn,ser,inout'
-skip = "crates/monty-typeshed/vendor/typeshed/stdlib/*"
+ignore-words-list = 'crate,NotIn,ser'
+skip = ["crates/monty-typeshed/vendor/typeshed/stdlib/*", "Cargo.lock"]
 
 [tool.inline-snapshot]
 format-command="ruff format --stdin-filename {filename}"

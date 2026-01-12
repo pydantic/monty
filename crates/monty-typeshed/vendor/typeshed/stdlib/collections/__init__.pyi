@@ -1,8 +1,9 @@
 import sys
 from _collections_abc import dict_items, dict_keys, dict_values
-from _typeshed import SupportsItems, SupportsKeysAndGetItem, SupportsRichComparison, SupportsRichComparisonT
 from types import GenericAlias
 from typing import Any, ClassVar, Generic, NoReturn, SupportsIndex, TypeVar, final, overload, type_check_only
+
+from _typeshed import SupportsItems, SupportsKeysAndGetItem, SupportsRichComparison, SupportsRichComparisonT
 from typing_extensions import Self, disjoint_base
 
 if sys.version_info >= (3, 10):
@@ -21,16 +22,26 @@ if sys.version_info >= (3, 10):
 else:
     from _collections_abc import *
 
-__all__ = ["ChainMap", "Counter", "OrderedDict", "UserDict", "UserList", "UserString", "defaultdict", "deque", "namedtuple"]
+__all__ = [
+    'ChainMap',
+    'Counter',
+    'OrderedDict',
+    'UserDict',
+    'UserList',
+    'UserString',
+    'defaultdict',
+    'deque',
+    'namedtuple',
+]
 
-_S = TypeVar("_S")
-_T = TypeVar("_T")
-_T1 = TypeVar("_T1")
-_T2 = TypeVar("_T2")
-_KT = TypeVar("_KT")
-_VT = TypeVar("_VT")
-_KT_co = TypeVar("_KT_co", covariant=True)
-_VT_co = TypeVar("_VT_co", covariant=True)
+_S = TypeVar('_S')
+_T = TypeVar('_T')
+_T1 = TypeVar('_T1')
+_T2 = TypeVar('_T2')
+_KT = TypeVar('_KT')
+_VT = TypeVar('_VT')
+_KT_co = TypeVar('_KT_co', covariant=True)
+_VT_co = TypeVar('_VT_co', covariant=True)
 
 # namedtuple is special-cased in the type checker; the initializer is ignored.
 def namedtuple(
@@ -49,7 +60,10 @@ class UserDict(MutableMapping[_KT, _VT]):
     def __init__(self, dict: None = None, /) -> None: ...
     @overload
     def __init__(
-        self: UserDict[str, _VT], dict: None = None, /, **kwargs: _VT  # pyright: ignore[reportInvalidTypeVarUse]  #11780
+        self: UserDict[str, _VT],
+        dict: None = None,
+        /,
+        **kwargs: _VT,  # pyright: ignore[reportInvalidTypeVarUse]  #11780
     ) -> None: ...
     @overload
     def __init__(self, dict: SupportsKeysAndGetItem[_KT, _VT], /) -> None: ...
@@ -187,7 +201,7 @@ class UserString(Sequence[UserString]):
     def casefold(self) -> Self: ...
     def center(self, width: int, *args: Any) -> Self: ...
     def count(self, sub: str | UserString, start: int = 0, end: int = sys.maxsize) -> int: ...
-    def encode(self: UserString, encoding: str | None = "utf-8", errors: str | None = "strict") -> bytes: ...
+    def encode(self: UserString, encoding: str | None = 'utf-8', errors: str | None = 'strict') -> bytes: ...
     def endswith(self, suffix: str | tuple[str, ...], start: int | None = 0, end: int | None = sys.maxsize) -> bool: ...
     def expandtabs(self, tabsize: int = 8) -> Self: ...
     def find(self, sub: str | UserString, start: int = 0, end: int = sys.maxsize) -> int: ...
@@ -223,7 +237,9 @@ class UserString(Sequence[UserString]):
     def split(self, sep: str | None = None, maxsplit: int = -1) -> list[str]: ...
     def rsplit(self, sep: str | None = None, maxsplit: int = -1) -> list[str]: ...
     def splitlines(self, keepends: bool = False) -> list[str]: ...
-    def startswith(self, prefix: str | tuple[str, ...], start: int | None = 0, end: int | None = sys.maxsize) -> bool: ...
+    def startswith(
+        self, prefix: str | tuple[str, ...], start: int | None = 0, end: int | None = sys.maxsize
+    ) -> bool: ...
     def strip(self, chars: str | None = None) -> Self: ...
     def swapcase(self) -> Self: ...
     def title(self) -> Self: ...

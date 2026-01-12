@@ -105,6 +105,8 @@ complete-tests: ## Fill in incomplete test expectations using CPython
 .PHONY: update-typeshed
 update-typeshed: ## Update vendored typeshed from upstream
 	uv run crates/monty-typeshed/update.py
+	make format-py
+	make lint-py
 
 .PHONY: bench
 bench: ## Run benchmarks

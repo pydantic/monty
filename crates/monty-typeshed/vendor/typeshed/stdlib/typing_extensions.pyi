@@ -2,7 +2,6 @@ import abc
 import enum
 import sys
 from _collections_abc import dict_items, dict_keys, dict_values
-from _typeshed import AnnotationForm, IdentityFunction, Incomplete, Unused
 from collections.abc import (
     AsyncGenerator as AsyncGenerator,
     AsyncIterable as AsyncIterable,
@@ -30,7 +29,7 @@ from collections.abc import (
 from contextlib import AbstractAsyncContextManager as AsyncContextManager, AbstractContextManager as ContextManager
 from re import Match as Match, Pattern as Pattern
 from types import GenericAlias, ModuleType
-from typing import (  # noqa: Y022,Y037,Y038,Y039,UP035
+from typing import (
     IO as IO,
     TYPE_CHECKING as TYPE_CHECKING,
     AbstractSet as AbstractSet,
@@ -67,145 +66,147 @@ from typing import (  # noqa: Y022,Y037,Y038,Y039,UP035
     type_check_only,
 )
 
+from _typeshed import AnnotationForm, IdentityFunction, Incomplete, Unused
+
 if sys.version_info >= (3, 10):
     from types import UnionType
 
 # Please keep order the same as at runtime.
 __all__ = [
     # Super-special typing primitives.
-    "Any",
-    "ClassVar",
-    "Concatenate",
-    "Final",
-    "LiteralString",
-    "ParamSpec",
-    "ParamSpecArgs",
-    "ParamSpecKwargs",
-    "Self",
-    "Type",
-    "TypeVar",
-    "TypeVarTuple",
-    "Unpack",
+    'Any',
+    'ClassVar',
+    'Concatenate',
+    'Final',
+    'LiteralString',
+    'ParamSpec',
+    'ParamSpecArgs',
+    'ParamSpecKwargs',
+    'Self',
+    'Type',
+    'TypeVar',
+    'TypeVarTuple',
+    'Unpack',
     # ABCs (from collections.abc).
-    "Awaitable",
-    "AsyncIterator",
-    "AsyncIterable",
-    "Coroutine",
-    "AsyncGenerator",
-    "AsyncContextManager",
-    "Buffer",
-    "ChainMap",
+    'Awaitable',
+    'AsyncIterator',
+    'AsyncIterable',
+    'Coroutine',
+    'AsyncGenerator',
+    'AsyncContextManager',
+    'Buffer',
+    'ChainMap',
     # Concrete collection types.
-    "ContextManager",
-    "Counter",
-    "Deque",
-    "DefaultDict",
-    "NamedTuple",
-    "OrderedDict",
-    "TypedDict",
+    'ContextManager',
+    'Counter',
+    'Deque',
+    'DefaultDict',
+    'NamedTuple',
+    'OrderedDict',
+    'TypedDict',
     # Structural checks, a.k.a. protocols.
-    "SupportsAbs",
-    "SupportsBytes",
-    "SupportsComplex",
-    "SupportsFloat",
-    "SupportsIndex",
-    "SupportsInt",
-    "SupportsRound",
-    "Reader",
-    "Writer",
+    'SupportsAbs',
+    'SupportsBytes',
+    'SupportsComplex',
+    'SupportsFloat',
+    'SupportsIndex',
+    'SupportsInt',
+    'SupportsRound',
+    'Reader',
+    'Writer',
     # One-off things.
-    "Annotated",
-    "assert_never",
-    "assert_type",
-    "clear_overloads",
-    "dataclass_transform",
-    "deprecated",
-    "disjoint_base",
-    "Doc",
-    "evaluate_forward_ref",
-    "get_overloads",
-    "final",
-    "Format",
-    "get_annotations",
-    "get_args",
-    "get_origin",
-    "get_original_bases",
-    "get_protocol_members",
-    "get_type_hints",
-    "IntVar",
-    "is_protocol",
-    "is_typeddict",
-    "Literal",
-    "NewType",
-    "overload",
-    "override",
-    "Protocol",
-    "Sentinel",
-    "reveal_type",
-    "runtime",
-    "runtime_checkable",
-    "Text",
-    "TypeAlias",
-    "TypeAliasType",
-    "TypeForm",
-    "TypeGuard",
-    "TypeIs",
-    "TYPE_CHECKING",
-    "type_repr",
-    "Never",
-    "NoReturn",
-    "ReadOnly",
-    "Required",
-    "NotRequired",
-    "NoDefault",
-    "NoExtraItems",
+    'Annotated',
+    'assert_never',
+    'assert_type',
+    'clear_overloads',
+    'dataclass_transform',
+    'deprecated',
+    'disjoint_base',
+    'Doc',
+    'evaluate_forward_ref',
+    'get_overloads',
+    'final',
+    'Format',
+    'get_annotations',
+    'get_args',
+    'get_origin',
+    'get_original_bases',
+    'get_protocol_members',
+    'get_type_hints',
+    'IntVar',
+    'is_protocol',
+    'is_typeddict',
+    'Literal',
+    'NewType',
+    'overload',
+    'override',
+    'Protocol',
+    'Sentinel',
+    'reveal_type',
+    'runtime',
+    'runtime_checkable',
+    'Text',
+    'TypeAlias',
+    'TypeAliasType',
+    'TypeForm',
+    'TypeGuard',
+    'TypeIs',
+    'TYPE_CHECKING',
+    'type_repr',
+    'Never',
+    'NoReturn',
+    'ReadOnly',
+    'Required',
+    'NotRequired',
+    'NoDefault',
+    'NoExtraItems',
     # Pure aliases, have always been in typing
-    "AbstractSet",
-    "AnyStr",
-    "BinaryIO",
-    "Callable",
-    "Collection",
-    "Container",
-    "Dict",
-    "ForwardRef",
-    "FrozenSet",
-    "Generator",
-    "Generic",
-    "Hashable",
-    "IO",
-    "ItemsView",
-    "Iterable",
-    "Iterator",
-    "KeysView",
-    "List",
-    "Mapping",
-    "MappingView",
-    "Match",
-    "MutableMapping",
-    "MutableSequence",
-    "MutableSet",
-    "Optional",
-    "Pattern",
-    "Reversible",
-    "Sequence",
-    "Set",
-    "Sized",
-    "TextIO",
-    "Tuple",
-    "Union",
-    "ValuesView",
-    "cast",
-    "no_type_check",
-    "no_type_check_decorator",
+    'AbstractSet',
+    'AnyStr',
+    'BinaryIO',
+    'Callable',
+    'Collection',
+    'Container',
+    'Dict',
+    'ForwardRef',
+    'FrozenSet',
+    'Generator',
+    'Generic',
+    'Hashable',
+    'IO',
+    'ItemsView',
+    'Iterable',
+    'Iterator',
+    'KeysView',
+    'List',
+    'Mapping',
+    'MappingView',
+    'Match',
+    'MutableMapping',
+    'MutableSequence',
+    'MutableSet',
+    'Optional',
+    'Pattern',
+    'Reversible',
+    'Sequence',
+    'Set',
+    'Sized',
+    'TextIO',
+    'Tuple',
+    'Union',
+    'ValuesView',
+    'cast',
+    'no_type_check',
+    'no_type_check_decorator',
     # Added dynamically
-    "CapsuleType",
+    'CapsuleType',
 ]
 
-_T = _TypeVar("_T")
-_F = _TypeVar("_F", bound=Callable[..., Any])
-_TC = _TypeVar("_TC", bound=type[object])
-_T_co = _TypeVar("_T_co", covariant=True)  # Any type covariant containers.
-_T_contra = _TypeVar("_T_contra", contravariant=True)
+_T = _TypeVar('_T')
+_F = _TypeVar('_F', bound=Callable[..., Any])
+_TC = _TypeVar('_TC', bound=type[object])
+_T_co = _TypeVar('_T_co', covariant=True)  # Any type covariant containers.
+_T_contra = _TypeVar('_T_contra', contravariant=True)
 
 # Do not import (and re-export) Protocol or runtime_checkable from
 # typing module because type checkers need to be able to distinguish
@@ -270,7 +271,10 @@ if sys.version_info >= (3, 13):
     from typing import get_type_hints as get_type_hints
 else:
     def get_type_hints(
-        obj: Any, globalns: dict[str, Any] | None = None, localns: Mapping[str, Any] | None = None, include_extras: bool = False
+        obj: Any,
+        globalns: dict[str, Any] | None = None,
+        localns: Mapping[str, Any] | None = None,
+        include_extras: bool = False,
     ) -> dict[str, AnnotationForm]: ...
 
 def get_args(tp: AnnotationForm) -> tuple[AnnotationForm, ...]: ...
@@ -496,7 +500,9 @@ else:
         message: LiteralString
         category: type[Warning] | None
         stacklevel: int
-        def __init__(self, message: LiteralString, /, *, category: type[Warning] | None = ..., stacklevel: int = 1) -> None: ...
+        def __init__(
+            self, message: LiteralString, /, *, category: type[Warning] | None = ..., stacklevel: int = 1
+        ) -> None: ...
         def __call__(self, arg: _T, /) -> _T: ...
 
     @final
@@ -662,7 +668,7 @@ else:
         globals: Mapping[str, Any] | None = None,  # value types depend on the key
         locals: Mapping[str, Any] | None = None,  # value types depend on the key
         eval_str: bool = False,
-        format: Format = Format.VALUE,  # noqa: Y011
+        format: Format = Format.VALUE,
     ) -> dict[str, AnnotationForm]: ...
     @overload
     def evaluate_forward_ref(

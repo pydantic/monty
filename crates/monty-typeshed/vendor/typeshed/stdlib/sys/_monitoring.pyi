@@ -9,6 +9,7 @@ import sys
 from collections.abc import Callable
 from types import CodeType
 from typing import Any, Final, type_check_only
+
 from typing_extensions import deprecated
 
 DEBUGGER_ID: Final = 0
@@ -50,7 +51,7 @@ class _events:
         BRANCH_RIGHT: Final[int]
 
         @property
-        @deprecated("Deprecated since Python 3.14. Use `BRANCH_LEFT` or `BRANCH_RIGHT` instead.")
+        @deprecated('Deprecated since Python 3.14. Use `BRANCH_LEFT` or `BRANCH_RIGHT` instead.')
         def BRANCH(self) -> int: ...
 
     else:
