@@ -1,0 +1,65 @@
+use ruff_db::{
+    diagnostic::{DiagnosticFormat, DisplayDiagnosticConfig, DisplayDiagnostics},
+    files::system_path_to_file,
+    system::DbWithWritableSystem as _,
+    Db as SourceDb,
+};
+use ty_module_resolver::SearchPathSettings;
+use ty_python_semantic::{
+    types::check_types, Program, ProgramSettings, PythonPlatform, PythonVersionSource, PythonVersionWithSource,
+};
+
+use crate::db::MemoryDb;
+
+#[derive(Debug, Default)]
+pub struct TypeCheckingConfig {
+    /// How to format the output
+    pub format: DiagnosticFormat,
+    /// Whether to highlight the output with ansi colors
+    pub color: bool,
+    /// Path for the python file used in the output, defaults to `main.py`
+    pub python_file_path: Option<String>,
+}
+
+/// Type check some python source code, checking if it's valid to run with monty.
+///
+/// # Arguments
+/// * `python_source` - The python source code to type check.
+/// * `config` - The configuration for type checking.
+pub fn type_check(python_source: &str, config: Option<TypeCheckingConfig>) -> Result<Option<String>, String> {
+    let mut db = MemoryDb::new();
+
+    Program::from_settings(
+        &db,
+        ProgramSettings {
+            python_version: PythonVersionWithSource {
+                version: db.python_version(),
+                source: PythonVersionSource::default(),
+            },
+            python_platform: PythonPlatform::default(),
+            search_paths: SearchPathSettings::new(vec![])
+                .to_search_paths(db.system(), db.vendored())
+                .map_err(|e| e.to_string())?,
+        },
+    );
+
+    let config = config.unwrap_or_default();
+    let path = config.python_file_path.unwrap_or_else(|| "main.py".to_string());
+
+    db.write_files(vec![(&path, python_source)])
+        .map_err(|e| e.to_string())?;
+    let file = system_path_to_file(&db, &path).map_err(|e| e.to_string())?;
+    let diagnostics = check_types(&db, file);
+
+    if diagnostics.is_empty() {
+        return Ok(None);
+    }
+
+    // set format and color here.
+    let display_config = DisplayDiagnosticConfig::default()
+        .format(config.format)
+        .color(config.color);
+
+    let s = DisplayDiagnostics::new(&db, &display_config, &diagnostics).to_string();
+    Ok(Some(s))
+}

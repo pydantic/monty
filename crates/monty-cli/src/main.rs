@@ -1,6 +1,6 @@
 use std::{env, fs, process::ExitCode, time::Instant};
 
-use monty::{run_type_checking, MontyObject, MontyRun, NoLimitTracker, RunProgress, StdPrint};
+use monty::{MontyObject, MontyRun, NoLimitTracker, RunProgress, StdPrint};
 
 const EXT_FUNCTIONS: bool = false;
 
@@ -15,10 +15,10 @@ fn main() -> ExitCode {
         }
     };
 
-    let start = Instant::now();
-    run_type_checking(file_path, &code);
-    let elapsed = start.elapsed();
-    println!("time taken to run typing: {elapsed:?}");
+    // let start = Instant::now();
+    // run_type_checking(file_path, &code);
+    // let elapsed = start.elapsed();
+    // println!("time taken to run typing: {elapsed:?}");
 
     let input_names = vec![];
     let inputs = vec![];

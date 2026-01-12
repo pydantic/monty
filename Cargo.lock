@@ -1257,7 +1257,6 @@ name = "monty"
 version = "0.0.0"
 dependencies = [
  "ahash",
- "camino",
  "codspeed-criterion-compat",
  "criterion",
  "datatest-stable",
@@ -1266,17 +1265,12 @@ dependencies = [
  "postcard",
  "pprof",
  "pyo3",
- "ruff_db",
  "ruff_python_ast",
  "ruff_python_parser",
  "ruff_text_size",
- "salsa",
  "serde",
  "serde_json",
  "strum",
- "ty_module_resolver",
- "ty_python_semantic",
- "ty_vendored",
 ]
 
 [[package]]
@@ -1296,6 +1290,18 @@ dependencies = [
  "pyo3",
  "pyo3-build-config",
  "serde",
+]
+
+[[package]]
+name = "monty-type-checking"
+version = "0.0.0"
+dependencies = [
+ "ruff_db",
+ "ruff_python_ast",
+ "salsa",
+ "ty_module_resolver",
+ "ty_python_semantic",
+ "ty_vendored",
 ]
 
 [[package]]

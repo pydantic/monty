@@ -1,24 +1,26 @@
 use std::sync::Arc;
 
 use ruff_db::{
-    diagnostic::{DiagnosticFormat, DisplayDiagnosticConfig, DisplayDiagnostics},
-    files::{system_path_to_file, File, Files},
-    system::{DbWithTestSystem, DbWithWritableSystem as _, System, TestSystem},
+    files::{File, Files},
+    system::{DbWithTestSystem, System, TestSystem},
     vendored::VendoredFileSystem,
     Db as SourceDb,
 };
 use ruff_python_ast::PythonVersion;
-use ty_module_resolver::{Db as ModuleResolverDb, SearchPathSettings, SearchPaths};
+use ty_module_resolver::{Db as ModuleResolverDb, SearchPaths};
 use ty_python_semantic::{
     default_lint_registry,
     lint::{LintRegistry, RuleSelection},
-    types::check_types,
-    AnalysisSettings, Db, Program, ProgramSettings, PythonPlatform, PythonVersionSource, PythonVersionWithSource,
+    AnalysisSettings, Db, Program,
 };
 
+/// Very simple in-memory salsa/ty database.
+///
+/// Mostly taken from
+/// https://github.com/astral-sh/ruff/blob/7bacca9b625c2a658470afd99a0bf0aa0b4f1dbb/crates/ty_python_semantic/src/db.rs#L51
 #[salsa::db]
 #[derive(Clone)]
-struct TestDb {
+pub(crate) struct MemoryDb {
     storage: salsa::Storage<Self>,
     files: Files,
     system: TestSystem,
@@ -27,8 +29,8 @@ struct TestDb {
     analysis_settings: Arc<AnalysisSettings>,
 }
 
-impl TestDb {
-    pub(crate) fn new() -> Self {
+impl MemoryDb {
+    pub fn new() -> Self {
         Self {
             storage: salsa::Storage::new(None),
             system: TestSystem::default(),
@@ -40,7 +42,7 @@ impl TestDb {
     }
 }
 
-impl DbWithTestSystem for TestDb {
+impl DbWithTestSystem for MemoryDb {
     fn test_system(&self) -> &TestSystem {
         &self.system
     }
@@ -51,7 +53,7 @@ impl DbWithTestSystem for TestDb {
 }
 
 #[salsa::db]
-impl SourceDb for TestDb {
+impl SourceDb for MemoryDb {
     fn vendored(&self) -> &VendoredFileSystem {
         &self.vendored
     }
@@ -70,7 +72,7 @@ impl SourceDb for TestDb {
 }
 
 #[salsa::db]
-impl Db for TestDb {
+impl Db for MemoryDb {
     fn should_check_file(&self, file: File) -> bool {
         !file.path(self).is_vendored_path()
     }
@@ -93,48 +95,11 @@ impl Db for TestDb {
 }
 
 #[salsa::db]
-impl ModuleResolverDb for TestDb {
+impl ModuleResolverDb for MemoryDb {
     fn search_paths(&self) -> &SearchPaths {
         Program::get(self).search_paths(self)
     }
 }
 
 #[salsa::db]
-impl salsa::Database for TestDb {}
-
-pub fn run_type_checking(_path: &str, _source: &str) {
-    let path = "potato.py";
-    let source = "
-def foo(x: int) -> int:
-    return x + 1
-
-foo('wrong')
-";
-
-    let mut db = TestDb::new();
-
-    Program::from_settings(
-        &db,
-        ProgramSettings {
-            python_version: PythonVersionWithSource {
-                version: db.python_version(),
-                source: PythonVersionSource::default(),
-            },
-            python_platform: PythonPlatform::default(),
-            search_paths: SearchPathSettings::new(vec![])
-                .to_search_paths(db.system(), db.vendored())
-                .unwrap(),
-        },
-    );
-
-    db.write_files(vec![(path, source)]).unwrap();
-    let file = system_path_to_file(&db, path).unwrap();
-    let diagnostics = check_types(&db, file);
-
-    // set format and color here.
-    let display_config = DisplayDiagnosticConfig::default()
-        .format(DiagnosticFormat::Full)
-        .color(false);
-
-    println!("{}", DisplayDiagnostics::new(&db, &display_config, &diagnostics));
-}
+impl salsa::Database for MemoryDb {}

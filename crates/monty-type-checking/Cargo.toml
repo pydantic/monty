@@ -1,0 +1,24 @@
+[package]
+name = "monty-type-checking"
+readme = "../../README.md"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+license = { workspace = true }
+description = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+
+[lib]
+name = "monty_type_checking"
+path = "src/lib.rs"
+
+[dependencies]
+ruff_python_ast = { workspace = true }
+ruff_db = { workspace = true }
+ty_python_semantic = { workspace = true }
+ty_module_resolver = { workspace = true }
+ty_vendored = { workspace = true }
+salsa = { workspace = true }
