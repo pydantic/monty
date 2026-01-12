@@ -12,6 +12,7 @@ Usage:
 """
 
 import ast
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -94,6 +95,30 @@ ALLOWED_CLASSES = frozenset(
         'StopIteration',
     }
 )
+
+# Dependency modules that builtins.pyi imports from.
+# These are copied without filtering.
+DEPENDENCY_FILES = [
+    # Core type system
+    'typing.pyi',
+    'typing_extensions.pyi',
+    '_collections_abc.pyi',
+    # Used in type annotations
+    'types.pyi',
+    'io.pyi',
+    'abc.pyi',
+    # Other imports in builtins.pyi
+    '_ast.pyi',
+    '_sitebuiltins.pyi',
+]
+
+# Dependency directories (copied recursively)
+DEPENDENCY_DIRS = [
+    '_typeshed',
+    'collections',
+    'os',
+    'sys',
+]
 
 SCRIPT_DIR = Path(__file__).parent
 VENDOR_DIR = SCRIPT_DIR / 'vendor' / 'typeshed'
@@ -211,6 +236,36 @@ def filter_builtins(source: str) -> str:
     return ast.unparse(tree)
 
 
+def copy_dependencies(src_stdlib: Path, dest_stdlib: Path) -> None:
+    """Copy dependency modules from typeshed stdlib to vendor directory.
+
+    Args:
+        src_stdlib: Path to the source stdlib directory in cloned typeshed.
+        dest_stdlib: Path to the destination stdlib directory in vendor.
+    """
+    # Copy individual files
+    for filename in DEPENDENCY_FILES:
+        src_file = src_stdlib / filename
+        if src_file.exists():
+            dest_file = dest_stdlib / filename
+            shutil.copy2(src_file, dest_file)
+            print(f'Copied {filename}')
+        else:
+            print(f'Warning: {filename} not found in typeshed')
+
+    # Copy directories recursively
+    for dirname in DEPENDENCY_DIRS:
+        src_dir = src_stdlib / dirname
+        if src_dir.exists():
+            dest_dir = dest_stdlib / dirname
+            if dest_dir.exists():
+                shutil.rmtree(dest_dir)
+            shutil.copytree(src_dir, dest_dir)
+            print(f'Copied {dirname}/')
+        else:
+            print(f'Warning: {dirname}/ not found in typeshed')
+
+
 def main() -> int:
     """Main entry point."""
     print(f'Cloning {TYPESHED_REPO}...')
@@ -232,14 +287,17 @@ def main() -> int:
         print(f'Filtered to {len(filtered)} bytes')
 
         # Copy VERSIONS file
-        versions_source = repo_path / 'stdlib' / 'VERSIONS'
-        versions_content = versions_source.read_text()
+        src_stdlib = repo_path / 'stdlib'
+        versions_content = (src_stdlib / 'VERSIONS').read_text()
 
         # Write output files
         STDLIB_DIR.mkdir(parents=True, exist_ok=True)
         (STDLIB_DIR / 'builtins.pyi').write_text(filtered)
         (STDLIB_DIR / 'VERSIONS').write_text(versions_content)
         (VENDOR_DIR / 'source_commit.txt').write_text(commit + '\n')
+
+        # Copy dependency modules
+        copy_dependencies(src_stdlib, STDLIB_DIR)
 
         print(f'Updated to commit {commit}')
         print(f'Wrote {STDLIB_DIR / "builtins.pyi"}')

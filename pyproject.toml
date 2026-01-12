@@ -98,6 +98,7 @@ reportUnusedVariable = false
 [tool.codespell]
 # Ref: https://github.com/codespell-project/codespell#using-a-config-file
 ignore-words-list = 'crate,NotIn,ser,inout'
+skip = "crates/monty-typeshed/vendor/typeshed/stdlib/*"
 
 [tool.inline-snapshot]
 format-command="ruff format --stdin-filename {filename}"

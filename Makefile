@@ -102,6 +102,10 @@ test: test-ref-count-panic test-ref-count-return test-no-features test-py ## Run
 complete-tests: ## Fill in incomplete test expectations using CPython
 	uv run scripts/complete_tests.py
 
+.PHONY: update-typeshed
+update-typeshed: ## Update vendored typeshed from upstream
+	uv run crates/monty-typeshed/update.py
+
 .PHONY: bench
 bench: ## Run benchmarks
 	cargo bench -p monty --bench main
