@@ -97,7 +97,7 @@ reportUnusedVariable = false
 
 [tool.codespell]
 # Ref: https://github.com/codespell-project/codespell#using-a-config-file
-ignore-words-list = 'crate,NotIn,ser'
+ignore-words-list = 'crate,NotIn,ser,inout'
 
 [tool.inline-snapshot]
 format-command="ruff format --stdin-filename {filename}"

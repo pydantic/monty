@@ -3,6 +3,7 @@ name = "monty-python"
 description = "Python bindings for the Monty sandboxed Python interpreter"
 readme = "README.md"
 version = { workspace = true }
+rust-version = { workspace = true }
 edition = { workspace = true }
 authors = { workspace = true }
 license = { workspace = true }

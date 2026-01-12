@@ -1,5 +1,5 @@
 [package]
-name = "monty-type-checking"
+name = "monty_typeshed"
 readme = "../../README.md"
 version = { workspace = true }
 rust-version = { workspace = true }
@@ -12,17 +12,18 @@ categories = { workspace = true }
 homepage = { workspace = true }
 repository = { workspace = true }
 
-[lib]
-name = "monty_type_checking"
-path = "src/lib.rs"
-
 [dependencies]
-monty_typeshed = { path = "../monty-typeshed" }
-ruff_python_ast = { workspace = true }
 ruff_db = { workspace = true }
-ty_python_semantic = { workspace = true }
-ty_module_resolver = { workspace = true }
-salsa = { workspace = true }
+zip = { version = "0.6.6", default-features = false }
+
+[build-dependencies]
+path-slash = "0.2.1"
+walkdir = "2.3.2"
+zip = { version = "0.6.6", features = ["zstd", "deflate"] }
+
+[features]
+zstd = ["zip/zstd"]
+deflate = ["zip/deflate"]
 
 [lints]
 workspace = true

@@ -3,12 +3,12 @@ use ruff_db::diagnostic::DiagnosticFormat;
 
 #[test]
 fn test_type_checking_success() {
-    let code = r#"
+    let code = r"
 def add(x: int, y: int) -> int:
     return x + y
 
 result = add(1, 2)
-    "#;
+    ";
 
     let result = type_check(code, None).unwrap();
     assert!(result.is_none());
@@ -16,12 +16,12 @@ result = add(1, 2)
 
 #[test]
 fn test_type_checking_error() {
-    let code = r#"
+    let code = r"
 def add(x: int, y: int) -> int:
     return x + y
 
 result = add(1, '2')
-    "#;
+    ";
 
     let result = type_check(code, None).unwrap();
     assert!(result.is_some());
@@ -52,12 +52,12 @@ info: rule `invalid-argument-type` is enabled by default
 
 #[test]
 fn test_type_checking_error_concise() {
-    let code = r#"
+    let code = r"
 def add(x: int, y: int) -> int:
     return x + y
 
 result = add(1, '2')
-    "#;
+    ";
 
     let config = TypeCheckingConfig::default().format(DiagnosticFormat::Concise);
     let result = type_check(code, Some(config)).unwrap();

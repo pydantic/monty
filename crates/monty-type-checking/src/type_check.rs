@@ -22,14 +22,17 @@ pub struct TypeCheckingConfig {
 }
 
 impl TypeCheckingConfig {
+    #[must_use]
     pub fn format(self, format: DiagnosticFormat) -> Self {
         Self { format, ..self }
     }
 
+    #[must_use]
     pub fn color(self, color: bool) -> Self {
         Self { color, ..self }
     }
 
+    #[must_use]
     pub fn python_file_path(self, python_file_path: Option<String>) -> Self {
         Self {
             python_file_path,

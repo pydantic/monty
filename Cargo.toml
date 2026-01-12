@@ -1,10 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/monty", "crates/monty-cli", "crates/monty-python", "crates/monty-type-checking"]
+members = ["crates/monty", "crates/monty-cli", "crates/monty-python", "crates/monty-type-checking", "crates/monty-typeshed"]
 
 [workspace.package]
 edition = "2021"
 version = "0.0.0"
+rust-version = "1.90"
 license = "MIT"
 authors = ["Samuel Colvin <samuel@pydantic.dev>"]
 description = "A sandboxed, snapshotable Python interpreter written in Rust."

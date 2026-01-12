@@ -34,7 +34,7 @@ impl MemoryDb {
         Self {
             storage: salsa::Storage::new(None),
             system: TestSystem::default(),
-            vendored: ty_vendored::file_system().clone(),
+            vendored: monty_typeshed::file_system().clone(),
             files: Files::default(),
             rule_selection: Arc::new(RuleSelection::from_registry(default_lint_registry())),
             analysis_settings: AnalysisSettings::default().into(),
