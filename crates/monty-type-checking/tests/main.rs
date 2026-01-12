@@ -1,4 +1,5 @@
-use monty_type_checking::type_check;
+use monty_type_checking::{type_check, TypeCheckingConfig};
+use ruff_db::diagnostic::DiagnosticFormat;
 
 #[test]
 fn test_type_checking_success() {
@@ -9,7 +10,7 @@ def add(x: int, y: int) -> int:
 result = add(1, 2)
     "#;
 
-    let result = type_check(&code, None).unwrap();
+    let result = type_check(code, None).unwrap();
     assert!(result.is_none());
 }
 
@@ -22,7 +23,7 @@ def add(x: int, y: int) -> int:
 result = add(1, '2')
     "#;
 
-    let result = type_check(&code, None).unwrap();
+    let result = type_check(code, None).unwrap();
     assert!(result.is_some());
 
     let error_diagnostics = result.unwrap();
@@ -46,5 +47,25 @@ info: Function defined here
 info: rule `invalid-argument-type` is enabled by default
 
 "#
+    );
+}
+
+#[test]
+fn test_type_checking_error_concise() {
+    let code = r#"
+def add(x: int, y: int) -> int:
+    return x + y
+
+result = add(1, '2')
+    "#;
+
+    let config = TypeCheckingConfig::default().format(DiagnosticFormat::Concise);
+    let result = type_check(code, Some(config)).unwrap();
+    assert!(result.is_some());
+
+    let error_diagnostics = result.unwrap();
+    assert_eq!(
+        error_diagnostics,
+        "main.py:5:17: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal[\"2\"]`\n"
     );
 }

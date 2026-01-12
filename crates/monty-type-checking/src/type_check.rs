@@ -21,11 +21,33 @@ pub struct TypeCheckingConfig {
     pub python_file_path: Option<String>,
 }
 
+impl TypeCheckingConfig {
+    pub fn format(self, format: DiagnosticFormat) -> Self {
+        Self { format, ..self }
+    }
+
+    pub fn color(self, color: bool) -> Self {
+        Self { color, ..self }
+    }
+
+    pub fn python_file_path(self, python_file_path: Option<String>) -> Self {
+        Self {
+            python_file_path,
+            ..self
+        }
+    }
+}
+
 /// Type check some python source code, checking if it's valid to run with monty.
 ///
 /// # Arguments
 /// * `python_source` - The python source code to type check.
 /// * `config` - The configuration for type checking.
+///
+/// # Returns
+/// * `Ok(Some(String))` - If there are typing errors, returns a string with the error diagnostics.
+/// * `Ok(None)` - If there are no typing errors.
+/// * `Err(String)` - If there was an unexpected/internal error during type checking.
 pub fn type_check(python_source: &str, config: Option<TypeCheckingConfig>) -> Result<Option<String>, String> {
     let mut db = MemoryDb::new();
 
@@ -44,22 +66,20 @@ pub fn type_check(python_source: &str, config: Option<TypeCheckingConfig>) -> Re
     );
 
     let config = config.unwrap_or_default();
-    let path = config.python_file_path.unwrap_or_else(|| "main.py".to_string());
+    let path = config.python_file_path.as_deref().unwrap_or("main.py");
 
-    db.write_files(vec![(&path, python_source)])
-        .map_err(|e| e.to_string())?;
-    let file = system_path_to_file(&db, &path).map_err(|e| e.to_string())?;
+    db.write_file(path, python_source).map_err(|e| e.to_string())?;
+    let file = system_path_to_file(&db, path).map_err(|e| e.to_string())?;
     let diagnostics = check_types(&db, file);
 
     if diagnostics.is_empty() {
-        return Ok(None);
+        Ok(None)
+    } else {
+        let display_config = DisplayDiagnosticConfig::default()
+            .format(config.format)
+            .color(config.color);
+
+        let s = DisplayDiagnostics::new(&db, &display_config, &diagnostics).to_string();
+        Ok(Some(s))
     }
-
-    // set format and color here.
-    let display_config = DisplayDiagnosticConfig::default()
-        .format(config.format)
-        .color(config.color);
-
-    let s = DisplayDiagnostics::new(&db, &display_config, &diagnostics).to_string();
-    Ok(Some(s))
 }
