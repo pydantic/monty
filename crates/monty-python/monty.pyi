@@ -55,19 +55,15 @@ class MontyRuntimeError(MontyError):
         """Returns the Monty traceback as a list of Frame objects."""
 
 @final
-class MontyTypingError(Exception):
-    """Raised when type checking encounters an internal error.
+class MontyTypingError(MontyError):
+    """Raised when type checking finds errors in the code.
 
-    This exception is raised when the type checking infrastructure itself fails
-    (e.g., database initialization, file I/O errors), not when the code being
-    checked has type errors. Type errors in user code are returned as
-    `Some(str)` from `type_check()`, not as exceptions.
+    This exception is raised when static type analysis detects type errors
+    before execution. The diagnostic message contains detailed information
+    about the type errors found.
+
+    Inherits exception(), display(), __str__() from MontyError.
     """
-
-    def __new__(cls, message: str) -> Self: ...
-    def __init__(self, message: str) -> None: ...
-    def __str__(self) -> str: ...
-    def __repr__(self) -> str: ...
 
 @final
 class Frame:

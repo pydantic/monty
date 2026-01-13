@@ -9,9 +9,8 @@
 //! ```text
 //! MontyError(Exception)        # Base class for all Monty exceptions
 //! ├── MontySyntaxError         # Raised when syntax is invalid or Monty can't parse the code
-//! └── MontyRuntimeError        # Raised when code fails during execution
-//!
-//! MontyTypingError(Exception)  # Raised when type checking encounters an internal error
+//! ├── MontyRuntimeError        # Raised when code fails during execution
+//! └── MontyTypingError         # Raised when type checking finds errors in the code
 //! ```
 
 use ::monty::{ExcType, MontyException, StackFrame};
@@ -19,7 +18,7 @@ use pyo3::{
     exceptions,
     prelude::*,
     types::{PyDict, PyList, PyString},
-    PyTypeCheck,
+    PyClassInitializer, PyTypeCheck,
 };
 
 use crate::dataclass::get_frozen_instance_error;
@@ -294,32 +293,27 @@ impl PyFrame {
     }
 }
 
-/// Raised when type checking encounters an internal error.
+/// Raised when type checking finds errors in the code.
 ///
-/// This exception is raised when the type checking infrastructure itself fails
-/// (e.g., database initialization, file I/O errors), not when the code being
-/// checked has type errors. Type errors in user code are returned as
-/// `Ok(Some(String))` from `type_check()`, not as exceptions.
-///
-/// This is a standalone exception, not part of the `MontyError` hierarchy,
-/// because it represents infrastructure failures rather than user code issues.
-#[pyclass(extends=pyo3::exceptions::PyException, module="monty")]
+/// Inherits from `MontyError`. This exception is raised when static type
+/// analysis detects type errors. The diagnostic message
+/// contains detailed information about the type errors found.
+#[pyclass(extends=MontyError, module="monty")]
 #[derive(Clone)]
-pub struct MontyTypingError {
-    /// The error message describing what went wrong.
-    message: String,
-}
+pub struct MontyTypingError;
 
 impl MontyTypingError {
-    /// Creates a new `PyErr` wrapping a `MontyTypingError`.
+    /// Creates a new `MontyTypingError` with the given diagnostic message.
     ///
-    /// Used when the type checking infrastructure encounters an internal error.
+    /// The message should contain the formatted type error diagnostics from
+    /// the type checker.
     #[must_use]
     pub fn new_err(py: Python<'_>, message: impl Into<String>) -> PyErr {
-        let error = Self {
-            message: message.into(),
-        };
-        match Py::new(py, error) {
+        // Create a MontyException with TypeError as the exception type
+        let exc = MontyException::new(ExcType::TypeError, Some(message.into()));
+        let base_error = MontyError::new(exc);
+        let init = PyClassInitializer::from(base_error).add_subclass(Self);
+        match Py::new(py, init) {
             Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
             Err(e) => e,
         }
@@ -328,17 +322,20 @@ impl MontyTypingError {
 
 #[pymethods]
 impl MontyTypingError {
-    #[new]
-    fn py_new(message: String) -> Self {
-        Self { message }
-    }
-
-    fn __str__(&self) -> &str {
-        &self.message
-    }
-
-    fn __repr__(&self) -> String {
-        format!("MontyTypingError('{}')", self.message)
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __repr__(slf: PyRef<'_, Self>) -> String {
+        let parent = slf.as_super();
+        if let Some(msg) = parent.message() {
+            // Truncate long messages for repr
+            let preview = if msg.len() > 50 {
+                format!("{}...", &msg[..50])
+            } else {
+                msg.to_string()
+            };
+            format!("MontyTypingError({preview})")
+        } else {
+            "MontyTypingError()".to_string()
+        }
     }
 }
 

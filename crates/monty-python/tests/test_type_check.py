@@ -108,3 +108,43 @@ def test_type_check_concise_format():
     assert str(exc_info.value) == snapshot(
         'main.py:1:1: error[unsupported-operator] Operator `+` is not supported between objects of type `Literal["hello"]` and `Literal[1]`\n'
     )
+
+
+# === MontyTypingError tests ===
+
+
+def test_monty_typing_error_is_monty_error_subclass():
+    """MontyTypingError is a subclass of MontyError."""
+    error = monty.MontyTypingError('test')
+    assert isinstance(error, monty.MontyError)
+    assert isinstance(error, Exception)
+
+
+def test_monty_typing_error_repr():
+    """MontyTypingError has proper repr with truncation."""
+    error = monty.MontyTypingError('short message')
+    assert repr(error) == snapshot('MontyTypingError(short message)')
+
+    long_msg = 'a' * 100
+    error_long = monty.MontyTypingError(long_msg)
+    assert repr(error_long) == snapshot('MontyTypingError(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...)')
+
+
+def test_monty_typing_error_str():
+    """MontyTypingError str returns the message."""
+    error = monty.MontyTypingError('test message')
+    assert str(error) == snapshot('test message')
+
+
+def test_monty_typing_error_can_be_raised():
+    """MontyTypingError can be raised and caught."""
+    with pytest.raises(monty.MontyTypingError) as exc_info:
+        raise monty.MontyTypingError('manual error')
+    assert str(exc_info.value) == 'manual error'
+
+
+def test_monty_typing_error_caught_as_monty_error():
+    """MontyTypingError can be caught as MontyError."""
+    m = monty.Monty('"hello" + 1')
+    with pytest.raises(monty.MontyError):
+        m.type_check()
