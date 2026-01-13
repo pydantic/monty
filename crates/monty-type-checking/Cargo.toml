@@ -1,5 +1,5 @@
 [package]
-name = "monty-type-checking"
+name = "monty_type_checking"
 readme = "../../README.md"
 version = { workspace = true }
 rust-version = { workspace = true }

@@ -27,6 +27,24 @@ impl TypeCheckingConfig {
         Self { format, ..self }
     }
 
+    pub fn format_from_str(self, format: &str) -> Result<Self, String> {
+        let format = match format.to_ascii_lowercase().as_str() {
+            "full" => DiagnosticFormat::Full,
+            "concise" => DiagnosticFormat::Concise,
+            "azure" => DiagnosticFormat::Azure,
+            "json" => DiagnosticFormat::Json,
+            "jsonlines" | "json-lines" => DiagnosticFormat::JsonLines,
+            "rdjson" => DiagnosticFormat::Rdjson,
+            "pylint" => DiagnosticFormat::Pylint,
+            // don't bother with the "junit" feature, please check the binary size and add it if you need this format
+            // "junit" => DiagnosticFormat::Junit,
+            "gitlab" => DiagnosticFormat::Gitlab,
+            "github" => DiagnosticFormat::Github,
+            _ => return Err(format!("Unknown format: {format}")),
+        };
+        Ok(Self { format, ..self })
+    }
+
     #[must_use]
     pub fn color(self, color: bool) -> Self {
         Self { color, ..self }

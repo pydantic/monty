@@ -5,6 +5,7 @@ use ::monty::{
     ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRun, NoLimitTracker, PrintWriter,
     ResourceTracker, RunProgress, Snapshot, StdPrint,
 };
+use monty_type_checking::{type_check, TypeCheckingConfig};
 use pyo3::{
     exceptions::{PyKeyError, PyRuntimeError, PyTypeError, PyValueError},
     intern,
@@ -15,7 +16,7 @@ use pyo3::{
 
 use crate::{
     convert::{monty_to_py, py_to_monty},
-    exceptions::{exc_py_to_monty, MontyError},
+    exceptions::{exc_py_to_monty, MontyError, MontyTypingError},
     external::ExternalFunctionRegistry,
     limits::{extract_limits, PySignalTracker},
 };
@@ -46,9 +47,11 @@ impl PyMonty {
     /// * `code` - Python code to execute
     /// * `inputs` - List of input variable names available in the code
     /// * `external_functions` - List of external function names the code can call
+    /// * `type_check` - Whether to perform type checking on the code
     ///
     /// # Raises
-    /// `SyntaxError` if the code cannot be parsed
+    /// * `SyntaxError` if the code cannot be parsed
+    /// * `MontyTypingError` if type checking fails
     #[new]
     #[pyo3(signature = (code, *, script_name="main.py", inputs=None, external_functions=None))]
     fn new(
@@ -71,6 +74,36 @@ impl PyMonty {
             input_names,
             external_function_names,
         })
+    }
+
+    /// Performs static type checking on the code.
+    ///
+    /// Analyzes the code for type errors without executing it. This uses
+    /// a subset of Python's type system supported by Monty.
+    ///
+    /// # Args
+    /// * `prefix_code` - Optional prefix to prepend to the code before type checking,
+    /// e.g. with inputs and external function signatures
+    /// * `format` - Optional format string for the type error messages
+    /// * `color` - Whether to colorize the type error messages
+    #[pyo3(signature = (prefix_code=None, format="full", color=false))]
+    fn type_check(&self, py: Python<'_>, prefix_code: Option<&str>, format: &str, color: bool) -> PyResult<()> {
+        let config = TypeCheckingConfig::default()
+            .color(color)
+            .format_from_str(format)
+            .map_err(PyTypeError::new_err)?;
+
+        let source_code: Cow<str> = if let Some(prefix_code) = prefix_code {
+            format!("{}\n{}", prefix_code, self.runner.code()).into()
+        } else {
+            self.runner.code().into()
+        };
+        let result = type_check(&source_code, Some(config)).map_err(PyRuntimeError::new_err)?;
+        if let Some(errors) = result {
+            Err(MontyTypingError::new_err(py, errors))
+        } else {
+            Ok(())
+        }
     }
 
     /// Executes the code and returns the result.
@@ -170,24 +203,6 @@ impl PyMonty {
         progress.progress_or_complete(py, self.script_name.clone(), print_callback.map(|c| c.clone().unbind()))
     }
 
-    fn __repr__(&self) -> String {
-        let lines = self.runner.code().lines().count();
-        let mut s = format!(
-            "Monty(<{} line{} of code>, script_name='{}'",
-            lines,
-            if lines == 1 { "" } else { "s" },
-            self.script_name
-        );
-        if !self.input_names.is_empty() {
-            write!(s, ", inputs={:?}", self.input_names).unwrap();
-        }
-        if !self.external_function_names.is_empty() {
-            write!(s, ", external_functions={:?}", self.external_function_names).unwrap();
-        }
-        s.push(')');
-        s
-    }
-
     /// Serializes the Monty instance to a binary format.
     ///
     /// The serialized data can be stored and later restored with `Monty.load()`.
@@ -231,6 +246,24 @@ impl PyMonty {
             input_names: serialized.input_names,
             external_function_names: serialized.external_function_names,
         })
+    }
+
+    fn __repr__(&self) -> String {
+        let lines = self.runner.code().lines().count();
+        let mut s = format!(
+            "Monty(<{} line{} of code>, script_name='{}'",
+            lines,
+            if lines == 1 { "" } else { "s" },
+            self.script_name
+        );
+        if !self.input_names.is_empty() {
+            write!(s, ", inputs={:?}", self.input_names).unwrap();
+        }
+        if !self.external_function_names.is_empty() {
+            write!(s, ", external_functions={:?}", self.external_function_names).unwrap();
+        }
+        s.push(')');
+        s
     }
 }
 

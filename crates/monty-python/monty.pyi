@@ -10,6 +10,7 @@ __all__ = [
     'MontyError',
     'MontySyntaxError',
     'MontyRuntimeError',
+    'MontyTypingError',
     'Frame',
 ]
 
@@ -52,6 +53,21 @@ class MontyRuntimeError(MontyError):
 
     def traceback(self) -> list[Frame]:
         """Returns the Monty traceback as a list of Frame objects."""
+
+@final
+class MontyTypingError(Exception):
+    """Raised when type checking encounters an internal error.
+
+    This exception is raised when the type checking infrastructure itself fails
+    (e.g., database initialization, file I/O errors), not when the code being
+    checked has type errors. Type errors in user code are returned as
+    `Some(str)` from `type_check()`, not as exceptions.
+    """
+
+    def __new__(cls, message: str) -> Self: ...
+    def __init__(self, message: str) -> None: ...
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
 
 @final
 class Frame:
@@ -117,6 +133,32 @@ class Monty:
 
         Raises:
             MontySyntaxError: If the code cannot be parsed
+        """
+
+    def type_check(
+        self,
+        prefix_code: str | None = None,
+        format: Literal[
+            'full', 'concise', 'azure', 'json', 'jsonlines', 'rdjson', 'pylint', 'gitlab', 'github'
+        ] = 'full',
+        color: bool = False,
+    ) -> None:
+        """
+        Perform static type checking on the code.
+
+        Analyzes the code for type errors without executing it. This uses
+        a subset of Python's type system supported by Monty.
+
+        Arguments:
+            prefix_code: Optional code to prepend before type checking,
+                e.g. with input variable declarations or external function signatures.
+            format: Output format for type error messages. Defaults to 'full'.
+            color: Whether to colorize the type error messages.
+
+        Raises:
+            MontyTypingError: If type errors are found in the code.
+            RuntimeError: If the type checking infrastructure fails internally.
+            TypeError: If an invalid format string is provided.
         """
 
     def run(

@@ -12,7 +12,7 @@ mod limits;
 mod monty_cls;
 
 // Use `::monty` to refer to the external crate (not the pymodule)
-pub use exceptions::{MontyError, MontyRuntimeError, MontySyntaxError, PyFrame};
+pub use exceptions::{MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, PyFrame};
 pub use monty_cls::{PyMonty, PyMontyComplete, PyMontySnapshot};
 use pyo3::prelude::*;
 
@@ -27,6 +27,8 @@ mod monty {
     use super::MontyRuntimeError;
     #[pymodule_export]
     use super::MontySyntaxError;
+    #[pymodule_export]
+    use super::MontyTypingError;
     #[pymodule_export]
     use super::PyFrame as Frame;
     #[pymodule_export]

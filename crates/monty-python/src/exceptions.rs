@@ -2,7 +2,7 @@
 //!
 //! Provides a hierarchy of exception types that wrap Monty's internal exceptions,
 //! preserving traceback information and allowing Python code to distinguish
-//! between syntax errors and runtime errors from Monty-executed code.
+//! between syntax errors, runtime errors, and type checking errors from Monty-executed code.
 //!
 //! ## Exception Hierarchy
 //!
@@ -10,6 +10,8 @@
 //! MontyError(Exception)        # Base class for all Monty exceptions
 //! ├── MontySyntaxError         # Raised when syntax is invalid or Monty can't parse the code
 //! └── MontyRuntimeError        # Raised when code fails during execution
+//!
+//! MontyTypingError(Exception)  # Raised when type checking encounters an internal error
 //! ```
 
 use ::monty::{ExcType, MontyException, StackFrame};
@@ -289,6 +291,54 @@ impl PyFrame {
             function_name: frame.frame_name.clone(),
             source_line: frame.preview_line.clone(),
         }
+    }
+}
+
+/// Raised when type checking encounters an internal error.
+///
+/// This exception is raised when the type checking infrastructure itself fails
+/// (e.g., database initialization, file I/O errors), not when the code being
+/// checked has type errors. Type errors in user code are returned as
+/// `Ok(Some(String))` from `type_check()`, not as exceptions.
+///
+/// This is a standalone exception, not part of the `MontyError` hierarchy,
+/// because it represents infrastructure failures rather than user code issues.
+#[pyclass(extends=pyo3::exceptions::PyException, module="monty")]
+#[derive(Clone)]
+pub struct MontyTypingError {
+    /// The error message describing what went wrong.
+    message: String,
+}
+
+impl MontyTypingError {
+    /// Creates a new `PyErr` wrapping a `MontyTypingError`.
+    ///
+    /// Used when the type checking infrastructure encounters an internal error.
+    #[must_use]
+    pub fn new_err(py: Python<'_>, message: impl Into<String>) -> PyErr {
+        let error = Self {
+            message: message.into(),
+        };
+        match Py::new(py, error) {
+            Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
+            Err(e) => e,
+        }
+    }
+}
+
+#[pymethods]
+impl MontyTypingError {
+    #[new]
+    fn py_new(message: String) -> Self {
+        Self { message }
+    }
+
+    fn __str__(&self) -> &str {
+        &self.message
+    }
+
+    fn __repr__(&self) -> String {
+        format!("MontyTypingError('{}')", self.message)
     }
 }
 

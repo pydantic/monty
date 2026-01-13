@@ -18,6 +18,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 monty = { path = "../monty" }
+monty_type_checking = { path = "../monty-type-checking" }
 pyo3 = { version = "0.27.2", features = ["extension-module", "indexmap", "generate-import-lib"] }
 indexmap = "2.9"
 serde = { version = "1.0", features = ["derive"] }
