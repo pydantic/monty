@@ -286,12 +286,16 @@ def main() -> int:
 
         # Copy VERSIONS file
         src_stdlib = repo_path / 'stdlib'
-        versions_content = (src_stdlib / 'VERSIONS').read_text()
 
         # Write output files
         STDLIB_DIR.mkdir(parents=True, exist_ok=True)
         (STDLIB_DIR / 'builtins.pyi').write_text(filtered)
-        (STDLIB_DIR / 'VERSIONS').write_text(versions_content)
+        (STDLIB_DIR / 'VERSIONS').write_text("""\
+# absolutely minimal VERSIONS file explosing only the modules required
+
+builtins: 3.0-
+typing: 3.5-
+""")
         (VENDOR_DIR / 'source_commit.txt').write_text(commit + '\n')
 
         # Copy dependency modules

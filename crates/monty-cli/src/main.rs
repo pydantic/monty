@@ -1,6 +1,7 @@
 use std::{env, fs, process::ExitCode, time::Instant};
 
 use monty::{MontyObject, MontyRun, NoLimitTracker, RunProgress, StdPrint};
+use monty_type_checking::type_check;
 
 const EXT_FUNCTIONS: bool = false;
 
@@ -15,10 +16,14 @@ fn main() -> ExitCode {
         }
     };
 
-    // let start = Instant::now();
-    // run_type_checking(file_path, &code);
-    // let elapsed = start.elapsed();
-    // println!("time taken to run typing: {elapsed:?}");
+    let start = Instant::now();
+    if let Some(failure) = type_check(&code, Some(file_path)).unwrap() {
+        eprintln!("type checking failed: {failure}");
+    } else {
+        eprintln!("type checking succeeded");
+    }
+    let elapsed = start.elapsed();
+    println!("time taken to run typing: {elapsed:?}");
 
     let input_names = vec![];
     let inputs = vec![];

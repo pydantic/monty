@@ -88,3 +88,18 @@ fn missing_stdlib_datetime() {
     let dbg = format!("{failure:?}");
     assert_eq!(dbg, "TypeCheckingFailure { format: Concise, color: false, diagnostics: \"main.py:1:8: error[unresolved-import] Cannot resolve imported module `datetime`\\n\" }");
 }
+
+#[test]
+fn missing_stdlib_sys() {
+    let code = "import sys\nprint(sys.version)";
+
+    let result = type_check(code, None).unwrap();
+    assert!(result.is_some());
+
+    let failure = result.unwrap().format(DiagnosticFormat::Concise);
+    let error_diagnostics = failure.to_string();
+    assert_eq!(
+        error_diagnostics,
+        "main.py:1:8: error[unresolved-import] Cannot resolve imported module `sys`\n"
+    );
+}

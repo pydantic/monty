@@ -2,3 +2,4 @@
 # we will gitignore the `venv/` stubs in typeshed, as there is a general
 # rule to ignore `venv/` directories in the root `.gitignore`.
 !/vendor/typeshed/**/*
+/typeshed-repo/
