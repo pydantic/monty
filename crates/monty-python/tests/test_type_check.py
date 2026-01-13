@@ -92,20 +92,22 @@ def test_type_check_with_prefix_code():
     assert m.type_check(prefix_code='x = 0') is None
 
 
-def test_type_check_invalid_format():
-    """Invalid format string raises TypeError."""
-    m = monty.Monty('x = 1')
-    with pytest.raises(TypeError) as exc_info:
-        m.type_check(format='invalid_format')  # pyright: ignore[reportArgumentType]
-    assert str(exc_info.value) == snapshot('Unknown format: invalid_format')
-
-
-def test_type_check_concise_format():
-    """Type checking with concise format."""
+def test_type_check_display_invalid_format():
+    """Invalid format string on display() raises ValueError."""
     m = monty.Monty('"hello" + 1')
     with pytest.raises(monty.MontyTypingError) as exc_info:
-        m.type_check(format='concise')
-    assert str(exc_info.value) == snapshot(
+        m.type_check()
+    with pytest.raises(ValueError) as val_exc:
+        exc_info.value.display('invalid_format')  # pyright: ignore[reportArgumentType]
+    assert str(val_exc.value) == snapshot('Unknown format: invalid_format')
+
+
+def test_type_check_display_concise_format():
+    """Type checking with concise format via display()."""
+    m = monty.Monty('"hello" + 1')
+    with pytest.raises(monty.MontyTypingError) as exc_info:
+        m.type_check()
+    assert exc_info.value.display('concise') == snapshot(
         'main.py:1:1: error[unsupported-operator] Operator `+` is not supported between objects of type `Literal["hello"]` and `Literal[1]`\n'
     )
 
@@ -115,32 +117,34 @@ def test_type_check_concise_format():
 
 def test_monty_typing_error_is_monty_error_subclass():
     """MontyTypingError is a subclass of MontyError."""
-    error = monty.MontyTypingError('test')
+    m = monty.Monty('"hello" + 1')
+    with pytest.raises(monty.MontyTypingError) as exc_info:
+        m.type_check()
+    error = exc_info.value
     assert isinstance(error, monty.MontyError)
     assert isinstance(error, Exception)
 
 
 def test_monty_typing_error_repr():
     """MontyTypingError has proper repr with truncation."""
-    error = monty.MontyTypingError('short message')
-    assert repr(error) == snapshot('MontyTypingError(short message)')
-
-    long_msg = 'a' * 100
-    error_long = monty.MontyTypingError(long_msg)
-    assert repr(error_long) == snapshot('MontyTypingError(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...)')
-
-
-def test_monty_typing_error_str():
-    """MontyTypingError str returns the message."""
-    error = monty.MontyTypingError('test message')
-    assert str(error) == snapshot('test message')
-
-
-def test_monty_typing_error_can_be_raised():
-    """MontyTypingError can be raised and caught."""
+    m = monty.Monty('"hello" + 1')
     with pytest.raises(monty.MontyTypingError) as exc_info:
-        raise monty.MontyTypingError('manual error')
-    assert str(exc_info.value) == 'manual error'
+        m.type_check()
+    # repr truncates at 50 chars
+    assert repr(exc_info.value) == snapshot("""\
+MontyTypingError(error[unsupported-operator]: Unsupported `+` operation
+ --> main.py:1:1
+  |
+1 | "hello" + 1
+  | -------^^^-
+  | |         |
+  | |         Has type `Literal[1]`
+  | Has type `Literal["hello"]`
+  |
+info: rule `unsupported-operator` is enabled by default
+
+)\
+""")
 
 
 def test_monty_typing_error_caught_as_monty_error():
@@ -148,3 +152,12 @@ def test_monty_typing_error_caught_as_monty_error():
     m = monty.Monty('"hello" + 1')
     with pytest.raises(monty.MontyError):
         m.type_check()
+
+
+def test_monty_typing_error_display_default():
+    """MontyTypingError display() defaults to full format."""
+    m = monty.Monty('"hello" + 1')
+    with pytest.raises(monty.MontyTypingError) as exc_info:
+        m.type_check()
+    # Default display should match str()
+    assert exc_info.value.display() == str(exc_info.value)

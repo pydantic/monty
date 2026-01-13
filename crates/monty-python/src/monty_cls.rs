@@ -5,7 +5,7 @@ use ::monty::{
     ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRun, NoLimitTracker, PrintWriter,
     ResourceTracker, RunProgress, Snapshot, StdPrint,
 };
-use monty_type_checking::{type_check, TypeCheckingConfig};
+use monty_type_checking::type_check;
 use pyo3::{
     exceptions::{PyKeyError, PyRuntimeError, PyTypeError, PyValueError},
     intern,
@@ -83,24 +83,21 @@ impl PyMonty {
     ///
     /// # Args
     /// * `prefix_code` - Optional prefix to prepend to the code before type checking,
-    /// e.g. with inputs and external function signatures
-    /// * `format` - Optional format string for the type error messages
-    /// * `color` - Whether to colorize the type error messages
-    #[pyo3(signature = (prefix_code=None, format="full", color=false))]
-    fn type_check(&self, py: Python<'_>, prefix_code: Option<&str>, format: &str, color: bool) -> PyResult<()> {
-        let config = TypeCheckingConfig::default()
-            .color(color)
-            .format_from_str(format)
-            .map_err(PyTypeError::new_err)?;
-
+    ///   e.g. with inputs and external function signatures
+    ///
+    /// # Raises
+    /// * `MontyTypingError` if type errors are found (use `.display(format, color)` to format)
+    /// * `RuntimeError` if type checking infrastructure fails
+    #[pyo3(signature = (prefix_code=None))]
+    fn type_check(&self, py: Python<'_>, prefix_code: Option<&str>) -> PyResult<()> {
         let source_code: Cow<str> = if let Some(prefix_code) = prefix_code {
             format!("{}\n{}", prefix_code, self.runner.code()).into()
         } else {
             self.runner.code().into()
         };
-        let result = type_check(&source_code, Some(config)).map_err(PyRuntimeError::new_err)?;
-        if let Some(errors) = result {
-            Err(MontyTypingError::new_err(py, errors))
+        let result = type_check(&source_code, None).map_err(PyRuntimeError::new_err)?;
+        if let Some(failure) = result {
+            Err(MontyTypingError::new_err(py, failure))
         } else {
             Ok(())
         }
