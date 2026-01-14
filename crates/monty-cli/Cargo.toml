@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 monty = { path = "../monty" }
+monty_type_checking = { path = "../monty-type-checking" }
 
 [lints]
 workspace = true

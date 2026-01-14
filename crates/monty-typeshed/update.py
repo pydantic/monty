@@ -18,83 +18,80 @@ import tempfile
 from pathlib import Path
 
 # Whitelisted builtin functions (from crates/monty/src/builtins/)
-ALLOWED_FUNCTIONS = frozenset(
-    {
-        'abs',
-        'all',
-        'any',
-        'bin',
-        'chr',
-        'divmod',
-        'hash',
-        'hex',
-        'id',
-        'isinstance',
-        'len',
-        'max',
-        'min',
-        'oct',
-        'ord',
-        'pow',
-        'print',
-        'repr',
-        'round',
-        'sorted',
-        'sum',
-    }
-)
+ALLOWED_FUNCTIONS = {
+    'abs',
+    'all',
+    'any',
+    'bin',
+    'chr',
+    'divmod',
+    'hash',
+    'hex',
+    'id',
+    'isinstance',
+    'len',
+    'max',
+    'min',
+    'oct',
+    'ord',
+    'pow',
+    'print',
+    'repr',
+    'round',
+    'sorted',
+    'sum',
+}
 
 # Whitelisted builtin classes (from crates/monty/src/types/ and exception_private.rs)
-ALLOWED_CLASSES = frozenset(
-    {
-        # Core types
-        'object',
-        'type',
-        # Primitive types
-        'bool',
-        'int',
-        'float',
-        # String/bytes types
-        'str',
-        'bytes',
-        # Container types
-        'list',
-        'tuple',
-        'dict',
-        'set',
-        'frozenset',
-        'range',
-        # Iterator types (these are classes, not functions)
-        'enumerate',
-        'reversed',
-        'zip',
-        # Slicing
-        'slice',
-        # Exception hierarchy (from crates/monty/src/exception_private.rs)
-        'BaseException',
-        'Exception',
-        'SystemExit',
-        'KeyboardInterrupt',
-        'ArithmeticError',
-        'OverflowError',
-        'ZeroDivisionError',
-        'LookupError',
-        'IndexError',
-        'KeyError',
-        'RuntimeError',
-        'NotImplementedError',
-        'RecursionError',
-        'AttributeError',
-        'AssertionError',
-        'MemoryError',
-        'NameError',
-        'SyntaxError',
-        'TimeoutError',
-        'TypeError',
-        'ValueError',
-        'StopIteration',
-    }
-)
+ALLOWED_CLASSES = {
+    # Core types
+    'object',
+    'type',
+    # Primitive types
+    'bool',
+    'int',
+    'float',
+    # String/bytes types
+    'str',
+    'bytes',
+    # Container types
+    'list',
+    'tuple',
+    'dict',
+    'set',
+    'frozenset',
+    'range',
+    # Iterator types (these are classes, not functions)
+    'enumerate',
+    'reversed',
+    'zip',
+    # Slicing
+    'slice',
+    # Exception hierarchy (from crates/monty/src/exception_private.rs)
+    'BaseException',
+    'Exception',
+    'SystemExit',
+    'KeyboardInterrupt',
+    'ArithmeticError',
+    'OverflowError',
+    'ZeroDivisionError',
+    'LookupError',
+    'IndexError',
+    'KeyError',
+    'RuntimeError',
+    'NotImplementedError',
+    'RecursionError',
+    'AttributeError',
+    'AssertionError',
+    'MemoryError',
+    'NameError',
+    'SyntaxError',
+    'OSError',
+    'TimeoutError',
+    'TypeError',
+    'ValueError',
+    'StopIteration',
+}
 
 # Dependency modules that builtins.pyi imports from.
 # These are copied without filtering.
@@ -105,17 +102,14 @@ DEPENDENCY_FILES = [
     '_collections_abc.pyi',
     # Used in type annotations
     'types.pyi',
-    'io.pyi',
-    'abc.pyi',
-    # Other imports in builtins.pyi
-    '_sitebuiltins.pyi',
 ]
+
 
 # Dependency directories (copied recursively)
 DEPENDENCY_DIRS = [
     'collections',
-    'os',
     'sys',
+    '_typeshed',
 ]
 
 SCRIPT_DIR = Path(__file__).parent
@@ -175,7 +169,7 @@ def filter_statements(nodes: list[ast.stmt]) -> list[ast.stmt]:
             if node.name in ALLOWED_FUNCTIONS:
                 result.append(node)
         elif isinstance(node, ast.ClassDef):
-            if node.name in ALLOWED_CLASSES:
+            if node.name.startswith('_') or node.name in ALLOWED_CLASSES:
                 result.append(node)
         elif isinstance(node, ast.If):
             # Recursively filter version-conditional blocks
@@ -266,6 +260,11 @@ def copy_dependencies(src_stdlib: Path, dest_stdlib: Path) -> None:
 
 def main() -> int:
     """Main entry point."""
+    # Clean up any stale files from previous runs
+    if VENDOR_DIR.exists():
+        print(f'Removing existing {VENDOR_DIR}...')
+        shutil.rmtree(VENDOR_DIR)
+
     print(f'Cloning {TYPESHED_REPO}...')
 
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -286,12 +285,23 @@ def main() -> int:
 
         # Copy VERSIONS file
         src_stdlib = repo_path / 'stdlib'
-        versions_content = (src_stdlib / 'VERSIONS').read_text()
 
         # Write output files
         STDLIB_DIR.mkdir(parents=True, exist_ok=True)
         (STDLIB_DIR / 'builtins.pyi').write_text(filtered)
-        (STDLIB_DIR / 'VERSIONS').write_text(versions_content)
+        (STDLIB_DIR / 'VERSIONS').write_text("""\
+# absolutely minimal VERSIONS file exposing only the modules required
+# all these modules are required to get type checking working with ty
+
+_collections_abc: 3.3-
+_typeshed: 3.0-  # not present at runtime, only for type checking
+builtins: 3.0-
+collections: 3.0-
+sys: 3.0-
+typing: 3.5-
+typing_extensions: 3.7-
+types: 3.0-
+""")
         (VENDOR_DIR / 'source_commit.txt').write_text(commit + '\n')
 
         # Copy dependency modules

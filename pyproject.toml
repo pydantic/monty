@@ -68,7 +68,8 @@ quote-style = "single"
 pythonVersion = "3.14"
 typeCheckingMode = "strict"
 reportUnnecessaryTypeIgnoreComment = true
-include = ["scripts", "crates/monty/test_cases", "crates/monty-python"]
+include = ["scripts", "crates/monty/test_cases", "crates/monty-python", "crates/monty-type-checking"]
+exclude = ["crates/monty-type-checking/tests/bad_types.py"]
 venv = ".venv"
 
 # we include tests cases in type checking then switch off all rules that break
@@ -98,6 +99,10 @@ reportUnboundVariable = false
 reportAttributeAccessIssue = false
 # unused variables are fine
 reportUnusedVariable = false
+
+[[tool.pyright.executionEnvironments]]
+root = "crates/monty-type-checking"
+reportUnnecessaryIsInstance = false
 
 [tool.codespell]
 # Ref: https://github.com/codespell-project/codespell#using-a-config-file

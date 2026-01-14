@@ -11,6 +11,7 @@ from typing import (
     Generic,
     MutableMapping,
     MutableSequence,
+    Protocol,
     Sequence,
     SupportsAbs,
     SupportsBytes,
@@ -19,6 +20,7 @@ from typing import (
     TypeVar,
     final,
     overload,
+    type_check_only,
 )
 
 import _typeshed
@@ -30,9 +32,11 @@ from _typeshed import (
     SupportsAdd,
     SupportsAnext,
     SupportsDivMod,
+    SupportsFlush,
     SupportsKeysAndGetItem,
     SupportsLenAndGetItem,
     SupportsNext,
+    SupportsRAdd,
     SupportsRDivMod,
     SupportsRichComparison,
     SupportsRichComparisonT,
@@ -338,6 +342,14 @@ class float:
     if sys.version_info >= (3, 14):
         @classmethod
         def from_number(cls, number: float | SupportsIndex | SupportsFloat, /) -> Self: ...
+
+@type_check_only
+class _FormatMapMapping(Protocol):
+    def __getitem__(self, key: str, /) -> Any: ...
+
+@type_check_only
+class _TranslateTable(Protocol):
+    def __getitem__(self, key: int, /) -> str | int | None: ...
 
 @disjoint_base
 class str(Sequence[str]):
@@ -988,6 +1000,11 @@ def any(iterable: Iterable[object], /) -> bool: ...
 def bin(number: int | SupportsIndex, /) -> str: ...
 def chr(i: int | SupportsIndex, /) -> str: ...
 
+if sys.version_info >= (3, 10):
+    @type_check_only
+    class _SupportsSynchronousAnext(Protocol[_AwaitableT_co]):
+        def __anext__(self) -> _AwaitableT_co: ...
+
 copyright: _sitebuiltins._Printer
 credits: _sitebuiltins._Printer
 
@@ -1004,6 +1021,9 @@ help: _sitebuiltins._Helper
 
 def hex(number: int | SupportsIndex, /) -> str: ...
 def id(obj: object, /) -> int: ...
+@type_check_only
+class _GetItemIterable(Protocol[_T_co]):
+    def __getitem__(self, i: int, /) -> _T_co: ...
 
 if sys.version_info >= (3, 10):
     _ClassInfo: TypeAlias = type | types.UnionType | tuple[_ClassInfo, ...]
@@ -1052,6 +1072,9 @@ def oct(number: int | SupportsIndex, /) -> str: ...
 _Opener: TypeAlias = Callable[[str, int], int]
 
 def ord(c: str | bytes | bytearray, /) -> int: ...
+@type_check_only
+class _SupportsWriteAndFlush(SupportsWrite[_T_contra], SupportsFlush, Protocol[_T_contra]): ...
+
 @overload
 def print(
     *values: object,
@@ -1071,6 +1094,19 @@ def print(
 
 _E_contra = TypeVar('_E_contra', contravariant=True)
 _M_contra = TypeVar('_M_contra', contravariant=True)
+
+@type_check_only
+class _SupportsPow2(Protocol[_E_contra, _T_co]):
+    def __pow__(self, other: _E_contra, /) -> _T_co: ...
+
+@type_check_only
+class _SupportsPow3NoneOnly(Protocol[_E_contra, _T_co]):
+    def __pow__(self, other: _E_contra, modulo: None = None, /) -> _T_co: ...
+
+@type_check_only
+class _SupportsPow3(Protocol[_E_contra, _M_contra, _T_co]):
+    def __pow__(self, other: _E_contra, modulo: _M_contra, /) -> _T_co: ...
+
 _SupportsSomeKindOfPow = _SupportsPow2[Any, Any] | _SupportsPow3NoneOnly[Any, Any] | _SupportsPow3[Any, Any, Any]
 
 @overload
@@ -1117,6 +1153,14 @@ class reversed(Generic[_T]):
     def __length_hint__(self) -> int: ...
 
 def repr(obj: object, /) -> str: ...
+@type_check_only
+class _SupportsRound1(Protocol[_T_co]):
+    def __round__(self) -> _T_co: ...
+
+@type_check_only
+class _SupportsRound2(Protocol[_T_co]):
+    def __round__(self, ndigits: int, /) -> _T_co: ...
+
 @overload
 def round(number: _SupportsRound1[_T], ndigits: None = None) -> _T: ...
 @overload
@@ -1132,6 +1176,10 @@ def sorted(
 
 _AddableT1 = TypeVar('_AddableT1', bound=SupportsAdd[Any, Any])
 _AddableT2 = TypeVar('_AddableT2', bound=SupportsAdd[Any, Any])
+
+@type_check_only
+class _SupportsSumWithNoDefaultGiven(SupportsAdd[Any, Any], SupportsRAdd[int, Any], Protocol): ...
+
 _SupportsSumNoDefaultT = TypeVar('_SupportsSumNoDefaultT', bound=_SupportsSumWithNoDefaultGiven)
 
 @overload
@@ -1240,6 +1288,11 @@ if sys.version_info >= (3, 10):
     NotImplemented: NotImplementedType
 else:
     Ellipsis: ellipsis
+
+    @final
+    @type_check_only
+    class _NotImplementedType(Any): ...
+
     NotImplemented: _NotImplementedType
 
 @disjoint_base
@@ -1272,6 +1325,15 @@ class Exception(BaseException): ...
 @disjoint_base
 class StopIteration(Exception):
     value: Any
+
+@disjoint_base
+class OSError(Exception):
+    errno: int | None
+    strerror: str | None
+    filename: Any
+    filename2: Any
+    if sys.platform == 'win32':
+        winerror: int
 
 EnvironmentError = OSError
 IOError = OSError

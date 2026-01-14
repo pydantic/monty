@@ -57,6 +57,8 @@ jobs:
       - run: make test-no-features
       - run: make test-ref-count-panic
       - run: make test-ref-count-return
+      # test the type checking logic
+      - run: make test-type-checking
 
   test-python:
     name: test python ${{ matrix.python-version }}
@@ -73,6 +75,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - uses: astral-sh/setup-uv@v7
 
       - run: uv sync --all-packages --only-dev
