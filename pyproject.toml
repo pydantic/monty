@@ -69,6 +69,7 @@ pythonVersion = "3.14"
 typeCheckingMode = "strict"
 reportUnnecessaryTypeIgnoreComment = true
 include = ["scripts", "crates/monty/test_cases", "crates/monty-python", "crates/monty-type-checking"]
+exclude = ["crates/monty-type-checking/tests/bad_types.py"]
 venv = ".venv"
 
 # we include tests cases in type checking then switch off all rules that break

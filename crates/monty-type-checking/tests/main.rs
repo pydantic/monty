@@ -103,3 +103,41 @@ fn missing_stdlib_sys() {
         "main.py:1:8: error[unresolved-import] Cannot resolve imported module `sys`\n"
     );
 }
+
+/// Test that good_types.py type-checks without errors.
+///
+/// This file uses `assert_type` from typing to verify that inferred types match expected types.
+#[test]
+fn type_check_good_types() {
+    let code = include_str!("good_types.py");
+    let result = type_check(code, Some("good_types.py")).unwrap();
+    assert!(result.is_none(), "Expected no type errors, got: {result:?}");
+}
+
+/// Test that bad_types.py produces the expected type errors.
+///
+/// Set `UPDATE_EXPECT=1` to update the expected errors file.
+#[test]
+fn type_check_bad_types() {
+    let code = include_str!("bad_types.py");
+    let result = type_check(code, Some("bad_types.py")).unwrap();
+
+    let failure = result.expect("Expected type errors in bad_types.py");
+    let actual = failure
+        .format(ruff_db::diagnostic::DiagnosticFormat::Concise)
+        .to_string();
+
+    let expected_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/bad_types_errors.txt");
+
+    if std::env::var("UPDATE_EXPECT").is_ok() {
+        std::fs::write(expected_path, &actual).expect("Failed to write expected errors file");
+        panic!("Updated expected errors in {expected_path}");
+    }
+
+    let expected = include_str!("bad_types_errors.txt");
+    assert_eq!(
+        actual.trim(),
+        expected.trim(),
+        "Type errors don't match expected.\n\nRun with UPDATE_EXPECT=1 to update."
+    );
+}
