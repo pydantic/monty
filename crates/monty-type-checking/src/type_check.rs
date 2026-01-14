@@ -85,7 +85,9 @@ impl fmt::Display for TypeCheckingFailure {
 }
 
 impl TypeCheckingFailure {
-    fn new(diagnostics: Vec<Diagnostic>, db: MemoryDb) -> Self {
+    fn new(mut diagnostics: Vec<Diagnostic>, db: MemoryDb) -> Self {
+        // Sort diagnostics by line number
+        diagnostics.sort_by(|a, b| a.rendering_sort_key(&db).cmp(&b.rendering_sort_key(&db)));
         Self {
             diagnostics,
             db,
