@@ -91,14 +91,6 @@ ALLOWED_CLASSES = {
     'TypeError',
     'ValueError',
     'StopIteration',
-    # required to get other bits of the stdlib to work
-    'property',
-    'classmethod',
-    'staticmethod',
-    'complex',
-    'bytearray',
-    'memoryview',
-    'Warning',
 }
 
 # Dependency modules that builtins.pyi imports from.
@@ -110,11 +102,6 @@ DEPENDENCY_FILES = [
     '_collections_abc.pyi',
     # Used in type annotations
     'types.pyi',
-    # 'io.pyi',
-    # '_io.pyi',
-    'abc.pyi',
-    # # Other imports in builtins.pyi
-    '_sitebuiltins.pyi',
 ]
 
 
@@ -304,6 +291,7 @@ def main() -> int:
         (STDLIB_DIR / 'builtins.pyi').write_text(filtered)
         (STDLIB_DIR / 'VERSIONS').write_text("""\
 # absolutely minimal VERSIONS file exposing only the modules required
+# all these modules are required to get type checking working with ty
 
 _collections_abc: 3.3-
 _typeshed: 3.0-  # not present at runtime, only for type checking
