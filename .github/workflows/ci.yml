@@ -75,6 +75,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - uses: astral-sh/setup-uv@v7
 
       - run: uv sync --all-packages --only-dev
