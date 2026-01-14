@@ -83,6 +83,10 @@ test-ref-count-return: ## Run rust tests with ref-count-return enabled
 test-cases: ## Run tests cases only
 	cargo test -p monty --test datatest_runner
 
+.PHONY: test-type-checking
+test-type-checking: ## Run rust tests on monty_type_checking
+	cargo test -p monty_type_checking -p monty_typeshed
+
 .PHONY: run-pytest
 run-pytest: ## Run Python tests with pytest
 	uv run --package monty-python --only-dev pytest crates/monty-python/tests

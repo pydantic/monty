@@ -57,6 +57,8 @@ jobs:
       - run: make test-no-features
       - run: make test-ref-count-panic
       - run: make test-ref-count-return
+      # test the type checking logic
+      - run: make test-type-checking
 
   test-python:
     name: test python ${{ matrix.python-version }}
