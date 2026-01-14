@@ -110,44 +110,19 @@ DEPENDENCY_FILES = [
     '_collections_abc.pyi',
     # Used in type annotations
     'types.pyi',
-    'io.pyi',
+    # 'io.pyi',
     # '_io.pyi',
     'abc.pyi',
     # # Other imports in builtins.pyi
     '_sitebuiltins.pyi',
-    # # files used by nested files
-    # 'annotationlib.pyi',
-    # 'warnings.pyi',
-    # '_warnings.pyi',
-    # 're.pyi',
-    # 'sre_compile.pyi',
-    # 'sre_constants.pyi',
-    # 'sre_parse.pyi',
-    # 'enum.pyi',
-    # 'contextlib.pyi',
-    # 'posixpath.pyi',
-    # 'ntpath.pyi',
-    # 'genericpath.pyi',
-    # 'resource.pyi',
-    # 'subprocess.pyi',
-    # '_winapi.pyi',
-    # 'codecs.pyi',
-    # 'dataclasses.pyi',
-    # 'zipimport.pyi',
 ]
 
 
 # Dependency directories (copied recursively)
 DEPENDENCY_DIRS = [
     'collections',
-    'os',
     'sys',
     '_typeshed',
-    # 'importlib',
-    # 'pathlib',
-    # 'zipfile',
-    # 'wsgiref',
-    # 'http',
 ]
 
 SCRIPT_DIR = Path(__file__).parent
@@ -298,6 +273,11 @@ def copy_dependencies(src_stdlib: Path, dest_stdlib: Path) -> None:
 
 def main() -> int:
     """Main entry point."""
+    # Clean up any stale files from previous runs
+    if VENDOR_DIR.exists():
+        print(f'Removing existing {VENDOR_DIR}...')
+        shutil.rmtree(VENDOR_DIR)
+
     print(f'Cloning {TYPESHED_REPO}...')
 
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -323,11 +303,15 @@ def main() -> int:
         STDLIB_DIR.mkdir(parents=True, exist_ok=True)
         (STDLIB_DIR / 'builtins.pyi').write_text(filtered)
         (STDLIB_DIR / 'VERSIONS').write_text("""\
-# absolutely minimal VERSIONS file explosing only the modules required
-# `typing` and `types` are required for ty to work correctly
+# absolutely minimal VERSIONS file exposing only the modules required
 
+_collections_abc: 3.3-
+_typeshed: 3.0-  # not present at runtime, only for type checking
 builtins: 3.0-
+collections: 3.0-
+sys: 3.0-
 typing: 3.5-
+typing_extensions: 3.7-
 types: 3.0-
 """)
         (VENDOR_DIR / 'source_commit.txt').write_text(commit + '\n')

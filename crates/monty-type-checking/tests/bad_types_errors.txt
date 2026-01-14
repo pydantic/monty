@@ -5,8 +5,8 @@ bad_types.py:9:13: info[revealed-type] Revealed type: `str`
 bad_types.py:10:13: info[revealed-type] Revealed type: `list[Unknown | int]`
 bad_types.py:11:13: info[revealed-type] Revealed type: `tuple[Literal[1], Literal[2]]`
 bad_types.py:12:13: info[revealed-type] Revealed type: `dict[Unknown | int, Unknown | int]`
-bad_types.py:13:13: info[revealed-type] Revealed type: `Unknown`
-bad_types.py:14:13: info[revealed-type] Revealed type: `frozenset`
+bad_types.py:13:13: info[revealed-type] Revealed type: `set[Unknown | int]`
+bad_types.py:14:13: info[revealed-type] Revealed type: `frozenset[Unknown | int]`
 bad_types.py:33:11: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `Literal["hello"]`
 bad_types.py:34:11: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `float`
 bad_types.py:35:11: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `Literal[42]`
