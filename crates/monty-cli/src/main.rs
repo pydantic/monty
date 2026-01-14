@@ -17,7 +17,7 @@ fn main() -> ExitCode {
     };
 
     let start = Instant::now();
-    if let Some(failure) = type_check(&code, Some(file_path)).unwrap() {
+    if let Some(failure) = type_check(&code, file_path).unwrap() {
         eprintln!("type checking failed: {failure}");
     } else {
         eprintln!("type checking succeeded");

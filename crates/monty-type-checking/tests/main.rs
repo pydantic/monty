@@ -10,7 +10,7 @@ def add(x: int, y: int) -> int:
 result = add(1, 2)
     ";
 
-    let result = type_check(code, None).unwrap();
+    let result = type_check(code, "main.py").unwrap();
     assert!(result.is_none());
 }
 
@@ -23,7 +23,7 @@ def add(x: int, y: int) -> int:
 result = add(1, '2')
     ";
 
-    let result = type_check(code, None).unwrap();
+    let result = type_check(code, "main.py").unwrap();
     assert!(result.is_some());
 
     let error_diagnostics = result.unwrap().to_string();
@@ -59,7 +59,7 @@ def add(x: int, y: int) -> int:
 result = add(1, '2')
     ";
 
-    let result = type_check(code, None).unwrap();
+    let result = type_check(code, "main.py").unwrap();
     assert!(result.is_some());
 
     let failure = result.unwrap().format(DiagnosticFormat::Concise);
@@ -76,7 +76,7 @@ result = add(1, '2')
 fn missing_stdlib_datetime() {
     let code = "import datetime\nprint(datetime.datetime.now())";
 
-    let result = type_check(code, None).unwrap();
+    let result = type_check(code, "main.py").unwrap();
     assert!(result.is_some());
 
     let failure = result.unwrap().format(DiagnosticFormat::Concise);
@@ -95,7 +95,7 @@ fn missing_stdlib_datetime() {
 #[test]
 fn type_check_good_types() {
     let code = include_str!("good_types.py");
-    let result = type_check(code, Some("good_types.py")).unwrap();
+    let result = type_check(code, "good_types.py").unwrap();
     assert!(result.is_none(), "Expected no type errors, got: {result:?}");
 }
 
@@ -105,7 +105,7 @@ fn type_check_good_types() {
 #[test]
 fn type_check_bad_types() {
     let code = include_str!("bad_types.py");
-    let result = type_check(code, Some("bad_types.py")).unwrap();
+    let result = type_check(code, "bad_types.py").unwrap();
 
     let failure = result.expect("Expected type errors in bad_types.py");
     let actual = failure

@@ -48,10 +48,6 @@ impl PyMonty {
     /// * `inputs` - List of input variable names available in the code
     /// * `external_functions` - List of external function names the code can call
     /// * `type_check` - Whether to perform type checking on the code
-    ///
-    /// # Raises
-    /// * `SyntaxError` if the code cannot be parsed
-    /// * `MontyTypingError` if type checking fails
     #[new]
     #[pyo3(signature = (code, *, script_name="main.py", inputs=None, external_functions=None))]
     fn new(
@@ -86,8 +82,8 @@ impl PyMonty {
     ///   e.g. with inputs and external function signatures
     ///
     /// # Raises
-    /// * `MontyTypingError` if type errors are found (use `.display(format, color)` to format)
     /// * `RuntimeError` if type checking infrastructure fails
+    /// * `MontyTypingError` if type errors are found
     #[pyo3(signature = (prefix_code=None))]
     fn type_check(&self, py: Python<'_>, prefix_code: Option<&str>) -> PyResult<()> {
         let source_code: Cow<str> = if let Some(prefix_code) = prefix_code {
@@ -95,7 +91,7 @@ impl PyMonty {
         } else {
             self.runner.code().into()
         };
-        let result = type_check(&source_code, None).map_err(PyRuntimeError::new_err)?;
+        let result = type_check(&source_code, &self.script_name).map_err(PyRuntimeError::new_err)?;
         if let Some(failure) = result {
             Err(MontyTypingError::new_err(py, failure))
         } else {

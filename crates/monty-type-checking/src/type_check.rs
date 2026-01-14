@@ -1,4 +1,4 @@
-use std::fmt;
+use std::fmt::{self, Display};
 
 use ruff_db::{
     diagnostic::{Diagnostic, DiagnosticFormat, DisplayDiagnosticConfig, DisplayDiagnostics},
@@ -17,15 +17,17 @@ use crate::db::MemoryDb;
 ///
 /// # Arguments
 /// * `python_source` - The python source code to type check.
-/// * `python_file_path` - The path for the python file used in the output, defaults to `main.py`
+/// * `python_file_path` - The path for the python file used in the output.
 ///
 /// # Returns
-/// * `Ok(Some(TypeCheckingFailure))` - If there are typing errors, returns a string with the error diagnostics.
+/// * `Ok(Some(TypeCheckingFailure))` - If there are typing errors.
 /// * `Ok(None)` - If there are no typing errors.
 /// * `Err(String)` - If there was an unexpected/internal error during type checking.
-pub fn type_check(python_source: &str, python_file_path: Option<&str>) -> Result<Option<TypeCheckingFailure>, String> {
+pub fn type_check(python_source: &str, python_file_path: &str) -> Result<Option<TypeCheckingFailure>, String> {
     let mut db = MemoryDb::new();
 
+    // The API is confusing here - we have to load the "program" here like this, otherwise we get unwrap
+    // panics when calling `check_types`
     Program::from_settings(
         &db,
         ProgramSettings {
@@ -36,14 +38,12 @@ pub fn type_check(python_source: &str, python_file_path: Option<&str>) -> Result
             python_platform: PythonPlatform::default(),
             search_paths: SearchPathSettings::new(vec![])
                 .to_search_paths(db.system(), db.vendored())
-                .map_err(|e| e.to_string())?,
+                .map_err(to_string)?,
         },
     );
 
-    let path = python_file_path.unwrap_or("main.py");
-
-    db.write_file(path, python_source).map_err(|e| e.to_string())?;
-    let file = system_path_to_file(&db, path).map_err(|e| e.to_string())?;
+    db.write_file(python_file_path, python_source).map_err(to_string)?;
+    let file = system_path_to_file(&db, python_file_path).map_err(to_string)?;
     let diagnostics = check_types(&db, file);
 
     if diagnostics.is_empty() {
@@ -51,6 +51,10 @@ pub fn type_check(python_source: &str, python_file_path: Option<&str>) -> Result
     } else {
         Ok(Some(TypeCheckingFailure::new(diagnostics, db)))
     }
+}
+
+fn to_string(err: impl Display) -> String {
+    err.to_string()
 }
 
 /// Represents diagnostic details when type checking fails.
