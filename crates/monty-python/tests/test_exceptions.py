@@ -193,12 +193,18 @@ def test_display_type_msg():
     assert display == snapshot('ValueError: test message')
 
 
-def test_display_msg():
+def test_runtime_display():
     m = monty.Monty("raise ValueError('test message')")
     with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run()
-    display = exc_info.value.display('msg')
-    assert display == snapshot('test message')
+    assert exc_info.value.display('msg') == snapshot('test message')
+    assert exc_info.value.display('type-msg') == snapshot('ValueError: test message')
+    assert exc_info.value.display() == snapshot("""\
+Traceback (most recent call last):
+  File "main.py", line 1, in <module>
+    raise ValueError('test message')
+ValueError: test message\
+""")
 
 
 def test_str_returns_msg():
@@ -211,8 +217,8 @@ def test_str_returns_msg():
 def test_syntax_error_display():
     with pytest.raises(monty.MontySyntaxError) as exc_info:
         monty.Monty('def')
-    display = exc_info.value.display()
-    assert 'SyntaxError:' in display
+    assert exc_info.value.display() == snapshot('Expected an identifier at byte range 3..3')
+    assert exc_info.value.display('type-msg') == snapshot('SyntaxError: Expected an identifier at byte range 3..3')
 
 
 def test_syntax_error_str():

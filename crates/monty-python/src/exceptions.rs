@@ -120,18 +120,17 @@ impl MontySyntaxError {
     /// Returns formatted exception string.
     ///
     /// Args:
-    ///     show: 'traceback' - full traceback with exception (same as 'type-msg' for syntax errors)
-    ///           'type-msg' - 'ExceptionType: message' format
-    ///           'msg' - just the message
-    #[pyo3(signature = (show = "traceback"))]
+    ///     format: 'type-msg' - 'ExceptionType: message' format
+    ///             'msg' - just the message
+    #[pyo3(signature = (format = "msg"))]
     #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
-    fn display(slf: PyRef<'_, Self>, show: &str) -> PyResult<String> {
+    fn display(slf: PyRef<'_, Self>, format: &str) -> PyResult<String> {
         let parent = slf.as_super();
-        match show {
-            "traceback" | "type-msg" => Ok(parent.exc.summary()),
+        match format {
             "msg" => Ok(parent.message().unwrap_or_default().to_string()),
+            "type-msg" => Ok(parent.exc.summary()),
             _ => Err(exceptions::PyValueError::new_err(format!(
-                "Invalid display mode: '{show}'. Expected 'traceback', 'type-msg', or 'msg'"
+                "Invalid display format: '{format}'. Expected 'type-msg', or 'msg'"
             ))),
         }
     }
@@ -246,16 +245,16 @@ impl MontyRuntimeError {
 
     /// Returns formatted exception string.
     ///
-    /// Overrides the base class to provide the full traceback when show='traceback'.
-    #[pyo3(signature = (show = "traceback"))]
+    /// Overrides the base class to provide the full traceback when format='traceback'.
+    #[pyo3(signature = (format = "traceback"))]
     #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
-    fn display(slf: PyRef<'_, Self>, show: &str) -> PyResult<String> {
-        match show {
+    fn display(slf: PyRef<'_, Self>, format: &str) -> PyResult<String> {
+        match format {
             "traceback" => Ok(slf.as_super().exc.to_string()),
             "type-msg" => Ok(slf.as_super().exc.summary()),
             "msg" => Ok(slf.as_super().message().unwrap_or_default().to_string()),
             _ => Err(exceptions::PyValueError::new_err(format!(
-                "Invalid display mode: '{show}'. Expected 'traceback', 'type-msg', or 'msg'"
+                "Invalid display format: '{format}'. Expected 'traceback', 'type-msg', or 'msg'"
             ))),
         }
     }

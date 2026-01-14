@@ -34,32 +34,11 @@ class MontySyntaxError(MontyError):
     Inherits exception(), __str__() from MontyError.
     """
 
-    def display(self, show: Literal['traceback', 'type-msg', 'msg'] = 'traceback') -> str:
+    def display(self, format: Literal['type-msg', 'msg'] = 'msg') -> str:
         """Returns formatted exception string.
 
         Args:
-            show: 'traceback' - full exception with type and message
-                  'type-msg' - 'ExceptionType: message' format
-                  'msg' - just the message
-        """
-
-@final
-class MontyRuntimeError(MontyError):
-    """Raised when Monty code fails during execution.
-
-    Inherits exception(), __str__() from MontyError.
-    Additionally provides traceback() and display() methods.
-    """
-
-    def traceback(self) -> list[Frame]:
-        """Returns the Monty traceback as a list of Frame objects."""
-
-    def display(self, show: Literal['traceback', 'type-msg', 'msg'] = 'traceback') -> str:
-        """Returns formatted exception string.
-
-        Args:
-            show: 'traceback' - full traceback with exception
-                  'type-msg' - 'ExceptionType: message' format
+            format: 'type-msg' - 'ExceptionType: message' format
                   'msg' - just the message
         """
 
@@ -87,6 +66,26 @@ class MontyTypingError(MontyError):
         Args:
             format: Output format for the diagnostics. Defaults to 'full'.
             color: Whether to include ANSI color codes. Defaults to False.
+        """
+
+@final
+class MontyRuntimeError(MontyError):
+    """Raised when Monty code fails during execution.
+
+    Inherits exception(), __str__() from MontyError.
+    Additionally provides traceback() and display() methods.
+    """
+
+    def traceback(self) -> list[Frame]:
+        """Returns the Monty traceback as a list of Frame objects."""
+
+    def display(self, format: Literal['traceback', 'type-msg', 'msg'] = 'traceback') -> str:
+        """Returns formatted exception string.
+
+        Args:
+            format: 'traceback' - full traceback with exception
+                  'type-msg' - 'ExceptionType: message' format
+                  'msg' - just the message
         """
 
 @final
