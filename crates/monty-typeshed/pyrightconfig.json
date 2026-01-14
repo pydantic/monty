@@ -1,0 +1,7 @@
+{
+      "typeshedPath": "vendor/typeshed",
+      "include": ["stdlib/*.pyi"],
+      "typeCheckingMode": "strict",
+      "reportMissingModuleSource": "none",
+      "reportIncompleteStub": "none"
+  }

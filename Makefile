@@ -106,7 +106,7 @@ complete-tests: ## Fill in incomplete test expectations using CPython
 update-typeshed: ## Update vendored typeshed from upstream
 	uv run crates/monty-typeshed/update.py
 	make format-py
-	make lint-py
+	cd crates/monty-typeshed && uv run basedpyright --project pyrightconfig.json vendor/typeshed
 
 .PHONY: bench
 bench: ## Run benchmarks

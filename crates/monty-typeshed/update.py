@@ -18,83 +18,88 @@ import tempfile
 from pathlib import Path
 
 # Whitelisted builtin functions (from crates/monty/src/builtins/)
-ALLOWED_FUNCTIONS = frozenset(
-    {
-        'abs',
-        'all',
-        'any',
-        'bin',
-        'chr',
-        'divmod',
-        'hash',
-        'hex',
-        'id',
-        'isinstance',
-        'len',
-        'max',
-        'min',
-        'oct',
-        'ord',
-        'pow',
-        'print',
-        'repr',
-        'round',
-        'sorted',
-        'sum',
-    }
-)
+ALLOWED_FUNCTIONS = {
+    'abs',
+    'all',
+    'any',
+    'bin',
+    'chr',
+    'divmod',
+    'hash',
+    'hex',
+    'id',
+    'isinstance',
+    'len',
+    'max',
+    'min',
+    'oct',
+    'ord',
+    'pow',
+    'print',
+    'repr',
+    'round',
+    'sorted',
+    'sum',
+}
 
 # Whitelisted builtin classes (from crates/monty/src/types/ and exception_private.rs)
-ALLOWED_CLASSES = frozenset(
-    {
-        # Core types
-        'object',
-        'type',
-        # Primitive types
-        'bool',
-        'int',
-        'float',
-        # String/bytes types
-        'str',
-        'bytes',
-        # Container types
-        'list',
-        'tuple',
-        'dict',
-        'set',
-        'frozenset',
-        'range',
-        # Iterator types (these are classes, not functions)
-        'enumerate',
-        'reversed',
-        'zip',
-        # Slicing
-        'slice',
-        # Exception hierarchy (from crates/monty/src/exception_private.rs)
-        'BaseException',
-        'Exception',
-        'SystemExit',
-        'KeyboardInterrupt',
-        'ArithmeticError',
-        'OverflowError',
-        'ZeroDivisionError',
-        'LookupError',
-        'IndexError',
-        'KeyError',
-        'RuntimeError',
-        'NotImplementedError',
-        'RecursionError',
-        'AttributeError',
-        'AssertionError',
-        'MemoryError',
-        'NameError',
-        'SyntaxError',
-        'TimeoutError',
-        'TypeError',
-        'ValueError',
-        'StopIteration',
-    }
-)
+ALLOWED_CLASSES = {
+    # Core types
+    'object',
+    'type',
+    # Primitive types
+    'bool',
+    'int',
+    'float',
+    # String/bytes types
+    'str',
+    'bytes',
+    # Container types
+    'list',
+    'tuple',
+    'dict',
+    'set',
+    'frozenset',
+    'range',
+    # Iterator types (these are classes, not functions)
+    'enumerate',
+    'reversed',
+    'zip',
+    # Slicing
+    'slice',
+    # Exception hierarchy (from crates/monty/src/exception_private.rs)
+    'BaseException',
+    'Exception',
+    'SystemExit',
+    'KeyboardInterrupt',
+    'ArithmeticError',
+    'OverflowError',
+    'ZeroDivisionError',
+    'LookupError',
+    'IndexError',
+    'KeyError',
+    'RuntimeError',
+    'NotImplementedError',
+    'RecursionError',
+    'AttributeError',
+    'AssertionError',
+    'MemoryError',
+    'NameError',
+    'SyntaxError',
+    'OSError',
+    'TimeoutError',
+    'TypeError',
+    'ValueError',
+    'StopIteration',
+    # required to get other bits of the stdlib to work
+    'property',
+    'classmethod',
+    'staticmethod',
+    'complex',
+    'bytearray',
+    'memoryview',
+    'Warning',
+}
 
 # Dependency modules that builtins.pyi imports from.
 # These are copied without filtering.
@@ -109,6 +114,15 @@ DEPENDENCY_FILES = [
     'abc.pyi',
     # Other imports in builtins.pyi
     '_sitebuiltins.pyi',
+    # files used by nested files
+    'annotationlib.pyi',
+    'warnings.pyi',
+    '_warnings.pyi',
+    're.pyi',
+    'sre_compile.pyi',
+    'sre_constants.pyi',
+    'enum.pyi',
+    'contextlib.pyi',
 ]
 
 # Dependency directories (copied recursively)
@@ -116,6 +130,8 @@ DEPENDENCY_DIRS = [
     'collections',
     'os',
     'sys',
+    '_typeshed',
+    'importlib',
 ]
 
 SCRIPT_DIR = Path(__file__).parent
@@ -175,7 +191,7 @@ def filter_statements(nodes: list[ast.stmt]) -> list[ast.stmt]:
             if node.name in ALLOWED_FUNCTIONS:
                 result.append(node)
         elif isinstance(node, ast.ClassDef):
-            if node.name in ALLOWED_CLASSES:
+            if node.name.startswith('_') or node.name in ALLOWED_CLASSES:
                 result.append(node)
         elif isinstance(node, ast.If):
             # Recursively filter version-conditional blocks

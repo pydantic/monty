@@ -1,21 +1,4 @@
-# The structure of this file is as follows:
-# - Blank lines and comments starting with `#` are ignored.
-# - Lines contain the name of a module, followed by a colon,
-#   a space, and a version range (for example: `symbol: 3.0-3.9`).
-#
-# Version ranges may be of the form "X.Y-A.B" or "X.Y-". The
-# first form means that a module was introduced in version X.Y and last
-# available in version A.B. The second form means that the module was
-# introduced in version X.Y and is still available in the latest
-# version of Python.
-#
-# If a submodule is not listed separately, it has the same lifetime as
-# its parent module.
-#
-# Python versions before 3.0 are ignored, so any module that was already
-# present in 3.0 will have "3.0" as its minimum version. Version ranges
-# for unsupported versions of Python 3 are generally accurate but we do
-# not guarantee their correctness.
+# absolutely minimal VERSIONS file explosing only the modules required
 
 builtins: 3.0-
 typing: 3.5-
