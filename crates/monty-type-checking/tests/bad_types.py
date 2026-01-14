@@ -1,7 +1,18 @@
 # This file contains intentional type errors to test the type checker.
 # Each section demonstrates a different category of type error.
 
-from typing import assert_type
+from typing import assert_type, reveal_type
+
+reveal_type(None)
+reveal_type(int(1))
+reveal_type(float(1.2))
+reveal_type(b'foobar'.decode())
+reveal_type([1])
+reveal_type((1, 2))
+reveal_type({1: 2})
+reveal_type({1, 2})
+reveal_type(frozenset({1, 2}))
+
 
 # === Invalid argument types ===
 
