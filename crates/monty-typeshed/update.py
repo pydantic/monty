@@ -111,19 +111,31 @@ DEPENDENCY_FILES = [
     # Used in type annotations
     'types.pyi',
     'io.pyi',
+    # '_io.pyi',
     'abc.pyi',
-    # Other imports in builtins.pyi
+    # # Other imports in builtins.pyi
     '_sitebuiltins.pyi',
-    # files used by nested files
-    'annotationlib.pyi',
-    'warnings.pyi',
-    '_warnings.pyi',
-    're.pyi',
-    'sre_compile.pyi',
-    'sre_constants.pyi',
-    'enum.pyi',
-    'contextlib.pyi',
+    # # files used by nested files
+    # 'annotationlib.pyi',
+    # 'warnings.pyi',
+    # '_warnings.pyi',
+    # 're.pyi',
+    # 'sre_compile.pyi',
+    # 'sre_constants.pyi',
+    # 'sre_parse.pyi',
+    # 'enum.pyi',
+    # 'contextlib.pyi',
+    # 'posixpath.pyi',
+    # 'ntpath.pyi',
+    # 'genericpath.pyi',
+    # 'resource.pyi',
+    # 'subprocess.pyi',
+    # '_winapi.pyi',
+    # 'codecs.pyi',
+    # 'dataclasses.pyi',
+    # 'zipimport.pyi',
 ]
+
 
 # Dependency directories (copied recursively)
 DEPENDENCY_DIRS = [
@@ -131,7 +143,11 @@ DEPENDENCY_DIRS = [
     'os',
     'sys',
     '_typeshed',
-    'importlib',
+    # 'importlib',
+    # 'pathlib',
+    # 'zipfile',
+    # 'wsgiref',
+    # 'http',
 ]
 
 SCRIPT_DIR = Path(__file__).parent
@@ -308,9 +324,11 @@ def main() -> int:
         (STDLIB_DIR / 'builtins.pyi').write_text(filtered)
         (STDLIB_DIR / 'VERSIONS').write_text("""\
 # absolutely minimal VERSIONS file explosing only the modules required
+# `typing` and `types` are required for ty to work correctly
 
 builtins: 3.0-
 typing: 3.5-
+types: 3.0-
 """)
         (VENDOR_DIR / 'source_commit.txt').write_text(commit + '\n')
 

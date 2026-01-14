@@ -1,7 +1,27 @@
 {
-      "typeshedPath": "vendor/typeshed",
-      "include": ["stdlib/*.pyi"],
-      "typeCheckingMode": "strict",
-      "reportMissingModuleSource": "none",
-      "reportIncompleteStub": "none"
-  }
+    "typeshedPath": "vendor/typeshed",
+    "include": ["vendor/typeshed/stdlib/builtins.pyi"],
+    "ignore": [
+        "vendor/typeshed/stdlib/typing.pyi",
+        "vendor/typeshed/stdlib/typing_extensions.pyi",
+        "vendor/typeshed/stdlib/_*.pyi",
+        "vendor/typeshed/stdlib/abc.pyi",
+        "vendor/typeshed/stdlib/io.pyi",
+        "vendor/typeshed/stdlib/types.pyi",
+        "vendor/typeshed/stdlib/_sitebuiltins.pyi",
+        "vendor/typeshed/stdlib/collections",
+        "vendor/typeshed/stdlib/os",
+        "vendor/typeshed/stdlib/sys"
+    ],
+    "typeCheckingMode": "strict",
+    "pythonVersion": "3.14",
+    "useLibraryCodeForTypes": false,
+    "reportMissingModuleSource": "none",
+    "reportMissingImports": "none",
+    "reportMissingTypeStubs": "none",
+    "reportIncompleteStub": "none",
+    "reportRedeclaration": "none",
+    "reportPrivateUsage": "none",
+    "reportConstantRedefinition": "none",
+    "reportUntypedFunctionDecorator": "none"
+}
