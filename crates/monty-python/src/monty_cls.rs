@@ -48,17 +48,24 @@ impl PyMonty {
     /// * `inputs` - List of input variable names available in the code
     /// * `external_functions` - List of external function names the code can call
     /// * `type_check` - Whether to perform type checking on the code
+    /// * `type_check_prefix_code` - Prefix code to be executed before type checking
     #[new]
-    #[pyo3(signature = (code, *, script_name="main.py", inputs=None, external_functions=None))]
+    #[pyo3(signature = (code, *, script_name="main.py", inputs=None, external_functions=None, type_check=false, type_check_prefix_code=None))]
     fn new(
         py: Python<'_>,
         code: String,
         script_name: &str,
         inputs: Option<&Bound<'_, PyList>>,
         external_functions: Option<&Bound<'_, PyList>>,
+        type_check: bool,
+        type_check_prefix_code: Option<&str>,
     ) -> PyResult<Self> {
         let input_names = list_str(inputs, "inputs")?;
         let external_function_names = list_str(external_functions, "external_functions")?;
+
+        if type_check {
+            py_type_check(py, &code, script_name, type_check_prefix_code)?;
+        }
 
         // Create the snapshot (parses the code)
         let runner = MontyRun::new(code, script_name, input_names.clone(), external_function_names.clone())
@@ -86,17 +93,7 @@ impl PyMonty {
     /// * `MontyTypingError` if type errors are found
     #[pyo3(signature = (prefix_code=None))]
     fn type_check(&self, py: Python<'_>, prefix_code: Option<&str>) -> PyResult<()> {
-        let source_code: Cow<str> = if let Some(prefix_code) = prefix_code {
-            format!("{}\n{}", prefix_code, self.runner.code()).into()
-        } else {
-            self.runner.code().into()
-        };
-        let result = type_check(&source_code, &self.script_name).map_err(PyRuntimeError::new_err)?;
-        if let Some(failure) = result {
-            Err(MontyTypingError::new_err(py, failure))
-        } else {
-            Ok(())
-        }
+        py_type_check(py, self.runner.code(), &self.script_name, prefix_code)
     }
 
     /// Executes the code and returns the result.
@@ -257,6 +254,20 @@ impl PyMonty {
         }
         s.push(')');
         s
+    }
+}
+
+fn py_type_check(py: Python<'_>, code: &str, script_name: &str, prefix_code: Option<&str>) -> PyResult<()> {
+    let source_code: Cow<str> = if let Some(prefix_code) = prefix_code {
+        format!("{prefix_code}\n{code}").into()
+    } else {
+        code.into()
+    };
+    let result = type_check(&source_code, script_name).map_err(PyRuntimeError::new_err)?;
+    if let Some(failure) = result {
+        Err(MontyTypingError::new_err(py, failure))
+    } else {
+        Ok(())
     }
 }
 

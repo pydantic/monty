@@ -140,6 +140,8 @@ class Monty:
         script_name: str = 'main.py',
         inputs: list[str] | None = None,
         external_functions: list[str] | None = None,
+        type_check: bool = False,
+        type_check_prefix_code: str | None = None,
     ) -> Self:
         """
         Create a new Monty interpreter by parsing the given code.
@@ -149,9 +151,13 @@ class Monty:
             script_name: Name used in tracebacks and error messages
             inputs: List of input variable names available in the code
             external_functions: List of external function names the code can call
+            type_check: Whether to perform type checking on the code (default: True)
+            type_check_prefix_code: Optional code to prepend before type checking,
+                e.g. with input variable declarations or external function signatures
 
         Raises:
             MontySyntaxError: If the code cannot be parsed
+            MontyTypingError: If type_check is True and type errors are found
         """
 
     def type_check(self, prefix_code: str | None = None) -> None:

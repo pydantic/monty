@@ -161,3 +161,103 @@ def test_monty_typing_error_display_default():
         m.type_check()
     # Default display should match str()
     assert exc_info.value.display() == str(exc_info.value)
+
+
+# === Constructor type_check parameter tests ===
+
+
+def test_constructor_type_check_default_false():
+    """Type checking is disabled by default in constructor."""
+    # This should NOT raise during construction (type_check=False is default)
+    m = monty.Monty('"hello" + 1')
+    # But we can still call type_check() manually later
+    with pytest.raises(monty.MontyTypingError):
+        m.type_check()
+
+
+def test_constructor_type_check_explicit_true():
+    """Explicit type_check=True raises on type errors."""
+    with pytest.raises(monty.MontyTypingError) as exc_info:
+        monty.Monty('"hello" + 1', type_check=True)
+    assert str(exc_info.value) == snapshot("""\
+error[unsupported-operator]: Unsupported `+` operation
+ --> main.py:1:1
+  |
+1 | "hello" + 1
+  | -------^^^-
+  | |         |
+  | |         Has type `Literal[1]`
+  | Has type `Literal["hello"]`
+  |
+info: rule `unsupported-operator` is enabled by default
+
+""")
+
+
+def test_constructor_type_check_explicit_false():
+    """Explicit type_check=False skips type checking during construction."""
+    # This should NOT raise during construction
+    m = monty.Monty('"hello" + 1', type_check=False)
+    # But we can still call type_check() manually later
+    with pytest.raises(monty.MontyTypingError):
+        m.type_check()
+
+
+def test_constructor_default_allows_run_with_inputs():
+    """Default (type_check=False) allows running code that would fail type checking."""
+    # Code with undefined variable - type checking would fail
+    m = monty.Monty('x + 1', inputs=['x'])
+    # But runtime works fine with the input provided
+    result = m.run(inputs={'x': 5})
+    assert result == 6
+
+
+def test_constructor_type_check_prefix_code():
+    """type_check_prefix_code provides declarations for type checking."""
+    # Without prefix, this would fail type checking (x is undefined)
+    # Use assignment to define x, not just type annotation
+    m = monty.Monty('result = x + 1', type_check=True, type_check_prefix_code='x = 0')
+    # Should construct successfully because prefix declares x
+    assert m is not None
+
+
+def test_constructor_type_check_prefix_code_with_external_function():
+    """type_check_prefix_code can declare external function signatures."""
+    # Define fetch as a function that takes a string and returns a string
+    prefix = """
+def fetch(url: str) -> str:
+    return ''
+"""
+    m = monty.Monty(
+        'result = fetch("https://example.com")',
+        external_functions=['fetch'],
+        type_check=True,
+        type_check_prefix_code=prefix,
+    )
+    assert m is not None
+
+
+def test_constructor_type_check_prefix_code_invalid():
+    """type_check_prefix_code with wrong types still catches errors."""
+    # Prefix defines x as str, but code tries to use it with int addition
+    with pytest.raises(monty.MontyTypingError) as exc_info:
+        monty.Monty(
+            'result: int = x + 1',
+            type_check=True,
+            type_check_prefix_code='x = "hello"',
+        )
+    # Should fail because str + int is invalid
+    assert str(exc_info.value) == snapshot("""\
+error[unsupported-operator]: Unsupported `+` operation
+ --> main.py:2:15
+  |
+1 | x = "hello"
+2 | result: int = x + 1
+  |               -^^^-
+  |               |   |
+  |               |   Has type `Literal[1]`
+  |               Has type `Literal["hello"]`
+  |
+info: rule `unsupported-operator` is enabled by default
+
+""")
