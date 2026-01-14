@@ -1,3 +1,5 @@
+use std::fs;
+
 use monty_type_checking::type_check;
 use ruff_db::diagnostic::DiagnosticFormat;
 
@@ -93,17 +95,44 @@ fn missing_stdlib_datetime() {
 ///
 /// This file uses `assert_type` from typing to verify that inferred types match expected types.
 #[test]
-fn type_check_good_types() {
+fn type_good_types() {
     let code = include_str!("good_types.py");
     let result = type_check(code, "good_types.py").unwrap();
     assert!(result.is_none(), "Expected no type errors, got: {result:?}");
+}
+
+fn check_file_content(file_name: &str, mut actual: &str) {
+    let expected_path = format!("{}/tests/{}", env!("CARGO_MANIFEST_DIR"), file_name);
+    let expected = if fs::exists(&expected_path).unwrap() {
+        fs::read_to_string(&expected_path).unwrap()
+    } else {
+        std::fs::write(&expected_path, actual).unwrap();
+        panic!("{file_name} did not exist, file created.")
+    };
+
+    let expected = expected.as_str().trim();
+    actual = actual.trim();
+
+    if actual == expected {
+        println!("File content matches expected.");
+        return;
+    }
+
+    let status = if std::env::var("UPDATE_EXPECT").is_ok() {
+        std::fs::write(&expected_path, actual).unwrap();
+        "FILE UPDATE"
+    } else {
+        "FILE NOT UPDATED"
+    };
+
+    panic!("Type errors don't match expected.\n\nEXPECTED:\n{expected}\n\nACTUAL:\n{actual}\n\n{status}.");
 }
 
 /// Test that bad_types.py produces the expected type errors.
 ///
 /// Set `UPDATE_EXPECT=1` to update the expected errors file.
 #[test]
-fn type_check_bad_types() {
+fn type_bad_types() {
     let code = include_str!("bad_types.py");
     let result = type_check(code, "bad_types.py").unwrap();
 
@@ -112,17 +141,18 @@ fn type_check_bad_types() {
         .format(ruff_db::diagnostic::DiagnosticFormat::Concise)
         .to_string();
 
-    let expected_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/bad_types_errors.txt");
+    check_file_content("bad_types_output.txt", &actual);
+}
 
-    if std::env::var("UPDATE_EXPECT").is_ok() {
-        std::fs::write(expected_path, &actual).expect("Failed to write expected errors file");
-        panic!("Updated expected errors in {expected_path}");
-    }
+#[test]
+fn test_reveal_types() {
+    let code = include_str!("reveal_types.py");
+    let result = type_check(code, "reveal_types.py").unwrap();
 
-    let expected = include_str!("bad_types_errors.txt");
-    assert_eq!(
-        actual.trim(),
-        expected.trim(),
-        "Type errors don't match expected.\n\nRun with UPDATE_EXPECT=1 to update."
-    );
+    let failure = result.expect("Expected type errors in reveal_types.py");
+    let actual = failure
+        .format(ruff_db::diagnostic::DiagnosticFormat::Concise)
+        .to_string();
+
+    check_file_content("reveal_types_output.txt", &actual);
 }

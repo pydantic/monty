@@ -1,0 +1,20 @@
+bad_types.py:22:11: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `Literal["hello"]`
+bad_types.py:23:11: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `float`
+bad_types.py:24:11: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `Literal[42]`
+bad_types.py:25:11: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `list[Unknown | int]`
+bad_types.py:28:16: error[invalid-argument-type] Argument to function `takes_list_int` is incorrect: Expected `list[int]`, found `list[int | str]`
+bad_types.py:29:16: error[invalid-argument-type] Argument to function `takes_list_int` is incorrect: Expected `list[int]`, found `list[int | float]`
+bad_types.py:36:12: error[invalid-return-type] Return type does not match returned value: expected `int`, found `Literal["oops"]`
+bad_types.py:40:12: error[invalid-return-type] Return type does not match returned value: expected `str`, found `Literal[123]`
+bad_types.py:44:12: error[invalid-return-type] Return type does not match returned value: expected `list[int]`, found `list[int | str]`
+bad_types.py:48:12: error[invalid-return-type] Return type does not match returned value: expected `None`, found `Literal[42]`
+bad_types.py:63:11: error[unsupported-operator] Operator `+` is not supported between objects of type `int` and `str`
+bad_types.py:64:11: error[unsupported-operator] Operator `-` is not supported between objects of type `str` and `int`
+bad_types.py:70:1: error[type-assertion-failure] Type `str` does not match asserted type `Literal[42]`
+bad_types.py:73:1: error[type-assertion-failure] Type `list[str]` does not match asserted type `list[int]`
+bad_types.py:85:5: error[unresolved-attribute] Object of type `MyClass` has no attribute `nonexistent_attr`
+bad_types.py:95:1: error[missing-argument] No argument provided for required parameter `b` of function `takes_two`
+bad_types.py:96:23: error[too-many-positional-arguments] Too many positional arguments to function `takes_two`: expected 2, got 3
+bad_types.py:101:1: error[missing-argument] No argument provided for required parameter `b` of function `takes_two`
+bad_types.py:101:16: error[unknown-argument] Argument `c` does not match any known parameter of function `takes_two`
+bad_types.py:107:1: error[call-non-callable] Object of type `Literal[42]` is not callable

@@ -1,0 +1,41 @@
+reveal_types.py:4:13: info[revealed-type] Revealed type: `None`
+reveal_types.py:5:13: info[revealed-type] Revealed type: `object`
+reveal_types.py:6:13: info[revealed-type] Revealed type: `<class 'int'>`
+reveal_types.py:9:13: info[revealed-type] Revealed type: `Literal[True]`
+reveal_types.py:10:13: info[revealed-type] Revealed type: `int`
+reveal_types.py:11:13: info[revealed-type] Revealed type: `float`
+reveal_types.py:14:13: info[revealed-type] Revealed type: `Literal["hello"]`
+reveal_types.py:15:13: info[revealed-type] Revealed type: `Literal[b"foobar"]`
+reveal_types.py:18:13: info[revealed-type] Revealed type: `list[Unknown | int]`
+reveal_types.py:19:13: info[revealed-type] Revealed type: `tuple[Literal[1], Literal[2]]`
+reveal_types.py:20:13: info[revealed-type] Revealed type: `dict[Unknown | int, Unknown | int]`
+reveal_types.py:21:13: info[revealed-type] Revealed type: `set[Unknown | int]`
+reveal_types.py:22:13: info[revealed-type] Revealed type: `frozenset[Unknown | int]`
+reveal_types.py:23:13: info[revealed-type] Revealed type: `range`
+reveal_types.py:26:13: info[revealed-type] Revealed type: `enumerate[Unknown | int]`
+reveal_types.py:27:13: info[revealed-type] Revealed type: `reversed[Unknown | int]`
+reveal_types.py:28:13: info[revealed-type] Revealed type: `zip[Unknown]`
+reveal_types.py:31:13: info[revealed-type] Revealed type: `slice[Any, Any, Any]`
+reveal_types.py:34:13: info[revealed-type] Revealed type: `BaseException`
+reveal_types.py:35:13: info[revealed-type] Revealed type: `Exception`
+reveal_types.py:36:13: info[revealed-type] Revealed type: `SystemExit`
+reveal_types.py:37:13: info[revealed-type] Revealed type: `KeyboardInterrupt`
+reveal_types.py:38:13: info[revealed-type] Revealed type: `ArithmeticError`
+reveal_types.py:39:13: info[revealed-type] Revealed type: `OverflowError`
+reveal_types.py:40:13: info[revealed-type] Revealed type: `ZeroDivisionError`
+reveal_types.py:41:13: info[revealed-type] Revealed type: `LookupError`
+reveal_types.py:42:13: info[revealed-type] Revealed type: `IndexError`
+reveal_types.py:43:13: info[revealed-type] Revealed type: `KeyError`
+reveal_types.py:44:13: info[revealed-type] Revealed type: `RuntimeError`
+reveal_types.py:45:13: info[revealed-type] Revealed type: `NotImplementedError`
+reveal_types.py:46:13: info[revealed-type] Revealed type: `RecursionError`
+reveal_types.py:47:13: info[revealed-type] Revealed type: `AttributeError`
+reveal_types.py:48:13: info[revealed-type] Revealed type: `AssertionError`
+reveal_types.py:49:13: info[revealed-type] Revealed type: `MemoryError`
+reveal_types.py:50:13: info[revealed-type] Revealed type: `NameError`
+reveal_types.py:51:13: info[revealed-type] Revealed type: `SyntaxError`
+reveal_types.py:52:13: info[revealed-type] Revealed type: `OSError`
+reveal_types.py:53:13: info[revealed-type] Revealed type: `TimeoutError`
+reveal_types.py:54:13: info[revealed-type] Revealed type: `TypeError`
+reveal_types.py:55:13: info[revealed-type] Revealed type: `ValueError`
+reveal_types.py:56:13: info[revealed-type] Revealed type: `StopIteration`
