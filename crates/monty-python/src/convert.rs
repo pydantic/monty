@@ -137,12 +137,8 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject) -> PyResult<Py<PyAny>> {
     }
 }
 
-/// Cached import of `dataclasses.FrozenInstanceError` exception class.
 pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {
     static BUILTINS: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
 
-    BUILTINS.get_or_try_init(py, || {
-        let module = py.import("builtins")?;
-        Ok(module.unbind())
-    })
+    BUILTINS.get_or_try_init(py, || py.import("builtins").map(Bound::unbind))
 }
