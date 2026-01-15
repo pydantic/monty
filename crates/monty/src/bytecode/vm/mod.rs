@@ -859,9 +859,6 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         Err(err) => catch_sync!(self, cached_frame, err),
                     }
                 }
-                Opcode::CallExternal => {
-                    todo!("CallExternal")
-                }
                 Opcode::CallFunctionExtended => {
                     let flags = fetch_u8!(cached_frame);
                     let has_kwargs = (flags & 0x01) != 0;

@@ -239,8 +239,6 @@ pub enum Opcode {
     CallFunctionKw,
     /// Call method. Operands: u16 name_id, u8 arg_count.
     CallMethod,
-    /// External call (pauses VM). Operands: u16 func_id, u8 arg_count.
-    CallExternal,
     /// Call a defined function with *args tuple and **kwargs dict. Operand: u8 flags.
     ///
     /// Flags:
