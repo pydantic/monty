@@ -53,13 +53,14 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Calls a builtin function directly without stack manipulation for the callable.
     /// This is an optimization that avoids constant pool lookup and stack manipulation.
-    pub(super) fn exec_call_builtin_function(
-        &mut self,
-        builtin: BuiltinsFunctions,
-        arg_count: usize,
-    ) -> Result<Value, RunError> {
-        let args = self.pop_n_args(arg_count);
-        builtin.call(self.heap, args, self.interns, self.print_writer)
+    pub(super) fn exec_call_builtin_function(&mut self, builtin_id: u8, arg_count: usize) -> Result<Value, RunError> {
+        // Convert u8 to BuiltinsFunctions via FromRepr
+        if let Some(builtin) = BuiltinsFunctions::from_repr(builtin_id) {
+            let args = self.pop_n_args(arg_count);
+            builtin.call(self.heap, args, self.interns, self.print_writer)
+        } else {
+            Err(RunError::internal("CallBuiltinFunction: invalid builtin_id"))
+        }
     }
 
     /// Executes `CallFunctionKw` opcode.
@@ -141,13 +142,10 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 let a = self.pop();
                 ArgValues::Two(a, b)
             }
-            _ => {
-                let args = self.pop_n(n);
-                ArgValues::ArgsKargs {
-                    args,
-                    kwargs: KwargsValues::Empty,
-                }
-            }
+            _ => ArgValues::ArgsKargs {
+                args: self.pop_n(n),
+                kwargs: KwargsValues::Empty,
+            },
         }
     }
 

@@ -16,7 +16,6 @@ use call::CallResult;
 
 use crate::{
     args::ArgValues,
-    builtins::BuiltinsFunctions,
     bytecode::{code::Code, op::Opcode},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     for_iterator::ForIterator,
@@ -804,16 +803,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let builtin_id = fetch_u8!(cached_frame);
                     let arg_count = usize::from(fetch_u8!(cached_frame));
 
-                    // Sync IP before call (for traceback generation)
-                    self.current_frame_mut().ip = cached_frame.ip;
-
-                    // Convert u8 to BuiltinsFunctions via FromRepr
-                    let Some(builtin_func) = BuiltinsFunctions::from_repr(builtin_id) else {
-                        return Err(RunError::internal("CallBuiltinFunction: invalid builtin_id"));
-                    };
-
-                    match self.exec_call_builtin_function(builtin_func, arg_count) {
+                    match self.exec_call_builtin_function(builtin_id, arg_count) {
                         Ok(result) => self.push(result),
+                        // IP sync deferred to error path (no frame push possible)
                         Err(err) => catch_sync!(self, cached_frame, err),
                     }
                 }
@@ -850,11 +842,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let arg_count = usize::from(fetch_u8!(cached_frame));
                     let name_id = StringId::from_index(name_idx);
 
-                    // Sync IP before call (call_method may access frame for traceback)
-                    self.current_frame_mut().ip = cached_frame.ip;
-
                     match self.exec_call_method(name_id, arg_count) {
                         Ok(result) => self.push(result),
+                        // IP sync deferred to error path (no frame push possible)
                         Err(err) => catch_sync!(self, cached_frame, err),
                     }
                 }
