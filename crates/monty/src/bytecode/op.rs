@@ -224,6 +224,11 @@ pub enum Opcode {
     /// - Pushing/popping the callable on the stack
     /// - Runtime type dispatch in call_function
     CallBuiltinFunction,
+    /// Call a builtin type constructor directly. Operands: u8 type_id, u8 arg_count.
+    ///
+    /// The type_id is the discriminant of `BuiltinsTypes` (via `FromRepr`).
+    /// This is an optimization for type constructors like `list()`, `int()`, `str()`.
+    CallBuiltinType,
     /// Call with positional and keyword args.
     ///
     /// Operands: u8 pos_count, u8 kw_count, then kw_count u16 name indices.

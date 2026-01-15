@@ -728,6 +728,21 @@ impl<'a> Compiler<'a> {
             // Fall through to standard path for kwargs/unpacking
         }
 
+        // Check if we can use the optimized CallBuiltinType path:
+        // - Callable must be a builtin type constructor (known at compile time)
+        // - Arguments must be positional-only (Empty, One, Two, or Args)
+        if let Callable::Builtin(Builtins::Type(t)) = callable {
+            if let Some(type_id) = t.callable_to_u8() {
+                if let Some(arg_count) = self.compile_builtin_call(args, call_pos)? {
+                    // Optimization applied - CallBuiltinType emitted
+                    self.code.set_location(call_pos, None);
+                    self.code.emit_call_builtin_type(type_id, arg_count);
+                    return Ok(());
+                }
+            }
+            // Fall through to standard path for kwargs/unpacking or non-callable types
+        }
+
         // Standard path: push callable, compile args, emit CallFunction/CallFunctionKw
         // Push the callable (use name position for NameError caret range)
         match callable {

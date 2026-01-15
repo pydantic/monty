@@ -90,6 +90,49 @@ impl Type {
         }
     }
 
+    /// Converts a callable type to a u8 for the `CallBuiltinType` opcode.
+    ///
+    /// Returns `Some(u8)` for types that can be called as constructors,
+    /// `None` for non-callable types.
+    #[must_use]
+    pub fn callable_to_u8(self) -> Option<u8> {
+        match self {
+            Self::Bool => Some(0),
+            Self::Int => Some(1),
+            Self::Float => Some(2),
+            Self::Str => Some(3),
+            Self::Bytes => Some(4),
+            Self::List => Some(5),
+            Self::Tuple => Some(6),
+            Self::Dict => Some(7),
+            Self::Set => Some(8),
+            Self::FrozenSet => Some(9),
+            Self::Range => Some(10),
+            _ => None,
+        }
+    }
+
+    /// Converts a u8 back to a callable `Type` for the `CallBuiltinType` opcode.
+    ///
+    /// Returns `Some(Type)` for valid callable type IDs, `None` otherwise.
+    #[must_use]
+    pub fn callable_from_u8(id: u8) -> Option<Self> {
+        match id {
+            0 => Some(Self::Bool),
+            1 => Some(Self::Int),
+            2 => Some(Self::Float),
+            3 => Some(Self::Str),
+            4 => Some(Self::Bytes),
+            5 => Some(Self::List),
+            6 => Some(Self::Tuple),
+            7 => Some(Self::Dict),
+            8 => Some(Self::Set),
+            9 => Some(Self::FrozenSet),
+            10 => Some(Self::Range),
+            _ => None,
+        }
+    }
+
     /// Calls this type as a constructor (e.g., `list(x)`, `int(x)`).
     ///
     /// Dispatches to the appropriate type's init method for container types,

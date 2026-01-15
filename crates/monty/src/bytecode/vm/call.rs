@@ -13,7 +13,7 @@ use crate::{
     intern::{ExtFunctionId, FunctionId, StringId},
     io::PrintWriter,
     resource::ResourceTracker,
-    types::{Dict, PyTrait},
+    types::{Dict, PyTrait, Type},
     value::{Attr, Value},
 };
 
@@ -60,6 +60,20 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             builtin.call(self.heap, args, self.interns, self.print_writer)
         } else {
             Err(RunError::internal("CallBuiltinFunction: invalid builtin_id"))
+        }
+    }
+
+    /// Executes `CallBuiltinType` opcode.
+    ///
+    /// Calls a builtin type constructor directly without stack manipulation for the callable.
+    /// This is an optimization for type constructors like `list()`, `int()`, `str()`.
+    pub(super) fn exec_call_builtin_type(&mut self, type_id: u8, arg_count: usize) -> Result<Value, RunError> {
+        // Convert u8 to Type via callable_from_u8
+        if let Some(t) = Type::callable_from_u8(type_id) {
+            let args = self.pop_n_args(arg_count);
+            t.call(self.heap, args, self.interns)
+        } else {
+            Err(RunError::internal("CallBuiltinType: invalid type_id"))
         }
     }
 

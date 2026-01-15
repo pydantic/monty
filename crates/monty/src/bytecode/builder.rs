@@ -138,6 +138,19 @@ impl CodeBuilder {
         self.bytecode.push(arg_count);
     }
 
+    /// Emits `CallBuiltinType` instruction.
+    ///
+    /// Operands: type_id (u8) + arg_count (u8)
+    ///
+    /// The type_id is the `#[repr(u8)]` discriminant of `BuiltinsTypes`.
+    /// This is an optimization for type constructors like `list()`, `int()`, `str()`.
+    pub fn emit_call_builtin_type(&mut self, type_id: u8, arg_count: u8) {
+        self.record_location();
+        self.bytecode.push(Opcode::CallBuiltinType as u8);
+        self.bytecode.push(type_id);
+        self.bytecode.push(arg_count);
+    }
+
     /// Emits CallFunctionKw with inline keyword names.
     ///
     /// Operands: pos_count (u8) + kw_count (u8) + kw_count * name_id (u16 each)

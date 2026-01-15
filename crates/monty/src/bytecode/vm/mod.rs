@@ -809,6 +809,17 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         Err(err) => catch_sync!(self, cached_frame, err),
                     }
                 }
+                Opcode::CallBuiltinType => {
+                    // Fetch operands: type_id (u8) + arg_count (u8)
+                    let type_id = fetch_u8!(cached_frame);
+                    let arg_count = usize::from(fetch_u8!(cached_frame));
+
+                    match self.exec_call_builtin_type(type_id, arg_count) {
+                        Ok(result) => self.push(result),
+                        // IP sync deferred to error path (no frame push possible)
+                        Err(err) => catch_sync!(self, cached_frame, err),
+                    }
+                }
                 Opcode::CallFunctionKw => {
                     // Fetch operands: pos_count, kw_count, then kw_count name indices
                     let pos_count = usize::from(fetch_u8!(cached_frame));
