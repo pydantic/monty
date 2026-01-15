@@ -35,15 +35,19 @@ pub fn is_dataclass(value: &Bound<'_, PyAny>) -> bool {
 /// Converts a Python dataclass instance to `MontyObject::Dataclass`.
 ///
 /// Extracts field names in definition order (for repr) and all field values as attrs.
+/// The `type_id` is set to `id(type(dc))` in Python, allowing registry lookups by type identity.
 pub fn dataclass_to_monty(value: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
     let py = value.py();
 
-    let name = value
-        .get_type()
+    let dc_type = value.get_type();
+    let name = dc_type
         .getattr(intern!(py, "__name__"))?
         .cast_into::<PyString>()?
         .to_str()?
         .to_string();
+
+    // Get type_id from id(type(dc)) for registry lookups
+    let type_id: u64 = py.import("builtins")?.getattr("id")?.call1((&dc_type,))?.extract()?;
 
     let fields_dict = value
         .getattr(intern!(py, "__dataclass_fields__"))?
@@ -75,6 +79,7 @@ pub fn dataclass_to_monty(value: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
 
     Ok(MontyObject::Dataclass {
         name,
+        type_id,
         field_names,
         attrs: attrs.into(),
         methods: vec![],
@@ -84,19 +89,20 @@ pub fn dataclass_to_monty(value: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
 
 /// Converts a `MontyObject::Dataclass` to a Python object.
 ///
-/// If the class name is found in the dc_registry, creates an instance of the original
+/// If the `type_id` is found in the dc_registry, creates an instance of the original
 /// Python dataclass type (so `isinstance(result, OriginalClass)` works).
 /// Otherwise, falls back to creating a `PyUnknownDataclass`.
 pub fn dataclass_to_py(
     py: Python<'_>,
     name: &str,
+    type_id: u64,
     field_names: &[String],
     attrs: &DictPairs,
     frozen: bool,
     dc_registry: &Bound<'_, PyDict>,
 ) -> PyResult<Py<PyAny>> {
-    // Try to use the original type from the dc_registry
-    if let Some(original_type) = dc_registry.get_item(name)? {
+    // Try to use the original type from the dc_registry (keyed by type_id)
+    if let Some(original_type) = dc_registry.get_item(type_id)? {
         let original_type: Bound<'_, PyType> = original_type.cast_into()?;
         // Build kwargs dict from field names and values
         let kwargs = PyDict::new(py);

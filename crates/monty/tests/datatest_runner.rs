@@ -308,6 +308,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> ExternalResult 
             // Return an immutable Point(x=1, y=2) dataclass
             MontyObject::Dataclass {
                 name: "Point".to_string(),
+                type_id: 0, // Test fixture has no real Python type
                 field_names: vec!["x".to_string(), "y".to_string()],
                 attrs: vec![
                     (MontyObject::String("x".to_string()), MontyObject::Int(1)),
@@ -324,6 +325,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> ExternalResult 
             // Return a mutable Point(x=1, y=2) dataclass
             MontyObject::Dataclass {
                 name: "MutablePoint".to_string(),
+                type_id: 0, // Test fixture has no real Python type
                 field_names: vec!["x".to_string(), "y".to_string()],
                 attrs: vec![
                     (MontyObject::String("x".to_string()), MontyObject::Int(1)),
@@ -341,6 +343,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> ExternalResult 
             // Return an immutable User(name=name, active=True) dataclass
             MontyObject::Dataclass {
                 name: "User".to_string(),
+                type_id: 0, // Test fixture has no real Python type
                 field_names: vec!["name".to_string(), "active".to_string()],
                 attrs: vec![
                     (MontyObject::String("name".to_string()), MontyObject::String(name)),
@@ -357,6 +360,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> ExternalResult 
             // Return an immutable empty dataclass with no fields
             MontyObject::Dataclass {
                 name: "Empty".to_string(),
+                type_id: 0, // Test fixture has no real Python type
                 field_names: vec![],
                 attrs: vec![].into(),
                 methods: vec![],

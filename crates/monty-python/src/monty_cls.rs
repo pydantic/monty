@@ -99,8 +99,9 @@ impl PyMonty {
     /// # Raises
     /// * `TypeError` if the argument is not a dataclass type
     fn register_dataclass(&self, py: Python<'_>, cls: &Bound<'_, PyType>) -> PyResult<()> {
-        let name = cls.getattr(intern!(py, "__name__"))?;
-        self.dataclass_registry.bind(py).set_item(name, cls)?;
+        // Use id(type) as the key for registry lookups
+        let type_id = cls.as_ptr() as u64;
+        self.dataclass_registry.bind(py).set_item(type_id, cls)?;
         Ok(())
     }
 
@@ -666,8 +667,9 @@ fn prep_registry<'py>(py: Python<'py>, dataclass_registry: Option<Bound<'py, PyL
 
     if let Some(registry_list) = dataclass_registry {
         for cls in registry_list {
-            let name = cls.getattr(intern!(py, "__name__"))?;
-            dc_registry.set_item(name, cls)?;
+            // Use id(type) as the key for registry lookups
+            let type_id = cls.as_ptr() as u64;
+            dc_registry.set_item(type_id, cls)?;
         }
     }
     Ok(dc_registry)

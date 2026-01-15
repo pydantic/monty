@@ -716,3 +716,21 @@ def test_dataclass_params_attributes():
     assert params.eq is True
     assert params.order is False
     assert params.frozen is False
+
+
+def test_repeat_dataclass_name():
+    """Two classes with the same name are distinguished because we use id, not name."""
+
+    def create_point():
+        @dataclass
+        class Point:
+            x: int
+            y: int
+
+        return Point
+
+    point_cls2 = create_point()
+    m = monty.Monty('a, b', inputs=['a', 'b'], dataclass_registry=[Point, point_cls2])
+    a, b = m.run(inputs={'a': Point(x=10, y=20), 'b': point_cls2(x=30, y=40)})
+    assert isinstance(a, Point)
+    assert isinstance(b, point_cls2)

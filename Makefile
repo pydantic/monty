@@ -126,7 +126,7 @@ profile: ## Profile the code with pprof and generate flamegraphs
 	uv run scripts/flamegraph_to_text.py
 
 .PHONY: type-sizes
-type-sizes: ## Print type sizes for the crate (requires nightly and top-type-sizes)
+type-sizes: ## Write type sizes for the crate to ./type-sizes.txt (requires nightly and top-type-sizes)
 	RUSTFLAGS="-Zprint-type-sizes" cargo +nightly build -j1 2>&1 | top-type-sizes -f '^monty.*' > type-sizes.txt
 	@echo "Type sizes written to ./type-sizes.txt"
 

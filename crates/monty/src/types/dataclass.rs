@@ -44,6 +44,8 @@ use crate::{
 pub(crate) struct Dataclass {
     /// The class name (e.g., "Point", "User")
     name: String,
+    /// Identifier of the type, from `id(type(dc))` in python.
+    type_id: u64,
     /// Declared field names in definition order (for repr and hashing)
     field_names: Vec<String>,
     /// All attributes (both declared fields and dynamically added)
@@ -59,14 +61,23 @@ impl Dataclass {
     ///
     /// # Arguments
     /// * `name` - The class name
+    /// * `type_id` - The type ID of the dataclass
     /// * `field_names` - Declared field names in definition order
     /// * `attrs` - Dict of attribute name -> value pairs (ownership transferred)
     /// * `methods` - Set of method names that trigger external calls
     /// * `frozen` - Whether this dataclass instance is immutable (affects hashability)
     #[must_use]
-    pub fn new(name: String, field_names: Vec<String>, attrs: Dict, methods: AHashSet<String>, frozen: bool) -> Self {
+    pub fn new(
+        name: String,
+        type_id: u64,
+        field_names: Vec<String>,
+        attrs: Dict,
+        methods: AHashSet<String>,
+        frozen: bool,
+    ) -> Self {
         Self {
             name,
+            type_id,
             field_names,
             attrs,
             methods,
@@ -78,6 +89,12 @@ impl Dataclass {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Returns the type ID of the dataclass.
+    #[must_use]
+    pub fn type_id(&self) -> u64 {
+        self.type_id
     }
 
     /// Returns a reference to the declared field names.
@@ -266,12 +283,13 @@ impl PyTrait for Dataclass {
 }
 
 // Custom serde implementation for Dataclass.
-// Serializes all five fields; methods set is serialized as a Vec for determinism.
+// Serializes all six fields; methods set is serialized as a Vec for determinism.
 impl serde::Serialize for Dataclass {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("Dataclass", 5)?;
+        let mut state = serializer.serialize_struct("Dataclass", 6)?;
         state.serialize_field("name", &self.name)?;
+        state.serialize_field("type_id", &self.type_id)?;
         state.serialize_field("field_names", &self.field_names)?;
         state.serialize_field("attrs", &self.attrs)?;
         // Serialize methods as sorted Vec for deterministic output
@@ -288,6 +306,7 @@ impl<'de> serde::Deserialize<'de> for Dataclass {
         #[derive(serde::Deserialize)]
         struct DataclassData {
             name: String,
+            type_id: u64,
             field_names: Vec<String>,
             attrs: Dict,
             methods: Vec<String>,
@@ -296,6 +315,7 @@ impl<'de> serde::Deserialize<'de> for Dataclass {
         let dc = DataclassData::deserialize(deserializer)?;
         Ok(Self {
             name: dc.name,
+            type_id: dc.type_id,
             field_names: dc.field_names,
             attrs: dc.attrs,
             methods: dc.methods.into_iter().collect(),

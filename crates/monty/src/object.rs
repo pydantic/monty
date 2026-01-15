@@ -108,6 +108,8 @@ pub enum MontyObject {
     Dataclass {
         /// The class name (e.g., "Point", "User").
         name: String,
+        /// Identifier of the type, from `id(type(dc))` in python.
+        type_id: u64,
         /// Declared field names in definition order (for repr).
         field_names: Vec<String>,
         /// All attribute name -> value mapping (includes fields and extra attrs).
@@ -233,6 +235,7 @@ impl MontyObject {
             }
             Self::Dataclass {
                 name,
+                type_id,
                 field_names,
                 attrs,
                 methods,
@@ -248,7 +251,7 @@ impl MontyObject {
                     .map_err(|_| InvalidInputError::invalid_type("unhashable dataclass attr keys"))?;
                 // Convert methods Vec to AHashSet
                 let methods_set: ahash::AHashSet<String> = methods.into_iter().collect();
-                let dc = Dataclass::new(name, field_names, dict, methods_set, frozen);
+                let dc = Dataclass::new(name, type_id, field_names, dict, methods_set, frozen);
                 Ok(Value::Ref(heap.allocate(HeapData::Dataclass(dc))?))
             }
             Self::Type(t) => Ok(Value::Builtin(Builtins::Type(t))),
@@ -373,6 +376,7 @@ impl MontyObject {
                         methods.sort();
                         Self::Dataclass {
                             name: dc.name().to_owned(),
+                            type_id: dc.type_id(),
                             field_names: dc.field_names().to_vec(),
                             attrs,
                             methods,
@@ -649,6 +653,7 @@ impl PartialEq for MontyObject {
             (
                 Self::Dataclass {
                     name: a_name,
+                    type_id: a_type_id,
                     field_names: a_field_names,
                     attrs: a_attrs,
                     methods: a_methods,
@@ -656,6 +661,7 @@ impl PartialEq for MontyObject {
                 },
                 Self::Dataclass {
                     name: b_name,
+                    type_id: b_type_id,
                     field_names: b_field_names,
                     attrs: b_attrs,
                     methods: b_methods,
@@ -663,6 +669,7 @@ impl PartialEq for MontyObject {
                 },
             ) => {
                 a_name == b_name
+                    && a_type_id == b_type_id
                     && a_field_names == b_field_names
                     && a_attrs == b_attrs
                     && a_methods == b_methods
