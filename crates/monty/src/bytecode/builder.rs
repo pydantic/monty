@@ -125,16 +125,16 @@ impl CodeBuilder {
         self.bytecode.push(operand3);
     }
 
-    /// Emits CallBuiltin instruction.
+    /// Emits `CallBuiltinFunction` instruction.
     ///
-    /// Operands: const_idx (u16) + arg_count (u8)
+    /// Operands: builtin_id (u8) + arg_count (u8)
     ///
-    /// The const_idx points to a `Value::Builtin` in the constant pool.
-    /// This is an optimization that avoids pushing/popping the callable.
-    pub fn emit_call_builtin(&mut self, const_idx: u16, arg_count: u8) {
+    /// The builtin_id is the `#[repr(u8)]` discriminant of `BuiltinsFunctions`.
+    /// This is an optimization that avoids constant pool lookup and stack manipulation.
+    pub fn emit_call_builtin_function(&mut self, builtin_id: u8, arg_count: u8) {
         self.record_location();
-        self.bytecode.push(Opcode::CallBuiltin as u8);
-        self.bytecode.extend_from_slice(&const_idx.to_le_bytes());
+        self.bytecode.push(Opcode::CallBuiltinFunction as u8);
+        self.bytecode.push(builtin_id);
         self.bytecode.push(arg_count);
     }
 

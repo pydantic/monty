@@ -30,7 +30,7 @@ mod zip;
 
 use std::{fmt::Write, str::FromStr};
 
-use strum::{Display, EnumString, IntoStaticStr};
+use strum::{Display, EnumString, FromRepr, IntoStaticStr};
 
 use crate::{
     args::ArgValues,
@@ -125,9 +125,21 @@ impl FromStr for Builtins {
 /// Uses strum derives for automatic `Display`, `FromStr`, and `IntoStaticStr` implementations.
 /// All variants serialize to lowercase (e.g., `Print` -> "print").
 #[derive(
-    Debug, Clone, Copy, Display, EnumString, IntoStaticStr, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    Display,
+    EnumString,
+    FromRepr,
+    IntoStaticStr,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[strum(serialize_all = "lowercase")]
+#[repr(u8)]
 pub enum BuiltinsFunctions {
     Abs,
     // Aiter,
@@ -207,7 +219,7 @@ impl BuiltinsFunctions {
     ///
     /// The `interns` parameter provides access to interned string content for py_str and py_repr.
     /// The `print` parameter is used for print output.
-    fn call(
+    pub(crate) fn call(
         self,
         heap: &mut Heap<impl ResourceTracker>,
         args: ArgValues,

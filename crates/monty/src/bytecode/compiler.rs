@@ -715,15 +715,14 @@ impl<'a> Compiler<'a> {
     ///
     /// The `call_pos` is the position of the full call expression for proper traceback caret.
     fn compile_call(&mut self, callable: &Callable, args: &ArgExprs, call_pos: CodeRange) -> Result<(), CompileError> {
-        // Check if we can use the optimized CallBuiltin path:
-        // - Callable must be a builtin (known at compile time)
+        // Check if we can use the optimized CallBuiltinFunction path:
+        // - Callable must be a builtin function (known at compile time)
         // - Arguments must be positional-only (Empty, One, Two, or Args)
-        if let Callable::Builtin(builtin) = callable {
-            if let Some(arg_count) = self.compile_builtin_call(*builtin, args, call_pos)? {
-                // Optimization applied - CallBuiltin emitted
-                let const_idx = self.code.add_const(Value::Builtin(*builtin));
+        if let Callable::Builtin(Builtins::Function(builtin_func)) = callable {
+            if let Some(arg_count) = self.compile_builtin_call(args, call_pos)? {
+                // Optimization applied - CallBuiltinFunction emitted
                 self.code.set_location(call_pos, None);
-                self.code.emit_call_builtin(const_idx, arg_count);
+                self.code.emit_call_builtin_function(*builtin_func as u8, arg_count);
                 return Ok(());
             }
             // Fall through to standard path for kwargs/unpacking
@@ -856,18 +855,13 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles arguments for a builtin call and returns the arg count if CallBuiltin can be used.
+    /// Compiles arguments for a builtin call and returns the arg count if optimization can be used.
     ///
-    /// Returns `Some(arg_count)` if the call uses positional-only arguments (CallBuiltin applicable).
+    /// Returns `Some(arg_count)` if the call uses positional-only arguments (CallBuiltinFunction applicable).
     /// Returns `None` if the call uses kwargs or unpacking (must use standard CallFunction path).
     ///
     /// When `Some` is returned, arguments have been compiled onto the stack.
-    fn compile_builtin_call(
-        &mut self,
-        _builtin: Builtins,
-        args: &ArgExprs,
-        call_pos: CodeRange,
-    ) -> Result<Option<u8>, CompileError> {
+    fn compile_builtin_call(&mut self, args: &ArgExprs, call_pos: CodeRange) -> Result<Option<u8>, CompileError> {
         match args {
             ArgExprs::Empty => Ok(Some(0)),
             ArgExprs::One(arg) => {

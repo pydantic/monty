@@ -100,7 +100,7 @@ test-docs: dev-py ## Test docs examples only
 	cargo test --doc -p monty
 
 .PHONY: test
-test: test-ref-count-panic test-ref-count-return test-no-features test-py ## Run all tests
+test: test-ref-count-panic test-ref-count-return test-no-features test-type-checking test-py ## Run rust tests
 
 .PHONY: complete-tests
 complete-tests: ## Fill in incomplete test expectations using CPython

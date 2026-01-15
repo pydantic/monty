@@ -7,7 +7,7 @@
 use super::{CallFrame, VM};
 use crate::{
     args::{ArgValues, KwargsValues},
-    builtins::Builtins,
+    builtins::BuiltinsFunctions,
     exception_private::{ExcType, RunError},
     heap::{HeapData, HeapId},
     intern::{ExtFunctionId, FunctionId, StringId},
@@ -49,11 +49,15 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         self.call_function(callable, args)
     }
 
-    /// Executes `CallBuiltin` opcode.
+    /// Executes `CallBuiltinFunction` opcode.
     ///
     /// Calls a builtin function directly without stack manipulation for the callable.
-    /// This is an optimization that avoids pushing/popping the callable.
-    pub(super) fn exec_call_builtin(&mut self, builtin: Builtins, arg_count: usize) -> Result<Value, RunError> {
+    /// This is an optimization that avoids constant pool lookup and stack manipulation.
+    pub(super) fn exec_call_builtin_function(
+        &mut self,
+        builtin: BuiltinsFunctions,
+        arg_count: usize,
+    ) -> Result<Value, RunError> {
         let args = self.pop_n_args(arg_count);
         builtin.call(self.heap, args, self.interns, self.print_writer)
     }

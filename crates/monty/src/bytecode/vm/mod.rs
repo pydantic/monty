@@ -16,6 +16,7 @@ use call::CallResult;
 
 use crate::{
     args::ArgValues,
+    builtins::BuiltinsFunctions,
     bytecode::{code::Code, op::Opcode},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     for_iterator::ForIterator,
@@ -798,20 +799,20 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         Err(err) => catch_sync!(self, cached_frame, err),
                     }
                 }
-                Opcode::CallBuiltin => {
-                    // Fetch operands: const_idx (u16) + arg_count (u8)
-                    let const_idx = fetch_u16!(cached_frame);
+                Opcode::CallBuiltinFunction => {
+                    // Fetch operands: builtin_id (u8) + arg_count (u8)
+                    let builtin_id = fetch_u8!(cached_frame);
                     let arg_count = usize::from(fetch_u8!(cached_frame));
 
                     // Sync IP before call (for traceback generation)
                     self.current_frame_mut().ip = cached_frame.ip;
 
-                    // Get the builtin from constants
-                    let Value::Builtin(builtin) = *cached_frame.code.constants().get(const_idx) else {
-                        return Err(RunError::internal("CallBuiltin: expected Builtin in constant pool"));
+                    // Convert u8 to BuiltinsFunctions via FromRepr
+                    let Some(builtin_func) = BuiltinsFunctions::from_repr(builtin_id) else {
+                        return Err(RunError::internal("CallBuiltinFunction: invalid builtin_id"));
                     };
 
-                    match self.exec_call_builtin(builtin, arg_count) {
+                    match self.exec_call_builtin_function(builtin_func, arg_count) {
                         Ok(result) => self.push(result),
                         Err(err) => catch_sync!(self, cached_frame, err),
                     }
