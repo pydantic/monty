@@ -23,12 +23,17 @@ use crate::{
 pub struct ExternalFunctionRegistry<'py> {
     py: Python<'py>,
     functions: &'py Bound<'py, PyDict>,
+    dc_registry: &'py Bound<'py, PyDict>,
 }
 
 impl<'py> ExternalFunctionRegistry<'py> {
     /// Creates a new registry from a Python dict of `name -> callable`.
-    pub fn new(py: Python<'py>, functions: &'py Bound<'py, PyDict>) -> Self {
-        Self { py, functions }
+    pub fn new(py: Python<'py>, functions: &'py Bound<'py, PyDict>, dc_registry: &'py Bound<'py, PyDict>) -> Self {
+        Self {
+            py,
+            functions,
+            dc_registry,
+        }
     }
 
     /// Calls an external function by name with Monty arguments.
@@ -64,15 +69,18 @@ impl<'py> ExternalFunctionRegistry<'py> {
             .ok_or_else(|| PyErr::new::<PyKeyError, _>(format!("External function '{function_name}' not found")))?;
 
         // Convert positional arguments to Python objects
-        let py_args: PyResult<Vec<Py<PyAny>>> = args.iter().map(|arg| monty_to_py(self.py, arg)).collect();
+        let py_args: PyResult<Vec<Py<PyAny>>> = args
+            .iter()
+            .map(|arg| monty_to_py(self.py, arg, self.dc_registry))
+            .collect();
         let py_args_tuple = PyTuple::new(self.py, py_args?)?;
 
         // Convert keyword arguments to Python dict
         let py_kwargs = PyDict::new(self.py);
         for (key, value) in kwargs {
             // Keys in kwargs should be strings
-            let py_key = monty_to_py(self.py, key)?;
-            let py_value = monty_to_py(self.py, value)?;
+            let py_key = monty_to_py(self.py, key, self.dc_registry)?;
+            let py_value = monty_to_py(self.py, value, self.dc_registry)?;
             py_kwargs.set_item(py_key, py_value)?;
         }
 

@@ -28,7 +28,7 @@ pub use crate::{
     exception_private::ExcType,
     exception_public::{CodeLoc, MontyException, StackFrame},
     io::{CollectStringPrint, NoPrint, PrintWriter, StdPrint},
-    object::{InvalidInputError, MontyObject},
+    object::{DictPairs, InvalidInputError, MontyObject},
     resource::{LimitedTracker, NoLimitTracker, ResourceError, ResourceLimits, ResourceTracker},
     run::{ExternalResult, MontyRun, RunProgress, Snapshot},
 };

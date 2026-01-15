@@ -87,12 +87,12 @@ test-cases: ## Run tests cases only
 test-type-checking: ## Run rust tests on monty_type_checking
 	cargo test -p monty_type_checking -p monty_typeshed
 
-.PHONY: run-pytest
-run-pytest: ## Run Python tests with pytest
+.PHONY: pytest
+pytest: ## Run Python tests with pytest
 	uv run --package monty-python --only-dev pytest crates/monty-python/tests
 
 .PHONY: test-py
-test-py: dev-py run-pytest ## Build the python package (debug profile) and run tests
+test-py: dev-py pytest ## Build the python package (debug profile) and run tests
 
 .PHONY: test-docs
 test-docs: dev-py ## Test docs examples only

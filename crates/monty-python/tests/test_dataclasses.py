@@ -14,52 +14,88 @@ from inline_snapshot import snapshot
 import monty
 
 
+@dataclass
+class Person:
+    name: str
+    age: int
+
+
 def test_dataclass_input():
     """Dataclass instances are converted and returned as MontyDataclass."""
 
-    @dataclass
-    class Person:
-        name: str
-        age: int
+    m = monty.Monty('x', inputs=['x'])
+    m.register_dataclass(Person)
+    result = m.run(inputs={'x': Person(name='Alice', age=30)})
+    assert result.name == snapshot('Alice')
+    assert result.age == snapshot(30)
+    assert is_dataclass(result)
+    assert isinstance(result, Person)
+    assert asdict(result) == snapshot({'name': 'Alice', 'age': 30})
+    assert repr(result) == snapshot("Person(name='Alice', age=30)")
+
+
+def test_dataclass_unknown():
+    """Dataclass instances are converted and returned as MontyDataclass."""
 
     m = monty.Monty('x', inputs=['x'])
     result = m.run(inputs={'x': Person(name='Alice', age=30)})
     assert result.name == snapshot('Alice')
     assert result.age == snapshot(30)
-    assert repr(result) == snapshot("Person(name='Alice', age=30)")
+    assert is_dataclass(result)
+    assert not isinstance(result, Person)
+    assert asdict(result) == snapshot({'name': 'Alice', 'age': 30})  # pyright: ignore[reportArgumentType]
+    assert repr(result) == snapshot("<Unknown Dataclass Person(name='Alice', age=30)>")
+
+
+@dataclass(frozen=True)
+class Point:
+    x: int
+    y: int
 
 
 def test_dataclass_frozen():
     """Frozen dataclasses are converted like regular dataclasses."""
 
-    @dataclass(frozen=True)
-    class Point:
-        x: int
-        y: int
-
-    m = monty.Monty('p', inputs=['p'])
+    m = monty.Monty('p', inputs=['p'], dataclass_registry=[Point])
     result = m.run(inputs={'p': Point(x=10, y=20)})
+    assert isinstance(result, Point)
     assert result.x == snapshot(10)
     assert result.y == snapshot(20)
     assert repr(result) == snapshot('Point(x=10, y=20)')
 
 
+@dataclass
+class Address:
+    city: str
+    zip_code: str
+
+
+@dataclass
+class PersonAddress:
+    name: str
+    address: Address
+
+
 def test_dataclass_nested():
     """Nested dataclasses are recursively converted."""
 
-    @dataclass
-    class Address:
-        city: str
-        zip_code: str
-
-    @dataclass
-    class Person:
-        name: str
-        address: Address
-
     m = monty.Monty('x', inputs=['x'])
-    result = m.run(inputs={'x': Person(name='Bob', address=Address(city='NYC', zip_code='10001'))})
+    m.register_dataclass(Address)
+    m.register_dataclass(PersonAddress)
+    result = m.run(inputs={'x': PersonAddress(name='Bob', address=Address(city='NYC', zip_code='10001'))})
+    assert isinstance(result, PersonAddress)
     assert result.name == snapshot('Bob')
+    assert isinstance(result.address, Address)
+    assert result.address.city == snapshot('NYC')
+    assert result.address.zip_code == snapshot('10001')
+
+
+def test_dataclass_nested_unknown():
+    m = monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': PersonAddress(name='Bob', address=Address(city='NYC', zip_code='10001'))})
+    assert not isinstance(result, PersonAddress)
+    assert result.name == snapshot('Bob')
+    assert not isinstance(result.address, Address)
     assert result.address.city == snapshot('NYC')
     assert result.address.zip_code == snapshot('10001')
 
@@ -72,6 +108,7 @@ def test_dataclass_with_list_field():
         items: list[int]
 
     m = monty.Monty('x', inputs=['x'])
+    m.register_dataclass(Container)
     result = m.run(inputs={'x': Container(items=[1, 2, 3])})
     assert result.items == snapshot([1, 2, 3])
 
@@ -84,6 +121,7 @@ def test_dataclass_with_dict_field():
         settings: dict[str, int]
 
     m = monty.Monty('x', inputs=['x'])
+    m.register_dataclass(Config)
     result = m.run(inputs={'x': Config(settings={'a': 1, 'b': 2})})
     assert result.settings == snapshot({'a': 1, 'b': 2})
 
@@ -96,8 +134,9 @@ def test_dataclass_empty():
         pass
 
     m = monty.Monty('x', inputs=['x'])
+    m.register_dataclass(Empty)
     result = m.run(inputs={'x': Empty()})
-    assert repr(result) == snapshot('Empty()')
+    assert repr(result) == snapshot('test_dataclass_empty.<locals>.Empty()')
 
 
 def test_dataclass_type_raises():
@@ -108,6 +147,7 @@ def test_dataclass_type_raises():
         value: int
 
     m = monty.Monty('x', inputs=['x'])
+    m.register_dataclass(MyClass)
     with pytest.raises(TypeError, match='Cannot convert type to Monty value'):
         m.run(inputs={'x': MyClass})
 
@@ -133,18 +173,8 @@ def test_dataclass_field_access():
 def test_dataclass_field_access_nested():
     """Access fields of nested dataclasses."""
 
-    @dataclass
-    class Address:
-        city: str
-        zip_code: str
-
-    @dataclass
-    class Person:
-        name: str
-        address: Address
-
     m = monty.Monty('x.address.city', inputs=['x'])
-    result = m.run(inputs={'x': Person(name='Bob', address=Address(city='NYC', zip_code='10001'))})
+    result = m.run(inputs={'x': PersonAddress(name='Bob', address=Address(city='NYC', zip_code='10001'))})
     assert result == snapshot('NYC')
 
 
@@ -223,43 +253,14 @@ def test_dataclass_repr_empty():
         pass
 
     m = monty.Monty('repr(x)', inputs=['x'])
+    m.register_dataclass(Empty)
     assert m.run(inputs={'x': Empty()}) == snapshot('Empty()')
-
-
-# === Name attributes ===
-
-
-def test_dataclass_name():
-    """Access __name__ of returned dataclass."""
-
-    @dataclass
-    class Person:
-        name: str
-        age: int
-
-    m = monty.Monty('x', inputs=['x'])
-    result = m.run(inputs={'x': Person(name='Alice', age=30)})
-    assert result.__name__ == snapshot('Person')
-
-
-def test_dataclass_qualname():
-    """Access __qualname__ of returned dataclass (same as __name__)."""
-
-    @dataclass
-    class Person:
-        name: str
-        age: int
-
-    m = monty.Monty('x', inputs=['x'])
-    result = m.run(inputs={'x': Person(name='Alice', age=30)})
-    # MontyDataclass returns __name__ for __qualname__ since we don't track nesting
-    assert result.__qualname__ == snapshot('Person')
 
 
 # === Setattr ===
 
 
-def test_dataclass_setattr_mutable():
+def test_dataclass_setattr_mutable_unknown():
     """Setting attributes on mutable dataclass works."""
 
     @dataclass
@@ -273,12 +274,12 @@ def test_dataclass_setattr_mutable():
     # Modify existing field
     result.x = 100
     assert result.x == snapshot(100)
-    assert repr(result) == snapshot('Point(x=100, y=20)')
+    assert repr(result) == snapshot('<Unknown Dataclass Point(x=100, y=20)>')
 
     # Add new attribute (not in repr since not a declared field)
     result.z = 30
     assert result.z == snapshot(30)
-    assert repr(result) == snapshot('Point(x=100, y=20)')
+    assert repr(result) == snapshot('<Unknown Dataclass Point(x=100, y=20)>')
 
 
 def test_dataclass_setattr_frozen():
@@ -521,7 +522,7 @@ def test_dataclass_hash_mutable_raises():
     m = monty.Monty('p', inputs=['p'])
     result = m.run(inputs={'p': Point(x=10, y=20)})
 
-    with pytest.raises(TypeError, match="unhashable type: 'Point'"):
+    with pytest.raises(TypeError, match="unhashable type: 'UnknownDataclass'"):
         hash(result)
 
 

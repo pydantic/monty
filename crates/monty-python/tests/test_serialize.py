@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
@@ -197,3 +198,40 @@ def test_progress_dump_load_with_limits():
     result = progress2.resume(return_value=99)
     assert isinstance(result, monty.MontyComplete)
     assert result.output == snapshot(99)
+
+
+@dataclass
+class Person:
+    name: str
+    age: int
+
+
+def test_monty_load_dataclass():
+    m = monty.Monty('x', inputs=['x'])
+    data = m.dump()
+
+    m2 = monty.Monty.load(data)
+    m2.register_dataclass(Person)
+    result = m2.run(inputs={'x': Person(name='Alice', age=30)})
+    assert isinstance(result, Person)
+
+
+def test_progress_dump_load_dataclass():
+    m = monty.Monty('func()', external_functions=['func'])
+    progress = m.start()
+    assert isinstance(progress, monty.MontySnapshot)
+
+    data = progress.dump()
+    assert isinstance(data, bytes)
+    assert len(data) > 0
+
+    progress2 = monty.MontySnapshot.load(data, dataclass_registry=[Person])
+    assert progress2.function_name == snapshot('func')
+    assert progress2.args == snapshot(())
+    assert progress2.kwargs == snapshot({})
+
+    result = progress2.resume(return_value=Person(name='Alice', age=30))
+    assert isinstance(result, monty.MontyComplete)
+    assert isinstance(result.output, Person)
+    assert result.output.name == snapshot('Alice')
+    assert result.output.age == snapshot(30)

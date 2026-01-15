@@ -142,6 +142,7 @@ class Monty:
         external_functions: list[str] | None = None,
         type_check: bool = False,
         type_check_prefix_code: str | None = None,
+        dataclass_registry: list[type] | None = None,
     ) -> Self:
         """
         Create a new Monty interpreter by parsing the given code.
@@ -154,6 +155,8 @@ class Monty:
             type_check: Whether to perform type checking on the code (default: True)
             type_check_prefix_code: Optional code to prepend before type checking,
                 e.g. with input variable declarations or external function signatures
+            dataclass_registry: Optional list of dataclass types to register for proper
+                isinstance() support on output, see `register_dataclass()` above.
 
         Raises:
             MontySyntaxError: If the code cannot be parsed
@@ -241,18 +244,39 @@ class Monty:
         """
 
     @staticmethod
-    def load(data: bytes) -> 'Monty':
+    def load(
+        data: bytes,
+        *,
+        dataclass_registry: list[type] | None = None,
+    ) -> 'Monty':
         """
         Deserialize a Monty instance from binary format.
 
         Arguments:
             data: The serialized Monty data from `dump()`
+            dataclass_registry: Optional list of dataclass types to register for proper
+                isinstance() support on output, see `register_dataclass()` above.
 
         Returns:
             A new Monty instance.
 
         Raises:
             ValueError: If deserialization fails.
+        """
+
+    def register_dataclass(self, cls: type) -> None:
+        """
+        Register a dataclass type for proper isinstance() support on output.
+
+        When a dataclass passes through Monty and is returned, it normally becomes
+        an `UnknownDataclass`. By registering the original type, we can use it to
+        instantiate a real instance of that dataclass.
+
+        Arguments:
+            cls: The dataclass type to register.
+
+        Raises:
+            TypeError: If the argument is not a dataclass type.
         """
 
     def __repr__(self) -> str: ...
@@ -332,6 +356,7 @@ class MontySnapshot:
         data: bytes,
         *,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        dataclass_registry: list[type] | None = None,
     ) -> 'MontySnapshot':
         """
         Deserialize a MontySnapshot instance from binary format.
@@ -342,6 +367,8 @@ class MontySnapshot:
         Arguments:
             data: The serialized MontySnapshot data from `dump()`
             print_callback: Optional callback for print output
+            dataclass_registry: Optional list of dataclass types to register for proper
+                isinstance() support on output, see `register_dataclass()` above.
 
         Returns:
             A new MontySnapshot instance.

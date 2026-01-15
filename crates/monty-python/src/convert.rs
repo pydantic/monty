@@ -3,6 +3,7 @@
 //! This module provides bidirectional conversion:
 //! - `py_to_monty`: Convert Python objects to Monty's `MontyObject` for input
 //! - `monty_to_py`: Convert Monty's `MontyObject` back to Python objects for output
+//! - `monty_to_py_with_registry`: Same as above, but uses dataclass registry for isinstance() support
 
 use ::monty::MontyObject;
 use monty::MontyException;
@@ -14,7 +15,7 @@ use pyo3::{
 };
 
 use crate::{
-    dataclass::{dataclass_to_monty, is_dataclass, PyMontyDataclass},
+    dataclass::{dataclass_to_monty, dataclass_to_py, is_dataclass},
     exceptions::{exc_monty_to_py, exc_to_monty_object},
 };
 
@@ -73,11 +74,12 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
     }
 }
 
-/// Converts Monty's `MontyObject` to a native Python object.
+/// Converts Monty's `MontyObject` to a native Python object, using the dataclass registry.
 ///
-/// All Monty values can be converted to Python, including output-only
-/// types like `Repr` which become strings.
-pub fn monty_to_py(py: Python<'_>, obj: &MontyObject) -> PyResult<Py<PyAny>> {
+/// When a dataclass is converted and its class name is found in the registry,
+/// an instance of the original Python type is created (so `isinstance()` works).
+/// Otherwise, falls back to `PyMontyDataclass`.
+pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &Bound<'_, PyDict>) -> PyResult<Py<PyAny>> {
     match obj {
         MontyObject::None => Ok(py.None()),
         MontyObject::Ellipsis => Ok(py.Ellipsis()),
@@ -87,29 +89,32 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject) -> PyResult<Py<PyAny>> {
         MontyObject::String(s) => Ok(PyString::new(py, s).into_any().unbind()),
         MontyObject::Bytes(b) => Ok(PyBytes::new(py, b).into_any().unbind()),
         MontyObject::List(items) => {
-            let py_items: PyResult<Vec<Py<PyAny>>> = items.iter().map(|item| monty_to_py(py, item)).collect();
+            let py_items: PyResult<Vec<Py<PyAny>>> =
+                items.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
             Ok(PyList::new(py, py_items?)?.into_any().unbind())
         }
         MontyObject::Tuple(items) => {
-            let py_items: PyResult<Vec<Py<PyAny>>> = items.iter().map(|item| monty_to_py(py, item)).collect();
+            let py_items: PyResult<Vec<Py<PyAny>>> =
+                items.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
             Ok(PyTuple::new(py, py_items?)?.into_any().unbind())
         }
         MontyObject::Dict(map) => {
             let dict = PyDict::new(py);
             for (k, v) in map {
-                dict.set_item(monty_to_py(py, k)?, monty_to_py(py, v)?)?;
+                dict.set_item(monty_to_py(py, k, dc_registry)?, monty_to_py(py, v, dc_registry)?)?;
             }
             Ok(dict.into_any().unbind())
         }
         MontyObject::Set(items) => {
             let set = PySet::empty(py)?;
             for item in items {
-                set.add(monty_to_py(py, item)?)?;
+                set.add(monty_to_py(py, item, dc_registry)?)?;
             }
             Ok(set.into_any().unbind())
         }
         MontyObject::FrozenSet(items) => {
-            let py_items: PyResult<Vec<Py<PyAny>>> = items.iter().map(|item| monty_to_py(py, item)).collect();
+            let py_items: PyResult<Vec<Py<PyAny>>> =
+                items.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
             Ok(PyFrozenSet::new(py, &py_items?)?.into_any().unbind())
         }
         // Return the exception instance as a value (not raised)
@@ -120,17 +125,14 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject) -> PyResult<Py<PyAny>> {
         // Return Python's built-in type object
         MontyObject::Type(t) => import_builtins(py)?.getattr(py, t.to_string()),
         MontyObject::BuiltinFunction(f) => import_builtins(py)?.getattr(py, f.to_string()),
-        // Dataclass - convert to PyMontyDataclass
+        // Dataclass - use registry to reconstruct original type if available
         MontyObject::Dataclass {
             name,
             field_names,
             attrs,
             frozen,
             methods: _,
-        } => {
-            let dc = PyMontyDataclass::new(py, name.clone(), field_names.clone(), attrs, *frozen)?;
-            Ok(Py::new(py, dc)?.into_any())
-        }
+        } => dataclass_to_py(py, name, field_names, attrs, *frozen, dc_registry),
         // Output-only types - convert to string representation
         MontyObject::Repr(s) => Ok(PyString::new(py, s).into_any().unbind()),
         MontyObject::Cycle(_, placeholder) => Ok(PyString::new(py, placeholder).into_any().unbind()),

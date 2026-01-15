@@ -2,20 +2,22 @@
 //!
 //! This module handles:
 //! - Converting Python dataclass instances to `MontyObject::Dataclass`
-//! - Converting `MontyObject::Dataclass` back to Python via `PyMontyDataclass`
-//! - `PyMontyDataclass`: A Python class that mimics dataclass behavior
+//! - Converting `MontyObject::Dataclass` back to Python via `PyUnknownDataclass`
+//! - `PyUnknownDataclass`: A Python class that mimics dataclass behavior
 
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
 };
 
-use ::monty::MontyObject;
+use ::monty::{DictPairs, MontyObject};
 use pyo3::{
+    exceptions::{PyAttributeError, PyTypeError},
     intern,
     prelude::*,
     sync::PyOnceLock,
     types::{PyDict, PyString, PyType},
+    Bound,
 };
 
 use crate::convert::{monty_to_py, py_to_monty};
@@ -80,6 +82,44 @@ pub fn dataclass_to_monty(value: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
     })
 }
 
+/// Converts a `MontyObject::Dataclass` to a Python object.
+///
+/// If the class name is found in the dc_registry, creates an instance of the original
+/// Python dataclass type (so `isinstance(result, OriginalClass)` works).
+/// Otherwise, falls back to creating a `PyUnknownDataclass`.
+pub fn dataclass_to_py(
+    py: Python<'_>,
+    name: &str,
+    field_names: &[String],
+    attrs: &DictPairs,
+    frozen: bool,
+    dc_registry: &Bound<'_, PyDict>,
+) -> PyResult<Py<PyAny>> {
+    // Try to use the original type from the dc_registry
+    if let Some(original_type) = dc_registry.get_item(name)? {
+        let original_type: Bound<'_, PyType> = original_type.cast_into()?;
+        // Build kwargs dict from field names and values
+        let kwargs = PyDict::new(py);
+        for (key, value) in attrs {
+            // Skip non-string keys
+            if let MontyObject::String(s) = key {
+                // Only include declared fields in constructor kwargs
+                let key_str = s.as_str();
+                if field_names.iter().any(|f| f.as_str() == key_str) {
+                    kwargs.set_item(key_str, monty_to_py(py, value, dc_registry)?)?;
+                }
+            }
+        }
+
+        // Call the dataclass constructor with kwargs
+        original_type.call((), Some(&kwargs)).map(Bound::unbind)
+    } else {
+        // Fall back to PyUnknownDataclass
+        let dc = PyUnknownDataclass::new(py, name.to_string(), field_names.to_vec(), attrs, frozen, dc_registry)?;
+        Ok(Py::new(py, dc)?.into_any())
+    }
+}
+
 /// Python class that mimics dataclass behavior for `MontyObject::Dataclass`.
 ///
 /// Supports:
@@ -88,8 +128,8 @@ pub fn dataclass_to_monty(value: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
 /// - Equality comparison (`__eq__`)
 /// - Hashing for frozen instances (`__hash__`)
 /// - `dataclasses` module compatibility (`__dataclass_fields__`)
-#[pyclass(name = "MontyDataclass")]
-pub struct PyMontyDataclass {
+#[pyclass(name = "UnknownDataclass")]
+pub struct PyUnknownDataclass {
     /// Class name (e.g., "Point", "User")
     name: String,
     /// Declared field names in definition order (for repr)
@@ -101,19 +141,7 @@ pub struct PyMontyDataclass {
 }
 
 #[pymethods]
-impl PyMontyDataclass {
-    /// Returns the class name.
-    #[getter]
-    fn __name__(&self) -> &str {
-        &self.name
-    }
-
-    /// Returns the qualified name (same as __name__ since we don't track nesting).
-    #[getter]
-    fn __qualname__(&self) -> &str {
-        &self.name
-    }
-
+impl PyUnknownDataclass {
     /// Returns a dict mapping field names to Field objects.
     ///
     /// This enables compatibility with `dataclasses.is_dataclass()`, `dataclasses.fields()`,
@@ -216,9 +244,8 @@ impl PyMontyDataclass {
         let attrs = self.attrs.bind(py);
         match attrs.get_item(name)? {
             Some(value) => Ok(value.unbind()),
-            None => Err(pyo3::exceptions::PyAttributeError::new_err(format!(
-                "'{}' object has no attribute '{}'",
-                self.name, name
+            None => Err(PyAttributeError::new_err(format!(
+                "'UnknownDataclass' object has no attribute '{name}'",
             ))),
         }
     }
@@ -247,12 +274,12 @@ impl PyMontyDataclass {
                 parts.push(format!("{field_name}={value_repr}"));
             }
         }
-        Ok(format!("{}({})", self.name, parts.join(", ")))
+        Ok(format!("<Unknown Dataclass {}({})>", self.name, parts.join(", ")))
     }
 
     /// Equality comparison.
     fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
-        // Check if other is also a PyMontyDataclass
+        // Check if other is also a PyUnknownDataclass
         if let Ok(other_dc) = other.extract::<PyRef<'_, Self>>() {
             if self.name != other_dc.name {
                 return Ok(false);
@@ -269,14 +296,10 @@ impl PyMontyDataclass {
     /// Hash (only for frozen dataclasses).
     fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
         if !self.frozen {
-            return Err(pyo3::exceptions::PyTypeError::new_err(format!(
-                "unhashable type: '{}'",
-                self.name
-            )));
+            return Err(PyTypeError::new_err("unhashable type: 'UnknownDataclass'"));
         }
 
         let mut hasher = DefaultHasher::new();
-        self.name.hash(&mut hasher);
 
         let attrs = self.attrs.bind(py);
         for field_name in &self.field_names {
@@ -300,18 +323,19 @@ impl PyMontyDataclass {
     }
 }
 
-impl PyMontyDataclass {
-    /// Creates a new `PyMontyDataclass` from `MontyObject` fields.
+impl PyUnknownDataclass {
+    /// Creates a new `PyUnknownDataclass` from `MontyObject` fields.
     pub fn new<'a>(
         py: Python<'_>,
         name: String,
         field_names: Vec<String>,
         attrs: impl IntoIterator<Item = &'a (MontyObject, MontyObject)>,
         frozen: bool,
+        dc_registry: &Bound<'_, PyDict>,
     ) -> PyResult<Self> {
         let dict = PyDict::new(py);
         for (k, v) in attrs {
-            dict.set_item(monty_to_py(py, k)?, monty_to_py(py, v)?)?;
+            dict.set_item(monty_to_py(py, k, dc_registry)?, monty_to_py(py, v, dc_registry)?)?;
         }
         Ok(Self {
             name,
