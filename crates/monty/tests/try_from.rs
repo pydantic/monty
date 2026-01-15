@@ -7,7 +7,6 @@ use monty::MontyRun;
 /// is valid (e.g., Python int to Rust i64, Python str to Rust String).
 
 #[test]
-#[allow(clippy::float_cmp)]
 fn try_from_ok_int_to_i64() {
     let ex = MontyRun::new("42".to_owned(), "test.py", vec![], vec![]).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
@@ -16,7 +15,6 @@ fn try_from_ok_int_to_i64() {
 }
 
 #[test]
-#[allow(clippy::float_cmp)]
 fn try_from_ok_zero_to_i64() {
     let ex = MontyRun::new("0".to_owned(), "test.py", vec![], vec![]).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
@@ -25,7 +23,7 @@ fn try_from_ok_zero_to_i64() {
 }
 
 #[test]
-#[allow(clippy::float_cmp)]
+#[expect(clippy::float_cmp)]
 fn try_from_ok_float_to_f64() {
     let ex = MontyRun::new("2.5".to_owned(), "test.py", vec![], vec![]).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
@@ -34,7 +32,7 @@ fn try_from_ok_float_to_f64() {
 }
 
 #[test]
-#[allow(clippy::float_cmp)]
+#[expect(clippy::float_cmp)]
 fn try_from_ok_int_to_f64() {
     let ex = MontyRun::new("42".to_owned(), "test.py", vec![], vec![]).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
@@ -43,7 +41,6 @@ fn try_from_ok_int_to_f64() {
 }
 
 #[test]
-#[allow(clippy::float_cmp)]
 fn try_from_ok_string_to_string() {
     let ex = MontyRun::new("'hello'".to_owned(), "test.py", vec![], vec![]).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
@@ -52,7 +49,6 @@ fn try_from_ok_string_to_string() {
 }
 
 #[test]
-#[allow(clippy::float_cmp)]
 fn try_from_ok_empty_string_to_string() {
     let ex = MontyRun::new("''".to_owned(), "test.py", vec![], vec![]).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
@@ -61,7 +57,6 @@ fn try_from_ok_empty_string_to_string() {
 }
 
 #[test]
-#[allow(clippy::float_cmp)]
 fn try_from_ok_multiline_string_to_string() {
     let ex = MontyRun::new("'hello\\nworld'".to_owned(), "test.py", vec![], vec![]).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
@@ -70,7 +65,6 @@ fn try_from_ok_multiline_string_to_string() {
 }
 
 #[test]
-#[allow(clippy::float_cmp)]
 fn try_from_ok_bool_true_to_bool() {
     let ex = MontyRun::new("True".to_owned(), "test.py", vec![], vec![]).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
@@ -79,7 +73,6 @@ fn try_from_ok_bool_true_to_bool() {
 }
 
 #[test]
-#[allow(clippy::float_cmp)]
 fn try_from_ok_bool_false_to_bool() {
     let ex = MontyRun::new("False".to_owned(), "test.py", vec![], vec![]).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();

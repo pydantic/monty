@@ -168,7 +168,7 @@ impl<'i> Prepare<'i> {
     /// * `enclosing_locals` - Names that exist as locals in the enclosing function (for nonlocal resolution)
     /// * `cell_var_names` - Names that are captured by nested functions (must be stored in cells)
     /// * `interner` - Reference to the string interner for looking up names
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn new_function(
         capacity: usize,
         params: &[StringId],
@@ -1033,7 +1033,7 @@ impl<'i> Prepare<'i> {
 ///
 /// This struct holds the scope-related information needed for the second pass
 /// of function preparation and for closure analysis.
-#[allow(clippy::struct_field_names)] // Field names are descriptive and consistent with Python terminology
+#[expect(clippy::struct_field_names)] // Field names are descriptive and consistent with Python terminology
 struct FunctionScopeInfo {
     /// Names declared as `global`
     global_names: AHashSet<String>,

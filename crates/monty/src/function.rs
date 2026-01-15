@@ -81,7 +81,7 @@ impl Function {
     /// * `cell_param_indices` - Maps cell indices to parameter indices for captured parameters
     /// * `defaults_count` - Number of default parameter values
     /// * `code` - The compiled bytecode for the function body
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         name: Identifier,
         signature: Signature,

@@ -306,7 +306,6 @@ impl PyTrait for List {
 /// * `heap` - The heap for resolving value references
 /// * `heap_ids` - Set of heap IDs being repr'd (for cycle detection)
 /// * `interns` - The interned strings table for looking up string/bytes literals
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn repr_sequence_fmt(
     start: char,
     end: char,

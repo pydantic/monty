@@ -212,7 +212,6 @@ impl PyTrait for Value {
         }
     }
 
-    #[allow(clippy::only_used_in_recursion)]
     fn py_cmp(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Option<Ordering> {
         match (self, other) {
             (Self::Int(s), Self::Int(o)) => s.partial_cmp(o),

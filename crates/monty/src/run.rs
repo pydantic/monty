@@ -217,7 +217,7 @@ impl MontyRun {
 /// * `T` - Resource tracker implementation (e.g., `NoLimitTracker` or `LimitedTracker`)
 ///
 /// Serialization requires `T: Serialize + Deserialize`.
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
 pub enum RunProgress<T: ResourceTracker> {
@@ -241,7 +241,7 @@ impl<T: ResourceTracker> RunProgress<T> {
     ///
     /// Returns (function_name, positional_args, keyword_args, state).
     #[must_use]
-    #[allow(clippy::type_complexity)]
+    #[expect(clippy::type_complexity)]
     pub fn into_function_call(
         self,
     ) -> Option<(String, Vec<MontyObject>, Vec<(MontyObject, MontyObject)>, Snapshot<T>)> {

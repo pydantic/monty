@@ -4,7 +4,7 @@
 //! This script should be automatically run at build time
 //! whenever the script itself changes, or whenever any files
 //! in `crates/ty_vendored/vendor/typeshed` change.
-#![allow(clippy::unnecessary_debug_formatting)]
+#![expect(clippy::unnecessary_debug_formatting)]
 
 use std::{fs::File, io::Write, path::Path};
 

@@ -133,6 +133,18 @@ Avoid `fn my_func<T: MyTrait>(..., param: T)` style function definitions, STRONG
 
 Also avoid using functions and structs via a path like `std::borrow::Cow::Owned(...)`, instead import `Cow` globally with `use std::borrow::Cow;`.
 
+NEVER use `allow()` in rust lint markers, instead use `expect()` so any unnecessary markers are removed. E.g. use
+
+```rs
+#[expect(clippy::too_many_arguments)]
+```
+
+NOT!
+
+```rs
+#[allow(clippy::too_many_arguments)]
+```
+
 ### Docstrings and comments.
 
 IMPORTANT: every struct, enum and function should be a comprehensive but concise docstring to

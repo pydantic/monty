@@ -26,7 +26,6 @@ pub type RunResult<T> = Result<T, RunError>;
 ///
 /// Uses strum derives for automatic `Display`, `FromStr`, and `Into<&'static str>` implementations.
 /// The string representation matches the variant name exactly (e.g., `ValueError` -> "ValueError").
-#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, IntoStaticStr, Serialize, Deserialize)]
 pub enum ExcType {
     /// primary exception class - matches any exception in isinstance checks.

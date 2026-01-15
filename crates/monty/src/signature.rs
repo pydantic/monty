@@ -95,7 +95,7 @@ impl Signature {
     /// * `kwargs` - Keyword-only parameter names
     /// * `kwarg_default_map` - Mapping of kw-only parameters to default indices
     /// * `var_kwargs` - Variable keyword parameter name (**kwargs)
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         pos_args: Vec<StringId>,
         pos_defaults_count: usize,

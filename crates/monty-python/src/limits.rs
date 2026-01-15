@@ -130,7 +130,6 @@ impl<T: ResourceTracker> PySignalTracker<T> {
         // Periodically check Python signals
         self.check_counter += 1;
 
-        #[allow(clippy::redundant_closure_for_method_calls)]
         if self.check_counter.is_multiple_of(SIGNAL_CHECK_INTERVAL) {
             Python::attach(|py| {
                 py.check_signals()
