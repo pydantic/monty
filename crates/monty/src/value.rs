@@ -1214,7 +1214,7 @@ impl Value {
     /// With `ref-count-panic` enabled, `Ref` variants are replaced with `Dereferenced` and
     /// the original is forgotten to prevent the Drop impl from panicking. Non-Ref variants
     /// are left unchanged since they don't trigger the Drop panic.
-    #[allow(unused_mut)]
+    #[cfg_attr(not(feature = "ref-count-return"), expect(unused_mut))]
     pub fn drop_with_heap(mut self, heap: &mut Heap<impl ResourceTracker>) {
         #[cfg(feature = "ref-count-panic")]
         {

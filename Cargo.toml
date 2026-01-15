@@ -49,6 +49,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(codspeed)'] }
 [workspace.lints.clippy]
 dbg_macro = "warn"
 use_self = "warn"
+allow_attributes = "warn"
 
 # in general we lint against the pedantic group, but we will whitelist
 # certain lints which we don't want to enforce

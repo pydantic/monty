@@ -49,7 +49,7 @@ enum Expectation {
     ReturnType(String),
     /// Expect successful execution, check ref counts of named variables.
     /// Only used when `ref-count-return` feature is enabled; skipped otherwise.
-    RefCounts(#[cfg_attr(not(feature = "ref-count-return"), allow(dead_code))] AHashMap<String, usize>),
+    RefCounts(#[cfg_attr(not(feature = "ref-count-return"), expect(dead_code))] AHashMap<String, usize>),
     /// Expect exception with full traceback comparison.
     /// The expected traceback string should match exactly between Monty and CPython.
     Traceback(String),

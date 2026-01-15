@@ -907,7 +907,8 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // We use individual pops which reverses order, so we need to reverse back
                     let mut cells = Vec::with_capacity(cell_count);
                     for _ in 0..cell_count {
-                        #[allow(unused_mut)] // mut needed for dec_ref_forget when ref-count-panic feature is enabled
+                        // mut needed for dec_ref_forget when ref-count-panic feature is enabled
+                        #[cfg_attr(not(feature = "ref-count-return"), expect(unused_mut))]
                         let mut cell_val = self.pop();
                         match &cell_val {
                             Value::Ref(heap_id) => {
