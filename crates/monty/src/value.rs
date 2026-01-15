@@ -70,7 +70,7 @@ pub(crate) enum Value {
     /// A builtin function or exception type
     Builtin(Builtins),
     /// A function defined in the module (not a closure, doesn't capture any variables)
-    Function(FunctionId),
+    DefFunction(FunctionId),
     /// Reference to an external function defined on the host
     ExtFunction(ExtFunctionId),
 
@@ -115,7 +115,7 @@ impl PyTrait for Value {
             Self::InternString(_) => Type::Str,
             Self::InternBytes(_) => Type::Bytes,
             Self::Builtin(c) => c.py_type(),
-            Self::Function(_) | Self::ExtFunction(_) => Type::Function,
+            Self::DefFunction(_) | Self::ExtFunction(_) => Type::Function,
             Self::Ref(id) => heap.get(*id).py_type(heap),
             #[cfg(feature = "ref-count-panic")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
@@ -205,7 +205,7 @@ impl PyTrait for Value {
 
             // Builtins equality - just check the enums are equal
             (Self::Builtin(b1), Self::Builtin(b2)) => b1 == b2,
-            (Self::Function(f1), Self::Function(f2)) => f1 == f2,
+            (Self::DefFunction(f1), Self::DefFunction(f2)) => f1 == f2,
 
             _ => false,
         }
@@ -246,8 +246,8 @@ impl PyTrait for Value {
             Self::Bool(b) => *b,
             Self::Int(v) => *v != 0,
             Self::Float(f) => *f != 0.0,
-            Self::Builtin(_) => true,                         // Builtins are always truthy
-            Self::Function(_) | Self::ExtFunction(_) => true, // same
+            Self::Builtin(_) => true,                            // Builtins are always truthy
+            Self::DefFunction(_) | Self::ExtFunction(_) => true, // same
             Self::InternString(string_id) => !interns.get_str(*string_id).is_empty(),
             Self::InternBytes(bytes_id) => !interns.get_bytes(*bytes_id).is_empty(),
             Self::Ref(id) => heap.get(*id).py_bool(heap, interns),
@@ -279,7 +279,7 @@ impl PyTrait for Value {
                 }
             }
             Self::Builtin(b) => b.py_repr_fmt(f),
-            Self::Function(f_id) => interns.get_function(*f_id).py_repr_fmt(f, interns, 0),
+            Self::DefFunction(f_id) => interns.get_function(*f_id).py_repr_fmt(f, interns, 0),
             Self::ExtFunction(f_id) => {
                 write!(f, "<function '{}' external>", interns.get_external_function_name(*f_id))
             }
@@ -896,7 +896,7 @@ impl Value {
             Self::Int(v) => int_value_id(*v),
             Self::Float(v) => float_value_id(*v),
             Self::Builtin(c) => builtin_value_id(*c),
-            Self::Function(f_id) => function_value_id(*f_id),
+            Self::DefFunction(f_id) => function_value_id(*f_id),
             Self::ExtFunction(f_id) => ext_function_value_id(*f_id),
             #[cfg(feature = "ref-count-panic")]
             Self::Dereferenced => panic!("Cannot get id of Dereferenced object"),
@@ -959,7 +959,7 @@ impl Value {
             Self::Float(f) => f.to_bits().hash(&mut hasher),
             Self::Builtin(b) => b.hash(&mut hasher),
             // Hash functions based on function ID
-            Self::Function(f_id) => f_id.hash(&mut hasher),
+            Self::DefFunction(f_id) => f_id.hash(&mut hasher),
             Self::ExtFunction(f_id) => f_id.hash(&mut hasher),
             Self::InternString(_) | Self::InternBytes(_) | Self::Ref(_) => unreachable!("covered above"),
             #[cfg(feature = "ref-count-panic")]
@@ -1263,7 +1263,7 @@ impl Value {
             Self::Int(v) => Self::Int(*v),
             Self::Float(v) => Self::Float(*v),
             Self::Builtin(b) => Self::Builtin(*b),
-            Self::Function(f) => Self::Function(*f),
+            Self::DefFunction(f) => Self::DefFunction(*f),
             Self::ExtFunction(f) => Self::ExtFunction(*f),
             Self::InternString(s) => Self::InternString(*s),
             Self::InternBytes(b) => Self::InternBytes(*b),

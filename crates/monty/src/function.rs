@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use crate::{bytecode::Code, expressions::Identifier, intern::Interns, namespace::NamespaceId, signature::Signature};
 
-/// A compiled function ready for execution.
+/// A defined function once compiled and ready for execution.
 ///
 /// This is created during the compilation phase from a `PreparedFunctionDef`.
 /// Contains everything needed to execute a user-defined function: compiled bytecode,

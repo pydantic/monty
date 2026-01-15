@@ -795,7 +795,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Call the function and handle the result
                     match self.call_function(callable, args) {
                         Ok(CallResult::Builtin(result)) => self.push(result),
-                        Ok(CallResult::UserFunction) => {
+                        Ok(CallResult::DefFunction) => {
                             // Frame pushed - reload cache from new frame
                             reload_cache!(self, cached_frame);
                         }
@@ -856,7 +856,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Call the function and handle the result
                     match self.call_function(callable, args) {
                         Ok(CallResult::Builtin(result)) => self.push(result),
-                        Ok(CallResult::UserFunction) => {
+                        Ok(CallResult::DefFunction) => {
                             // Frame pushed - reload cache from new frame
                             reload_cache!(self, cached_frame);
                         }
@@ -901,7 +901,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::CallExternal => {
                     todo!("CallExternal")
                 }
-                Opcode::CallFunctionEx => {
+                Opcode::CallFunctionExtended => {
                     let flags = fetch_u8!(cached_frame);
                     let has_kwargs = (flags & 0x01) != 0;
 
@@ -918,9 +918,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let callable = self.pop();
 
                     // Call the function with unpacked args
-                    match self.call_function_ex(callable, args_tuple, kwargs) {
+                    match self.call_function_extended(callable, args_tuple, kwargs) {
                         Ok(CallResult::Builtin(result)) => self.push(result),
-                        Ok(CallResult::UserFunction) => {
+                        Ok(CallResult::DefFunction) => {
                             // Frame pushed - reload cache from new frame
                             reload_cache!(self, cached_frame);
                         }
@@ -948,7 +948,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
 
                     if defaults_count == 0 {
                         // No defaults - use inline Value::Function (no heap allocation)
-                        self.push(Value::Function(func_id));
+                        self.push(Value::DefFunction(func_id));
                     } else {
                         // Pop default values from stack (drain maintains order: first pushed = first in vec)
                         let defaults = self.pop_n(defaults_count);

@@ -14,15 +14,16 @@ use crate::{
 
 /// Result of calling a function.
 ///
-/// Distinguishes between builtin function calls (which return a value immediately),
-/// user function calls (which push a frame and continue execution), and external
-/// function calls (which pause the VM).
+/// Distinguishes between:
+/// * builtin function calls (which return a value immediately)
+/// * defined function calls (which push a frame and continue execution)
+/// * and, external function calls (which pauses the VM).
 pub(super) enum CallResult {
     /// Builtin function returned a value - push it onto the stack.
     Builtin(Value),
-    /// User function call - frame was pushed, continue execution in VM loop.
+    /// defined function (function defined in monty code) call - frame was pushed, continue execution in VM loop.
     /// The return value will be pushed by ReturnValue opcode.
-    UserFunction,
+    DefFunction,
     /// External function call - VM should pause and return to caller.
     /// Contains (ext_function_id, args) where args preserves both positional and keyword arguments.
     ExternalCall(ExtFunctionId, ArgValues),
@@ -70,11 +71,10 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         }
     }
 
-    /// Calls a callable value with the given arguments.
+    /// Calls a value with the given arguments.
     ///
-    /// Returns `CallResult::Builtin(value)` for builtin functions,
-    /// `CallResult::UserFunction` for user functions (frame was pushed), or
-    /// `CallResult::ExternalCall` for external functions (VM should pause).
+    /// # Returns
+    /// `CallResult` indicating what to do next.
     pub(super) fn call_function(&mut self, callable: Value, args: ArgValues) -> Result<CallResult, RunError> {
         match callable {
             Value::Builtin(builtin) => {
@@ -87,10 +87,10 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 // Preserve full ArgValues to keep both positional and keyword arguments
                 Ok(CallResult::ExternalCall(ext_id, args))
             }
-            Value::Function(func_id) => {
-                // User function without defaults or captured variables (inline representation)
-                self.call_user_function(func_id, &[], Vec::new(), args)?;
-                Ok(CallResult::UserFunction)
+            Value::DefFunction(func_id) => {
+                // Defined function without defaults or captured variables (inline representation)
+                self.call_def_function(func_id, &[], Vec::new(), args)?;
+                Ok(CallResult::DefFunction)
             }
             Value::Ref(heap_id) => {
                 // Could be a closure or function - check heap and extract info.
@@ -130,9 +130,9 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 // Drop the callable ref (cloned data has its own refcounts)
                 callable.drop_with_heap(self.heap);
 
-                // Call the user function
-                self.call_user_function(func_id, &cells, defaults, args)?;
-                Ok(CallResult::UserFunction)
+                // Call the defined function
+                self.call_def_function(func_id, &cells, defaults, args)?;
+                Ok(CallResult::DefFunction)
             }
             _ => {
                 args.drop_with_heap(self.heap);
@@ -141,10 +141,10 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         }
     }
 
-    /// Calls a function with unpacked args tuple and optional kwargs dict.
+    /// Calls a defined function with unpacked args tuple and optional kwargs dict.
     ///
     /// This is used for `f(*args)` and `f(**kwargs)` style calls.
-    pub(super) fn call_function_ex(
+    pub(super) fn call_function_extended(
         &mut self,
         callable: Value,
         args_tuple: Value,
@@ -260,11 +260,11 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         self.call_function(callable, args)
     }
 
-    /// Calls a user-defined function by pushing a new frame.
+    /// Calls a defined function by pushing a new frame.
     ///
     /// Sets up the function's namespace with bound arguments, cell variables,
     /// and free variables (captured from enclosing scope for closures).
-    fn call_user_function(
+    fn call_def_function(
         &mut self,
         func_id: FunctionId,
         cells: &[HeapId],

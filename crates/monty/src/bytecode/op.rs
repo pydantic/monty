@@ -228,7 +228,7 @@ pub enum Opcode {
     CallMethod,
     /// External call (pauses VM). Operands: u16 func_id, u8 arg_count.
     CallExternal,
-    /// Call with *args tuple and **kwargs dict. Operand: u8 flags.
+    /// Call a defined function with *args tuple and **kwargs dict. Operand: u8 flags.
     ///
     /// Flags:
     /// - bit 0: has kwargs dict on stack
@@ -239,7 +239,7 @@ pub enum Opcode {
     /// - kwargs dict (if flag bit 0 set)
     ///
     /// Used for calls with `*args` and/or `**kwargs` unpacking.
-    CallFunctionEx,
+    CallFunctionExtended,
 
     // === Control Flow ===
     /// Unconditional relative jump. Operand: i16 offset.

@@ -911,7 +911,7 @@ impl<'a> Compiler<'a> {
         // 3. Call the function
         self.code.set_location(call_pos, None);
         let flags = u8::from(has_kwargs);
-        self.code.emit_u8(Opcode::CallFunctionEx, flags);
+        self.code.emit_u8(Opcode::CallFunctionExtended, flags);
         Ok(())
     }
 
