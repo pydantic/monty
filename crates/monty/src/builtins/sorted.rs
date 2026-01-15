@@ -57,8 +57,8 @@ pub fn builtin_sorted(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, in
                 }
                 Some(_) => break,
                 None => {
-                    let left_type = items[j - 1].py_type(Some(heap));
-                    let right_type = items[j].py_type(Some(heap));
+                    let left_type = items[j - 1].py_type(heap);
+                    let right_type = items[j].py_type(heap);
                     for item in items {
                         item.drop_with_heap(heap);
                     }

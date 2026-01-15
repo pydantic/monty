@@ -196,7 +196,7 @@ impl Dataclass {
 }
 
 impl PyTrait for Dataclass {
-    fn py_type(&self, _heap: Option<&Heap<impl ResourceTracker>>) -> Type {
+    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::Dataclass
     }
 

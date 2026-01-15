@@ -118,9 +118,8 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject) -> PyResult<Py<PyAny>> {
         }
         MontyObject::Type(t) => {
             // Return Python's built-in type object
-            let type_name: &str = t.into();
             let builtins = py.import("builtins")?;
-            Ok(builtins.getattr(type_name)?.unbind())
+            Ok(builtins.getattr(t.to_string())?.unbind())
         }
         // Dataclass - convert to PyMontyDataclass
         MontyObject::Dataclass {

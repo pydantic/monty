@@ -23,7 +23,7 @@ pub fn builtin_sum(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
     let mut accumulator = match start {
         Some(v) => {
             // Reject string start values - Python explicitly forbids this
-            let is_str = matches!(v.py_type(Some(heap)), Type::Str);
+            let is_str = matches!(v.py_type(heap), Type::Str);
             if is_str {
                 iterable.drop_with_heap(heap);
                 v.drop_with_heap(heap);
@@ -40,7 +40,7 @@ pub fn builtin_sum(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
     // Sum all items
     while let Some(item) = iter.for_next(heap, interns)? {
         // Get item type before any operations (needed for error messages)
-        let item_type = item.py_type(Some(heap));
+        let item_type = item.py_type(heap);
 
         // Try to add the item to accumulator
         let add_result = accumulator.py_add(&item, heap, interns);
@@ -53,7 +53,7 @@ pub fn builtin_sum(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
             }
             Ok(None) => {
                 // Types don't support addition - use binary_type_error for consistent messages
-                let acc_type = accumulator.py_type(Some(heap));
+                let acc_type = accumulator.py_type(heap);
                 accumulator.drop_with_heap(heap);
                 iter.drop_with_heap(heap);
                 return Err(ExcType::binary_type_error("+", acc_type, item_type));

@@ -559,7 +559,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::UnaryNeg => {
                     // Unary minus - negate numeric value
                     let value = self.pop();
-                    let value_type = value.py_type(Some(self.heap));
+                    let value_type = value.py_type(self.heap);
                     let result = match &value {
                         Value::Int(n) => Some(Value::Int(-n)),
                         Value::Float(f) => Some(Value::Float(-f)),
@@ -576,7 +576,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::UnaryPos => {
                     // Unary plus - typically a no-op for numbers
                     let value = self.pop();
-                    let value_type = value.py_type(Some(self.heap));
+                    let value_type = value.py_type(self.heap);
                     let result = match &value {
                         Value::Int(_) | Value::Float(_) | Value::Bool(_) => Some(value.clone_immediate()),
                         _ => None,
@@ -591,7 +591,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::UnaryInvert => {
                     // Bitwise NOT
                     let value = self.pop();
-                    let value_type = value.py_type(Some(self.heap));
+                    let value_type = value.py_type(self.heap);
                     let result = match &value {
                         Value::Int(n) => Some(Value::Int(!n)),
                         Value::Bool(b) => Some(Value::Int(!i64::from(*b))),

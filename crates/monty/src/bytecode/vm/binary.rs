@@ -26,8 +26,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(Some(self.heap));
-                let rhs_type = rhs.py_type(Some(self.heap));
+                let lhs_type = lhs.py_type(self.heap);
+                let rhs_type = rhs.py_type(self.heap);
                 lhs.drop_with_heap(self.heap);
                 rhs.drop_with_heap(self.heap);
                 Err(ExcType::binary_type_error("+", lhs_type, rhs_type))
@@ -55,8 +55,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(Some(self.heap));
-                let rhs_type = rhs.py_type(Some(self.heap));
+                let lhs_type = lhs.py_type(self.heap);
+                let rhs_type = rhs.py_type(self.heap);
                 lhs.drop_with_heap(self.heap);
                 rhs.drop_with_heap(self.heap);
                 Err(ExcType::binary_type_error("-", lhs_type, rhs_type))
@@ -84,8 +84,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(Some(self.heap));
-                let rhs_type = rhs.py_type(Some(self.heap));
+                let lhs_type = lhs.py_type(self.heap);
+                let rhs_type = rhs.py_type(self.heap);
                 lhs.drop_with_heap(self.heap);
                 rhs.drop_with_heap(self.heap);
                 Err(ExcType::binary_type_error("*", lhs_type, rhs_type))
@@ -113,8 +113,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(Some(self.heap));
-                let rhs_type = rhs.py_type(Some(self.heap));
+                let lhs_type = lhs.py_type(self.heap);
+                let rhs_type = rhs.py_type(self.heap);
                 lhs.drop_with_heap(self.heap);
                 rhs.drop_with_heap(self.heap);
                 Err(ExcType::binary_type_error("/", lhs_type, rhs_type))
@@ -142,8 +142,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(Some(self.heap));
-                let rhs_type = rhs.py_type(Some(self.heap));
+                let lhs_type = lhs.py_type(self.heap);
+                let rhs_type = rhs.py_type(self.heap);
                 lhs.drop_with_heap(self.heap);
                 rhs.drop_with_heap(self.heap);
                 Err(ExcType::binary_type_error("//", lhs_type, rhs_type))
@@ -168,8 +168,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             self.push(v);
             Ok(())
         } else {
-            let lhs_type = lhs.py_type(Some(self.heap));
-            let rhs_type = rhs.py_type(Some(self.heap));
+            let lhs_type = lhs.py_type(self.heap);
+            let rhs_type = rhs.py_type(self.heap);
             lhs.drop_with_heap(self.heap);
             rhs.drop_with_heap(self.heap);
             Err(ExcType::binary_type_error("%", lhs_type, rhs_type))
@@ -191,8 +191,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(Some(self.heap));
-                let rhs_type = rhs.py_type(Some(self.heap));
+                let lhs_type = lhs.py_type(self.heap);
+                let rhs_type = rhs.py_type(self.heap);
                 lhs.drop_with_heap(self.heap);
                 rhs.drop_with_heap(self.heap);
                 Err(ExcType::binary_type_error("** or pow()", lhs_type, rhs_type))
@@ -262,8 +262,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                     Ok(())
                 }
                 Ok(None) => {
-                    let lhs_type = lhs.py_type(Some(self.heap));
-                    let rhs_type = rhs.py_type(Some(self.heap));
+                    let lhs_type = lhs.py_type(self.heap);
+                    let rhs_type = rhs.py_type(self.heap);
                     lhs.drop_with_heap(self.heap);
                     rhs.drop_with_heap(self.heap);
                     Err(ExcType::binary_type_error("+=", lhs_type, rhs_type))

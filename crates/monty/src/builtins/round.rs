@@ -32,7 +32,7 @@ pub fn builtin_round(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
         Some(Value::Int(n)) => (Some(n), Some(Value::Int(n))),
         Some(Value::Bool(b)) => (Some(i64::from(b)), Some(Value::Bool(b))),
         Some(v) => {
-            let type_name = v.py_type(Some(heap));
+            let type_name = v.py_type(heap);
             number.drop_with_heap(heap);
             v.drop_with_heap(heap);
             return exc_err_fmt!(ExcType::TypeError; "'{}' object cannot be interpreted as an integer", type_name);
@@ -76,7 +76,7 @@ pub fn builtin_round(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
             }
         }
         _ => {
-            exc_err_fmt!(ExcType::TypeError; "type {} doesn't define __round__ method", number.py_type(Some(heap)))
+            exc_err_fmt!(ExcType::TypeError; "type {} doesn't define __round__ method", number.py_type(heap))
         }
     };
 

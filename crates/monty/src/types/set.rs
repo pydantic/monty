@@ -113,7 +113,7 @@ impl SetStorage {
     /// the set, it will be dropped.
     fn add(&mut self, value: Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
         let Some(hash) = value.py_hash(heap, interns) else {
-            let err = ExcType::type_error_unhashable_set_element(value.py_type(Some(heap)));
+            let err = ExcType::type_error_unhashable_set_element(value.py_type(heap));
             value.drop_with_heap(heap);
             return Err(err);
         };
@@ -143,7 +143,7 @@ impl SetStorage {
     fn remove(&mut self, value: &Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
         let hash = value
             .py_hash(heap, interns)
-            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(Some(heap))))?;
+            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(heap)))?;
 
         let entry = self.indices.entry(
             hash,
@@ -226,7 +226,7 @@ impl SetStorage {
     pub fn contains(&self, value: &Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
         let hash = value
             .py_hash(heap, interns)
-            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(Some(heap))))?;
+            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(heap)))?;
 
         Ok(self
             .indices
@@ -573,7 +573,7 @@ impl Set {
 }
 
 impl PyTrait for Set {
-    fn py_type(&self, _heap: Option<&Heap<impl ResourceTracker>>) -> Type {
+    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::Set
     }
 
@@ -1079,7 +1079,7 @@ impl FrozenSet {
 }
 
 impl PyTrait for FrozenSet {
-    fn py_type(&self, _heap: Option<&Heap<impl ResourceTracker>>) -> Type {
+    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::FrozenSet
     }
 

@@ -23,7 +23,7 @@ pub fn builtin_abs(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
         Value::Float(f) => Ok(Value::Float(f.abs())),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         _ => {
-            exc_err_fmt!(ExcType::TypeError; "bad operand type for abs(): '{}'", value.py_type(Some(heap)))
+            exc_err_fmt!(ExcType::TypeError; "bad operand type for abs(): '{}'", value.py_type(heap))
         }
     };
 

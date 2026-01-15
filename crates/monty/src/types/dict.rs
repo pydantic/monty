@@ -244,7 +244,7 @@ impl Dict {
     ) -> RunResult<Option<(Value, Value)>> {
         let hash = key
             .py_hash(heap, interns)
-            .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type(Some(heap))))?;
+            .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type(heap)))?;
 
         let entry = self.indices.entry(
             hash,
@@ -360,7 +360,7 @@ impl Dict {
             }
             Some(v) => {
                 let Value::Ref(id) = &v else {
-                    let err = ExcType::type_error_not_iterable(v.py_type(Some(heap)));
+                    let err = ExcType::type_error_not_iterable(v.py_type(heap));
                     v.drop_with_heap(heap);
                     return Err(err);
                 };
@@ -368,7 +368,7 @@ impl Dict {
 
                 // Check if it's a dict and get key-value pairs
                 let HeapData::Dict(dict) = heap.get(id) else {
-                    let err = ExcType::type_error_not_iterable(v.py_type(Some(heap)));
+                    let err = ExcType::type_error_not_iterable(v.py_type(heap));
                     v.drop_with_heap(heap);
                     return Err(err);
                 };
@@ -405,7 +405,7 @@ impl Dict {
     ) -> RunResult<(Option<usize>, u64)> {
         let hash = key
             .py_hash(heap, interns)
-            .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type(Some(heap))))?;
+            .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type(heap)))?;
 
         let opt_index = self
             .indices
@@ -452,7 +452,7 @@ impl IntoIterator for Dict {
 }
 
 impl PyTrait for Dict {
-    fn py_type(&self, _heap: Option<&Heap<impl ResourceTracker>>) -> Type {
+    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::Dict
     }
 

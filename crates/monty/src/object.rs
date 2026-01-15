@@ -388,6 +388,7 @@ impl MontyObject {
                 result
             }
             Value::Builtin(Builtins::Type(t)) => Self::Type(*t),
+            Value::Builtin(Builtins::ExcType(e)) => Self::Type(Type::Exception(*e)),
             #[cfg(feature = "ref-count-panic")]
             Value::Dereferenced => panic!("Dereferenced found while converting to MontyObject"),
             _ => Self::Repr(object.py_repr(heap, interns).into_owned()),
@@ -609,10 +610,7 @@ impl Hash for MontyObject {
             Self::Float(f64) => f64.to_bits().hash(state),
             Self::String(string) => string.hash(state),
             Self::Bytes(bytes) => bytes.hash(state),
-            Self::Type(t) => {
-                let type_str: &'static str = t.into();
-                type_str.hash(state);
-            }
+            Self::Type(t) => t.to_string().hash(state),
             Self::Cycle(_, _) => panic!("cycle values are not hashable"),
             _ => panic!("{} python values are not hashable", self.type_name()),
         }

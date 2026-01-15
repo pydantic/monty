@@ -137,7 +137,7 @@ impl From<List> for Vec<Value> {
 }
 
 impl PyTrait for List {
-    fn py_type(&self, _heap: Option<&Heap<impl ResourceTracker>>) -> Type {
+    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::List
     }
 
@@ -153,7 +153,7 @@ impl PyTrait for List {
         // Extract integer index from key, returning TypeError if not an int
         let index = match key {
             Value::Int(i) => *i,
-            _ => return Err(ExcType::type_error_indices(Type::List, key.py_type(Some(heap)))),
+            _ => return Err(ExcType::type_error_indices(Type::List, key.py_type(heap))),
         };
 
         // Convert to usize, handling negative indices (Python-style: -1 = last element)

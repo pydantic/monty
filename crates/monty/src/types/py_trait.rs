@@ -38,7 +38,7 @@ pub trait PyTrait {
     ///
     /// Used for error messages and the `type()` builtin.
     /// Takes heap reference for cases where nested Value lookups are needed.
-    fn py_type(&self, heap: Option<&Heap<impl ResourceTracker>>) -> Type;
+    fn py_type(&self, heap: &Heap<impl ResourceTracker>) -> Type;
 
     /// Returns the number of elements in this container.
     ///
@@ -230,7 +230,7 @@ pub trait PyTrait {
         _args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
-        Err(ExcType::attribute_error(self.py_type(Some(heap)), attr.as_str(interns)))
+        Err(ExcType::attribute_error(self.py_type(heap), attr.as_str(interns)))
     }
 
     /// Estimates the memory size in bytes of this value.
@@ -254,7 +254,7 @@ pub trait PyTrait {
     ///
     /// Default implementation returns TypeError.
     fn py_getitem(&self, _key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
-        Err(ExcType::type_error_not_sub(self.py_type(Some(heap))))
+        Err(ExcType::type_error_not_sub(self.py_type(heap)))
     }
 
     /// Python subscript set operation (`__setitem__`), e.g., `d[key] = value`.
@@ -273,7 +273,7 @@ pub trait PyTrait {
         _interns: &Interns,
     ) -> RunResult<()> {
         Err(ExcType::TypeError).map_err(|e| {
-            crate::exception_private::exc_fmt!(e; "'{}' object does not support item assignment", self.py_type(Some(heap)))
+            crate::exception_private::exc_fmt!(e; "'{}' object does not support item assignment", self.py_type(heap))
                 .into()
         })
     }

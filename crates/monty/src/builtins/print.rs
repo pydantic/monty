@@ -144,10 +144,10 @@ fn extract_string_kwarg(
             if let HeapData::Str(s) = heap.get(*id) {
                 return Ok(Some(s.as_str().to_owned()));
             }
-            exc_err_fmt!(ExcType::TypeError; "{} must be None or a string, not {}", name, value.py_type(Some(heap)))
+            exc_err_fmt!(ExcType::TypeError; "{} must be None or a string, not {}", name, value.py_type(heap))
         }
         _ => {
-            exc_err_fmt!(ExcType::TypeError; "{} must be None or a string, not {}", name, value.py_type(Some(heap)))
+            exc_err_fmt!(ExcType::TypeError; "{} must be None or a string, not {}", name, value.py_type(heap))
         }
     }
 }

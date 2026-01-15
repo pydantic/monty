@@ -22,7 +22,7 @@ pub fn builtin_hash(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inte
             let hash_i64 = i64::from_ne_bytes(hash.to_ne_bytes());
             Ok(Value::Int(hash_i64))
         }
-        None => Err(ExcType::type_error_unhashable(value.py_type(Some(heap)))),
+        None => Err(ExcType::type_error_unhashable(value.py_type(heap))),
     };
     value.drop_with_heap(heap);
     result

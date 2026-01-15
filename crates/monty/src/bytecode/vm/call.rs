@@ -64,7 +64,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             result
         } else {
             // Non-heap values don't support method calls
-            let type_name = obj.py_type(Some(self.heap));
+            let type_name = obj.py_type(self.heap);
             args.drop_with_heap(self.heap);
             Err(ExcType::attribute_error(type_name, self.interns.get_str(name_id)))
         }

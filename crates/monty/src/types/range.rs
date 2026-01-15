@@ -208,7 +208,7 @@ impl Iterator for RangeIter {
 impl ExactSizeIterator for RangeIter {}
 
 impl PyTrait for Range {
-    fn py_type(&self, _heap: Option<&Heap<impl ResourceTracker>>) -> Type {
+    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::Range
     }
 

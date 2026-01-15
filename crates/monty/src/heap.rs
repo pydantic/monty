@@ -156,7 +156,7 @@ impl HeapData {
 /// This provides efficient dispatch without boxing overhead by matching on
 /// the enum variant and delegating to the inner type's implementation.
 impl PyTrait for HeapData {
-    fn py_type(&self, heap: Option<&Heap<impl ResourceTracker>>) -> Type {
+    fn py_type(&self, heap: &Heap<impl ResourceTracker>) -> Type {
         match self {
             Self::Str(s) => s.py_type(heap),
             Self::Bytes(b) => b.py_type(heap),
@@ -302,7 +302,7 @@ impl PyTrait for HeapData {
                 interns.get_function(*f_id).py_repr_fmt(f, interns, 0)
             }
             // Cell repr shows the contained value's type
-            Self::Cell(v) => write!(f, "<cell: {} object>", v.py_type(Some(heap))),
+            Self::Cell(v) => write!(f, "<cell: {} object>", v.py_type(heap)),
             Self::Range(r) => r.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Exception(e) => e.py_repr_fmt(f),
             Self::Dataclass(dc) => dc.py_repr_fmt(f, heap, heap_ids, interns),
@@ -415,7 +415,7 @@ impl PyTrait for HeapData {
             Self::Set(s) => s.py_call_attr(heap, attr, args, interns),
             Self::FrozenSet(fs) => fs.py_call_attr(heap, attr, args, interns),
             Self::Dataclass(dc) => dc.py_call_attr(heap, attr, args, interns),
-            _ => Err(ExcType::attribute_error(self.py_type(Some(heap)), attr.as_str(interns))),
+            _ => Err(ExcType::attribute_error(self.py_type(heap), attr.as_str(interns))),
         }
     }
 
@@ -426,7 +426,7 @@ impl PyTrait for HeapData {
             Self::List(l) => l.py_getitem(key, heap, interns),
             Self::Tuple(t) => t.py_getitem(key, heap, interns),
             Self::Dict(d) => d.py_getitem(key, heap, interns),
-            _ => Err(ExcType::type_error_not_sub(self.py_type(Some(heap)))),
+            _ => Err(ExcType::type_error_not_sub(self.py_type(heap))),
         }
     }
 
@@ -443,7 +443,7 @@ impl PyTrait for HeapData {
             Self::List(l) => l.py_setitem(key, value, heap, interns),
             Self::Tuple(t) => t.py_setitem(key, value, heap, interns),
             Self::Dict(d) => d.py_setitem(key, value, heap, interns),
-            _ => Err(ExcType::type_error_not_sub_assignment(self.py_type(Some(heap)))),
+            _ => Err(ExcType::type_error_not_sub_assignment(self.py_type(heap))),
         }
     }
 }

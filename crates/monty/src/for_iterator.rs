@@ -118,7 +118,7 @@ impl ForIterator {
                 value,
             })
         } else {
-            let err = ExcType::type_error_not_iterable(value.py_type(Some(heap)));
+            let err = ExcType::type_error_not_iterable(value.py_type(heap));
             value.drop_with_heap(heap);
             Err(err)
         }

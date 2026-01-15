@@ -251,3 +251,23 @@ def test_bool_preserves_type():
     result = m.run(inputs={'x': True})
     assert type(result) is bool
     assert result is True
+
+
+def test_return_int():
+    m = monty.Monty('x = 4\ntype(x)')
+    result = m.run()
+    assert result is int
+
+    m = monty.Monty('int')
+    result = m.run()
+    assert result is int
+
+
+def test_return_exception():
+    m = monty.Monty('x = ValueError()\ntype(x)')
+    result = m.run()
+    assert result is ValueError
+
+    m = monty.Monty('ValueError')
+    result = m.run()
+    assert result is ValueError

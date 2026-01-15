@@ -83,7 +83,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                     items
                 }
                 _ => {
-                    let type_ = iterable.py_type(Some(self.heap));
+                    let type_ = iterable.py_type(self.heap);
                     iterable.drop_with_heap(self.heap);
                     list_ref.drop_with_heap(self.heap);
                     return Err(ExcType::type_error_not_iterable(type_));
@@ -100,7 +100,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 items
             }
             _ => {
-                let type_ = iterable.py_type(Some(self.heap));
+                let type_ = iterable.py_type(self.heap);
                 iterable.drop_with_heap(self.heap);
                 list_ref.drop_with_heap(self.heap);
                 return Err(ExcType::type_error_not_iterable(type_));
@@ -182,13 +182,13 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                     .map(|(k, v)| (Value::copy_for_extend(k), Value::copy_for_extend(v)))
                     .collect()
             } else {
-                let type_name = mapping.py_type(Some(self.heap)).to_string();
+                let type_name = mapping.py_type(self.heap).to_string();
                 mapping.drop_with_heap(self.heap);
                 dict_ref.drop_with_heap(self.heap);
                 return Err(ExcType::type_error_kwargs_not_mapping(&func_name, &type_name));
             }
         } else {
-            let type_name = mapping.py_type(Some(self.heap)).to_string();
+            let type_name = mapping.py_type(self.heap).to_string();
             mapping.drop_with_heap(self.heap);
             dict_ref.drop_with_heap(self.heap);
             return Err(ExcType::type_error_kwargs_not_mapping(&func_name, &type_name));
@@ -338,14 +338,14 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                     return Ok(());
                 }
                 other => {
-                    let type_name = other.py_type(Some(self.heap));
+                    let type_name = other.py_type(self.heap);
                     value.drop_with_heap(self.heap);
                     return Err(unpack_type_error(type_name));
                 }
             },
             // Non-iterable types
             _ => {
-                let type_name = value.py_type(Some(self.heap));
+                let type_name = value.py_type(self.heap);
                 value.drop_with_heap(self.heap);
                 return Err(unpack_type_error(type_name));
             }

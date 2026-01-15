@@ -1,6 +1,6 @@
 use std::fmt;
 
-use strum::{EnumString, IntoStaticStr};
+use strum::EnumString;
 
 use crate::{
     args::ArgValues,
@@ -18,16 +18,13 @@ use crate::{
 /// When parsed from a string (e.g., "list", "dict"), it can be used to create
 /// new instances of that type.
 ///
-/// Note: `Display` is implemented manually because `Dataclass` and `Exception` variants
-/// are disabled for strum's `EnumString` (they can't be parsed from strings), but we still
-/// need to display them in error messages.
-#[derive(Debug, Clone, Copy, EnumString, IntoStaticStr, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+/// Note: `Exception` variants is disabled for strum's `EnumString` (they can't be parsed from strings).
+#[derive(Debug, Clone, Copy, EnumString, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
-#[allow(clippy::enum_variant_names)]
+#[expect(clippy::enum_variant_names)]
 pub enum Type {
     Ellipsis,
     Type,
-    #[strum(serialize = "NoneType")]
     NoneType,
     Bool,
     Int,
@@ -39,21 +36,14 @@ pub enum Type {
     Tuple,
     Dict,
     Set,
-    #[strum(serialize = "frozenset")]
     FrozenSet,
-    /// User-defined dataclass instance type.
-    #[strum(disabled)]
     Dataclass,
     #[strum(disabled)]
     Exception(ExcType),
     Function,
-    #[strum(serialize = "builtin_function_or_method")]
     BuiltinFunction,
     Cell,
-    #[strum(serialize = "iterator")]
     Iterator,
-    /// used when we can't infer the type, this should be removed or very rare
-    Unknown,
 }
 
 impl fmt::Display for Type {
@@ -79,7 +69,6 @@ impl fmt::Display for Type {
             Self::BuiltinFunction => f.write_str("builtin_function_or_method"),
             Self::Cell => f.write_str("cell"),
             Self::Iterator => f.write_str("iterator"),
-            Self::Unknown => f.write_str("unknown"),
         }
     }
 }
@@ -127,7 +116,7 @@ impl Type {
                             Value::Int(i) => Ok(Value::Int(*i)),
                             Value::Float(f) => Ok(Value::Int(f64_to_i64_truncate(*f))),
                             Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
-                            _ => Err(ExcType::type_error_int_conversion(v.py_type(Some(heap)))),
+                            _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
                         };
                         v.drop_with_heap(heap);
                         result
@@ -148,9 +137,9 @@ impl Type {
                             }
                             Value::Ref(heap_id) => match heap.get(*heap_id) {
                                 HeapData::Str(s) => Ok(Value::Float(parse_f64_from_str(s.as_str())?)),
-                                _ => Err(ExcType::type_error_float_conversion(v.py_type(Some(heap)))),
+                                _ => Err(ExcType::type_error_float_conversion(v.py_type(heap))),
                             },
-                            _ => Err(ExcType::type_error_float_conversion(v.py_type(Some(heap)))),
+                            _ => Err(ExcType::type_error_float_conversion(v.py_type(heap))),
                         };
                         v.drop_with_heap(heap);
                         result

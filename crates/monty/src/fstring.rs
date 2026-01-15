@@ -263,7 +263,7 @@ pub fn format_with_spec(
     heap: &Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> Result<String, RunError> {
-    let value_type = value.py_type(Some(heap));
+    let value_type = value.py_type(heap);
 
     match (value, spec.type_char) {
         // Integer formatting

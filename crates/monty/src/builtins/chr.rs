@@ -37,7 +37,7 @@ pub fn builtin_chr(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
             Ok(Value::Ref(heap_id))
         }
         _ => {
-            exc_err_fmt!(ExcType::TypeError; "an integer is required (got type {})", value.py_type(Some(heap)))
+            exc_err_fmt!(ExcType::TypeError; "an integer is required (got type {})", value.py_type(heap))
         }
     };
 

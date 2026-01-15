@@ -91,7 +91,7 @@ impl std::ops::Deref for Str {
 }
 
 impl PyTrait for Str {
-    fn py_type(&self, _heap: Option<&Heap<impl ResourceTracker>>) -> Type {
+    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::Str
     }
 

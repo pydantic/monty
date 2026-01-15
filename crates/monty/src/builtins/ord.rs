@@ -37,11 +37,11 @@ pub fn builtin_ord(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
                     }
                 }
             } else {
-                exc_err_fmt!(ExcType::TypeError; "ord() expected string of length 1, but {} found", value.py_type(Some(heap)))
+                exc_err_fmt!(ExcType::TypeError; "ord() expected string of length 1, but {} found", value.py_type(heap))
             }
         }
         _ => {
-            exc_err_fmt!(ExcType::TypeError; "ord() expected string of length 1, but {} found", value.py_type(Some(heap)))
+            exc_err_fmt!(ExcType::TypeError; "ord() expected string of length 1, but {} found", value.py_type(heap))
         }
     };
 

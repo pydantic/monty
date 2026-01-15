@@ -27,7 +27,7 @@ pub fn builtin_enumerate(
         Some(Value::Int(n)) => *n,
         Some(Value::Bool(b)) => i64::from(*b),
         Some(v) => {
-            let type_name = v.py_type(Some(heap));
+            let type_name = v.py_type(heap);
             iterable.drop_with_heap(heap);
             if let Some(s) = start {
                 s.drop_with_heap(heap);

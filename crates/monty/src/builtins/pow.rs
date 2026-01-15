@@ -120,8 +120,8 @@ pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
             }
             _ => Err(ExcType::binary_type_error(
                 "** or pow()",
-                base.py_type(Some(heap)),
-                exp.py_type(Some(heap)),
+                base.py_type(heap),
+                exp.py_type(heap),
             )),
         }
     };

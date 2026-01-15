@@ -138,7 +138,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             _ => {
                 // Dynamic format spec - parse the string
                 let spec_str = spec_value.py_str(self.heap, self.interns);
-                let value_type = value_for_error.py_type(Some(self.heap));
+                let value_type = value_for_error.py_type(self.heap);
                 spec_str.parse::<ParsedFormatSpec>().map_err(|invalid| {
                     RunError::Exc(
                         SimpleException::new(

@@ -28,7 +28,7 @@ pub fn builtin_hex(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
             Ok(Value::Ref(heap_id))
         }
         _ => {
-            exc_err_fmt!(ExcType::TypeError; "'{}' object cannot be interpreted as an integer", value.py_type(Some(heap)))
+            exc_err_fmt!(ExcType::TypeError; "'{}' object cannot be interpreted as an integer", value.py_type(heap))
         }
     };
 

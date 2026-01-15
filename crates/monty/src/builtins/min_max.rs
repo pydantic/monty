@@ -77,8 +77,8 @@ fn builtin_min_max(
                     Some(Ordering::Less) => !is_min,
                     Some(Ordering::Equal) => false,
                     None => {
-                        let result_type = result.py_type(Some(heap));
-                        let item_type = item.py_type(Some(heap));
+                        let result_type = result.py_type(heap);
+                        let item_type = item.py_type(heap);
                         result.drop_with_heap(heap);
                         item.drop_with_heap(heap);
                         iter.drop_with_heap(heap);
@@ -108,8 +108,8 @@ fn builtin_min_max(
                     Some(Ordering::Less) => !is_min,
                     Some(Ordering::Equal) => false,
                     None => {
-                        let result_type = result.py_type(Some(heap));
-                        let item_type = item.py_type(Some(heap));
+                        let result_type = result.py_type(heap);
+                        let item_type = item.py_type(heap);
                         result.drop_with_heap(heap);
                         item.drop_with_heap(heap);
                         return exc_err_fmt!(ExcType::TypeError; "'<' not supported between instances of '{}' and '{}'", result_type, item_type);

@@ -93,7 +93,7 @@ impl From<Tuple> for Vec<Value> {
 }
 
 impl PyTrait for Tuple {
-    fn py_type(&self, _heap: Option<&Heap<impl ResourceTracker>>) -> Type {
+    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::Tuple
     }
 
@@ -109,7 +109,7 @@ impl PyTrait for Tuple {
         // Extract integer index from key, returning TypeError if not an int
         let index = match key {
             Value::Int(i) => *i,
-            _ => return Err(ExcType::type_error_indices(Type::Tuple, key.py_type(Some(heap)))),
+            _ => return Err(ExcType::type_error_indices(Type::Tuple, key.py_type(heap))),
         };
 
         // Convert to usize, handling negative indices (Python-style: -1 = last element)

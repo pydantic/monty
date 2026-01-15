@@ -77,13 +77,13 @@ impl Bytes {
                         HeapData::Str(s) => heap.allocate(HeapData::Bytes(Self::new(s.as_str().as_bytes().to_vec()))),
                         HeapData::Bytes(b) => heap.allocate(HeapData::Bytes(Self::new(b.as_slice().to_vec()))),
                         _ => {
-                            let err = ExcType::type_error_bytes_init(v.py_type(Some(heap)));
+                            let err = ExcType::type_error_bytes_init(v.py_type(heap));
                             v.drop_with_heap(heap);
                             return Err(err);
                         }
                     },
                     _ => {
-                        let err = ExcType::type_error_bytes_init(v.py_type(Some(heap)));
+                        let err = ExcType::type_error_bytes_init(v.py_type(heap));
                         v.drop_with_heap(heap);
                         return Err(err);
                     }
@@ -122,7 +122,7 @@ impl std::ops::Deref for Bytes {
 }
 
 impl PyTrait for Bytes {
-    fn py_type(&self, _heap: Option<&Heap<impl ResourceTracker>>) -> Type {
+    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::Bytes
     }
 

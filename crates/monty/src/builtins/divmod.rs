@@ -65,7 +65,7 @@ pub fn builtin_divmod(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) ->
             }
         }
         _ => {
-            exc_err_fmt!(ExcType::TypeError; "unsupported operand type(s) for divmod(): '{}' and '{}'", a.py_type(Some(heap)), b.py_type(Some(heap)))
+            exc_err_fmt!(ExcType::TypeError; "unsupported operand type(s) for divmod(): '{}' and '{}'", a.py_type(heap), b.py_type(heap))
         }
     };
 
