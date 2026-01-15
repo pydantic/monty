@@ -1,4 +1,6 @@
 //! Public interface for running Monty code.
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use crate::{
     bytecode::{Code, Compiler, FrameExit, VMSnapshot, VM},
     exception_private::{RunError, RunResult},
@@ -84,7 +86,7 @@ impl MontyRun {
         resource_tracker: impl ResourceTracker,
         print: &mut impl PrintWriter,
     ) -> Result<MontyObject, MontyException> {
-        self.executor.run_with_tracker(inputs, resource_tracker, print)
+        self.executor.run(inputs, resource_tracker, print)
     }
 
     /// Executes the code to completion with no resource limits, printing to stdout/stderr.
@@ -447,7 +449,7 @@ impl<T: ResourceTracker> Snapshot<T> {
 ///
 /// This is an internal type used by [`MontyRun`]. It stores the compiled bytecode and source code
 /// for error reporting.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct Executor {
     /// Number of slots needed in the global namespace.
     namespace_size: usize,
@@ -462,6 +464,24 @@ struct Executor {
     external_function_ids: Vec<ExtFunctionId>,
     /// Source code for error reporting (extracting preview lines for tracebacks).
     code: String,
+    /// Estimated heap capacity for pre-allocation on subsequent runs.
+    /// Uses AtomicUsize for thread-safety (required by PyO3's Sync bound).
+    heap_capacity: AtomicUsize,
+}
+
+impl Clone for Executor {
+    fn clone(&self) -> Self {
+        Self {
+            namespace_size: self.namespace_size,
+            #[cfg(feature = "ref-count-return")]
+            name_map: self.name_map.clone(),
+            module_code: self.module_code.clone(),
+            interns: self.interns.clone(),
+            external_function_ids: self.external_function_ids.clone(),
+            code: self.code.clone(),
+            heap_capacity: AtomicUsize::new(self.heap_capacity.load(Ordering::Relaxed)),
+        }
+    }
 }
 
 impl Executor {
@@ -498,6 +518,7 @@ impl Executor {
             interns,
             external_function_ids,
             code,
+            heap_capacity: AtomicUsize::new(prepared.namespace_size),
         })
     }
 
@@ -511,13 +532,14 @@ impl Executor {
     /// * `inputs` - Values to fill the first N slots of the namespace
     /// * `resource_tracker` - Custom resource tracker implementation
     /// * `print` - Print implementation for print() output
-    fn run_with_tracker(
+    fn run(
         &self,
         inputs: Vec<MontyObject>,
         resource_tracker: impl ResourceTracker,
         print: &mut impl PrintWriter,
     ) -> Result<MontyObject, MontyException> {
-        let mut heap = Heap::new(self.namespace_size, resource_tracker);
+        let heap_capacity = self.heap_capacity.load(Ordering::Relaxed);
+        let mut heap = Heap::new(heap_capacity, resource_tracker);
         let mut namespaces = self.prepare_namespaces(inputs, &mut heap)?;
 
         // Create and run VM
@@ -526,6 +548,10 @@ impl Executor {
 
         // Clean up VM state before it goes out of scope
         vm.cleanup();
+
+        if heap.size() > heap_capacity {
+            self.heap_capacity.store(heap.size(), Ordering::Relaxed);
+        }
 
         // Clean up the global namespace before returning (only needed with ref-count-panic)
         #[cfg(feature = "ref-count-panic")]

@@ -608,6 +608,11 @@ impl<T: ResourceTracker> Heap<T> {
         &mut self.tracker
     }
 
+    /// Number of entries in the heap
+    pub fn size(&self) -> usize {
+        self.entries.len()
+    }
+
     /// Allocates a new heap entry.
     ///
     /// Returns `Err(ResourceError)` if allocation would exceed configured limits.

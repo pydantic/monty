@@ -48,7 +48,7 @@ use crate::{
 /// Uses strum derives for automatic `Display`, `FromStr`, and `AsRef<str>` implementations.
 /// All variants serialize to lowercase (e.g., `Print` -> "print").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub enum Builtins {
+pub(crate) enum Builtins {
     /// A builtin function like `print`, `len`, `type`, etc.
     Function(BuiltinsFunctions),
     /// An exception type constructor like `ValueError`, `TypeError`, etc.
