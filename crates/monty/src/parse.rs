@@ -1014,19 +1014,6 @@ impl CodeRange {
     pub fn preview_line_number(&self) -> Option<u32> {
         self.preview_line
     }
-
-    pub fn extend(&self, end: &Self) -> Self {
-        Self {
-            filename: self.filename,
-            preview_line: if self.start.line == end.end.line {
-                self.preview_line
-            } else {
-                None
-            },
-            start: self.start,
-            end: end.end,
-        }
-    }
 }
 
 /// Errors that can occur during parsing or preparation of Python code.

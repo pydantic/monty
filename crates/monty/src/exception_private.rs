@@ -12,7 +12,6 @@ use crate::{
     fstring::FormatError,
     heap::{Heap, HeapData},
     intern::{Interns, StringId},
-    operators::CmpOperator,
     parse::CodeRange,
     resource::ResourceTracker,
     types::{str::string_repr, PyTrait, Type},
@@ -643,26 +642,6 @@ impl ExcType {
         exc_static!(Self::OverflowError; "Python int too large to convert to C ssize_t").into()
     }
 
-    /// Generates a consistent error for invalid `**kwargs` types.
-    #[must_use]
-    pub(crate) fn kwargs_type_error(callable_name: Option<&str>, type_: Type) -> SimpleException {
-        let message = match callable_name {
-            Some(name) => format!("{name}() argument after ** must be a mapping, not {type_}"),
-            None => format!("argument after ** must be a mapping, not {type_}"),
-        };
-        SimpleException::new(Self::TypeError, Some(message))
-    }
-
-    /// Generates the duplicate keyword argument error.
-    #[must_use]
-    pub(crate) fn duplicate_kwarg_error(callable_name: Option<&str>, key: &str) -> SimpleException {
-        let message = match callable_name {
-            Some(name) => format!("{name}() got multiple values for keyword argument '{key}'"),
-            None => format!("got multiple values for keyword argument '{key}'"),
-        };
-        SimpleException::new(Self::TypeError, Some(message))
-    }
-
     /// Creates a TypeError for unsupported binary operations.
     ///
     /// For `+` or `+=` with str/list on the left side, uses CPython's special format:
@@ -686,11 +665,6 @@ impl ExcType {
     #[must_use]
     pub(crate) fn unary_type_error(op: &str, value_type: Type) -> RunError {
         exc_fmt!(Self::TypeError; "bad operand type for unary {op}: '{value_type}'").into()
-    }
-
-    #[must_use]
-    pub(crate) fn cmp_type_error(op: &CmpOperator, left_type: Type, right_type: Type) -> RunError {
-        exc_fmt!(Self::TypeError; "'{op}' not supported between instances of '{left_type}' and '{right_type}'").into()
     }
 }
 
@@ -737,20 +711,6 @@ impl SimpleException {
 
     pub(crate) fn py_type(&self) -> Type {
         Type::Exception(self.exc_type)
-    }
-
-    /// Returns the exception formatted as Python would display it to the user.
-    ///
-    /// Format: `ExceptionType: message` (e.g., `NotImplementedError: feature not supported`)
-    /// If there's no message, just returns the exception type name.
-    #[must_use]
-    pub fn py_str(&self) -> String {
-        // TODO this is wrong, it doesn't match what cpython does
-        let type_str: &'static str = self.exc_type.into();
-        match &self.arg {
-            Some(arg) => format!("{type_str}: {arg}"),
-            None => type_str.to_string(),
-        }
     }
 
     /// Returns the exception formatted as Python would repr it.
@@ -840,14 +800,6 @@ impl From<MontyException> for ExceptionRaise {
 }
 
 impl ExceptionRaise {
-    /// Returns the exception formatted as Python would display it to the user.
-    ///
-    /// Format: `ExceptionType: message` (e.g., `NotImplementedError: feature not supported`)
-    #[must_use]
-    pub fn py_str(&self) -> String {
-        self.exc.py_str()
-    }
-
     /// Adds a caller's frame as the outermost frame in the traceback chain.
     ///
     /// This is used when an exception propagates up through call frames.

@@ -428,8 +428,5 @@ mod tests {
 
         assert_eq!(idx1, 0);
         assert_eq!(idx2, 1);
-
-        let code = builder.build(0);
-        assert_eq!(code.constants().len(), 2);
     }
 }

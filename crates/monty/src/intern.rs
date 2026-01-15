@@ -97,10 +97,6 @@ impl BytesId {
 pub struct FunctionId(u32);
 
 impl FunctionId {
-    pub fn new(index: usize) -> Self {
-        Self(index.try_into().expect("Invalid function id"))
-    }
-
     /// Creates a FunctionId from a raw index value.
     ///
     /// Used by the bytecode VM to reconstruct FunctionIds from operands stored
@@ -256,23 +252,6 @@ impl InternerBuilder {
     pub fn get_str(&self, id: StringId) -> &str {
         &self.strings[id.index()]
     }
-
-    /// Looks up bytes by their `BytesId`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the `BytesId` is invalid (not from this interner).
-    #[inline]
-    pub fn get_bytes(&self, id: BytesId) -> &[u8] {
-        &self.bytes[id.index()]
-    }
-
-    /// Consumes the interner and returns the strings and bytes storage.
-    ///
-    /// This is used when transferring ownership to the `Executor`.
-    pub fn into_storage(self) -> (Vec<String>, Vec<Vec<u8>>) {
-        (self.strings, self.bytes)
-    }
 }
 
 /// Read-only storage for interned string and bytes.
@@ -324,24 +303,6 @@ impl Interns {
     #[inline]
     pub fn get_function(&self, id: FunctionId) -> &Function {
         self.functions.get(id.index()).expect("Function not found")
-    }
-
-    /// Lookup a function mutably by its `FunctionId`.
-    ///
-    /// Used during eager compilation to set the compiled bytecode on each function.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the `FunctionId` is invalid.
-    #[inline]
-    pub fn get_function_mut(&mut self, id: FunctionId) -> &mut Function {
-        self.functions.get_mut(id.index()).expect("Function not found")
-    }
-
-    /// Returns the number of functions stored.
-    #[inline]
-    pub fn function_count(&self) -> usize {
-        self.functions.len()
     }
 
     /// Lookup an external function name by its `ExtFunctionId`

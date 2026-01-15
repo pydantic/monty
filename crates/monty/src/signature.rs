@@ -187,26 +187,6 @@ impl Signature {
         slots
     }
 
-    /// Returns the namespace slot index for the *args tuple, if present.
-    ///
-    /// The *args slot comes after pos_args and args.
-    pub fn var_args_slot(&self) -> Option<usize> {
-        self.var_args.as_ref().map(|_| self.pos_arg_count() + self.arg_count())
-    }
-
-    /// Returns the namespace slot index for the **kwargs dict, if present.
-    ///
-    /// The **kwargs slot comes after all other parameters including kwargs.
-    pub fn var_kwargs_slot(&self) -> Option<usize> {
-        self.var_kwargs.as_ref().map(|_| {
-            let mut slot = self.pos_arg_count() + self.arg_count() + self.kwarg_count();
-            if self.var_args.is_some() {
-                slot += 1;
-            }
-            slot
-        })
-    }
-
     /// Returns an iterator over all parameter names in namespace slot order.
     ///
     /// Order: pos_args, args, var_args (if present), kwargs, var_kwargs (if present)
@@ -218,24 +198,6 @@ impl Signature {
         let var_kwargs = self.var_kwargs.iter().copied();
 
         pos_args.chain(args).chain(var_args).chain(kwargs).chain(var_kwargs)
-    }
-
-    /// Returns the number of required positional arguments.
-    ///
-    /// This is the minimum number of positional arguments that must be provided.
-    /// Parameters with defaults are not required.
-    pub fn required_positional_count(&self) -> usize {
-        let total_positional = self.pos_arg_count() + self.arg_count();
-        let positional_defaults = self.pos_defaults_count + self.arg_defaults_count;
-        total_positional.saturating_sub(positional_defaults)
-    }
-
-    /// Returns the number of required keyword-only arguments.
-    ///
-    /// This is the minimum number of keyword-only arguments that must be provided.
-    /// Keyword-only parameters with defaults are not required.
-    pub fn required_kwonly_count(&self) -> usize {
-        self.kwarg_count().saturating_sub(self.kwarg_defaults_count())
     }
 
     /// Returns the maximum number of positional arguments accepted.

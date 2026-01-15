@@ -45,7 +45,6 @@ salsa = { git = "https://github.com/salsa-rs/salsa.git", rev = "9860ff6ca0f1f8f3
 [workspace.lints.rust]
 # codspeed cfg is set by codspeed-criterion-compat when running in CodSpeed environment
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(codspeed)'] }
-dead_code = "allow"
 
 [workspace.lints.clippy]
 dbg_macro = "warn"

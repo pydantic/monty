@@ -636,21 +636,6 @@ impl<T: ResourceTracker> Heap<T> {
         Ok(id)
     }
 
-    /// Allocates a new cell containing the given value.
-    ///
-    /// Cells are used for closure support, allowing values to be shared between
-    /// a function and its nested closures. The cell is created with refcount 1.
-    ///
-    /// Note: The contained value's refcount is NOT incremented. The caller is
-    /// responsible for ensuring proper reference counting of the value before
-    /// putting it in a cell (typically by cloning with `clone_with_heap`).
-    pub fn alloc_cell(&mut self, value: Value) -> HeapId {
-        // Cell allocation is considered infallible - cells are small and essential
-        // for closure support. Panic if allocation fails (should be rare).
-        self.allocate(HeapData::Cell(value))
-            .expect("cell allocation failed - out of resources")
-    }
-
     /// Increments the reference count for an existing heap entry.
     ///
     /// # Panics
@@ -993,25 +978,6 @@ impl<T: ResourceTracker> Heap<T> {
         }
     }
 
-    /// Removes all values and resets the ID counter, used between executor runs.
-    pub fn clear(&mut self) {
-        // When ref-count-panic is enabled, mark all contained Values as Dereferenced
-        // before clearing to prevent Drop panics. We use py_dec_ref_ids for this
-        // since it handles the marking (we ignore the collected IDs since we're
-        // clearing everything anyway).
-        #[cfg(feature = "ref-count-panic")]
-        {
-            let mut dummy_stack = Vec::new();
-            for value in self.entries.iter_mut().flatten() {
-                if let Some(data) = &mut value.data {
-                    data.py_dec_ref_ids(&mut dummy_stack);
-                }
-            }
-        }
-        self.entries.clear();
-        self.free_list.clear();
-    }
-
     /// Returns the reference count for the heap entry at the given ID.
     ///
     /// This is primarily used for testing reference counting behavior.
@@ -1019,6 +985,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// # Panics
     /// Panics if the value ID is invalid or the value has already been freed.
     #[must_use]
+    #[cfg(feature = "ref-count-return")]
     pub fn get_refcount(&self, id: HeapId) -> usize {
         self.entries
             .get(id.index())
@@ -1033,6 +1000,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// This is primarily used for testing to verify that all heap entries
     /// are accounted for in reference count tests.
     #[must_use]
+    #[cfg(feature = "ref-count-return")]
     pub fn entry_count(&self) -> usize {
         self.entries.iter().filter(|o| o.is_some()).count()
     }
@@ -1076,20 +1044,6 @@ impl<T: ResourceTracker> Heap<T> {
                 old.drop_with_heap(self);
             }
             _ => panic!("Heap::set_cell_value: entry is not a Cell"),
-        }
-    }
-
-    /// Returns a reference to the value inside a cell without cloning.
-    ///
-    /// Useful when you only need to read the cell's value temporarily.
-    ///
-    /// # Panics
-    /// Panics if the ID is invalid, the value has been freed, or the entry is not a Cell.
-    pub fn get_cell_value_ref(&self, id: HeapId) -> &Value {
-        let data = self.get(id);
-        match data {
-            HeapData::Cell(v) => v,
-            _ => panic!("Heap::get_cell_value_ref: entry is not a Cell"),
         }
     }
 

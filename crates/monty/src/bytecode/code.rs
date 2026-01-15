@@ -93,48 +93,12 @@ impl Code {
         &self.constants
     }
 
-    /// Returns the location table for traceback generation.
-    #[must_use]
-    pub fn location_table(&self) -> &[LocationEntry] {
-        &self.location_table
-    }
-
-    /// Returns the exception handler table.
-    #[must_use]
-    pub fn exception_table(&self) -> &[ExceptionEntry] {
-        &self.exception_table
-    }
-
-    /// Returns the number of local variable slots needed.
-    #[must_use]
-    pub fn num_locals(&self) -> u16 {
-        self.num_locals
-    }
-
-    /// Returns the maximum stack depth hint.
-    #[must_use]
-    pub fn stack_size(&self) -> u16 {
-        self.stack_size
-    }
-
     /// Returns the local variable name for a given slot index.
     ///
     /// Used to generate proper NameError messages when accessing undefined locals.
     #[must_use]
     pub fn local_name(&self, slot: u16) -> Option<StringId> {
         self.local_names.get(slot as usize).copied()
-    }
-
-    /// Returns the length of the bytecode in bytes.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.bytecode.len()
-    }
-
-    /// Returns true if the bytecode is empty.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.bytecode.is_empty()
     }
 
     /// Finds the location entry for a given bytecode offset.
@@ -205,18 +169,6 @@ impl ConstPool {
     pub fn get(&self, index: u16) -> &Value {
         &self.values[index as usize]
     }
-
-    /// Returns the number of constants in the pool.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.values.len()
-    }
-
-    /// Returns true if the constant pool is empty.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
-    }
 }
 
 /// Source location for a bytecode instruction, used for tracebacks.
@@ -259,22 +211,10 @@ impl LocationEntry {
         }
     }
 
-    /// Returns the bytecode offset this entry applies to.
-    #[must_use]
-    pub fn bytecode_offset(&self) -> u32 {
-        self.bytecode_offset
-    }
-
     /// Returns the full source range.
     #[must_use]
     pub fn range(&self) -> CodeRange {
         self.range
-    }
-
-    /// Returns the optional focus range.
-    #[must_use]
-    pub fn focus(&self) -> Option<CodeRange> {
-        self.focus
     }
 }
 
@@ -328,18 +268,6 @@ impl ExceptionEntry {
             handler,
             stack_depth,
         }
-    }
-
-    /// Returns the start of the protected range (inclusive).
-    #[must_use]
-    pub fn start(&self) -> u32 {
-        self.start
-    }
-
-    /// Returns the end of the protected range (exclusive).
-    #[must_use]
-    pub fn end(&self) -> u32 {
-        self.end
     }
 
     /// Returns the handler bytecode offset.

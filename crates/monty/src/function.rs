@@ -1,12 +1,6 @@
 use std::fmt::Write;
 
-use crate::{
-    bytecode::Code,
-    expressions::Identifier,
-    intern::{Interns, StringId},
-    namespace::NamespaceId,
-    signature::Signature,
-};
+use crate::{bytecode::Code, expressions::Identifier, intern::Interns, namespace::NamespaceId, signature::Signature};
 
 /// A compiled function ready for execution.
 ///
@@ -102,25 +96,6 @@ impl Function {
             defaults_count,
             code,
         }
-    }
-
-    /// Returns true if this function has any default parameter values.
-    #[must_use]
-    pub fn has_defaults(&self) -> bool {
-        self.defaults_count > 0
-    }
-
-    /// Returns true if this function is equal to another function.
-    ///
-    /// We assume functions are equal if they have the same name and position.
-    pub fn py_eq(&self, other: &Self) -> bool {
-        self.name.py_eq(&other.name)
-    }
-
-    /// Returns the function name as a string ID.
-    #[must_use]
-    pub fn name_id(&self) -> StringId {
-        self.name.name_id
     }
 
     /// Writes the Python repr() string for this function to a formatter.

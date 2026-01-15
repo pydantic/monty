@@ -61,13 +61,6 @@ impl Identifier {
         }
     }
 
-    /// Returns true if this identifier is equal to another identifier.
-    ///
-    /// We assume identifiers with the same name and position in code are equal.
-    pub fn py_eq(&self, other: &Self) -> bool {
-        self.name_id == other.name_id && self.position == other.position
-    }
-
     /// Creates a new identifier with resolved namespace index and explicit scope.
     pub fn new_with_scope(name_id: StringId, position: CodeRange, namespace_id: NamespaceId, scope: NameScope) -> Self {
         Self {

@@ -128,25 +128,6 @@ impl ForIterator {
         self.value.drop_with_heap(heap);
     }
 
-    /// Creates a placeholder iterator for use during heap manipulation.
-    ///
-    /// This is used by the VM's ForIter opcode when we need to temporarily
-    /// remove an iterator from the heap (using `std::mem::replace`) to avoid
-    /// borrow conflicts while calling `for_next()`.
-    ///
-    /// The placeholder is an exhausted Range iterator that yields no values.
-    pub fn placeholder() -> Self {
-        Self {
-            index: 0,
-            iter_value: ForIterValue::Range {
-                start: 0,
-                step: 1,
-                len: 0,
-            },
-            value: Value::None,
-        }
-    }
-
     /// Collects HeapIds from this iterator for reference counting cleanup.
     pub fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.value.py_dec_ref_ids(stack);
@@ -432,37 +413,6 @@ impl ForIterator {
                 };
                 Ok(Some(clone_and_inc_ref(item, heap)))
             }
-        }
-    }
-
-    /// Decrements the iterator position by one step.
-    ///
-    /// Used when snapshotting mid-iteration: after `for_next()` returns a value and advances,
-    /// call `decr()` before saving the iterator to `ClauseState::For`. On resume, `for_next()`
-    /// will return the same value again.
-    ///
-    /// For strings, this scans backwards through the UTF-8 to find the previous character
-    /// boundary. This is O(1) amortized since UTF-8 characters are at most 4 bytes.
-    ///
-    /// # Panics
-    /// Panics if called when `index == 0` (cannot decrement below zero).
-    pub fn decr(&mut self) {
-        debug_assert!(self.index > 0, "cannot decrement iterator below zero");
-        self.index -= 1;
-
-        // For strings, move byte_offset back to the previous character's start
-        if let ForIterValue::IterStr {
-            string, byte_offset, ..
-        } = &mut self.iter_value
-        {
-            // Find the previous character by scanning backwards.
-            // UTF-8 continuation bytes have the form 10xxxxxx (0x80-0xBF).
-            // Start bytes have other forms, so we scan back until we find one.
-            let prev_char = string[..*byte_offset]
-                .chars()
-                .last()
-                .expect("byte_offset > 0 implies previous char exists");
-            *byte_offset -= prev_char.len_utf8();
         }
     }
 

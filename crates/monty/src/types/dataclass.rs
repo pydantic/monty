@@ -145,20 +145,6 @@ impl Dataclass {
         self.attrs.set(name, value, heap, interns)
     }
 
-    /// Creates a deep clone of this dataclass with proper reference counting.
-    ///
-    /// The attrs Dict is cloned with proper refcount handling for all values.
-    #[must_use]
-    pub fn clone_with_heap(&self, heap: &mut Heap<impl ResourceTracker>) -> Self {
-        Self {
-            name: self.name.clone(),
-            field_names: self.field_names.clone(),
-            attrs: self.attrs.clone_with_heap(heap),
-            methods: self.methods.clone(),
-            frozen: self.frozen,
-        }
-    }
-
     /// Computes the hash for this dataclass if it's frozen.
     ///
     /// Returns Some(hash) for frozen (immutable) dataclasses, None for mutable ones.

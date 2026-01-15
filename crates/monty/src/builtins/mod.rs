@@ -96,16 +96,6 @@ impl Builtins {
             Self::Type(_) => Type::Type,
         }
     }
-
-    /// Returns the exception type if this is an ExcType builtin.
-    ///
-    /// Used for exception type matching in try/except handlers.
-    pub fn as_exc_type(self) -> Option<ExcType> {
-        match self {
-            Self::ExcType(exc_type) => Some(exc_type),
-            _ => None,
-        }
-    }
 }
 
 impl FromStr for Builtins {

@@ -323,27 +323,6 @@ impl Dict {
         self.entries.get(index).map(|e| &e.key)
     }
 
-    /// Creates a deep clone of this dict with proper reference counting.
-    ///
-    /// All heap-allocated keys and values have their reference counts
-    /// incremented. This should be used instead of `.clone()` which would
-    /// bypass reference counting.
-    #[must_use]
-    pub fn clone_with_heap(&self, heap: &mut Heap<impl ResourceTracker>) -> Self {
-        Self {
-            indices: self.indices.clone(),
-            entries: self
-                .entries
-                .iter()
-                .map(|entry| DictEntry {
-                    key: entry.key.clone_with_heap(heap),
-                    value: entry.value.clone_with_heap(heap),
-                    hash: entry.hash,
-                })
-                .collect(),
-        }
-    }
-
     /// Creates a dict from the `dict()` constructor call.
     ///
     /// - `dict()` with no args returns an empty dict
