@@ -94,7 +94,12 @@ impl Type {
     ///
     /// Dispatches to the appropriate type's init method for container types,
     /// or handles primitive type conversions inline.
-    pub fn call(self, heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+    pub(crate) fn call(
+        self,
+        heap: &mut Heap<impl ResourceTracker>,
+        args: ArgValues,
+        interns: &Interns,
+    ) -> RunResult<Value> {
         match self {
             // Container types - delegate to init methods
             Self::List => List::init(heap, args, interns),

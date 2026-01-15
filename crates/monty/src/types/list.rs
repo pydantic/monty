@@ -25,7 +25,7 @@ use crate::{
 /// reference counts are incremented if they are heap-allocated (Ref variants).
 /// This ensures values remain valid while referenced by the list.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-pub struct List(Vec<Value>);
+pub(crate) struct List(Vec<Value>);
 
 impl List {
     /// Creates a new list from a vector of values.
@@ -56,23 +56,6 @@ impl List {
     #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
-    }
-
-    /// Returns true if the list is empty.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// Creates a deep clone of this list with proper reference counting.
-    ///
-    /// All heap-allocated values in the list have their reference counts
-    /// incremented. This should be used instead of `.clone()` which would
-    /// bypass reference counting.
-    #[must_use]
-    pub fn clone_with_heap(&self, heap: &mut Heap<impl ResourceTracker>) -> Self {
-        let cloned: Vec<Value> = self.0.iter().map(|obj| obj.clone_with_heap(heap)).collect();
-        Self(cloned)
     }
 
     /// Appends an element to the end of the list.

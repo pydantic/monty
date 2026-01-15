@@ -34,7 +34,7 @@ use crate::{
 /// - `cell_var_count`: Number of cells to create for variables captured by nested functions.
 ///   At call time, cells are created and pushed sequentially after params.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Function {
+pub(crate) struct Function {
     /// The function name (used for error messages and repr).
     pub name: Identifier,
     /// The function signature.

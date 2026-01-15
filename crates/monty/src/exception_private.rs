@@ -162,7 +162,7 @@ impl ExcType {
     ///
     /// Sets `hide_caret: true` because CPython doesn't show carets for attribute GET errors.
     #[must_use]
-    pub fn attribute_error(type_: Type, attr: &str) -> RunError {
+    pub(crate) fn attribute_error(type_: Type, attr: &str) -> RunError {
         let exc = exc_fmt!(Self::AttributeError; "'{type_}' object has no attribute '{attr}'");
         RunError::Exc(ExceptionRaise {
             exc,
@@ -176,7 +176,7 @@ impl ExcType {
     /// This is a temporary error used when dataclass methods are called but the external
     /// call mechanism hasn't been integrated yet.
     #[must_use]
-    pub fn attribute_error_method_not_implemented(class_name: &str, method_name: &str) -> RunError {
+    pub(crate) fn attribute_error_method_not_implemented(class_name: &str, method_name: &str) -> RunError {
         exc_fmt!(Self::AttributeError; "'{class_name}' object method '{method_name}' requires external call (not yet implemented)").into()
     }
 
@@ -185,7 +185,7 @@ impl ExcType {
     /// Matches CPython's format: `AttributeError: 'ClassName' object has no attribute 'attr_name'`
     /// Sets `hide_caret: true` because CPython doesn't show carets for attribute GET errors.
     #[must_use]
-    pub fn attribute_error_not_found(class_name: &str, attr_name: &str) -> RunError {
+    pub(crate) fn attribute_error_not_found(class_name: &str, attr_name: &str) -> RunError {
         let exc = exc_fmt!(Self::AttributeError; "'{class_name}' object has no attribute '{attr_name}'");
         RunError::Exc(ExceptionRaise {
             exc,
@@ -198,7 +198,7 @@ impl ExcType {
     ///
     /// Matches CPython's format for setting attributes on built-in types.
     #[must_use]
-    pub fn attribute_error_no_setattr(type_: Type, attr_name: &str) -> RunError {
+    pub(crate) fn attribute_error_no_setattr(type_: Type, attr_name: &str) -> RunError {
         exc_fmt!(Self::AttributeError; "'{type_}' object has no attribute '{attr_name}' and no __dict__ for setting new attributes").into()
     }
 
@@ -207,12 +207,12 @@ impl ExcType {
     /// Matches CPython's `dataclasses.FrozenInstanceError` which is a subclass of `AttributeError`.
     /// Message format: "cannot assign to field 'attr_name'"
     #[must_use]
-    pub fn frozen_instance_error(attr_name: &str) -> RunError {
+    pub(crate) fn frozen_instance_error(attr_name: &str) -> RunError {
         exc_fmt!(Self::FrozenInstanceError; "cannot assign to field '{attr_name}'").into()
     }
 
     #[must_use]
-    pub fn type_error_not_sub(type_: Type) -> RunError {
+    pub(crate) fn type_error_not_sub(type_: Type) -> RunError {
         exc_fmt!(Self::TypeError; "'{type_}' object is not subscriptable").into()
     }
 
@@ -220,7 +220,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: '{type}' object does not support item assignment`
     #[must_use]
-    pub fn type_error_not_sub_assignment(type_: Type) -> RunError {
+    pub(crate) fn type_error_not_sub_assignment(type_: Type) -> RunError {
         exc_fmt!(Self::TypeError; "'{type_}' object does not support item assignment").into()
     }
 
@@ -228,7 +228,7 @@ impl ExcType {
     ///
     /// This matches Python 3.14's error message: `TypeError: unhashable type: 'list'`
     #[must_use]
-    pub fn type_error_unhashable(type_: Type) -> RunError {
+    pub(crate) fn type_error_unhashable(type_: Type) -> RunError {
         exc_fmt!(Self::TypeError; "unhashable type: '{type_}'").into()
     }
 
@@ -237,7 +237,7 @@ impl ExcType {
     /// This matches Python 3.14's error message:
     /// `TypeError: cannot use 'list' as a dict key (unhashable type: 'list')`
     #[must_use]
-    pub fn type_error_unhashable_dict_key(type_: Type) -> RunError {
+    pub(crate) fn type_error_unhashable_dict_key(type_: Type) -> RunError {
         exc_fmt!(Self::TypeError; "cannot use '{type_}' as a dict key (unhashable type: '{type_}')").into()
     }
 
@@ -246,7 +246,7 @@ impl ExcType {
     /// This matches Python 3.14's error message:
     /// `TypeError: cannot use 'list' as a set element (unhashable type: 'list')`
     #[must_use]
-    pub fn type_error_unhashable_set_element(type_: Type) -> RunError {
+    pub(crate) fn type_error_unhashable_set_element(type_: Type) -> RunError {
         exc_fmt!(Self::TypeError; "cannot use '{type_}' as a set element (unhashable type: '{type_}')").into()
     }
 
@@ -255,7 +255,7 @@ impl ExcType {
     /// For string keys, uses the raw string value without extra quoting.
     /// For other types, uses repr.
     #[must_use]
-    pub fn key_error(key: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunError {
+    pub(crate) fn key_error(key: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunError {
         let key_str = match key {
             Value::InternString(string_id) => interns.get_str(*string_id).to_owned(),
             Value::Ref(id) => {
@@ -274,7 +274,7 @@ impl ExcType {
     ///
     /// Matches CPython's error format: `KeyError: 'pop from an empty set'`
     #[must_use]
-    pub fn key_error_pop_empty_set() -> RunError {
+    pub(crate) fn key_error_pop_empty_set() -> RunError {
         exc_fmt!(Self::KeyError; "pop from an empty set").into()
     }
 
@@ -289,7 +289,7 @@ impl ExcType {
     /// * `expected` - Number of expected arguments
     /// * `actual` - Number of arguments actually provided
     #[must_use]
-    pub fn type_error_arg_count(name: &str, expected: usize, actual: usize) -> RunError {
+    pub(crate) fn type_error_arg_count(name: &str, expected: usize, actual: usize) -> RunError {
         if expected == 1 {
             // CPython: "len() takes exactly one argument (2 given)"
             exc_fmt!(Self::TypeError; "{}() takes exactly one argument ({} given)", name, actual).into()
@@ -307,7 +307,7 @@ impl ExcType {
     /// * `name` - The method name (e.g., "dict.keys")
     /// * `actual` - Number of arguments actually provided
     #[must_use]
-    pub fn type_error_no_args(name: &str, actual: usize) -> RunError {
+    pub(crate) fn type_error_no_args(name: &str, actual: usize) -> RunError {
         // CPython: "dict.keys() takes no arguments (1 given)"
         exc_fmt!(Self::TypeError; "{}() takes no arguments ({} given)", name, actual).into()
     }
@@ -321,7 +321,7 @@ impl ExcType {
     /// * `min` - Minimum number of required arguments
     /// * `actual` - Number of arguments actually provided
     #[must_use]
-    pub fn type_error_at_least(name: &str, min: usize, actual: usize) -> RunError {
+    pub(crate) fn type_error_at_least(name: &str, min: usize, actual: usize) -> RunError {
         // CPython: "get expected at least 1 argument, got 0"
         exc_fmt!(Self::TypeError; "{} expected at least {} argument, got {}", name, min, actual).into()
     }
@@ -335,7 +335,7 @@ impl ExcType {
     /// * `max` - Maximum number of allowed arguments
     /// * `actual` - Number of arguments actually provided
     #[must_use]
-    pub fn type_error_at_most(name: &str, max: usize, actual: usize) -> RunError {
+    pub(crate) fn type_error_at_most(name: &str, max: usize, actual: usize) -> RunError {
         // CPython: "get expected at most 2 arguments, got 3"
         exc_fmt!(Self::TypeError; "{} expected at most {} arguments, got {}", name, max, actual).into()
     }
@@ -344,7 +344,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `{name}() missing {count} required positional argument(s): 'a' and 'b'`
     #[must_use]
-    pub fn type_error_missing_positional_with_names(name: &str, missing_names: &[&str]) -> RunError {
+    pub(crate) fn type_error_missing_positional_with_names(name: &str, missing_names: &[&str]) -> RunError {
         let count = missing_names.len();
         let names_str = format_param_names(missing_names);
         if count == 1 {
@@ -359,7 +359,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `{name}() missing {count} required keyword-only argument(s): 'a' and 'b'`
     #[must_use]
-    pub fn type_error_missing_kwonly_with_names(name: &str, missing_names: &[&str]) -> RunError {
+    pub(crate) fn type_error_missing_kwonly_with_names(name: &str, missing_names: &[&str]) -> RunError {
         let count = missing_names.len();
         let names_str = format_param_names(missing_names);
         if count == 1 {
@@ -376,7 +376,12 @@ impl ExcType {
     /// - Simple: `{name}() takes {max} positional argument(s) but {actual} were given`
     /// - With kwonly: `{name}() takes {max} positional argument(s) but {actual} positional argument(s) (and N keyword-only argument(s)) were given`
     #[must_use]
-    pub fn type_error_too_many_positional(name: &str, max: usize, actual: usize, kwonly_given: usize) -> RunError {
+    pub(crate) fn type_error_too_many_positional(
+        name: &str,
+        max: usize,
+        actual: usize,
+        kwonly_given: usize,
+    ) -> RunError {
         let takes_word = if max == 1 { "argument" } else { "arguments" };
 
         if kwonly_given > 0 {
@@ -401,7 +406,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `{name}() got some positional-only arguments passed as keyword arguments: '{param}'`
     #[must_use]
-    pub fn type_error_positional_only(name: &str, param: &str) -> RunError {
+    pub(crate) fn type_error_positional_only(name: &str, param: &str) -> RunError {
         exc_fmt!(Self::TypeError; "{}() got some positional-only arguments passed as keyword arguments: '{}'", name, param).into()
     }
 
@@ -409,7 +414,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `{name}() got multiple values for argument '{param}'`
     #[must_use]
-    pub fn type_error_duplicate_arg(name: &str, param: &str) -> RunError {
+    pub(crate) fn type_error_duplicate_arg(name: &str, param: &str) -> RunError {
         exc_fmt!(Self::TypeError; "{name}() got multiple values for argument '{param}'").into()
     }
 
@@ -417,7 +422,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `{name}() got multiple values for keyword argument '{key}'`
     #[must_use]
-    pub fn type_error_multiple_values(name: &str, key: &str) -> RunError {
+    pub(crate) fn type_error_multiple_values(name: &str, key: &str) -> RunError {
         exc_fmt!(Self::TypeError; "{name}() got multiple values for keyword argument '{key}'").into()
     }
 
@@ -425,7 +430,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `{name}() got an unexpected keyword argument '{key}'`
     #[must_use]
-    pub fn type_error_unexpected_keyword(name: &str, key: &str) -> RunError {
+    pub(crate) fn type_error_unexpected_keyword(name: &str, key: &str) -> RunError {
         exc_fmt!(Self::TypeError; "{name}() got an unexpected keyword argument '{key}'").into()
     }
 
@@ -433,7 +438,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `{name}() argument after ** must be a mapping, not {type_name}`
     #[must_use]
-    pub fn type_error_kwargs_not_mapping(name: &str, type_name: &str) -> RunError {
+    pub(crate) fn type_error_kwargs_not_mapping(name: &str, type_name: &str) -> RunError {
         exc_fmt!(Self::TypeError; "{name}() argument after ** must be a mapping, not {type_name}").into()
     }
 
@@ -441,13 +446,13 @@ impl ExcType {
     ///
     /// Matches CPython's format: `{name}() keywords must be strings`
     #[must_use]
-    pub fn type_error_kwargs_nonstring_key() -> RunError {
+    pub(crate) fn type_error_kwargs_nonstring_key() -> RunError {
         SimpleException::new(Self::TypeError, Some("keywords must be strings".to_string())).into()
     }
 
     /// Creates a simple TypeError with a custom message.
     #[must_use]
-    pub fn type_error(msg: &str) -> RunError {
+    pub(crate) fn type_error(msg: &str) -> RunError {
         exc_fmt!(Self::TypeError; "{msg}").into()
     }
 
@@ -455,7 +460,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: cannot convert '{type}' object to bytes`
     #[must_use]
-    pub fn type_error_bytes_init(type_: Type) -> RunError {
+    pub(crate) fn type_error_bytes_init(type_: Type) -> RunError {
         exc_fmt!(Self::TypeError; "cannot convert '{type_}' object to bytes").into()
     }
 
@@ -463,7 +468,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: cannot create '{type}' instances`
     #[must_use]
-    pub fn type_error_not_callable(type_: Type) -> RunError {
+    pub(crate) fn type_error_not_callable(type_: Type) -> RunError {
         exc_fmt!(Self::TypeError; "cannot create '{type_}' instances").into()
     }
 
@@ -471,7 +476,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: '{type}' object is not iterable`
     #[must_use]
-    pub fn type_error_not_iterable(type_: Type) -> RunError {
+    pub(crate) fn type_error_not_iterable(type_: Type) -> RunError {
         exc_fmt!(Self::TypeError; "'{type_}' object is not iterable").into()
     }
 
@@ -479,7 +484,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: int() argument must be a string, a bytes-like object or a real number, not '{type}'`
     #[must_use]
-    pub fn type_error_int_conversion(type_: Type) -> RunError {
+    pub(crate) fn type_error_int_conversion(type_: Type) -> RunError {
         exc_fmt!(Self::TypeError; "int() argument must be a string, a bytes-like object or a real number, not '{type_}'").into()
     }
 
@@ -487,7 +492,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: float() argument must be a string or a real number, not '{type}'`
     #[must_use]
-    pub fn type_error_float_conversion(type_: Type) -> RunError {
+    pub(crate) fn type_error_float_conversion(type_: Type) -> RunError {
         exc_fmt!(Self::TypeError; "float() argument must be a string or a real number, not '{type_}'").into()
     }
 
@@ -495,7 +500,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `ValueError: negative count`
     #[must_use]
-    pub fn value_error_negative_bytes_count() -> RunError {
+    pub(crate) fn value_error_negative_bytes_count() -> RunError {
         exc_static!(Self::ValueError; "negative count").into()
     }
 
@@ -503,7 +508,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: isinstance() arg 2 must be a type, a tuple of types, or a union`
     #[must_use]
-    pub fn isinstance_arg2_error() -> RunError {
+    pub(crate) fn isinstance_arg2_error() -> RunError {
         exc_static!(Self::TypeError; "isinstance() arg 2 must be a type, a tuple of types, or a union").into()
     }
 
@@ -511,7 +516,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: catching classes that do not inherit from BaseException is not allowed`
     #[must_use]
-    pub fn except_invalid_type_error() -> RunError {
+    pub(crate) fn except_invalid_type_error() -> RunError {
         exc_static!(Self::TypeError; "catching classes that do not inherit from BaseException is not allowed").into()
     }
 
@@ -519,7 +524,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `ValueError: range() arg 3 must not be zero`
     #[must_use]
-    pub fn value_error_range_step_zero() -> RunError {
+    pub(crate) fn value_error_range_step_zero() -> RunError {
         exc_static!(Self::ValueError; "range() arg 3 must not be zero").into()
     }
 
@@ -527,7 +532,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `RuntimeError: dictionary changed size during iteration`
     #[must_use]
-    pub fn runtime_error_dict_changed_size() -> RunError {
+    pub(crate) fn runtime_error_dict_changed_size() -> RunError {
         exc_static!(Self::RuntimeError; "dictionary changed size during iteration").into()
     }
 
@@ -535,7 +540,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `RuntimeError: Set changed size during iteration`
     #[must_use]
-    pub fn runtime_error_set_changed_size() -> RunError {
+    pub(crate) fn runtime_error_set_changed_size() -> RunError {
         exc_static!(Self::RuntimeError; "Set changed size during iteration").into()
     }
 
@@ -543,7 +548,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: {name}() takes no keyword arguments`
     #[must_use]
-    pub fn type_error_no_kwargs(name: &str) -> RunError {
+    pub(crate) fn type_error_no_kwargs(name: &str) -> RunError {
         exc_fmt!(Self::TypeError; "{name}() takes no keyword arguments").into()
     }
 
@@ -551,7 +556,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `IndexError('list index out of range')`
     #[must_use]
-    pub fn list_index_error() -> RunError {
+    pub(crate) fn list_index_error() -> RunError {
         exc_static!(Self::IndexError; "list index out of range").into()
     }
 
@@ -559,7 +564,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `IndexError('tuple index out of range')`
     #[must_use]
-    pub fn tuple_index_error() -> RunError {
+    pub(crate) fn tuple_index_error() -> RunError {
         exc_static!(Self::IndexError; "tuple index out of range").into()
     }
 
@@ -567,7 +572,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError('{type}' indices must be integers, not '{index_type}')`
     #[must_use]
-    pub fn type_error_indices(type_str: Type, index_type: Type) -> RunError {
+    pub(crate) fn type_error_indices(type_str: Type, index_type: Type) -> RunError {
         exc_fmt!(Self::TypeError; "{type_str} indices must be integers, not '{index_type}'").into()
     }
 
@@ -576,7 +581,7 @@ impl ExcType {
     /// Matches CPython's format: `NameError: cannot access free variable 'x' where it is not
     /// associated with a value in enclosing scope`
     #[must_use]
-    pub fn name_error_free_variable(name: &str) -> SimpleException {
+    pub(crate) fn name_error_free_variable(name: &str) -> SimpleException {
         exc_fmt!(Self::NameError; "cannot access free variable '{name}' where it is not associated with a value in enclosing scope")
     }
 
@@ -584,7 +589,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `NameError: name 'x' is not defined`
     #[must_use]
-    pub fn name_error(name: &str) -> SimpleException {
+    pub(crate) fn name_error(name: &str) -> SimpleException {
         exc_fmt!(Self::NameError; "name '{name}' is not defined")
     }
 
@@ -593,7 +598,7 @@ impl ExcType {
     /// Used during parsing when encountering Python syntax that Monty doesn't yet support.
     /// The message format is: "The monty syntax parser does not yet support {feature}"
     #[must_use]
-    pub fn not_implemented(feature: &str) -> SimpleException {
+    pub(crate) fn not_implemented(feature: &str) -> SimpleException {
         exc_fmt!(Self::NotImplementedError; "The monty syntax parser does not yet support {}", feature)
     }
 
@@ -601,7 +606,7 @@ impl ExcType {
     ///
     /// Matches CPython 3.14's format: `ZeroDivisionError('division by zero')`
     #[must_use]
-    pub fn zero_division() -> SimpleException {
+    pub(crate) fn zero_division() -> SimpleException {
         exc_static!(Self::ZeroDivisionError; "division by zero")
     }
 
@@ -609,7 +614,7 @@ impl ExcType {
     ///
     /// Matches CPython 3.14's format: `ZeroDivisionError('zero to a negative power')`
     #[must_use]
-    pub fn zero_pow_negative() -> SimpleException {
+    pub(crate) fn zero_pow_negative() -> SimpleException {
         exc_static!(Self::ZeroDivisionError; "zero to a negative power")
     }
 
@@ -617,7 +622,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `OverflowError('cannot fit 'int' into an index-sized integer')`
     #[must_use]
-    pub fn overflow_repeat_count() -> SimpleException {
+    pub(crate) fn overflow_repeat_count() -> SimpleException {
         exc_static!(Self::OverflowError; "cannot fit 'int' into an index-sized integer")
     }
 
@@ -625,7 +630,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `ValueError: negative shift count`
     #[must_use]
-    pub fn value_error_negative_shift_count() -> RunError {
+    pub(crate) fn value_error_negative_shift_count() -> RunError {
         exc_static!(Self::ValueError; "negative shift count").into()
     }
 
@@ -634,13 +639,13 @@ impl ExcType {
     /// Matches CPython's format: `OverflowError: Python int too large to convert to C ssize_t`
     /// Note: CPython uses this message because it tries to convert to ssize_t for the shift amount.
     #[must_use]
-    pub fn overflow_shift_count() -> RunError {
+    pub(crate) fn overflow_shift_count() -> RunError {
         exc_static!(Self::OverflowError; "Python int too large to convert to C ssize_t").into()
     }
 
     /// Generates a consistent error for invalid `**kwargs` types.
     #[must_use]
-    pub fn kwargs_type_error(callable_name: Option<&str>, type_: Type) -> SimpleException {
+    pub(crate) fn kwargs_type_error(callable_name: Option<&str>, type_: Type) -> SimpleException {
         let message = match callable_name {
             Some(name) => format!("{name}() argument after ** must be a mapping, not {type_}"),
             None => format!("argument after ** must be a mapping, not {type_}"),
@@ -650,7 +655,7 @@ impl ExcType {
 
     /// Generates the duplicate keyword argument error.
     #[must_use]
-    pub fn duplicate_kwarg_error(callable_name: Option<&str>, key: &str) -> SimpleException {
+    pub(crate) fn duplicate_kwarg_error(callable_name: Option<&str>, key: &str) -> SimpleException {
         let message = match callable_name {
             Some(name) => format!("{name}() got multiple values for keyword argument '{key}'"),
             None => format!("got multiple values for keyword argument '{key}'"),
@@ -666,7 +671,7 @@ impl ExcType {
     /// For other cases, uses the generic format:
     /// `unsupported operand type(s) for {op}: '{left}' and '{right}'`
     #[must_use]
-    pub fn binary_type_error(op: &str, lhs_type: Type, rhs_type: Type) -> RunError {
+    pub(crate) fn binary_type_error(op: &str, lhs_type: Type, rhs_type: Type) -> RunError {
         let message = if (op == "+" || op == "+=") && (lhs_type == Type::Str || lhs_type == Type::List) {
             format!("can only concatenate {lhs_type} (not \"{rhs_type}\") to {lhs_type}")
         } else {
@@ -679,12 +684,12 @@ impl ExcType {
     ///
     /// Uses CPython's format: `bad operand type for unary {op}: '{type}'`
     #[must_use]
-    pub fn unary_type_error(op: &str, value_type: Type) -> RunError {
+    pub(crate) fn unary_type_error(op: &str, value_type: Type) -> RunError {
         exc_fmt!(Self::TypeError; "bad operand type for unary {op}: '{value_type}'").into()
     }
 
     #[must_use]
-    pub fn cmp_type_error<T>(op: &CmpOperator, left_type: Type, right_type: Type) -> RunError {
+    pub(crate) fn cmp_type_error(op: &CmpOperator, left_type: Type, right_type: Type) -> RunError {
         exc_fmt!(Self::TypeError; "'{op}' not supported between instances of '{left_type}' and '{right_type}'").into()
     }
 }
@@ -694,7 +699,7 @@ impl ExcType {
 /// This is used for performance reasons for common exception patterns.
 /// Exception messages use `String` for owned storage.
 #[derive(Debug, Clone, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct SimpleException {
+pub(crate) struct SimpleException {
     exc_type: ExcType,
     arg: Option<String>,
 }
@@ -962,7 +967,7 @@ impl RawStackFrame {
 /// - `Exc`: Python exception that can be caught by try/except (when implemented)
 /// - `UncatchableExc`: Python exception from resource limits that CANNOT be caught
 #[derive(Debug)]
-pub enum RunError {
+pub(crate) enum RunError {
     /// Internal interpreter error - indicates a bug in Monty, not user code.
     Internal(Cow<'static, str>),
     /// Catchable Python exception (e.g., ValueError, TypeError).

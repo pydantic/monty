@@ -26,7 +26,7 @@ use crate::{
 ///
 /// The range is computed lazily during iteration, not stored as a list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct Range {
+pub(crate) struct Range {
     /// The starting value (inclusive). Defaults to 0.
     pub start: i64,
     /// The ending value (exclusive).
@@ -89,15 +89,6 @@ impl Range {
         self.len() == 0
     }
 
-    /// Returns an iterator over the range values.
-    pub fn iter(&self) -> RangeIter {
-        RangeIter {
-            current: self.start,
-            stop: self.stop,
-            step: self.step,
-        }
-    }
-
     /// Creates a range from the `range()` constructor call.
     ///
     /// Supports:
@@ -155,57 +146,6 @@ impl Default for Range {
         Self::from_stop(0)
     }
 }
-
-/// Iterator over range values.
-pub struct RangeIter {
-    current: i64,
-    stop: i64,
-    step: i64,
-}
-
-impl Iterator for RangeIter {
-    type Item = i64;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.step > 0 {
-            if self.current < self.stop {
-                let value = self.current;
-                self.current += self.step;
-                Some(value)
-            } else {
-                None
-            }
-        } else {
-            // step < 0
-            if self.current > self.stop {
-                let value = self.current;
-                self.current += self.step;
-                Some(value)
-            } else {
-                None
-            }
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = if self.step > 0 {
-            if self.stop > self.current {
-                let len_i64 = (self.stop - self.current - 1) / self.step + 1;
-                usize::try_from(len_i64).expect("range length guaranteed non-negative")
-            } else {
-                0
-            }
-        } else if self.current > self.stop {
-            let len_i64 = (self.current - self.stop - 1) / (-self.step) + 1;
-            usize::try_from(len_i64).expect("range length guaranteed non-negative")
-        } else {
-            0
-        };
-        (len, Some(len))
-    }
-}
-
-impl ExactSizeIterator for RangeIter {}
 
 impl PyTrait for Range {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {

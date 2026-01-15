@@ -279,7 +279,7 @@ impl InternerBuilder {
 ///
 /// This provides lookup by `StringId`, `BytesId` and `FunctionId` for interned literals and functions
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Interns {
+pub(crate) struct Interns {
     strings: Vec<String>,
     bytes: Vec<Vec<u8>>,
     functions: Vec<Function>,

@@ -20,7 +20,7 @@ use crate::{
 ///
 /// Wraps a `Vec<u8>` and provides Python-compatible operations.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
-pub struct Bytes(Vec<u8>);
+pub(crate) struct Bytes(Vec<u8>);
 
 impl Bytes {
     /// Creates a new Bytes from a byte vector.

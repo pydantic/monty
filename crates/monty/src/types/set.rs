@@ -439,7 +439,7 @@ impl SetStorage {
 /// the caller transfers ownership. When values are removed or the set is cleared,
 /// their reference counts are decremented.
 #[derive(Debug, Default)]
-pub struct Set(SetStorage);
+pub(crate) struct Set(SetStorage);
 
 impl Set {
     /// Creates a new empty set.
@@ -511,12 +511,6 @@ impl Set {
     /// Returns a shallow copy of the set.
     #[must_use]
     pub fn copy(&self, heap: &mut Heap<impl ResourceTracker>) -> Self {
-        Self(self.0.clone_with_heap(heap))
-    }
-
-    /// Creates a deep clone with proper reference counting.
-    #[must_use]
-    pub fn clone_with_heap(&self, heap: &mut Heap<impl ResourceTracker>) -> Self {
         Self(self.0.clone_with_heap(heap))
     }
 
@@ -953,19 +947,13 @@ impl Set {
 /// Unlike mutable sets, frozensets can be used as dict keys or set elements because
 /// they are immutable. The hash is computed as the XOR of element hashes (order-independent).
 #[derive(Debug, Default)]
-pub struct FrozenSet(SetStorage);
+pub(crate) struct FrozenSet(SetStorage);
 
 impl FrozenSet {
     /// Creates a new empty frozenset.
     #[must_use]
     pub fn new() -> Self {
         Self(SetStorage::new())
-    }
-
-    /// Creates a frozenset with pre-allocated capacity.
-    #[must_use]
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self(SetStorage::with_capacity(capacity))
     }
 
     /// Returns the number of elements in the frozenset.
@@ -983,12 +971,6 @@ impl FrozenSet {
     /// Returns a shallow copy of the frozenset.
     #[must_use]
     pub fn copy(&self, heap: &mut Heap<impl ResourceTracker>) -> Self {
-        Self(self.0.clone_with_heap(heap))
-    }
-
-    /// Creates a deep clone with proper reference counting.
-    #[must_use]
-    pub fn clone_with_heap(&self, heap: &mut Heap<impl ResourceTracker>) -> Self {
         Self(self.0.clone_with_heap(heap))
     }
 

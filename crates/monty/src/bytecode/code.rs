@@ -176,7 +176,7 @@ impl Code {
 /// duplicated here. At runtime, constants are loaded via `clone_with_heap()` to
 /// handle reference counting properly.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-pub struct ConstPool {
+pub(crate) struct ConstPool {
     /// The constant values, indexed by the operand of `LoadConst`.
     values: Vec<Value>,
 }
@@ -189,12 +189,6 @@ impl Clone for ConstPool {
 }
 
 impl ConstPool {
-    /// Creates a new empty constant pool.
-    #[must_use]
-    pub fn new() -> Self {
-        Self { values: Vec::new() }
-    }
-
     /// Creates a constant pool from a vector of values.
     #[must_use]
     pub fn from_vec(values: Vec<Value>) -> Self {

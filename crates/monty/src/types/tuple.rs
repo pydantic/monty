@@ -29,7 +29,7 @@ use crate::{
 /// When a tuple is freed, all contained heap references have their refcounts
 /// decremented via `push_stack_ids`.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-pub struct Tuple(Vec<Value>);
+pub(crate) struct Tuple(Vec<Value>);
 
 impl Tuple {
     /// Creates a new tuple from a vector of values.
@@ -45,17 +45,6 @@ impl Tuple {
     #[must_use]
     pub fn as_vec(&self) -> &Vec<Value> {
         &self.0
-    }
-
-    /// Creates a deep clone of this tuple with proper reference counting.
-    ///
-    /// All heap-allocated values in the tuple have their reference counts
-    /// incremented. This should be used instead of `.clone()` which would
-    /// bypass reference counting.
-    #[must_use]
-    pub fn clone_with_heap(&self, heap: &mut Heap<impl ResourceTracker>) -> Self {
-        let cloned: Vec<Value> = self.0.iter().map(|obj| obj.clone_with_heap(heap)).collect();
-        Self(cloned)
     }
 
     /// Creates a tuple from the `tuple()` constructor call.

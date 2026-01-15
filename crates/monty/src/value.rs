@@ -10,13 +10,12 @@ use std::{
 use ahash::AHashSet;
 
 use crate::{
-    args::ArgValues,
     builtins::Builtins,
     exception_private::{exc_err_fmt, ExcType, RunError, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{BytesId, ExtFunctionId, FunctionId, Interns, StringId},
     resource::ResourceTracker,
-    types::{bytes::bytes_repr_fmt, str::string_repr_fmt, Dict, PyTrait, Type},
+    types::{bytes::bytes_repr_fmt, str::string_repr_fmt, PyTrait, Type},
 };
 
 /// Bitwise operation type for `py_bitwise`.
@@ -54,7 +53,7 @@ impl BitwiseOp {
 ///
 /// NOTE: it's important to keep this size small to minimize memory overhead!
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub enum Value {
+pub(crate) enum Value {
     // Immediate values (stored inline, no heap allocation)
     Undefined,
     Ellipsis,
@@ -1179,24 +1178,6 @@ impl Value {
         }
     }
 
-    /// Calls an attribute method on this value (e.g., list.append()).
-    ///
-    /// This method requires heap access to work with heap-allocated values and
-    /// to generate accurate error messages.
-    pub fn call_attr(
-        &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
-        attr: &Attr,
-        args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Self> {
-        if let Self::Ref(id) = self {
-            heap.call_attr(*id, attr, args, interns)
-        } else {
-            Err(ExcType::attribute_error(self.py_type(heap), attr.as_str(interns)))
-        }
-    }
-
     /// Clones an value with proper heap reference counting.
     ///
     /// For immediate values (Int, Bool, None, etc.), this performs a simple copy.
@@ -1301,21 +1282,6 @@ impl Value {
         std::mem::forget(old);
     }
 
-    /// Convert a Value into a Dict reference.
-    ///
-    /// The returned reference borrows from the heap. Note that this method
-    /// consumes `self` but does NOT handle reference counting - the caller
-    /// must ensure proper cleanup if needed.
-    pub fn into_dict(self, heap: &mut Heap<impl ResourceTracker>) -> Result<&Dict, &'static str> {
-        let Self::Ref(id) = self else {
-            return Err("into_dict, value must be a Ref");
-        };
-        match heap.get(id) {
-            HeapData::Dict(dict) => Ok(dict),
-            _ => Err("into_dict, value must be a Dict"),
-        }
-    }
-
     /// Converts the value into a keyword string representation if possible.
     ///
     /// Returns `Some(KeywordStr)` for `InternString` values or heap `str`
@@ -1367,7 +1333,7 @@ impl EitherStr {
 /// Known method names (append, get, keys, etc.) are pre-interned with stable
 /// `StringId` values - see `intern.rs` for the `ATTR_*` constants.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum Attr {
+pub(crate) enum Attr {
     /// Interned attribute name (compile-time constant or parsed identifier).
     ///
     /// Compare against `ATTR_*` constants from `intern.rs` for known methods.
@@ -1392,20 +1358,6 @@ impl Attr {
         match self {
             Self::Interned(id) => Some(*id),
             Self::Other(_) => None,
-        }
-    }
-
-    /// Converts the attribute to a `Value` for use as a dict key.
-    ///
-    /// For interned attributes, returns `Value::InternString(id)` - no heap allocation.
-    /// For runtime attributes, allocates a heap string and returns `Value::Ref(id)`.
-    pub fn to_value(&self, heap: &mut Heap<impl ResourceTracker>) -> Result<Value, crate::resource::ResourceError> {
-        match self {
-            Self::Interned(id) => Ok(Value::InternString(*id)),
-            Self::Other(name) => {
-                let heap_id = heap.allocate(HeapData::Str(name.clone().into()))?;
-                Ok(Value::Ref(heap_id))
-            }
         }
     }
 }

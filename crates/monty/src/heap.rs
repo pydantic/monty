@@ -39,7 +39,7 @@ impl HeapId {
 /// Note: The `Value` variant is special - it wraps boxed immediate values
 /// that need heap identity (e.g., when `id()` is called on an int).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub enum HeapData {
+pub(crate) enum HeapData {
     Str(Str),
     Bytes(Bytes),
     List(List),

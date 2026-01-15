@@ -10,7 +10,7 @@ use crate::{
 
 /// Unique identifier for values stored inside the namespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-pub struct NamespaceId(u32);
+pub(crate) struct NamespaceId(u32);
 
 impl NamespaceId {
     pub fn new(index: usize) -> Self {
@@ -28,10 +28,10 @@ impl NamespaceId {
 
 /// Index for the global (module-level) namespace in Namespaces.
 /// At module level, local_idx == GLOBAL_NS_IDX (same namespace).
-pub const GLOBAL_NS_IDX: NamespaceId = NamespaceId(0);
+pub(crate) const GLOBAL_NS_IDX: NamespaceId = NamespaceId(0);
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct Namespace(Vec<Value>);
+pub(crate) struct Namespace(Vec<Value>);
 
 impl Namespace {
     fn with_capacity(capacity: usize) -> Self {

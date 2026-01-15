@@ -31,7 +31,7 @@ use crate::{
 /// When using `from_pairs()`, ownership is transferred without incrementing refcounts
 /// (caller must ensure values' refcounts account for the dict's reference).
 #[derive(Debug, Default)]
-pub struct Dict {
+pub(crate) struct Dict {
     /// indices mapping from the entry hash to its index.
     indices: HashTable<usize>,
     /// entries is a dense vec maintaining entry order.
@@ -416,7 +416,7 @@ impl Dict {
 }
 
 /// Iterator over borrowed (key, value) pairs in a dict.
-pub struct DictIter<'a>(std::slice::Iter<'a, DictEntry>);
+pub(crate) struct DictIter<'a>(std::slice::Iter<'a, DictEntry>);
 
 impl<'a> Iterator for DictIter<'a> {
     type Item = (&'a Value, &'a Value);
@@ -434,7 +434,7 @@ impl<'a> IntoIterator for &'a Dict {
 }
 
 /// Iterator over owned (key, value) pairs from a consumed dict.
-pub struct DictIntoIter(std::vec::IntoIter<DictEntry>);
+pub(crate) struct DictIntoIter(std::vec::IntoIter<DictEntry>);
 
 impl Iterator for DictIntoIter {
     type Item = (Value, Value);

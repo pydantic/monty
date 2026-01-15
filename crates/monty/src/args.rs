@@ -17,7 +17,7 @@ use crate::{
 /// Most Python method calls have at most 2 arguments, so this optimization
 /// eliminates the Vec heap allocation overhead for the vast majority of calls.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub enum ArgValues {
+pub(crate) enum ArgValues {
     Empty,
     One(Value),
     Two(Value, Value),
@@ -168,7 +168,7 @@ impl ArgValues {
 /// Used to capture both the case of inline keyword arguments `foo(foo=1, bar=2)`
 /// and the case of a dictionary passed as a single argument `foo(**kwargs)`.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub enum KwargsValues {
+pub(crate) enum KwargsValues {
     Empty,
     Inline(Vec<(StringId, Value)>),
     Dict(Dict),
@@ -251,7 +251,7 @@ impl IntoIterator for KwargsValues {
 /// Iterator over keyword argument (key, value) pairs.
 ///
 /// For `Inline` kwargs, converts `StringId` keys to `Value::InternString`.
-pub enum KwargsValuesIter {
+pub(crate) enum KwargsValuesIter {
     Empty,
     Inline(IntoIter<(StringId, Value)>),
     Dict(IntoIter<(Value, Value)>),
