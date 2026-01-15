@@ -271,3 +271,9 @@ def test_return_exception():
     m = monty.Monty('ValueError')
     result = m.run()
     assert result is ValueError
+
+
+def test_return_builtin():
+    m = monty.Monty('len')
+    result = m.run()
+    assert result is len

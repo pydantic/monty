@@ -9,6 +9,7 @@ use monty::MontyException;
 use pyo3::{
     exceptions::PyBaseException,
     prelude::*,
+    sync::PyOnceLock,
     types::{PyBool, PyBytes, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple},
 };
 
@@ -116,11 +117,9 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject) -> PyResult<Py<PyAny>> {
             let exc = exc_monty_to_py(py, MontyException::new(*exc_type, arg.clone()));
             Ok(exc.into_value(py).into_any())
         }
-        MontyObject::Type(t) => {
-            // Return Python's built-in type object
-            let builtins = py.import("builtins")?;
-            Ok(builtins.getattr(t.to_string())?.unbind())
-        }
+        // Return Python's built-in type object
+        MontyObject::Type(t) => import_builtins(py)?.getattr(py, t.to_string()),
+        MontyObject::BuiltinFunction(f) => import_builtins(py)?.getattr(py, f.to_string()),
         // Dataclass - convert to PyMontyDataclass
         MontyObject::Dataclass {
             name,
@@ -136,4 +135,14 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject) -> PyResult<Py<PyAny>> {
         MontyObject::Repr(s) => Ok(PyString::new(py, s).into_any().unbind()),
         MontyObject::Cycle(_, placeholder) => Ok(PyString::new(py, placeholder).into_any().unbind()),
     }
+}
+
+/// Cached import of `dataclasses.FrozenInstanceError` exception class.
+pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {
+    static BUILTINS: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
+
+    BUILTINS.get_or_try_init(py, || {
+        let module = py.import("builtins")?;
+        Ok(module.unbind())
+    })
 }

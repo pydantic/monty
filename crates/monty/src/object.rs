@@ -7,7 +7,7 @@ use ahash::AHashSet;
 use indexmap::IndexMap;
 
 use crate::{
-    builtins::Builtins,
+    builtins::{Builtins, BuiltinsFunctions},
     exception_private::{ExcType, SimpleException},
     heap::{Heap, HeapData, HeapId},
     intern::Interns,
@@ -103,6 +103,7 @@ pub enum MontyObject {
     ///
     /// Returned by the `type()` builtin and can be compared with other types.
     Type(Type),
+    BuiltinFunction(BuiltinsFunctions),
     /// A dataclass instance with class name, field names, attributes, method names, and mutability.
     Dataclass {
         /// The class name (e.g., "Point", "User").
@@ -250,9 +251,10 @@ impl MontyObject {
                 let dc = Dataclass::new(name, field_names, dict, methods_set, frozen);
                 Ok(Value::Ref(heap.allocate(HeapData::Dataclass(dc))?))
             }
+            Self::Type(t) => Ok(Value::Builtin(Builtins::Type(t))),
+            Self::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
             Self::Repr(_) => Err(InvalidInputError::invalid_type("Repr")),
             Self::Cycle(_, _) => Err(InvalidInputError::invalid_type("Cycle")),
-            Self::Type(t) => Ok(Value::Builtin(Builtins::Type(t))),
         }
     }
 
@@ -389,6 +391,7 @@ impl MontyObject {
             }
             Value::Builtin(Builtins::Type(t)) => Self::Type(*t),
             Value::Builtin(Builtins::ExcType(e)) => Self::Type(Type::Exception(*e)),
+            Value::Builtin(Builtins::Function(f)) => Self::BuiltinFunction(*f),
             #[cfg(feature = "ref-count-panic")]
             Value::Dereferenced => panic!("Dereferenced found while converting to MontyObject"),
             _ => Self::Repr(object.py_repr(heap, interns).into_owned()),
@@ -532,9 +535,10 @@ impl MontyObject {
                 }
                 f.write_char(')')
             }
+            Self::Type(t) => write!(f, "<class '{t}'>"),
+            Self::BuiltinFunction(func) => write!(f, "<built-in function {func}>"),
             Self::Repr(s) => write!(f, "Repr({})", string_repr(s)),
             Self::Cycle(_, placeholder) => f.write_str(placeholder),
-            Self::Type(t) => write!(f, "<class '{t}'>"),
         }
     }
 
@@ -564,9 +568,7 @@ impl MontyObject {
             Self::FrozenSet(fs) => !fs.is_empty(),
             Self::Exception { .. } => true,
             Self::Dataclass { .. } => true, // Dataclass instances are always truthy
-            Self::Repr(_) => true,
-            Self::Cycle(_, _) => true,
-            Self::Type(_) => true,
+            Self::Type(_) | Self::BuiltinFunction(_) | Self::Repr(_) | Self::Cycle(_, _) => true,
         }
     }
 
@@ -590,9 +592,10 @@ impl MontyObject {
             Self::FrozenSet(_) => "frozenset",
             Self::Exception { .. } => "Exception",
             Self::Dataclass { .. } => "dataclass",
+            Self::Type(_) => "type",
+            Self::BuiltinFunction(_) => "builtin_function_or_method",
             Self::Repr(_) => "repr",
             Self::Cycle(_, _) => "cycle",
-            Self::Type(_) => "type",
         }
     }
 }
