@@ -707,9 +707,29 @@ impl<'a> Compiler<'a> {
 
     /// Compiles a function call expression.
     ///
-    /// Pushes the callable onto the stack, then all arguments, then emits CallFunction.
+    /// For builtin calls with positional-only arguments, emits the optimized `CallBuiltin`
+    /// opcode which avoids pushing/popping the callable on the stack.
+    ///
+    /// For other calls, pushes the callable onto the stack, then all arguments, then emits
+    /// `CallFunction` or `CallFunctionKw`.
+    ///
     /// The `call_pos` is the position of the full call expression for proper traceback caret.
     fn compile_call(&mut self, callable: &Callable, args: &ArgExprs, call_pos: CodeRange) -> Result<(), CompileError> {
+        // Check if we can use the optimized CallBuiltin path:
+        // - Callable must be a builtin (known at compile time)
+        // - Arguments must be positional-only (Empty, One, Two, or Args)
+        if let Callable::Builtin(builtin) = callable {
+            if let Some(arg_count) = self.compile_builtin_call(*builtin, args, call_pos)? {
+                // Optimization applied - CallBuiltin emitted
+                let const_idx = self.code.add_const(Value::Builtin(*builtin));
+                self.code.set_location(call_pos, None);
+                self.code.emit_call_builtin(const_idx, arg_count);
+                return Ok(());
+            }
+            // Fall through to standard path for kwargs/unpacking
+        }
+
+        // Standard path: push callable, compile args, emit CallFunction/CallFunctionKw
         // Push the callable (use name position for NameError caret range)
         match callable {
             Callable::Builtin(builtin) => {
@@ -834,6 +854,46 @@ impl<'a> Compiler<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Compiles arguments for a builtin call and returns the arg count if CallBuiltin can be used.
+    ///
+    /// Returns `Some(arg_count)` if the call uses positional-only arguments (CallBuiltin applicable).
+    /// Returns `None` if the call uses kwargs or unpacking (must use standard CallFunction path).
+    ///
+    /// When `Some` is returned, arguments have been compiled onto the stack.
+    fn compile_builtin_call(
+        &mut self,
+        _builtin: Builtins,
+        args: &ArgExprs,
+        call_pos: CodeRange,
+    ) -> Result<Option<u8>, CompileError> {
+        match args {
+            ArgExprs::Empty => Ok(Some(0)),
+            ArgExprs::One(arg) => {
+                self.compile_expr(arg)?;
+                Ok(Some(1))
+            }
+            ArgExprs::Two(arg1, arg2) => {
+                self.compile_expr(arg1)?;
+                self.compile_expr(arg2)?;
+                Ok(Some(2))
+            }
+            ArgExprs::Args(args) => {
+                if args.len() > MAX_CALL_ARGS {
+                    return Err(CompileError::new(
+                        format!("more than {MAX_CALL_ARGS} positional arguments in function call"),
+                        call_pos,
+                    ));
+                }
+                for arg in args {
+                    self.compile_expr(arg)?;
+                }
+                Ok(Some(u8::try_from(args.len()).expect("argument count exceeds u8")))
+            }
+            // Kwargs or unpacking - fall back to standard path
+            ArgExprs::Kwargs(_) | ArgExprs::ArgsKargs { .. } => Ok(None),
+        }
     }
 
     /// Compiles a function call with `*args` and/or `**kwargs` unpacking.

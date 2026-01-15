@@ -216,6 +216,13 @@ pub enum Opcode {
     // === Function Calls ===
     /// Call TOS with n positional args. Operand: u8 arg_count.
     CallFunction,
+    /// Call a builtin function directly. Operands: u16 const_idx, u8 arg_count.
+    ///
+    /// The const_idx points to a `Value::Builtin` in the constant pool.
+    /// This is an optimization over `LoadConst + CallFunction` that avoids:
+    /// - Pushing/popping the callable on the stack
+    /// - Runtime type dispatch in call_function
+    CallBuiltin,
     /// Call with positional and keyword args.
     ///
     /// Operands: u8 pos_count, u8 kw_count, then kw_count u16 name indices.

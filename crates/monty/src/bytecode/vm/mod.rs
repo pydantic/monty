@@ -15,7 +15,7 @@ use std::cmp::Ordering;
 use call::CallResult;
 
 use crate::{
-    args::{ArgValues, KwargsValues},
+    args::ArgValues,
     bytecode::{code::Code, op::Opcode},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     for_iterator::ForIterator,
@@ -786,33 +786,34 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Sync IP before call (call_function may access frame for traceback)
                     self.current_frame_mut().ip = cached_frame.ip;
 
-                    // Pop arguments in reverse order (TOS is last arg)
-                    let args = self.pop_n_args(arg_count);
-
-                    // Pop the callable
-                    let callable = self.pop();
-
-                    // Call the function and handle the result
-                    match self.call_function(callable, args) {
-                        Ok(CallResult::Builtin(result)) => self.push(result),
-                        Ok(CallResult::DefFunction) => {
-                            // Frame pushed - reload cache from new frame
-                            reload_cache!(self, cached_frame);
-                        }
-                        Ok(CallResult::ExternalCall(ext_id, ext_args)) => {
+                    match self.exec_call_function(arg_count) {
+                        Ok(CallResult::Push(result)) => self.push(result),
+                        Ok(CallResult::FramePushed) => reload_cache!(self, cached_frame),
+                        Ok(CallResult::External(ext_id, args)) => {
                             return Ok(FrameExit::ExternalCall {
                                 ext_function_id: ext_id,
-                                args: ext_args,
+                                args,
                             });
                         }
-                        Err(err) => {
-                            // IP already synced above
-                            if let Some(result) = self.handle_exception(err) {
-                                return Err(result);
-                            }
-                            // Exception caught - reload cache
-                            reload_cache!(self, cached_frame);
-                        }
+                        Err(err) => catch_sync!(self, cached_frame, err),
+                    }
+                }
+                Opcode::CallBuiltin => {
+                    // Fetch operands: const_idx (u16) + arg_count (u8)
+                    let const_idx = fetch_u16!(cached_frame);
+                    let arg_count = usize::from(fetch_u8!(cached_frame));
+
+                    // Sync IP before call (for traceback generation)
+                    self.current_frame_mut().ip = cached_frame.ip;
+
+                    // Get the builtin from constants
+                    let Value::Builtin(builtin) = *cached_frame.code.constants().get(const_idx) else {
+                        return Err(RunError::internal("CallBuiltin: expected Builtin in constant pool"));
+                    };
+
+                    match self.exec_call_builtin(builtin, arg_count) {
+                        Ok(result) => self.push(result),
+                        Err(err) => catch_sync!(self, cached_frame, err),
                     }
                 }
                 Opcode::CallFunctionKw => {
@@ -829,51 +830,16 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Sync IP before call (call_function may access frame for traceback)
                     self.current_frame_mut().ip = cached_frame.ip;
 
-                    // Pop keyword values (TOS is last kwarg value)
-                    let kw_values = self.pop_n(kw_count);
-
-                    // Pop positional arguments
-                    let pos_args = self.pop_n(pos_count);
-
-                    // Pop the callable
-                    let callable = self.pop();
-
-                    // Build kwargs as Vec<(StringId, Value)>
-                    let kwargs_inline: Vec<(StringId, Value)> = kwname_ids.into_iter().zip(kw_values).collect();
-
-                    // Build ArgValues with both positional and keyword args
-                    let args = if pos_args.is_empty() && kwargs_inline.is_empty() {
-                        ArgValues::Empty
-                    } else if pos_args.is_empty() {
-                        ArgValues::Kwargs(KwargsValues::Inline(kwargs_inline))
-                    } else {
-                        ArgValues::ArgsKargs {
-                            args: pos_args,
-                            kwargs: KwargsValues::Inline(kwargs_inline),
-                        }
-                    };
-
-                    // Call the function and handle the result
-                    match self.call_function(callable, args) {
-                        Ok(CallResult::Builtin(result)) => self.push(result),
-                        Ok(CallResult::DefFunction) => {
-                            // Frame pushed - reload cache from new frame
-                            reload_cache!(self, cached_frame);
-                        }
-                        Ok(CallResult::ExternalCall(ext_id, ext_args)) => {
+                    match self.exec_call_function_kw(pos_count, kwname_ids) {
+                        Ok(CallResult::Push(result)) => self.push(result),
+                        Ok(CallResult::FramePushed) => reload_cache!(self, cached_frame),
+                        Ok(CallResult::External(ext_id, args)) => {
                             return Ok(FrameExit::ExternalCall {
                                 ext_function_id: ext_id,
-                                args: ext_args,
+                                args,
                             });
                         }
-                        Err(err) => {
-                            // IP already synced above
-                            if let Some(result) = self.handle_exception(err) {
-                                return Err(result);
-                            }
-                            // Exception caught - reload cache
-                            reload_cache!(self, cached_frame);
-                        }
+                        Err(err) => catch_sync!(self, cached_frame, err),
                     }
                 }
                 Opcode::CallMethod => {
@@ -886,14 +852,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Sync IP before call (call_method may access frame for traceback)
                     self.current_frame_mut().ip = cached_frame.ip;
 
-                    // Pop arguments in reverse order (TOS is last arg)
-                    let args = self.pop_n_args(arg_count);
-
-                    // Pop the object
-                    let obj = self.pop();
-
-                    // Call the method on the object
-                    match self.call_method(obj, name_id, args) {
+                    match self.exec_call_method(name_id, arg_count) {
                         Ok(result) => self.push(result),
                         Err(err) => catch_sync!(self, cached_frame, err),
                     }
@@ -908,36 +867,16 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Sync IP before call
                     self.current_frame_mut().ip = cached_frame.ip;
 
-                    // Pop kwargs dict if present
-                    let kwargs = if has_kwargs { Some(self.pop()) } else { None };
-
-                    // Pop args tuple
-                    let args_tuple = self.pop();
-
-                    // Pop callable
-                    let callable = self.pop();
-
-                    // Call the function with unpacked args
-                    match self.call_function_extended(callable, args_tuple, kwargs) {
-                        Ok(CallResult::Builtin(result)) => self.push(result),
-                        Ok(CallResult::DefFunction) => {
-                            // Frame pushed - reload cache from new frame
-                            reload_cache!(self, cached_frame);
-                        }
-                        Ok(CallResult::ExternalCall(ext_id, ext_args)) => {
+                    match self.exec_call_function_extended(has_kwargs) {
+                        Ok(CallResult::Push(result)) => self.push(result),
+                        Ok(CallResult::FramePushed) => reload_cache!(self, cached_frame),
+                        Ok(CallResult::External(ext_id, args)) => {
                             return Ok(FrameExit::ExternalCall {
                                 ext_function_id: ext_id,
-                                args: ext_args,
+                                args,
                             });
                         }
-                        Err(err) => {
-                            // IP already synced above
-                            if let Some(result) = self.handle_exception(err) {
-                                return Err(result);
-                            }
-                            // Exception caught - reload cache
-                            reload_cache!(self, cached_frame);
-                        }
+                        Err(err) => catch_sync!(self, cached_frame, err),
                     }
                 }
                 // Function Definition
