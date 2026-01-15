@@ -3,7 +3,6 @@
 //! This module provides bidirectional conversion:
 //! - `py_to_monty`: Convert Python objects to Monty's `MontyObject` for input
 //! - `monty_to_py`: Convert Monty's `MontyObject` back to Python objects for output
-//! - `monty_to_py_with_registry`: Same as above, but uses dataclass registry for isinstance() support
 
 use ::monty::MontyObject;
 use monty::MontyException;
