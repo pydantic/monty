@@ -40,14 +40,10 @@ pub fn dataclass_to_monty(value: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
     let py = value.py();
 
     let dc_type = value.get_type();
-    let name = dc_type
-        .getattr(intern!(py, "__name__"))?
-        .cast_into::<PyString>()?
-        .to_str()?
-        .to_string();
+    let name: String = dc_type.getattr(intern!(py, "__name__"))?.extract()?;
 
     // Get type_id from id(type(dc)) for registry lookups
-    let type_id: u64 = py.import("builtins")?.getattr("id")?.call1((&dc_type,))?.extract()?;
+    let type_id = dc_type.as_ptr() as u64;
 
     let fields_dict = value
         .getattr(intern!(py, "__dataclass_fields__"))?
