@@ -417,10 +417,17 @@ pub(crate) struct DictIntoIter(std::vec::IntoIter<DictEntry>);
 
 impl Iterator for DictIntoIter {
     type Item = (Value, Value);
+
     fn next(&mut self) -> Option<Self::Item> {
         self.0.next().map(|e| (e.key, e.value))
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
 }
+
+impl ExactSizeIterator for DictIntoIter {}
 
 impl IntoIterator for Dict {
     type Item = (Value, Value);

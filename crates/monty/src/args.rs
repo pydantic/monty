@@ -7,7 +7,7 @@ use crate::{
     heap::Heap,
     intern::{Interns, StringId},
     parse::ParseError,
-    types::Dict,
+    types::{dict::DictIntoIter, Dict},
     value::Value,
 };
 
@@ -142,7 +142,81 @@ impl ArgValues {
             }
         }
     }
+
+    /// Splits into positional iterator and keyword values without allocating
+    /// for the common One/Two cases.
+    ///
+    /// This avoids the Vec allocation that `split()` incurs for `One` and `Two` variants.
+    /// Use this method instead of `split()` when iterating over positional arguments.
+    pub fn into_parts(self) -> (ArgPosIter, KwargsValues) {
+        match self {
+            Self::Empty => (ArgPosIter::Empty, KwargsValues::Empty),
+            Self::One(v) => (ArgPosIter::One(Some(v)), KwargsValues::Empty),
+            Self::Two(v1, v2) => (ArgPosIter::Two(Some(v1), Some(v2)), KwargsValues::Empty),
+            Self::Kwargs(kwargs) => (ArgPosIter::Empty, kwargs),
+            Self::ArgsKargs { args, kwargs } => (ArgPosIter::Vec(args.into_iter()), kwargs),
+        }
+    }
 }
+
+/// Iterator over positional arguments without allocation.
+///
+/// Supports iterating over `ArgValues::One/Two` without converting to Vec.
+/// This iterator must be fully consumed OR explicitly dropped with
+/// `drop_remaining_with_heap()` to maintain correct reference counts.
+///
+/// The iterator yields values by ownership transfer. Once a value is yielded,
+/// the caller is responsible for either using it or calling `drop_with_heap()` on it.
+pub(crate) enum ArgPosIter {
+    Empty,
+    One(Option<Value>),
+    Two(Option<Value>, Option<Value>),
+    Vec(IntoIter<Value>),
+}
+
+impl ArgPosIter {
+    /// Drop any remaining values in the iterator.
+    ///
+    /// MUST be called if iteration is abandoned early (e.g., on error paths)
+    /// to avoid reference count leaks.
+    pub fn drop_remaining_with_heap(self, heap: &mut Heap<impl ResourceTracker>) {
+        for value in self {
+            value.drop_with_heap(heap);
+        }
+    }
+}
+
+impl Iterator for ArgPosIter {
+    type Item = Value;
+
+    #[inline]
+    fn next(&mut self) -> Option<Value> {
+        match self {
+            Self::Empty => None,
+            Self::One(v) => v.take(),
+            Self::Two(v1, v2) => v1.take().or_else(|| v2.take()),
+            Self::Vec(iter) => iter.next(),
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::Empty => (0, Some(0)),
+            Self::One(v) => {
+                let n = usize::from(v.is_some());
+                (n, Some(n))
+            }
+            Self::Two(v1, v2) => {
+                let n = usize::from(v1.is_some()) + usize::from(v2.is_some());
+                (n, Some(n))
+            }
+            Self::Vec(iter) => iter.size_hint(),
+        }
+    }
+}
+
+impl ExactSizeIterator for ArgPosIter {}
 
 /// Type for keyword arguments.
 ///
@@ -224,7 +298,7 @@ impl IntoIterator for KwargsValues {
         match self {
             Self::Empty => KwargsValuesIter::Empty,
             Self::Inline(kvs) => KwargsValuesIter::Inline(kvs.into_iter()),
-            Self::Dict(dict) => KwargsValuesIter::Dict(dict.into_iter().collect::<Vec<_>>().into_iter()),
+            Self::Dict(dict) => KwargsValuesIter::Dict(dict.into_iter()),
         }
     }
 }
@@ -232,10 +306,12 @@ impl IntoIterator for KwargsValues {
 /// Iterator over keyword argument (key, value) pairs.
 ///
 /// For `Inline` kwargs, converts `StringId` keys to `Value::InternString`.
+/// For `Dict` kwargs, iterates directly over the dict's entries without
+/// intermediate allocation.
 pub(crate) enum KwargsValuesIter {
     Empty,
     Inline(IntoIter<(StringId, Value)>),
-    Dict(IntoIter<(Value, Value)>),
+    Dict(DictIntoIter),
 }
 
 impl Iterator for KwargsValuesIter {
