@@ -4,7 +4,7 @@ use strum::EnumString;
 
 use crate::{
     args::ArgValues,
-    exception_private::{exc_fmt, ExcType, RunResult},
+    exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData},
     intern::Interns,
     resource::ResourceTracker,
@@ -263,6 +263,10 @@ fn parse_f64_from_str(value: &str) -> RunResult<f64> {
 /// Creates the `ValueError` raised by `float()` when a string cannot be parsed.
 ///
 /// Matches CPython's message format: `could not convert string to float: '...'`.
-fn value_error_could_not_convert_string_to_float(value: &str) -> crate::exception_private::RunError {
-    exc_fmt!(ExcType::ValueError; "could not convert string to float: '{value}'").into()
+fn value_error_could_not_convert_string_to_float(value: &str) -> RunError {
+    SimpleException::new_msg(
+        ExcType::ValueError,
+        format!("could not convert string to float: '{value}'"),
+    )
+    .into()
 }

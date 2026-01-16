@@ -2,7 +2,7 @@
 
 use crate::{
     args::{ArgValues, KwargsValues},
-    exception_private::{exc_err_fmt, exc_fmt, ExcType, RunError, RunResult},
+    exception_private::{exc_err_fmt, ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData},
     intern::Interns,
     io::PrintWriter,
@@ -92,7 +92,7 @@ fn extract_print_kwargs(
         let Some(keyword_name) = key.as_either_str(heap) else {
             key.drop_with_heap(heap);
             value.drop_with_heap(heap);
-            error = Some(exc_fmt!(ExcType::TypeError; "keywords must be strings").into());
+            error = Some(SimpleException::new_msg(ExcType::TypeError, "keywords must be strings").into());
             continue;
         };
 
@@ -108,11 +108,17 @@ fn extract_print_kwargs(
             },
             "flush" => {} // Accepted but ignored (we don't buffer output)
             "file" => {
-                error = Some(exc_fmt!(ExcType::TypeError; "print() 'file' argument is not supported").into());
+                error = Some(
+                    SimpleException::new_msg(ExcType::TypeError, "print()) 'file' argument is not supported").into(),
+                );
             }
             _ => {
                 error = Some(
-                    exc_fmt!(ExcType::TypeError; "'{}' is an invalid keyword argument for print()", key_str).into(),
+                    SimpleException::new_msg(
+                        ExcType::TypeError,
+                        format!("'{key_str}' is an invalid keyword argument for print())"),
+                    )
+                    .into(),
                 );
             }
         }

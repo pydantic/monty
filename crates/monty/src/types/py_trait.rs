@@ -14,7 +14,7 @@ use ahash::AHashSet;
 use super::Type;
 use crate::{
     args::ArgValues,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapId},
     intern::Interns,
     resource::ResourceTracker,
@@ -272,9 +272,10 @@ pub trait PyTrait {
         heap: &mut Heap<impl ResourceTracker>,
         _interns: &Interns,
     ) -> RunResult<()> {
-        Err(ExcType::TypeError).map_err(|e| {
-            crate::exception_private::exc_fmt!(e; "'{}' object does not support item assignment", self.py_type(heap))
-                .into()
-        })
+        Err(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("'{}' object does not support item assignment", self.py_type(heap)),
+        )
+        .into())
     }
 }
