@@ -110,18 +110,18 @@ impl Range {
         let result = match positional.len() {
             0 => Err(ExcType::type_error_at_least("range", 1, 0)),
             1 => {
-                let stop = positional[0].as_int()?;
+                let stop = positional[0].as_int(heap)?;
                 Ok(Self::from_stop(stop))
             }
             2 => {
-                let start = positional[0].as_int()?;
-                let stop = positional[1].as_int()?;
+                let start = positional[0].as_int(heap)?;
+                let stop = positional[1].as_int(heap)?;
                 Ok(Self::from_start_stop(start, stop))
             }
             3 => {
-                let start = positional[0].as_int()?;
-                let stop = positional[1].as_int()?;
-                let step = positional[2].as_int()?;
+                let start = positional[0].as_int(heap)?;
+                let stop = positional[1].as_int(heap)?;
+                let step = positional[2].as_int(heap)?;
                 if step == 0 {
                     Err(ExcType::value_error_range_step_zero())
                 } else {

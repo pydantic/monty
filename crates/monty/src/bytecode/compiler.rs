@@ -995,6 +995,7 @@ impl<'a> Compiler<'a> {
         // Compile arguments based on the argument type
         match args {
             ArgExprs::Empty => {
+                self.code.set_location(call_pos, None);
                 self.code.emit_u16_u8(
                     Opcode::CallMethod,
                     u16::try_from(name_id.index()).expect("name index exceeds u16"),
@@ -1003,6 +1004,7 @@ impl<'a> Compiler<'a> {
             }
             ArgExprs::One(arg) => {
                 self.compile_expr(arg)?;
+                self.code.set_location(call_pos, None);
                 self.code.emit_u16_u8(
                     Opcode::CallMethod,
                     u16::try_from(name_id.index()).expect("name index exceeds u16"),
@@ -1012,6 +1014,7 @@ impl<'a> Compiler<'a> {
             ArgExprs::Two(arg1, arg2) => {
                 self.compile_expr(arg1)?;
                 self.compile_expr(arg2)?;
+                self.code.set_location(call_pos, None);
                 self.code.emit_u16_u8(
                     Opcode::CallMethod,
                     u16::try_from(name_id.index()).expect("name index exceeds u16"),
@@ -1030,6 +1033,7 @@ impl<'a> Compiler<'a> {
                     self.compile_expr(arg)?;
                 }
                 let arg_count = u8::try_from(args.len()).expect("argument count exceeds u8");
+                self.code.set_location(call_pos, None);
                 self.code.emit_u16_u8(
                     Opcode::CallMethod,
                     u16::try_from(name_id.index()).expect("name index exceeds u16"),

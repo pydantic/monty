@@ -253,7 +253,7 @@ impl PyTrait for List {
                 // Python's insert() handles negative indices by adding len
                 // If still negative after adding len, clamps to 0
                 // If >= len, appends to end
-                let index_i64 = index_obj.as_int()?;
+                let index_i64 = index_obj.as_int(heap)?;
                 let len = self.0.len();
                 let len_i64 = i64::try_from(len).expect("list length exceeds i64::MAX");
                 let index = if index_i64 < 0 {

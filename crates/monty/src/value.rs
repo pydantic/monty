@@ -1106,15 +1106,12 @@ impl Value {
         }
     }
 
-    pub fn as_int(&self) -> RunResult<i64> {
-        match self {
-            Self::Int(i) => Ok(*i),
-            // TODO use self.type
-            _ => Err(SimpleException::new_msg(
-                ExcType::TypeError,
-                format!("'{self:?}' object cannot be interpreted as an integer"),
-            )
-            .into()),
+    pub fn as_int(&self, heap: &Heap<impl ResourceTracker>) -> RunResult<i64> {
+        if let Self::Int(i) = self {
+            Ok(*i)
+        } else {
+            let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type(heap));
+            Err(SimpleException::new_msg(ExcType::TypeError, msg).into())
         }
     }
 
