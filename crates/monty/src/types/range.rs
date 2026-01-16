@@ -41,14 +41,14 @@ impl Range {
     /// # Panics
     /// Panics if step is 0. Use `new_checked` for fallible construction.
     #[must_use]
-    pub fn new(start: i64, stop: i64, step: i64) -> Self {
+    fn new(start: i64, stop: i64, step: i64) -> Self {
         debug_assert!(step != 0, "range step cannot be 0");
         Self { start, stop, step }
     }
 
     /// Creates a range from just a stop value (start=0, step=1).
     #[must_use]
-    pub fn from_stop(stop: i64) -> Self {
+    fn from_stop(stop: i64) -> Self {
         Self {
             start: 0,
             stop,
@@ -58,7 +58,7 @@ impl Range {
 
     /// Creates a range from start and stop (step=1).
     #[must_use]
-    pub fn from_start_stop(start: i64, stop: i64) -> Self {
+    fn from_start_stop(start: i64, stop: i64) -> Self {
         Self { start, stop, step: 1 }
     }
 
@@ -83,7 +83,6 @@ impl Range {
         }
     }
 
-    /// Returns true if the range is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -96,48 +95,57 @@ impl Range {
     /// - `range(start, stop)` - range from start to stop
     /// - `range(start, stop, step)` - range with custom step
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let (positional, kwargs) = args.split();
+        let range = match args {
+            ArgValues::Empty => return Err(ExcType::type_error_at_least("range", 1, 0)),
+            ArgValues::One(stop_val) => {
+                let result = stop_val.as_int(heap);
+                stop_val.drop_with_heap(heap);
+                Self::from_stop(result?)
+            }
+            ArgValues::Two(start_val, stop_val) => {
+                let start = start_val.as_int(heap);
+                let stop = stop_val.as_int(heap);
+                start_val.drop_with_heap(heap);
+                stop_val.drop_with_heap(heap);
+                Self::from_start_stop(start?, stop?)
+            }
+            ArgValues::ArgsKargs { args, kwargs } if kwargs.is_empty() && args.len() == 3 => {
+                let mut iter = args.into_iter();
+                let start_val = iter.next().unwrap();
+                let stop_val = iter.next().unwrap();
+                let step_val = iter.next().unwrap();
 
-        // range() doesn't accept keyword arguments
-        if !kwargs.is_empty() {
-            kwargs.drop_with_heap(heap);
-            for v in positional {
-                v.drop_with_heap(heap);
-            }
-            return Err(ExcType::type_error_no_kwargs("range"));
-        }
+                let start = start_val.as_int(heap);
+                let stop = stop_val.as_int(heap);
+                let step = step_val.as_int(heap);
+                start_val.drop_with_heap(heap);
+                stop_val.drop_with_heap(heap);
+                step_val.drop_with_heap(heap);
 
-        let result = match positional.len() {
-            0 => Err(ExcType::type_error_at_least("range", 1, 0)),
-            1 => {
-                let stop = positional[0].as_int(heap)?;
-                Ok(Self::from_stop(stop))
-            }
-            2 => {
-                let start = positional[0].as_int(heap)?;
-                let stop = positional[1].as_int(heap)?;
-                Ok(Self::from_start_stop(start, stop))
-            }
-            3 => {
-                let start = positional[0].as_int(heap)?;
-                let stop = positional[1].as_int(heap)?;
-                let step = positional[2].as_int(heap)?;
+                let step = step?;
                 if step == 0 {
-                    Err(ExcType::value_error_range_step_zero())
-                } else {
-                    Ok(Self::new(start, stop, step))
+                    return Err(ExcType::value_error_range_step_zero());
                 }
+                Self::new(start?, stop?, step)
             }
-            n => Err(ExcType::type_error_at_most("range", 3, n)),
+            ArgValues::Kwargs(kwargs) => {
+                kwargs.drop_with_heap(heap);
+                return Err(ExcType::type_error_no_kwargs("range"));
+            }
+            ArgValues::ArgsKargs { args, kwargs } => {
+                let arg_count = args.len();
+                for v in args {
+                    v.drop_with_heap(heap);
+                }
+                if !kwargs.is_empty() {
+                    kwargs.drop_with_heap(heap);
+                    return Err(ExcType::type_error_no_kwargs("range"));
+                }
+                return Err(ExcType::type_error_at_most("range", 3, arg_count));
+            }
         };
 
-        // Drop all positional args
-        for v in positional {
-            v.drop_with_heap(heap);
-        }
-
-        // Allocate the range on the heap
-        Ok(Value::Ref(heap.allocate(HeapData::Range(result?))?))
+        Ok(Value::Ref(heap.allocate(HeapData::Range(range))?))
     }
 }
 

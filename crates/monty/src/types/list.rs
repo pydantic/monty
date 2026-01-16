@@ -239,6 +239,7 @@ impl PyTrait for List {
         interns: &Interns,
     ) -> RunResult<Value> {
         let Some(attr_id) = attr.string_id() else {
+            args.drop_with_heap(heap);
             return Err(ExcType::attribute_error(Type::List, attr.as_str(interns)));
         };
 
@@ -253,7 +254,16 @@ impl PyTrait for List {
                 // Python's insert() handles negative indices by adding len
                 // If still negative after adding len, clamps to 0
                 // If >= len, appends to end
-                let index_i64 = index_obj.as_int(heap)?;
+                let index_result = index_obj.as_int(heap);
+                // Drop index_obj before propagating error - it could be a Ref (e.g., dict)
+                index_obj.drop_with_heap(heap);
+                let index_i64 = match index_result {
+                    Ok(i) => i,
+                    Err(e) => {
+                        item.drop_with_heap(heap);
+                        return Err(e);
+                    }
+                };
                 let len = self.0.len();
                 let len_i64 = i64::try_from(len).expect("list length exceeds i64::MAX");
                 let index = if index_i64 < 0 {
@@ -271,7 +281,10 @@ impl PyTrait for List {
                 self.insert(heap, index, item);
                 Ok(Value::None)
             }
-            _ => Err(ExcType::attribute_error(Type::List, attr.as_str(interns))),
+            _ => {
+                args.drop_with_heap(heap);
+                Err(ExcType::attribute_error(Type::List, attr.as_str(interns)))
+            }
         }
     }
 }
