@@ -80,10 +80,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 } else {
                     // Not an exception type
                     exc_value.drop_with_heap(self.heap);
-                    SimpleException::new_msg(
-                        ExcType::TypeError,
-                        "exceptions must derive from BaseException".to_string(),
-                    )
+                    SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException")
                 }
             }
             // Exception type (e.g., `raise ValueError` instead of `raise ValueError()`)
@@ -92,10 +89,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             // Invalid exception value
             _ => {
                 exc_value.drop_with_heap(self.heap);
-                SimpleException::new_msg(
-                    ExcType::TypeError,
-                    "exceptions must derive from BaseException".to_string(),
-                )
+                SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException")
             }
         };
 

@@ -21,11 +21,7 @@ pub fn builtin_divmod(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) ->
     let result = match (&a, &b) {
         (Value::Int(x), Value::Int(y)) => {
             if *y == 0 {
-                Err(SimpleException::new_msg(
-                    ExcType::ZeroDivisionError,
-                    "integer division or modulo by zero".to_string(),
-                )
-                .into())
+                Err(SimpleException::new_msg(ExcType::ZeroDivisionError, "integer division or modulo by zero").into())
             } else {
                 // Python uses floor division (toward negative infinity), not Euclidean
                 let (quot, rem) = floor_divmod(*x, *y);

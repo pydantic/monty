@@ -540,7 +540,7 @@ impl ExcType {
     /// Creates a simple TypeError with a custom message.
     #[must_use]
     pub(crate) fn type_error(msg: &str) -> RunError {
-        SimpleException::new_msg(Self::TypeError, msg.to_string()).into()
+        SimpleException::new_msg(Self::TypeError, msg).into()
     }
 
     /// Creates a TypeError for bytes() constructor with invalid type.

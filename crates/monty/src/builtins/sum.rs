@@ -29,7 +29,7 @@ pub fn builtin_sum(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
                 v.drop_with_heap(heap);
                 return Err(SimpleException::new_msg(
                     ExcType::TypeError,
-                    "sum() can't sum strings [use ''.join(seq) instead]".to_string(),
+                    "sum() can't sum strings [use ''.join(seq) instead]",
                 )
                 .into());
             }

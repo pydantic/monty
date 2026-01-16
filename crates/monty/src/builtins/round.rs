@@ -71,17 +71,12 @@ pub fn builtin_round(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
             } else {
                 // No digits: round to nearest integer and return int (banker's rounding)
                 if f.is_nan() {
-                    Err(SimpleException::new_msg(
-                        ExcType::ValueError,
-                        "cannot convert float NaN to integer".to_string(),
-                    )
-                    .into())
+                    Err(SimpleException::new_msg(ExcType::ValueError, "cannot convert float NaN to integer").into())
                 } else if f.is_infinite() {
-                    Err(SimpleException::new_msg(
-                        ExcType::OverflowError,
-                        "cannot convert float infinity to integer".to_string(),
+                    Err(
+                        SimpleException::new_msg(ExcType::OverflowError, "cannot convert float infinity to integer")
+                            .into(),
                     )
-                    .into())
                 } else {
                     Ok(Value::Int(f64_to_i64(bankers_round(*f))))
                 }

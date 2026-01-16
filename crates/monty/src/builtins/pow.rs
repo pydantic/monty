@@ -61,7 +61,7 @@ pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
                 } else if *e < 0 {
                     Err(SimpleException::new_msg(
                         ExcType::ValueError,
-                        "pow() 2nd argument cannot be negative when 3rd argument specified".to_string(),
+                        "pow() 2nd argument cannot be negative when 3rd argument specified",
                     )
                     .into())
                 } else {
@@ -76,7 +76,7 @@ pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
             }
             _ => Err(SimpleException::new_msg(
                 ExcType::TypeError,
-                "pow() 3rd argument not allowed unless all arguments are integers".to_string(),
+                "pow() 3rd argument not allowed unless all arguments are integers",
             )
             .into()),
         }
@@ -89,7 +89,7 @@ pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
                     if *b == 0 {
                         return Err(SimpleException::new_msg(
                             ExcType::ZeroDivisionError,
-                            "0.0 cannot be raised to a negative power".to_string(),
+                            "0.0 cannot be raised to a negative power",
                         )
                         .into());
                     }
@@ -100,20 +100,18 @@ pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
                             Some(v) => Ok(Value::Int(v)),
                             None => {
                                 // TODO: replace with BigInt once available to match CPython semantics.
-                                Err(SimpleException::new_msg(
-                                    ExcType::OverflowError,
-                                    "result too large to represent".to_string(),
+                                Err(
+                                    SimpleException::new_msg(ExcType::OverflowError, "result too large to represent")
+                                        .into(),
                                 )
-                                .into())
                             }
                         },
                         Err(_) => {
                             // TODO: replace with BigInt once available to match CPython semantics.
-                            Err(SimpleException::new_msg(
-                                ExcType::OverflowError,
-                                "result too large to represent".to_string(),
+                            Err(
+                                SimpleException::new_msg(ExcType::OverflowError, "result too large to represent")
+                                    .into(),
                             )
-                            .into())
                         }
                     }
                 }
@@ -122,7 +120,7 @@ pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
                 if *b == 0.0 && *e < 0.0 {
                     return Err(SimpleException::new_msg(
                         ExcType::ZeroDivisionError,
-                        "0.0 cannot be raised to a negative power".to_string(),
+                        "0.0 cannot be raised to a negative power",
                     )
                     .into());
                 }
@@ -132,7 +130,7 @@ pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
                 if *b == 0 && *e < 0.0 {
                     return Err(SimpleException::new_msg(
                         ExcType::ZeroDivisionError,
-                        "0.0 cannot be raised to a negative power".to_string(),
+                        "0.0 cannot be raised to a negative power",
                     )
                     .into());
                 }
@@ -142,7 +140,7 @@ pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
                 if *b == 0.0 && *e < 0 {
                     return Err(SimpleException::new_msg(
                         ExcType::ZeroDivisionError,
-                        "0.0 cannot be raised to a negative power".to_string(),
+                        "0.0 cannot be raised to a negative power",
                     )
                     .into());
                 }

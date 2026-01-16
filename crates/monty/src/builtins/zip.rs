@@ -28,11 +28,9 @@ pub fn builtin_zip(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
         for v in positional {
             v.drop_with_heap(heap);
         }
-        return Err(SimpleException::new_msg(
-            ExcType::TypeError,
-            "zip() does not support keyword arguments yet".to_string(),
-        )
-        .into());
+        return Err(
+            SimpleException::new_msg(ExcType::TypeError, "zip() does not support keyword arguments yet").into(),
+        );
     }
 
     if positional.is_empty() {

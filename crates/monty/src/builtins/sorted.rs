@@ -29,11 +29,9 @@ pub fn builtin_sorted(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, in
         for v in positional {
             v.drop_with_heap(heap);
         }
-        return Err(SimpleException::new_msg(
-            ExcType::TypeError,
-            "sorted() does not support keyword arguments yet".to_string(),
-        )
-        .into());
+        return Err(
+            SimpleException::new_msg(ExcType::TypeError, "sorted() does not support keyword arguments yet").into(),
+        );
     }
 
     let positional_len = positional.len();
