@@ -19,20 +19,14 @@ pub fn builtin_chr(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
     let result = match &value {
         Value::Int(n) => {
             if *n < 0 || *n > 0x0010_FFFF {
-                Err(
-                    SimpleException::new_msg(ExcType::ValueError, "chr() arg not in range(0x110000)".to_string())
-                        .into(),
-                )
+                Err(SimpleException::new_msg(ExcType::ValueError, "chr() arg not in range(0x110000)").into())
             } else if let Some(c) = char::from_u32(u32::try_from(*n).expect("chr() range check failed")) {
                 let s = c.to_string();
                 let heap_id = heap.allocate(HeapData::Str(Str::new(s)))?;
                 Ok(Value::Ref(heap_id))
             } else {
                 // This shouldn't happen for valid Unicode range, but handle it
-                Err(
-                    SimpleException::new_msg(ExcType::ValueError, "chr() arg not in range(0x110000)".to_string())
-                        .into(),
-                )
+                Err(SimpleException::new_msg(ExcType::ValueError, "chr() arg not in range(0x110000)").into())
             }
         }
         Value::Bool(b) => {

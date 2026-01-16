@@ -304,7 +304,7 @@ impl ExcType {
     /// Matches CPython's error format: `KeyError: 'pop from an empty set'`
     #[must_use]
     pub(crate) fn key_error_pop_empty_set() -> RunError {
-        SimpleException::new_msg(Self::KeyError, "pop from an empty set".to_string()).into()
+        SimpleException::new_msg(Self::KeyError, "pop from an empty set").into()
     }
 
     /// Creates a TypeError for when a function receives the wrong number of arguments.
@@ -534,7 +534,7 @@ impl ExcType {
     /// Matches CPython's format: `{name}() keywords must be strings`
     #[must_use]
     pub(crate) fn type_error_kwargs_nonstring_key() -> RunError {
-        SimpleException::new_msg(Self::TypeError, "keywords must be strings".to_string()).into()
+        SimpleException::new_msg(Self::TypeError, "keywords must be strings").into()
     }
 
     /// Creates a simple TypeError with a custom message.

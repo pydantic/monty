@@ -24,9 +24,7 @@ pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
         for v in positional {
             v.drop_with_heap(heap);
         }
-        return Err(
-            SimpleException::new_msg(ExcType::TypeError, "pow() takes no keyword arguments".to_string()).into(),
-        );
+        return Err(SimpleException::new_msg(ExcType::TypeError, "pow() takes no keyword arguments").into());
     }
 
     let (base, exp, modulo) = match positional.len() {
@@ -59,10 +57,7 @@ pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
         match (&base, &exp, &m) {
             (Value::Int(b), Value::Int(e), Value::Int(m_val)) => {
                 if *m_val == 0 {
-                    Err(
-                        SimpleException::new_msg(ExcType::ValueError, "pow() 3rd argument cannot be 0".to_string())
-                            .into(),
-                    )
+                    Err(SimpleException::new_msg(ExcType::ValueError, "pow() 3rd argument cannot be 0").into())
                 } else if *e < 0 {
                     Err(SimpleException::new_msg(
                         ExcType::ValueError,
