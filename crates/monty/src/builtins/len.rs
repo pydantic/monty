@@ -2,7 +2,7 @@
 
 use crate::{
     args::ArgValues,
-    exception_private::{exc_err_fmt, ExcType, RunResult},
+    exception_private::{SimpleException, ExcType, RunResult},
     heap::Heap,
     intern::Interns,
     resource::ResourceTracker,
@@ -18,7 +18,7 @@ pub fn builtin_len(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
     let result = match value.py_len(heap, interns) {
         Some(len) => Ok(Value::Int(i64::try_from(len).expect("len exceeds i64::MAX"))),
         None => {
-            exc_err_fmt!(ExcType::TypeError; "object of type {} has no len()", value.py_repr(heap, interns))
+            Err(SimpleException::new_msg(ExcType::TypeError, format!("object of type {} has no len()", value.py_repr(heap, interns))).into())
         }
     };
     value.drop_with_heap(heap);

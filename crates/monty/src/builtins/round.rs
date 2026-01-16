@@ -2,7 +2,7 @@
 
 use crate::{
     args::ArgValues,
-    exception_private::{exc_err_fmt, ExcType, RunResult},
+    exception_private::{SimpleException, ExcType, RunResult},
     heap::Heap,
     resource::ResourceTracker,
     types::PyTrait,
@@ -35,7 +35,7 @@ pub fn builtin_round(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
             let type_name = v.py_type(heap);
             number.drop_with_heap(heap);
             v.drop_with_heap(heap);
-            return exc_err_fmt!(ExcType::TypeError; "'{}' object cannot be interpreted as an integer", type_name);
+            return Err(SimpleException::new_msg(ExcType::TypeError, format!("'{}' object cannot be interpreted as an integer", type_name)).into());
         }
         None => (None, None),
     };
@@ -67,16 +67,16 @@ pub fn builtin_round(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
             } else {
                 // No digits: round to nearest integer and return int (banker's rounding)
                 if f.is_nan() {
-                    exc_err_fmt!(ExcType::ValueError; "cannot convert float NaN to integer")
+                    Err(SimpleException::new_msg(ExcType::ValueError, format!("cannot convert float NaN to integer")).into())
                 } else if f.is_infinite() {
-                    exc_err_fmt!(ExcType::OverflowError; "cannot convert float infinity to integer")
+                    Err(SimpleException::new_msg(ExcType::OverflowError, format!("cannot convert float infinity to integer")).into())
                 } else {
                     Ok(Value::Int(f64_to_i64(bankers_round(*f))))
                 }
             }
         }
         _ => {
-            exc_err_fmt!(ExcType::TypeError; "type {} doesn't define __round__ method", number.py_type(heap))
+            Err(SimpleException::new_msg(ExcType::TypeError, format!("type {} doesn't define __round__ method", number.py_type(heap))).into())
         }
     };
 

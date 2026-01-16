@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 
 use crate::{
     args::ArgValues,
-    exception_private::{exc_err_fmt, ExcType, RunResult},
+    exception_private::{SimpleException, ExcType, RunResult},
     for_iterator::ForIterator,
     heap::{Heap, HeapData},
     intern::Interns,
@@ -29,7 +29,7 @@ pub fn builtin_sorted(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, in
         for v in positional {
             v.drop_with_heap(heap);
         }
-        return exc_err_fmt!(ExcType::TypeError; "sorted() does not support keyword arguments yet");
+        return Err(SimpleException::new_msg(ExcType::TypeError, format!("sorted() does not support keyword arguments yet")).into());
     }
 
     let positional_len = positional.len();
@@ -37,7 +37,7 @@ pub fn builtin_sorted(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, in
         for v in positional {
             v.drop_with_heap(heap);
         }
-        return exc_err_fmt!(ExcType::TypeError; "sorted expected 1 argument, got {positional_len}");
+        return Err(SimpleException::new_msg(ExcType::TypeError, format!("sorted expected 1 argument, got {positional_len}")).into());
     }
 
     let iterable = positional.into_iter().next().unwrap();
@@ -62,7 +62,7 @@ pub fn builtin_sorted(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, in
                     for item in items {
                         item.drop_with_heap(heap);
                     }
-                    return exc_err_fmt!(ExcType::TypeError; "'<' not supported between instances of '{}' and '{}'", left_type, right_type);
+                    return Err(SimpleException::new_msg(ExcType::TypeError, format!("'<' not supported between instances of '{}' and '{}'", left_type, right_type)).into());
                 }
             }
         }

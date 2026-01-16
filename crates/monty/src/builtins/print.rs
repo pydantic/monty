@@ -2,7 +2,7 @@
 
 use crate::{
     args::{ArgValues, KwargsValues},
-    exception_private::{exc_err_fmt, ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData},
     intern::Interns,
     io::PrintWriter,
@@ -150,10 +150,16 @@ fn extract_string_kwarg(
             if let HeapData::Str(s) = heap.get(*id) {
                 return Ok(Some(s.as_str().to_owned()));
             }
-            exc_err_fmt!(ExcType::TypeError; "{} must be None or a string, not {}", name, value.py_type(heap))
+            Err(SimpleException::new_msg(
+                ExcType::TypeError,
+                format!("{} must be None or a string, not {}", name, value.py_type(heap)),
+            )
+            .into())
         }
-        _ => {
-            exc_err_fmt!(ExcType::TypeError; "{} must be None or a string, not {}", name, value.py_type(heap))
-        }
+        _ => Err(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{} must be None or a string, not {}", name, value.py_type(heap)),
+        )
+        .into()),
     }
 }

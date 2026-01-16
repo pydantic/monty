@@ -2,7 +2,7 @@
 
 use crate::{
     args::ArgValues,
-    exception_private::{exc_err_fmt, ExcType, RunResult},
+    exception_private::{SimpleException, ExcType, RunResult},
     for_iterator::ForIterator,
     heap::Heap,
     intern::Interns,
@@ -27,7 +27,7 @@ pub fn builtin_sum(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
             if is_str {
                 iterable.drop_with_heap(heap);
                 v.drop_with_heap(heap);
-                return exc_err_fmt!(ExcType::TypeError; "sum() can't sum strings [use ''.join(seq) instead]");
+                return Err(SimpleException::new_msg(ExcType::TypeError, format!("sum() can't sum strings [use ''.join(seq) instead]")).into());
             }
             v
         }

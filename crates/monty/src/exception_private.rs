@@ -885,14 +885,6 @@ macro_rules! exc_static {
 }
 pub(crate) use exc_static;
 
-// TODO remove this, we should always set position before creating the Err
-macro_rules! exc_err_fmt {
-    ($error_type:expr; $($fmt_args:tt)*) => {
-        Err(crate::exception_private::SimpleException::new_msg($error_type, format!($($fmt_args)*)).into())
-    };
-}
-pub(crate) use exc_err_fmt;
-
 /// A raised exception with optional stack frame for traceback.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExceptionRaise {

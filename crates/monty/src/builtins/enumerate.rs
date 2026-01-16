@@ -2,7 +2,7 @@
 
 use crate::{
     args::ArgValues,
-    exception_private::{exc_err_fmt, ExcType, RunResult},
+    exception_private::{SimpleException, ExcType, RunResult},
     for_iterator::ForIterator,
     heap::{Heap, HeapData},
     intern::Interns,
@@ -32,7 +32,7 @@ pub fn builtin_enumerate(
             if let Some(s) = start {
                 s.drop_with_heap(heap);
             }
-            return exc_err_fmt!(ExcType::TypeError; "'{}' object cannot be interpreted as an integer", type_name);
+            return Err(SimpleException::new_msg(ExcType::TypeError, format!("'{}' object cannot be interpreted as an integer", type_name)).into());
         }
         None => 0,
     };

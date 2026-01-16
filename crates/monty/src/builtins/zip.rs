@@ -2,7 +2,7 @@
 
 use crate::{
     args::ArgValues,
-    exception_private::{exc_err_fmt, ExcType, RunResult},
+    exception_private::{SimpleException, ExcType, RunResult},
     for_iterator::ForIterator,
     heap::{Heap, HeapData},
     intern::Interns,
@@ -28,7 +28,7 @@ pub fn builtin_zip(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
         for v in positional {
             v.drop_with_heap(heap);
         }
-        return exc_err_fmt!(ExcType::TypeError; "zip() does not support keyword arguments yet");
+        return Err(SimpleException::new_msg(ExcType::TypeError, format!("zip() does not support keyword arguments yet")).into());
     }
 
     if positional.is_empty() {
