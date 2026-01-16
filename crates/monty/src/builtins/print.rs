@@ -109,14 +109,14 @@ fn extract_print_kwargs(
             "flush" => {} // Accepted but ignored (we don't buffer output)
             "file" => {
                 error = Some(
-                    SimpleException::new_msg(ExcType::TypeError, "print()) 'file' argument is not supported").into(),
+                    SimpleException::new_msg(ExcType::TypeError, "print() 'file' argument is not supported").into(),
                 );
             }
             _ => {
                 error = Some(
                     SimpleException::new_msg(
                         ExcType::TypeError,
-                        format!("'{key_str}' is an invalid keyword argument for print())"),
+                        format!("'{key_str}' is an invalid keyword argument for print()"),
                     )
                     .into(),
                 );

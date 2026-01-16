@@ -401,7 +401,7 @@ impl ExcType {
         } else {
             SimpleException::new_msg(
                 Self::TypeError,
-                format!("{name}()) missing {count} required positional arguments: {names_str}"),
+                format!("{name}() missing {count} required positional arguments: {names_str}"),
             )
             .into()
         }
@@ -423,7 +423,7 @@ impl ExcType {
         } else {
             SimpleException::new_msg(
                 Self::TypeError,
-                format!("{name}()) missing {count} required keyword-only arguments: {names_str}"),
+                format!("{name}() missing {count} required keyword-only arguments: {names_str}"),
             )
             .into()
         }
