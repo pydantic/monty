@@ -383,14 +383,14 @@ fn unpack_size_error(expected: usize, actual: usize) -> RunError {
     } else {
         format!("too many values to unpack (expected {expected}, got {actual})")
     };
-    SimpleException::new(ExcType::ValueError, Some(message)).into()
+    SimpleException::new_msg(ExcType::ValueError, message).into()
 }
 
 /// Creates a TypeError for attempting to unpack a non-iterable type.
 fn unpack_type_error(type_name: Type) -> RunError {
-    SimpleException::new(
+    SimpleException::new_msg(
         ExcType::TypeError,
-        Some(format!("cannot unpack non-iterable {type_name} object")),
+        format!("cannot unpack non-iterable {type_name} object"),
     )
     .into()
 }

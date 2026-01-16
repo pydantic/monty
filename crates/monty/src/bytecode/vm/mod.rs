@@ -951,11 +951,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         self.make_exception(exc, true) // is_raise=true for reraise
                     } else {
                         // No active exception - create a RuntimeError
-                        SimpleException::new(
-                            ExcType::RuntimeError,
-                            Some("No active exception to reraise".to_string()),
-                        )
-                        .into()
+                        SimpleException::new_msg(ExcType::RuntimeError, "No active exception to reraise").into()
                     };
                     catch_sync!(self, cached_frame, error);
                 }

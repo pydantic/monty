@@ -121,16 +121,16 @@ impl ExcType {
         interns: &Interns,
     ) -> RunResult<Value> {
         let exc = match args {
-            ArgValues::Empty => Ok(SimpleException::new(self, None)),
+            ArgValues::Empty => Ok(SimpleException::new_none(self)),
             ArgValues::One(value) => {
                 // Borrow the value to inspect its type, then clean up with drop_with_heap
                 let result = match &value {
                     Value::InternString(string_id) => {
-                        Ok(SimpleException::new(self, Some(interns.get_str(*string_id).to_owned())))
+                        Ok(SimpleException::new_msg(self, interns.get_str(*string_id).to_owned()))
                     }
                     Value::Ref(heap_id) => {
                         if let HeapData::Str(s) = heap.get(*heap_id) {
-                            Ok(SimpleException::new(self, Some(s.as_str().to_owned())))
+                            Ok(SimpleException::new_msg(self, s.as_str().to_owned()))
                         } else {
                             Err(RunError::internal(
                                 "exceptions can only be called with zero or one string argument",
@@ -296,7 +296,7 @@ impl ExcType {
             }
             _ => key.py_repr(heap, interns).into_owned(),
         };
-        SimpleException::new(Self::KeyError, Some(key_str)).into()
+        SimpleException::new_msg(Self::KeyError, key_str).into()
     }
 
     /// Creates a KeyError for popping from an empty set.
@@ -534,7 +534,7 @@ impl ExcType {
     /// Matches CPython's format: `{name}() keywords must be strings`
     #[must_use]
     pub(crate) fn type_error_kwargs_nonstring_key() -> RunError {
-        SimpleException::new(Self::TypeError, Some("keywords must be strings".to_string())).into()
+        SimpleException::new_msg(Self::TypeError, "keywords must be strings".to_string()).into()
     }
 
     /// Creates a simple TypeError with a custom message.
@@ -811,6 +811,12 @@ impl From<MontyException> for SimpleException {
 }
 
 impl SimpleException {
+    /// Creates a new exception with the given type and optional argument message.
+    #[must_use]
+    pub fn new(exc_type: ExcType, arg: Option<String>) -> Self {
+        Self { exc_type, arg }
+    }
+
     /// Creates a new exception with the given type and argument message.
     #[must_use]
     pub fn new_msg(exc_type: ExcType, arg: impl Into<String>) -> Self {
@@ -820,10 +826,10 @@ impl SimpleException {
         }
     }
 
-    /// Creates a new exception with the given type and optional argument message.
+    /// Creates a new exception with the given type and no argument message.
     #[must_use]
-    pub fn new(exc_type: ExcType, arg: Option<String>) -> Self {
-        Self { exc_type, arg }
+    pub fn new_none(exc_type: ExcType) -> Self {
+        Self { exc_type, arg: None }
     }
 
     #[must_use]
@@ -1061,7 +1067,7 @@ impl From<FormatError> for RunError {
             FormatError::Overflow(_) => ExcType::OverflowError,
             FormatError::InvalidAlignment(_) | FormatError::ValueError(_) => ExcType::ValueError,
         };
-        Self::Exc(SimpleException::new(exc_type, Some(err.to_string())).into())
+        Self::Exc(SimpleException::new_msg(exc_type, err.to_string()).into())
     }
 }
 

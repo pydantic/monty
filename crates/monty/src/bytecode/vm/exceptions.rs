@@ -80,21 +80,21 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 } else {
                     // Not an exception type
                     exc_value.drop_with_heap(self.heap);
-                    SimpleException::new(
+                    SimpleException::new_msg(
                         ExcType::TypeError,
-                        Some("exceptions must derive from BaseException".to_string()),
+                        "exceptions must derive from BaseException".to_string(),
                     )
                 }
             }
             // Exception type (e.g., `raise ValueError` instead of `raise ValueError()`)
             // Instantiate with no message
-            Value::Builtin(Builtins::ExcType(exc_type)) => SimpleException::new(*exc_type, None),
+            Value::Builtin(Builtins::ExcType(exc_type)) => SimpleException::new_none(*exc_type),
             // Invalid exception value
             _ => {
                 exc_value.drop_with_heap(self.heap);
-                SimpleException::new(
+                SimpleException::new_msg(
                     ExcType::TypeError,
-                    Some("exceptions must derive from BaseException".to_string()),
+                    "exceptions must derive from BaseException".to_string(),
                 )
             }
         };

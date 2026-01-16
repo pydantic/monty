@@ -141,11 +141,9 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 let value_type = value_for_error.py_type(self.heap);
                 spec_str.parse::<ParsedFormatSpec>().map_err(|invalid| {
                     RunError::Exc(
-                        SimpleException::new(
+                        SimpleException::new_msg(
                             ExcType::ValueError,
-                            Some(format!(
-                                "Invalid format specifier '{invalid}' for object of type '{value_type}'"
-                            )),
+                            format!("Invalid format specifier '{invalid}' for object of type '{value_type}'"),
                         )
                         .into(),
                     )

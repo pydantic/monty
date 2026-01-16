@@ -304,9 +304,9 @@ pub fn format_with_spec(
         }
 
         // Type mismatch errors
-        (_, Some(c)) => Err(SimpleException::new(
+        (_, Some(c)) => Err(SimpleException::new_msg(
             ExcType::ValueError,
-            Some(format!("Unknown format code '{c}' for object of type '{value_type}'")),
+            format!("Unknown format code '{c}' for object of type '{value_type}'"),
         )
         .into()),
     }

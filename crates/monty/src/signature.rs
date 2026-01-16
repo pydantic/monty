@@ -635,7 +635,7 @@ impl Signature {
                 if actual_count == 1 { "was" } else { "were" }
             )
         };
-        Err(SimpleException::new(ExcType::TypeError, Some(msg))
+        Err(SimpleException::new_msg(ExcType::TypeError, msg)
             .with_position(func_name.position)
             .into())
     }
