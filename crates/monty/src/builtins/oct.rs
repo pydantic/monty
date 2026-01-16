@@ -2,7 +2,7 @@
 
 use crate::{
     args::ArgValues,
-    exception_private::{SimpleException, ExcType, RunResult},
+    exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapData},
     resource::ResourceTracker,
     types::{PyTrait, Str},
@@ -27,9 +27,11 @@ pub fn builtin_oct(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
             let heap_id = heap.allocate(HeapData::Str(Str::new(s.to_string())))?;
             Ok(Value::Ref(heap_id))
         }
-        _ => {
-            Err(SimpleException::new_msg(ExcType::TypeError, format!("'{}' object cannot be interpreted as an integer", value.py_type(heap))).into())
-        }
+        _ => Err(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("'{}' object cannot be interpreted as an integer", value.py_type(heap)),
+        )
+        .into()),
     };
 
     value.drop_with_heap(heap);

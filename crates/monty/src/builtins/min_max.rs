@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 
 use crate::{
     args::ArgValues,
-    exception_private::{SimpleException, ExcType, RunResult},
+    exception_private::{ExcType, RunResult, SimpleException},
     for_iterator::ForIterator,
     heap::Heap,
     intern::Interns,
@@ -54,13 +54,19 @@ fn builtin_min_max(
         for v in positional {
             v.drop_with_heap(heap);
         }
-        return Err(SimpleException::new_msg(ExcType::TypeError, format!("{}() does not support keyword arguments yet", func_name)).into());
+        return Err(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{func_name}() does not support keyword arguments yet"),
+        )
+        .into());
     }
 
     match positional.len() {
-        0 => {
-            Err(SimpleException::new_msg(ExcType::TypeError, format!("{}() expected at least 1 argument, got 0", func_name)).into())
-        }
+        0 => Err(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{func_name}() expected at least 1 argument, got 0"),
+        )
+        .into()),
         1 => {
             // Single argument: iterate over it
             let iterable = positional.into_iter().next().unwrap();
@@ -68,7 +74,11 @@ fn builtin_min_max(
 
             let Some(mut result) = iter.for_next(heap, interns)? else {
                 iter.drop_with_heap(heap);
-                return Err(SimpleException::new_msg(ExcType::ValueError, format!("{}() iterable argument is empty", func_name)).into());
+                return Err(SimpleException::new_msg(
+                    ExcType::ValueError,
+                    format!("{func_name}() iterable argument is empty"),
+                )
+                .into());
             };
 
             while let Some(item) = iter.for_next(heap, interns)? {
@@ -82,7 +92,11 @@ fn builtin_min_max(
                         result.drop_with_heap(heap);
                         item.drop_with_heap(heap);
                         iter.drop_with_heap(heap);
-                        return Err(SimpleException::new_msg(ExcType::TypeError, format!("'<' not supported between instances of '{}' and '{}'", result_type, item_type)).into());
+                        return Err(SimpleException::new_msg(
+                            ExcType::TypeError,
+                            format!("'<' not supported between instances of '{result_type}' and '{item_type}'"),
+                        )
+                        .into());
                     }
                 };
 
@@ -112,7 +126,11 @@ fn builtin_min_max(
                         let item_type = item.py_type(heap);
                         result.drop_with_heap(heap);
                         item.drop_with_heap(heap);
-                        return Err(SimpleException::new_msg(ExcType::TypeError, format!("'<' not supported between instances of '{}' and '{}'", result_type, item_type)).into());
+                        return Err(SimpleException::new_msg(
+                            ExcType::TypeError,
+                            format!("'<' not supported between instances of '{result_type}' and '{item_type}'"),
+                        )
+                        .into());
                     }
                 };
 

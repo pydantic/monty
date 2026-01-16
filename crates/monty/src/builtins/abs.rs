@@ -2,7 +2,7 @@
 
 use crate::{
     args::ArgValues,
-    exception_private::{SimpleException, ExcType, RunResult},
+    exception_private::{ExcType, RunResult, SimpleException},
     heap::Heap,
     resource::ResourceTracker,
     types::PyTrait,
@@ -22,9 +22,11 @@ pub fn builtin_abs(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
         }
         Value::Float(f) => Ok(Value::Float(f.abs())),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
-        _ => {
-            Err(SimpleException::new_msg(ExcType::TypeError, format!("bad operand type for abs(): '{}'", value.py_type(heap))).into())
-        }
+        _ => Err(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("bad operand type for abs(): '{}'", value.py_type(heap)),
+        )
+        .into()),
     };
 
     value.drop_with_heap(heap);

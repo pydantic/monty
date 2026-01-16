@@ -2,7 +2,7 @@
 
 use crate::{
     args::ArgValues,
-    exception_private::{SimpleException, ExcType, RunResult},
+    exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapData},
     resource::ResourceTracker,
     types::{PyTrait, Str},
@@ -19,14 +19,20 @@ pub fn builtin_chr(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
     let result = match &value {
         Value::Int(n) => {
             if *n < 0 || *n > 0x0010_FFFF {
-                Err(SimpleException::new_msg(ExcType::ValueError, format!("chr() arg not in range(0x110000)")).into())
+                Err(
+                    SimpleException::new_msg(ExcType::ValueError, "chr() arg not in range(0x110000)".to_string())
+                        .into(),
+                )
             } else if let Some(c) = char::from_u32(u32::try_from(*n).expect("chr() range check failed")) {
                 let s = c.to_string();
                 let heap_id = heap.allocate(HeapData::Str(Str::new(s)))?;
                 Ok(Value::Ref(heap_id))
             } else {
                 // This shouldn't happen for valid Unicode range, but handle it
-                Err(SimpleException::new_msg(ExcType::ValueError, format!("chr() arg not in range(0x110000)")).into())
+                Err(
+                    SimpleException::new_msg(ExcType::ValueError, "chr() arg not in range(0x110000)".to_string())
+                        .into(),
+                )
             }
         }
         Value::Bool(b) => {
@@ -37,7 +43,12 @@ pub fn builtin_chr(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
             Ok(Value::Ref(heap_id))
         }
         _ => {
-            Err(SimpleException::new_msg(ExcType::TypeError, format!("an integer is required (got type {})", value.py_type(heap))).into())
+            let type_name = value.py_type(heap);
+            Err(SimpleException::new_msg(
+                ExcType::TypeError,
+                format!("an integer is required (got type {type_name})"),
+            )
+            .into())
         }
     };
 

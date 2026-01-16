@@ -2,7 +2,7 @@
 
 use crate::{
     args::ArgValues,
-    exception_private::{SimpleException, ExcType, RunResult},
+    exception_private::{ExcType, RunResult, SimpleException},
     heap::Heap,
     resource::ResourceTracker,
     types::PyTrait,
@@ -35,7 +35,11 @@ pub fn builtin_round(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
             let type_name = v.py_type(heap);
             number.drop_with_heap(heap);
             v.drop_with_heap(heap);
-            return Err(SimpleException::new_msg(ExcType::TypeError, format!("'{}' object cannot be interpreted as an integer", type_name)).into());
+            return Err(SimpleException::new_msg(
+                ExcType::TypeError,
+                format!("'{type_name}' object cannot be interpreted as an integer"),
+            )
+            .into());
         }
         None => (None, None),
     };
@@ -67,16 +71,29 @@ pub fn builtin_round(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
             } else {
                 // No digits: round to nearest integer and return int (banker's rounding)
                 if f.is_nan() {
-                    Err(SimpleException::new_msg(ExcType::ValueError, format!("cannot convert float NaN to integer")).into())
+                    Err(SimpleException::new_msg(
+                        ExcType::ValueError,
+                        "cannot convert float NaN to integer".to_string(),
+                    )
+                    .into())
                 } else if f.is_infinite() {
-                    Err(SimpleException::new_msg(ExcType::OverflowError, format!("cannot convert float infinity to integer")).into())
+                    Err(SimpleException::new_msg(
+                        ExcType::OverflowError,
+                        "cannot convert float infinity to integer".to_string(),
+                    )
+                    .into())
                 } else {
                     Ok(Value::Int(f64_to_i64(bankers_round(*f))))
                 }
             }
         }
         _ => {
-            Err(SimpleException::new_msg(ExcType::TypeError, format!("type {} doesn't define __round__ method", number.py_type(heap))).into())
+            let type_name = number.py_type(heap);
+            Err(SimpleException::new_msg(
+                ExcType::TypeError,
+                format!("type {type_name} doesn't define __round__ method"),
+            )
+            .into())
         }
     };
 

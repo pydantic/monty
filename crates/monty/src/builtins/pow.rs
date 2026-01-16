@@ -2,7 +2,7 @@
 
 use crate::{
     args::ArgValues,
-    exception_private::{SimpleException, ExcType, RunResult},
+    exception_private::{ExcType, RunResult, SimpleException},
     heap::Heap,
     resource::ResourceTracker,
     types::PyTrait,
@@ -24,7 +24,9 @@ pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
         for v in positional {
             v.drop_with_heap(heap);
         }
-        return Err(SimpleException::new_msg(ExcType::TypeError, format!("pow() takes no keyword arguments")).into());
+        return Err(
+            SimpleException::new_msg(ExcType::TypeError, "pow() takes no keyword arguments".to_string()).into(),
+        );
     }
 
     let (base, exp, modulo) = match positional.len() {
@@ -40,7 +42,11 @@ pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
             for v in positional {
                 v.drop_with_heap(heap);
             }
-            return Err(SimpleException::new_msg(ExcType::TypeError, format!("pow expected 2 or 3 arguments, got {}", n)).into());
+            return Err(SimpleException::new_msg(
+                ExcType::TypeError,
+                format!("pow expected 2 or 3 arguments, got {n}"),
+            )
+            .into());
         }
     };
 
@@ -53,9 +59,16 @@ pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
         match (&base, &exp, &m) {
             (Value::Int(b), Value::Int(e), Value::Int(m_val)) => {
                 if *m_val == 0 {
-                    Err(SimpleException::new_msg(ExcType::ValueError, format!("pow() 3rd argument cannot be 0")).into())
+                    Err(
+                        SimpleException::new_msg(ExcType::ValueError, "pow() 3rd argument cannot be 0".to_string())
+                            .into(),
+                    )
                 } else if *e < 0 {
-                    Err(SimpleException::new_msg(ExcType::ValueError, format!("pow() 2nd argument cannot be negative when 3rd argument specified")).into())
+                    Err(SimpleException::new_msg(
+                        ExcType::ValueError,
+                        "pow() 2nd argument cannot be negative when 3rd argument specified".to_string(),
+                    )
+                    .into())
                 } else {
                     // Use modular exponentiation
                     let result = mod_pow(
@@ -66,9 +79,11 @@ pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
                     Ok(Value::Int(result))
                 }
             }
-            _ => {
-                Err(SimpleException::new_msg(ExcType::TypeError, format!("pow() 3rd argument not allowed unless all arguments are integers")).into())
-            }
+            _ => Err(SimpleException::new_msg(
+                ExcType::TypeError,
+                "pow() 3rd argument not allowed unless all arguments are integers".to_string(),
+            )
+            .into()),
         }
     } else {
         // Two-argument pow
@@ -77,7 +92,11 @@ pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
                 if *e < 0 {
                     // Negative exponent returns float
                     if *b == 0 {
-                        return Err(SimpleException::new_msg(ExcType::ZeroDivisionError, format!("0.0 cannot be raised to a negative power")).into());
+                        return Err(SimpleException::new_msg(
+                            ExcType::ZeroDivisionError,
+                            "0.0 cannot be raised to a negative power".to_string(),
+                        )
+                        .into());
                     }
                     Ok(Value::Float((*b as f64).powf(*e as f64)))
                 } else {
@@ -86,31 +105,51 @@ pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
                             Some(v) => Ok(Value::Int(v)),
                             None => {
                                 // TODO: replace with BigInt once available to match CPython semantics.
-                                Err(SimpleException::new_msg(ExcType::OverflowError, format!("result too large to represent")).into())
+                                Err(SimpleException::new_msg(
+                                    ExcType::OverflowError,
+                                    "result too large to represent".to_string(),
+                                )
+                                .into())
                             }
                         },
                         Err(_) => {
                             // TODO: replace with BigInt once available to match CPython semantics.
-                            Err(SimpleException::new_msg(ExcType::OverflowError, format!("result too large to represent")).into())
+                            Err(SimpleException::new_msg(
+                                ExcType::OverflowError,
+                                "result too large to represent".to_string(),
+                            )
+                            .into())
                         }
                     }
                 }
             }
             (Value::Float(b), Value::Float(e)) => {
                 if *b == 0.0 && *e < 0.0 {
-                    return Err(SimpleException::new_msg(ExcType::ZeroDivisionError, format!("0.0 cannot be raised to a negative power")).into());
+                    return Err(SimpleException::new_msg(
+                        ExcType::ZeroDivisionError,
+                        "0.0 cannot be raised to a negative power".to_string(),
+                    )
+                    .into());
                 }
                 Ok(Value::Float(b.powf(*e)))
             }
             (Value::Int(b), Value::Float(e)) => {
                 if *b == 0 && *e < 0.0 {
-                    return Err(SimpleException::new_msg(ExcType::ZeroDivisionError, format!("0.0 cannot be raised to a negative power")).into());
+                    return Err(SimpleException::new_msg(
+                        ExcType::ZeroDivisionError,
+                        "0.0 cannot be raised to a negative power".to_string(),
+                    )
+                    .into());
                 }
                 Ok(Value::Float((*b as f64).powf(*e)))
             }
             (Value::Float(b), Value::Int(e)) => {
                 if *b == 0.0 && *e < 0 {
-                    return Err(SimpleException::new_msg(ExcType::ZeroDivisionError, format!("0.0 cannot be raised to a negative power")).into());
+                    return Err(SimpleException::new_msg(
+                        ExcType::ZeroDivisionError,
+                        "0.0 cannot be raised to a negative power".to_string(),
+                    )
+                    .into());
                 }
                 if let Ok(exp_i32) = i32::try_from(*e) {
                     Ok(Value::Float(b.powi(exp_i32)))

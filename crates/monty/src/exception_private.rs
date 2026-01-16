@@ -304,7 +304,7 @@ impl ExcType {
     /// Matches CPython's error format: `KeyError: 'pop from an empty set'`
     #[must_use]
     pub(crate) fn key_error_pop_empty_set() -> RunError {
-        SimpleException::new_msg(Self::KeyError, format!("pop from an empty set")).into()
+        SimpleException::new_msg(Self::KeyError, "pop from an empty set".to_string()).into()
     }
 
     /// Creates a TypeError for when a function receives the wrong number of arguments.
@@ -323,14 +323,14 @@ impl ExcType {
             // CPython: "len() takes exactly one argument (2 given)"
             SimpleException::new_msg(
                 Self::TypeError,
-                format!("{}() takes exactly one argument ({} given)", name, actual),
+                format!("{name}() takes exactly one argument ({actual} given)"),
             )
             .into()
         } else {
             // CPython: "insert expected 2 arguments, got 1"
             SimpleException::new_msg(
                 Self::TypeError,
-                format!("{} expected {} arguments, got {}", name, expected, actual),
+                format!("{name} expected {expected} arguments, got {actual}"),
             )
             .into()
         }
@@ -346,11 +346,7 @@ impl ExcType {
     #[must_use]
     pub(crate) fn type_error_no_args(name: &str, actual: usize) -> RunError {
         // CPython: "dict.keys() takes no arguments (1 given)"
-        SimpleException::new_msg(
-            Self::TypeError,
-            format!("{}() takes no arguments ({} given)", name, actual),
-        )
-        .into()
+        SimpleException::new_msg(Self::TypeError, format!("{name}() takes no arguments ({actual} given)")).into()
     }
 
     /// Creates a TypeError for when a function receives fewer arguments than required.
@@ -366,7 +362,7 @@ impl ExcType {
         // CPython: "get expected at least 1 argument, got 0"
         SimpleException::new_msg(
             Self::TypeError,
-            format!("{} expected at least {} argument, got {}", name, min, actual),
+            format!("{name} expected at least {min} argument, got {actual}"),
         )
         .into()
     }
@@ -384,7 +380,7 @@ impl ExcType {
         // CPython: "get expected at most 2 arguments, got 3"
         SimpleException::new_msg(
             Self::TypeError,
-            format!("{} expected at most {} arguments, got {}", name, max, actual),
+            format!("{name} expected at most {max} arguments, got {actual}"),
         )
         .into()
     }
@@ -399,16 +395,13 @@ impl ExcType {
         if count == 1 {
             SimpleException::new_msg(
                 Self::TypeError,
-                format!("{}() missing 1 required positional argument: {}", name, names_str),
+                format!("{name}() missing 1 required positional argument: {names_str}"),
             )
             .into()
         } else {
             SimpleException::new_msg(
                 Self::TypeError,
-                format!(
-                    "{}()) missing {} required positional arguments: {}",
-                    name, count, names_str
-                ),
+                format!("{name}()) missing {count} required positional arguments: {names_str}"),
             )
             .into()
         }
@@ -424,16 +417,13 @@ impl ExcType {
         if count == 1 {
             SimpleException::new_msg(
                 Self::TypeError,
-                format!("{}() missing 1 required keyword-only argument: {}", name, names_str),
+                format!("{name}() missing 1 required keyword-only argument: {names_str}"),
             )
             .into()
         } else {
             SimpleException::new_msg(
                 Self::TypeError,
-                format!(
-                    "{}()) missing {} required keyword-only arguments: {}",
-                    name, count, names_str
-                ),
+                format!("{name}()) missing {count} required keyword-only arguments: {names_str}"),
             )
             .into()
         }
@@ -460,24 +450,20 @@ impl ExcType {
             SimpleException::new_msg(
                 Self::TypeError,
                 format!(
-                    "{}() takes {} positional {} but {} positional {} (and {} keyword-only {}) were given",
-                    name, max, takes_word, actual, given_word, kwonly_given, kwonly_word
+                    "{name}() takes {max} positional {takes_word} but {actual} positional {given_word} (and {kwonly_given} keyword-only {kwonly_word}) were given"
                 ),
             )
             .into()
         } else if max == 0 {
             SimpleException::new_msg(
                 Self::TypeError,
-                format!("{}() takes 0 positional arguments but {} were given", name, actual),
+                format!("{name}() takes 0 positional arguments but {actual} were given"),
             )
             .into()
         } else {
             SimpleException::new_msg(
                 Self::TypeError,
-                format!(
-                    "{}()) takes {} positional {} but {} were given",
-                    name, max, takes_word, actual
-                ),
+                format!("{name}()) takes {max} positional {takes_word} but {actual} were given"),
             )
             .into()
         }
@@ -490,10 +476,7 @@ impl ExcType {
     pub(crate) fn type_error_positional_only(name: &str, param: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
-            format!(
-                "{}() got some positional-only arguments passed as keyword arguments: '{}'",
-                name, param
-            ),
+            format!("{name}() got some positional-only arguments passed as keyword arguments: '{param}'"),
         )
         .into()
     }
@@ -557,7 +540,7 @@ impl ExcType {
     /// Creates a simple TypeError with a custom message.
     #[must_use]
     pub(crate) fn type_error(msg: &str) -> RunError {
-        SimpleException::new_msg(Self::TypeError, format!("{msg}")).into()
+        SimpleException::new_msg(Self::TypeError, msg.to_string()).into()
     }
 
     /// Creates a TypeError for bytes() constructor with invalid type.
@@ -613,7 +596,7 @@ impl ExcType {
     /// Matches CPython's format: `ValueError: negative count`
     #[must_use]
     pub(crate) fn value_error_negative_bytes_count() -> RunError {
-        exc_static!(Self::ValueError; "negative count").into()
+        SimpleException::new_msg(Self::ValueError, "negative count").into()
     }
 
     /// Creates a TypeError for isinstance() arg 2.
@@ -621,7 +604,11 @@ impl ExcType {
     /// Matches CPython's format: `TypeError: isinstance() arg 2 must be a type, a tuple of types, or a union`
     #[must_use]
     pub(crate) fn isinstance_arg2_error() -> RunError {
-        exc_static!(Self::TypeError; "isinstance() arg 2 must be a type, a tuple of types, or a union").into()
+        SimpleException::new_msg(
+            Self::TypeError,
+            "isinstance() arg 2 must be a type, a tuple of types, or a union",
+        )
+        .into()
     }
 
     /// Creates a TypeError for invalid exception type in except clause.
@@ -629,7 +616,11 @@ impl ExcType {
     /// Matches CPython's format: `TypeError: catching classes that do not inherit from BaseException is not allowed`
     #[must_use]
     pub(crate) fn except_invalid_type_error() -> RunError {
-        exc_static!(Self::TypeError; "catching classes that do not inherit from BaseException is not allowed").into()
+        SimpleException::new_msg(
+            Self::TypeError,
+            "catching classes that do not inherit from BaseException is not allowed",
+        )
+        .into()
     }
 
     /// Creates a ValueError for range() step argument being zero.
@@ -637,7 +628,7 @@ impl ExcType {
     /// Matches CPython's format: `ValueError: range() arg 3 must not be zero`
     #[must_use]
     pub(crate) fn value_error_range_step_zero() -> RunError {
-        exc_static!(Self::ValueError; "range() arg 3 must not be zero").into()
+        SimpleException::new_msg(Self::ValueError, "range() arg 3 must not be zero").into()
     }
 
     /// Creates a RuntimeError for dict mutation during iteration.
@@ -645,7 +636,7 @@ impl ExcType {
     /// Matches CPython's format: `RuntimeError: dictionary changed size during iteration`
     #[must_use]
     pub(crate) fn runtime_error_dict_changed_size() -> RunError {
-        exc_static!(Self::RuntimeError; "dictionary changed size during iteration").into()
+        SimpleException::new_msg(Self::RuntimeError, "dictionary changed size during iteration").into()
     }
 
     /// Creates a RuntimeError for set mutation during iteration.
@@ -653,7 +644,7 @@ impl ExcType {
     /// Matches CPython's format: `RuntimeError: Set changed size during iteration`
     #[must_use]
     pub(crate) fn runtime_error_set_changed_size() -> RunError {
-        exc_static!(Self::RuntimeError; "Set changed size during iteration").into()
+        SimpleException::new_msg(Self::RuntimeError, "Set changed size during iteration").into()
     }
 
     /// Creates a TypeError for functions that don't accept keyword arguments.
@@ -669,7 +660,7 @@ impl ExcType {
     /// Matches CPython's format: `IndexError('list index out of range')`
     #[must_use]
     pub(crate) fn list_index_error() -> RunError {
-        exc_static!(Self::IndexError; "list index out of range").into()
+        SimpleException::new_msg(Self::IndexError, "list index out of range").into()
     }
 
     /// Creates an IndexError for tuple index out of range.
@@ -677,7 +668,7 @@ impl ExcType {
     /// Matches CPython's format: `IndexError('tuple index out of range')`
     #[must_use]
     pub(crate) fn tuple_index_error() -> RunError {
-        exc_static!(Self::IndexError; "tuple index out of range").into()
+        SimpleException::new_msg(Self::IndexError, "tuple index out of range").into()
     }
 
     /// Creates a TypeError for non-integer sequence indices.
@@ -720,7 +711,7 @@ impl ExcType {
     pub(crate) fn not_implemented(feature: &str) -> SimpleException {
         SimpleException::new_msg(
             Self::NotImplementedError,
-            format!("The monty syntax parser does not yet support {}", feature),
+            format!("The monty syntax parser does not yet support {feature}"),
         )
     }
 
@@ -729,7 +720,7 @@ impl ExcType {
     /// Matches CPython 3.14's format: `ZeroDivisionError('division by zero')`
     #[must_use]
     pub(crate) fn zero_division() -> SimpleException {
-        exc_static!(Self::ZeroDivisionError; "division by zero")
+        SimpleException::new_msg(Self::ZeroDivisionError, "division by zero")
     }
 
     /// Creates a ZeroDivisionError for 0 raised to a negative power.
@@ -737,7 +728,7 @@ impl ExcType {
     /// Matches CPython 3.14's format: `ZeroDivisionError('zero to a negative power')`
     #[must_use]
     pub(crate) fn zero_pow_negative() -> SimpleException {
-        exc_static!(Self::ZeroDivisionError; "zero to a negative power")
+        SimpleException::new_msg(Self::ZeroDivisionError, "zero to a negative power")
     }
 
     /// Creates an OverflowError for string/sequence repetition with count too large.
@@ -745,7 +736,7 @@ impl ExcType {
     /// Matches CPython's format: `OverflowError('cannot fit 'int' into an index-sized integer')`
     #[must_use]
     pub(crate) fn overflow_repeat_count() -> SimpleException {
-        exc_static!(Self::OverflowError; "cannot fit 'int' into an index-sized integer")
+        SimpleException::new_msg(Self::OverflowError, "cannot fit 'int' into an index-sized integer")
     }
 
     /// Creates a ValueError for negative shift count in bitwise shift operations.
@@ -753,7 +744,7 @@ impl ExcType {
     /// Matches CPython's format: `ValueError: negative shift count`
     #[must_use]
     pub(crate) fn value_error_negative_shift_count() -> RunError {
-        exc_static!(Self::ValueError; "negative shift count").into()
+        SimpleException::new_msg(Self::ValueError, "negative shift count").into()
     }
 
     /// Creates an OverflowError for shift count exceeding integer size.
@@ -762,7 +753,7 @@ impl ExcType {
     /// Note: CPython uses this message because it tries to convert to ssize_t for the shift amount.
     #[must_use]
     pub(crate) fn overflow_shift_count() -> RunError {
-        exc_static!(Self::OverflowError; "Python int too large to convert to C ssize_t").into()
+        SimpleException::new_msg(Self::OverflowError, "Python int too large to convert to C ssize_t").into()
     }
 
     /// Creates a TypeError for unsupported binary operations.
@@ -779,7 +770,7 @@ impl ExcType {
         } else {
             format!("unsupported operand type(s) for {op}: '{lhs_type}' and '{rhs_type}'")
         };
-        SimpleException::new_msg(Self::TypeError, format!("{message}")).into()
+        SimpleException::new_msg(Self::TypeError, message).into()
     }
 
     /// Creates a TypeError for unsupported unary operations.
@@ -877,13 +868,6 @@ impl SimpleException {
         }
     }
 }
-
-macro_rules! exc_static {
-    ($error_type:expr; $msg:expr) => {
-        crate::exception_private::SimpleException::new($error_type, Some($msg.into()))
-    };
-}
-pub(crate) use exc_static;
 
 /// A raised exception with optional stack frame for traceback.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
