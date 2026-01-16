@@ -463,7 +463,7 @@ impl ExcType {
         } else {
             SimpleException::new_msg(
                 Self::TypeError,
-                format!("{name}()) takes {max} positional {takes_word} but {actual} were given"),
+                format!("{name}() takes {max} positional {takes_word} but {actual} were given"),
             )
             .into()
         }
