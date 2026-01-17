@@ -6,6 +6,125 @@ use std::time::Duration;
 
 use monty::{ExcType, LimitedTracker, MontyObject, MontyRun, ResourceLimits, StdPrint};
 
+/// Test that GC properly collects dict cycles via the has_refs() check in allocate().
+///
+/// This test creates cycles using dict literals and dict setitem. Dict setitem
+/// does NOT call mark_potential_cycle(), so the ONLY way may_have_cycles gets
+/// set is through the has_refs() check when allocating a dict with refs.
+///
+/// If has_refs() is disabled, this test will FAIL because GC never runs.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn gc_collects_dict_cycles_via_has_refs() {
+    // Create 200,001 dict cycles. Each iteration:
+    // - Creates empty dict d1
+    // - Creates dict d2 = {'ref': d1} - d2 is allocated WITH a ref to d1
+    //   This triggers has_refs() which sets may_have_cycles = true
+    // - Sets d1['ref'] = d2 - creates cycle d1 <-> d2
+    //   Dict setitem does NOT call mark_potential_cycle()
+    // - On next iteration, both dicts are reassigned, making the cycle unreachable
+    //
+    // GC runs every 100,000 allocations. With 200,001 iterations:
+    // - GC runs at 100k (collects cycles 0-49,999 approximately)
+    // - GC runs at 200k (collects more cycles)
+    // After GC runs, only the final cycle should remain.
+    let code = r"
+# Create many dict cycles
+for i in range(200001):
+    d1 = {}
+    d2 = {'ref': d1}  # d2 allocated WITH ref - has_refs() must trigger here
+    d1['ref'] = d2    # Cycle formed - dict setitem does NOT call mark_potential_cycle
+
+# Create final result (not a cycle)
+result = 'done'
+result
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let output = ex.run_ref_counts(vec![]).expect("should succeed");
+
+    // GC_INTERVAL is 100,000. With 200,001 iterations creating dict cycles,
+    // GC must have run at least once, resetting allocations_since_gc.
+    // If may_have_cycles was never set (has_refs() disabled), GC never runs
+    // and allocations_since_gc would be ~400k (2 dicts per iteration).
+    assert!(
+        output.allocations_since_gc < 100_000,
+        "GC should have run (has_refs() must set may_have_cycles): allocations_since_gc = {}",
+        output.allocations_since_gc
+    );
+
+    // Verify that GC collected most cycles.
+    // If GC failed to collect cycles, heap_count would be >> 400k.
+    // We allow a small number of extra objects for implementation details.
+    assert!(
+        output.heap_count < 20,
+        "GC should collect most unreachable dict cycles: {} heap objects (expected < 20)",
+        output.heap_count
+    );
+}
+
+/// Test that GC properly collects self-referencing list cycles.
+///
+/// This test creates cycles using list.append(), which calls mark_potential_cycle().
+/// This tests the mutation-based cycle detection path.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn gc_collects_list_cycles() {
+    // Create 200,001 self-referencing list cycles. Each iteration:
+    // - Creates empty list `a`
+    // - Appends `a` to itself (creating a self-reference cycle)
+    //   This calls mark_potential_cycle() and sets may_have_cycles = true
+    // - On next iteration, `a` is reassigned, making the cycle unreachable
+    //
+    // GC runs every 100,000 allocations. With 200,001 iterations:
+    // - GC runs at 100k (collects cycles 0-99,999)
+    // - GC runs at 200k (collects cycles 100k-199,999)
+    // After GC runs, only the final cycle should remain.
+    let code = r"
+# Create many self-referencing list cycles
+for i in range(200001):
+    a = []
+    a.append(a)  # Creates cycle via list.append() which calls mark_potential_cycle()
+
+# Create final result (not a cycle)
+result = [1, 2, 3]
+len(result)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let output = ex.run_ref_counts(vec![]).expect("should succeed");
+
+    // GC_INTERVAL is 100,000. With 200,001 iterations creating list cycles,
+    // GC must have run at least twice, resetting allocations_since_gc.
+    assert!(
+        output.allocations_since_gc < 100_000,
+        "GC should have run: allocations_since_gc = {}",
+        output.allocations_since_gc
+    );
+
+    // Verify that GC collected most cycles.
+    // If GC failed to collect cycles, heap_count would be >> 200k.
+    assert!(
+        output.heap_count < 20,
+        "GC should collect most unreachable list cycles: {} heap objects (expected < 20)",
+        output.heap_count
+    );
+
+    // Verify expected ref counts
+    // `a` is the last self-referencing list (refcount 2: variable + self-reference)
+    // `result` is a simple list (refcount 1: just the variable)
+    assert_eq!(
+        output.counts.get("a"),
+        Some(&2),
+        "self-referencing list should have refcount 2"
+    );
+    assert_eq!(
+        output.counts.get("result"),
+        Some(&1),
+        "result list should have refcount 1"
+    );
+}
+
 /// Test that allocation limits return an error.
 #[test]
 fn allocation_limit_exceeded() {

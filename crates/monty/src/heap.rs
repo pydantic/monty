@@ -611,7 +611,7 @@ pub struct HeapValue {
 /// Serialization requires `T: Serialize` and `T: Deserialize`. Custom serde implementation
 /// handles the Drop constraint by using `std::mem::take` during serialization.
 #[derive(Debug)]
-pub struct Heap<T: ResourceTracker> {
+pub(crate) struct Heap<T: ResourceTracker> {
     entries: Vec<Option<HeapValue>>,
     /// IDs of freed slots available for reuse. Populated by `dec_ref`, consumed by `allocate`.
     free_list: Vec<HeapId>,
@@ -627,7 +627,7 @@ pub struct Heap<T: ResourceTracker> {
 impl<T: ResourceTracker + serde::Serialize> serde::Serialize for Heap<T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("Heap", 4)?;
+        let mut state = serializer.serialize_struct("Heap", 5)?;
         state.serialize_field("entries", &self.entries)?;
         state.serialize_field("free_list", &self.free_list)?;
         state.serialize_field("tracker", &self.tracker)?;
@@ -729,6 +729,15 @@ impl<T: ResourceTracker> Heap<T> {
         self.may_have_cycles = true;
     }
 
+    /// Returns the number of GC-tracked allocations since the last garbage collection.
+    ///
+    /// This counter increments for each allocation of a GC-tracked type (List, Dict, etc.)
+    /// and resets to 0 when `collect_garbage` runs. Useful for testing GC behavior.
+    #[cfg(feature = "ref-count-return")]
+    pub fn get_allocations_since_gc(&self) -> u32 {
+        self.allocations_since_gc
+    }
+
     /// Allocates a new heap entry.
     ///
     /// Returns `Err(ResourceError)` if allocation would exceed configured limits.
@@ -743,7 +752,9 @@ impl<T: ResourceTracker> Heap<T> {
         self.tracker.on_allocate(|| data.py_estimate_size())?;
         if data.is_gc_tracked() {
             self.allocations_since_gc = self.allocations_since_gc.wrapping_add(1);
-            // Mark potential cycles if this container has heap references
+            // Mark potential cycles if this container has heap references.
+            // This is essential for types like Dict where setitem doesn't call
+            // mark_potential_cycle() - the allocation is the only place to detect refs.
             if data.has_refs() {
                 self.may_have_cycles = true;
             }

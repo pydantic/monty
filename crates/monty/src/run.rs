@@ -609,11 +609,14 @@ impl Executor {
         let py_object = frame_exit_to_object(frame_exit_result, &mut heap, &self.interns)
             .map_err(|e| e.into_python_exception(&self.interns, &self.code))?;
 
+        let allocations_since_gc = heap.get_allocations_since_gc();
+
         Ok(RefCountOutput {
             py_object,
             counts,
             unique_refs,
             heap_count,
+            allocations_since_gc,
         })
     }
 
@@ -665,6 +668,9 @@ fn frame_exit_to_object(
     }
 }
 
+/// Output from `run_ref_counts` containing reference count and heap information.
+///
+/// Used for testing GC behavior and reference counting correctness.
 #[cfg(feature = "ref-count-return")]
 #[derive(Debug)]
 pub struct RefCountOutput {
@@ -672,4 +678,9 @@ pub struct RefCountOutput {
     pub counts: ahash::AHashMap<String, usize>,
     pub unique_refs: usize,
     pub heap_count: usize,
+    /// Number of GC-tracked allocations since the last garbage collection.
+    ///
+    /// If GC ran during execution, this will be lower than the total number of
+    /// allocations. Compare this against expected allocation count to verify GC ran.
+    pub allocations_since_gc: u32,
 }
