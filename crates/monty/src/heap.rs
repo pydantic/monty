@@ -695,6 +695,15 @@ impl<T: ResourceTracker> Heap<T> {
         self.may_have_cycles = true;
     }
 
+    /// Returns whether reference cycles may exist in the heap.
+    ///
+    /// When false, GC can be skipped entirely since no cycles are possible.
+    /// This happens when only primitive values are stored in containers.
+    #[inline]
+    pub fn may_have_cycles(&self) -> bool {
+        self.may_have_cycles
+    }
+
     /// Allocates a new heap entry.
     ///
     /// Returns `Err(ResourceError)` if allocation would exceed configured limits.
@@ -1300,10 +1309,9 @@ impl<T: ResourceTracker> Heap<T> {
     /// This is necessary because reference counting alone cannot free cycles
     /// where objects reference each other but are unreachable from the program.
     ///
-    /// # Optimization
-    /// If `may_have_cycles` is false, the mark-sweep phase is skipped entirely
-    /// since no cycles can exist. This happens when only primitive values are
-    /// stored in containers.
+    /// # Caller Responsibility
+    /// The caller should check `may_have_cycles()` before calling this method.
+    /// If no cycles are possible, the caller can skip GC entirely.
     ///
     /// # Arguments
     /// * `get_roots` - Closure returning an iterator of HeapIds that are roots
@@ -1312,15 +1320,6 @@ impl<T: ResourceTracker> Heap<T> {
         I: Iterator<Item = HeapId>,
         F: FnOnce() -> I,
     {
-        // Skip mark-sweep if no cycles are possible
-        if !self.may_have_cycles {
-            self.tracker.on_gc_complete(0, 0);
-            return;
-        }
-
-        // Count live objects before GC for adaptive interval tuning
-        let heap_size_before = self.entries.iter().filter(|e| e.is_some()).count();
-
         // Mark phase: collect all reachable IDs using BFS
         // Use Vec<bool> instead of HashSet for O(1) operations without hashing overhead
         let mut reachable: Vec<bool> = vec![false; self.entries.len()];
@@ -1343,7 +1342,6 @@ impl<T: ResourceTracker> Heap<T> {
         }
 
         // Sweep phase: free unreachable values
-        let mut freed_count = 0;
         for (id, value) in self.entries.iter_mut().enumerate() {
             if reachable[id] {
                 continue;
@@ -1351,8 +1349,6 @@ impl<T: ResourceTracker> Heap<T> {
 
             // This entry is unreachable - free it
             if let Some(value) = value.take() {
-                freed_count += 1;
-
                 // Notify tracker of freed memory
                 if let Some(ref data) = value.data {
                     self.tracker.on_free(|| data.py_estimate_size());
@@ -1371,8 +1367,8 @@ impl<T: ResourceTracker> Heap<T> {
         // Reset cycle flag after GC - cycles have been collected
         self.may_have_cycles = false;
 
-        // Notify tracker that GC is complete with stats for adaptive tuning
-        self.tracker.on_gc_complete(heap_size_before, freed_count);
+        // Notify tracker that GC is complete
+        self.tracker.on_gc_complete();
     }
 }
 
