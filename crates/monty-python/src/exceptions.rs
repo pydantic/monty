@@ -268,10 +268,10 @@ impl MontyRuntimeError {
     fn __str__(slf: PyRef<'_, Self>) -> String {
         let parent = slf.as_super();
         let exc_type_name = parent.exc_type();
-        if let Some(msg) = parent.message() {
-            if !msg.is_empty() {
-                return format!("{exc_type_name}: {msg}");
-            }
+        if let Some(msg) = parent.message()
+            && !msg.is_empty()
+        {
+            return format!("{exc_type_name}: {msg}");
         }
         format!("{exc_type_name}")
     }
@@ -280,10 +280,10 @@ impl MontyRuntimeError {
     fn __repr__(slf: PyRef<'_, Self>) -> String {
         let parent = slf.as_super();
         let exc_type_name = parent.exc_type();
-        if let Some(msg) = parent.message() {
-            if !msg.is_empty() {
-                return format!("MontyRuntimeError({exc_type_name}: {msg})");
-            }
+        if let Some(msg) = parent.message()
+            && !msg.is_empty()
+        {
+            return format!("MontyRuntimeError({exc_type_name}: {msg})");
         }
         format!("MontyRuntimeError({exc_type_name})")
     }
