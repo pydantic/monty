@@ -1,6 +1,7 @@
+// Use codspeed-criterion-compat when running on CodSpeed (CI), real criterion otherwise (for flamegraphs)
+#[cfg(not(codspeed))]
 use std::ffi::CString;
 
-// Use codspeed-criterion-compat when running on CodSpeed (CI), real criterion otherwise (for flamegraphs)
 #[cfg(codspeed)]
 use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 #[cfg(not(codspeed))]
@@ -8,6 +9,8 @@ use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 use monty::MontyRun;
 #[cfg(not(codspeed))]
 use pprof::criterion::{Output, PProfProfiler};
+// CPython benchmarks are only run locally, not on CodSpeed CI (requires Python + pyo3 setup)
+#[cfg(not(codspeed))]
 use pyo3::prelude::*;
 
 /// Runs a benchmark using the Monty interpreter.
@@ -27,6 +30,7 @@ fn run_monty(bench: &mut Bencher, code: &str, expected: i64) {
 
 /// Runs a benchmark using CPython.
 /// Wraps code in main(), parses once, then benchmarks repeated execution.
+#[cfg(not(codspeed))]
 fn run_cpython(bench: &mut Bencher, code: &str, expected: i64) {
     Python::attach(|py| {
         let wrapped = wrap_for_cpython(code);
@@ -51,6 +55,7 @@ fn run_cpython(bench: &mut Bencher, code: &str, expected: i64) {
 
 /// Wraps code in a main() function for CPython execution.
 /// Indents each line and converts the last expression to a return statement.
+#[cfg(not(codspeed))]
 fn wrap_for_cpython(code: &str) -> String {
     let mut lines: Vec<String> = Vec::new();
     let mut last_expr = String::new();
@@ -139,6 +144,7 @@ fn end_to_end_monty(bench: &mut Bencher) {
 
 /// Benchmarks end-to-end execution (parsing + running) using CPython.
 /// This is different from other benchmarks as it includes parsing in the loop.
+#[cfg(not(codspeed))]
 fn end_to_end_cpython(bench: &mut Bencher) {
     Python::attach(|py| {
         bench.iter(|| {
@@ -158,34 +164,43 @@ fn end_to_end_cpython(bench: &mut Bencher) {
 /// Configures all benchmarks in a single group.
 fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("add_two__monty", |b| run_monty(b, ADD_TWO, 3));
+    #[cfg(not(codspeed))]
     c.bench_function("add_two__cpython", |b| run_cpython(b, ADD_TWO, 3));
 
     c.bench_function("list_append__monty", |b| run_monty(b, LIST_APPEND, 42));
+    #[cfg(not(codspeed))]
     c.bench_function("list_append__cpython", |b| run_cpython(b, LIST_APPEND, 42));
 
     c.bench_function("loop_mod_13__monty", |b| run_monty(b, LOOP_MOD_13, 77));
+    #[cfg(not(codspeed))]
     c.bench_function("loop_mod_13__cpython", |b| run_cpython(b, LOOP_MOD_13, 77));
 
     c.bench_function("end_to_end__monty", end_to_end_monty);
+    #[cfg(not(codspeed))]
     c.bench_function("end_to_end__cpython", end_to_end_cpython);
 
     c.bench_function("kitchen_sink__monty", |b| run_monty(b, KITCHEN_SINK, 58));
+    #[cfg(not(codspeed))]
     c.bench_function("kitchen_sink__cpython", |b| run_cpython(b, KITCHEN_SINK, 58));
 
     c.bench_function("func_call_kwargs__monty", |b| run_monty(b, FUNC_CALL_KWARGS, 3));
+    #[cfg(not(codspeed))]
     c.bench_function("func_call_kwargs__cpython", |b| run_cpython(b, FUNC_CALL_KWARGS, 3));
 
     c.bench_function("list_append_str__monty", |b| run_monty(b, LIST_APPEND_STR, 100_000));
+    #[cfg(not(codspeed))]
     c.bench_function("list_append_str__cpython", |b| run_cpython(b, LIST_APPEND_STR, 100_000));
 
     c.bench_function("list_append_int__monty", |b| {
         run_monty(b, LIST_APPEND_INT, 4_999_950_000);
     });
+    #[cfg(not(codspeed))]
     c.bench_function("list_append_int__cpython", |b| {
         run_cpython(b, LIST_APPEND_INT, 4_999_950_000);
     });
 
     c.bench_function("fib__monty", |b| run_monty(b, FIB_25, 75_025));
+    #[cfg(not(codspeed))]
     c.bench_function("fib__cpython", |b| run_cpython(b, FIB_25, 75_025));
 }
 
