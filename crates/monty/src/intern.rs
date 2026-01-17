@@ -26,7 +26,7 @@ pub struct StringId(u32);
 pub const MODULE_STRING_ID: StringId = StringId(0);
 
 /// update MAX_ATTR_ID when adding new attrs
-const MAX_ATTR_ID: u32 = 58;
+const MAX_ATTR_ID: u32 = 61;
 
 /// Number of ASCII single-character strings pre-interned at startup.
 const ASCII_STRING_COUNT: u32 = 128;
@@ -143,7 +143,11 @@ pub mod attr {
     pub const CENTER: StringId = StringId(55);
     pub const LJUST: StringId = StringId(56);
     pub const RJUST: StringId = StringId(57);
-    pub const ZFILL: StringId = StringId(MAX_ATTR_ID);
+    pub const ZFILL: StringId = StringId(58);
+    // Additional methods
+    pub const ENCODE: StringId = StringId(59);
+    pub const ISIDENTIFIER: StringId = StringId(60);
+    pub const ISTITLE: StringId = StringId(MAX_ATTR_ID);
 }
 
 impl StringId {
@@ -388,6 +392,13 @@ impl InternerBuilder {
         debug_assert_eq!(id, attr::RJUST);
         let id = interner.intern_static("zfill");
         debug_assert_eq!(id, attr::ZFILL);
+        // Additional methods
+        let id = interner.intern_static("encode");
+        debug_assert_eq!(id, attr::ENCODE);
+        let id = interner.intern_static("isidentifier");
+        debug_assert_eq!(id, attr::ISIDENTIFIER);
+        let id = interner.intern_static("istitle");
+        debug_assert_eq!(id, attr::ISTITLE);
 
         // Pre-intern ASCII single-character strings so string iteration can reuse interns.
         for byte in 0u8..=127 {

@@ -271,3 +271,35 @@ assert 'a\nb\nc'.splitlines(keepends=False) == ['a', 'b', 'c'], 'splitlines keep
 
 # replace with keyword args
 assert 'aaa'.replace('a', 'b', count=2) == 'bba', 'replace count kwarg'
+
+# === Phase 9: Additional methods ===
+
+# encode()
+assert 'hello'.encode() == b'hello', 'encode default'
+assert 'hello'.encode('utf-8') == b'hello', 'encode utf-8'
+assert 'hello'.encode('utf8') == b'hello', 'encode utf8 alias'
+assert 'hello'.encode('UTF-8') == b'hello', 'encode UTF-8 case insensitive'
+assert ''.encode() == b'', 'encode empty'
+assert 'hello'.encode('utf-8', 'strict') == b'hello', 'encode with errors'
+
+# isidentifier()
+assert 'hello'.isidentifier() == True, 'isidentifier basic'
+assert '_hello'.isidentifier() == True, 'isidentifier underscore'
+assert '__init__'.isidentifier() == True, 'isidentifier dunder'
+assert 'hello123'.isidentifier() == True, 'isidentifier with digits'
+assert ''.isidentifier() == False, 'isidentifier empty'
+assert '123hello'.isidentifier() == False, 'isidentifier digit start'
+assert 'hello world'.isidentifier() == False, 'isidentifier with space'
+assert 'hello-world'.isidentifier() == False, 'isidentifier with dash'
+assert 'class'.isidentifier() == True, 'isidentifier keyword'  # isidentifier doesn't check keywords
+
+# istitle()
+assert 'Hello World'.istitle() == True, 'istitle basic'
+assert 'Hello'.istitle() == True, 'istitle single word'
+assert 'HELLO'.istitle() == False, 'istitle all upper'
+assert 'hello'.istitle() == False, 'istitle all lower'
+assert ''.istitle() == False, 'istitle empty'
+assert 'Hello world'.istitle() == False, 'istitle lowercase word'
+assert '123'.istitle() == False, 'istitle numbers only'
+assert 'Hello 123 World'.istitle() == True, 'istitle with numbers'
+assert "They'Re".istitle() == True, 'istitle apostrophe'

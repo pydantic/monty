@@ -858,6 +858,22 @@ impl ExcType {
     pub(crate) fn type_error_fillchar_must_be_single_char() -> RunError {
         SimpleException::new_msg(Self::TypeError, "The fill character must be exactly one character long").into()
     }
+
+    /// Creates a LookupError for unknown encoding.
+    ///
+    /// Matches CPython's format: `LookupError: unknown encoding: {encoding}`
+    #[must_use]
+    pub(crate) fn lookup_error_unknown_encoding(encoding: &str) -> RunError {
+        SimpleException::new_msg(Self::LookupError, format!("unknown encoding: {encoding}")).into()
+    }
+
+    /// Creates a LookupError for unknown error handler.
+    ///
+    /// Matches CPython's format: `LookupError: unknown error handler name '{name}'`
+    #[must_use]
+    pub(crate) fn lookup_error_unknown_error_handler(name: &str) -> RunError {
+        SimpleException::new_msg(Self::LookupError, format!("unknown error handler name '{name}'")).into()
+    }
 }
 
 /// Simple lightweight representation of an exception.

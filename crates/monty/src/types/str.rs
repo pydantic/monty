@@ -7,7 +7,7 @@ use std::fmt::Write;
 
 use ahash::AHashSet;
 
-use super::PyTrait;
+use super::{Bytes, PyTrait};
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},
@@ -296,6 +296,16 @@ pub fn call_str_method(
         attr::LJUST => str_ljust(s, args, heap, interns),
         attr::RJUST => str_rjust(s, args, heap, interns),
         attr::ZFILL => str_zfill(s, args, heap),
+        // Additional methods
+        attr::ENCODE => str_encode(s, args, heap, interns),
+        attr::ISIDENTIFIER => {
+            args.check_zero_args("str.isidentifier", heap)?;
+            Ok(Value::Bool(str_isidentifier(s)))
+        }
+        attr::ISTITLE => {
+            args.check_zero_args("str.istitle", heap)?;
+            Ok(Value::Bool(str_istitle(s)))
+        }
         // Existing method
         attr::JOIN => {
             let iterable = args.get_one_arg("str.join", heap)?;
@@ -1806,4 +1816,132 @@ fn str_zfill(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>) ->
 
     let heap_id = heap.allocate(HeapData::Str(Str::new(result)))?;
     Ok(Value::Ref(heap_id))
+}
+
+/// Implements Python's `str.encode(encoding='utf-8', errors='strict')` method.
+///
+/// Returns an encoded version of the string as a bytes object. Only supports
+/// UTF-8 encoding (the native encoding for Rust strings).
+fn str_encode(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Value> {
+    let (encoding, errors) = parse_encode_args(args, heap, interns)?;
+
+    // Only UTF-8 is supported - Rust strings are always valid UTF-8
+    let encoding_lower = encoding.to_ascii_lowercase();
+    if encoding_lower != "utf-8" && encoding_lower != "utf8" {
+        return Err(ExcType::lookup_error_unknown_encoding(&encoding));
+    }
+
+    // For UTF-8 encoding of a valid UTF-8 string, errors mode doesn't matter
+    // since there's nothing to handle - the string is already valid UTF-8
+    if errors != "strict" && errors != "ignore" && errors != "replace" && errors != "backslashreplace" {
+        return Err(ExcType::lookup_error_unknown_error_handler(&errors));
+    }
+
+    let bytes = s.as_bytes().to_vec();
+    let heap_id = heap.allocate(HeapData::Bytes(Bytes::new(bytes)))?;
+    Ok(Value::Ref(heap_id))
+}
+
+/// Parses arguments for `str.encode()`.
+///
+/// Returns (encoding, errors) with defaults "utf-8" and "strict".
+fn parse_encode_args(
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<(String, String)> {
+    let (first, second) = args.get_zero_one_two_args("str.encode", heap)?;
+
+    let encoding = if let Some(v) = first {
+        let s = extract_string_arg(&v, heap, interns)?;
+        v.drop_with_heap(heap);
+        s
+    } else {
+        "utf-8".to_owned()
+    };
+
+    let errors = if let Some(v) = second {
+        let s = extract_string_arg(&v, heap, interns)?;
+        v.drop_with_heap(heap);
+        s
+    } else {
+        "strict".to_owned()
+    };
+
+    Ok((encoding, errors))
+}
+
+/// Implements Python's `str.isidentifier()` predicate.
+///
+/// Returns True if the string is a valid Python identifier according to
+/// the language definition (starts with letter or underscore, followed by
+/// letters, digits, or underscores). Empty strings return False.
+fn str_isidentifier(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+
+    let mut chars = s.chars();
+
+    // First character must be a letter (Unicode) or underscore
+    let first = chars.next().unwrap();
+    if !is_xid_start(first) && first != '_' {
+        return false;
+    }
+
+    // Remaining characters must be letters, digits (Unicode), or underscores
+    chars.all(is_xid_continue)
+}
+
+/// Checks if a character is valid at the start of an identifier (XID_Start).
+///
+/// This is a simplified implementation that covers ASCII and common Unicode letters.
+/// Python uses the full Unicode XID_Start property.
+fn is_xid_start(c: char) -> bool {
+    c.is_alphabetic()
+}
+
+/// Checks if a character is valid in the continuation of an identifier (XID_Continue).
+///
+/// This is a simplified implementation that covers ASCII and common Unicode.
+/// Python uses the full Unicode XID_Continue property.
+fn is_xid_continue(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Implements Python's `str.istitle()` predicate.
+///
+/// Returns True if the string is titlecased: uppercase characters follow
+/// uncased characters and lowercase characters follow cased characters.
+/// Empty strings return False.
+fn str_istitle(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+
+    let mut prev_cased = false;
+    let mut has_cased = false;
+
+    for c in s.chars() {
+        if c.is_uppercase() {
+            // Uppercase must follow uncased
+            if prev_cased {
+                return false;
+            }
+            prev_cased = true;
+            has_cased = true;
+        } else if c.is_lowercase() {
+            // Lowercase must follow cased
+            if !prev_cased {
+                return false;
+            }
+            prev_cased = true;
+            has_cased = true;
+        } else {
+            // Uncased character
+            prev_cased = false;
+        }
+    }
+
+    has_cased
 }

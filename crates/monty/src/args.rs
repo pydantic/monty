@@ -106,6 +106,27 @@ impl ArgValues {
         }
     }
 
+    /// Checks that zero, one, or two arguments were passed.
+    ///
+    /// Returns (None, None) for 0 args, (Some(a), None) for 1 arg, (Some(a), Some(b)) for 2 args.
+    /// On error, properly drops all contained values to maintain reference counts.
+    pub fn get_zero_one_two_args(
+        self,
+        name: &str,
+        heap: &mut Heap<impl ResourceTracker>,
+    ) -> RunResult<(Option<Value>, Option<Value>)> {
+        match self {
+            Self::Empty => Ok((None, None)),
+            Self::One(a) => Ok((Some(a), None)),
+            Self::Two(a, b) => Ok((Some(a), Some(b))),
+            other => {
+                let count = other.count();
+                other.drop_with_heap(heap);
+                Err(ExcType::type_error_at_most(name, 2, count))
+            }
+        }
+    }
+
     /// Splits into positional iterator and keyword values without allocating
     /// for the common One/Two cases.
     pub fn into_parts(self) -> (ArgPosIter, KwargsValues) {
