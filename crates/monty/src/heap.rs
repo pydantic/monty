@@ -147,7 +147,7 @@ impl HeapData {
             Self::Dataclass(dc) => dc.has_refs(),
             Self::Iterator(iter) => iter.has_refs(),
             // Leaf types cannot have refs
-            Self::Str(_) | Self::Bytes(_) | Self::Range(_) | Self::Exception(_) => false,
+            Self::Str(_) | Self::Bytes(_) | Self::Range(_) | Self::Exception(_) | Self::LongInt(_) => false,
         }
     }
 
