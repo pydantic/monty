@@ -28,11 +28,15 @@ pub const MODULE_STRING_ID: StringId = StringId(0);
 /// update MAX_ATTR_ID when adding new attrs
 const MAX_ATTR_ID: u32 = 61;
 
+/// The StringId for the empty string `""` - interned for allocation-free empty string returns.
+pub const EMPTY_STRING: StringId = StringId(MAX_ATTR_ID + 1);
+
 /// Number of ASCII single-character strings pre-interned at startup.
 const ASCII_STRING_COUNT: u32 = 128;
 
 /// First StringId reserved for ASCII single-character interns.
-const ASCII_STRING_START_ID: u32 = MAX_ATTR_ID + 1;
+/// Starts after MAX_ATTR_ID and EMPTY_STRING.
+const ASCII_STRING_START_ID: u32 = MAX_ATTR_ID + 2;
 
 /// Static strings for all 128 ASCII characters, built once on first access.
 ///
@@ -280,7 +284,8 @@ impl InternerBuilder {
     /// Called once by `BASE_INTERNER` lazy initialization. Contains `<module>`,
     /// all attribute names, and ASCII single-character strings.
     fn build_base() -> Self {
-        let base_count = (MAX_ATTR_ID + ASCII_STRING_COUNT + 1) as usize;
+        // +1 for <module>, +1 for empty string
+        let base_count = (MAX_ATTR_ID + ASCII_STRING_COUNT + 2) as usize;
         let mut interner = Self {
             string_map: AHashMap::with_capacity(base_count),
             strings: Vec::with_capacity(base_count),
@@ -424,6 +429,10 @@ impl InternerBuilder {
         debug_assert_eq!(id, attr::ISIDENTIFIER);
         let id = interner.intern_static("istitle");
         debug_assert_eq!(id, attr::ISTITLE);
+
+        // Pre-intern the empty string for allocation-free empty string returns
+        let id = interner.intern_static("");
+        debug_assert_eq!(id, EMPTY_STRING);
 
         // Pre-intern ASCII single-character strings so string iteration can reuse interns.
         for byte in 0u8..=127 {

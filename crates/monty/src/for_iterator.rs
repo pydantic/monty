@@ -24,7 +24,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId},
     intern::{BytesId, Interns},
     resource::ResourceTracker,
-    types::{PyTrait, Range},
+    types::{PyTrait, Range, str::allocate_char},
     value::Value,
 };
 
@@ -358,7 +358,7 @@ impl ForIterator {
                     .expect("index < len implies char exists");
                 *byte_offset += c.len_utf8();
                 self.index += 1;
-                Ok(Some(heap.allocate_char(c)?))
+                Ok(Some(allocate_char(c, heap)?))
             }
             ForIterValue::HeapBytes { heap_id, len } => {
                 if self.index >= *len {

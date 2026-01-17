@@ -128,9 +128,10 @@ len(result)
 /// Test that allocation limits return an error.
 #[test]
 fn allocation_limit_exceeded() {
+    // Use multi-character strings to ensure heap allocation (single ASCII chars are interned)
     let code = r"
 result = []
-for i in range(11):
+for i in range(100, 115):
     result.append(str(i))
 result
 ";
@@ -151,6 +152,7 @@ result
 
 #[test]
 fn allocation_limit_not_exceeded() {
+    // Single-digit strings are interned (no allocation), so this uses minimal heap
     let code = r"
 result = []
 for i in range(9):
@@ -159,8 +161,9 @@ result
 ";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
 
-    // Allocations: list (1) + range (1) + iterator (1) + str(0)...str(8) (9) = 12
-    let limits = ResourceLimits::new().max_allocations(12);
+    // Allocations: list (1) + range (1) + iterator (1) = 3
+    // Note: str(0)...str(8) are single ASCII chars, so they use pre-interned strings
+    let limits = ResourceLimits::new().max_allocations(5);
     let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
 
     // Should succeed

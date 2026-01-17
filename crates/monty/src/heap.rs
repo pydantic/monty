@@ -13,9 +13,11 @@ use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult, SimpleException},
     for_iterator::{ForIterator, IterState},
-    intern::{FunctionId, Interns, ascii_string_id},
+    intern::{FunctionId, Interns},
     resource::{ResourceError, ResourceTracker},
-    types::{Bytes, Dataclass, Dict, FrozenSet, List, LongInt, PyTrait, Range, Set, Str, Tuple, Type},
+    types::{
+        Bytes, Dataclass, Dict, FrozenSet, List, LongInt, PyTrait, Range, Set, Str, Tuple, Type, str::allocate_char,
+    },
     value::{Attr, Value},
 };
 
@@ -781,23 +783,6 @@ impl<T: ResourceTracker> Heap<T> {
         Ok(id)
     }
 
-    /// Creates a `Value` for a single character, using interned ASCII when possible.
-    ///
-    /// For ASCII characters (0-127), returns `Value::InternString` pointing to a
-    /// pre-interned single-character string, avoiding heap allocation entirely.
-    /// For non-ASCII characters, allocates a new string on the heap.
-    ///
-    /// This is more efficient than always allocating when iterating over strings
-    /// or using `chr()`, since ASCII characters are very common.
-    pub fn allocate_char(&mut self, c: char) -> Result<Value, ResourceError> {
-        if c.is_ascii() {
-            Ok(Value::InternString(ascii_string_id(c as u8)))
-        } else {
-            let heap_id = self.allocate(HeapData::Str(Str::new(c.to_string())))?;
-            Ok(Value::Ref(heap_id))
-        }
-    }
-
     /// Increments the reference count for an existing heap entry.
     ///
     /// # Panics
@@ -952,7 +937,7 @@ impl<T: ResourceTracker> Heap<T> {
             }
 
             IterState::IterStr { char, char_len } => {
-                let value = self.allocate_char(char)?;
+                let value = allocate_char(char, self)?;
                 (value, Some(char_len))
             }
 

@@ -5,7 +5,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     heap::Heap,
     resource::ResourceTracker,
-    types::PyTrait,
+    types::{PyTrait, str::allocate_char},
     value::Value,
 };
 
@@ -21,7 +21,7 @@ pub fn builtin_chr(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
             if *n < 0 || *n > 0x0010_FFFF {
                 Err(SimpleException::new_msg(ExcType::ValueError, "chr() arg not in range(0x110000)").into())
             } else if let Some(c) = char::from_u32(u32::try_from(*n).expect("chr() range check failed")) {
-                Ok(heap.allocate_char(c)?)
+                Ok(allocate_char(c, heap)?)
             } else {
                 // This shouldn't happen for valid Unicode range, but handle it
                 Err(SimpleException::new_msg(ExcType::ValueError, "chr() arg not in range(0x110000)").into())
@@ -30,7 +30,7 @@ pub fn builtin_chr(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
         Value::Bool(b) => {
             // bool is subclass of int
             let c = if *b { '\x01' } else { '\x00' };
-            Ok(heap.allocate_char(c)?)
+            Ok(allocate_char(c, heap)?)
         }
         _ => {
             let type_name = value.py_type(heap);

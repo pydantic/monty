@@ -13,8 +13,8 @@ use crate::{
     exception_private::{ExcType, RunResult},
     for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StringId, attr},
-    resource::ResourceTracker,
+    intern::{EMPTY_STRING, Interns, StringId, ascii_string_id, attr},
+    resource::{ResourceError, ResourceTracker},
     types::Type,
     value::{Attr, Value},
 };
@@ -51,15 +51,11 @@ impl Str {
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
         let value = args.get_zero_one_arg("str", heap)?;
         match value {
-            None => {
-                let heap_id = heap.allocate(HeapData::Str(Self::new(String::new())))?;
-                Ok(Value::Ref(heap_id))
-            }
+            None => Ok(Value::InternString(EMPTY_STRING)),
             Some(v) => {
                 let s = v.py_str(heap, interns).into_owned();
-                let heap_id = heap.allocate(HeapData::Str(Self::new(s)))?;
                 v.drop_with_heap(heap);
-                Ok(Value::Ref(heap_id))
+                allocate_string(s, heap)
             }
         }
     }
@@ -80,6 +76,45 @@ impl From<&str> for Str {
 impl From<Str> for String {
     fn from(value: Str) -> Self {
         value.0
+    }
+}
+
+/// Allocates a string, using interned versions when possible.
+///
+/// Optimizations:
+/// - Empty strings return the pre-interned `EMPTY_STRING`
+/// - Single ASCII characters return pre-interned ASCII strings
+/// - Other strings are allocated on the heap
+///
+/// This avoids heap allocation for common cases like results from `strip()`,
+/// `split()`, string iteration, etc.
+pub fn allocate_string(s: String, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    match s.len() {
+        0 => Ok(Value::InternString(EMPTY_STRING)),
+        1 => {
+            // Single byte means single ASCII character
+            let byte = s.as_bytes()[0];
+            Ok(Value::InternString(ascii_string_id(byte)))
+        }
+        _ => {
+            let heap_id = heap.allocate(HeapData::Str(Str::new(s)))?;
+            Ok(Value::Ref(heap_id))
+        }
+    }
+}
+
+/// Allocates a single character as a string value.
+///
+/// ASCII characters use pre-interned strings for efficiency.
+/// Non-ASCII characters are allocated on the heap.
+///
+/// This is used by string iteration and `chr()` builtin.
+pub fn allocate_char(c: char, heap: &mut Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
+    if c.is_ascii() {
+        Ok(Value::InternString(ascii_string_id(c as u8)))
+    } else {
+        let heap_id = heap.allocate(HeapData::Str(Str::new(c.to_string())))?;
+        Ok(Value::Ref(heap_id))
     }
 }
 
@@ -406,9 +441,8 @@ fn str_join(
 
     iter.drop_with_heap(heap);
 
-    // Allocate result on heap
-    let heap_id = heap.allocate(HeapData::Str(Str::new(result)))?;
-    Ok(Value::Ref(heap_id))
+    // Allocate result (uses interned empty string if result is empty)
+    allocate_string(result, heap)
 }
 
 /// Writes a Python repr() string for a given string slice to a formatter.
@@ -479,16 +513,12 @@ pub fn string_repr(s: &str) -> String {
 
 /// Implements Python's `str.lower()` method.
 fn str_lower(s: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-    let result = s.to_lowercase();
-    let heap_id = heap.allocate(HeapData::Str(Str::new(result)))?;
-    Ok(Value::Ref(heap_id))
+    allocate_string(s.to_lowercase(), heap)
 }
 
 /// Implements Python's `str.upper()` method.
 fn str_upper(s: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-    let result = s.to_uppercase();
-    let heap_id = heap.allocate(HeapData::Str(Str::new(result)))?;
-    Ok(Value::Ref(heap_id))
+    allocate_string(s.to_uppercase(), heap)
 }
 
 /// Implements Python's `str.capitalize()` method.
@@ -506,8 +536,7 @@ fn str_capitalize(s: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<V
             result
         }
     };
-    let heap_id = heap.allocate(HeapData::Str(Str::new(result)))?;
-    Ok(Value::Ref(heap_id))
+    allocate_string(result, heap)
 }
 
 /// Implements Python's `str.title()` method.
@@ -527,8 +556,7 @@ fn str_title(s: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value>
         prev_is_cased = c.is_alphabetic();
     }
 
-    let heap_id = heap.allocate(HeapData::Str(Str::new(result)))?;
-    Ok(Value::Ref(heap_id))
+    allocate_string(result, heap)
 }
 
 /// Implements Python's `str.swapcase()` method.
@@ -547,8 +575,7 @@ fn str_swapcase(s: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Val
         }
     }
 
-    let heap_id = heap.allocate(HeapData::Str(Str::new(result)))?;
-    Ok(Value::Ref(heap_id))
+    allocate_string(result, heap)
 }
 
 /// Implements Python's `str.casefold()` method.
@@ -557,9 +584,7 @@ fn str_swapcase(s: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Val
 /// but more aggressive because it is intended for caseless string matching.
 fn str_casefold(s: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
     // Rust's to_lowercase() is equivalent to Unicode casefolding for most purposes
-    let result = s.to_lowercase();
-    let heap_id = heap.allocate(HeapData::Str(Str::new(result)))?;
-    Ok(Value::Ref(heap_id))
+    allocate_string(s.to_lowercase(), heap)
 }
 
 // =============================================================================
@@ -1195,8 +1220,7 @@ fn str_strip(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, in
         Some(c) => s.trim_matches(|ch| c.contains(ch)).to_owned(),
         None => s.trim().to_owned(),
     };
-    let heap_id = heap.allocate(HeapData::Str(Str::new(result)))?;
-    Ok(Value::Ref(heap_id))
+    allocate_string(result, heap)
 }
 
 /// Implements Python's `str.lstrip(chars?)` method.
@@ -1208,8 +1232,7 @@ fn str_lstrip(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, i
         Some(c) => s.trim_start_matches(|ch| c.contains(ch)).to_owned(),
         None => s.trim_start().to_owned(),
     };
-    let heap_id = heap.allocate(HeapData::Str(Str::new(result)))?;
-    Ok(Value::Ref(heap_id))
+    allocate_string(result, heap)
 }
 
 /// Implements Python's `str.rstrip(chars?)` method.
@@ -1221,8 +1244,7 @@ fn str_rstrip(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, i
         Some(c) => s.trim_end_matches(|ch| c.contains(ch)).to_owned(),
         None => s.trim_end().to_owned(),
     };
-    let heap_id = heap.allocate(HeapData::Str(Str::new(result)))?;
-    Ok(Value::Ref(heap_id))
+    allocate_string(result, heap)
 }
 
 /// Parses the optional chars argument for strip methods.
@@ -1261,8 +1283,7 @@ fn str_removeprefix(
     prefix_value.drop_with_heap(heap);
 
     let result = s.strip_prefix(&prefix).unwrap_or(s).to_owned();
-    let heap_id = heap.allocate(HeapData::Str(Str::new(result)))?;
-    Ok(Value::Ref(heap_id))
+    allocate_string(result, heap)
 }
 
 /// Implements Python's `str.removesuffix(suffix)` method.
@@ -1280,8 +1301,7 @@ fn str_removesuffix(
     suffix_value.drop_with_heap(heap);
 
     let result = s.strip_suffix(&suffix).unwrap_or(s).to_owned();
-    let heap_id = heap.allocate(HeapData::Str(Str::new(result)))?;
-    Ok(Value::Ref(heap_id))
+    allocate_string(result, heap)
 }
 
 // =============================================================================
@@ -1320,11 +1340,10 @@ fn str_split(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, in
         }
     };
 
-    // Convert to list of heap strings
+    // Convert to list of strings (using interned empty string when applicable)
     let mut list_items = Vec::with_capacity(parts.len());
     for part in parts {
-        let str_id = heap.allocate(HeapData::Str(Str::new(part.to_owned())))?;
-        list_items.push(Value::Ref(str_id));
+        list_items.push(allocate_string(part.to_owned(), heap)?);
     }
 
     let list = crate::types::List::new(list_items);
@@ -1367,11 +1386,10 @@ fn str_rsplit(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, i
         }
     };
 
-    // Convert to list of heap strings
+    // Convert to list of strings (using interned empty string when applicable)
     let mut list_items = Vec::with_capacity(parts.len());
     for part in parts {
-        let str_id = heap.allocate(HeapData::Str(Str::new(part.to_owned())))?;
-        list_items.push(Value::Ref(str_id));
+        list_items.push(allocate_string(part.to_owned(), heap)?);
     }
 
     let list = crate::types::List::new(list_items);
@@ -1579,8 +1597,7 @@ fn str_splitlines(
 
         let line = if keepends { &s[start..end] } else { &s[start..line_end] };
 
-        let str_id = heap.allocate(HeapData::Str(Str::new(line.to_owned())))?;
-        lines.push(Value::Ref(str_id));
+        lines.push(allocate_string(line.to_owned(), heap)?);
 
         start = end;
     }
@@ -1687,11 +1704,11 @@ fn str_partition(
         None => (s, "", ""),
     };
 
-    let before_id = heap.allocate(HeapData::Str(Str::new(before.to_owned())))?;
-    let sep_id = heap.allocate(HeapData::Str(Str::new(sep_found.to_owned())))?;
-    let after_id = heap.allocate(HeapData::Str(Str::new(after.to_owned())))?;
+    let before_val = allocate_string(before.to_owned(), heap)?;
+    let sep_val = allocate_string(sep_found.to_owned(), heap)?;
+    let after_val = allocate_string(after.to_owned(), heap)?;
 
-    let tuple = crate::types::Tuple::new(vec![Value::Ref(before_id), Value::Ref(sep_id), Value::Ref(after_id)]);
+    let tuple = crate::types::Tuple::new(vec![before_val, sep_val, after_val]);
     let heap_id = heap.allocate(HeapData::Tuple(tuple))?;
     Ok(Value::Ref(heap_id))
 }
@@ -1719,11 +1736,11 @@ fn str_rpartition(
         None => ("", "", s),
     };
 
-    let before_id = heap.allocate(HeapData::Str(Str::new(before.to_owned())))?;
-    let sep_id = heap.allocate(HeapData::Str(Str::new(sep_found.to_owned())))?;
-    let after_id = heap.allocate(HeapData::Str(Str::new(after.to_owned())))?;
+    let before_val = allocate_string(before.to_owned(), heap)?;
+    let sep_val = allocate_string(sep_found.to_owned(), heap)?;
+    let after_val = allocate_string(after.to_owned(), heap)?;
 
-    let tuple = crate::types::Tuple::new(vec![Value::Ref(before_id), Value::Ref(sep_id), Value::Ref(after_id)]);
+    let tuple = crate::types::Tuple::new(vec![before_val, sep_val, after_val]);
     let heap_id = heap.allocate(HeapData::Tuple(tuple))?;
     Ok(Value::Ref(heap_id))
 }
@@ -1747,8 +1764,7 @@ fn str_replace(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, 
         s.replacen(&old, &new, n)
     };
 
-    let heap_id = heap.allocate(HeapData::Str(Str::new(result)))?;
-    Ok(Value::Ref(heap_id))
+    allocate_string(result, heap)
 }
 
 /// Parses arguments for the replace method.
@@ -1861,8 +1877,7 @@ fn str_center(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, i
         result
     };
 
-    let heap_id = heap.allocate(HeapData::Str(Str::new(result)))?;
-    Ok(Value::Ref(heap_id))
+    allocate_string(result, heap)
 }
 
 /// Implements Python's `str.ljust(width, fillchar?)` method.
@@ -1884,8 +1899,7 @@ fn str_ljust(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, in
         result
     };
 
-    let heap_id = heap.allocate(HeapData::Str(Str::new(result)))?;
-    Ok(Value::Ref(heap_id))
+    allocate_string(result, heap)
 }
 
 /// Implements Python's `str.rjust(width, fillchar?)` method.
@@ -1907,8 +1921,7 @@ fn str_rjust(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, in
         result
     };
 
-    let heap_id = heap.allocate(HeapData::Str(Str::new(result)))?;
-    Ok(Value::Ref(heap_id))
+    allocate_string(result, heap)
 }
 
 /// Parses arguments for justify methods (center, ljust, rjust).
@@ -2008,8 +2021,7 @@ fn str_zfill(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>) ->
         result
     };
 
-    let heap_id = heap.allocate(HeapData::Str(Str::new(result)))?;
-    Ok(Value::Ref(heap_id))
+    allocate_string(result, heap)
 }
 
 /// Implements Python's `str.encode(encoding='utf-8', errors='strict')` method.
