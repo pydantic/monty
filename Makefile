@@ -30,6 +30,16 @@ dev-py: ## Install the python package for development
 dev-py-release: ## Install the python package for development with a release build
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
 
+.PHONY: dev-py-pgo
+dev-py-pgo: ## Install the python package for development with profile-guided optimization
+	$(eval PROFDATA := $(shell mktemp -d))
+	RUSTFLAGS='-Cprofile-generate=$(PROFDATA)' uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
+	uv run --package monty-python --only-dev pytest crates/monty-python/tests -k "not test_parallel_exec"
+	$(eval LLVM_PROFDATA := $(shell rustup run stable bash -c 'echo $$RUSTUP_HOME/toolchains/$$RUSTUP_TOOLCHAIN/lib/rustlib/$$(rustc -Vv | grep host | cut -d " " -f 2)/bin/llvm-profdata'))
+	$(LLVM_PROFDATA) merge -o $(PROFDATA)/merged.profdata $(PROFDATA)
+	RUSTFLAGS='-Cprofile-use=$(PROFDATA)/merged.profdata' $(uv-run-no-sync) maturin develop --uv -m crates/monty-python/Cargo.toml --release
+	@rm -rf $(PROFDATA)
+
 .PHONY: format-rs
 format-rs:  ## Format Rust code with fmt
 	@cargo +nightly fmt --version
