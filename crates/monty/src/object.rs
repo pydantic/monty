@@ -15,8 +15,7 @@ use crate::{
     intern::Interns,
     resource::{ResourceError, ResourceTracker},
     types::{
-        PyTrait, Type,
-        bigint::bigint_to_value,
+        LongInt, PyTrait, Type,
         bytes::{Bytes, bytes_repr},
         dict::Dict,
         list::List,
@@ -188,7 +187,7 @@ impl MontyObject {
             Self::None => Ok(Value::None),
             Self::Bool(b) => Ok(Value::Bool(b)),
             Self::Int(i) => Ok(Value::Int(i)),
-            Self::BigInt(bi) => Ok(bigint_to_value(bi, heap)?),
+            Self::BigInt(bi) => Ok(LongInt::new(bi).into_value(heap)?),
             Self::Float(f) => Ok(Value::Float(f)),
             Self::String(s) => Ok(Value::Ref(heap.allocate(HeapData::Str(Str::new(s)))?)),
             Self::Bytes(b) => Ok(Value::Ref(heap.allocate(HeapData::Bytes(Bytes::new(b)))?)),
@@ -393,7 +392,7 @@ impl MontyObject {
                         // Iterators are internal objects - represent as a type string
                         Self::Repr("<iterator>".to_owned())
                     }
-                    HeapData::BigInt(bi) => Self::BigInt(bi.clone()),
+                    HeapData::LongInt(li) => Self::BigInt(li.inner().clone()),
                 };
 
                 // Remove from visited set after processing

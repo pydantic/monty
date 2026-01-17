@@ -32,8 +32,8 @@ pub fn builtin_hex(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
             Ok(Value::Ref(heap_id))
         }
         Value::Ref(id) => {
-            if let HeapData::BigInt(bi) = heap.get(*id) {
-                let hex_str = format_bigint_hex(bi);
+            if let HeapData::LongInt(li) = heap.get(*id) {
+                let hex_str = format_bigint_hex(li.inner());
                 let heap_id = heap.allocate(HeapData::Str(Str::new(hex_str)))?;
                 Ok(Value::Ref(heap_id))
             } else {

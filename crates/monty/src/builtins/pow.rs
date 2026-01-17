@@ -8,7 +8,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapData},
     resource::ResourceTracker,
-    types::{PyTrait, bigint::bigint_to_value},
+    types::{LongInt, PyTrait},
     value::Value,
 };
 
@@ -141,16 +141,16 @@ fn checked_pow_i64(mut base: i64, mut exp: u32) -> Option<i64> {
     Some(result)
 }
 
-/// Implements two-argument pow with BigInt support.
+/// Implements two-argument pow with LongInt support.
 ///
-/// On overflow, promotes to BigInt instead of returning an error.
+/// On overflow, promotes to LongInt instead of returning an error.
 fn two_arg_pow(base: &Value, exp: &Value, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
     match (base, exp) {
         (Value::Int(b), Value::Int(e)) => int_pow_int(*b, *e, heap),
         (Value::Int(b), Value::Ref(id)) => {
             // Clone to avoid borrow conflict with heap mutation
-            let e_bi = if let HeapData::BigInt(bi) = heap.get(*id) {
-                bi.clone()
+            let e_bi = if let HeapData::LongInt(li) = heap.get(*id) {
+                li.inner().clone()
             } else {
                 return Err(ExcType::binary_type_error(
                     "** or pow()",
@@ -158,12 +158,12 @@ fn two_arg_pow(base: &Value, exp: &Value, heap: &mut Heap<impl ResourceTracker>)
                     exp.py_type(heap),
                 ));
             };
-            int_pow_bigint(*b, &e_bi, heap)
+            int_pow_longint(*b, &e_bi, heap)
         }
         (Value::Ref(id), Value::Int(e)) => {
             // Clone to avoid borrow conflict with heap mutation
-            let b_bi = if let HeapData::BigInt(bi) = heap.get(*id) {
-                bi.clone()
+            let b_bi = if let HeapData::LongInt(li) = heap.get(*id) {
+                li.inner().clone()
             } else {
                 return Err(ExcType::binary_type_error(
                     "** or pow()",
@@ -171,12 +171,12 @@ fn two_arg_pow(base: &Value, exp: &Value, heap: &mut Heap<impl ResourceTracker>)
                     exp.py_type(heap),
                 ));
             };
-            bigint_pow_int(&b_bi, *e, heap)
+            longint_pow_int(&b_bi, *e, heap)
         }
         (Value::Ref(id1), Value::Ref(id2)) => {
             // Clone both to avoid borrow conflict with heap mutation
-            let b_bi = if let HeapData::BigInt(bi) = heap.get(*id1) {
-                bi.clone()
+            let b_bi = if let HeapData::LongInt(li) = heap.get(*id1) {
+                li.inner().clone()
             } else {
                 return Err(ExcType::binary_type_error(
                     "** or pow()",
@@ -184,8 +184,8 @@ fn two_arg_pow(base: &Value, exp: &Value, heap: &mut Heap<impl ResourceTracker>)
                     exp.py_type(heap),
                 ));
             };
-            let e_bi = if let HeapData::BigInt(bi) = heap.get(*id2) {
-                bi.clone()
+            let e_bi = if let HeapData::LongInt(li) = heap.get(*id2) {
+                li.inner().clone()
             } else {
                 return Err(ExcType::binary_type_error(
                     "** or pow()",
@@ -193,7 +193,7 @@ fn two_arg_pow(base: &Value, exp: &Value, heap: &mut Heap<impl ResourceTracker>)
                     exp.py_type(heap),
                 ));
             };
-            bigint_pow_bigint(&b_bi, &e_bi, heap)
+            longint_pow_longint(&b_bi, &e_bi, heap)
         }
         (Value::Float(b), Value::Float(e)) => {
             if *b == 0.0 && *e < 0.0 {
@@ -226,7 +226,7 @@ fn two_arg_pow(base: &Value, exp: &Value, heap: &mut Heap<impl ResourceTracker>)
     }
 }
 
-/// int ** int with BigInt promotion on overflow.
+/// int ** int with LongInt promotion on overflow.
 fn int_pow_int(b: i64, e: i64, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
     if e < 0 {
         // Negative exponent returns float
@@ -242,9 +242,9 @@ fn int_pow_int(b: i64, e: i64, heap: &mut Heap<impl ResourceTracker>) -> RunResu
         if let Some(v) = checked_pow_i64(b, exp_u32) {
             Ok(Value::Int(v))
         } else {
-            // Overflow - promote to BigInt
+            // Overflow - promote to LongInt
             let bi = BigInt::from(b).pow(exp_u32);
-            Ok(bigint_to_value(bi, heap)?)
+            Ok(LongInt::new(bi).into_value(heap)?)
         }
     } else {
         // Exponent too large for u32 - use BigInt for result
@@ -253,17 +253,17 @@ fn int_pow_int(b: i64, e: i64, heap: &mut Heap<impl ResourceTracker>) -> RunResu
         let exp_u64 = e as u64;
         let base_bi = BigInt::from(b);
         let bi = bigint_pow_large(&base_bi, exp_u64)?;
-        Ok(bigint_to_value(bi, heap)?)
+        Ok(LongInt::new(bi).into_value(heap)?)
     }
 }
 
-/// int ** BigInt with BigInt result.
-fn int_pow_bigint(b: i64, e: &BigInt, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+/// int ** LongInt with LongInt result.
+fn int_pow_longint(b: i64, e: &BigInt, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
     if b == 0 && e.is_negative() {
         return Err(ExcType::zero_negative_power());
     }
     if e.is_negative() {
-        // Negative BigInt exponent: return float
+        // Negative LongInt exponent: return float
         if let Some(e_f64) = e.to_f64() {
             Ok(Value::Float((b as f64).powf(e_f64)))
         } else {
@@ -279,15 +279,15 @@ fn int_pow_bigint(b: i64, e: &BigInt, heap: &mut Heap<impl ResourceTracker>) -> 
         Ok(Value::Int(if is_even { 1 } else { -1 }))
     } else if let Some(exp_u32) = e.to_u32() {
         let bi = BigInt::from(b).pow(exp_u32);
-        Ok(bigint_to_value(bi, heap)?)
+        Ok(LongInt::new(bi).into_value(heap)?)
     } else {
         // Exponent too large
         Err(ExcType::overflow_exponent_too_large())
     }
 }
 
-/// BigInt ** int with BigInt result.
-fn bigint_pow_int(b: &BigInt, e: i64, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+/// LongInt ** int with LongInt result.
+fn longint_pow_int(b: &BigInt, e: i64, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
     if b.is_zero() && e < 0 {
         return Err(ExcType::zero_negative_power());
     }
@@ -300,19 +300,19 @@ fn bigint_pow_int(b: &BigInt, e: i64, heap: &mut Heap<impl ResourceTracker>) -> 
         }
     } else if let Ok(exp_u32) = u32::try_from(e) {
         let bi = b.pow(exp_u32);
-        Ok(bigint_to_value(bi, heap)?)
+        Ok(LongInt::new(bi).into_value(heap)?)
     } else {
         // Exponent too large for u32
         // Safety: e >= 0 at this point
         #[expect(clippy::cast_sign_loss)]
         let exp_u64 = e as u64;
         let bi = bigint_pow_large(b, exp_u64)?;
-        Ok(bigint_to_value(bi, heap)?)
+        Ok(LongInt::new(bi).into_value(heap)?)
     }
 }
 
-/// BigInt ** BigInt with BigInt result.
-fn bigint_pow_bigint(b: &BigInt, e: &BigInt, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+/// LongInt ** LongInt with LongInt result.
+fn longint_pow_longint(b: &BigInt, e: &BigInt, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
     if b.is_zero() && e.is_negative() {
         return Err(ExcType::zero_negative_power());
     }
@@ -325,7 +325,7 @@ fn bigint_pow_bigint(b: &BigInt, e: &BigInt, heap: &mut Heap<impl ResourceTracke
         }
     } else if let Some(exp_u32) = e.to_u32() {
         let bi = b.pow(exp_u32);
-        Ok(bigint_to_value(bi, heap)?)
+        Ok(LongInt::new(bi).into_value(heap)?)
     } else {
         // Exponent too large
         Err(ExcType::overflow_exponent_too_large())

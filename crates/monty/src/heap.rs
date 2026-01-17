@@ -7,8 +7,7 @@ use std::{
 };
 
 use ahash::AHashSet;
-use num_bigint::BigInt;
-use num_traits::Zero;
+use num_integer::Integer;
 
 use crate::{
     args::ArgValues,
@@ -16,10 +15,7 @@ use crate::{
     for_iterator::{ForIterator, IterState},
     intern::{FunctionId, Interns},
     resource::{ResourceError, ResourceTracker},
-    types::{
-        Bytes, Dataclass, Dict, FrozenSet, List, PyTrait, Range, Set, Str, Tuple, Type,
-        bigint::{bigint_to_value, estimate_size, hash_bigint},
-    },
+    types::{Bytes, Dataclass, Dict, FrozenSet, List, LongInt, PyTrait, Range, Set, Str, Tuple, Type},
     value::{Attr, Value},
 };
 
@@ -92,13 +88,13 @@ pub(crate) enum HeapData {
     /// Created by the `GetIter` opcode, advanced by `ForIter`. Stores iteration
     /// state for lists, tuples, strings, ranges, dicts, and sets.
     Iterator(ForIterator),
-    /// An arbitrary precision integer (BigInt).
+    /// An arbitrary precision integer (LongInt).
     ///
     /// Stored on the heap to keep `Value` enum at 16 bytes. Python has one `int` type,
-    /// so BigInt is an implementation detail - we use `Value::Int(i64)` for performance
-    /// when values fit, and promote to BigInt on overflow. When BigInt results fit back
+    /// so LongInt is an implementation detail - we use `Value::Int(i64)` for performance
+    /// when values fit, and promote to LongInt on overflow. When LongInt results fit back
     /// in i64, they are demoted back to `Value::Int` for performance.
-    BigInt(BigInt),
+    LongInt(LongInt),
 }
 
 impl HeapData {
@@ -159,8 +155,8 @@ impl HeapData {
             Self::List(_) | Self::Dict(_) | Self::Set(_) | Self::Cell(_) | Self::Exception(_) | Self::Iterator(_) => {
                 None
             }
-            // BigInt is immutable and hashable
-            Self::BigInt(bi) => Some(hash_bigint(bi)),
+            // LongInt is immutable and hashable
+            Self::LongInt(li) => Some(li.hash()),
         }
     }
 }
@@ -185,8 +181,8 @@ impl PyTrait for HeapData {
             Self::Exception(e) => e.py_type(),
             Self::Dataclass(dc) => dc.py_type(heap),
             Self::Iterator(_) => Type::Iterator,
-            // BigInt is still `int` in Python - it's an implementation detail
-            Self::BigInt(_) => Type::Int,
+            // LongInt is still `int` in Python - it's an implementation detail
+            Self::LongInt(_) => Type::Int,
         }
     }
 
@@ -206,7 +202,7 @@ impl PyTrait for HeapData {
             Self::Exception(e) => std::mem::size_of::<SimpleException>() + e.arg().map_or(0, String::len),
             Self::Dataclass(dc) => dc.py_estimate_size(),
             Self::Iterator(_) => std::mem::size_of::<ForIterator>(),
-            Self::BigInt(bi) => estimate_size(bi),
+            Self::LongInt(li) => li.estimate_size(),
         }
     }
 
@@ -220,14 +216,14 @@ impl PyTrait for HeapData {
             Self::Set(s) => PyTrait::py_len(s, heap, interns),
             Self::FrozenSet(fs) => PyTrait::py_len(fs, heap, interns),
             Self::Range(r) => Some(r.len()),
-            // Cells, Exceptions, Dataclasses, Iterators, and BigInts don't have length
+            // Cells, Exceptions, Dataclasses, Iterators, and LongInts don't have length
             Self::Cell(_)
             | Self::Closure(_, _, _)
             | Self::FunctionDefaults(_, _)
             | Self::Exception(_)
             | Self::Dataclass(_)
             | Self::Iterator(_)
-            | Self::BigInt(_) => None,
+            | Self::LongInt(_) => None,
         }
     }
 
@@ -244,8 +240,8 @@ impl PyTrait for HeapData {
             (Self::FunctionDefaults(a_id, _), Self::FunctionDefaults(b_id, _)) => *a_id == *b_id,
             (Self::Range(a), Self::Range(b)) => a.py_eq(b, heap, interns),
             (Self::Dataclass(a), Self::Dataclass(b)) => a.py_eq(b, heap, interns),
-            // BigInt equality
-            (Self::BigInt(a), Self::BigInt(b)) => a == b,
+            // LongInt equality
+            (Self::LongInt(a), Self::LongInt(b)) => a == b,
             // Cells, Exceptions, and Iterators compare by identity only (handled at Value level via HeapId comparison)
             (Self::Cell(_), Self::Cell(_))
             | (Self::Exception(_), Self::Exception(_))
@@ -280,8 +276,8 @@ impl PyTrait for HeapData {
             Self::Cell(v) => v.py_dec_ref_ids(stack),
             Self::Dataclass(dc) => dc.py_dec_ref_ids(stack),
             Self::Iterator(iter) => iter.py_dec_ref_ids(stack),
-            // Range, Exception, and BigInt have no nested heap references
-            Self::Range(_) | Self::Exception(_) | Self::BigInt(_) => {}
+            // Range, Exception, and LongInt have no nested heap references
+            Self::Range(_) | Self::Exception(_) | Self::LongInt(_) => {}
         }
     }
 
@@ -300,7 +296,7 @@ impl PyTrait for HeapData {
             Self::Exception(_) => true, // Exceptions are always truthy
             Self::Dataclass(dc) => dc.py_bool(heap, interns),
             Self::Iterator(_) => true, // Iterators are always truthy
-            Self::BigInt(bi) => !bi.is_zero(),
+            Self::LongInt(li) => !li.is_zero(),
         }
     }
 
@@ -328,7 +324,7 @@ impl PyTrait for HeapData {
             Self::Exception(e) => e.py_repr_fmt(f),
             Self::Dataclass(dc) => dc.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Iterator(_) => write!(f, "<iterator>"),
-            Self::BigInt(bi) => write!(f, "{bi}"),
+            Self::LongInt(li) => write!(f, "{li}"),
         }
     }
 
@@ -336,8 +332,8 @@ impl PyTrait for HeapData {
         match self {
             // Strings return their value directly without quotes
             Self::Str(s) => s.py_str(heap, interns),
-            // BigInt returns its string representation
-            Self::BigInt(bi) => Cow::Owned(bi.to_string()),
+            // LongInt returns its string representation
+            Self::LongInt(li) => Cow::Owned(li.to_string()),
             // All other types use repr
             _ => self.py_repr(heap, interns),
         }
@@ -389,13 +385,12 @@ impl PyTrait for HeapData {
             (Self::List(a), Self::List(b)) => a.py_mod(b, heap),
             (Self::Tuple(a), Self::Tuple(b)) => a.py_mod(b, heap),
             (Self::Dict(a), Self::Dict(b)) => a.py_mod(b, heap),
-            (Self::BigInt(a), Self::BigInt(b)) => {
-                use num_integer::Integer;
+            (Self::LongInt(a), Self::LongInt(b)) => {
                 if b.is_zero() {
                     Err(crate::exception_private::ExcType::zero_division().into())
                 } else {
-                    let bi = a.mod_floor(b);
-                    Ok(bigint_to_value(bi, heap).map(Some)?)
+                    let bi = a.inner().mod_floor(b.inner());
+                    Ok(LongInt::new(bi).into_value(heap).map(Some)?)
                 }
             }
             // Cells don't support arithmetic operations
@@ -502,7 +497,7 @@ impl HashState {
             // Cells are hashable by identity (like all Python objects without __hash__ override)
             // FrozenSet is immutable and hashable
             // Range is immutable and hashable
-            // BigInt is immutable and hashable
+            // LongInt is immutable and hashable
             HeapData::Str(_)
             | HeapData::Bytes(_)
             | HeapData::Tuple(_)
@@ -511,7 +506,7 @@ impl HashState {
             | HeapData::Closure(_, _, _)
             | HeapData::FunctionDefaults(_, _)
             | HeapData::Range(_)
-            | HeapData::BigInt(_) => Self::Unknown,
+            | HeapData::LongInt(_) => Self::Unknown,
             // Dataclass hashability depends on the mutable flag
             HeapData::Dataclass(dc) => {
                 if dc.is_frozen() {
@@ -1311,7 +1306,7 @@ impl<T: ResourceTracker> Heap<T> {
 fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
     match data {
         // Leaf types with no heap references
-        HeapData::Str(_) | HeapData::Bytes(_) | HeapData::Range(_) | HeapData::Exception(_) | HeapData::BigInt(_) => {}
+        HeapData::Str(_) | HeapData::Bytes(_) | HeapData::Range(_) | HeapData::Exception(_) | HeapData::LongInt(_) => {}
         HeapData::List(list) => {
             for value in list.as_vec() {
                 if let Value::Ref(id) = value {

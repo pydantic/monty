@@ -32,8 +32,8 @@ pub fn builtin_bin(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
             Ok(Value::Ref(heap_id))
         }
         Value::Ref(id) => {
-            if let HeapData::BigInt(bi) = heap.get(*id) {
-                let bin_str = format_bigint_bin(bi);
+            if let HeapData::LongInt(li) = heap.get(*id) {
+                let bin_str = format_bigint_bin(li.inner());
                 let heap_id = heap.allocate(HeapData::Str(Str::new(bin_str)))?;
                 Ok(Value::Ref(heap_id))
             } else {

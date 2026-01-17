@@ -2,14 +2,13 @@
 
 use num_bigint::BigInt;
 use num_integer::Integer;
-use num_traits::Zero;
 
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapData},
     resource::ResourceTracker,
-    types::{PyTrait, Tuple, bigint::bigint_to_value},
+    types::{LongInt, PyTrait, Tuple},
     value::Value,
 };
 
@@ -34,14 +33,14 @@ pub fn builtin_divmod(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) ->
             }
         }
         (Value::Int(x), Value::Ref(id)) => {
-            if let HeapData::BigInt(y_bi) = heap.get(*id) {
-                if y_bi.is_zero() {
+            if let HeapData::LongInt(li) = heap.get(*id) {
+                if li.is_zero() {
                     Err(ExcType::divmod_by_zero())
                 } else {
                     let x_bi = BigInt::from(*x);
-                    let (quot, rem) = bigint_floor_divmod(&x_bi, y_bi);
-                    let quot_val = bigint_to_value(quot, heap)?;
-                    let rem_val = bigint_to_value(rem, heap)?;
+                    let (quot, rem) = bigint_floor_divmod(&x_bi, li.inner());
+                    let quot_val = LongInt::new(quot).into_value(heap)?;
+                    let rem_val = LongInt::new(rem).into_value(heap)?;
                     let tuple_id = heap.allocate(HeapData::Tuple(Tuple::new(vec![quot_val, rem_val])))?;
                     Ok(Value::Ref(tuple_id))
                 }
@@ -56,14 +55,14 @@ pub fn builtin_divmod(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) ->
             }
         }
         (Value::Ref(id), Value::Int(y)) => {
-            if let HeapData::BigInt(x_bi) = heap.get(*id) {
+            if let HeapData::LongInt(li) = heap.get(*id) {
                 if *y == 0 {
                     Err(ExcType::divmod_by_zero())
                 } else {
                     let y_bi = BigInt::from(*y);
-                    let (quot, rem) = bigint_floor_divmod(x_bi, &y_bi);
-                    let quot_val = bigint_to_value(quot, heap)?;
-                    let rem_val = bigint_to_value(rem, heap)?;
+                    let (quot, rem) = bigint_floor_divmod(li.inner(), &y_bi);
+                    let quot_val = LongInt::new(quot).into_value(heap)?;
+                    let rem_val = LongInt::new(rem).into_value(heap)?;
                     let tuple_id = heap.allocate(HeapData::Tuple(Tuple::new(vec![quot_val, rem_val])))?;
                     Ok(Value::Ref(tuple_id))
                 }
@@ -78,8 +77,8 @@ pub fn builtin_divmod(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) ->
             }
         }
         (Value::Ref(id1), Value::Ref(id2)) => {
-            let x_bi = if let HeapData::BigInt(bi) = heap.get(*id1) {
-                bi.clone()
+            let x_bi = if let HeapData::LongInt(li) = heap.get(*id1) {
+                li.inner().clone()
             } else {
                 let a_type = a.py_type(heap);
                 let b_type = b.py_type(heap);
@@ -89,13 +88,13 @@ pub fn builtin_divmod(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) ->
                 )
                 .into());
             };
-            if let HeapData::BigInt(y_bi) = heap.get(*id2) {
-                if y_bi.is_zero() {
+            if let HeapData::LongInt(li) = heap.get(*id2) {
+                if li.is_zero() {
                     Err(ExcType::divmod_by_zero())
                 } else {
-                    let (quot, rem) = bigint_floor_divmod(&x_bi, y_bi);
-                    let quot_val = bigint_to_value(quot, heap)?;
-                    let rem_val = bigint_to_value(rem, heap)?;
+                    let (quot, rem) = bigint_floor_divmod(&x_bi, li.inner());
+                    let quot_val = LongInt::new(quot).into_value(heap)?;
+                    let rem_val = LongInt::new(rem).into_value(heap)?;
                     let tuple_id = heap.allocate(HeapData::Tuple(Tuple::new(vec![quot_val, rem_val])))?;
                     Ok(Value::Ref(tuple_id))
                 }

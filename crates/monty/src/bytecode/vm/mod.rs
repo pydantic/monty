@@ -13,7 +13,6 @@ mod format;
 use std::cmp::Ordering;
 
 use call::CallResult;
-use num_bigint::BigInt;
 
 use crate::{
     args::ArgValues,
@@ -26,7 +25,7 @@ use crate::{
     namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
     parse::CodeRange,
     resource::ResourceTracker,
-    types::{PyTrait, bigint::bigint_to_value},
+    types::{LongInt, PyTrait},
     value::{BitwiseOp, Value},
 };
 
@@ -565,19 +564,19 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                             if let Some(negated) = n.checked_neg() {
                                 Ok(Some(Value::Int(negated)))
                             } else {
-                                // i64::MIN negated overflows to BigInt
-                                let bi = -BigInt::from(*n);
-                                bigint_to_value(bi, self.heap).map(Some)
+                                // i64::MIN negated overflows to LongInt
+                                let li = -LongInt::from(*n);
+                                li.into_value(self.heap).map(Some)
                             }
                         }
                         Value::Float(f) => Ok(Some(Value::Float(-f))),
                         Value::Bool(b) => Ok(Some(Value::Int(if *b { -1 } else { 0 }))),
                         Value::Ref(id) => {
-                            if let HeapData::BigInt(bi) = self.heap.get(*id) {
-                                let negated = -bi;
-                                bigint_to_value(negated, self.heap).map(Some)
+                            if let HeapData::LongInt(li) = self.heap.get(*id) {
+                                let negated = -LongInt::new(li.inner().clone());
+                                negated.into_value(self.heap).map(Some)
                             } else {
-                                Ok(None) // Not a BigInt - unsupported type
+                                Ok(None) // Not a LongInt - unsupported type
                             }
                         }
                         _ => Ok(None), // Unsupported type
@@ -616,12 +615,12 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         Value::Int(n) => Ok(Some(Value::Int(!n))),
                         Value::Bool(b) => Ok(Some(Value::Int(!i64::from(*b)))),
                         Value::Ref(id) => {
-                            if let HeapData::BigInt(bi) = self.heap.get(*id) {
-                                // BigInt bitwise NOT: ~x = -(x + 1)
-                                let inverted = -(bi + 1i32);
-                                bigint_to_value(inverted, self.heap).map(Some)
+                            if let HeapData::LongInt(li) = self.heap.get(*id) {
+                                // LongInt bitwise NOT: ~x = -(x + 1)
+                                let inverted = -(li.inner() + 1i32);
+                                LongInt::new(inverted).into_value(self.heap).map(Some)
                             } else {
-                                Ok(None) // Not a BigInt - unsupported type
+                                Ok(None) // Not a LongInt - unsupported type
                             }
                         }
                         _ => Ok(None), // Unsupported type

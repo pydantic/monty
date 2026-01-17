@@ -5,11 +5,11 @@
 ///
 /// The `AbstractValue` trait provides a common interface for all heap-allocated
 /// types, enabling efficient dispatch via `enum_dispatch`.
-pub mod bigint;
 pub mod bytes;
 pub mod dataclass;
 pub mod dict;
 pub mod list;
+pub mod long_int;
 pub mod py_trait;
 pub mod range;
 pub mod set;
@@ -21,6 +21,7 @@ pub(crate) use bytes::Bytes;
 pub(crate) use dataclass::Dataclass;
 pub(crate) use dict::Dict;
 pub(crate) use list::List;
+pub(crate) use long_int::LongInt;
 pub(crate) use py_trait::PyTrait;
 pub(crate) use range::Range;
 pub(crate) use set::{FrozenSet, Set};
