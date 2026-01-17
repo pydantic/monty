@@ -582,11 +582,6 @@ pub struct HeapValue {
 ///
 /// Serialization requires `T: Serialize` and `T: Deserialize`. Custom serde implementation
 /// handles the Drop constraint by using `std::mem::take` during serialization.
-///
-/// # GC Optimization
-/// The `may_have_cycles` flag tracks whether reference cycles may exist. When a
-/// container stores a reference to another heap object, `mark_potential_cycle()` is
-/// called. GC can skip the mark-sweep phase entirely when this flag is false.
 #[derive(Debug)]
 pub struct Heap<T: ResourceTracker> {
     entries: Vec<Option<HeapValue>>,
@@ -609,6 +604,7 @@ impl<T: ResourceTracker + serde::Serialize> serde::Serialize for Heap<T> {
         state.serialize_field("free_list", &self.free_list)?;
         state.serialize_field("tracker", &self.tracker)?;
         state.serialize_field("may_have_cycles", &self.may_have_cycles)?;
+        state.serialize_field("allocations_since_gc", &self.allocations_since_gc)?;
         state.end()
     }
 }
@@ -620,8 +616,8 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
             entries: Vec<Option<HeapValue>>,
             free_list: Vec<HeapId>,
             tracker: T,
-            #[serde(default)]
             may_have_cycles: bool,
+            allocations_since_gc: u32,
         }
         let fields = HeapFields::<T>::deserialize(deserializer)?;
         Ok(Self {
@@ -629,7 +625,7 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
             free_list: fields.free_list,
             tracker: fields.tracker,
             may_have_cycles: fields.may_have_cycles,
-            allocations_since_gc: 0,
+            allocations_since_gc: fields.allocations_since_gc,
         })
     }
 }
@@ -1303,7 +1299,8 @@ impl<T: ResourceTracker> Heap<T> {
 
     /// Returns whether garbage collection should run.
     ///
-    /// True if reference cycles exist in the heap and the number of allocations since the last GC exceeds the interval.
+    /// True if reference cycles count exist in the heap
+    /// and the number of allocations since the last GC exceeds the interval.
     #[inline]
     pub fn should_gc(&self) -> bool {
         self.may_have_cycles && self.allocations_since_gc > GC_INTERVAL
@@ -1319,20 +1316,16 @@ impl<T: ResourceTracker> Heap<T> {
     /// where objects reference each other but are unreachable from the program.
     ///
     /// # Caller Responsibility
-    /// The caller should check `may_have_cycles()` before calling this method.
+    /// The caller should check `should_gc()` before calling this method.
     /// If no cycles are possible, the caller can skip GC entirely.
     ///
     /// # Arguments
-    /// * `get_roots` - Closure returning an iterator of HeapIds that are roots
-    pub fn collect_garbage<I, F>(&mut self, get_roots: F)
-    where
-        I: Iterator<Item = HeapId>,
-        F: FnOnce() -> I,
-    {
+    /// * `root` - HeapIds that are roots
+    pub fn collect_garbage(&mut self, root: Vec<HeapId>) {
         // Mark phase: collect all reachable IDs using BFS
         // Use Vec<bool> instead of HashSet for O(1) operations without hashing overhead
         let mut reachable: Vec<bool> = vec![false; self.entries.len()];
-        let mut work_list: Vec<HeapId> = get_roots().collect();
+        let mut work_list: Vec<HeapId> = root;
 
         while let Some(id) = work_list.pop() {
             let idx = id.index();

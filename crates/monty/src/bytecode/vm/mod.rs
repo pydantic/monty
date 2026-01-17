@@ -404,7 +404,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             // Check time limit and trigger GC if needed at each instruction.
             // For NoLimitTracker, these are inlined no-ops that compile away.
             self.heap.tracker_mut().check_time()?;
-            // Only run GC if: (1) allocation threshold reached, (2) cycles may exist
+
             if self.heap.should_gc() {
                 // Sync IP before GC for safety
                 self.current_frame_mut().ip = cached_frame.ip;
@@ -1206,7 +1206,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         // Collect all roots into a vec to avoid lifetime issues
         let roots: Vec<HeapId> = stack_roots.chain(exc_roots).chain(ns_roots).collect();
 
-        self.heap.collect_garbage(|| roots.into_iter());
+        self.heap.collect_garbage(roots);
     }
 
     /// Returns the current source position for traceback generation.
