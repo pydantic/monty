@@ -128,6 +128,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// Gets a ParsedFormatSpec from a format spec value.
     ///
     /// The `value_for_error` parameter is used to include the value type in error messages.
+    /// Uses lazy type capture: only calls `py_type()` in error paths.
     fn get_format_spec(&self, spec_value: &Value, value_for_error: &Value) -> Result<ParsedFormatSpec, RunError> {
         match spec_value {
             Value::Int(n) if *n < 0 => {
@@ -138,8 +139,9 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             _ => {
                 // Dynamic format spec - parse the string
                 let spec_str = spec_value.py_str(self.heap, self.interns);
-                let value_type = value_for_error.py_type(self.heap);
                 spec_str.parse::<ParsedFormatSpec>().map_err(|invalid| {
+                    // Only fetch type in error path
+                    let value_type = value_for_error.py_type(self.heap);
                     RunError::Exc(
                         SimpleException::new_msg(
                             ExcType::ValueError,

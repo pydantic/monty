@@ -86,6 +86,8 @@ jobs:
         # also test with a release build
       - run: make dev-py-release
       - run: make pytest
+        # test uv run exercise script
+      - run: uv run crates/monty-python/exercise.py
 
   bench-test:
     runs-on: ubuntu-latest
