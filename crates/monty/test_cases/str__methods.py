@@ -253,7 +253,21 @@ assert '  hello  '.strip(None) == 'hello', 'strip None same as no arg'
 assert '  hello  '.lstrip(None) == 'hello  ', 'lstrip None same as no arg'
 assert '  hello  '.rstrip(None) == '  hello', 'rstrip None same as no arg'
 
-# NOTE: Keyword argument tests for split/rsplit/splitlines/replace are commented out
-# because the bytecode compiler doesn't yet support method calls with keyword arguments.
-# The runtime implementation (str.rs) does support kwargs, but they can't be tested yet.
-# See bytecode/compiler.rs:1044 for the TODO.
+# === Phase 8: Keyword argument tests ===
+
+# split with keyword args
+assert 'a,b,c'.split(sep=',') == ['a', 'b', 'c'], 'split sep kwarg'
+assert 'a,b,c'.split(',', maxsplit=1) == ['a', 'b,c'], 'split maxsplit kwarg'
+assert 'a,b,c'.split(sep=',', maxsplit=1) == ['a', 'b,c'], 'split both kwargs'
+
+# rsplit with keyword args
+assert 'a,b,c'.rsplit(sep=',') == ['a', 'b', 'c'], 'rsplit sep kwarg'
+assert 'a,b,c'.rsplit(',', maxsplit=1) == ['a,b', 'c'], 'rsplit maxsplit kwarg'
+assert 'a,b,c'.rsplit(sep=',', maxsplit=1) == ['a,b', 'c'], 'rsplit both kwargs'
+
+# splitlines with keyword args
+assert 'a\nb\nc'.splitlines(keepends=True) == ['a\n', 'b\n', 'c'], 'splitlines keepends kwarg'
+assert 'a\nb\nc'.splitlines(keepends=False) == ['a', 'b', 'c'], 'splitlines keepends=False'
+
+# replace with keyword args
+assert 'aaa'.replace('a', 'b', count=2) == 'bba', 'replace count kwarg'

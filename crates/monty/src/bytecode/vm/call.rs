@@ -125,6 +125,45 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         self.call_method(obj, name_id, args)
     }
 
+    /// Executes `CallMethodKw` opcode.
+    ///
+    /// Pops the object, positional args, and keyword args from the stack,
+    /// builds the appropriate `ArgValues`, and calls the method.
+    pub(super) fn exec_call_method_kw(
+        &mut self,
+        name_id: StringId,
+        pos_count: usize,
+        kwname_ids: Vec<StringId>,
+    ) -> Result<Value, RunError> {
+        let kw_count = kwname_ids.len();
+
+        // Pop keyword values (TOS is last kwarg value)
+        let kw_values = self.pop_n(kw_count);
+
+        // Pop positional arguments
+        let pos_args = self.pop_n(pos_count);
+
+        // Pop the object
+        let obj = self.pop();
+
+        // Build kwargs as Vec<(StringId, Value)>
+        let kwargs_inline: Vec<(StringId, Value)> = kwname_ids.into_iter().zip(kw_values).collect();
+
+        // Build ArgValues with both positional and keyword args
+        let args = if pos_args.is_empty() && kwargs_inline.is_empty() {
+            ArgValues::Empty
+        } else if pos_args.is_empty() {
+            ArgValues::Kwargs(KwargsValues::Inline(kwargs_inline))
+        } else {
+            ArgValues::ArgsKargs {
+                args: pos_args,
+                kwargs: KwargsValues::Inline(kwargs_inline),
+            }
+        };
+
+        self.call_method(obj, name_id, args)
+    }
+
     /// Executes `CallFunctionExtended` opcode.
     ///
     /// Handles calls with `*args` and/or `**kwargs` unpacking.

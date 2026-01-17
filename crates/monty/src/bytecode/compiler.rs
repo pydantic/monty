@@ -1039,9 +1039,80 @@ impl<'a> Compiler<'a> {
                     arg_count,
                 );
             }
-            ArgExprs::Kwargs(_) | ArgExprs::ArgsKargs { .. } => {
-                // TODO: Need CallMethodKw for keyword arguments
-                todo!("Method calls with keyword arguments not yet implemented")
+            ArgExprs::Kwargs(kwargs) => {
+                // Keyword-only method call
+                if kwargs.len() > MAX_CALL_ARGS {
+                    return Err(CompileError::new(
+                        format!("more than {MAX_CALL_ARGS} keyword arguments in method call"),
+                        call_pos,
+                    ));
+                }
+                // Compile kwarg values and collect names
+                let mut kwname_ids = Vec::with_capacity(kwargs.len());
+                for kwarg in kwargs {
+                    self.compile_expr(&kwarg.value)?;
+                    kwname_ids.push(u16::try_from(kwarg.key.name_id.index()).expect("name index exceeds u16"));
+                }
+                self.code.set_location(call_pos, None);
+                self.code.emit_call_method_kw(
+                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
+                    0, // no positional args
+                    &kwname_ids,
+                );
+            }
+            ArgExprs::ArgsKargs {
+                args,
+                kwargs,
+                var_args,
+                var_kwargs,
+            } => {
+                // Check if there's unpacking - we don't support that for method calls yet
+                if var_args.is_some() || var_kwargs.is_some() {
+                    return Err(CompileError::new(
+                        "method calls with *args or **kwargs unpacking not yet supported".to_owned(),
+                        call_pos,
+                    ));
+                }
+
+                // No unpacking - use CallMethodKw for efficiency
+                let pos_count = args.as_ref().map_or(0, Vec::len);
+                let kw_count = kwargs.as_ref().map_or(0, Vec::len);
+
+                if pos_count > MAX_CALL_ARGS {
+                    return Err(CompileError::new(
+                        format!("more than {MAX_CALL_ARGS} positional arguments in method call"),
+                        call_pos,
+                    ));
+                }
+                if kw_count > MAX_CALL_ARGS {
+                    return Err(CompileError::new(
+                        format!("more than {MAX_CALL_ARGS} keyword arguments in method call"),
+                        call_pos,
+                    ));
+                }
+
+                // Compile positional args
+                if let Some(args) = args {
+                    for arg in args {
+                        self.compile_expr(arg)?;
+                    }
+                }
+
+                // Compile kwarg values and collect names
+                let mut kwname_ids = Vec::new();
+                if let Some(kwargs) = kwargs {
+                    for kwarg in kwargs {
+                        self.compile_expr(&kwarg.value)?;
+                        kwname_ids.push(u16::try_from(kwarg.key.name_id.index()).expect("name index exceeds u16"));
+                    }
+                }
+
+                self.code.set_location(call_pos, None);
+                self.code.emit_call_method_kw(
+                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
+                    u8::try_from(pos_count).expect("positional arg count exceeds u8"),
+                    &kwname_ids,
+                );
             }
         }
         Ok(())

@@ -239,6 +239,12 @@ pub enum Opcode {
     CallFunctionKw,
     /// Call method. Operands: u16 name_id, u8 arg_count.
     CallMethod,
+    /// Call method with keyword args. Operands: u16 name_id, u8 pos_count, u8 kw_count, then kw_count u16 name indices.
+    ///
+    /// Stack: [obj, pos_args..., kw_values...]
+    /// After the operands, there are kw_count little-endian u16 values,
+    /// each being a StringId index for the corresponding keyword argument name.
+    CallMethodKw,
     /// Call a defined function with *args tuple and **kwargs dict. Operand: u8 flags.
     ///
     /// Flags:

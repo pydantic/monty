@@ -892,6 +892,26 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         Err(err) => catch_sync!(self, cached_frame, err),
                     }
                 }
+                Opcode::CallMethodKw => {
+                    // CallMethodKw: u16 name_id, u8 pos_count, u8 kw_count, then kw_count u16 name indices
+                    // Stack: [obj, pos_args..., kw_values...] -> [result]
+                    let name_idx = fetch_u16!(cached_frame);
+                    let pos_count = usize::from(fetch_u8!(cached_frame));
+                    let kw_count = usize::from(fetch_u8!(cached_frame));
+                    let name_id = StringId::from_index(name_idx);
+
+                    // Read keyword name StringIds
+                    let mut kwname_ids = Vec::with_capacity(kw_count);
+                    for _ in 0..kw_count {
+                        kwname_ids.push(StringId::from_index(fetch_u16!(cached_frame)));
+                    }
+
+                    match self.exec_call_method_kw(name_id, pos_count, kwname_ids) {
+                        Ok(result) => self.push(result),
+                        // IP sync deferred to error path (no frame push possible)
+                        Err(err) => catch_sync!(self, cached_frame, err),
+                    }
+                }
                 Opcode::CallFunctionExtended => {
                     let flags = fetch_u8!(cached_frame);
                     let has_kwargs = (flags & 0x01) != 0;

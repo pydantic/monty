@@ -168,6 +168,24 @@ impl CodeBuilder {
         }
     }
 
+    /// Emits CallMethodKw with inline keyword names.
+    ///
+    /// Operands: method_name_id (u16) + pos_count (u8) + kw_count (u8) + kw_count * name_id (u16 each)
+    ///
+    /// The kwname_ids slice contains StringId indices for each keyword argument
+    /// name, in order matching how the values were pushed to the stack.
+    pub fn emit_call_method_kw(&mut self, method_name_id: u16, pos_count: u8, kwname_ids: &[u16]) {
+        self.record_location();
+        self.bytecode.push(Opcode::CallMethodKw as u8);
+        self.bytecode.extend_from_slice(&method_name_id.to_le_bytes());
+        self.bytecode.push(pos_count);
+        self.bytecode
+            .push(u8::try_from(kwname_ids.len()).expect("keyword count exceeds u8"));
+        for &name_id in kwname_ids {
+            self.bytecode.extend_from_slice(&name_id.to_le_bytes());
+        }
+    }
+
     /// Emits a forward jump instruction, returning a label to patch later.
     ///
     /// The jump offset is initially set to 0 and must be patched with
