@@ -192,29 +192,41 @@ impl PyMonty {
         // Extract input values in the order they were declared
         let input_values = self.extract_input_values(inputs)?;
 
-        macro_rules! start {
+        // Clone the runner since start() consumes it - allows reuse of the parsed code
+        macro_rules! start_hold_gil {
             ($resource_tracker:expr, $print_output:expr) => {
-                // Clone the runner since start() consumes it - allows reuse of the parsed code
                 self.runner
                     .clone()
                     .start(input_values, $resource_tracker, &mut $print_output)
                     .map_err(|e| MontyError::new_err(py, e))?
             };
         }
+        macro_rules! start_release_gil {
+            ($resource_tracker:expr, $print_output:expr) => {{
+                let runner = self.runner.clone();
+                py.detach(|| runner.start(input_values, $resource_tracker, &mut $print_output))
+                    .map_err(|e| MontyError::new_err(py, e))?
+            }};
+        }
 
         // separate code paths due to generics
         let progress = match (limits, print_callback) {
-            (Some(limits), Some(callback)) => EitherProgress::Limited(start!(
-                LimitedTracker::new(extract_limits(limits)?),
-                CallbackStringPrint(callback)
-            )),
+            (Some(limits), Some(callback)) => {
+                let limits = LimitedTracker::new(extract_limits(limits)?);
+                EitherProgress::Limited(start_hold_gil!(limits, CallbackStringPrint(callback)))
+            }
             (Some(limits), None) => {
-                EitherProgress::Limited(start!(LimitedTracker::new(extract_limits(limits)?), StdPrint))
+                let limits = LimitedTracker::new(extract_limits(limits)?);
+                EitherProgress::Limited(start_release_gil!(limits, StdPrint))
             }
             (None, Some(callback)) => {
-                EitherProgress::NoLimit(start!(NoLimitTracker::default(), CallbackStringPrint(callback)))
+                let limits = NoLimitTracker::default();
+                EitherProgress::NoLimit(start_hold_gil!(limits, CallbackStringPrint(callback)))
             }
-            (None, None) => EitherProgress::NoLimit(start!(NoLimitTracker::default(), StdPrint)),
+            (None, None) => {
+                let limits = NoLimitTracker::default();
+                EitherProgress::NoLimit(start_release_gil!(limits, StdPrint))
+            }
         };
         progress.progress_or_complete(
             py,
@@ -452,7 +464,7 @@ impl EitherProgress {
     }
 }
 
-/// Runtime execution snapshot, parameterized by resource tracker type.
+/// Runtime execution snapshot, holds multiple resource tracker types since pyclass structs can't be generic.
 ///
 /// Used internally by `PyMontySnapshot` to store execution state.
 /// The `Done` variant indicates the snapshot has been consumed.
@@ -527,7 +539,7 @@ impl PyMontySnapshot {
                 let result = if let Some(print_callback) = &self.print_callback {
                     snapshot.run(external_result, &mut CallbackStringPrint(print_callback.bind(py)))
                 } else {
-                    snapshot.run(external_result, &mut StdPrint)
+                    py.detach(|| snapshot.run(external_result, &mut StdPrint))
                 };
                 EitherProgress::NoLimit(result.map_err(|e| MontyError::new_err(py, e))?)
             }
@@ -535,7 +547,7 @@ impl PyMontySnapshot {
                 let result = if let Some(print_callback) = &self.print_callback {
                     snapshot.run(external_result, &mut CallbackStringPrint(print_callback.bind(py)))
                 } else {
-                    snapshot.run(external_result, &mut StdPrint)
+                    py.detach(|| snapshot.run(external_result, &mut StdPrint))
                 };
                 EitherProgress::Limited(result.map_err(|e| MontyError::new_err(py, e))?)
             }

@@ -1,6 +1,7 @@
 import threading
 import time
 from functools import partial
+from typing import cast
 
 import monty
 
@@ -27,8 +28,8 @@ x
         t.join()
     diff_parallel = time.perf_counter() - start
     # check that running the function in parallel 4 times is less than 1.5x slower than running it once
-    slowdown = diff_parallel / diff
-    assert slowdown < 1.5, 'Execution should not be slower in parallel'
+    time_multiple = diff_parallel / diff
+    assert time_multiple < 1.5, 'Execution should not be slower in parallel'
 
 
 def double(a: int) -> int:
@@ -57,5 +58,62 @@ double(x)
         t.join()
     diff_parallel = time.perf_counter() - start
     # check that running the function in parallel 4 times is less than 1.5x slower than running it once
-    slowdown = diff_parallel / diff
-    assert slowdown < 1.5, 'Execution should not be slower in parallel'
+    time_multiple = diff_parallel / diff
+    assert time_multiple < 1.5, 'Execution should not be slower in parallel'
+
+
+def test_parallel_exec_start():
+    """Run code directly, run it in parallel, check that parallel execution not much slower."""
+    code = """
+x = 0
+for i in range(200_000):
+    x += 1
+double(x)
+"""
+    m = monty.Monty(code, external_functions=['double'])
+    start = time.perf_counter()
+    progress = m.start()
+    diff = time.perf_counter() - start
+    assert isinstance(progress, monty.MontySnapshot)
+
+    threads = [threading.Thread(target=m.start) for _ in range(4)]
+    start = time.perf_counter()
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    diff_parallel = time.perf_counter() - start
+    # check that running the function in parallel 4 times is less than 1.5x slower than running it once
+    time_multiple = diff_parallel / diff
+    assert time_multiple < 1.5, 'Execution should not be slower in parallel'
+
+
+def test_parallel_exec_start_resume():
+    """Run code directly, run it in parallel, check that parallel execution not much slower."""
+    code = """
+x = double(1)
+for i in range(200_000):
+    x += 1
+x
+"""
+    m = monty.Monty(code, external_functions=['double'])
+    progress = m.start()
+    assert isinstance(progress, monty.MontySnapshot)
+    start = time.perf_counter()
+    result = progress.resume(return_value=2)
+    diff = time.perf_counter() - start
+    assert isinstance(result, monty.MontyComplete)
+    assert result.output == 200_002
+
+    progresses = cast(list[monty.MontySnapshot], [m.start() for _ in range(4)])
+
+    threads = [threading.Thread(target=partial(p.resume, return_value=2)) for p in progresses]
+    start = time.perf_counter()
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    diff_parallel = time.perf_counter() - start
+    # check that running the function in parallel 4 times is less than 1.5x slower than running it once
+    time_multiple = diff_parallel / diff
+    assert time_multiple < 1.5, 'Execution should not be slower in parallel'
