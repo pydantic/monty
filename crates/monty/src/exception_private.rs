@@ -818,14 +818,21 @@ impl ExcType {
     /// Creates a TypeError for str.join() when an item is not a string.
     ///
     /// Matches CPython's format: `TypeError: sequence item {index}: expected str instance, {type} found`
-    /// Simplified version without index to avoid complexity.
     #[must_use]
-    pub(crate) fn type_error_join_item(item_type: Type) -> RunError {
+    pub(crate) fn type_error_join_item(index: usize, item_type: Type) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
-            format!("sequence item: expected str instance, {item_type} found"),
+            format!("sequence item {index}: expected str instance, {item_type} found"),
         )
         .into()
+    }
+
+    /// Creates a TypeError for str.join() when the argument is not iterable.
+    ///
+    /// Matches CPython's format: `TypeError: can only join an iterable`
+    #[must_use]
+    pub(crate) fn type_error_join_not_iterable() -> RunError {
+        SimpleException::new_msg(Self::TypeError, "can only join an iterable".to_owned()).into()
     }
 }
 

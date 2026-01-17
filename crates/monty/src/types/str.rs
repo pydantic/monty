@@ -208,7 +208,7 @@ pub fn call_str_method(
     interns: &Interns,
 ) -> RunResult<Value> {
     if method_id == attr::JOIN {
-        let iterable = args.get_one_arg("str.join")?;
+        let iterable = args.get_one_arg_or_drop("str.join", heap)?;
         str_join(s, iterable, heap, interns)
     } else {
         args.drop_with_heap(heap);
@@ -228,19 +228,21 @@ pub fn call_str_method(
 /// * `interns` - The interns table for resolving interned strings
 ///
 /// # Errors
-/// Returns `TypeError` if any element in the iterable is not a string.
+/// Returns `TypeError` if the argument is not iterable or if any element is not a string.
 fn str_join(
     separator: &str,
     iterable: Value,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
-    // Create ForIterator from the iterable
-    let mut iter = ForIterator::new(iterable, heap, interns)?;
+    // Create ForIterator from the iterable, with join-specific error message
+    let Ok(mut iter) = ForIterator::new(iterable, heap, interns) else {
+        return Err(ExcType::type_error_join_not_iterable());
+    };
 
-    // Build result string
+    // Build result string, tracking index for error messages
     let mut result = String::new();
-    let mut first = true;
+    let mut index = 0usize;
 
     while let Some(item) = iter.for_next(heap, interns)? {
         // Check item is a string and extract its content
@@ -259,22 +261,22 @@ fn str_join(
                     let t = item.py_type(heap);
                     item.drop_with_heap(heap);
                     iter.drop_with_heap(heap);
-                    return Err(ExcType::type_error_join_item(t));
+                    return Err(ExcType::type_error_join_item(index, t));
                 }
             }
             _ => {
                 let t = item.py_type(heap);
                 item.drop_with_heap(heap);
                 iter.drop_with_heap(heap);
-                return Err(ExcType::type_error_join_item(t));
+                return Err(ExcType::type_error_join_item(index, t));
             }
         };
 
-        if !first {
+        if index > 0 {
             result.push_str(separator);
         }
         result.push_str(&item_str);
-        first = false;
+        index += 1;
     }
 
     iter.drop_with_heap(heap);

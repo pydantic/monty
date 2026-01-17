@@ -35,10 +35,27 @@ impl ArgValues {
     }
 
     /// Checks that exactly one positional argument was passed, returning it.
+    ///
+    /// **Warning**: On error, contained values are NOT dropped. Use `get_one_arg_or_drop`
+    /// when args may contain heap references.
     pub fn get_one_arg(self, name: &str) -> RunResult<Value> {
         match self {
             Self::One(a) => Ok(a),
             _ => Err(ExcType::type_error_arg_count(name, 1, self.count())),
+        }
+    }
+
+    /// Like `get_one_arg`, but properly drops contained values on error.
+    ///
+    /// Use this when the args may contain heap references that need cleanup.
+    pub fn get_one_arg_or_drop(self, name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+        match self {
+            Self::One(a) => Ok(a),
+            other => {
+                let count = other.count();
+                other.drop_with_heap(heap);
+                Err(ExcType::type_error_arg_count(name, 1, count))
+            }
         }
     }
 
