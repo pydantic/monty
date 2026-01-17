@@ -1,9 +1,17 @@
+import os
 import threading
 import time
 from functools import partial
 from typing import cast
 
+import pytest
+
 import monty
+
+# I don't see a way to run these tests reliably on CI since github actions only has one CPU
+# perhaps we could use ubuntu-24.04-arm once the repo is open source (it's currently not supported for private repos)
+# https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+pytestmark = pytest.mark.skipif('CI' in os.environ, reason='on CI')
 
 
 def test_parallel_exec():
