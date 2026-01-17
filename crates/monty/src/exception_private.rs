@@ -799,10 +799,11 @@ impl ExcType {
 
     /// Creates a ZeroDivisionError for zero raised to a negative power.
     ///
-    /// Matches CPython's format: `ZeroDivisionError: 0.0 cannot be raised to a negative power`
+    /// Matches CPython's format: `ZeroDivisionError: zero to a negative power`
+    /// Note: CPython uses the same message for both int and float zero ** negative.
     #[must_use]
     pub(crate) fn zero_negative_power() -> RunError {
-        SimpleException::new_msg(Self::ZeroDivisionError, "0.0 cannot be raised to a negative power").into()
+        SimpleException::new_msg(Self::ZeroDivisionError, "zero to a negative power").into()
     }
 
     /// Creates an OverflowError for exponents that are too large.
@@ -813,20 +814,13 @@ impl ExcType {
         SimpleException::new_msg(Self::OverflowError, "exponent too large").into()
     }
 
-    /// Creates a ZeroDivisionError for integer division or modulo by zero.
+    /// Creates a ZeroDivisionError for divmod by zero (both integer and float).
     ///
-    /// Matches CPython's format: `ZeroDivisionError: integer division or modulo by zero`
+    /// Matches CPython's format: `ZeroDivisionError: division by zero`
+    /// Note: CPython uses the same message for both integer and float divmod.
     #[must_use]
-    pub(crate) fn integer_divmod_by_zero() -> RunError {
-        SimpleException::new_msg(Self::ZeroDivisionError, "integer division or modulo by zero").into()
-    }
-
-    /// Creates a ZeroDivisionError for float divmod by zero.
-    ///
-    /// Matches CPython's format: `ZeroDivisionError: float divmod()`
-    #[must_use]
-    pub(crate) fn float_divmod_by_zero() -> RunError {
-        SimpleException::new_msg(Self::ZeroDivisionError, "float divmod()").into()
+    pub(crate) fn divmod_by_zero() -> RunError {
+        SimpleException::new_msg(Self::ZeroDivisionError, "division by zero").into()
     }
 }
 
