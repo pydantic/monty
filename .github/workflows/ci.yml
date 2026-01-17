@@ -153,7 +153,7 @@ jobs:
           - os: windows
             target: i686
 
-    runs-on: ${{ (matrix.os == 'linux' && 'ubuntu-latest') || (matrix.os == 'macos' && 'macos-13') || (matrix.os == 'windows' && 'windows-latest') }}
+    runs-on: ${{ (matrix.os == 'linux' && 'ubuntu-latest') || (matrix.os == 'macos' && 'macos-latest') || (matrix.os == 'windows' && 'windows-latest') }}
     steps:
       - uses: actions/checkout@v6
 
