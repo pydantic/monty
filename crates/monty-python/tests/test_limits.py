@@ -1,6 +1,7 @@
 import multiprocessing
 import os
 import signal
+import threading
 import time
 from types import FrameType
 
@@ -115,7 +116,13 @@ def test_limits_none_value_allowed():
 
 
 def test_signal_alarm_custom_error():
-    """Test that custom signal handlers work during execution."""
+    """Test that custom signal handlers work during execution.
+
+    The idea here is we run another thread which sends a signal to the current process after a delay
+    then set up a signal handler to catch that signal and raise a custom exception.
+
+    So while monty is running, we have to run the code to catch the signal, and propagate that exception.
+    """
     code = """
 def fib(n):
     if n <= 1:
@@ -126,10 +133,16 @@ fib(35)
 """
     m = monty.Monty(code)
 
+    def send_signal():
+        time.sleep(0.1)
+        os.kill(os.getpid(), signal.SIGINT)
+
     def raise_potato(signum: int, frame: FrameType | None) -> None:
         raise ValueError('potato')
 
-    old_handler = signal.signal(signal.SIGALRM, raise_potato)
+    thread = threading.Thread(target=send_signal)
+    thread.start()
+    old_handler = signal.signal(signal.SIGINT, raise_potato)
     try:
         signal.alarm(1)  # Fire after 1 second
         with pytest.raises(monty.MontyRuntimeError) as exc_info:
@@ -138,8 +151,8 @@ fib(35)
         assert isinstance(inner, ValueError)
         assert inner.args[0] == snapshot('potato')
     finally:
-        signal.alarm(0)  # Cancel any pending alarm
-        signal.signal(signal.SIGALRM, old_handler)
+        thread.join()
+        signal.signal(signal.SIGINT, old_handler)
 
 
 def _send_sigint_after_delay(pid: int, delay: float) -> None:

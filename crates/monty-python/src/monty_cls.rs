@@ -151,7 +151,7 @@ impl PyMonty {
             (Some(limits), Some(callback)) => {
                 let inner_tracker = LimitedTracker::new(extract_limits(limits)?);
                 let tracker = PySignalTracker::new(inner_tracker);
-                self.run_with_tracker(
+                self.run_hold_gil(
                     py,
                     input_values,
                     tracker,
@@ -162,16 +162,16 @@ impl PyMonty {
             (Some(limits), None) => {
                 let inner_tracker = LimitedTracker::new(extract_limits(limits)?);
                 let tracker = PySignalTracker::new(inner_tracker);
-                self.run_with_tracker(py, input_values, tracker, external_functions, StdPrint)
+                self.run_release_gil(py, input_values, tracker, external_functions, StdPrint)
             }
-            (None, Some(callback)) => self.run_with_tracker(
+            (None, Some(callback)) => self.run_hold_gil(
                 py,
                 input_values,
                 PySignalTracker::new(NoLimitTracker::default()),
                 external_functions,
                 CallbackStringPrint(callback),
             ),
-            (None, None) => self.run_with_tracker(
+            (None, None) => self.run_release_gil(
                 py,
                 input_values,
                 PySignalTracker::new(NoLimitTracker::default()),
@@ -342,8 +342,8 @@ impl PyMonty {
             .collect::<PyResult<_>>()
     }
 
-    /// Runs code with a generic tracker.
-    fn run_with_tracker(
+    /// Runs code with a generic resource tracker while holding the GIL.
+    fn run_hold_gil(
         &self,
         py: Python<'_>,
         input_values: Vec<MontyObject>,
@@ -363,6 +363,32 @@ impl PyMonty {
                 .runner
                 .clone()
                 .start(input_values, tracker, &mut print_output)
+                .map_err(|e| MontyError::new_err(py, e))?;
+            execute_progress(py, progress, external_functions, &mut print_output, dataclass_registry)
+        }
+    }
+
+    /// Runs code with a generic resource tracker while releasing the GIL.
+    fn run_release_gil(
+        &self,
+        py: Python<'_>,
+        input_values: Vec<MontyObject>,
+        tracker: impl ResourceTracker + Send,
+        external_functions: Option<&Bound<'_, PyDict>>,
+        mut print_output: impl PrintWriter + Send,
+    ) -> PyResult<Py<PyAny>> {
+        let dataclass_registry = self.dataclass_registry.bind(py);
+        if self.external_function_names.is_empty() {
+            let runner = &self.runner;
+            match py.detach(|| runner.run(input_values, tracker, &mut print_output)) {
+                Ok(v) => monty_to_py(py, &v, dataclass_registry),
+                Err(err) => Err(MontyError::new_err(py, err)),
+            }
+        } else {
+            // Clone the runner since start() consumes it - allows reuse of the parsed code
+            let runner = self.runner.clone();
+            let progress = py
+                .detach(|| runner.start(input_values, tracker, &mut print_output))
                 .map_err(|e| MontyError::new_err(py, e))?;
             execute_progress(py, progress, external_functions, &mut print_output, dataclass_registry)
         }
