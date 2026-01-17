@@ -1,17 +1,16 @@
 use std::sync::Arc;
 
 use ruff_db::{
+    Db as SourceDb,
     files::{File, Files},
     system::{DbWithTestSystem, System, TestSystem},
     vendored::VendoredFileSystem,
-    Db as SourceDb,
 };
 use ruff_python_ast::PythonVersion;
 use ty_module_resolver::{Db as ModuleResolverDb, SearchPaths};
 use ty_python_semantic::{
-    default_lint_registry,
+    AnalysisSettings, Db, Program, default_lint_registry,
     lint::{LintRegistry, RuleSelection},
-    AnalysisSettings, Db, Program,
 };
 
 /// Very simple in-memory salsa/ty database.

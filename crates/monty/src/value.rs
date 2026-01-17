@@ -15,7 +15,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId},
     intern::{BytesId, ExtFunctionId, FunctionId, Interns, StringId},
     resource::ResourceTracker,
-    types::{bytes::bytes_repr_fmt, str::string_repr_fmt, PyTrait, Type},
+    types::{PyTrait, Type, bytes::bytes_repr_fmt, str::string_repr_fmt},
 };
 
 /// Bitwise operation type for `py_bitwise`.
@@ -1162,15 +1162,7 @@ impl Value {
                         return Err(ExcType::value_error_negative_shift_count());
                     }
                     // Large right shifts just give 0 or -1 for negative numbers
-                    if r > 63 {
-                        if l < 0 {
-                            -1
-                        } else {
-                            0
-                        }
-                    } else {
-                        l >> r
-                    }
+                    if r > 63 { if l < 0 { -1 } else { 0 } } else { l >> r }
                 }
             };
             Ok(Self::Int(result))

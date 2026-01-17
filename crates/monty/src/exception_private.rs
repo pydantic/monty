@@ -14,7 +14,7 @@ use crate::{
     intern::{Interns, StringId},
     parse::CodeRange,
     resource::ResourceTracker,
-    types::{str::string_repr, PyTrait, Type},
+    types::{PyTrait, Type, str::string_repr},
     value::Value,
 };
 

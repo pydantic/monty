@@ -1,6 +1,7 @@
 use std::vec::IntoIter;
 
 use crate::{
+    MontyObject, ResourceTracker,
     exception_private::{ExcType, RunResult},
     expressions::{ExprLoc, Identifier},
     heap::Heap,
@@ -8,7 +9,6 @@ use crate::{
     parse::ParseError,
     types::Dict,
     value::Value,
-    MontyObject, ResourceTracker,
 };
 
 /// Type for method call arguments.

@@ -21,7 +21,7 @@ use crate::{
     exception_private::ExcType,
     exception_public::{MontyException, StackFrame},
     expressions::{Callable, Expr, ExprLoc, Identifier, Literal, NameScope, PreparedFunctionDef, PreparedNode},
-    fstring::{encode_format_spec, ConversionFlag, FStringPart, FormatSpec},
+    fstring::{ConversionFlag, FStringPart, FormatSpec, encode_format_spec},
     function::Function,
     intern::Interns,
     operators::{CmpOperator, Operator},

@@ -2,9 +2,9 @@ use std::ffi::CString;
 
 // Use codspeed-criterion-compat when running on CodSpeed (CI), real criterion otherwise (for flamegraphs)
 #[cfg(codspeed)]
-use codspeed_criterion_compat::{black_box, criterion_group, criterion_main, Bencher, Criterion};
+use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 #[cfg(not(codspeed))]
-use criterion::{black_box, criterion_group, criterion_main, Bencher, Criterion};
+use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 use monty::MontyRun;
 #[cfg(not(codspeed))]
 use pprof::criterion::{Output, PProfProfiler};

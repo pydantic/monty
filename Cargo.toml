@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/monty", "crates/monty-cli", "crates/monty-python", "crates/monty-type-checking", "crates/monty-typeshed"]
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 version = "0.0.0"
 rust-version = "1.90"
 license = "MIT"

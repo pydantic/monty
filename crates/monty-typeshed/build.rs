@@ -10,9 +10,9 @@ use std::{fs::File, io::Write, path::Path};
 
 use path_slash::PathExt;
 use zip::{
+    CompressionMethod,
     result::ZipResult,
     write::{FileOptions, ZipWriter},
-    CompressionMethod,
 };
 
 const TYPESHED_SOURCE_DIR: &str = "vendor/typeshed";

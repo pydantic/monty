@@ -7,18 +7,18 @@ use ::monty::{
 };
 use monty_type_checking::type_check;
 use pyo3::{
+    IntoPyObjectExt,
     exceptions::{PyKeyError, PyRuntimeError, PyTypeError, PyValueError},
     intern,
     prelude::*,
     types::{PyBytes, PyDict, PyList, PyTuple, PyType},
-    IntoPyObjectExt,
 };
 
 use crate::{
     convert::{monty_to_py, py_to_monty},
-    exceptions::{exc_py_to_monty, MontyError, MontyTypingError},
+    exceptions::{MontyError, MontyTypingError, exc_py_to_monty},
     external::ExternalFunctionRegistry,
-    limits::{extract_limits, PySignalTracker},
+    limits::{PySignalTracker, extract_limits},
 };
 
 /// A sandboxed Python interpreter instance.

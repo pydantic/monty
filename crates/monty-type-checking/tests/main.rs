@@ -88,7 +88,10 @@ fn missing_stdlib_datetime() {
         "main.py:1:8: error[unresolved-import] Cannot resolve imported module `datetime`\n"
     );
     let dbg = format!("{failure:?}");
-    assert_eq!(dbg, "TypeCheckingFailure { format: Concise, color: false, diagnostics: \"main.py:1:8: error[unresolved-import] Cannot resolve imported module `datetime`\\n\" }");
+    assert_eq!(
+        dbg,
+        "TypeCheckingFailure { format: Concise, color: false, diagnostics: \"main.py:1:8: error[unresolved-import] Cannot resolve imported module `datetime`\\n\" }"
+    );
 }
 
 /// Test that good_types.py type-checks without errors.

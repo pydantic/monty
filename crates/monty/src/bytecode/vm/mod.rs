@@ -22,7 +22,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId},
     intern::{ExtFunctionId, FunctionId, Interns, StringId},
     io::PrintWriter,
-    namespace::{NamespaceId, Namespaces, GLOBAL_NS_IDX},
+    namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
     parse::CodeRange,
     resource::ResourceTracker,
     types::PyTrait,
@@ -83,9 +83,7 @@ macro_rules! fetch_u8 {
 
 /// Fetches an i8 operand using cached code/ip.
 macro_rules! fetch_i8 {
-    ($cached_frame:expr) => {{
-        i8::from_ne_bytes([fetch_byte!($cached_frame)])
-    }};
+    ($cached_frame:expr) => {{ i8::from_ne_bytes([fetch_byte!($cached_frame)]) }};
 }
 
 /// Fetches a u16 operand (little-endian) using cached code/ip.

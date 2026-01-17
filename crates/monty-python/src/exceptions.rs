@@ -16,10 +16,10 @@
 use ::monty::{ExcType, MontyException, StackFrame};
 use monty_type_checking::TypeCheckingFailure;
 use pyo3::{
+    PyClassInitializer, PyTypeCheck,
     exceptions::{self},
     prelude::*,
     types::{PyDict, PyList, PyString},
-    PyClassInitializer, PyTypeCheck,
 };
 
 use crate::dataclass::get_frozen_instance_error;

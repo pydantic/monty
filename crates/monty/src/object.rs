@@ -13,13 +13,13 @@ use crate::{
     intern::Interns,
     resource::{ResourceError, ResourceTracker},
     types::{
-        bytes::{bytes_repr, Bytes},
+        PyTrait, Type,
+        bytes::{Bytes, bytes_repr},
         dict::Dict,
         list::List,
         set::{FrozenSet, Set},
-        str::{string_repr, Str},
+        str::{Str, string_repr},
         tuple::Tuple,
-        PyTrait, Type,
     },
     value::Value,
 };

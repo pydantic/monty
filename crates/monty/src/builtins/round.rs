@@ -113,11 +113,7 @@ fn bankers_round(value: f64) -> f64 {
         floor + 1.0
     } else {
         // Exactly 0.5 - round to even
-        if f64_to_i64(floor) % 2 == 0 {
-            floor
-        } else {
-            floor + 1.0
-        }
+        if f64_to_i64(floor) % 2 == 0 { floor } else { floor + 1.0 }
     }
 }
 

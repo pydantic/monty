@@ -5,7 +5,7 @@ use crate::{
     builtins::Builtins,
     exception_private::{ExcType, ExceptionRaise, RawStackFrame, RunError, SimpleException},
     heap::HeapData,
-    intern::{StringId, MODULE_STRING_ID},
+    intern::{MODULE_STRING_ID, StringId},
     io::PrintWriter,
     resource::ResourceTracker,
     types::{PyTrait, Type},

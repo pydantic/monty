@@ -4,8 +4,8 @@ use std::{
 };
 
 use crate::{
-    exception_private::{ExceptionRaise, RawStackFrame, RunError, SimpleException},
     ExcType, MontyException,
+    exception_private::{ExceptionRaise, RawStackFrame, RunError, SimpleException},
 };
 
 /// Error returned when a resource limit is exceeded during execution.

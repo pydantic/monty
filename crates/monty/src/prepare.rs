@@ -755,7 +755,7 @@ impl<'i> Prepare<'i> {
 
             // Sort cell_var_map entries by slot to get cells in order
             let mut cell_entries: Vec<_> = inner_prepare.cell_var_map.iter().collect();
-            cell_entries.sort_by_key(|(_, &slot)| slot);
+            cell_entries.sort_by_key(|&(_, slot)| slot);
 
             // For each cell (in slot order), check if it's a parameter
             cell_entries

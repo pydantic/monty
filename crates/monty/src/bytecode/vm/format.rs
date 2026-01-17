@@ -3,7 +3,7 @@
 use super::VM;
 use crate::{
     exception_private::{ExcType, RunError, SimpleException},
-    fstring::{ascii_escape, decode_format_spec, format_string, format_with_spec, ParsedFormatSpec},
+    fstring::{ParsedFormatSpec, ascii_escape, decode_format_spec, format_string, format_with_spec},
     heap::HeapData,
     io::PrintWriter,
     resource::ResourceTracker,

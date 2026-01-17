@@ -2,7 +2,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
-    bytecode::{Code, Compiler, FrameExit, VMSnapshot, VM},
+    ExcType, MontyException,
+    bytecode::{Code, Compiler, FrameExit, VM, VMSnapshot},
     exception_private::{RunError, RunResult},
     heap::Heap,
     intern::{ExtFunctionId, Interns},
@@ -13,7 +14,6 @@ use crate::{
     prepare::prepare,
     resource::{NoLimitTracker, ResourceTracker},
     value::Value,
-    ExcType, MontyException,
 };
 
 /// Primary interface for running Monty code.

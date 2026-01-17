@@ -7,7 +7,7 @@ use std::fmt::Write;
 
 use ahash::AHashSet;
 
-use super::{list::repr_sequence_fmt, PyTrait};
+use super::{PyTrait, list::repr_sequence_fmt};
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},

@@ -1,14 +1,14 @@
 use std::fmt::{self, Display};
 
 use ruff_db::{
+    Db as SourceDb,
     diagnostic::{Diagnostic, DiagnosticFormat, DisplayDiagnosticConfig, DisplayDiagnostics},
     files::system_path_to_file,
     system::DbWithWritableSystem as _,
-    Db as SourceDb,
 };
 use ty_module_resolver::SearchPathSettings;
 use ty_python_semantic::{
-    types::check_types, Program, ProgramSettings, PythonPlatform, PythonVersionSource, PythonVersionWithSource,
+    Program, ProgramSettings, PythonPlatform, PythonVersionSource, PythonVersionWithSource, types::check_types,
 };
 
 use crate::db::MemoryDb;

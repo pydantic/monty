@@ -12,12 +12,12 @@ use std::{
 
 use ::monty::{DictPairs, MontyObject};
 use pyo3::{
+    Bound,
     exceptions::{PyAttributeError, PyTypeError},
     intern,
     prelude::*,
     sync::PyOnceLock,
     types::{PyDict, PyString, PyType},
-    Bound,
 };
 
 use crate::convert::{monty_to_py, py_to_monty};

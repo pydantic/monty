@@ -1,13 +1,15 @@
 use std::{borrow::Cow, fmt};
 
 use ruff_python_ast::{
-    self as ast, name::Name, BoolOp, CmpOp, ConversionFlag as RuffConversionFlag, ElifElseClause, Expr as AstExpr,
+    self as ast, BoolOp, CmpOp, ConversionFlag as RuffConversionFlag, ElifElseClause, Expr as AstExpr,
     InterpolatedStringElement, Keyword, Number, Operator as AstOperator, ParameterWithDefault, Stmt, UnaryOp,
+    name::Name,
 };
 use ruff_python_parser::parse_module;
 use ruff_text_size::{Ranged, TextRange};
 
 use crate::{
+    StackFrame,
     args::{ArgExprs, Kwarg},
     builtins::Builtins,
     exception_private::ExcType,
@@ -17,7 +19,6 @@ use crate::{
     intern::{InternerBuilder, StringId},
     operators::{CmpOperator, Operator},
     value::Attr,
-    StackFrame,
 };
 
 /// A parameter in a function signature with optional default value.

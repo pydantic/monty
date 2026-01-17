@@ -1,14 +1,14 @@
 use std::fmt::Write;
 
 use ahash::AHashSet;
-use hashbrown::{hash_table::Entry, HashTable};
+use hashbrown::{HashTable, hash_table::Entry};
 
 use super::{List, PyTrait, Tuple};
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
-    intern::{attr, Interns},
+    intern::{Interns, attr},
     resource::ResourceTracker,
     types::Type,
     value::{Attr, Value},
