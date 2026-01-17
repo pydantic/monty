@@ -1,4 +1,13 @@
-use std::{error::Error, ffi::CString, fs, path::Path, sync::mpsc, thread, time::Duration};
+use std::{
+    error::Error,
+    ffi::CString,
+    fs,
+    panic::{self, AssertUnwindSafe},
+    path::Path,
+    sync::mpsc::{self, RecvTimeoutError},
+    thread,
+    time::Duration,
+};
 
 use ahash::AHashMap;
 use monty::{
@@ -1038,25 +1047,62 @@ fn format_cpython_exception(py: Python<'_>, e: &PyErr) -> String {
 /// and will fail with a timeout error.
 const TEST_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Runs a closure with a timeout, returning an error if it exceeds the duration.
+/// Result from running a test with a timeout.
+enum TimeoutResult<T> {
+    /// The closure completed successfully.
+    Ok(T),
+    /// The closure panicked with the given message.
+    Panicked(String),
+    /// The timeout was exceeded.
+    TimedOut,
+}
+
+/// Runs a closure with a timeout, returning an error if it exceeds the duration or panics.
 ///
 /// Spawns the closure in a separate thread and waits for the result with a timeout.
-/// If the timeout is exceeded, returns an error message. Note that the spawned thread
-/// will continue running in the background (Rust doesn't support killing threads),
-/// but the test will fail immediately.
-fn run_with_timeout<F, T>(timeout: Duration, f: F) -> Result<T, String>
+/// Distinguishes between three cases:
+/// - Success: the closure returned normally
+/// - Panic: the closure panicked (detected via channel disconnect + catch_unwind)
+/// - Timeout: the timeout was exceeded (possible infinite loop)
+///
+/// Note that if a timeout occurs, the spawned thread will continue running in the
+/// background (Rust doesn't support killing threads), but the test will fail immediately.
+fn run_with_timeout<F, T>(timeout: Duration, f: F) -> TimeoutResult<T>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let result = f();
-        let _ = tx.send(result);
+        // Catch panics so we can report them properly instead of as timeouts
+        let result = panic::catch_unwind(AssertUnwindSafe(f));
+        match result {
+            Ok(value) => {
+                let _ = tx.send(Ok(value));
+            }
+            Err(panic_payload) => {
+                // Extract panic message from the payload
+                let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                let _ = tx.send(Err(msg));
+            }
+        }
     });
 
-    rx.recv_timeout(timeout)
-        .map_err(|_| format!("test timed out after {timeout:?} (possible infinite loop)"))
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(value)) => TimeoutResult::Ok(value),
+        Ok(Err(panic_msg)) => TimeoutResult::Panicked(panic_msg),
+        Err(RecvTimeoutError::Timeout) => TimeoutResult::TimedOut,
+        // Disconnected without sending means something went very wrong
+        Err(RecvTimeoutError::Disconnected) => {
+            TimeoutResult::Panicked("thread terminated without sending result".to_string())
+        }
+    }
 }
 
 /// Test function that runs each fixture through Monty.
@@ -1082,14 +1128,20 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
         }
     });
 
-    // Handle timeout error
+    // Handle timeout/panic errors from the test thread
     let result = match result {
-        Ok(inner_result) => inner_result,
-        Err(timeout_msg) => Err(TestFailure {
+        TimeoutResult::Ok(inner_result) => inner_result,
+        TimeoutResult::Panicked(panic_msg) => Err(TestFailure {
+            test_name: test_name.clone(),
+            kind: "Panic".to_string(),
+            expected: "no panic".to_string(),
+            actual: format!("test panicked: {panic_msg}"),
+        }),
+        TimeoutResult::TimedOut => Err(TestFailure {
             test_name: test_name.clone(),
             kind: "Timeout".to_string(),
-            expected: "completion within 5s".to_string(),
-            actual: timeout_msg,
+            expected: format!("completion within {TEST_TIMEOUT:?}"),
+            actual: format!("test timed out after {TEST_TIMEOUT:?} (possible infinite loop)"),
         }),
     };
 

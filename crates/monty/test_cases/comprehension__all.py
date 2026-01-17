@@ -48,6 +48,19 @@ assert [prefix + str(x) for x in [1, 2, 3]] == ['item_1', 'item_2', 'item_3'], '
 base = [1, 2, 3]
 assert [x + 10 for x in base] == [11, 12, 13], 'closure list'
 
+
+# === Capture when iter uses same name as target ===
+def outer_capture_same_name():
+    x = [1, 2, 3]
+
+    def inner():
+        return [x for x in x]
+
+    return inner()
+
+
+assert outer_capture_same_name() == [1, 2, 3], 'iter uses outer x'
+
 # === Empty iterables ===
 assert [x for x in []] == [], 'empty list'
 assert {x for x in []} == set(), 'empty set'
