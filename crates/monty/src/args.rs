@@ -7,7 +7,7 @@ use crate::{
     heap::Heap,
     intern::{Interns, StringId},
     parse::ParseError,
-    types::{dict::DictIntoIter, Dict},
+    types::{Dict, dict::DictIntoIter},
     value::Value,
 };
 
