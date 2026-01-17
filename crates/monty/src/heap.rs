@@ -18,7 +18,7 @@ use crate::{
     resource::{ResourceError, ResourceTracker},
     types::{
         Bytes, Dataclass, Dict, FrozenSet, List, PyTrait, Range, Set, Str, Tuple, Type,
-        bigint::{bigint_to_value, estimate_size, hash_bigint, is_zero},
+        bigint::{bigint_to_value, estimate_size, hash_bigint},
     },
     value::{Attr, Value},
 };
@@ -300,7 +300,7 @@ impl PyTrait for HeapData {
             Self::Exception(_) => true, // Exceptions are always truthy
             Self::Dataclass(dc) => dc.py_bool(heap, interns),
             Self::Iterator(_) => true, // Iterators are always truthy
-            Self::BigInt(bi) => !is_zero(bi),
+            Self::BigInt(bi) => !bi.is_zero(),
         }
     }
 

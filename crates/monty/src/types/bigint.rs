@@ -11,7 +11,7 @@ use std::{
 };
 
 use num_bigint::BigInt;
-use num_traits::{ToPrimitive, Zero};
+use num_traits::ToPrimitive;
 
 use crate::{
     heap::{Heap, HeapData},
@@ -32,11 +32,6 @@ pub fn bigint_to_value(bi: BigInt, heap: &mut Heap<impl ResourceTracker>) -> Res
         let heap_id = heap.allocate(HeapData::BigInt(bi))?;
         Ok(Value::Ref(heap_id))
     }
-}
-
-/// Checks if a BigInt is zero.
-pub fn is_zero(bi: &BigInt) -> bool {
-    bi.is_zero()
 }
 
 /// Computes a hash for a BigInt that is consistent with i64 hashing.

@@ -13,6 +13,7 @@ use ahash::AHashSet;
 
 use super::Type;
 use crate::{
+    ResourceError,
     args::ArgValues,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapId},
@@ -133,7 +134,7 @@ pub trait PyTrait {
         _other: &Self,
         _heap: &mut Heap<impl ResourceTracker>,
         _interns: &Interns,
-    ) -> Result<Option<Value>, crate::resource::ResourceError> {
+    ) -> Result<Option<Value>, ResourceError> {
         Ok(None)
     }
 
@@ -141,11 +142,7 @@ pub trait PyTrait {
     ///
     /// Returns `Ok(None)` if the operation is not supported for these types,
     /// `Ok(Some(value))` on success, or `Err(ResourceError)` if allocation fails.
-    fn py_sub(
-        &self,
-        _other: &Self,
-        _heap: &mut Heap<impl ResourceTracker>,
-    ) -> Result<Option<Value>, crate::resource::ResourceError> {
+    fn py_sub(&self, _other: &Self, _heap: &mut Heap<impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
         Ok(None)
     }
 
@@ -153,11 +150,7 @@ pub trait PyTrait {
     ///
     /// Returns `Ok(None)` if the operation is not supported for these types,
     /// `Ok(Some(value))` on success, or `Err(RunError)` if an error occurs.
-    fn py_mod(
-        &self,
-        _other: &Self,
-        _heap: &mut Heap<impl ResourceTracker>,
-    ) -> crate::exception_private::RunResult<Option<Value>> {
+    fn py_mod(&self, _other: &Self, _heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -180,7 +173,7 @@ pub trait PyTrait {
         heap: &mut Heap<impl ResourceTracker>,
         _self_id: Option<HeapId>,
         _interns: &Interns,
-    ) -> Result<bool, crate::resource::ResourceError> {
+    ) -> Result<bool, ResourceError> {
         // Drop other if it's a Ref (ensure proper refcounting for unsupported types)
         other.drop_with_heap(heap);
         Ok(false)
