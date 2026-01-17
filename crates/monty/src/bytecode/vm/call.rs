@@ -427,18 +427,13 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
         // Get function info (interns is a shared reference so no conflict)
         let func = self.interns.get_function(func_id);
-        let namespace_size = func.namespace_size;
-        let param_count = func.signature.total_slots();
-        let cell_var_count = func.cell_var_count;
-        let cell_param_indices = func.cell_param_indices.clone();
-        let code = &func.code;
 
         // 1. Create new namespace for function
-        let namespace_idx = self.namespaces.new_namespace(namespace_size, self.heap)?;
+        let namespace_idx = self.namespaces.new_namespace(func.namespace_size, self.heap)?;
 
+        let namespace = self.namespaces.get_mut(namespace_idx).mut_vec();
         // 2. Bind arguments to parameters
         {
-            let namespace = self.namespaces.get_mut(namespace_idx).mut_vec();
             let bind_result = func
                 .signature
                 .bind(args, &defaults, self.heap, self.interns, func.name, namespace);
@@ -458,12 +453,12 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         }
 
         // Track created cell HeapIds for the frame
-        let mut frame_cells: Vec<HeapId> = Vec::with_capacity(cell_var_count + cells.len());
+        let mut frame_cells: Vec<HeapId> = Vec::with_capacity(func.cell_var_count + cells.len());
 
         // 3. Create cells for variables captured by nested functions
         {
-            let namespace = self.namespaces.get_mut(namespace_idx).mut_vec();
-            for (i, maybe_param_idx) in cell_param_indices.iter().enumerate() {
+            let param_count = func.signature.total_slots();
+            for (i, maybe_param_idx) in func.cell_param_indices.iter().enumerate() {
                 let cell_slot = param_count + i;
                 let cell_value = if let Some(param_idx) = maybe_param_idx {
                     namespace[*param_idx].clone_with_heap(self.heap)
@@ -472,30 +467,25 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 };
                 let cell_id = self.heap.allocate(HeapData::Cell(cell_value))?;
                 frame_cells.push(cell_id);
-                while namespace.len() <= cell_slot {
-                    namespace.push(Value::Undefined);
-                }
-                namespace[cell_slot] = Value::Ref(cell_id);
+                namespace.resize_with(cell_slot, || Value::Undefined);
+                namespace.push(Value::Ref(cell_id));
             }
 
             // 4. Copy captured cells (free vars) into namespace
-            let free_var_start = param_count + cell_var_count;
+            let free_var_start = param_count + func.cell_var_count;
             for (i, &cell_id) in cells.iter().enumerate() {
                 self.heap.inc_ref(cell_id);
                 frame_cells.push(cell_id);
                 let slot = free_var_start + i;
-                while namespace.len() <= slot {
-                    namespace.push(Value::Undefined);
-                }
-                namespace[slot] = Value::Ref(cell_id);
+                namespace.resize_with(slot, || Value::Undefined);
+                namespace.push(Value::Ref(cell_id));
             }
 
             // 5. Fill remaining slots with Undefined
-            while namespace.len() < namespace_size {
-                namespace.push(Value::Undefined);
-            }
+            namespace.resize_with(func.namespace_size, || Value::Undefined);
         }
 
+        let code = &func.code;
         // 6. Push new frame
         self.frames.push(CallFrame::new_function(
             code,

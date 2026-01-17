@@ -284,7 +284,9 @@ impl Signature {
         {
             let func = interns.get_str(func_name.name_id);
             // Must clean up iterator and kwargs before returning error
-            pos_iter.drop_remaining_with_heap(heap);
+            for value in pos_iter {
+                value.drop_with_heap(heap);
+            }
             keyword_args.drop_with_heap(heap);
             return Err(ExcType::type_error_too_many_positional(
                 func,

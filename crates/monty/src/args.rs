@@ -171,18 +171,6 @@ pub(crate) enum ArgPosIter {
     Vec(IntoIter<Value>),
 }
 
-impl ArgPosIter {
-    /// Drop any remaining values in the iterator.
-    ///
-    /// MUST be called if iteration is abandoned early (e.g., on error paths)
-    /// to avoid reference count leaks.
-    pub fn drop_remaining_with_heap(self, heap: &mut Heap<impl ResourceTracker>) {
-        for value in self {
-            value.drop_with_heap(heap);
-        }
-    }
-}
-
 impl Iterator for ArgPosIter {
     type Item = Value;
 
