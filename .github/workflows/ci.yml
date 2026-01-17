@@ -217,48 +217,19 @@ jobs:
 
       - run: pip install -U twine
 
-      # Phase 1: Build instrumented wheel
-      - name: Build PGO wheel (instrumented)
-        uses: PyO3/maturin-action@v1
+      - name: build PGO wheel
+        id: pgo
+        uses: ./.github/actions/build-pgo-wheel
         with:
-          args: --release --out pgo-wheel -i 3.12
+          interpreter: ${{ matrix.interpreter }}
           rust-toolchain: stable
-          working-directory: crates/monty-python
-        env:
-          RUSTFLAGS: "-Cprofile-generate=${{ github.workspace }}/profdata"
 
-      # Phase 2: Collect profile data
-      - run: pip install crates/monty-python/pgo-wheel/*.whl --force-reinstall
-      - run: python crates/monty-python/exercise.py
-
-      # Phase 3: Merge profile data and build optimized wheel
-      - name: Merge PGO data (Unix)
-        if: matrix.os != 'windows'
-        run: |
-          rustup run stable bash -c 'llvm-profdata merge -o ${{ github.workspace }}/merged.profdata ${{ github.workspace }}/profdata'
-
-      - name: Merge PGO data (Windows)
-        if: matrix.os == 'windows'
-        run: |
-          $LLVM_PROFDATA = (rustup run stable rustc --print target-libdir) -replace 'lib$', 'bin\llvm-profdata.exe'
-          & $LLVM_PROFDATA merge -o ${{ github.workspace }}/merged.profdata ${{ github.workspace }}/profdata
-
-      - name: Build final PGO wheel (optimized)
-        uses: PyO3/maturin-action@v1
-        with:
-          manylinux: auto
-          args: --release --out dist -i ${{ matrix.interpreter }}
-          rust-toolchain: stable
-          working-directory: crates/monty-python
-        env:
-          RUSTFLAGS: "-Cprofile-use=${{ github.workspace }}/merged.profdata"
-
-      - run: twine check --strict crates/monty-python/dist/*
+      - run: twine check --strict ${{ steps.pgo.outputs.wheel-dir }}/*
 
       - uses: actions/upload-artifact@v4
         with:
           name: pypi_files-${{ matrix.os }}-pgo
-          path: crates/monty-python/dist
+          path: ${{ steps.pgo.outputs.wheel-dir }}
 
   # Inspect built artifacts
   inspect-pypi-assets:
