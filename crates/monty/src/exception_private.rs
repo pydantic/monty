@@ -539,7 +539,7 @@ impl ExcType {
 
     /// Creates a simple TypeError with a custom message.
     #[must_use]
-    pub(crate) fn type_error(msg: &str) -> RunError {
+    pub(crate) fn type_error(msg: impl Into<String>) -> RunError {
         SimpleException::new_msg(Self::TypeError, msg).into()
     }
 

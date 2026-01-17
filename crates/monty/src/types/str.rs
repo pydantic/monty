@@ -287,7 +287,7 @@ pub fn call_str_method(
         // Split methods
         attr::SPLIT => str_split(s, args, heap, interns),
         attr::RSPLIT => str_rsplit(s, args, heap, interns),
-        attr::SPLITLINES => str_splitlines(s, args, heap),
+        attr::SPLITLINES => str_splitlines(s, args, heap, interns),
         attr::PARTITION => str_partition(s, args, heap, interns),
         attr::RPARTITION => str_rpartition(s, args, heap, interns),
         // Replace/modify methods
@@ -710,29 +710,33 @@ fn str_count(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, in
 /// Implements Python's `str.startswith(prefix, start?, end?)` method.
 ///
 /// Returns True if the string starts with the prefix, otherwise returns False.
+/// The prefix argument can be a string or a tuple of strings.
 fn str_startswith(
     s: &str,
     args: ArgValues,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
-    let (prefix, start, end) = parse_search_args("str.startswith", s, args, heap, interns)?;
+    let (prefixes, start, end) = parse_prefix_suffix_args("str.startswith", s, args, heap, interns)?;
     let slice = slice_string(s, start, end);
-    Ok(Value::Bool(slice.starts_with(&prefix)))
+    let result = prefixes.iter().any(|prefix| slice.starts_with(prefix));
+    Ok(Value::Bool(result))
 }
 
 /// Implements Python's `str.endswith(suffix, start?, end?)` method.
 ///
 /// Returns True if the string ends with the suffix, otherwise returns False.
+/// The suffix argument can be a string or a tuple of strings.
 fn str_endswith(
     s: &str,
     args: ArgValues,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
-    let (suffix, start, end) = parse_search_args("str.endswith", s, args, heap, interns)?;
+    let (suffixes, start, end) = parse_prefix_suffix_args("str.endswith", s, args, heap, interns)?;
     let slice = slice_string(s, start, end);
-    Ok(Value::Bool(slice.ends_with(&suffix)))
+    let result = suffixes.iter().any(|suffix| slice.ends_with(suffix));
+    Ok(Value::Bool(result))
 }
 
 /// Parses arguments for search methods (find, rfind, index, rindex, count, startswith, endswith).
@@ -778,26 +782,140 @@ fn parse_search_args(
     let sub = extract_string_arg(&sub_value, heap, interns)?;
     sub_value.drop_with_heap(heap);
 
-    // Extract start (default 0)
+    // Extract start (default 0, None means default)
     let str_len = s.chars().count();
     let start = if let Some(v) = start_value {
-        let result = extract_int_arg(&v, heap)?;
-        v.drop_with_heap(heap);
-        normalize_index(result, str_len)
+        if matches!(v, Value::None) {
+            v.drop_with_heap(heap);
+            0
+        } else {
+            let result = extract_int_arg(&v, heap)?;
+            v.drop_with_heap(heap);
+            normalize_index(result, str_len)
+        }
     } else {
         0
     };
 
-    // Extract end (default len)
+    // Extract end (default len, None means default)
     let end = if let Some(v) = end_value {
-        let result = extract_int_arg(&v, heap)?;
-        v.drop_with_heap(heap);
-        normalize_index(result, str_len)
+        if matches!(v, Value::None) {
+            v.drop_with_heap(heap);
+            str_len
+        } else {
+            let result = extract_int_arg(&v, heap)?;
+            v.drop_with_heap(heap);
+            normalize_index(result, str_len)
+        }
     } else {
         str_len
     };
 
     Ok((sub, start, end))
+}
+
+/// Parses arguments for startswith/endswith methods.
+///
+/// Returns (prefixes/suffixes as Vec, start, end) where start and end are character indices.
+/// The first argument can be either a string or a tuple of strings.
+fn parse_prefix_suffix_args(
+    method: &str,
+    s: &str,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<(Vec<String>, usize, usize)> {
+    let (pos, kwargs) = args.into_parts();
+    if !kwargs.is_empty() {
+        kwargs.drop_with_heap(heap);
+        return Err(ExcType::type_error_no_kwargs(method));
+    }
+
+    let mut pos_iter = pos;
+    let prefix_value = pos_iter
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
+    let start_value = pos_iter.next();
+    let end_value = pos_iter.next();
+
+    // Check no extra arguments
+    if pos_iter.next().is_some() {
+        // Drop remaining values
+        for v in pos_iter {
+            v.drop_with_heap(heap);
+        }
+        prefix_value.drop_with_heap(heap);
+        if let Some(v) = start_value {
+            v.drop_with_heap(heap);
+        }
+        if let Some(v) = end_value {
+            v.drop_with_heap(heap);
+        }
+        return Err(ExcType::type_error_at_most(method, 3, 4));
+    }
+
+    // Extract prefix/suffix - can be a string or tuple of strings
+    let prefixes = extract_str_or_tuple_of_str(&prefix_value, heap, interns)?;
+    prefix_value.drop_with_heap(heap);
+
+    // Extract start (default 0, None means default)
+    let str_len = s.chars().count();
+    let start = if let Some(v) = start_value {
+        if matches!(v, Value::None) {
+            v.drop_with_heap(heap);
+            0
+        } else {
+            let result = extract_int_arg(&v, heap)?;
+            v.drop_with_heap(heap);
+            normalize_index(result, str_len)
+        }
+    } else {
+        0
+    };
+
+    // Extract end (default len, None means default)
+    let end = if let Some(v) = end_value {
+        if matches!(v, Value::None) {
+            v.drop_with_heap(heap);
+            str_len
+        } else {
+            let result = extract_int_arg(&v, heap)?;
+            v.drop_with_heap(heap);
+            normalize_index(result, str_len)
+        }
+    } else {
+        str_len
+    };
+
+    Ok((prefixes, start, end))
+}
+
+/// Extracts a string or tuple of strings from a Value.
+///
+/// Returns a Vec of strings - a single-element Vec if given a string,
+/// or multiple elements if given a tuple of strings.
+fn extract_str_or_tuple_of_str(
+    value: &Value,
+    heap: &Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Vec<String>> {
+    match value {
+        Value::InternString(id) => Ok(vec![interns.get_str(*id).to_owned()]),
+        Value::Ref(heap_id) => match heap.get(*heap_id) {
+            HeapData::Str(s) => Ok(vec![s.as_str().to_owned()]),
+            HeapData::Tuple(tuple) => {
+                let items = tuple.as_vec();
+                let mut strings = Vec::with_capacity(items.len());
+                for item in items {
+                    let s = extract_string_arg(item, heap, interns)?;
+                    strings.push(s);
+                }
+                Ok(strings)
+            }
+            _ => Err(ExcType::type_error("expected str or tuple of str")),
+        },
+        _ => Err(ExcType::type_error("expected str or tuple of str")),
+    }
 }
 
 /// Extracts a string from a Value, returning an error if not a string.
@@ -912,6 +1030,8 @@ fn str_rstrip(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, i
 }
 
 /// Parses the optional chars argument for strip methods.
+///
+/// Accepts None as a value meaning "use default whitespace stripping".
 fn parse_strip_arg(
     method: &str,
     args: ArgValues,
@@ -921,6 +1041,7 @@ fn parse_strip_arg(
     let value = args.get_zero_one_arg(method, heap)?;
     match value {
         None => Ok(None),
+        Some(Value::None) => Ok(None), // Explicit None means default whitespace
         Some(v) => {
             let result = extract_string_arg(&v, heap, interns)?;
             v.drop_with_heap(heap);
@@ -1055,6 +1176,8 @@ fn str_rsplit(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, i
 }
 
 /// Parses arguments for split methods.
+///
+/// Supports both positional and keyword arguments for sep and maxsplit.
 fn parse_split_args(
     method: &str,
     args: ArgValues,
@@ -1062,16 +1185,12 @@ fn parse_split_args(
     interns: &Interns,
 ) -> RunResult<(Option<String>, i64)> {
     let (pos, kwargs) = args.into_parts();
-    if !kwargs.is_empty() {
-        kwargs.drop_with_heap(heap);
-        return Err(ExcType::type_error_no_kwargs(method));
-    }
 
     let mut pos_iter = pos;
     let sep_value = pos_iter.next();
     let maxsplit_value = pos_iter.next();
 
-    // Check no extra arguments
+    // Check no extra positional arguments
     if pos_iter.next().is_some() {
         for v in pos_iter {
             v.drop_with_heap(heap);
@@ -1082,11 +1201,13 @@ fn parse_split_args(
         if let Some(v) = maxsplit_value {
             v.drop_with_heap(heap);
         }
+        kwargs.drop_with_heap(heap);
         return Err(ExcType::type_error_at_most(method, 2, 3));
     }
 
-    // Extract sep (default None)
-    let sep = if let Some(v) = sep_value {
+    // Extract positional sep (default None)
+    let mut has_pos_sep = sep_value.is_some();
+    let mut sep = if let Some(v) = sep_value {
         if matches!(v, Value::None) {
             v.drop_with_heap(heap);
             None
@@ -1099,14 +1220,63 @@ fn parse_split_args(
         None
     };
 
-    // Extract maxsplit (default -1)
-    let maxsplit = if let Some(v) = maxsplit_value {
+    // Extract positional maxsplit (default -1)
+    let mut has_pos_maxsplit = maxsplit_value.is_some();
+    let mut maxsplit = if let Some(v) = maxsplit_value {
         let result = extract_int_arg(&v, heap)?;
         v.drop_with_heap(heap);
         result
     } else {
         -1
     };
+
+    // Process kwargs
+    for (key, value) in kwargs {
+        let Some(keyword_name) = key.as_either_str(heap) else {
+            key.drop_with_heap(heap);
+            value.drop_with_heap(heap);
+            return Err(ExcType::type_error("keywords must be strings"));
+        };
+
+        let key_str = keyword_name.as_str(interns);
+        match key_str {
+            "sep" => {
+                if has_pos_sep {
+                    key.drop_with_heap(heap);
+                    value.drop_with_heap(heap);
+                    return Err(ExcType::type_error(format!(
+                        "{method}() got multiple values for argument 'sep'"
+                    )));
+                }
+                if matches!(value, Value::None) {
+                    sep = None;
+                } else {
+                    sep = Some(extract_string_arg(&value, heap, interns)?);
+                }
+                has_pos_sep = true;
+            }
+            "maxsplit" => {
+                if has_pos_maxsplit {
+                    key.drop_with_heap(heap);
+                    value.drop_with_heap(heap);
+                    return Err(ExcType::type_error(format!(
+                        "{method}() got multiple values for argument 'maxsplit'"
+                    )));
+                }
+                maxsplit = extract_int_arg(&value, heap)?;
+                has_pos_maxsplit = true;
+            }
+            _ => {
+                key.drop_with_heap(heap);
+                value.drop_with_heap(heap);
+                return Err(ExcType::type_error(format!(
+                    "'{key_str}' is an invalid keyword argument for {method}()"
+                )));
+            }
+        }
+        key.drop_with_heap(heap);
+        value.drop_with_heap(heap);
+    }
 
     Ok((sep, maxsplit))
 }
@@ -1161,21 +1331,14 @@ fn rsplit_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
 /// Implements Python's `str.splitlines(keepends?)` method.
 ///
 /// Returns a list of the lines in the string, breaking at line boundaries.
-fn str_splitlines(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-    let keepends = match args.get_zero_one_arg("str.splitlines", heap)? {
-        None => false,
-        Some(v) => {
-            // Check if value is truthy - for splitlines, any non-zero/non-empty value means True
-            let result = match &v {
-                Value::Bool(b) => *b,
-                Value::Int(i) => *i != 0,
-                Value::None => false,
-                _ => true, // Most other values are truthy
-            };
-            v.drop_with_heap(heap);
-            result
-        }
-    };
+/// Accepts keepends as either positional or keyword argument.
+fn str_splitlines(
+    s: &str,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let keepends = parse_splitlines_args(args, heap, interns)?;
 
     let mut lines = Vec::new();
     let mut start = 0;
@@ -1221,6 +1384,80 @@ fn str_splitlines(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker
     let list = crate::types::List::new(lines);
     let heap_id = heap.allocate(HeapData::List(list))?;
     Ok(Value::Ref(heap_id))
+}
+
+/// Parses arguments for splitlines method.
+///
+/// Supports both positional and keyword arguments for keepends.
+fn parse_splitlines_args(args: ArgValues, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
+    let (pos, kwargs) = args.into_parts();
+
+    let mut pos_iter = pos;
+    let keepends_value = pos_iter.next();
+
+    // Check no extra positional arguments
+    if pos_iter.next().is_some() {
+        for v in pos_iter {
+            v.drop_with_heap(heap);
+        }
+        if let Some(v) = keepends_value {
+            v.drop_with_heap(heap);
+        }
+        kwargs.drop_with_heap(heap);
+        return Err(ExcType::type_error_at_most("str.splitlines", 1, 2));
+    }
+
+    // Extract positional keepends (default false)
+    let mut has_pos_keepends = keepends_value.is_some();
+    let mut keepends = if let Some(v) = keepends_value {
+        let result = value_is_truthy(&v);
+        v.drop_with_heap(heap);
+        result
+    } else {
+        false
+    };
+
+    // Process kwargs
+    for (key, value) in kwargs {
+        let Some(keyword_name) = key.as_either_str(heap) else {
+            key.drop_with_heap(heap);
+            value.drop_with_heap(heap);
+            return Err(ExcType::type_error("keywords must be strings"));
+        };
+
+        let key_str = keyword_name.as_str(interns);
+        if key_str == "keepends" {
+            if has_pos_keepends {
+                key.drop_with_heap(heap);
+                value.drop_with_heap(heap);
+                return Err(ExcType::type_error(
+                    "str.splitlines() got multiple values for argument 'keepends'",
+                ));
+            }
+            keepends = value_is_truthy(&value);
+            has_pos_keepends = true;
+        } else {
+            key.drop_with_heap(heap);
+            value.drop_with_heap(heap);
+            return Err(ExcType::type_error(format!(
+                "'{key_str}' is an invalid keyword argument for str.splitlines()"
+            )));
+        }
+        key.drop_with_heap(heap);
+        value.drop_with_heap(heap);
+    }
+
+    Ok(keepends)
+}
+
+/// Checks if a value is truthy for bool conversion.
+fn value_is_truthy(v: &Value) -> bool {
+    match v {
+        Value::Bool(b) => *b,
+        Value::Int(i) => *i != 0,
+        Value::None => false,
+        _ => true, // Most other values are truthy
+    }
 }
 
 /// Implements Python's `str.partition(sep)` method.
@@ -1311,6 +1548,8 @@ fn str_replace(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, 
 }
 
 /// Parses arguments for the replace method.
+///
+/// Supports both positional and keyword arguments for count (Python 3.13+).
 fn parse_replace_args(
     method: &str,
     args: ArgValues,
@@ -1318,22 +1557,20 @@ fn parse_replace_args(
     interns: &Interns,
 ) -> RunResult<(String, String, i64)> {
     let (pos, kwargs) = args.into_parts();
-    if !kwargs.is_empty() {
-        kwargs.drop_with_heap(heap);
-        return Err(ExcType::type_error_no_kwargs(method));
-    }
 
     let mut pos_iter = pos;
     let Some(old_value) = pos_iter.next() else {
+        kwargs.drop_with_heap(heap);
         return Err(ExcType::type_error_at_least(method, 2, 0));
     };
     let Some(new_value) = pos_iter.next() else {
         old_value.drop_with_heap(heap);
+        kwargs.drop_with_heap(heap);
         return Err(ExcType::type_error_at_least(method, 2, 1));
     };
     let count_value = pos_iter.next();
 
-    // Check no extra arguments
+    // Check no extra positional arguments
     if pos_iter.next().is_some() {
         for v in pos_iter {
             v.drop_with_heap(heap);
@@ -1343,6 +1580,7 @@ fn parse_replace_args(
         if let Some(v) = count_value {
             v.drop_with_heap(heap);
         }
+        kwargs.drop_with_heap(heap);
         return Err(ExcType::type_error_at_most(method, 3, 4));
     }
 
@@ -1352,13 +1590,44 @@ fn parse_replace_args(
     let new = extract_string_arg(&new_value, heap, interns)?;
     new_value.drop_with_heap(heap);
 
-    let count = if let Some(v) = count_value {
+    let mut has_pos_count = count_value.is_some();
+    let mut count = if let Some(v) = count_value {
         let result = extract_int_arg(&v, heap)?;
         v.drop_with_heap(heap);
         result
     } else {
         -1
     };
+
+    // Process kwargs (Python 3.13+ allows count as keyword)
+    for (key, value) in kwargs {
+        let Some(keyword_name) = key.as_either_str(heap) else {
+            key.drop_with_heap(heap);
+            value.drop_with_heap(heap);
+            return Err(ExcType::type_error("keywords must be strings"));
+        };
+
+        let key_str = keyword_name.as_str(interns);
+        if key_str == "count" {
+            if has_pos_count {
+                key.drop_with_heap(heap);
+                value.drop_with_heap(heap);
+                return Err(ExcType::type_error(format!(
+                    "{method}() got multiple values for argument 'count'"
+                )));
+            }
+            count = extract_int_arg(&value, heap)?;
+            has_pos_count = true;
+        } else {
+            key.drop_with_heap(heap);
+            value.drop_with_heap(heap);
+            return Err(ExcType::type_error(format!(
+                "'{key_str}' is an invalid keyword argument for {method}()"
+            )));
+        }
+        key.drop_with_heap(heap);
+        value.drop_with_heap(heap);
+    }
 
     Ok((old, new, count))
 }

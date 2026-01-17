@@ -1384,7 +1384,7 @@ impl PyTrait for Value {
                 let id = *id;
                 heap.with_entry_mut(id, |heap, data| data.py_setitem(key, value, heap, interns))
             }
-            _ => Err(ExcType::type_error(&format!(
+            _ => Err(ExcType::type_error(format!(
                 "'{}' object does not support item assignment",
                 self.py_type(heap)
             ))),
@@ -1526,7 +1526,7 @@ impl Value {
                     HeapData::Str(s) => str_contains(s.as_str(), item, heap, interns),
                     other => {
                         let type_name = other.py_type(heap);
-                        Err(ExcType::type_error(&format!(
+                        Err(ExcType::type_error(format!(
                             "argument of type '{type_name}' is not iterable"
                         )))
                     }
@@ -1538,7 +1538,7 @@ impl Value {
             }
             _ => {
                 let type_name = self.py_type(heap);
-                Err(ExcType::type_error(&format!(
+                Err(ExcType::type_error(format!(
                     "argument of type '{type_name}' is not iterable"
                 )))
             }

@@ -227,3 +227,33 @@ assert '-42'.zfill(5) == '-0042', 'zfill negative'
 assert '+42'.zfill(5) == '+0042', 'zfill positive'
 assert '42'.zfill(2) == '42', 'zfill no padding'
 assert ''.zfill(3) == '000', 'zfill empty'
+
+# === Phase 7: Additional tests for Python compatibility ===
+
+# startswith/endswith with tuple
+assert 'hello'.startswith(('he', 'lo')) == True, 'startswith tuple first match'
+assert 'hello'.startswith(('lo', 'he')) == True, 'startswith tuple second match'
+assert 'hello'.startswith(('x', 'y')) == False, 'startswith tuple no match'
+assert 'hello'.endswith(('he', 'lo')) == True, 'endswith tuple first match'
+assert 'hello'.endswith(('lo', 'he')) == True, 'endswith tuple second match'
+assert 'hello'.endswith(('x', 'y')) == False, 'endswith tuple no match'
+assert 'hello'.startswith(('ell',), 1) == True, 'startswith tuple with start'
+
+# find/rfind/index/rindex/count with None as start/end
+assert 'hello'.find('l', None) == 2, 'find with None start'
+assert 'hello'.find('l', None, None) == 2, 'find with None start and end'
+assert 'hello'.find('l', 0, None) == 2, 'find with None end'
+assert 'hello'.rfind('l', None, None) == 3, 'rfind with None start and end'
+assert 'hello'.count('l', None, None) == 2, 'count with None start and end'
+assert 'hello'.startswith('he', None) == True, 'startswith with None start'
+assert 'hello'.endswith('lo', None, None) == True, 'endswith with None start and end'
+
+# strip with None
+assert '  hello  '.strip(None) == 'hello', 'strip None same as no arg'
+assert '  hello  '.lstrip(None) == 'hello  ', 'lstrip None same as no arg'
+assert '  hello  '.rstrip(None) == '  hello', 'rstrip None same as no arg'
+
+# NOTE: Keyword argument tests for split/rsplit/splitlines/replace are commented out
+# because the bytecode compiler doesn't yet support method calls with keyword arguments.
+# The runtime implementation (str.rs) does support kwargs, but they can't be tested yet.
+# See bytecode/compiler.rs:1044 for the TODO.
