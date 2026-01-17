@@ -145,9 +145,6 @@ impl ArgValues {
 
     /// Splits into positional iterator and keyword values without allocating
     /// for the common One/Two cases.
-    ///
-    /// This avoids the Vec allocation that `split()` incurs for `One` and `Two` variants.
-    /// Use this method instead of `split()` when iterating over positional arguments.
     pub fn into_parts(self) -> (ArgPosIter, KwargsValues) {
         match self {
             Self::Empty => (ArgPosIter::Empty, KwargsValues::Empty),
