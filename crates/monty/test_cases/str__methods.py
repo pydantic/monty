@@ -303,3 +303,25 @@ assert 'Hello world'.istitle() == False, 'istitle lowercase word'
 assert '123'.istitle() == False, 'istitle numbers only'
 assert 'Hello 123 World'.istitle() == True, 'istitle with numbers'
 assert "They'Re".istitle() == True, 'istitle apostrophe'
+
+# === Phase 10: Unicode support for is* methods ===
+
+# isdecimal with Unicode decimal digits
+assert '٠١٢٣٤٥٦٧٨٩'.isdecimal() == True, 'isdecimal Arabic-Indic'
+assert '０１２３４５６７８９'.isdecimal() == True, 'isdecimal Fullwidth'
+assert '०१२३४५६७८९'.isdecimal() == True, 'isdecimal Devanagari'
+assert '²'.isdecimal() == False, 'isdecimal superscript not decimal'
+assert '½'.isdecimal() == False, 'isdecimal fraction not decimal'
+
+# isdigit with superscripts and subscripts
+assert '²³'.isdigit() == True, 'isdigit superscripts'
+assert '₀₁₂₃₄₅₆₇₈₉'.isdigit() == True, 'isdigit subscripts'
+assert '0123456789'.isdigit() == True, 'isdigit ASCII'
+assert '٠١٢٣٤٥٦٧٨٩'.isdigit() == True, 'isdigit Arabic-Indic'
+assert '½'.isdigit() == False, 'isdigit fraction not digit'
+
+# isnumeric with fractions and other numerics
+assert '½'.isnumeric() == True, 'isnumeric fraction'
+assert '²'.isnumeric() == True, 'isnumeric superscript'
+assert '٠١٢٣٤٥٦٧٨٩'.isnumeric() == True, 'isnumeric Arabic-Indic'
+assert '0123456789'.isnumeric() == True, 'isnumeric ASCII'

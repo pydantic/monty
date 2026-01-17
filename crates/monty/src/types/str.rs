@@ -562,9 +562,10 @@ fn str_isalpha(s: &str) -> bool {
 /// Implements Python's `str.isdigit()` method.
 ///
 /// Returns True if all characters in the string are digits and there is at least one character.
-/// Note: This checks for ASCII digits only, matching Python's behavior for basic cases.
+/// In Python, digits include decimal digits (Nd) plus characters with Numeric_Type=Digit
+/// (superscripts, subscripts, circled digits, etc.).
 fn str_isdigit(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
+    !s.is_empty() && s.chars().all(is_unicode_digit)
 }
 
 /// Implements Python's `str.isalnum()` method.
@@ -577,6 +578,8 @@ fn str_isalnum(s: &str) -> bool {
 /// Implements Python's `str.isnumeric()` method.
 ///
 /// Returns True if all characters in the string are numeric and there is at least one character.
+/// In Python, numeric includes decimal digits (Nd), letter numerals (Nl), and other numerals (No).
+/// Rust's `char::is_numeric()` checks for all of these categories.
 fn str_isnumeric(s: &str) -> bool {
     !s.is_empty() && s.chars().all(char::is_numeric)
 }
@@ -623,9 +626,178 @@ fn str_isupper(s: &str) -> bool {
 /// Implements Python's `str.isdecimal()` method.
 ///
 /// Returns True if all characters in the string are decimal characters and there is at least one character.
-/// Decimal characters are those that can be used to form numbers in base 10.
+/// Decimal characters are those in Unicode category Nd (Decimal_Number) - digits that can be used
+/// to form numbers in base 10.
 fn str_isdecimal(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
+    !s.is_empty() && s.chars().all(is_unicode_decimal)
+}
+
+/// Checks if a character is a Unicode decimal digit (Nd category).
+///
+/// This covers decimal digit ranges from various scripts including ASCII, Arabic-Indic,
+/// Devanagari, Bengali, Thai, Fullwidth, and many others.
+fn is_unicode_decimal(c: char) -> bool {
+    let cp = c as u32;
+    matches!(
+        cp,
+        // Basic Latin (ASCII digits)
+        0x0030..=0x0039
+        // Arabic-Indic digits
+        | 0x0660..=0x0669
+        // Extended Arabic-Indic digits
+        | 0x06F0..=0x06F9
+        // NKo digits
+        | 0x07C0..=0x07C9
+        // Devanagari digits
+        | 0x0966..=0x096F
+        // Bengali digits
+        | 0x09E6..=0x09EF
+        // Gurmukhi digits
+        | 0x0A66..=0x0A6F
+        // Gujarati digits
+        | 0x0AE6..=0x0AEF
+        // Oriya digits
+        | 0x0B66..=0x0B6F
+        // Tamil digits
+        | 0x0BE6..=0x0BEF
+        // Telugu digits
+        | 0x0C66..=0x0C6F
+        // Kannada digits
+        | 0x0CE6..=0x0CEF
+        // Malayalam digits
+        | 0x0D66..=0x0D6F
+        // Sinhala Lith digits
+        | 0x0DE6..=0x0DEF
+        // Thai digits
+        | 0x0E50..=0x0E59
+        // Lao digits
+        | 0x0ED0..=0x0ED9
+        // Tibetan digits
+        | 0x0F20..=0x0F29
+        // Myanmar digits
+        | 0x1040..=0x1049
+        // Myanmar Shan digits
+        | 0x1090..=0x1099
+        // Khmer digits
+        | 0x17E0..=0x17E9
+        // Mongolian digits
+        | 0x1810..=0x1819
+        // Limbu digits
+        | 0x1946..=0x194F
+        // New Tai Lue digits
+        | 0x19D0..=0x19D9
+        // Tai Tham Hora digits
+        | 0x1A80..=0x1A89
+        // Tai Tham Tham digits
+        | 0x1A90..=0x1A99
+        // Balinese digits
+        | 0x1B50..=0x1B59
+        // Sundanese digits
+        | 0x1BB0..=0x1BB9
+        // Lepcha digits
+        | 0x1C40..=0x1C49
+        // Ol Chiki digits
+        | 0x1C50..=0x1C59
+        // Vai digits
+        | 0xA620..=0xA629
+        // Saurashtra digits
+        | 0xA8D0..=0xA8D9
+        // Kayah Li digits
+        | 0xA900..=0xA909
+        // Javanese digits
+        | 0xA9D0..=0xA9D9
+        // Myanmar Tai Laing digits
+        | 0xA9F0..=0xA9F9
+        // Cham digits
+        | 0xAA50..=0xAA59
+        // Meetei Mayek digits
+        | 0xABF0..=0xABF9
+        // Fullwidth digits
+        | 0xFF10..=0xFF19
+        // Osmanya digits
+        | 0x104A0..=0x104A9
+        // Hanifi Rohingya digits
+        | 0x10D30..=0x10D39
+        // Brahmi digits
+        | 0x11066..=0x1106F
+        // Sora Sompeng digits
+        | 0x110F0..=0x110F9
+        // Chakma digits
+        | 0x11136..=0x1113F
+        // Sharada digits
+        | 0x111D0..=0x111D9
+        // Khudawadi digits
+        | 0x112F0..=0x112F9
+        // Newa digits
+        | 0x11450..=0x11459
+        // Tirhuta digits
+        | 0x114D0..=0x114D9
+        // Modi digits
+        | 0x11650..=0x11659
+        // Takri digits
+        | 0x116C0..=0x116C9
+        // Ahom digits
+        | 0x11730..=0x11739
+        // Warang Citi digits
+        | 0x118E0..=0x118E9
+        // Dives Akuru digits
+        | 0x11950..=0x11959
+        // Bhaiksuki digits
+        | 0x11C50..=0x11C59
+        // Masaram Gondi digits
+        | 0x11D50..=0x11D59
+        // Gunjala Gondi digits
+        | 0x11DA0..=0x11DA9
+        // Adlam digits
+        | 0x1E950..=0x1E959
+        // Segmented digits
+        | 0x1FBF0..=0x1FBF9
+    )
+}
+
+/// Checks if a character is a Unicode digit (isdigit).
+///
+/// This includes decimal digits (Nd) plus characters with Numeric_Type=Digit
+/// such as superscripts, subscripts, and circled digits.
+fn is_unicode_digit(c: char) -> bool {
+    // First check if it's a decimal digit
+    if is_unicode_decimal(c) {
+        return true;
+    }
+
+    let cp = c as u32;
+    matches!(
+        cp,
+        // Superscripts (², ³)
+        0x00B2..=0x00B3
+        // Superscript 1
+        | 0x00B9
+        // Superscript digits 0, 4-9
+        | 0x2070
+        | 0x2074..=0x2079
+        // Subscript digits 0-9
+        | 0x2080..=0x2089
+        // Circled digits 1-9
+        | 0x2460..=0x2468
+        // Circled digit 0
+        | 0x24EA
+        // Circled digits 10-20
+        | 0x2469..=0x2473
+        // Parenthesized digits 1-9
+        | 0x2474..=0x247C
+        // Period digits 1-9
+        | 0x2488..=0x2490
+        // Double circled digits 1-10
+        | 0x24F5..=0x24FE
+        // Dingbat circled sans-serif digits 1-10
+        | 0x2780..=0x2789
+        // Dingbat negative circled digits 1-10
+        | 0x278A..=0x2793
+        // Dingbat circled sans-serif digits 1-10
+        | 0x24FF
+        // Fullwidth digit zero (already in decimal, but include for completeness)
+        // | 0xFF10..=0xFF19  // Already covered by is_unicode_decimal
+    )
 }
 
 // =============================================================================
@@ -1109,7 +1281,11 @@ fn str_split(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, in
     let (sep, maxsplit) = parse_split_args("str.split", args, heap, interns)?;
 
     let parts: Vec<&str> = match &sep {
-        Some(sep) if !sep.is_empty() => {
+        Some(sep) => {
+            // Empty separator raises ValueError
+            if sep.is_empty() {
+                return Err(ExcType::value_error_empty_separator());
+            }
             if maxsplit < 0 {
                 s.split(sep.as_str()).collect()
             } else {
@@ -1118,7 +1294,7 @@ fn str_split(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, in
                 s.splitn(max.saturating_add(1), sep.as_str()).collect()
             }
         }
-        _ => {
+        None => {
             // Split on whitespace, filtering empty strings
             if maxsplit < 0 {
                 s.split_whitespace().collect()
@@ -1150,7 +1326,11 @@ fn str_rsplit(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, i
     let (sep, maxsplit) = parse_split_args("str.rsplit", args, heap, interns)?;
 
     let parts: Vec<&str> = match &sep {
-        Some(sep) if !sep.is_empty() => {
+        Some(sep) => {
+            // Empty separator raises ValueError
+            if sep.is_empty() {
+                return Err(ExcType::value_error_empty_separator());
+            }
             if maxsplit < 0 {
                 s.rsplit(sep.as_str()).collect::<Vec<_>>().into_iter().rev().collect()
             } else {
@@ -1161,7 +1341,7 @@ fn str_rsplit(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, i
                 parts
             }
         }
-        _ => {
+        None => {
             // Split on whitespace from right
             if maxsplit < 0 {
                 s.split_whitespace().collect()
