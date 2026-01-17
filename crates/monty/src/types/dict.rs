@@ -30,12 +30,22 @@ use crate::{
 /// When values are added via `set()`, their reference counts are incremented.
 /// When using `from_pairs()`, ownership is transferred without incrementing refcounts
 /// (caller must ensure values' refcounts account for the dict's reference).
+///
+/// # GC Optimization
+/// The `contains_refs` flag tracks whether the dict contains any `Value::Ref` items.
+/// This allows `collect_child_ids` and `py_dec_ref_ids` to skip iteration when the
+/// dict contains only primitive values (ints, bools, None, etc.), significantly
+/// improving GC performance for dicts of primitives.
 #[derive(Debug, Default)]
 pub(crate) struct Dict {
     /// indices mapping from the entry hash to its index.
     indices: HashTable<usize>,
     /// entries is a dense vec maintaining entry order.
     entries: Vec<DictEntry>,
+    /// True if any key or value in the dict is a `Value::Ref`. Used to skip iteration
+    /// in `collect_child_ids` and `py_dec_ref_ids` when no refs are present.
+    /// Only transitions from false to true (never back) since tracking removals would be O(n).
+    contains_refs: bool,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -57,18 +67,24 @@ impl Dict {
         Self {
             indices: HashTable::with_capacity(capacity),
             entries: Vec::with_capacity(capacity),
+            contains_refs: false,
         }
     }
 
     /// Returns whether this dict contains any heap references (`Value::Ref`).
     ///
-    /// Used during allocation to determine if this container could create cycles.
+    /// Used during allocation to determine if this container could create cycles,
+    /// and in `collect_child_ids` and `py_dec_ref_ids` to skip iteration when no refs
+    /// are present.
+    ///
+    /// Note: This flag only transitions from false to true (never back). When a ref is
+    /// removed via `pop()`, we do NOT recompute the flag because that would be O(n).
+    /// This is conservative - we may iterate unnecessarily if all refs were removed,
+    /// but we'll never skip iteration when refs exist.
     #[inline]
     #[must_use]
     pub fn has_refs(&self) -> bool {
-        self.entries
-            .iter()
-            .any(|e| matches!(e.key, Value::Ref(_)) || matches!(e.value, Value::Ref(_)))
+        self.contains_refs
     }
 
     /// Creates a dict from a vector of (key, value) pairs.
@@ -107,6 +123,11 @@ impl Dict {
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<()> {
+        // Track if we're adding a reference for GC optimization
+        if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
+            self.contains_refs = true;
+        }
+
         let (opt_index, hash) = match self.find_index_hash(&key, heap, interns) {
             Ok((index, hash)) => (index, hash),
             Err(err) => {
@@ -210,6 +231,11 @@ impl Dict {
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<Option<Value>> {
+        // Track if we're adding a reference for GC optimization
+        if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
+            self.contains_refs = true;
+        }
+
         // Handle hash computation errors explicitly so we can drop key/value properly
         let (opt_index, hash) = match self.find_index_hash(&key, heap, interns) {
             Ok(result) => result,
@@ -482,6 +508,10 @@ impl PyTrait for Dict {
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        // Skip iteration if no refs - major GC optimization for dicts of primitives
+        if !self.contains_refs {
+            return;
+        }
         for entry in &mut self.entries {
             if let Value::Ref(id) = &entry.key {
                 stack.push(*id);
@@ -653,21 +683,34 @@ impl PyTrait for Dict {
 }
 
 // Custom serde implementation for Dict.
-// Only serializes entries; rebuilds the indices hash table on deserialize.
+// Serializes entries and contains_refs; rebuilds the indices hash table on deserialize.
 impl serde::Serialize for Dict {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.entries.serialize(serializer)
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("Dict", 2)?;
+        state.serialize_field("entries", &self.entries)?;
+        state.serialize_field("contains_refs", &self.contains_refs)?;
+        state.end()
     }
 }
 
 impl<'de> serde::Deserialize<'de> for Dict {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let entries: Vec<DictEntry> = Vec::deserialize(deserializer)?;
-        // Rebuild the indices hash table from the entries
-        let mut indices = HashTable::with_capacity(entries.len());
-        for (idx, entry) in entries.iter().enumerate() {
-            indices.insert_unique(entry.hash, idx, |&i| entries[i].hash);
+        #[derive(serde::Deserialize)]
+        struct DictFields {
+            entries: Vec<DictEntry>,
+            contains_refs: bool,
         }
-        Ok(Self { indices, entries })
+        let fields = DictFields::deserialize(deserializer)?;
+        // Rebuild the indices hash table from the entries
+        let mut indices = HashTable::with_capacity(fields.entries.len());
+        for (idx, entry) in fields.entries.iter().enumerate() {
+            indices.insert_unique(entry.hash, idx, |&i| fields.entries[i].hash);
+        }
+        Ok(Self {
+            indices,
+            entries: fields.entries,
+            contains_refs: fields.contains_refs,
+        })
     }
 }

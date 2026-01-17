@@ -1461,7 +1461,10 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
             }
         }
         HeapData::Dict(dict) => {
-            // Iterate through all entries to collect heap references
+            // Skip iteration if no refs - major GC optimization for dicts of primitives
+            if !dict.has_refs() {
+                return;
+            }
             for (k, v) in dict {
                 if let Value::Ref(id) = k {
                     work_list.push(*id);
