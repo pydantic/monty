@@ -832,7 +832,7 @@ impl ExcType {
     /// Matches CPython's format: `TypeError: can only join an iterable`
     #[must_use]
     pub(crate) fn type_error_join_not_iterable() -> RunError {
-        SimpleException::new_msg(Self::TypeError, "can only join an iterable".to_owned()).into()
+        SimpleException::new_msg(Self::TypeError, "can only join an iterable").into()
     }
 }
 
