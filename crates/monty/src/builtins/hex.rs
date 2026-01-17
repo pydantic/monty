@@ -1,5 +1,8 @@
 //! Implementation of the hex() builtin function.
 
+use num_bigint::BigInt;
+use num_traits::Signed;
+
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult, SimpleException},
@@ -12,6 +15,7 @@ use crate::{
 /// Implementation of the hex() builtin function.
 ///
 /// Converts an integer to a lowercase hexadecimal string prefixed with '0x'.
+/// Supports both i64 and BigInt integers.
 pub fn builtin_hex(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("hex")?;
 
@@ -27,6 +31,19 @@ pub fn builtin_hex(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
             let heap_id = heap.allocate(HeapData::Str(Str::new(s.to_string())))?;
             Ok(Value::Ref(heap_id))
         }
+        Value::Ref(id) => {
+            if let HeapData::BigInt(bi) = heap.get(*id) {
+                let hex_str = format_bigint_hex(bi);
+                let heap_id = heap.allocate(HeapData::Str(Str::new(hex_str)))?;
+                Ok(Value::Ref(heap_id))
+            } else {
+                Err(SimpleException::new_msg(
+                    ExcType::TypeError,
+                    format!("'{}' object cannot be interpreted as an integer", value.py_type(heap)),
+                )
+                .into())
+            }
+        }
         _ => Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!("'{}' object cannot be interpreted as an integer", value.py_type(heap)),
@@ -36,4 +53,13 @@ pub fn builtin_hex(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
 
     value.drop_with_heap(heap);
     result
+}
+
+/// Formats a BigInt as a hexadecimal string with '0x' prefix.
+fn format_bigint_hex(bi: &BigInt) -> String {
+    let is_negative = bi.is_negative();
+    let abs_bi = bi.abs();
+    let hex_digits = format!("{abs_bi:x}");
+    let prefix = if is_negative { "-0x" } else { "0x" };
+    format!("{prefix}{hex_digits}")
 }

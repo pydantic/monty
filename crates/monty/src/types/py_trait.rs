@@ -150,8 +150,15 @@ pub trait PyTrait {
     }
 
     /// Python modulus (`__mod__`).
-    fn py_mod(&self, _other: &Self) -> Option<Value> {
-        None
+    ///
+    /// Returns `Ok(None)` if the operation is not supported for these types,
+    /// `Ok(Some(value))` on success, or `Err(RunError)` if an error occurs.
+    fn py_mod(
+        &self,
+        _other: &Self,
+        _heap: &mut Heap<impl ResourceTracker>,
+    ) -> crate::exception_private::RunResult<Option<Value>> {
+        Ok(None)
     }
 
     /// Optimized helper for `(a % b) == c` comparisons.

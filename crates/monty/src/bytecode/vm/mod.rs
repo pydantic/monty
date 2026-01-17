@@ -13,6 +13,7 @@ mod format;
 use std::cmp::Ordering;
 
 use call::CallResult;
+use num_bigint::BigInt;
 
 use crate::{
     args::ArgValues,
@@ -558,17 +559,38 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Unary minus - negate numeric value
                     let value = self.pop();
                     let value_type = value.py_type(self.heap);
-                    let result = match &value {
-                        Value::Int(n) => Some(Value::Int(-n)),
-                        Value::Float(f) => Some(Value::Float(-f)),
-                        Value::Bool(b) => Some(Value::Int(if *b { -1 } else { 0 })),
-                        _ => None,
+                    let result: Result<Option<Value>, crate::resource::ResourceError> = match &value {
+                        Value::Int(n) => {
+                            // Use checked_neg to handle i64::MIN overflow
+                            if let Some(negated) = n.checked_neg() {
+                                Ok(Some(Value::Int(negated)))
+                            } else {
+                                // i64::MIN negated overflows to BigInt
+                                let bi = -BigInt::from(*n);
+                                crate::types::bigint::bigint_to_value(bi, self.heap).map(Some)
+                            }
+                        }
+                        Value::Float(f) => Ok(Some(Value::Float(-f))),
+                        Value::Bool(b) => Ok(Some(Value::Int(if *b { -1 } else { 0 }))),
+                        Value::Ref(id) => {
+                            if let HeapData::BigInt(bi) = self.heap.get(*id) {
+                                let negated = -bi;
+                                crate::types::bigint::bigint_to_value(negated, self.heap).map(Some)
+                            } else {
+                                Ok(None) // Not a BigInt - unsupported type
+                            }
+                        }
+                        _ => Ok(None), // Unsupported type
                     };
                     value.drop_with_heap(self.heap);
-                    if let Some(v) = result {
-                        self.push(v);
-                    } else {
-                        catch_sync!(self, cached_frame, ExcType::unary_type_error("-", value_type));
+                    match result {
+                        Ok(Some(v)) => self.push(v),
+                        Ok(None) => {
+                            catch_sync!(self, cached_frame, ExcType::unary_type_error("-", value_type));
+                        }
+                        Err(e) => {
+                            catch_sync!(self, cached_frame, RunError::from(e));
+                        }
                     }
                 }
                 Opcode::UnaryPos => {
@@ -590,16 +612,29 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Bitwise NOT
                     let value = self.pop();
                     let value_type = value.py_type(self.heap);
-                    let result = match &value {
-                        Value::Int(n) => Some(Value::Int(!n)),
-                        Value::Bool(b) => Some(Value::Int(!i64::from(*b))),
-                        _ => None,
+                    let result: Result<Option<Value>, crate::resource::ResourceError> = match &value {
+                        Value::Int(n) => Ok(Some(Value::Int(!n))),
+                        Value::Bool(b) => Ok(Some(Value::Int(!i64::from(*b)))),
+                        Value::Ref(id) => {
+                            if let HeapData::BigInt(bi) = self.heap.get(*id) {
+                                // BigInt bitwise NOT: ~x = -(x + 1)
+                                let inverted = -(bi + 1i32);
+                                crate::types::bigint::bigint_to_value(inverted, self.heap).map(Some)
+                            } else {
+                                Ok(None) // Not a BigInt - unsupported type
+                            }
+                        }
+                        _ => Ok(None), // Unsupported type
                     };
                     value.drop_with_heap(self.heap);
-                    if let Some(v) = result {
-                        self.push(v);
-                    } else {
-                        catch_sync!(self, cached_frame, ExcType::unary_type_error("~", value_type));
+                    match result {
+                        Ok(Some(v)) => self.push(v),
+                        Ok(None) => {
+                            catch_sync!(self, cached_frame, ExcType::unary_type_error("~", value_type));
+                        }
+                        Err(e) => {
+                            catch_sync!(self, cached_frame, RunError::from(e));
+                        }
                     }
                 }
                 // In-place Operations - route through exception handling

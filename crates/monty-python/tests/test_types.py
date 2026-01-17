@@ -277,3 +277,76 @@ def test_return_builtin():
     m = monty.Monty('len')
     result = m.run()
     assert result is len
+
+
+# === BigInt (arbitrary precision integers) ===
+
+
+def test_bigint_input():
+    """Passing a large integer (> i64::MAX) as input."""
+    big = 2**100
+    m = monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': big})
+    assert result == big
+    assert type(result) is int
+
+
+def test_bigint_output():
+    """Returning a large integer computed inside Monty."""
+    m = monty.Monty('2**100')
+    result = m.run()
+    assert result == 2**100
+    assert type(result) is int
+
+
+def test_bigint_negative_input():
+    """Passing a large negative integer as input."""
+    big_neg = -(2**100)
+    m = monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': big_neg})
+    assert result == big_neg
+    assert type(result) is int
+
+
+def test_int_overflow_to_bigint():
+    """Small int input that overflows to bigint during computation."""
+    max_i64 = 9223372036854775807
+    m = monty.Monty('x + 1', inputs=['x'])
+    result = m.run(inputs={'x': max_i64})
+    assert result == max_i64 + 1
+    assert type(result) is int
+
+
+def test_bigint_arithmetic():
+    """BigInt arithmetic operations."""
+    big = 2**100
+    m = monty.Monty('x * 2 + y', inputs=['x', 'y'])
+    result = m.run(inputs={'x': big, 'y': big})
+    assert result == big * 2 + big
+    assert type(result) is int
+
+
+def test_bigint_comparison():
+    """Comparing bigints with regular ints."""
+    big = 2**100
+    m = monty.Monty('x > y', inputs=['x', 'y'])
+    assert m.run(inputs={'x': big, 'y': 42}) is True
+    assert m.run(inputs={'x': 42, 'y': big}) is False
+
+
+def test_bigint_in_collection():
+    """BigInts inside collections."""
+    big = 2**100
+    m = monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': [big, 42, big * 2]})
+    assert result == [big, 42, big * 2]
+    assert type(result[0]) is int
+
+
+def test_bigint_as_dict_key():
+    """BigInt as dictionary key."""
+    big = 2**100
+    m = monty.Monty('x', inputs=['x'])
+    result = m.run(inputs={'x': {big: 'value'}})
+    assert result == {big: 'value'}
+    assert big in result

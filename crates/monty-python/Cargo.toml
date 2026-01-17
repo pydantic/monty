@@ -19,10 +19,11 @@ crate-type = ["cdylib"]
 [dependencies]
 monty = { path = "../monty" }
 monty_type_checking = { path = "../monty-type-checking" }
-pyo3 = { version = "0.27.2", features = ["indexmap", "generate-import-lib"] }
-indexmap = "2.9"
-serde = { version = "1.0", features = ["derive"] }
-postcard = { version = "1.1", features = ["alloc"] }
+pyo3 = { version = "0.27.2", features = ["indexmap", "generate-import-lib", "num-bigint"] }
+num-bigint = { workspace = true }
+indexmap = { workspace = true }
+serde = { workspace = true }
+postcard = { workspace = true }
 
 [build-dependencies]
 pyo3-build-config = { version = "0.27.2", features = ["resolve-config"] }

@@ -574,13 +574,14 @@ impl ForIterValue {
                 len: frozenset.len(),
             }),
             HeapData::Range(range) => Some(Self::from_range(range)),
-            // Closures, FunctionDefaults, Cells, Exceptions, Dataclasses, and Iterators are not iterable
+            // Closures, FunctionDefaults, Cells, Exceptions, Dataclasses, Iterators, and BigInts are not iterable
             HeapData::Closure(_, _, _)
             | HeapData::FunctionDefaults(_, _)
             | HeapData::Cell(_)
             | HeapData::Exception(_)
             | HeapData::Dataclass(_)
-            | HeapData::Iterator(_) => None,
+            | HeapData::Iterator(_)
+            | HeapData::BigInt(_) => None,
         }
     }
 }

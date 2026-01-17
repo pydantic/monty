@@ -6,6 +6,7 @@
 
 use ::monty::MontyObject;
 use monty::MontyException;
+use num_bigint::BigInt;
 use pyo3::{
     exceptions::PyBaseException,
     prelude::*,
@@ -32,7 +33,14 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
         // Check bool BEFORE int since bool is a subclass of int in Python
         Ok(MontyObject::Bool(bool.is_true()))
     } else if let Ok(int) = obj.cast::<PyInt>() {
-        Ok(MontyObject::Int(int.extract()?))
+        // Try i64 first (fast path), fall back to BigInt for large values
+        if let Ok(i) = int.extract::<i64>() {
+            Ok(MontyObject::Int(i))
+        } else {
+            // Extract as BigInt for values that don't fit in i64
+            let bi: BigInt = int.extract()?;
+            Ok(MontyObject::BigInt(bi))
+        }
     } else if let Ok(float) = obj.cast::<PyFloat>() {
         Ok(MontyObject::Float(float.extract()?))
     } else if let Ok(string) = obj.cast::<PyString>() {
@@ -84,6 +92,7 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &Bound<'_, Py
         MontyObject::Ellipsis => Ok(py.Ellipsis()),
         MontyObject::Bool(b) => Ok(PyBool::new(py, *b).to_owned().into_any().unbind()),
         MontyObject::Int(i) => Ok(i.into_pyobject(py)?.clone().into_any().unbind()),
+        MontyObject::BigInt(bi) => Ok(bi.into_pyobject(py)?.clone().into_any().unbind()),
         MontyObject::Float(f) => Ok(f.into_pyobject(py)?.clone().into_any().unbind()),
         MontyObject::String(s) => Ok(PyString::new(py, s).into_any().unbind()),
         MontyObject::Bytes(b) => Ok(PyBytes::new(py, b).into_any().unbind()),

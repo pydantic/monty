@@ -1,9 +1,12 @@
 //! Implementation of the pow() builtin function.
 
+use num_bigint::BigInt;
+use num_traits::{Signed, ToPrimitive, Zero};
+
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::Heap,
+    heap::{Heap, HeapData},
     resource::ResourceTracker,
     types::PyTrait,
     value::Value,
@@ -80,80 +83,7 @@ pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
         }
     } else {
         // Two-argument pow
-        match (&base, &exp) {
-            (Value::Int(b), Value::Int(e)) => {
-                if *e < 0 {
-                    // Negative exponent returns float
-                    if *b == 0 {
-                        return Err(SimpleException::new_msg(
-                            ExcType::ZeroDivisionError,
-                            "0.0 cannot be raised to a negative power",
-                        )
-                        .into());
-                    }
-                    Ok(Value::Float((*b as f64).powf(*e as f64)))
-                } else {
-                    match u32::try_from(*e) {
-                        Ok(exp_u32) => match checked_pow_i64(*b, exp_u32) {
-                            Some(v) => Ok(Value::Int(v)),
-                            None => {
-                                // TODO: replace with BigInt once available to match CPython semantics.
-                                Err(
-                                    SimpleException::new_msg(ExcType::OverflowError, "result too large to represent")
-                                        .into(),
-                                )
-                            }
-                        },
-                        Err(_) => {
-                            // TODO: replace with BigInt once available to match CPython semantics.
-                            Err(
-                                SimpleException::new_msg(ExcType::OverflowError, "result too large to represent")
-                                    .into(),
-                            )
-                        }
-                    }
-                }
-            }
-            (Value::Float(b), Value::Float(e)) => {
-                if *b == 0.0 && *e < 0.0 {
-                    return Err(SimpleException::new_msg(
-                        ExcType::ZeroDivisionError,
-                        "0.0 cannot be raised to a negative power",
-                    )
-                    .into());
-                }
-                Ok(Value::Float(b.powf(*e)))
-            }
-            (Value::Int(b), Value::Float(e)) => {
-                if *b == 0 && *e < 0.0 {
-                    return Err(SimpleException::new_msg(
-                        ExcType::ZeroDivisionError,
-                        "0.0 cannot be raised to a negative power",
-                    )
-                    .into());
-                }
-                Ok(Value::Float((*b as f64).powf(*e)))
-            }
-            (Value::Float(b), Value::Int(e)) => {
-                if *b == 0.0 && *e < 0 {
-                    return Err(SimpleException::new_msg(
-                        ExcType::ZeroDivisionError,
-                        "0.0 cannot be raised to a negative power",
-                    )
-                    .into());
-                }
-                if let Ok(exp_i32) = i32::try_from(*e) {
-                    Ok(Value::Float(b.powi(exp_i32)))
-                } else {
-                    Ok(Value::Float(b.powf(*e as f64)))
-                }
-            }
-            _ => Err(ExcType::binary_type_error(
-                "** or pow()",
-                base.py_type(heap),
-                exp.py_type(heap),
-            )),
-        }
+        Ok(two_arg_pow(&base, &exp, heap)?)
     };
 
     base.drop_with_heap(heap);
@@ -209,4 +139,233 @@ fn checked_pow_i64(mut base: i64, mut exp: u32) -> Option<i64> {
     }
 
     Some(result)
+}
+
+/// Implements two-argument pow with BigInt support.
+///
+/// On overflow, promotes to BigInt instead of returning an error.
+fn two_arg_pow(base: &Value, exp: &Value, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    match (base, exp) {
+        (Value::Int(b), Value::Int(e)) => int_pow_int(*b, *e, heap),
+        (Value::Int(b), Value::Ref(id)) => {
+            // Clone to avoid borrow conflict with heap mutation
+            let e_bi = if let HeapData::BigInt(bi) = heap.get(*id) {
+                bi.clone()
+            } else {
+                return Err(ExcType::binary_type_error(
+                    "** or pow()",
+                    base.py_type(heap),
+                    exp.py_type(heap),
+                ));
+            };
+            int_pow_bigint(*b, &e_bi, heap)
+        }
+        (Value::Ref(id), Value::Int(e)) => {
+            // Clone to avoid borrow conflict with heap mutation
+            let b_bi = if let HeapData::BigInt(bi) = heap.get(*id) {
+                bi.clone()
+            } else {
+                return Err(ExcType::binary_type_error(
+                    "** or pow()",
+                    base.py_type(heap),
+                    exp.py_type(heap),
+                ));
+            };
+            bigint_pow_int(&b_bi, *e, heap)
+        }
+        (Value::Ref(id1), Value::Ref(id2)) => {
+            // Clone both to avoid borrow conflict with heap mutation
+            let b_bi = if let HeapData::BigInt(bi) = heap.get(*id1) {
+                bi.clone()
+            } else {
+                return Err(ExcType::binary_type_error(
+                    "** or pow()",
+                    base.py_type(heap),
+                    exp.py_type(heap),
+                ));
+            };
+            let e_bi = if let HeapData::BigInt(bi) = heap.get(*id2) {
+                bi.clone()
+            } else {
+                return Err(ExcType::binary_type_error(
+                    "** or pow()",
+                    base.py_type(heap),
+                    exp.py_type(heap),
+                ));
+            };
+            bigint_pow_bigint(&b_bi, &e_bi, heap)
+        }
+        (Value::Float(b), Value::Float(e)) => {
+            if *b == 0.0 && *e < 0.0 {
+                Err(
+                    SimpleException::new_msg(ExcType::ZeroDivisionError, "0.0 cannot be raised to a negative power")
+                        .into(),
+                )
+            } else {
+                Ok(Value::Float(b.powf(*e)))
+            }
+        }
+        (Value::Int(b), Value::Float(e)) => {
+            if *b == 0 && *e < 0.0 {
+                Err(
+                    SimpleException::new_msg(ExcType::ZeroDivisionError, "0.0 cannot be raised to a negative power")
+                        .into(),
+                )
+            } else {
+                Ok(Value::Float((*b as f64).powf(*e)))
+            }
+        }
+        (Value::Float(b), Value::Int(e)) => {
+            if *b == 0.0 && *e < 0 {
+                Err(
+                    SimpleException::new_msg(ExcType::ZeroDivisionError, "0.0 cannot be raised to a negative power")
+                        .into(),
+                )
+            } else if let Ok(exp_i32) = i32::try_from(*e) {
+                Ok(Value::Float(b.powi(exp_i32)))
+            } else {
+                Ok(Value::Float(b.powf(*e as f64)))
+            }
+        }
+        _ => Err(ExcType::binary_type_error(
+            "** or pow()",
+            base.py_type(heap),
+            exp.py_type(heap),
+        )),
+    }
+}
+
+/// int ** int with BigInt promotion on overflow.
+fn int_pow_int(b: i64, e: i64, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    if e < 0 {
+        // Negative exponent returns float
+        if b == 0 {
+            return Err(SimpleException::new_msg(
+                ExcType::ZeroDivisionError,
+                "0.0 cannot be raised to a negative power",
+            )
+            .into());
+        }
+        Ok(Value::Float((b as f64).powf(e as f64)))
+    } else if let Ok(exp_u32) = u32::try_from(e) {
+        if let Some(v) = checked_pow_i64(b, exp_u32) {
+            Ok(Value::Int(v))
+        } else {
+            // Overflow - promote to BigInt
+            let bi = BigInt::from(b).pow(exp_u32);
+            Ok(crate::types::bigint::bigint_to_value(bi, heap)?)
+        }
+    } else {
+        // Exponent too large for u32 - use BigInt for result
+        // Safety: e >= 0 at this point
+        #[expect(clippy::cast_sign_loss)]
+        let exp_u64 = e as u64;
+        let base_bi = BigInt::from(b);
+        let bi = bigint_pow_large(&base_bi, exp_u64)?;
+        Ok(crate::types::bigint::bigint_to_value(bi, heap)?)
+    }
+}
+
+/// int ** BigInt with BigInt result.
+fn int_pow_bigint(b: i64, e: &BigInt, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    if b == 0 && e.is_negative() {
+        return Err(
+            SimpleException::new_msg(ExcType::ZeroDivisionError, "0.0 cannot be raised to a negative power").into(),
+        );
+    }
+    if e.is_negative() {
+        // Negative BigInt exponent: return float
+        if let Some(e_f64) = e.to_f64() {
+            Ok(Value::Float((b as f64).powf(e_f64)))
+        } else {
+            Ok(Value::Float(0.0))
+        }
+    } else if b == 0 {
+        Ok(Value::Int(0))
+    } else if b == 1 {
+        Ok(Value::Int(1))
+    } else if b == -1 {
+        // (-1) ** n = 1 if n is even, -1 if n is odd
+        let is_even = (e % 2i32).is_zero();
+        Ok(Value::Int(if is_even { 1 } else { -1 }))
+    } else if let Some(exp_u32) = e.to_u32() {
+        let bi = BigInt::from(b).pow(exp_u32);
+        Ok(crate::types::bigint::bigint_to_value(bi, heap)?)
+    } else {
+        // Exponent too large
+        Err(SimpleException::new_msg(ExcType::OverflowError, "exponent too large").into())
+    }
+}
+
+/// BigInt ** int with BigInt result.
+fn bigint_pow_int(b: &BigInt, e: i64, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    if b.is_zero() && e < 0 {
+        return Err(
+            SimpleException::new_msg(ExcType::ZeroDivisionError, "0.0 cannot be raised to a negative power").into(),
+        );
+    }
+    if e < 0 {
+        // Negative exponent: return float
+        if let (Some(b_f64), Some(e_f64)) = (b.to_f64(), Some(e as f64)) {
+            Ok(Value::Float(b_f64.powf(e_f64)))
+        } else {
+            Ok(Value::Float(0.0))
+        }
+    } else if let Ok(exp_u32) = u32::try_from(e) {
+        let bi = b.pow(exp_u32);
+        Ok(crate::types::bigint::bigint_to_value(bi, heap)?)
+    } else {
+        // Exponent too large for u32
+        // Safety: e >= 0 at this point
+        #[expect(clippy::cast_sign_loss)]
+        let exp_u64 = e as u64;
+        let bi = bigint_pow_large(b, exp_u64)?;
+        Ok(crate::types::bigint::bigint_to_value(bi, heap)?)
+    }
+}
+
+/// BigInt ** BigInt with BigInt result.
+fn bigint_pow_bigint(b: &BigInt, e: &BigInt, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    if b.is_zero() && e.is_negative() {
+        return Err(
+            SimpleException::new_msg(ExcType::ZeroDivisionError, "0.0 cannot be raised to a negative power").into(),
+        );
+    }
+    if e.is_negative() {
+        // Negative exponent: return float
+        if let (Some(b_f64), Some(e_f64)) = (b.to_f64(), e.to_f64()) {
+            Ok(Value::Float(b_f64.powf(e_f64)))
+        } else {
+            Ok(Value::Float(0.0))
+        }
+    } else if let Some(exp_u32) = e.to_u32() {
+        let bi = b.pow(exp_u32);
+        Ok(crate::types::bigint::bigint_to_value(bi, heap)?)
+    } else {
+        // Exponent too large
+        Err(SimpleException::new_msg(ExcType::OverflowError, "exponent too large").into())
+    }
+}
+
+/// BigInt power for large exponents (> u32::MAX).
+///
+/// This handles exponents that are too large for the standard pow function.
+/// For most bases, the result would be astronomically large, so we only handle
+/// special cases (0, 1, -1) and return an error for others.
+fn bigint_pow_large(base: &BigInt, exp: u64) -> RunResult<BigInt> {
+    if base.is_zero() {
+        Ok(BigInt::from(0))
+    } else if *base == BigInt::from(1) {
+        Ok(BigInt::from(1))
+    } else if *base == BigInt::from(-1) {
+        // (-1) ** n = 1 if n is even, -1 if n is odd
+        if exp.is_multiple_of(2) {
+            Ok(BigInt::from(1))
+        } else {
+            Ok(BigInt::from(-1))
+        }
+    } else {
+        // For any other base, exponent > u32::MAX would produce an astronomically large result
+        Err(SimpleException::new_msg(ExcType::OverflowError, "exponent too large").into())
+    }
 }

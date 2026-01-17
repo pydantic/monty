@@ -1,5 +1,9 @@
 //! Implementation of the divmod() builtin function.
 
+use num_bigint::BigInt;
+use num_integer::Integer;
+use num_traits::Zero;
+
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult, SimpleException},
@@ -27,6 +31,91 @@ pub fn builtin_divmod(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) ->
                 let (quot, rem) = floor_divmod(*x, *y);
                 let tuple_id = heap.allocate(HeapData::Tuple(Tuple::new(vec![Value::Int(quot), Value::Int(rem)])))?;
                 Ok(Value::Ref(tuple_id))
+            }
+        }
+        (Value::Int(x), Value::Ref(id)) => {
+            if let HeapData::BigInt(y_bi) = heap.get(*id) {
+                if y_bi.is_zero() {
+                    Err(
+                        SimpleException::new_msg(ExcType::ZeroDivisionError, "integer division or modulo by zero")
+                            .into(),
+                    )
+                } else {
+                    let x_bi = BigInt::from(*x);
+                    let (quot, rem) = bigint_floor_divmod(&x_bi, y_bi);
+                    let quot_val = crate::types::bigint::bigint_to_value(quot, heap)?;
+                    let rem_val = crate::types::bigint::bigint_to_value(rem, heap)?;
+                    let tuple_id = heap.allocate(HeapData::Tuple(Tuple::new(vec![quot_val, rem_val])))?;
+                    Ok(Value::Ref(tuple_id))
+                }
+            } else {
+                let a_type = a.py_type(heap);
+                let b_type = b.py_type(heap);
+                Err(SimpleException::new_msg(
+                    ExcType::TypeError,
+                    format!("unsupported operand type(s) for divmod(): '{a_type}' and '{b_type}'"),
+                )
+                .into())
+            }
+        }
+        (Value::Ref(id), Value::Int(y)) => {
+            if let HeapData::BigInt(x_bi) = heap.get(*id) {
+                if *y == 0 {
+                    Err(
+                        SimpleException::new_msg(ExcType::ZeroDivisionError, "integer division or modulo by zero")
+                            .into(),
+                    )
+                } else {
+                    let y_bi = BigInt::from(*y);
+                    let (quot, rem) = bigint_floor_divmod(x_bi, &y_bi);
+                    let quot_val = crate::types::bigint::bigint_to_value(quot, heap)?;
+                    let rem_val = crate::types::bigint::bigint_to_value(rem, heap)?;
+                    let tuple_id = heap.allocate(HeapData::Tuple(Tuple::new(vec![quot_val, rem_val])))?;
+                    Ok(Value::Ref(tuple_id))
+                }
+            } else {
+                let a_type = a.py_type(heap);
+                let b_type = b.py_type(heap);
+                Err(SimpleException::new_msg(
+                    ExcType::TypeError,
+                    format!("unsupported operand type(s) for divmod(): '{a_type}' and '{b_type}'"),
+                )
+                .into())
+            }
+        }
+        (Value::Ref(id1), Value::Ref(id2)) => {
+            let x_bi = if let HeapData::BigInt(bi) = heap.get(*id1) {
+                bi.clone()
+            } else {
+                let a_type = a.py_type(heap);
+                let b_type = b.py_type(heap);
+                return Err(SimpleException::new_msg(
+                    ExcType::TypeError,
+                    format!("unsupported operand type(s) for divmod(): '{a_type}' and '{b_type}'"),
+                )
+                .into());
+            };
+            if let HeapData::BigInt(y_bi) = heap.get(*id2) {
+                if y_bi.is_zero() {
+                    Err(
+                        SimpleException::new_msg(ExcType::ZeroDivisionError, "integer division or modulo by zero")
+                            .into(),
+                    )
+                } else {
+                    let (quot, rem) = bigint_floor_divmod(&x_bi, y_bi);
+                    let quot_val = crate::types::bigint::bigint_to_value(quot, heap)?;
+                    let rem_val = crate::types::bigint::bigint_to_value(rem, heap)?;
+                    let tuple_id = heap.allocate(HeapData::Tuple(Tuple::new(vec![quot_val, rem_val])))?;
+                    Ok(Value::Ref(tuple_id))
+                }
+            } else {
+                let a_type = a.py_type(heap);
+                let b_type = b.py_type(heap);
+                Err(SimpleException::new_msg(
+                    ExcType::TypeError,
+                    format!("unsupported operand type(s) for divmod(): '{a_type}' and '{b_type}'"),
+                )
+                .into())
             }
         }
         (Value::Float(x), Value::Float(y)) => {
@@ -96,4 +185,11 @@ fn floor_divmod(a: i64, b: i64) -> (i64, i64) {
     } else {
         (quot, rem)
     }
+}
+
+/// Computes Python-style floor division and modulo for BigInts.
+///
+/// Uses `div_mod_floor` from num_integer for correct floor semantics.
+fn bigint_floor_divmod(a: &BigInt, b: &BigInt) -> (BigInt, BigInt) {
+    a.div_mod_floor(b)
 }

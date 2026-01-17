@@ -27,6 +27,7 @@ strip = false
 lto = false
 
 [workspace.dependencies]
+# ruff, ty and related crates
 ruff_python_parser = { git = "https://github.com/astral-sh/ruff.git", package = "ruff_python_parser", branch = "main" }
 ruff_python_ast = { git = "https://github.com/astral-sh/ruff.git", package = "ruff_python_ast", branch = "main" }
 ruff_text_size = { git = "https://github.com/astral-sh/ruff.git", package = "ruff_text_size", branch = "main" }
@@ -41,6 +42,14 @@ salsa = { git = "https://github.com/salsa-rs/salsa.git", rev = "9860ff6ca0f1f8f3
     "salsa_unstable",
     "inventory",
 ] }
+# bigint and related crates
+num-bigint = { version = "0.4", features = ["serde"] }
+num-traits = "0.2"
+num-integer = "0.1"
+# others
+indexmap = { version = "2.9", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+postcard = { version = "1.1", features = ["alloc"] }
 
 [workspace.lints.rust]
 # codspeed cfg is set by codspeed-criterion-compat when running in CodSpeed environment

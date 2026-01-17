@@ -162,17 +162,26 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     pub(super) fn binary_mod(&mut self) -> Result<(), RunError> {
         let rhs = self.pop();
         let lhs = self.pop();
-        if let Some(v) = lhs.py_mod(&rhs) {
-            lhs.drop_with_heap(self.heap);
-            rhs.drop_with_heap(self.heap);
-            self.push(v);
-            Ok(())
-        } else {
-            let lhs_type = lhs.py_type(self.heap);
-            let rhs_type = rhs.py_type(self.heap);
-            lhs.drop_with_heap(self.heap);
-            rhs.drop_with_heap(self.heap);
-            Err(ExcType::binary_type_error("%", lhs_type, rhs_type))
+        let result = lhs.py_mod(&rhs, self.heap);
+        match result {
+            Ok(Some(v)) => {
+                lhs.drop_with_heap(self.heap);
+                rhs.drop_with_heap(self.heap);
+                self.push(v);
+                Ok(())
+            }
+            Ok(None) => {
+                let lhs_type = lhs.py_type(self.heap);
+                let rhs_type = rhs.py_type(self.heap);
+                lhs.drop_with_heap(self.heap);
+                rhs.drop_with_heap(self.heap);
+                Err(ExcType::binary_type_error("%", lhs_type, rhs_type))
+            }
+            Err(e) => {
+                lhs.drop_with_heap(self.heap);
+                rhs.drop_with_heap(self.heap);
+                Err(e)
+            }
         }
     }
 

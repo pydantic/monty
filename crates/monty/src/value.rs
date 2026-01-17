@@ -8,6 +8,9 @@ use std::{
 };
 
 use ahash::AHashSet;
+use num_bigint::BigInt;
+use num_integer::Integer;
+use num_traits::{Signed, ToPrimitive, Zero};
 
 use crate::{
     builtins::Builtins,
@@ -156,6 +159,23 @@ impl PyTrait for Value {
             (Self::Float(v1), Self::Bool(v2)) => *v1 == (i64::from(*v2) as f64),
             (Self::None, Self::None) => true,
 
+            // Int == BigInt comparison
+            (Self::Int(a), Self::Ref(id)) => {
+                if let HeapData::BigInt(b) = heap.get(*id) {
+                    BigInt::from(*a) == *b
+                } else {
+                    false
+                }
+            }
+            // BigInt == Int comparison
+            (Self::Ref(id), Self::Int(b)) => {
+                if let HeapData::BigInt(a) = heap.get(*id) {
+                    *a == BigInt::from(*b)
+                } else {
+                    false
+                }
+            }
+
             // For interned interns, compare by StringId first (fast path for same interned string)
             (Self::InternString(s1), Self::InternString(s2)) => s1 == s2,
             // for strings we need to account for the fact they might be either interned or not
@@ -219,12 +239,42 @@ impl PyTrait for Value {
             (Self::Float(s), Self::Int(o)) => s.partial_cmp(&(*o as f64)),
             (Self::Bool(s), _) => Self::Int(i64::from(*s)).py_cmp(other, heap, interns),
             (_, Self::Bool(s)) => self.py_cmp(&Self::Int(i64::from(*s)), heap, interns),
+            // Int vs BigInt comparison
+            (Self::Int(a), Self::Ref(id)) => {
+                if let HeapData::BigInt(b) = heap.get(*id) {
+                    BigInt::from(*a).partial_cmp(b)
+                } else {
+                    None
+                }
+            }
+            // BigInt vs Int comparison
+            (Self::Ref(id), Self::Int(b)) => {
+                if let HeapData::BigInt(a) = heap.get(*id) {
+                    a.partial_cmp(&BigInt::from(*b))
+                } else {
+                    None
+                }
+            }
+            // BigInt vs BigInt comparison
+            (Self::Ref(id1), Self::Ref(id2)) => {
+                let is_bigint1 = matches!(heap.get(*id1), HeapData::BigInt(_));
+                let is_bigint2 = matches!(heap.get(*id2), HeapData::BigInt(_));
+                if is_bigint1 && is_bigint2 {
+                    heap.with_two(*id1, *id2, |_heap, left, right| {
+                        if let (HeapData::BigInt(a), HeapData::BigInt(b)) = (left, right) {
+                            a.partial_cmp(b)
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                }
+            }
             (Self::InternString(s1), Self::InternString(s2)) => interns.get_str(*s1).partial_cmp(interns.get_str(*s2)),
             (Self::InternBytes(b1), Self::InternBytes(b2)) => {
                 interns.get_bytes(*b1).partial_cmp(interns.get_bytes(*b2))
             }
-            // Ref comparison requires heap context, not supported in PartialOrd
-            (Self::Ref(_), Self::Ref(_)) => None,
             _ => None,
         }
     }
@@ -322,10 +372,51 @@ impl PyTrait for Value {
         interns: &Interns,
     ) -> Result<Option<Value>, crate::resource::ResourceError> {
         match (self, other) {
-            (Self::Int(v1), Self::Int(v2)) => Ok(Some(Self::Int(v1 + v2))),
+            // Int + Int with overflow detection
+            (Self::Int(a), Self::Int(b)) => {
+                if let Some(result) = a.checked_add(*b) {
+                    Ok(Some(Self::Int(result)))
+                } else {
+                    // Overflow - promote to BigInt
+                    let bi = BigInt::from(*a) + BigInt::from(*b);
+                    crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                }
+            }
+            // Int + BigInt
+            (Self::Int(a), Self::Ref(id)) => {
+                if let HeapData::BigInt(b) = heap.get(*id) {
+                    let bi = BigInt::from(*a) + b;
+                    crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                } else {
+                    Ok(None)
+                }
+            }
+            // BigInt + Int
+            (Self::Ref(id), Self::Int(b)) => {
+                if let HeapData::BigInt(a) = heap.get(*id) {
+                    let bi = a + BigInt::from(*b);
+                    crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                } else {
+                    Ok(None)
+                }
+            }
             (Self::Float(v1), Self::Float(v2)) => Ok(Some(Self::Float(v1 + v2))),
             (Self::Ref(id1), Self::Ref(id2)) => {
-                heap.with_two(*id1, *id2, |heap, left, right| left.py_add(right, heap, interns))
+                // Check if both are BigInts
+                let is_bigint1 = matches!(heap.get(*id1), HeapData::BigInt(_));
+                let is_bigint2 = matches!(heap.get(*id2), HeapData::BigInt(_));
+                if is_bigint1 && is_bigint2 {
+                    heap.with_two(*id1, *id2, |heap, left, right| {
+                        if let (HeapData::BigInt(a), HeapData::BigInt(b)) = (left, right) {
+                            let bi = a + b;
+                            crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                        } else {
+                            Ok(None)
+                        }
+                    })
+                } else {
+                    heap.with_two(*id1, *id2, |heap, left, right| left.py_add(right, heap, interns))
+                }
             }
             (Self::InternString(s1), Self::InternString(s2)) => {
                 let concat = format!("{}{}", interns.get_str(*s1), interns.get_str(*s2));
@@ -386,21 +477,140 @@ impl PyTrait for Value {
     fn py_sub(
         &self,
         other: &Self,
-        _heap: &mut Heap<impl ResourceTracker>,
+        heap: &mut Heap<impl ResourceTracker>,
     ) -> Result<Option<Self>, crate::resource::ResourceError> {
         match (self, other) {
-            (Self::Int(v1), Self::Int(v2)) => Ok(Some(Self::Int(v1 - v2))),
+            // Int - Int with overflow detection
+            (Self::Int(a), Self::Int(b)) => {
+                if let Some(result) = a.checked_sub(*b) {
+                    Ok(Some(Self::Int(result)))
+                } else {
+                    // Overflow - promote to BigInt
+                    let bi = BigInt::from(*a) - BigInt::from(*b);
+                    crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                }
+            }
+            // Int - BigInt
+            (Self::Int(a), Self::Ref(id)) => {
+                if let HeapData::BigInt(b) = heap.get(*id) {
+                    let bi = BigInt::from(*a) - b;
+                    crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                } else {
+                    Ok(None)
+                }
+            }
+            // BigInt - Int
+            (Self::Ref(id), Self::Int(b)) => {
+                if let HeapData::BigInt(a) = heap.get(*id) {
+                    let bi = a - BigInt::from(*b);
+                    crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                } else {
+                    Ok(None)
+                }
+            }
+            // BigInt - BigInt
+            (Self::Ref(id1), Self::Ref(id2)) => {
+                let is_bigint1 = matches!(heap.get(*id1), HeapData::BigInt(_));
+                let is_bigint2 = matches!(heap.get(*id2), HeapData::BigInt(_));
+                if is_bigint1 && is_bigint2 {
+                    heap.with_two(*id1, *id2, |heap, left, right| {
+                        if let (HeapData::BigInt(a), HeapData::BigInt(b)) = (left, right) {
+                            let bi = a - b;
+                            crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                        } else {
+                            Ok(None)
+                        }
+                    })
+                } else {
+                    Ok(None)
+                }
+            }
             _ => Ok(None),
         }
     }
 
-    fn py_mod(&self, other: &Self) -> Option<Self> {
+    fn py_mod(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Self>> {
         match (self, other) {
-            (Self::Int(v1), Self::Int(v2)) => Some(Self::Int(v1 % v2)),
-            (Self::Float(v1), Self::Float(v2)) => Some(Self::Float(v1 % v2)),
-            (Self::Float(v1), Self::Int(v2)) => Some(Self::Float(v1 % (*v2 as f64))),
-            (Self::Int(v1), Self::Float(v2)) => Some(Self::Float((*v1 as f64) % v2)),
-            _ => None,
+            (Self::Int(a), Self::Int(b)) => {
+                if *b == 0 {
+                    Err(ExcType::zero_division().into())
+                } else {
+                    // Python modulo: a % b has the same sign as b
+                    let result = a.rem_euclid(*b);
+                    Ok(Some(Self::Int(result)))
+                }
+            }
+            // Int % BigInt
+            (Self::Int(a), Self::Ref(id)) => {
+                // Clone to avoid borrow conflict with heap mutation
+                let b_clone = if let HeapData::BigInt(b) = heap.get(*id) {
+                    if b.is_zero() {
+                        return Err(ExcType::zero_division().into());
+                    }
+                    b.clone()
+                } else {
+                    return Ok(None);
+                };
+                let bi = BigInt::from(*a).mod_floor(&b_clone);
+                Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+            }
+            // BigInt % Int
+            (Self::Ref(id), Self::Int(b)) => {
+                if *b == 0 {
+                    return Err(ExcType::zero_division().into());
+                }
+                // Clone to avoid borrow conflict with heap mutation
+                let a_clone = if let HeapData::BigInt(a) = heap.get(*id) {
+                    a.clone()
+                } else {
+                    return Ok(None);
+                };
+                let bi = a_clone.mod_floor(&BigInt::from(*b));
+                Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+            }
+            // BigInt % BigInt
+            (Self::Ref(id1), Self::Ref(id2)) => {
+                let is_bigint1 = matches!(heap.get(*id1), HeapData::BigInt(_));
+                let is_bigint2 = matches!(heap.get(*id2), HeapData::BigInt(_));
+                if is_bigint1 && is_bigint2 {
+                    // Check for zero division first
+                    if matches!(heap.get(*id2), HeapData::BigInt(b) if b.is_zero()) {
+                        return Err(ExcType::zero_division().into());
+                    }
+                    Ok(heap.with_two(*id1, *id2, |heap, left, right| {
+                        if let (HeapData::BigInt(a), HeapData::BigInt(b)) = (left, right) {
+                            let bi = a.mod_floor(b);
+                            crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                        } else {
+                            Ok(None)
+                        }
+                    })?)
+                } else {
+                    Ok(None)
+                }
+            }
+            (Self::Float(v1), Self::Float(v2)) => {
+                if *v2 == 0.0 {
+                    Err(ExcType::zero_division().into())
+                } else {
+                    Ok(Some(Self::Float(v1 % v2)))
+                }
+            }
+            (Self::Float(v1), Self::Int(v2)) => {
+                if *v2 == 0 {
+                    Err(ExcType::zero_division().into())
+                } else {
+                    Ok(Some(Self::Float(v1 % (*v2 as f64))))
+                }
+            }
+            (Self::Int(v1), Self::Float(v2)) => {
+                if *v2 == 0.0 {
+                    Err(ExcType::zero_division().into())
+                } else {
+                    Ok(Some(Self::Float((*v1 as f64) % v2)))
+                }
+            }
+            _ => Ok(None),
         }
     }
 
@@ -506,12 +716,53 @@ impl PyTrait for Value {
         interns: &Interns,
     ) -> RunResult<Option<Value>> {
         match (self, other) {
-            // Numeric multiplication
+            // Numeric multiplication with overflow promotion to BigInt
             (Self::Int(a), Self::Int(b)) => {
-                // Use checked_mul to handle overflow, fall back to float
-                match a.checked_mul(*b) {
-                    Some(result) => Ok(Some(Self::Int(result))),
-                    None => Ok(Some(Self::Float(*a as f64 * *b as f64))),
+                if let Some(result) = a.checked_mul(*b) {
+                    Ok(Some(Self::Int(result)))
+                } else {
+                    // Overflow - promote to BigInt
+                    let bi = BigInt::from(*a) * BigInt::from(*b);
+                    Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+                }
+            }
+            // Int * BigInt
+            (Self::Int(a), Self::Ref(id)) => {
+                if let HeapData::BigInt(b) = heap.get(*id) {
+                    let bi = BigInt::from(*a) * b;
+                    Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+                } else {
+                    // Check for sequence repetition
+                    let count = i64_to_repeat_count(*a)?;
+                    heap.mult_sequence(*id, count)
+                }
+            }
+            // BigInt * Int
+            (Self::Ref(id), Self::Int(b)) => {
+                if let HeapData::BigInt(a) = heap.get(*id) {
+                    let bi = a * BigInt::from(*b);
+                    Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+                } else {
+                    // Check for sequence repetition
+                    let count = i64_to_repeat_count(*b)?;
+                    heap.mult_sequence(*id, count)
+                }
+            }
+            // BigInt * BigInt
+            (Self::Ref(id1), Self::Ref(id2)) => {
+                let is_bigint1 = matches!(heap.get(*id1), HeapData::BigInt(_));
+                let is_bigint2 = matches!(heap.get(*id2), HeapData::BigInt(_));
+                if is_bigint1 && is_bigint2 {
+                    Ok(heap.with_two(*id1, *id2, |heap, left, right| {
+                        if let (HeapData::BigInt(a), HeapData::BigInt(b)) = (left, right) {
+                            let bi = a * b;
+                            crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                        } else {
+                            Ok(None)
+                        }
+                    })?)
+                } else {
+                    Ok(None)
                 }
             }
             (Self::Float(a), Self::Float(b)) => Ok(Some(Self::Float(a * b))),
@@ -552,12 +803,6 @@ impl PyTrait for Value {
                 let count = i64_to_repeat_count(*n)?;
                 let result: Vec<u8> = interns.get_bytes(*b).repeat(count);
                 Ok(Some(Self::Ref(heap.allocate(HeapData::Bytes(result.into()))?)))
-            }
-
-            // Heap string repetition: heap_str * int or int * heap_str
-            (Self::Ref(id), Self::Int(n)) | (Self::Int(n), Self::Ref(id)) => {
-                let count = i64_to_repeat_count(*n)?;
-                heap.mult_sequence(*id, count)
             }
 
             _ => Ok(None),
@@ -635,7 +880,7 @@ impl PyTrait for Value {
         }
     }
 
-    fn py_floordiv(&self, other: &Self, _heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_floordiv(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
         match (self, other) {
             // Floor division: int // int returns int
             (Self::Int(a), Self::Int(b)) => {
@@ -649,6 +894,53 @@ impl PyTrait for Value {
                     // If there's a remainder and signs differ, round down (toward -∞)
                     let result = if r != 0 && (*a < 0) != (*b < 0) { d - 1 } else { d };
                     Ok(Some(Self::Int(result)))
+                }
+            }
+            // Int // BigInt
+            (Self::Int(a), Self::Ref(id)) => {
+                if let HeapData::BigInt(b) = heap.get(*id) {
+                    if b.is_zero() {
+                        Err(ExcType::zero_division().into())
+                    } else {
+                        let bi = BigInt::from(*a).div_floor(b);
+                        Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+                    }
+                } else {
+                    Ok(None)
+                }
+            }
+            // BigInt // Int
+            (Self::Ref(id), Self::Int(b)) => {
+                if let HeapData::BigInt(a) = heap.get(*id) {
+                    if *b == 0 {
+                        Err(ExcType::zero_division().into())
+                    } else {
+                        let bi = a.div_floor(&BigInt::from(*b));
+                        Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+                    }
+                } else {
+                    Ok(None)
+                }
+            }
+            // BigInt // BigInt
+            (Self::Ref(id1), Self::Ref(id2)) => {
+                let is_bigint1 = matches!(heap.get(*id1), HeapData::BigInt(_));
+                let is_bigint2 = matches!(heap.get(*id2), HeapData::BigInt(_));
+                if is_bigint1 && is_bigint2 {
+                    // Check for zero division first
+                    if matches!(heap.get(*id2), HeapData::BigInt(b) if b.is_zero()) {
+                        return Err(ExcType::zero_division().into());
+                    }
+                    Ok(heap.with_two(*id1, *id2, |heap, left, right| {
+                        if let (HeapData::BigInt(a), HeapData::BigInt(b)) = (left, right) {
+                            let bi = a.div_floor(b);
+                            crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                        } else {
+                            Ok(None)
+                        }
+                    })?)
+                } else {
+                    Ok(None)
                 }
             }
             // Float floor division returns float
@@ -718,21 +1010,29 @@ impl PyTrait for Value {
         }
     }
 
-    fn py_pow(&self, other: &Self, _heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_pow(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
         match (self, other) {
             (Self::Int(base), Self::Int(exp)) => {
                 if *base == 0 && *exp < 0 {
                     Err(ExcType::zero_pow_negative().into())
                 } else if *exp >= 0 {
-                    // Positive exponent: try to return int, fall back to float on overflow
-                    // Note: exp > u32::MAX would overflow, so we use float for large exponents
+                    // Positive exponent: try to return int, promote to BigInt on overflow
                     if let Ok(exp_u32) = u32::try_from(*exp) {
-                        match base.checked_pow(exp_u32) {
-                            Some(result) => Ok(Some(Self::Int(result))),
-                            None => Ok(Some(Self::Float((*base as f64).powf(*exp as f64)))),
+                        if let Some(result) = base.checked_pow(exp_u32) {
+                            Ok(Some(Self::Int(result)))
+                        } else {
+                            // Overflow - promote to BigInt
+                            let bi = BigInt::from(*base).pow(exp_u32);
+                            Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
                         }
                     } else {
-                        Ok(Some(Self::Float((*base as f64).powf(*exp as f64))))
+                        // exp > u32::MAX - use BigInt with modpow-style exponentiation
+                        // For very large exponents, we still need BigInt
+                        // Safety: exp >= 0 is guaranteed by the outer if condition
+                        #[expect(clippy::cast_sign_loss)]
+                        let exp_u64 = *exp as u64;
+                        let bi = bigint_pow(BigInt::from(*base), exp_u64);
+                        Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
                     }
                 } else {
                     // Negative exponent: return float
@@ -742,6 +1042,80 @@ impl PyTrait for Value {
                     } else {
                         Ok(Some(Self::Float((*base as f64).powf(*exp as f64))))
                     }
+                }
+            }
+            // BigInt ** Int
+            (Self::Ref(id), Self::Int(exp)) => {
+                if let HeapData::BigInt(base) = heap.get(*id) {
+                    if base.is_zero() && *exp < 0 {
+                        Err(ExcType::zero_pow_negative().into())
+                    } else if *exp >= 0 {
+                        // Use BigInt pow for positive exponents
+                        if let Ok(exp_u32) = u32::try_from(*exp) {
+                            let bi = base.pow(exp_u32);
+                            Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+                        } else {
+                            // Safety: exp >= 0 is guaranteed by the outer if condition
+                            #[expect(clippy::cast_sign_loss)]
+                            let exp_u64 = *exp as u64;
+                            let bi = bigint_pow(base.clone(), exp_u64);
+                            Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+                        }
+                    } else {
+                        // Negative exponent: return float (BigInt base becomes 0.0 for large values)
+                        if let Some(base_f64) = base.to_f64() {
+                            if let Ok(exp_i32) = i32::try_from(*exp) {
+                                Ok(Some(Self::Float(base_f64.powi(exp_i32))))
+                            } else {
+                                Ok(Some(Self::Float(base_f64.powf(*exp as f64))))
+                            }
+                        } else {
+                            // Base too large for f64, result approaches 0
+                            Ok(Some(Self::Float(0.0)))
+                        }
+                    }
+                } else {
+                    Ok(None)
+                }
+            }
+            // Int ** BigInt (only small positive exponents make sense)
+            (Self::Int(base), Self::Ref(id)) => {
+                if let HeapData::BigInt(exp) = heap.get(*id) {
+                    if *base == 0 && exp.is_negative() {
+                        Err(ExcType::zero_pow_negative().into())
+                    } else if !exp.is_negative() {
+                        // For very large exponents, most results are huge or 0/1
+                        if *base == 0 {
+                            Ok(Some(Self::Int(0)))
+                        } else if *base == 1 {
+                            Ok(Some(Self::Int(1)))
+                        } else if *base == -1 {
+                            // (-1) ** n = 1 if n is even, -1 if n is odd
+                            let is_even = (exp % 2i32).is_zero();
+                            Ok(Some(Self::Int(if is_even { 1 } else { -1 })))
+                        } else if let Some(exp_u32) = exp.to_u32() {
+                            // Reasonable exponent size
+                            if let Some(result) = base.checked_pow(exp_u32) {
+                                Ok(Some(Self::Int(result)))
+                            } else {
+                                let bi = BigInt::from(*base).pow(exp_u32);
+                                Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+                            }
+                        } else {
+                            // Exponent too large - result would be astronomically large
+                            // Python handles this, but it would take forever. Use OverflowError
+                            Err(SimpleException::new_msg(ExcType::OverflowError, "exponent too large").into())
+                        }
+                    } else {
+                        // Negative BigInt exponent: return float
+                        if let (Some(base_f64), Some(exp_f64)) = (Some(*base as f64), exp.to_f64()) {
+                            Ok(Some(Self::Float(base_f64.powf(exp_f64))))
+                        } else {
+                            Ok(Some(Self::Float(0.0)))
+                        }
+                    }
+                } else {
+                    Ok(None)
                 }
             }
             (Self::Float(base), Self::Float(exp)) => {
@@ -1506,4 +1880,32 @@ fn str_contains(
         }
         _ => Err(ExcType::type_error("'in <str>' requires string as left operand")),
     }
+}
+
+/// Computes BigInt exponentiation for exponents larger than u32::MAX.
+///
+/// Uses repeated squaring for efficiency. This is needed when the exponent
+/// doesn't fit in a u32, which is required by the `num-bigint` pow method.
+fn bigint_pow(base: BigInt, exp: u64) -> BigInt {
+    if exp == 0 {
+        return BigInt::from(1);
+    }
+    if exp == 1 {
+        return base;
+    }
+
+    // Use repeated squaring
+    let mut result = BigInt::from(1);
+    let mut b = base;
+    let mut e = exp;
+
+    while e > 0 {
+        if e & 1 == 1 {
+            result *= &b;
+        }
+        b = &b * &b;
+        e >>= 1;
+    }
+
+    result
 }

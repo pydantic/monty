@@ -5,6 +5,8 @@ use std::{
 
 use ahash::AHashSet;
 use indexmap::IndexMap;
+use num_bigint::BigInt;
+use num_traits::Zero;
 
 use crate::{
     builtins::{Builtins, BuiltinsFunctions},
@@ -76,6 +78,8 @@ pub enum MontyObject {
     Bool(bool),
     /// Python integer (64-bit signed).
     Int(i64),
+    /// Python arbitrary-precision integer (larger than i64).
+    BigInt(BigInt),
     /// Python float (64-bit IEEE 754).
     Float(f64),
     /// Python string (UTF-8).
@@ -183,6 +187,7 @@ impl MontyObject {
             Self::None => Ok(Value::None),
             Self::Bool(b) => Ok(Value::Bool(b)),
             Self::Int(i) => Ok(Value::Int(i)),
+            Self::BigInt(bi) => Ok(crate::types::bigint::bigint_to_value(bi, heap)?),
             Self::Float(f) => Ok(Value::Float(f)),
             Self::String(s) => Ok(Value::Ref(heap.allocate(HeapData::Str(Str::new(s)))?)),
             Self::Bytes(b) => Ok(Value::Ref(heap.allocate(HeapData::Bytes(Bytes::new(b)))?)),
@@ -387,6 +392,7 @@ impl MontyObject {
                         // Iterators are internal objects - represent as a type string
                         Self::Repr("<iterator>".to_owned())
                     }
+                    HeapData::BigInt(bi) => Self::BigInt(bi.clone()),
                 };
 
                 // Remove from visited set after processing
@@ -420,6 +426,7 @@ impl MontyObject {
             Self::Bool(true) => f.write_str("True"),
             Self::Bool(false) => f.write_str("False"),
             Self::Int(v) => write!(f, "{v}"),
+            Self::BigInt(v) => write!(f, "{v}"),
             Self::Float(v) => {
                 let s = v.to_string();
                 f.write_str(&s)?;
@@ -562,6 +569,7 @@ impl MontyObject {
             Self::Ellipsis => true,
             Self::Bool(b) => *b,
             Self::Int(i) => *i != 0,
+            Self::BigInt(bi) => !bi.is_zero(),
             Self::Float(f) => *f != 0.0,
             Self::String(s) => !s.is_empty(),
             Self::Bytes(b) => !b.is_empty(),
@@ -585,7 +593,7 @@ impl MontyObject {
             Self::None => "NoneType",
             Self::Ellipsis => "ellipsis",
             Self::Bool(_) => "bool",
-            Self::Int(_) => "int",
+            Self::Int(_) | Self::BigInt(_) => "int",
             Self::Float(_) => "float",
             Self::String(_) => "str",
             Self::Bytes(_) => "bytes",
@@ -606,15 +614,29 @@ impl MontyObject {
 
 impl Hash for MontyObject {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Hash the discriminant first
-        std::mem::discriminant(self).hash(state);
+        // Hash the discriminant first (but Int and BigInt share discriminant for consistency)
+        match self {
+            Self::Int(_) | Self::BigInt(_) => {
+                // Use Int discriminant for both to maintain hash consistency
+                std::mem::discriminant(&Self::Int(0)).hash(state);
+            }
+            _ => std::mem::discriminant(self).hash(state),
+        }
 
         match self {
-            Self::Ellipsis => {}
-            Self::None => {}
+            Self::Ellipsis | Self::None => {}
             Self::Bool(bool) => bool.hash(state),
-            Self::Int(i64) => i64.hash(state),
-            Self::Float(f64) => f64.to_bits().hash(state),
+            Self::Int(i) => i.hash(state),
+            Self::BigInt(bi) => {
+                // For hash consistency, if BigInt fits in i64, hash as i64
+                if let Ok(i) = i64::try_from(bi) {
+                    i.hash(state);
+                } else {
+                    // For large BigInts, hash the signed bytes
+                    bi.to_signed_bytes_le().hash(state);
+                }
+            }
+            Self::Float(f) => f.to_bits().hash(state),
             Self::String(string) => string.hash(state),
             Self::Bytes(bytes) => bytes.hash(state),
             Self::Type(t) => t.to_string().hash(state),
@@ -631,6 +653,9 @@ impl PartialEq for MontyObject {
             (Self::None, Self::None) => true,
             (Self::Bool(a), Self::Bool(b)) => a == b,
             (Self::Int(a), Self::Int(b)) => a == b,
+            (Self::BigInt(a), Self::BigInt(b)) => a == b,
+            // Cross-compare Int and BigInt
+            (Self::Int(a), Self::BigInt(b)) | (Self::BigInt(b), Self::Int(a)) => BigInt::from(*a) == *b,
             // Use to_bits() for float comparison to be consistent with Hash
             (Self::Float(a), Self::Float(b)) => a.to_bits() == b.to_bits(),
             (Self::String(a), Self::String(b)) => a == b,
