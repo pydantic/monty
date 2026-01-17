@@ -144,7 +144,6 @@ fib(35)
     thread.start()
     old_handler = signal.signal(signal.SIGINT, raise_potato)
     try:
-        signal.alarm(1)  # Fire after 1 second
         with pytest.raises(monty.MontyRuntimeError) as exc_info:
             m.run()
         inner = exc_info.value.exception()

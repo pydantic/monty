@@ -365,18 +365,42 @@ impl PyMonty {
     ) -> PyResult<Py<PyAny>> {
         let dataclass_registry = self.dataclass_registry.bind(py);
         if self.external_function_names.is_empty() {
-            match self.runner.run(input_values, tracker, &mut print_output) {
+            return match self.runner.run(input_values, tracker, &mut print_output) {
                 Ok(v) => monty_to_py(py, &v, dataclass_registry),
                 Err(err) => Err(MontyError::new_err(py, err)),
+            };
+        }
+        // Clone the runner since start() consumes it - allows reuse of the parsed code
+        let mut progress = self
+            .runner
+            .clone()
+            .start(input_values, tracker, &mut print_output)
+            .map_err(|e| MontyError::new_err(py, e))?;
+
+        loop {
+            match progress {
+                RunProgress::Complete(result) => return monty_to_py(py, &result, dataclass_registry),
+                RunProgress::FunctionCall {
+                    function_name,
+                    args,
+                    kwargs,
+                    state,
+                } => {
+                    let registry = external_functions
+                        .map(|d| ExternalFunctionRegistry::new(py, d, dataclass_registry))
+                        .ok_or_else(|| {
+                            PyRuntimeError::new_err(format!(
+                                "External function '{function_name}' called but no external_functions provided"
+                            ))
+                        })?;
+
+                    let return_value = registry.call(&function_name, &args, &kwargs);
+
+                    progress = state
+                        .run(return_value, &mut print_output)
+                        .map_err(|e| MontyError::new_err(py, e))?;
+                }
             }
-        } else {
-            // Clone the runner since start() consumes it - allows reuse of the parsed code
-            let progress = self
-                .runner
-                .clone()
-                .start(input_values, tracker, &mut print_output)
-                .map_err(|e| MontyError::new_err(py, e))?;
-            execute_progress(py, progress, external_functions, &mut print_output, dataclass_registry)
         }
     }
 
@@ -392,17 +416,41 @@ impl PyMonty {
         let dataclass_registry = self.dataclass_registry.bind(py);
         if self.external_function_names.is_empty() {
             let runner = &self.runner;
-            match py.detach(|| runner.run(input_values, tracker, &mut print_output)) {
+            return match py.detach(|| runner.run(input_values, tracker, &mut print_output)) {
                 Ok(v) => monty_to_py(py, &v, dataclass_registry),
                 Err(err) => Err(MontyError::new_err(py, err)),
+            };
+        }
+        // Clone the runner since start() consumes it - allows reuse of the parsed code
+        let runner = self.runner.clone();
+        let mut progress = py
+            .detach(|| runner.start(input_values, tracker, &mut print_output))
+            .map_err(|e| MontyError::new_err(py, e))?;
+
+        loop {
+            match progress {
+                RunProgress::Complete(result) => return monty_to_py(py, &result, dataclass_registry),
+                RunProgress::FunctionCall {
+                    function_name,
+                    args,
+                    kwargs,
+                    state,
+                } => {
+                    let registry = external_functions
+                        .map(|d| ExternalFunctionRegistry::new(py, d, dataclass_registry))
+                        .ok_or_else(|| {
+                            PyRuntimeError::new_err(format!(
+                                "External function '{function_name}' called but no external_functions provided"
+                            ))
+                        })?;
+
+                    let return_value = registry.call(&function_name, &args, &kwargs);
+
+                    progress = py
+                        .detach(|| state.run(return_value, &mut print_output))
+                        .map_err(|e| MontyError::new_err(py, e))?;
+                }
             }
-        } else {
-            // Clone the runner since start() consumes it - allows reuse of the parsed code
-            let runner = self.runner.clone();
-            let progress = py
-                .detach(|| runner.start(input_values, tracker, &mut print_output))
-                .map_err(|e| MontyError::new_err(py, e))?;
-            execute_progress(py, progress, external_functions, &mut print_output, dataclass_registry)
         }
     }
 }
@@ -711,43 +759,6 @@ fn prep_registry<'py>(py: Python<'py>, dataclass_registry: Option<Bound<'py, PyL
         }
     }
     Ok(dc_registry)
-}
-
-/// Executes the `RunProgress` loop, handling external function calls.
-///
-/// Checks for pending Python signals (e.g., Ctrl+C) after execution completes.
-fn execute_progress<'py>(
-    py: Python<'py>,
-    mut progress: RunProgress<impl ResourceTracker>,
-    external_functions: Option<&Bound<'py, PyDict>>,
-    print_output: &mut impl PrintWriter,
-    dataclass_registry: &Bound<'py, PyDict>,
-) -> PyResult<Py<PyAny>> {
-    loop {
-        match progress {
-            RunProgress::Complete(result) => return monty_to_py(py, &result, dataclass_registry),
-            RunProgress::FunctionCall {
-                function_name,
-                args,
-                kwargs,
-                state,
-            } => {
-                let registry = external_functions
-                    .map(|d| ExternalFunctionRegistry::new(py, d, dataclass_registry))
-                    .ok_or_else(|| {
-                        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                            "External function '{function_name}' called but no external_functions provided"
-                        ))
-                    })?;
-
-                let return_value = registry.call(&function_name, &args, &kwargs);
-
-                progress = state
-                    .run(return_value, print_output)
-                    .map_err(|e| MontyError::new_err(py, e))?;
-            }
-        }
-    }
 }
 
 fn list_str(arg: Option<&Bound<'_, PyList>>, name: &str) -> PyResult<Vec<String>> {
