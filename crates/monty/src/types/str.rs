@@ -200,6 +200,20 @@ impl PyTrait for Str {
 /// * `args` - The method arguments
 /// * `heap` - The heap for allocation and reference counting
 /// * `interns` - The interns table for resolving interned strings
+///
+/// # Not Yet Implemented
+///
+/// The following Python string methods are not yet implemented:
+///
+/// - `format()` - Requires implementing the format spec mini-language (PEP 3101),
+///   which is complex and involves parsing format specifications like `{:>10.2f}`.
+/// - `format_map(mapping)` - Similar to `format()` but takes a mapping; depends on
+///   `format()` implementation.
+/// - `maketrans()` / `translate()` - Character translation tables; moderate complexity,
+///   requires building and applying Unicode translation maps.
+/// - `expandtabs(tabsize=8)` - Tab expansion; simple but rarely used in practice.
+/// - `isprintable()` - Checks if all characters are printable; requires accurate Unicode
+///   category data for the "printable" property.
 pub fn call_str_method(
     s: &str,
     method_id: StringId,
