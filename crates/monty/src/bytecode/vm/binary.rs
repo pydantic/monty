@@ -221,7 +221,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         let rhs = self.pop();
         let lhs = self.pop();
 
-        // Compute result before dropping operands (py_bitwise only reads values)
+        // Compute result before dropping operands (may allocate LongInt for large results)
         let result = lhs.py_bitwise(&rhs, op, self.heap);
 
         // Drop operands before propagating error

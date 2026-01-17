@@ -10,7 +10,7 @@ use std::{
 use ahash::AHashSet;
 use num_bigint::BigInt;
 use num_integer::Integer;
-use num_traits::Zero;
+use num_traits::{ToPrimitive, Zero};
 
 use crate::{
     builtins::Builtins,
@@ -535,8 +535,11 @@ impl PyTrait for Value {
                 if *b == 0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    // Python modulo: a % b has the same sign as b
-                    let result = a.rem_euclid(*b);
+                    // Python modulo: result has the same sign as divisor (b)
+                    // Standard remainder (%) in Rust has same sign as dividend (a)
+                    // We need to adjust when signs differ and remainder is non-zero
+                    let r = *a % *b;
+                    let result = if r != 0 && (*a < 0) != (*b < 0) { r + *b } else { r };
                     Ok(Some(Self::Int(result)))
                 }
             }
@@ -616,7 +619,12 @@ impl PyTrait for Value {
 
     fn py_mod_eq(&self, other: &Self, right_value: i64) -> Option<bool> {
         match (self, other) {
-            (Self::Int(v1), Self::Int(v2)) => Some(v1 % v2 == right_value),
+            (Self::Int(v1), Self::Int(v2)) => {
+                // Use Python's modulo semantics (result has same sign as divisor)
+                let r = *v1 % *v2;
+                let result = if r != 0 && (*v1 < 0) != (*v2 < 0) { r + *v2 } else { r };
+                Some(result == right_value)
+            }
             (Self::Float(v1), Self::Float(v2)) => Some(v1 % v2 == right_value as f64),
             (Self::Float(v1), Self::Int(v2)) => Some(v1 % (*v2 as f64) == right_value as f64),
             (Self::Int(v1), Self::Float(v2)) => Some((*v1 as f64) % v2 == right_value as f64),
@@ -633,7 +641,13 @@ impl PyTrait for Value {
     ) -> Result<bool, crate::resource::ResourceError> {
         match (&self, &other) {
             (Self::Int(v1), Self::Int(v2)) => {
-                *self = Self::Int(*v1 + v2);
+                if let Some(result) = v1.checked_add(*v2) {
+                    *self = Self::Int(result);
+                } else {
+                    // Overflow - promote to LongInt
+                    let li = LongInt::from(*v1) + LongInt::from(*v2);
+                    *self = li.into_value(heap)?;
+                }
                 Ok(true)
             }
             (Self::Float(v1), Self::Float(v2)) => {
@@ -748,11 +762,12 @@ impl PyTrait for Value {
                     heap.mult_sequence(*id, count)
                 }
             }
-            // LongInt * LongInt
+            // LongInt * LongInt or sequence * LongInt
             (Self::Ref(id1), Self::Ref(id2)) => {
                 let is_longint1 = matches!(heap.get(*id1), HeapData::LongInt(_));
                 let is_longint2 = matches!(heap.get(*id2), HeapData::LongInt(_));
                 if is_longint1 && is_longint2 {
+                    // LongInt * LongInt
                     Ok(heap.with_two(*id1, *id2, |heap, left, right| {
                         if let (HeapData::LongInt(a), HeapData::LongInt(b)) = (left, right) {
                             let result = LongInt::new(a.inner() * b.inner());
@@ -761,6 +776,22 @@ impl PyTrait for Value {
                             Ok(None)
                         }
                     })?)
+                } else if is_longint2 {
+                    // sequence * LongInt - get the repeat count from LongInt
+                    let count = if let HeapData::LongInt(li) = heap.get(*id2) {
+                        longint_to_repeat_count(li)?
+                    } else {
+                        return Ok(None);
+                    };
+                    heap.mult_sequence(*id1, count)
+                } else if is_longint1 {
+                    // LongInt * sequence - get the repeat count from LongInt
+                    let count = if let HeapData::LongInt(li) = heap.get(*id1) {
+                        longint_to_repeat_count(li)?
+                    } else {
+                        return Ok(None);
+                    };
+                    heap.mult_sequence(*id2, count)
                 } else {
                     Ok(None)
                 }
@@ -809,7 +840,7 @@ impl PyTrait for Value {
         }
     }
 
-    fn py_div(&self, other: &Self, _heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_div(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
         match (self, other) {
             // True division always returns float
             (Self::Int(a), Self::Int(b)) => {
@@ -817,6 +848,86 @@ impl PyTrait for Value {
                     Err(ExcType::zero_division().into())
                 } else {
                     Ok(Some(Self::Float(*a as f64 / *b as f64)))
+                }
+            }
+            // Int / LongInt
+            (Self::Int(a), Self::Ref(id)) => {
+                if let HeapData::LongInt(li) = heap.get(*id) {
+                    if li.is_zero() {
+                        Err(ExcType::zero_division().into())
+                    } else {
+                        // Convert both to f64 for division
+                        let a_f64 = *a as f64;
+                        let b_f64 = li.to_f64().unwrap_or(f64::INFINITY);
+                        Ok(Some(Self::Float(a_f64 / b_f64)))
+                    }
+                } else {
+                    Ok(None)
+                }
+            }
+            // LongInt / Int
+            (Self::Ref(id), Self::Int(b)) => {
+                if let HeapData::LongInt(li) = heap.get(*id) {
+                    if *b == 0 {
+                        Err(ExcType::zero_division().into())
+                    } else {
+                        // Convert both to f64 for division
+                        let a_f64 = li.to_f64().unwrap_or(f64::INFINITY);
+                        let b_f64 = *b as f64;
+                        Ok(Some(Self::Float(a_f64 / b_f64)))
+                    }
+                } else {
+                    Ok(None)
+                }
+            }
+            // LongInt / LongInt or LongInt / Float or Float / LongInt
+            (Self::Ref(id1), Self::Ref(id2)) => {
+                let is_longint1 = matches!(heap.get(*id1), HeapData::LongInt(_));
+                let is_longint2 = matches!(heap.get(*id2), HeapData::LongInt(_));
+                if is_longint1 && is_longint2 {
+                    // Check for zero division first
+                    if matches!(heap.get(*id2), HeapData::LongInt(li) if li.is_zero()) {
+                        return Err(ExcType::zero_division().into());
+                    }
+                    Ok(
+                        heap.with_two(*id1, *id2, |_heap, left, right| -> RunResult<Option<Self>> {
+                            if let (HeapData::LongInt(a), HeapData::LongInt(b)) = (left, right) {
+                                let a_f64 = a.to_f64().unwrap_or(f64::INFINITY);
+                                let b_f64 = b.to_f64().unwrap_or(f64::INFINITY);
+                                Ok(Some(Self::Float(a_f64 / b_f64)))
+                            } else {
+                                Ok(None)
+                            }
+                        })?,
+                    )
+                } else {
+                    Ok(None)
+                }
+            }
+            // LongInt / Float
+            (Self::Ref(id), Self::Float(b)) => {
+                if let HeapData::LongInt(li) = heap.get(*id) {
+                    if *b == 0.0 {
+                        Err(ExcType::zero_division().into())
+                    } else {
+                        let a_f64 = li.to_f64().unwrap_or(f64::INFINITY);
+                        Ok(Some(Self::Float(a_f64 / b)))
+                    }
+                } else {
+                    Ok(None)
+                }
+            }
+            // Float / LongInt
+            (Self::Float(a), Self::Ref(id)) => {
+                if let HeapData::LongInt(li) = heap.get(*id) {
+                    if li.is_zero() {
+                        Err(ExcType::zero_division().into())
+                    } else {
+                        let b_f64 = li.to_f64().unwrap_or(f64::INFINITY);
+                        Ok(Some(Self::Float(a / b_f64)))
+                    }
+                } else {
+                    Ok(None)
                 }
             }
             (Self::Float(a), Self::Float(b)) => {
@@ -1085,7 +1196,10 @@ impl PyTrait for Value {
                         Err(ExcType::zero_pow_negative().into())
                     } else if !li.is_negative() {
                         // For very large exponents, most results are huge or 0/1
-                        if *base == 0 {
+                        // Check for x ** 0 = 1 first (including 0 ** 0 = 1)
+                        if li.is_zero() {
+                            Ok(Some(Self::Int(1)))
+                        } else if *base == 0 {
                             Ok(Some(Self::Int(0)))
                         } else if *base == 1 {
                             Ok(Some(Self::Int(1)))
@@ -1492,54 +1606,75 @@ impl Value {
     /// Performs a binary bitwise operation on two values.
     ///
     /// Python only supports bitwise operations on integers (and bools, which coerce to int).
-    /// Returns a `TypeError` if either operand is not an integer or bool.
+    /// Returns a `TypeError` if either operand is not an integer, bool, or LongInt.
     ///
     /// For shift operations:
     /// - Negative shift counts raise `ValueError`
-    /// - Left shifts > 63 raise `OverflowError`
-    /// - Right shifts > 63 return 0 (or -1 for negative numbers)
-    pub fn py_bitwise(&self, other: &Self, op: BitwiseOp, heap: &Heap<impl ResourceTracker>) -> Result<Self, RunError> {
+    /// - Left shifts may produce LongInt results for large shifts
+    /// - Right shifts with large counts return 0 (or -1 for negative numbers)
+    pub fn py_bitwise(
+        &self,
+        other: &Self,
+        op: BitwiseOp,
+        heap: &mut Heap<impl ResourceTracker>,
+    ) -> Result<Self, RunError> {
         // Capture types for error messages
         let lhs_type = self.py_type(heap);
         let rhs_type = other.py_type(heap);
 
-        // Get integer values from lhs and rhs
-        let lhs_int = match self {
-            Self::Int(i) => Some(*i),
-            Self::Bool(b) => Some(i64::from(*b)),
-            _ => None,
-        };
-        let rhs_int = match other {
-            Self::Int(i) => Some(*i),
-            Self::Bool(b) => Some(i64::from(*b)),
-            _ => None,
-        };
+        // Extract BigInt from all numeric types
+        let lhs_bigint = extract_bigint(self, heap);
+        let rhs_bigint = extract_bigint(other, heap);
 
-        if let (Some(l), Some(r)) = (lhs_int, rhs_int) {
+        if let (Some(l), Some(r)) = (lhs_bigint, rhs_bigint) {
             let result = match op {
                 BitwiseOp::And => l & r,
                 BitwiseOp::Or => l | r,
                 BitwiseOp::Xor => l ^ r,
                 BitwiseOp::LShift => {
-                    // Python raises ValueError for negative shift, OverflowError for too large
-                    if r < 0 {
+                    // Get shift amount as i64 for validation
+                    let shift_amount = r.to_i64();
+                    if let Some(shift) = shift_amount {
+                        if shift < 0 {
+                            return Err(ExcType::value_error_negative_shift_count());
+                        }
+                        // Python allows arbitrarily large left shifts - use BigInt's shift
+                        // Safety: shift >= 0 is guaranteed by the check above
+                        #[expect(clippy::cast_sign_loss)]
+                        let shift_u64 = shift as u64;
+                        l << shift_u64
+                    } else if r.sign() == num_bigint::Sign::Minus {
                         return Err(ExcType::value_error_negative_shift_count());
-                    }
-                    // Limit shift to avoid overflow
-                    if r > 63 {
+                    } else {
+                        // Shift amount too large to fit in i64 - this would be astronomically large
                         return Err(ExcType::overflow_shift_count());
                     }
-                    l << r
                 }
                 BitwiseOp::RShift => {
-                    if r < 0 {
+                    // Get shift amount as i64 for validation
+                    let shift_amount = r.to_i64();
+                    if let Some(shift) = shift_amount {
+                        if shift < 0 {
+                            return Err(ExcType::value_error_negative_shift_count());
+                        }
+                        // Safety: shift >= 0 is guaranteed by the check above
+                        #[expect(clippy::cast_sign_loss)]
+                        let shift_u64 = shift as u64;
+                        l >> shift_u64
+                    } else if r.sign() == num_bigint::Sign::Minus {
                         return Err(ExcType::value_error_negative_shift_count());
+                    } else {
+                        // Shift amount too large - result is 0 or -1 depending on sign
+                        if l.sign() == num_bigint::Sign::Minus {
+                            BigInt::from(-1)
+                        } else {
+                            BigInt::from(0)
+                        }
                     }
-                    // Large right shifts just give 0 or -1 for negative numbers
-                    if r > 63 { if l < 0 { -1 } else { 0 } } else { l >> r }
                 }
             };
-            Ok(Self::Int(result))
+            // Convert result back to Value, demoting to i64 if it fits
+            LongInt::new(result).into_value(heap).map_err(Into::into)
         } else {
             Err(ExcType::binary_type_error(op.as_str(), lhs_type, rhs_type))
         }
@@ -1853,6 +1988,40 @@ fn i64_to_repeat_count(n: i64) -> RunResult<usize> {
         Ok(0)
     } else {
         usize::try_from(n).map_err(|_| ExcType::overflow_repeat_count().into())
+    }
+}
+
+/// Converts a LongInt repeat count to usize, handling negative values and overflow.
+///
+/// Returns 0 for negative values (Python treats negative repeat counts as 0).
+/// Returns `OverflowError` if the value exceeds `usize::MAX`.
+#[inline]
+fn longint_to_repeat_count(li: &LongInt) -> RunResult<usize> {
+    if li.is_negative() {
+        Ok(0)
+    } else if let Some(count) = li.to_usize() {
+        Ok(count)
+    } else {
+        Err(ExcType::overflow_repeat_count().into())
+    }
+}
+
+/// Extracts a BigInt from a Value for bitwise operations.
+///
+/// Returns `Some(BigInt)` for Int, Bool, and LongInt values.
+/// Returns `None` for other types (Float, Str, etc.).
+fn extract_bigint(value: &Value, heap: &Heap<impl ResourceTracker>) -> Option<BigInt> {
+    match value {
+        Value::Int(i) => Some(BigInt::from(*i)),
+        Value::Bool(b) => Some(BigInt::from(i64::from(*b))),
+        Value::Ref(id) => {
+            if let HeapData::LongInt(li) = heap.get(*id) {
+                Some(li.inner().clone())
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
 

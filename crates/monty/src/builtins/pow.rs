@@ -269,6 +269,9 @@ fn int_pow_longint(b: i64, e: &BigInt, heap: &mut Heap<impl ResourceTracker>) ->
         } else {
             Ok(Value::Float(0.0))
         }
+    } else if e.is_zero() {
+        // x ** 0 = 1 for all x (including 0 ** 0 = 1)
+        Ok(Value::Int(1))
     } else if b == 0 {
         Ok(Value::Int(0))
     } else if b == 1 {

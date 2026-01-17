@@ -128,6 +128,14 @@ impl LongInt {
         self.0.to_u32()
     }
 
+    /// Tries to convert to usize.
+    ///
+    /// Returns `Some(usize)` if the value fits, `None` otherwise.
+    /// Useful for sequence repetition counts.
+    pub fn to_usize(&self) -> Option<usize> {
+        self.0.to_usize()
+    }
+
     /// Returns the absolute value as a new `LongInt`.
     pub fn abs(&self) -> Self {
         Self(self.0.abs())

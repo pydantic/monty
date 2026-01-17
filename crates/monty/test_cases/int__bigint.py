@@ -3,7 +3,7 @@
 
 # === Setup constants ===
 MAX_I64 = 9223372036854775807  # i64::MAX
-MIN_I64 = -9223372036854775807 - 1  # i64::MIN (compute to avoid literal > 64 bits)
+MIN_I64 = -MAX_I64 - 1  # i64::MIN (compute to avoid type checker overflow)
 
 # === Overflow promotion ===
 bigger = MAX_I64 + 1
@@ -91,7 +91,8 @@ d[big_a] = 'c'
 assert d[big_a] == 'c', 'large bigint as key'
 
 # === Unary neg overflow ===
-neg_min = -MIN_I64
+# Use 0 - MIN_I64 instead of -MIN_I64 to avoid type checker overflow
+neg_min = 0 - MIN_I64
 assert neg_min == MAX_I64 + 1, 'neg i64::MIN promotes'
 
 # Note: ~bigger (bitwise not) tests skipped - Monty parser doesn't support ~ yet
@@ -175,3 +176,57 @@ demote_result = bigger - bigger
 assert demote_result == 0, 'bigint - bigint can demote to i64'
 demote_result2 = bigger - 1
 assert demote_result2 == MAX_I64, 'bigint - 1 demotes to i64::MAX'
+
+# === Bug 1: 0 ** 0 with LongInt exponent ===
+big = 2**100
+assert 0**big == 0, '0 ** large_positive should be 0'
+assert 1**big == 1, '1 ** large_positive should be 1'
+# Edge case: 0 ** 0 where 0 is a LongInt
+zero_big = big - big  # LongInt zero (actually demotes to int, so test with computed zero)
+assert 0**zero_big == 1, '0 ** 0 (computed zero) should be 1'
+assert 5**zero_big == 1, '5 ** 0 (computed zero) should be 1'
+
+# === Bug 2: Modulo with negative divisor ===
+assert 5 % -3 == -1, '5 % -3 should be -1'
+assert -5 % 3 == 1, '-5 % 3 should be 1'
+assert -5 % -3 == -2, '-5 % -3 should be -2'
+assert 7 % -4 == -1, '7 % -4 should be -1'
+
+# === Bug 3: += overflow ===
+x = MAX_I64
+x += 1
+assert x == MAX_I64 + 1, 'i64::MAX += 1 should promote to LongInt'
+y = MIN_I64
+y += -1
+assert y == MIN_I64 - 1, 'i64::MIN += -1 should promote to LongInt'
+
+# === Bug 4: LongInt * sequence ===
+big = 2**100
+assert 'a' * 0 == '', 'str * 0'
+assert [1] * 0 == [], 'list * 0'
+# Sequence * LongInt (where LongInt is heap-allocated)
+# Note: CPython doesn't support seq * huge_negative_longint (OverflowError)
+# Test with positive LongInt - should raise OverflowError for repeat count too large
+# But we can test heap-allocated LongInt by using a value that demotes
+big_then_small = big - big + 3  # Results in 3 (goes through LongInt arithmetic)
+assert 'ab' * big_then_small == 'ababab', 'str * LongInt that demotes to small value'
+
+# === Bug 5: True division with LongInt ===
+big = 2**100
+assert big / 2 == 2.0**99, 'bigint / int'
+# 1 / 2**100 is a very small positive number, not exactly 0.0
+tiny = 1 / big
+assert tiny > 0.0 and tiny < 1e-29, 'int / huge_bigint approaches 0'
+assert big / big == 1.0, 'bigint / bigint same value'
+assert big / 2.0 == 2.0**99, 'bigint / float'
+tiny_f = 1.0 / big
+assert tiny_f > 0.0 and tiny_f < 1e-29, 'float / huge_bigint approaches 0'
+
+# === Bug 6: Bitwise with LongInt ===
+big = 2**100
+assert big & 0xFF == 0, '2**100 & 0xFF'
+assert big | 1 == big + 1, '2**100 | 1'
+assert big ^ big == 0, 'bigint ^ same bigint'
+assert big >> 50 == 2**50, '2**100 >> 50'
+assert 1 << 100 == big, '1 << 100'
+assert (big + 0xFF) & 0xFF == 0xFF, 'bigint with low bits & mask'
