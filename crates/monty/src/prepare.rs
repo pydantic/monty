@@ -176,6 +176,7 @@ impl<'i> Prepare<'i> {
         assigned_names: AHashSet<String>,
         global_names: AHashSet<String>,
         nonlocal_names: AHashSet<String>,
+        implicit_captures: AHashSet<String>,
         global_name_map: AHashMap<String, NamespaceId>,
         enclosing_locals: Option<AHashSet<String>>,
         cell_var_names: AHashSet<String>,
@@ -198,19 +199,26 @@ impl<'i> Prepare<'i> {
         let mut cell_var_map = AHashMap::with_capacity(cell_var_names.len());
         let mut namespace_size = namespace_size;
         for name in cell_var_names {
-            if !nonlocal_names.contains(&name) {
+            if !nonlocal_names.contains(&name) && !implicit_captures.contains(&name) {
                 let slot = namespace_size;
                 namespace_size += 1;
                 cell_var_map.insert(name, NamespaceId::new(slot));
             }
         }
 
-        // Pre-populate free_var_map with nonlocal declarations SECOND (after cell_vars).
+        // Pre-populate free_var_map with nonlocal declarations AND implicit captures SECOND (after cell_vars).
         // Each entry maps name -> namespace slot index where the cell reference will be stored.
         // NOTE: We intentionally do NOT add these to name_map here, because the nonlocal
         // validation in prepare_nodes checks name_map to detect "used before nonlocal declaration"
-        let mut free_var_map = AHashMap::with_capacity(nonlocal_names.len());
+        let free_var_capacity = nonlocal_names.len() + implicit_captures.len();
+        let mut free_var_map = AHashMap::with_capacity(free_var_capacity);
         for name in nonlocal_names {
+            let slot = namespace_size;
+            namespace_size += 1;
+            free_var_map.insert(name, NamespaceId::new(slot));
+        }
+        // Implicit captures (variables accessed from enclosing scope without explicit nonlocal)
+        for name in implicit_captures {
             let slot = namespace_size;
             namespace_size += 1;
             free_var_map.insert(name, NamespaceId::new(slot));
@@ -665,9 +673,17 @@ impl<'i> Prepare<'i> {
         elt: Option<ExprLoc>,
         key_value: Option<(ExprLoc, ExprLoc)>,
     ) -> Result<(Vec<Comprehension>, Option<ExprLoc>, Option<(ExprLoc, ExprLoc)>), ParseError> {
-        // Save current scope state for isolation
+        // Save current scope state for isolation. We need to save and restore:
+        // - name_map: local variable bindings
+        // - names_assigned_in_order: tracks which names have been assigned
+        // - free_var_map: captured variables from enclosing scope (must shadow in comprehension)
+        // - cell_var_map: variables captured by nested functions (must shadow in comprehension)
+        // - enclosing_locals: names from enclosing scope (must shadow to prevent re-capture)
         let saved_name_map = self.name_map.clone();
         let saved_assigned_names = self.names_assigned_in_order.clone();
+        let saved_free_var_map = self.free_var_map.clone();
+        let saved_cell_var_map = self.cell_var_map.clone();
+        let saved_enclosing_locals = self.enclosing_locals.clone();
 
         // Process generators in order
         let mut prepared_generators = Vec::with_capacity(generators.len());
@@ -682,9 +698,21 @@ impl<'i> Prepare<'i> {
             let name_str = self.interner.get_str(comp.target.name_id).to_string();
             let comp_var_id = NamespaceId::new(self.namespace_size);
             self.namespace_size += 1;
-            // Temporarily shadow any existing binding in name_map
+
+            // Temporarily shadow any existing binding. We must update ALL maps that get_id checks
+            // BEFORE name_map, otherwise the wrong scope will be returned.
+            // The lookup order in get_id is: global_declarations, free_var_map, cell_var_map,
+            // assigned_names, enclosing_locals, then name_map. So we must remove from all maps
+            // checked before name_map to ensure the comprehension variable shadows any captured
+            // variable with the same name.
             self.name_map.insert(name_str.clone(), comp_var_id);
-            self.names_assigned_in_order.insert(name_str);
+            self.names_assigned_in_order.insert(name_str.clone());
+            self.free_var_map.remove(&name_str);
+            self.cell_var_map.remove(&name_str);
+            // Also remove from enclosing_locals to prevent get_id from re-capturing the variable
+            if let Some(ref mut enclosing) = self.enclosing_locals {
+                enclosing.remove(&name_str);
+            }
 
             // Create the target identifier with the new scope
             let target =
@@ -713,6 +741,9 @@ impl<'i> Prepare<'i> {
         // Restore scope state - loop variables do not leak to enclosing scope
         self.name_map = saved_name_map;
         self.names_assigned_in_order = saved_assigned_names;
+        self.free_var_map = saved_free_var_map;
+        self.cell_var_map = saved_cell_var_map;
+        self.enclosing_locals = saved_enclosing_locals;
 
         Ok((prepared_generators, prepared_elt, prepared_key_value))
     }
@@ -770,6 +801,15 @@ impl<'i> Prepare<'i> {
             locals
         };
 
+        // Filter potential_captures to get actual implicit captures.
+        // Only names that are ALSO in enclosing_locals are true implicit captures.
+        // Names NOT in enclosing_locals are either builtins or globals (handled at runtime).
+        let implicit_captures: AHashSet<String> = scope_info
+            .potential_captures
+            .into_iter()
+            .filter(|name| enclosing_locals.contains(name))
+            .collect();
+
         // Pass 2: Create child preparer for function body with scope info
         let mut inner_prepare = Prepare::new_function(
             body.len(),
@@ -777,6 +817,7 @@ impl<'i> Prepare<'i> {
             scope_info.assigned_names,
             scope_info.global_names,
             scope_info.nonlocal_names,
+            implicit_captures,
             global_name_map,
             Some(enclosing_locals),
             scope_info.cell_var_names,
@@ -1125,7 +1166,6 @@ impl<'i> Prepare<'i> {
 ///
 /// This struct holds the scope-related information needed for the second pass
 /// of function preparation and for closure analysis.
-#[expect(clippy::struct_field_names)] // Field names are descriptive and consistent with Python terminology
 struct FunctionScopeInfo {
     /// Names declared as `global`
     global_names: AHashSet<String>,
@@ -1135,6 +1175,11 @@ struct FunctionScopeInfo {
     assigned_names: AHashSet<String>,
     /// Names that are captured by nested functions (must be stored in cells)
     cell_var_names: AHashSet<String>,
+    /// Names that are referenced but not local, global, or nonlocal.
+    /// These are POTENTIAL implicit captures - they may be captures from an enclosing function
+    /// OR they may be builtin/global reads. The actual implicit captures are determined
+    /// by filtering against enclosing_locals in new_function.
+    potential_captures: AHashSet<String>,
 }
 
 /// Scans a function body to collect scope information (first pass of two-pass preparation).
@@ -1156,6 +1201,7 @@ fn collect_function_scope_info(
     let mut nonlocal_names = AHashSet::new();
     let mut assigned_names = AHashSet::new();
     let mut cell_var_names = AHashSet::new();
+    let mut referenced_names = AHashSet::new();
 
     // First pass: collect global, nonlocal, and assigned names
     for node in nodes {
@@ -1169,9 +1215,14 @@ fn collect_function_scope_info(
     }
 
     // Build the set of our locals: params + assigned_names (excluding globals)
-    let our_locals: AHashSet<String> = params
+    let param_names: AHashSet<String> = params
         .iter()
         .map(|string_id| interner.get_str(*string_id).to_string())
+        .collect();
+
+    let our_locals: AHashSet<String> = param_names
+        .iter()
+        .cloned()
         .chain(assigned_names.iter().cloned())
         .filter(|name| !global_names.contains(name))
         .collect();
@@ -1181,11 +1232,31 @@ fn collect_function_scope_info(
         collect_cell_vars_from_node(node, &our_locals, &mut cell_var_names, interner);
     }
 
+    // Third pass: collect all referenced names to identify potential implicit captures.
+    // These are names that might be captured from an enclosing function scope.
+    // We can't fully determine implicit captures here because we don't know yet what
+    // the enclosing scope's locals are - that's determined later when we call new_function.
+    for node in nodes {
+        collect_referenced_names_from_node(node, &mut referenced_names, interner);
+    }
+
+    // Potential implicit captures are names that are:
+    // - Referenced in the function body
+    // - Not local (not params, not assigned)
+    // - Not declared global
+    // - Not declared nonlocal (those are handled separately)
+    // The actual implicit captures will be filtered against enclosing_locals in new_function.
+    let potential_captures: AHashSet<String> = referenced_names
+        .into_iter()
+        .filter(|name| !our_locals.contains(name) && !global_names.contains(name) && !nonlocal_names.contains(name))
+        .collect();
+
     FunctionScopeInfo {
         global_names,
         nonlocal_names,
         assigned_names,
         cell_var_names,
+        potential_captures,
     }
 }
 
@@ -1538,35 +1609,42 @@ fn collect_referenced_names_from_comprehension(
     referenced: &mut AHashSet<String>,
     interner: &InternerBuilder,
 ) {
-    // Track loop variable names (these are local, not references to enclosing scope)
+    // Track loop variable names (these are local to the comprehension)
     let mut comp_locals: AHashSet<String> = AHashSet::new();
 
+    // Collect references from element/filter expressions separately.
+    // These CAN use comprehension locals, so we need to filter those out.
+    let mut inner_refs: AHashSet<String> = AHashSet::new();
+
     for comp in generators {
-        // Iterator expression can reference enclosing scope (but not this loop's variable yet)
+        // Iterator expression ALWAYS references enclosing scope (evaluated before
+        // the loop variable is defined). These go directly into `referenced`.
         collect_referenced_names_from_expr(&comp.iter, referenced, interner);
 
         // Add this generator's target to local set
         comp_locals.insert(interner.get_str(comp.target.name_id).to_string());
 
-        // Filter conditions can see prior loop variables
+        // Filter conditions can see prior loop variables - collect separately
         for cond in &comp.ifs {
-            collect_referenced_names_from_expr(cond, referenced, interner);
+            collect_referenced_names_from_expr(cond, &mut inner_refs, interner);
         }
     }
 
-    // Element expression(s) can see all loop variables
+    // Element expression(s) can see all loop variables - collect separately
     if let Some(e) = elt {
-        collect_referenced_names_from_expr(e, referenced, interner);
+        collect_referenced_names_from_expr(e, &mut inner_refs, interner);
     }
     if let Some((k, v)) = key_value {
-        collect_referenced_names_from_expr(k, referenced, interner);
-        collect_referenced_names_from_expr(v, referenced, interner);
+        collect_referenced_names_from_expr(k, &mut inner_refs, interner);
+        collect_referenced_names_from_expr(v, &mut inner_refs, interner);
     }
 
-    // Remove comprehension-local names from the referenced set
-    // (they are not references to enclosing scope)
-    for local in comp_locals {
-        referenced.remove(&local);
+    // Add inner references that are NOT comprehension-locals to the outer referenced set.
+    // Names that ARE comp_locals refer to the comprehension's loop variable, not enclosing scope.
+    for name in inner_refs {
+        if !comp_locals.contains(&name) {
+            referenced.insert(name);
+        }
     }
 }
 
