@@ -20,7 +20,9 @@ use crate::{
     builtins::Builtins,
     exception_private::ExcType,
     exception_public::{MontyException, StackFrame},
-    expressions::{Callable, Expr, ExprLoc, Identifier, Literal, NameScope, PreparedFunctionDef, PreparedNode},
+    expressions::{
+        Callable, Comprehension, Expr, ExprLoc, Identifier, Literal, NameScope, PreparedFunctionDef, PreparedNode,
+    },
     fstring::{ConversionFlag, FStringPart, FormatSpec, encode_format_spec},
     function::Function,
     intern::Interns,
@@ -536,6 +538,18 @@ impl<'a> Compiler<'a> {
                 // Compile each part and build the f-string
                 let part_count = self.compile_fstring_parts(parts)?;
                 self.code.emit_u16(Opcode::BuildFString, part_count);
+            }
+
+            Expr::ListComp { elt, generators } => {
+                self.compile_list_comp(elt, generators)?;
+            }
+
+            Expr::SetComp { elt, generators } => {
+                self.compile_set_comp(elt, generators)?;
+            }
+
+            Expr::DictComp { key, value, generators } => {
+                self.compile_dict_comp(key, value, generators)?;
             }
         }
         Ok(())
@@ -1179,6 +1193,138 @@ impl<'a> Compiler<'a> {
         if !or_else.is_empty() {
             self.compile_block(or_else)?;
         }
+
+        Ok(())
+    }
+
+    // ========================================================================
+    // Comprehension Compilation
+    // ========================================================================
+
+    /// Compiles a list comprehension: `[elt for target in iter if cond...]`
+    ///
+    /// Bytecode structure:
+    /// ```text
+    /// BUILD_LIST 0          ; empty result
+    /// <compile first iter>
+    /// GET_ITER
+    /// loop_start:
+    ///   FOR_ITER end_loop
+    ///   STORE_LOCAL target
+    ///   <compile filters - jump back to loop_start if any fails>
+    ///   [nested generators...]
+    ///   <compile elt>
+    ///   LIST_APPEND depth
+    ///   JUMP loop_start
+    /// end_loop:
+    /// ; result list on stack
+    /// ```
+    fn compile_list_comp(&mut self, elt: &ExprLoc, generators: &[Comprehension]) -> Result<(), CompileError> {
+        // Build empty list
+        self.code.emit_u16(Opcode::BuildList, 0);
+
+        // Compile the nested generators, which will eventually append to the list
+        let depth = u8::try_from(generators.len()).expect("too many generators in list comprehension");
+        self.compile_comprehension_generators(generators, 0, |compiler| {
+            compiler.compile_expr(elt)?;
+            compiler.code.emit_u8(Opcode::ListAppend, depth);
+            Ok(())
+        })?;
+
+        Ok(())
+    }
+
+    /// Compiles a set comprehension: `{elt for target in iter if cond...}`
+    fn compile_set_comp(&mut self, elt: &ExprLoc, generators: &[Comprehension]) -> Result<(), CompileError> {
+        // Build empty set
+        self.code.emit_u16(Opcode::BuildSet, 0);
+
+        // Compile the nested generators, which will eventually add to the set
+        let depth = u8::try_from(generators.len()).expect("too many generators in set comprehension");
+        self.compile_comprehension_generators(generators, 0, |compiler| {
+            compiler.compile_expr(elt)?;
+            compiler.code.emit_u8(Opcode::SetAdd, depth);
+            Ok(())
+        })?;
+
+        Ok(())
+    }
+
+    /// Compiles a dict comprehension: `{key: value for target in iter if cond...}`
+    fn compile_dict_comp(
+        &mut self,
+        key: &ExprLoc,
+        value: &ExprLoc,
+        generators: &[Comprehension],
+    ) -> Result<(), CompileError> {
+        // Build empty dict
+        self.code.emit_u16(Opcode::BuildDict, 0);
+
+        // Compile the nested generators, which will eventually set items in the dict
+        let depth = u8::try_from(generators.len()).expect("too many generators in dict comprehension");
+        self.compile_comprehension_generators(generators, 0, |compiler| {
+            compiler.compile_expr(key)?;
+            compiler.compile_expr(value)?;
+            compiler.code.emit_u8(Opcode::DictSetItem, depth);
+            Ok(())
+        })?;
+
+        Ok(())
+    }
+
+    /// Recursively compiles comprehension generators (the for/if clauses).
+    ///
+    /// For each generator:
+    /// 1. Compile the iterator expression and get iterator
+    /// 2. Start loop: FOR_ITER to get next value or exit
+    /// 3. Store to target variable
+    /// 4. Compile filter conditions (jump back to loop start if any fails)
+    /// 5. Either recurse for inner generator, or call the body callback
+    /// 6. Jump back to loop start
+    ///
+    /// The `body_fn` callback is called at the innermost level to emit the element/key-value code.
+    fn compile_comprehension_generators(
+        &mut self,
+        generators: &[Comprehension],
+        index: usize,
+        body_fn: impl FnOnce(&mut Self) -> Result<(), CompileError>,
+    ) -> Result<(), CompileError> {
+        let generator = &generators[index];
+
+        // Compile iterator expression
+        self.compile_expr(&generator.iter)?;
+        self.code.emit(Opcode::GetIter);
+
+        // Loop start
+        let loop_start = self.code.current_offset();
+
+        // FOR_ITER: advance iterator or jump to end
+        let end_jump = self.code.emit_jump(Opcode::ForIter);
+
+        // Store current value to target
+        self.compile_store(&generator.target);
+
+        // Compile filter conditions - jump back to loop start if any fails
+        for cond in &generator.ifs {
+            self.compile_expr(cond)?;
+            // If condition is false, skip to next iteration
+            self.code.emit_jump_to(Opcode::JumpIfFalse, loop_start);
+        }
+
+        // Either recurse for inner generator, or emit body
+        if index + 1 < generators.len() {
+            // Recurse for inner generator
+            self.compile_comprehension_generators(generators, index + 1, body_fn)?;
+        } else {
+            // Innermost level - emit body (the element/key-value expression and append/add/set)
+            body_fn(self)?;
+        }
+
+        // Jump back to loop start
+        self.code.emit_jump_to(Opcode::Jump, loop_start);
+
+        // End of loop
+        self.code.patch_jump(end_jump);
 
         Ok(())
     }

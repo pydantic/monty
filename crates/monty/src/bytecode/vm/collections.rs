@@ -263,6 +263,104 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     }
 
     // ========================================================================
+    // Comprehension Building
+    // ========================================================================
+
+    /// Appends TOS to list for comprehension.
+    ///
+    /// Stack: [..., list, iter1, ..., iterN, value] -> [..., list, iter1, ..., iterN]
+    /// The `depth` parameter is the number of iterators between the list and the value.
+    /// List is at stack position: len - 2 - depth (0-indexed from bottom).
+    pub(super) fn list_append(&mut self, depth: usize) -> Result<(), RunError> {
+        let value = self.pop();
+        let stack_len = self.stack.len();
+        let list_pos = stack_len - 1 - depth;
+
+        // Get the list reference
+        let Value::Ref(list_id) = self.stack[list_pos] else {
+            value.drop_with_heap(self.heap);
+            return Err(RunError::internal("ListAppend: expected list ref on stack"));
+        };
+
+        // Append to the list using with_entry_mut to handle proper contains_refs tracking
+        self.heap.with_entry_mut(list_id, |heap, data| {
+            if let HeapData::List(list) = data {
+                list.append(heap, value);
+                Ok(())
+            } else {
+                value.drop_with_heap(heap);
+                Err(RunError::internal("ListAppend: expected list on heap"))
+            }
+        })
+    }
+
+    /// Adds TOS to set for comprehension.
+    ///
+    /// Stack: [..., set, iter1, ..., iterN, value] -> [..., set, iter1, ..., iterN]
+    /// The `depth` parameter is the number of iterators between the set and the value.
+    /// May raise TypeError if value is unhashable.
+    pub(super) fn set_add(&mut self, depth: usize) -> Result<(), RunError> {
+        let value = self.pop();
+        let stack_len = self.stack.len();
+        let set_pos = stack_len - 1 - depth;
+
+        // Get the set reference
+        let Value::Ref(set_id) = self.stack[set_pos] else {
+            value.drop_with_heap(self.heap);
+            return Err(RunError::internal("SetAdd: expected set ref on stack"));
+        };
+
+        // Add to the set using with_entry_mut to avoid borrow conflicts
+        self.heap.with_entry_mut(set_id, |heap, data| {
+            if let HeapData::Set(set) = data {
+                set.add(value, heap, self.interns)
+            } else {
+                value.drop_with_heap(heap);
+                Err(RunError::internal("SetAdd: expected set on heap"))
+            }
+        })?;
+
+        Ok(())
+    }
+
+    /// Sets dict[key] = value for comprehension.
+    ///
+    /// Stack: [..., dict, iter1, ..., iterN, key, value] -> [..., dict, iter1, ..., iterN]
+    /// The `depth` parameter is the number of iterators between the dict and the key-value pair.
+    /// May raise TypeError if key is unhashable.
+    pub(super) fn dict_set_item(&mut self, depth: usize) -> Result<(), RunError> {
+        let value = self.pop();
+        let key = self.pop();
+        let stack_len = self.stack.len();
+        let dict_pos = stack_len - 1 - depth;
+
+        // Get the dict reference
+        let Value::Ref(dict_id) = self.stack[dict_pos] else {
+            key.drop_with_heap(self.heap);
+            value.drop_with_heap(self.heap);
+            return Err(RunError::internal("DictSetItem: expected dict ref on stack"));
+        };
+
+        // Set item in the dict using with_entry_mut to avoid borrow conflicts
+        let old_value = self.heap.with_entry_mut(dict_id, |heap, data| {
+            if let HeapData::Dict(dict) = data {
+                dict.set(key, value, heap, self.interns)
+            } else {
+                key.drop_with_heap(heap);
+                value.drop_with_heap(heap);
+                Err(RunError::internal("DictSetItem: expected dict on heap"))
+            }
+        })?;
+
+        // Drop old value if key already existed
+        if let Some(old) = old_value {
+            old.drop_with_heap(self.heap);
+        }
+
+        Ok(())
+    }
+
+    // ========================================================================
     // Unpacking
     // ========================================================================
 

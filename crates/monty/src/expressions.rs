@@ -174,6 +174,46 @@ pub enum Expr {
         body: Box<ExprLoc>,
         orelse: Box<ExprLoc>,
     },
+    /// List comprehension: `[elt for target in iter if cond...]`
+    ///
+    /// Builds a new list by iterating and optionally filtering. Loop variables
+    /// are scoped to the comprehension and do not leak to the enclosing scope.
+    ListComp {
+        elt: Box<ExprLoc>,
+        generators: Vec<Comprehension>,
+    },
+    /// Set comprehension: `{elt for target in iter if cond...}`
+    ///
+    /// Builds a new set by iterating and optionally filtering. Duplicate values
+    /// are deduplicated. Loop variables are scoped to the comprehension.
+    SetComp {
+        elt: Box<ExprLoc>,
+        generators: Vec<Comprehension>,
+    },
+    /// Dict comprehension: `{key: value for target in iter if cond...}`
+    ///
+    /// Builds a new dict by iterating and optionally filtering. Later values
+    /// overwrite earlier ones for duplicate keys. Loop variables are scoped
+    /// to the comprehension.
+    DictComp {
+        key: Box<ExprLoc>,
+        value: Box<ExprLoc>,
+        generators: Vec<Comprehension>,
+    },
+}
+
+/// A generator clause in a comprehension: `for target in iter [if cond1] [if cond2]...`
+///
+/// Represents one `for` clause with zero or more `if` filters. Multiple generators
+/// create nested iteration (the rightmost varies fastest).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Comprehension {
+    /// Loop variable (single identifier; tuple unpacking not yet supported).
+    pub target: Identifier,
+    /// Iterable expression to loop over.
+    pub iter: ExprLoc,
+    /// Zero or more filter conditions (all must be truthy for the element to be included).
+    pub ifs: Vec<ExprLoc>,
 }
 
 impl Expr {

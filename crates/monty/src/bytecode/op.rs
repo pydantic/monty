@@ -199,6 +199,27 @@ pub enum Opcode {
     /// when the mapping contains non-string keys.
     DictMerge,
 
+    // === Comprehension Building ===
+    /// Append TOS to list for comprehension. Operand: u8 depth (number of iterators).
+    ///
+    /// Stack: [..., list, iter1, ..., iterN, value] -> [..., list, iter1, ..., iterN]
+    /// Pops value (TOS), appends to list at stack position (len - 2 - depth).
+    /// Depth equals the number of nested iterators (generators) in the comprehension.
+    ListAppend,
+    /// Add TOS to set for comprehension. Operand: u8 depth (number of iterators).
+    ///
+    /// Stack: [..., set, iter1, ..., iterN, value] -> [..., set, iter1, ..., iterN]
+    /// Pops value (TOS), adds to set at stack position (len - 2 - depth).
+    /// May raise TypeError if value is unhashable.
+    SetAdd,
+    /// Set dict[key] = value for comprehension. Operand: u8 depth (number of iterators).
+    ///
+    /// Stack: [..., dict, iter1, ..., iterN, key, value] -> [..., dict, iter1, ..., iterN]
+    /// Pops value (TOS) and key (TOS-1), sets dict[key] = value.
+    /// Dict is at stack position (len - 3 - depth).
+    /// May raise TypeError if key is unhashable.
+    DictSetItem,
+
     // === Subscript & Attribute ===
     /// a[b]: pop index, pop obj, push result.
     BinarySubscr,

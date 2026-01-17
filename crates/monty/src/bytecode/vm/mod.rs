@@ -703,6 +703,19 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let func_name_id = fetch_u16!(cached_frame);
                     try_catch_sync!(self, cached_frame, self.dict_merge(func_name_id));
                 }
+                // Comprehension Building - append/add/set items during iteration
+                Opcode::ListAppend => {
+                    let depth = usize::from(fetch_u8!(cached_frame));
+                    try_catch_sync!(self, cached_frame, self.list_append(depth));
+                }
+                Opcode::SetAdd => {
+                    let depth = usize::from(fetch_u8!(cached_frame));
+                    try_catch_sync!(self, cached_frame, self.set_add(depth));
+                }
+                Opcode::DictSetItem => {
+                    let depth = usize::from(fetch_u8!(cached_frame));
+                    try_catch_sync!(self, cached_frame, self.dict_set_item(depth));
+                }
                 // Subscript & Attribute - route through exception handling
                 Opcode::BinarySubscr => {
                     let index = self.pop();

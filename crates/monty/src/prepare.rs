@@ -4,7 +4,9 @@ use ahash::{AHashMap, AHashSet};
 
 use crate::{
     args::ArgExprs,
-    expressions::{Callable, Expr, ExprLoc, Identifier, Literal, NameScope, Node, PreparedFunctionDef, PreparedNode},
+    expressions::{
+        Callable, Comprehension, Expr, ExprLoc, Identifier, Literal, NameScope, Node, PreparedFunctionDef, PreparedNode,
+    },
     fstring::{FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
     namespace::NamespaceId,
@@ -591,6 +593,29 @@ impl<'i> Prepare<'i> {
                 body: Box::new(self.prepare_expression(*body)?),
                 orelse: Box::new(self.prepare_expression(*orelse)?),
             },
+            Expr::ListComp { elt, generators } => {
+                let (generators, elt, _) = self.prepare_comprehension(generators, Some(*elt), None)?;
+                Expr::ListComp {
+                    elt: Box::new(elt.expect("list comp must have elt")),
+                    generators,
+                }
+            }
+            Expr::SetComp { elt, generators } => {
+                let (generators, elt, _) = self.prepare_comprehension(generators, Some(*elt), None)?;
+                Expr::SetComp {
+                    elt: Box::new(elt.expect("set comp must have elt")),
+                    generators,
+                }
+            }
+            Expr::DictComp { key, value, generators } => {
+                let (generators, _, key_value) = self.prepare_comprehension(generators, None, Some((*key, *value)))?;
+                let (key, value) = key_value.expect("dict comp must have key/value");
+                Expr::DictComp {
+                    key: Box::new(key),
+                    value: Box::new(value),
+                    generators,
+                }
+            }
         };
 
         // Optimization: Transform `(x % n) == value` with any constant right-hand side into a
@@ -620,6 +645,76 @@ impl<'i> Prepare<'i> {
         }
 
         Ok(ExprLoc { position, expr })
+    }
+
+    /// Prepares a comprehension with scope isolation for loop variables.
+    ///
+    /// Comprehension loop variables are isolated from the enclosing scope - they do not
+    /// leak after the comprehension completes. This is achieved by:
+    /// 1. Saving the current name_map and assigned state
+    /// 2. Processing generators in order (each generator's iter can see prior loop vars)
+    /// 3. Processing the element expression(s)
+    /// 4. Restoring the saved state so loop vars don't affect enclosing scope
+    ///
+    /// For list/set comprehensions, pass `elt` as Some and `key_value` as None.
+    /// For dict comprehensions, pass `elt` as None and `key_value` as Some((key, value)).
+    #[expect(clippy::type_complexity)]
+    fn prepare_comprehension(
+        &mut self,
+        generators: Vec<Comprehension>,
+        elt: Option<ExprLoc>,
+        key_value: Option<(ExprLoc, ExprLoc)>,
+    ) -> Result<(Vec<Comprehension>, Option<ExprLoc>, Option<(ExprLoc, ExprLoc)>), ParseError> {
+        // Save current scope state for isolation
+        let saved_name_map = self.name_map.clone();
+        let saved_assigned_names = self.names_assigned_in_order.clone();
+
+        // Process generators in order
+        let mut prepared_generators = Vec::with_capacity(generators.len());
+        for comp in generators {
+            // For the first generator, the iter expression is evaluated in the enclosing scope.
+            // For subsequent generators, the iter expression can see prior loop variables.
+            let iter = self.prepare_expression(comp.iter)?;
+
+            // Force allocation of a NEW slot for the comprehension loop variable.
+            // This is critical for scope isolation: the loop variable must NOT reuse
+            // any existing slot from the enclosing scope.
+            let name_str = self.interner.get_str(comp.target.name_id).to_string();
+            let comp_var_id = NamespaceId::new(self.namespace_size);
+            self.namespace_size += 1;
+            // Temporarily shadow any existing binding in name_map
+            self.name_map.insert(name_str.clone(), comp_var_id);
+            self.names_assigned_in_order.insert(name_str);
+
+            // Create the target identifier with the new scope
+            let target =
+                Identifier::new_with_scope(comp.target.name_id, comp.target.position, comp_var_id, NameScope::Local);
+
+            // Prepare filter conditions (can see this loop variable)
+            let ifs = comp
+                .ifs
+                .into_iter()
+                .map(|cond| self.prepare_expression(cond))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            prepared_generators.push(Comprehension { target, iter, ifs });
+        }
+
+        // Prepare the element expression(s) - can see all loop variables
+        let prepared_elt = match elt {
+            Some(e) => Some(self.prepare_expression(e)?),
+            None => None,
+        };
+        let prepared_key_value = match key_value {
+            Some((k, v)) => Some((self.prepare_expression(k)?, self.prepare_expression(v)?)),
+            None => None,
+        };
+
+        // Restore scope state - loop variables do not leak to enclosing scope
+        self.name_map = saved_name_map;
+        self.names_assigned_in_order = saved_assigned_names;
+
+        Ok((prepared_generators, prepared_elt, prepared_key_value))
     }
 
     /// Prepares a function definition using a two-pass approach for correct scope resolution.
@@ -1423,6 +1518,55 @@ fn collect_referenced_names_from_expr(
             collect_referenced_names_from_expr(body, referenced, interner);
             collect_referenced_names_from_expr(orelse, referenced, interner);
         }
+        Expr::ListComp { elt, generators } | Expr::SetComp { elt, generators } => {
+            collect_referenced_names_from_comprehension(generators, Some(elt), None, referenced, interner);
+        }
+        Expr::DictComp { key, value, generators } => {
+            collect_referenced_names_from_comprehension(generators, None, Some((key, value)), referenced, interner);
+        }
+    }
+}
+
+/// Collects referenced names from comprehension expressions.
+///
+/// Handles the special scoping rules: loop variables are local to the comprehension,
+/// so we collect references from iterators and conditions but exclude loop variable names.
+fn collect_referenced_names_from_comprehension(
+    generators: &[Comprehension],
+    elt: Option<&ExprLoc>,
+    key_value: Option<(&ExprLoc, &ExprLoc)>,
+    referenced: &mut AHashSet<String>,
+    interner: &InternerBuilder,
+) {
+    // Track loop variable names (these are local, not references to enclosing scope)
+    let mut comp_locals: AHashSet<String> = AHashSet::new();
+
+    for comp in generators {
+        // Iterator expression can reference enclosing scope (but not this loop's variable yet)
+        collect_referenced_names_from_expr(&comp.iter, referenced, interner);
+
+        // Add this generator's target to local set
+        comp_locals.insert(interner.get_str(comp.target.name_id).to_string());
+
+        // Filter conditions can see prior loop variables
+        for cond in &comp.ifs {
+            collect_referenced_names_from_expr(cond, referenced, interner);
+        }
+    }
+
+    // Element expression(s) can see all loop variables
+    if let Some(e) = elt {
+        collect_referenced_names_from_expr(e, referenced, interner);
+    }
+    if let Some((k, v)) = key_value {
+        collect_referenced_names_from_expr(k, referenced, interner);
+        collect_referenced_names_from_expr(v, referenced, interner);
+    }
+
+    // Remove comprehension-local names from the referenced set
+    // (they are not references to enclosing scope)
+    for local in comp_locals {
+        referenced.remove(&local);
     }
 }
 
