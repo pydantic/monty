@@ -8,6 +8,14 @@ use crate::{
     exception_private::{ExceptionRaise, RawStackFrame, RunError, SimpleException},
 };
 
+/// Threshold in bytes above which `check_large_result` is called.
+///
+/// Operations that may produce results larger than this threshold (100KB) should call
+/// `check_large_result` before performing the operation. This prevents DoS attacks
+/// where operations like `2 ** 10_000_000` allocate huge amounts of memory before
+/// the allocation check can catch them.
+pub const LARGE_RESULT_THRESHOLD: usize = 100_000;
+
 /// Error returned when a resource limit is exceeded during execution.
 ///
 /// This allows the sandbox to enforce strict limits on allocation count,
@@ -145,6 +153,19 @@ pub trait ResourceTracker: fmt::Debug {
     /// # Arguments
     /// * `current_depth` - Current call stack depth (before the new frame is pushed)
     fn check_recursion_depth(&self, current_depth: usize) -> Result<(), ResourceError>;
+
+    /// Called before operations that may produce large results (>100KB).
+    ///
+    /// This allows pre-emptive rejection of operations like `2 ** 10_000_000`
+    /// before the memory is actually allocated. The check only happens for
+    /// estimated result sizes above `LARGE_RESULT_THRESHOLD` to avoid overhead
+    /// on small operations.
+    ///
+    /// # Arguments
+    /// * `estimated_bytes` - Approximate size of the result in bytes
+    ///
+    /// Returns `Ok(())` to allow the operation, or `Err(ResourceError)` to reject.
+    fn check_large_result(&self, estimated_bytes: usize) -> Result<(), ResourceError>;
 }
 
 /// Default GC interval for `NoLimitTracker` - run GC every 100,000 allocations.
@@ -206,6 +227,12 @@ impl ResourceTracker for NoLimitTracker {
         } else {
             Ok(())
         }
+    }
+
+    #[inline]
+    fn check_large_result(&self, _estimated_bytes: usize) -> Result<(), ResourceError> {
+        // No limit - always allow operations regardless of result size
+        Ok(())
     }
 }
 
@@ -395,6 +422,20 @@ impl ResourceTracker for LimitedTracker {
                 return Err(ResourceError::Recursion {
                     limit: max,
                     depth: current_depth + 1,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn check_large_result(&self, estimated_bytes: usize) -> Result<(), ResourceError> {
+        // Check if this would exceed memory limit
+        if let Some(max) = self.limits.max_memory {
+            let new_memory = self.current_memory.saturating_add(estimated_bytes);
+            if new_memory > max {
+                return Err(ResourceError::Memory {
+                    limit: max,
+                    used: new_memory,
                 });
             }
         }

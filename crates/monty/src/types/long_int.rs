@@ -84,14 +84,15 @@ impl LongInt {
     /// Estimates memory size in bytes.
     ///
     /// Used for resource tracking. The actual size includes the Vec overhead
-    /// plus the digit storage.
+    /// plus the digit storage. Rounds up bits to bytes to avoid underestimating
+    /// (e.g., 1 bit = 1 byte, not 0 bytes).
     pub fn estimate_size(&self) -> usize {
         // Each BigInt digit is typically a u32 or u64
         // We estimate based on the number of significant bits
         let bits = self.0.bits();
-        // Convert bits to bytes, add overhead for Vec and sign
+        // Convert bits to bytes (round up), add overhead for Vec and sign
         // On 32-bit platforms, truncate to usize::MAX if bits is too large
-        let bit_bytes = usize::try_from(bits).unwrap_or(usize::MAX) / 8;
+        let bit_bytes = usize::try_from(bits).unwrap_or(usize::MAX).saturating_add(7) / 8;
         bit_bytes + std::mem::size_of::<BigInt>()
     }
 
@@ -139,6 +140,47 @@ impl LongInt {
     /// Returns the absolute value as a new `LongInt`.
     pub fn abs(&self) -> Self {
         Self(self.0.abs())
+    }
+
+    /// Returns the number of significant bits in this LongInt.
+    ///
+    /// Zero returns 0 bits. For non-zero values, this is the position of the
+    /// highest set bit plus one.
+    pub fn bits(&self) -> u64 {
+        self.0.bits()
+    }
+
+    /// Estimates the result size of `base ** exponent` in bytes.
+    ///
+    /// Returns `None` on overflow, which indicates an astronomically large result
+    /// that should likely be rejected. For special cases (0, 1, -1), the actual
+    /// result is small regardless of exponent, so callers should check for those
+    /// before calling this function.
+    pub fn estimate_pow_bytes(base_bits: u64, exponent: u64) -> Option<usize> {
+        // result_bits ≈ base_bits * exponent
+        let result_bits = base_bits.checked_mul(exponent)?;
+        // Round up to bytes
+        usize::try_from(result_bits.div_ceil(8)).ok()
+    }
+
+    /// Estimates the result size of `value << shift_amount` in bytes.
+    ///
+    /// Returns `None` on overflow, which indicates an astronomically large result.
+    /// For zero values, the result is always zero regardless of shift amount.
+    pub fn estimate_lshift_bytes(value_bits: u64, shift_amount: u64) -> Option<usize> {
+        let result_bits = value_bits.checked_add(shift_amount)?;
+        // Round up to bytes
+        usize::try_from(result_bits.div_ceil(8)).ok()
+    }
+
+    /// Estimates the result size of `a * b` in bytes.
+    ///
+    /// Returns `None` on overflow. The result of multiplying two numbers has at most
+    /// `a_bits + b_bits` bits.
+    pub fn estimate_mult_bytes(a_bits: u64, b_bits: u64) -> Option<usize> {
+        let result_bits = a_bits.checked_add(b_bits)?;
+        // Round up to bytes
+        usize::try_from(result_bits.div_ceil(8)).ok()
     }
 }
 

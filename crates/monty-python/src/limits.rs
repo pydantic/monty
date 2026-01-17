@@ -168,4 +168,8 @@ impl<T: ResourceTracker> ResourceTracker for PySignalTracker<T> {
     fn check_recursion_depth(&self, current_depth: usize) -> Result<(), ResourceError> {
         self.inner.check_recursion_depth(current_depth)
     }
+
+    fn check_large_result(&self, estimated_bytes: usize) -> Result<(), ResourceError> {
+        self.inner.check_large_result(estimated_bytes)
+    }
 }

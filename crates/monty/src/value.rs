@@ -17,7 +17,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId},
     intern::{BytesId, ExtFunctionId, FunctionId, Interns, StringId},
-    resource::ResourceTracker,
+    resource::{LARGE_RESULT_THRESHOLD, ResourceTracker},
     types::{LongInt, PyTrait, Type, bytes::bytes_repr_fmt, str::string_repr_fmt},
 };
 
@@ -743,6 +743,14 @@ impl PyTrait for Value {
             // Int * LongInt
             (Self::Int(a), Self::Ref(id)) => {
                 if let HeapData::LongInt(li) = heap.get(*id) {
+                    // Check size before computing to prevent DoS
+                    let a_bits = i64_bits(*a);
+                    let b_bits = li.bits();
+                    if let Some(estimated) = LongInt::estimate_mult_bytes(a_bits, b_bits)
+                        && estimated > LARGE_RESULT_THRESHOLD
+                    {
+                        heap.tracker().check_large_result(estimated)?;
+                    }
                     let result = LongInt::from(*a) * LongInt::new(li.inner().clone());
                     Ok(Some(result.into_value(heap)?))
                 } else {
@@ -754,6 +762,14 @@ impl PyTrait for Value {
             // LongInt * Int
             (Self::Ref(id), Self::Int(b)) => {
                 if let HeapData::LongInt(li) = heap.get(*id) {
+                    // Check size before computing to prevent DoS
+                    let a_bits = li.bits();
+                    let b_bits = i64_bits(*b);
+                    if let Some(estimated) = LongInt::estimate_mult_bytes(a_bits, b_bits)
+                        && estimated > LARGE_RESULT_THRESHOLD
+                    {
+                        heap.tracker().check_large_result(estimated)?;
+                    }
                     let result = LongInt::new(li.inner().clone()) * LongInt::from(*b);
                     Ok(Some(result.into_value(heap)?))
                 } else {
@@ -767,7 +783,23 @@ impl PyTrait for Value {
                 let is_longint1 = matches!(heap.get(*id1), HeapData::LongInt(_));
                 let is_longint2 = matches!(heap.get(*id2), HeapData::LongInt(_));
                 if is_longint1 && is_longint2 {
-                    // LongInt * LongInt
+                    // LongInt * LongInt - get bits for size check
+                    let a_bits = if let HeapData::LongInt(li) = heap.get(*id1) {
+                        li.bits()
+                    } else {
+                        0
+                    };
+                    let b_bits = if let HeapData::LongInt(li) = heap.get(*id2) {
+                        li.bits()
+                    } else {
+                        0
+                    };
+                    // Check size before computing to prevent DoS
+                    if let Some(estimated) = LongInt::estimate_mult_bytes(a_bits, b_bits)
+                        && estimated > LARGE_RESULT_THRESHOLD
+                    {
+                        heap.tracker().check_large_result(estimated)?;
+                    }
                     Ok(heap.with_two(*id1, *id2, |heap, left, right| {
                         if let (HeapData::LongInt(a), HeapData::LongInt(b)) = (left, right) {
                             let result = LongInt::new(a.inner() * b.inner());
@@ -1133,6 +1165,8 @@ impl PyTrait for Value {
                             Ok(Some(Self::Int(result)))
                         } else {
                             // Overflow - promote to LongInt
+                            // Check size before computing to prevent DoS
+                            check_pow_size(i64_bits(*base), u64::from(exp_u32), heap)?;
                             let bi = BigInt::from(*base).pow(exp_u32);
                             Ok(Some(LongInt::new(bi).into_value(heap)?))
                         }
@@ -1142,6 +1176,8 @@ impl PyTrait for Value {
                         // Safety: exp >= 0 is guaranteed by the outer if condition
                         #[expect(clippy::cast_sign_loss)]
                         let exp_u64 = *exp as u64;
+                        // Check size before computing to prevent DoS
+                        check_pow_size(i64_bits(*base), exp_u64, heap)?;
                         let bi = bigint_pow(BigInt::from(*base), exp_u64);
                         Ok(Some(LongInt::new(bi).into_value(heap)?))
                     }
@@ -1163,12 +1199,16 @@ impl PyTrait for Value {
                     } else if *exp >= 0 {
                         // Use BigInt pow for positive exponents
                         if let Ok(exp_u32) = u32::try_from(*exp) {
+                            // Check size before computing to prevent DoS
+                            check_pow_size(li.bits(), u64::from(exp_u32), heap)?;
                             let bi = li.inner().pow(exp_u32);
                             Ok(Some(LongInt::new(bi).into_value(heap)?))
                         } else {
                             // Safety: exp >= 0 is guaranteed by the outer if condition
                             #[expect(clippy::cast_sign_loss)]
                             let exp_u64 = *exp as u64;
+                            // Check size before computing to prevent DoS
+                            check_pow_size(li.bits(), exp_u64, heap)?;
                             let bi = bigint_pow(li.inner().clone(), exp_u64);
                             Ok(Some(LongInt::new(bi).into_value(heap)?))
                         }
@@ -1212,6 +1252,8 @@ impl PyTrait for Value {
                             if let Some(result) = base.checked_pow(exp_u32) {
                                 Ok(Some(Self::Int(result)))
                             } else {
+                                // Check size before computing to prevent DoS
+                                check_pow_size(i64_bits(*base), u64::from(exp_u32), heap)?;
                                 let bi = BigInt::from(*base).pow(exp_u32);
                                 Ok(Some(LongInt::new(bi).into_value(heap)?))
                             }
@@ -1642,6 +1684,15 @@ impl Value {
                         // Safety: shift >= 0 is guaranteed by the check above
                         #[expect(clippy::cast_sign_loss)]
                         let shift_u64 = shift as u64;
+                        // Check size before computing to prevent DoS
+                        // Skip check if value is 0 - result is always 0 regardless of shift
+                        let value_bits = l.bits();
+                        if value_bits > 0
+                            && let Some(estimated) = LongInt::estimate_lshift_bytes(value_bits, shift_u64)
+                            && estimated > LARGE_RESULT_THRESHOLD
+                        {
+                            heap.tracker().check_large_result(estimated)?;
+                        }
                         l << shift_u64
                     } else if r.sign() == num_bigint::Sign::Minus {
                         return Err(ExcType::value_error_negative_shift_count());
@@ -2049,6 +2100,40 @@ fn str_contains(
         }
         _ => Err(ExcType::type_error("'in <str>' requires string as left operand")),
     }
+}
+
+/// Computes the number of significant bits in an i64.
+///
+/// Returns 0 for 0, otherwise returns ceil(log2(|value|)) + 1 (accounting for sign).
+/// For example: 0 -> 0, 1 -> 1, 2 -> 2, 255 -> 8, 256 -> 9.
+fn i64_bits(value: i64) -> u64 {
+    if value == 0 {
+        0
+    } else {
+        // For negative numbers, use unsigned_abs to get magnitude
+        u64::from(64 - value.unsigned_abs().leading_zeros())
+    }
+}
+
+/// Checks if a pow operation result would exceed the large result threshold.
+///
+/// If the estimated result is larger than `LARGE_RESULT_THRESHOLD`, calls
+/// `heap.tracker().check_large_result()` to allow the tracker to reject the operation.
+/// Returns `Ok(())` if the operation should proceed, or an error to reject.
+fn check_pow_size(base_bits: u64, exp: u64, heap: &Heap<impl ResourceTracker>) -> Result<(), RunError> {
+    // Special case: 0 or 1 bit bases can't produce large results worth checking
+    // (0**n = 0, 1**n = 1, -1**n = ±1)
+    if base_bits <= 1 {
+        return Ok(());
+    }
+
+    if let Some(estimated) = LongInt::estimate_pow_bytes(base_bits, exp)
+        && estimated > LARGE_RESULT_THRESHOLD
+    {
+        heap.tracker().check_large_result(estimated)?;
+    }
+    // If estimate overflows, proceed anyway - into_value will catch it during allocation
+    Ok(())
 }
 
 /// Computes BigInt exponentiation for exponents larger than u32::MAX.

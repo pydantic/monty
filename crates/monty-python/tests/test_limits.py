@@ -186,3 +186,43 @@ fib(35)
         assert raised_keyboard_interrupt, 'Expected KeyboardInterrupt to be raised'
     finally:
         proc.join()
+
+
+def test_pow_memory_limit():
+    """Large pow should fail when memory limit is set."""
+    m = monty.Monty('2 ** 10000000')
+    limits = monty.ResourceLimits(max_memory=1_000_000)
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+        m.run(limits=limits)
+    assert isinstance(exc_info.value.exception(), MemoryError)
+
+
+def test_lshift_memory_limit():
+    """Large left shift should fail when memory limit is set."""
+    m = monty.Monty('1 << 10000000')
+    limits = monty.ResourceLimits(max_memory=1_000_000)
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+        m.run(limits=limits)
+    assert isinstance(exc_info.value.exception(), MemoryError)
+
+
+def test_mult_memory_limit():
+    """Large multiplication should fail when memory limit is set."""
+    # First create a large number, then try to square it
+    code = """
+big = 2 ** 4000000
+result = big * big
+"""
+    m = monty.Monty(code)
+    limits = monty.ResourceLimits(max_memory=1_000_000)
+    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+        m.run(limits=limits)
+    assert isinstance(exc_info.value.exception(), MemoryError)
+
+
+def test_small_operations_within_limit():
+    """Smaller operations should succeed even with limits."""
+    m = monty.Monty('2 ** 1000')
+    limits = monty.ResourceLimits(max_memory=1_000_000)
+    result = m.run(limits=limits)
+    assert result > 0

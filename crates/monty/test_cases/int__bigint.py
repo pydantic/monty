@@ -259,3 +259,18 @@ assert big ^ big == 0, 'bigint ^ same bigint'
 assert big >> 50 == 2**50, '2**100 >> 50'
 assert 1 << 100 == big, '1 << 100'
 assert (big + 0xFF) & 0xFF == 0xFF, 'bigint with low bits & mask'
+
+# === Large result operations (should succeed with NoLimitTracker) ===
+# These are large but allowed since test runner uses NoLimitTracker
+x = 2**100000  # ~12.5KB - well under any reasonable limit
+assert x > 0, '2 ** 100000 should succeed'
+
+y = 1 << 100000
+assert y > 0, '1 << 100000 should succeed'
+
+# Edge cases (constant-size results) - always succeed
+assert 0**10000000 == 0, '0 ** huge = 0'
+assert 1**10000000 == 1, '1 ** huge = 1'
+assert (-1) ** 10000000 == 1, '(-1) ** huge_even = 1'
+assert (-1) ** 10000001 == -1, '(-1) ** huge_odd = -1'
+assert 0 << 10000000 == 0, '0 << huge = 0'

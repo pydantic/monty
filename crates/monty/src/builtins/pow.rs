@@ -5,9 +5,9 @@ use num_traits::{Signed, ToPrimitive, Zero};
 
 use crate::{
     args::ArgValues,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData},
-    resource::ResourceTracker,
+    resource::{LARGE_RESULT_THRESHOLD, ResourceTracker},
     types::{LongInt, PyTrait},
     value::Value,
 };
@@ -239,6 +239,8 @@ fn int_pow_int(b: i64, e: i64, heap: &mut Heap<impl ResourceTracker>) -> RunResu
             Ok(Value::Int(v))
         } else {
             // Overflow - promote to LongInt
+            // Check size before computing to prevent DoS
+            check_pow_size(i64_bits(b), u64::from(exp_u32), heap)?;
             let bi = BigInt::from(b).pow(exp_u32);
             Ok(LongInt::new(bi).into_value(heap)?)
         }
@@ -247,6 +249,8 @@ fn int_pow_int(b: i64, e: i64, heap: &mut Heap<impl ResourceTracker>) -> RunResu
         // Safety: e >= 0 at this point
         #[expect(clippy::cast_sign_loss)]
         let exp_u64 = e as u64;
+        // Check size before computing to prevent DoS
+        check_pow_size(i64_bits(b), exp_u64, heap)?;
         let base_bi = BigInt::from(b);
         let bi = bigint_pow_large(&base_bi, exp_u64)?;
         Ok(LongInt::new(bi).into_value(heap)?)
@@ -277,6 +281,8 @@ fn int_pow_longint(b: i64, e: &BigInt, heap: &mut Heap<impl ResourceTracker>) ->
         let is_even = (e % 2i32).is_zero();
         Ok(Value::Int(if is_even { 1 } else { -1 }))
     } else if let Some(exp_u32) = e.to_u32() {
+        // Check size before computing to prevent DoS
+        check_pow_size(i64_bits(b), u64::from(exp_u32), heap)?;
         let bi = BigInt::from(b).pow(exp_u32);
         Ok(LongInt::new(bi).into_value(heap)?)
     } else {
@@ -298,6 +304,8 @@ fn longint_pow_int(b: &BigInt, e: i64, heap: &mut Heap<impl ResourceTracker>) ->
             Ok(Value::Float(0.0))
         }
     } else if let Ok(exp_u32) = u32::try_from(e) {
+        // Check size before computing to prevent DoS
+        check_pow_size(b.bits(), u64::from(exp_u32), heap)?;
         let bi = b.pow(exp_u32);
         Ok(LongInt::new(bi).into_value(heap)?)
     } else {
@@ -305,6 +313,8 @@ fn longint_pow_int(b: &BigInt, e: i64, heap: &mut Heap<impl ResourceTracker>) ->
         // Safety: e >= 0 at this point
         #[expect(clippy::cast_sign_loss)]
         let exp_u64 = e as u64;
+        // Check size before computing to prevent DoS
+        check_pow_size(b.bits(), exp_u64, heap)?;
         let bi = bigint_pow_large(b, exp_u64)?;
         Ok(LongInt::new(bi).into_value(heap)?)
     }
@@ -323,6 +333,8 @@ fn longint_pow_longint(b: &BigInt, e: &BigInt, heap: &mut Heap<impl ResourceTrac
             Ok(Value::Float(0.0))
         }
     } else if let Some(exp_u32) = e.to_u32() {
+        // Check size before computing to prevent DoS
+        check_pow_size(b.bits(), u64::from(exp_u32), heap)?;
         let bi = b.pow(exp_u32);
         Ok(LongInt::new(bi).into_value(heap)?)
     } else {
@@ -352,4 +364,28 @@ fn bigint_pow_large(base: &BigInt, exp: u64) -> RunResult<BigInt> {
         // For any other base, exponent > u32::MAX would produce an astronomically large result
         Err(ExcType::overflow_exponent_too_large())
     }
+}
+
+/// Computes the number of significant bits in an i64.
+fn i64_bits(value: i64) -> u64 {
+    if value == 0 {
+        0
+    } else {
+        u64::from(64 - value.unsigned_abs().leading_zeros())
+    }
+}
+
+/// Checks if a pow operation result would exceed the large result threshold.
+fn check_pow_size(base_bits: u64, exp: u64, heap: &Heap<impl ResourceTracker>) -> Result<(), RunError> {
+    // Special case: 0 or 1 bit bases can't produce large results worth checking
+    if base_bits <= 1 {
+        return Ok(());
+    }
+
+    if let Some(estimated) = LongInt::estimate_pow_bytes(base_bits, exp)
+        && estimated > LARGE_RESULT_THRESHOLD
+    {
+        heap.tracker().check_large_result(estimated)?;
+    }
+    Ok(())
 }

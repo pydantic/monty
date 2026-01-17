@@ -352,3 +352,147 @@ recurse(5)
 
     assert!(result.is_ok(), "should not exceed recursion depth limit");
 }
+
+// === BigInt large result pre-check tests ===
+// These tests verify that operations that would produce very large BigInt results
+// are rejected before the computation begins, preventing DoS attacks.
+
+/// Test that large pow operations are rejected by memory limits.
+#[test]
+fn bigint_pow_memory_limit() {
+    // 2 ** 10_000_000 would produce ~1.25MB result
+    let code = "2 ** 10000000";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    // Set a 1MB memory limit - should fail before computing
+    let limits = ResourceLimits::new().max_memory(1_000_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_err(), "large pow should exceed memory limit");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
+    );
+}
+
+/// Test that large left shift operations are rejected by memory limits.
+#[test]
+fn bigint_lshift_memory_limit() {
+    // 1 << 10_000_000 would produce ~1.25MB result
+    let code = "1 << 10000000";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    // Set a 1MB memory limit - should fail before computing
+    let limits = ResourceLimits::new().max_memory(1_000_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_err(), "large lshift should exceed memory limit");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
+    );
+}
+
+/// Test that large multiplication operations are rejected by memory limits.
+#[test]
+fn bigint_mult_memory_limit() {
+    // (2**4_000_000) * (2**4_000_000) would produce ~1MB result
+    let code = "big = 2 ** 4000000\nbig * big";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    // Set a 1MB memory limit - should fail before computing the multiplication
+    let limits = ResourceLimits::new().max_memory(1_000_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_err(), "large mult should exceed memory limit");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
+    );
+}
+
+/// Test that small BigInt operations succeed within memory limits.
+#[test]
+fn bigint_small_operations_within_limit() {
+    // 2 ** 1000 produces ~125 bytes - well under limit
+    let code = "x = 2 ** 1000\ny = 1 << 1000\nz = x * 2\nx > 0 and y > 0 and z > 0";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    // Set a 1MB memory limit - should succeed
+    let limits = ResourceLimits::new().max_memory(1_000_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_ok(), "small BigInt operations should succeed within limit");
+    let val = result.unwrap();
+    assert_eq!(val, MontyObject::Bool(true));
+}
+
+/// Test that edge cases (0, 1, -1) with huge exponents succeed even with limits.
+/// These produce constant-size results regardless of exponent.
+#[test]
+fn bigint_edge_cases_always_succeed() {
+    // Test each edge case individually to minimize other allocations
+    // These edge cases produce constant-size results regardless of exponent:
+    // - 0 ** huge = 0
+    // - 1 ** huge = 1
+    // - (-1) ** huge = 1 or -1
+    // - 0 << huge = 0
+
+    // 1MB limit would reject 2**10000000 (~1.25MB) but allows edge cases
+    let limits = ResourceLimits::new().max_memory(1_000_000);
+
+    // 0 ** huge = 0
+    let code = "0 ** 10000000";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+    let result = ex.run(vec![], LimitedTracker::new(limits.clone()), &mut StdPrint);
+    assert!(result.is_ok(), "0 ** huge should succeed");
+    assert_eq!(result.unwrap(), MontyObject::Int(0));
+
+    // 1 ** huge = 1
+    let code = "1 ** 10000000";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+    let result = ex.run(vec![], LimitedTracker::new(limits.clone()), &mut StdPrint);
+    assert!(result.is_ok(), "1 ** huge should succeed");
+    assert_eq!(result.unwrap(), MontyObject::Int(1));
+
+    // (-1) ** huge_even = 1
+    let code = "(-1) ** 10000000";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+    let result = ex.run(vec![], LimitedTracker::new(limits.clone()), &mut StdPrint);
+    assert!(result.is_ok(), "(-1) ** huge_even should succeed");
+    assert_eq!(result.unwrap(), MontyObject::Int(1));
+
+    // (-1) ** huge_odd = -1
+    let code = "(-1) ** 10000001";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+    let result = ex.run(vec![], LimitedTracker::new(limits.clone()), &mut StdPrint);
+    assert!(result.is_ok(), "(-1) ** huge_odd should succeed");
+    assert_eq!(result.unwrap(), MontyObject::Int(-1));
+
+    // 0 << huge = 0
+    let code = "0 << 10000000";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+    assert!(result.is_ok(), "0 << huge should succeed");
+    assert_eq!(result.unwrap(), MontyObject::Int(0));
+}
+
+/// Test that pow() builtin also respects memory limits.
+#[test]
+fn bigint_builtin_pow_memory_limit() {
+    let code = "pow(2, 10000000)";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(1_000_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_err(), "builtin pow should respect memory limit");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
