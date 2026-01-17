@@ -9,7 +9,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapData},
     resource::ResourceTracker,
-    types::{PyTrait, Tuple},
+    types::{PyTrait, Tuple, bigint::bigint_to_value},
     value::Value,
 };
 
@@ -25,7 +25,7 @@ pub fn builtin_divmod(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) ->
     let result = match (&a, &b) {
         (Value::Int(x), Value::Int(y)) => {
             if *y == 0 {
-                Err(SimpleException::new_msg(ExcType::ZeroDivisionError, "integer division or modulo by zero").into())
+                Err(ExcType::integer_divmod_by_zero())
             } else {
                 // Python uses floor division (toward negative infinity), not Euclidean
                 let (quot, rem) = floor_divmod(*x, *y);
@@ -36,15 +36,12 @@ pub fn builtin_divmod(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) ->
         (Value::Int(x), Value::Ref(id)) => {
             if let HeapData::BigInt(y_bi) = heap.get(*id) {
                 if y_bi.is_zero() {
-                    Err(
-                        SimpleException::new_msg(ExcType::ZeroDivisionError, "integer division or modulo by zero")
-                            .into(),
-                    )
+                    Err(ExcType::integer_divmod_by_zero())
                 } else {
                     let x_bi = BigInt::from(*x);
                     let (quot, rem) = bigint_floor_divmod(&x_bi, y_bi);
-                    let quot_val = crate::types::bigint::bigint_to_value(quot, heap)?;
-                    let rem_val = crate::types::bigint::bigint_to_value(rem, heap)?;
+                    let quot_val = bigint_to_value(quot, heap)?;
+                    let rem_val = bigint_to_value(rem, heap)?;
                     let tuple_id = heap.allocate(HeapData::Tuple(Tuple::new(vec![quot_val, rem_val])))?;
                     Ok(Value::Ref(tuple_id))
                 }
@@ -61,15 +58,12 @@ pub fn builtin_divmod(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) ->
         (Value::Ref(id), Value::Int(y)) => {
             if let HeapData::BigInt(x_bi) = heap.get(*id) {
                 if *y == 0 {
-                    Err(
-                        SimpleException::new_msg(ExcType::ZeroDivisionError, "integer division or modulo by zero")
-                            .into(),
-                    )
+                    Err(ExcType::integer_divmod_by_zero())
                 } else {
                     let y_bi = BigInt::from(*y);
                     let (quot, rem) = bigint_floor_divmod(x_bi, &y_bi);
-                    let quot_val = crate::types::bigint::bigint_to_value(quot, heap)?;
-                    let rem_val = crate::types::bigint::bigint_to_value(rem, heap)?;
+                    let quot_val = bigint_to_value(quot, heap)?;
+                    let rem_val = bigint_to_value(rem, heap)?;
                     let tuple_id = heap.allocate(HeapData::Tuple(Tuple::new(vec![quot_val, rem_val])))?;
                     Ok(Value::Ref(tuple_id))
                 }
@@ -97,14 +91,11 @@ pub fn builtin_divmod(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) ->
             };
             if let HeapData::BigInt(y_bi) = heap.get(*id2) {
                 if y_bi.is_zero() {
-                    Err(
-                        SimpleException::new_msg(ExcType::ZeroDivisionError, "integer division or modulo by zero")
-                            .into(),
-                    )
+                    Err(ExcType::integer_divmod_by_zero())
                 } else {
                     let (quot, rem) = bigint_floor_divmod(&x_bi, y_bi);
-                    let quot_val = crate::types::bigint::bigint_to_value(quot, heap)?;
-                    let rem_val = crate::types::bigint::bigint_to_value(rem, heap)?;
+                    let quot_val = bigint_to_value(quot, heap)?;
+                    let rem_val = bigint_to_value(rem, heap)?;
                     let tuple_id = heap.allocate(HeapData::Tuple(Tuple::new(vec![quot_val, rem_val])))?;
                     Ok(Value::Ref(tuple_id))
                 }
@@ -120,7 +111,7 @@ pub fn builtin_divmod(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) ->
         }
         (Value::Float(x), Value::Float(y)) => {
             if *y == 0.0 {
-                Err(SimpleException::new_msg(ExcType::ZeroDivisionError, "float divmod()").into())
+                Err(ExcType::float_divmod_by_zero())
             } else {
                 let quot = (x / y).floor();
                 let rem = x - quot * y;
@@ -131,7 +122,7 @@ pub fn builtin_divmod(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) ->
         }
         (Value::Int(x), Value::Float(y)) => {
             if *y == 0.0 {
-                Err(SimpleException::new_msg(ExcType::ZeroDivisionError, "float divmod()").into())
+                Err(ExcType::float_divmod_by_zero())
             } else {
                 let xf = *x as f64;
                 let quot = (xf / y).floor();
@@ -143,7 +134,7 @@ pub fn builtin_divmod(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) ->
         }
         (Value::Float(x), Value::Int(y)) => {
             if *y == 0 {
-                Err(SimpleException::new_msg(ExcType::ZeroDivisionError, "float divmod()").into())
+                Err(ExcType::float_divmod_by_zero())
             } else {
                 let yf = *y as f64;
                 let quot = (x / yf).floor();

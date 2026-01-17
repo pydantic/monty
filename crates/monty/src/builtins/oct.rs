@@ -5,7 +5,7 @@ use num_traits::Signed;
 
 use crate::{
     args::ArgValues,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData},
     resource::ResourceTracker,
     types::{PyTrait, Str},
@@ -37,18 +37,10 @@ pub fn builtin_oct(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
                 let heap_id = heap.allocate(HeapData::Str(Str::new(oct_str)))?;
                 Ok(Value::Ref(heap_id))
             } else {
-                Err(SimpleException::new_msg(
-                    ExcType::TypeError,
-                    format!("'{}' object cannot be interpreted as an integer", value.py_type(heap)),
-                )
-                .into())
+                Err(ExcType::type_error_not_integer(value.py_type(heap)))
             }
         }
-        _ => Err(SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("'{}' object cannot be interpreted as an integer", value.py_type(heap)),
-        )
-        .into()),
+        _ => Err(ExcType::type_error_not_integer(value.py_type(heap))),
     };
 
     value.drop_with_heap(heap);

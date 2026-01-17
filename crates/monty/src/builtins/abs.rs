@@ -8,7 +8,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapData},
     resource::ResourceTracker,
-    types::PyTrait,
+    types::{PyTrait, bigint::bigint_to_value},
     value::Value,
 };
 
@@ -27,7 +27,7 @@ pub fn builtin_abs(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
             } else {
                 // i64::MIN.abs() overflows, promote to BigInt
                 let bi = BigInt::from(*n).abs();
-                Ok(crate::types::bigint::bigint_to_value(bi, heap)?)
+                Ok(bigint_to_value(bi, heap)?)
             }
         }
         Value::Float(f) => Ok(Value::Float(f.abs())),
@@ -35,7 +35,7 @@ pub fn builtin_abs(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
         Value::Ref(id) => {
             if let HeapData::BigInt(bi) = heap.get(*id) {
                 let abs_bi = bi.abs();
-                Ok(crate::types::bigint::bigint_to_value(abs_bi, heap)?)
+                Ok(bigint_to_value(abs_bi, heap)?)
             } else {
                 Err(SimpleException::new_msg(
                     ExcType::TypeError,

@@ -784,6 +784,50 @@ impl ExcType {
         )
         .into()
     }
+
+    /// Creates a TypeError for functions that require an integer argument.
+    ///
+    /// Matches CPython's format: `TypeError: '{type}' object cannot be interpreted as an integer`
+    #[must_use]
+    pub(crate) fn type_error_not_integer(type_: Type) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("'{type_}' object cannot be interpreted as an integer"),
+        )
+        .into()
+    }
+
+    /// Creates a ZeroDivisionError for zero raised to a negative power.
+    ///
+    /// Matches CPython's format: `ZeroDivisionError: 0.0 cannot be raised to a negative power`
+    #[must_use]
+    pub(crate) fn zero_negative_power() -> RunError {
+        SimpleException::new_msg(Self::ZeroDivisionError, "0.0 cannot be raised to a negative power").into()
+    }
+
+    /// Creates an OverflowError for exponents that are too large.
+    ///
+    /// Matches CPython's format: `OverflowError: exponent too large`
+    #[must_use]
+    pub(crate) fn overflow_exponent_too_large() -> RunError {
+        SimpleException::new_msg(Self::OverflowError, "exponent too large").into()
+    }
+
+    /// Creates a ZeroDivisionError for integer division or modulo by zero.
+    ///
+    /// Matches CPython's format: `ZeroDivisionError: integer division or modulo by zero`
+    #[must_use]
+    pub(crate) fn integer_divmod_by_zero() -> RunError {
+        SimpleException::new_msg(Self::ZeroDivisionError, "integer division or modulo by zero").into()
+    }
+
+    /// Creates a ZeroDivisionError for float divmod by zero.
+    ///
+    /// Matches CPython's format: `ZeroDivisionError: float divmod()`
+    #[must_use]
+    pub(crate) fn float_divmod_by_zero() -> RunError {
+        SimpleException::new_msg(Self::ZeroDivisionError, "float divmod()").into()
+    }
 }
 
 /// Simple lightweight representation of an exception.

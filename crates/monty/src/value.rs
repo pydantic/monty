@@ -18,7 +18,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId},
     intern::{BytesId, ExtFunctionId, FunctionId, Interns, StringId},
     resource::ResourceTracker,
-    types::{PyTrait, Type, bytes::bytes_repr_fmt, str::string_repr_fmt},
+    types::{PyTrait, Type, bigint::bigint_to_value, bytes::bytes_repr_fmt, str::string_repr_fmt},
 };
 
 /// Bitwise operation type for `py_bitwise`.
@@ -379,14 +379,14 @@ impl PyTrait for Value {
                 } else {
                     // Overflow - promote to BigInt
                     let bi = BigInt::from(*a) + BigInt::from(*b);
-                    crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                    bigint_to_value(bi, heap).map(Some)
                 }
             }
             // Int + BigInt
             (Self::Int(a), Self::Ref(id)) => {
                 if let HeapData::BigInt(b) = heap.get(*id) {
                     let bi = BigInt::from(*a) + b;
-                    crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                    bigint_to_value(bi, heap).map(Some)
                 } else {
                     Ok(None)
                 }
@@ -395,7 +395,7 @@ impl PyTrait for Value {
             (Self::Ref(id), Self::Int(b)) => {
                 if let HeapData::BigInt(a) = heap.get(*id) {
                     let bi = a + BigInt::from(*b);
-                    crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                    bigint_to_value(bi, heap).map(Some)
                 } else {
                     Ok(None)
                 }
@@ -409,7 +409,7 @@ impl PyTrait for Value {
                     heap.with_two(*id1, *id2, |heap, left, right| {
                         if let (HeapData::BigInt(a), HeapData::BigInt(b)) = (left, right) {
                             let bi = a + b;
-                            crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                            bigint_to_value(bi, heap).map(Some)
                         } else {
                             Ok(None)
                         }
@@ -487,14 +487,14 @@ impl PyTrait for Value {
                 } else {
                     // Overflow - promote to BigInt
                     let bi = BigInt::from(*a) - BigInt::from(*b);
-                    crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                    bigint_to_value(bi, heap).map(Some)
                 }
             }
             // Int - BigInt
             (Self::Int(a), Self::Ref(id)) => {
                 if let HeapData::BigInt(b) = heap.get(*id) {
                     let bi = BigInt::from(*a) - b;
-                    crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                    bigint_to_value(bi, heap).map(Some)
                 } else {
                     Ok(None)
                 }
@@ -503,7 +503,7 @@ impl PyTrait for Value {
             (Self::Ref(id), Self::Int(b)) => {
                 if let HeapData::BigInt(a) = heap.get(*id) {
                     let bi = a - BigInt::from(*b);
-                    crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                    bigint_to_value(bi, heap).map(Some)
                 } else {
                     Ok(None)
                 }
@@ -516,7 +516,7 @@ impl PyTrait for Value {
                     heap.with_two(*id1, *id2, |heap, left, right| {
                         if let (HeapData::BigInt(a), HeapData::BigInt(b)) = (left, right) {
                             let bi = a - b;
-                            crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                            bigint_to_value(bi, heap).map(Some)
                         } else {
                             Ok(None)
                         }
@@ -552,7 +552,7 @@ impl PyTrait for Value {
                     return Ok(None);
                 };
                 let bi = BigInt::from(*a).mod_floor(&b_clone);
-                Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+                Ok(Some(bigint_to_value(bi, heap)?))
             }
             // BigInt % Int
             (Self::Ref(id), Self::Int(b)) => {
@@ -566,7 +566,7 @@ impl PyTrait for Value {
                     return Ok(None);
                 };
                 let bi = a_clone.mod_floor(&BigInt::from(*b));
-                Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+                Ok(Some(bigint_to_value(bi, heap)?))
             }
             // BigInt % BigInt
             (Self::Ref(id1), Self::Ref(id2)) => {
@@ -580,7 +580,7 @@ impl PyTrait for Value {
                     Ok(heap.with_two(*id1, *id2, |heap, left, right| {
                         if let (HeapData::BigInt(a), HeapData::BigInt(b)) = (left, right) {
                             let bi = a.mod_floor(b);
-                            crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                            bigint_to_value(bi, heap).map(Some)
                         } else {
                             Ok(None)
                         }
@@ -723,14 +723,14 @@ impl PyTrait for Value {
                 } else {
                     // Overflow - promote to BigInt
                     let bi = BigInt::from(*a) * BigInt::from(*b);
-                    Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+                    Ok(Some(bigint_to_value(bi, heap)?))
                 }
             }
             // Int * BigInt
             (Self::Int(a), Self::Ref(id)) => {
                 if let HeapData::BigInt(b) = heap.get(*id) {
                     let bi = BigInt::from(*a) * b;
-                    Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+                    Ok(Some(bigint_to_value(bi, heap)?))
                 } else {
                     // Check for sequence repetition
                     let count = i64_to_repeat_count(*a)?;
@@ -741,7 +741,7 @@ impl PyTrait for Value {
             (Self::Ref(id), Self::Int(b)) => {
                 if let HeapData::BigInt(a) = heap.get(*id) {
                     let bi = a * BigInt::from(*b);
-                    Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+                    Ok(Some(bigint_to_value(bi, heap)?))
                 } else {
                     // Check for sequence repetition
                     let count = i64_to_repeat_count(*b)?;
@@ -756,7 +756,7 @@ impl PyTrait for Value {
                     Ok(heap.with_two(*id1, *id2, |heap, left, right| {
                         if let (HeapData::BigInt(a), HeapData::BigInt(b)) = (left, right) {
                             let bi = a * b;
-                            crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                            bigint_to_value(bi, heap).map(Some)
                         } else {
                             Ok(None)
                         }
@@ -903,7 +903,7 @@ impl PyTrait for Value {
                         Err(ExcType::zero_division().into())
                     } else {
                         let bi = BigInt::from(*a).div_floor(b);
-                        Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+                        Ok(Some(bigint_to_value(bi, heap)?))
                     }
                 } else {
                     Ok(None)
@@ -916,7 +916,7 @@ impl PyTrait for Value {
                         Err(ExcType::zero_division().into())
                     } else {
                         let bi = a.div_floor(&BigInt::from(*b));
-                        Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+                        Ok(Some(bigint_to_value(bi, heap)?))
                     }
                 } else {
                     Ok(None)
@@ -934,7 +934,7 @@ impl PyTrait for Value {
                     Ok(heap.with_two(*id1, *id2, |heap, left, right| {
                         if let (HeapData::BigInt(a), HeapData::BigInt(b)) = (left, right) {
                             let bi = a.div_floor(b);
-                            crate::types::bigint::bigint_to_value(bi, heap).map(Some)
+                            bigint_to_value(bi, heap).map(Some)
                         } else {
                             Ok(None)
                         }
@@ -1023,7 +1023,7 @@ impl PyTrait for Value {
                         } else {
                             // Overflow - promote to BigInt
                             let bi = BigInt::from(*base).pow(exp_u32);
-                            Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+                            Ok(Some(bigint_to_value(bi, heap)?))
                         }
                     } else {
                         // exp > u32::MAX - use BigInt with modpow-style exponentiation
@@ -1032,7 +1032,7 @@ impl PyTrait for Value {
                         #[expect(clippy::cast_sign_loss)]
                         let exp_u64 = *exp as u64;
                         let bi = bigint_pow(BigInt::from(*base), exp_u64);
-                        Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+                        Ok(Some(bigint_to_value(bi, heap)?))
                     }
                 } else {
                     // Negative exponent: return float
@@ -1053,13 +1053,13 @@ impl PyTrait for Value {
                         // Use BigInt pow for positive exponents
                         if let Ok(exp_u32) = u32::try_from(*exp) {
                             let bi = base.pow(exp_u32);
-                            Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+                            Ok(Some(bigint_to_value(bi, heap)?))
                         } else {
                             // Safety: exp >= 0 is guaranteed by the outer if condition
                             #[expect(clippy::cast_sign_loss)]
                             let exp_u64 = *exp as u64;
                             let bi = bigint_pow(base.clone(), exp_u64);
-                            Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+                            Ok(Some(bigint_to_value(bi, heap)?))
                         }
                     } else {
                         // Negative exponent: return float (BigInt base becomes 0.0 for large values)
@@ -1099,7 +1099,7 @@ impl PyTrait for Value {
                                 Ok(Some(Self::Int(result)))
                             } else {
                                 let bi = BigInt::from(*base).pow(exp_u32);
-                                Ok(Some(crate::types::bigint::bigint_to_value(bi, heap)?))
+                                Ok(Some(bigint_to_value(bi, heap)?))
                             }
                         } else {
                             // Exponent too large - result would be astronomically large

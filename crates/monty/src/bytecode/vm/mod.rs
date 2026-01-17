@@ -26,7 +26,7 @@ use crate::{
     namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
     parse::CodeRange,
     resource::ResourceTracker,
-    types::PyTrait,
+    types::{PyTrait, bigint::bigint_to_value},
     value::{BitwiseOp, Value},
 };
 
@@ -567,7 +567,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                             } else {
                                 // i64::MIN negated overflows to BigInt
                                 let bi = -BigInt::from(*n);
-                                crate::types::bigint::bigint_to_value(bi, self.heap).map(Some)
+                                bigint_to_value(bi, self.heap).map(Some)
                             }
                         }
                         Value::Float(f) => Ok(Some(Value::Float(-f))),
@@ -575,7 +575,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         Value::Ref(id) => {
                             if let HeapData::BigInt(bi) = self.heap.get(*id) {
                                 let negated = -bi;
-                                crate::types::bigint::bigint_to_value(negated, self.heap).map(Some)
+                                bigint_to_value(negated, self.heap).map(Some)
                             } else {
                                 Ok(None) // Not a BigInt - unsupported type
                             }
@@ -619,7 +619,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                             if let HeapData::BigInt(bi) = self.heap.get(*id) {
                                 // BigInt bitwise NOT: ~x = -(x + 1)
                                 let inverted = -(bi + 1i32);
-                                crate::types::bigint::bigint_to_value(inverted, self.heap).map(Some)
+                                bigint_to_value(inverted, self.heap).map(Some)
                             } else {
                                 Ok(None) // Not a BigInt - unsupported type
                             }

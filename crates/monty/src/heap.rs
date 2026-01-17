@@ -16,7 +16,10 @@ use crate::{
     for_iterator::{ForIterator, IterState},
     intern::{FunctionId, Interns},
     resource::{ResourceError, ResourceTracker},
-    types::{Bytes, Dataclass, Dict, FrozenSet, List, PyTrait, Range, Set, Str, Tuple, Type},
+    types::{
+        Bytes, Dataclass, Dict, FrozenSet, List, PyTrait, Range, Set, Str, Tuple, Type,
+        bigint::{bigint_to_value, estimate_size, hash_bigint, is_zero},
+    },
     value::{Attr, Value},
 };
 
@@ -157,7 +160,7 @@ impl HeapData {
                 None
             }
             // BigInt is immutable and hashable
-            Self::BigInt(bi) => Some(crate::types::bigint::hash_bigint(bi)),
+            Self::BigInt(bi) => Some(hash_bigint(bi)),
         }
     }
 }
@@ -203,7 +206,7 @@ impl PyTrait for HeapData {
             Self::Exception(e) => std::mem::size_of::<SimpleException>() + e.arg().map_or(0, String::len),
             Self::Dataclass(dc) => dc.py_estimate_size(),
             Self::Iterator(_) => std::mem::size_of::<ForIterator>(),
-            Self::BigInt(bi) => crate::types::bigint::estimate_size(bi),
+            Self::BigInt(bi) => estimate_size(bi),
         }
     }
 
@@ -297,7 +300,7 @@ impl PyTrait for HeapData {
             Self::Exception(_) => true, // Exceptions are always truthy
             Self::Dataclass(dc) => dc.py_bool(heap, interns),
             Self::Iterator(_) => true, // Iterators are always truthy
-            Self::BigInt(bi) => !crate::types::bigint::is_zero(bi),
+            Self::BigInt(bi) => !is_zero(bi),
         }
     }
 
@@ -392,7 +395,7 @@ impl PyTrait for HeapData {
                     Err(crate::exception_private::ExcType::zero_division().into())
                 } else {
                     let bi = a.mod_floor(b);
-                    Ok(crate::types::bigint::bigint_to_value(bi, heap).map(Some)?)
+                    Ok(bigint_to_value(bi, heap).map(Some)?)
                 }
             }
             // Cells don't support arithmetic operations

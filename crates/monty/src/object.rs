@@ -16,6 +16,7 @@ use crate::{
     resource::{ResourceError, ResourceTracker},
     types::{
         PyTrait, Type,
+        bigint::bigint_to_value,
         bytes::{Bytes, bytes_repr},
         dict::Dict,
         list::List,
@@ -187,7 +188,7 @@ impl MontyObject {
             Self::None => Ok(Value::None),
             Self::Bool(b) => Ok(Value::Bool(b)),
             Self::Int(i) => Ok(Value::Int(i)),
-            Self::BigInt(bi) => Ok(crate::types::bigint::bigint_to_value(bi, heap)?),
+            Self::BigInt(bi) => Ok(bigint_to_value(bi, heap)?),
             Self::Float(f) => Ok(Value::Float(f)),
             Self::String(s) => Ok(Value::Ref(heap.allocate(HeapData::Str(Str::new(s)))?)),
             Self::Bytes(b) => Ok(Value::Ref(heap.allocate(HeapData::Bytes(Bytes::new(b)))?)),
