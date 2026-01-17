@@ -9,7 +9,7 @@ members = ["crates/monty-python"]
 [dependency-groups]
 dev = [
     "basedpyright>=1.34.0",
-    "maturin>=1.0,<2.0",
+    "maturin>=1.9.4,<2.0",
     "mypy>=1.19.1",
     "ruff>=0.14.7",
 ]
