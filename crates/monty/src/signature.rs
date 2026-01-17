@@ -303,16 +303,16 @@ impl Signature {
         // Check positional argument count against maximum
         let positional_count = positional_args.len();
         let kwonly_given = keyword_args.len();
-        if let Some(max) = self.max_positional_count() {
-            if positional_count > max {
-                let func = interns.get_str(func_name.name_id);
-                return Err(ExcType::type_error_too_many_positional(
-                    func,
-                    max,
-                    positional_count,
-                    kwonly_given,
-                ));
-            }
+        if let Some(max) = self.max_positional_count()
+            && positional_count > max
+        {
+            let func = interns.get_str(func_name.name_id);
+            return Err(ExcType::type_error_too_many_positional(
+                func,
+                max,
+                positional_count,
+                kwonly_given,
+            ));
         }
 
         // Initialize result namespace with Undefined values for all slots
@@ -370,18 +370,17 @@ impl Signature {
             };
 
             // Check if this keyword matches a positional-only param (error)
-            if let Some(pos_args) = &self.pos_args {
-                if let Some(&param_id) = pos_args
+            if let Some(pos_args) = &self.pos_args
+                && let Some(&param_id) = pos_args
                     .iter()
                     .find(|&&param_id| keyword_name.matches(param_id, interns))
-                {
-                    let func = interns.get_str(func_name.name_id);
-                    let param = interns.get_str(param_id);
-                    key.drop_with_heap(heap);
-                    value.drop_with_heap(heap);
-                    cleanup_on_error(namespace, var_args_value, excess_kwargs, heap);
-                    return Err(ExcType::type_error_positional_only(func, param));
-                }
+            {
+                let func = interns.get_str(func_name.name_id);
+                let param = interns.get_str(param_id);
+                key.drop_with_heap(heap);
+                value.drop_with_heap(heap);
+                cleanup_on_error(namespace, var_args_value, excess_kwargs, heap);
+                return Err(ExcType::type_error_positional_only(func, param));
             }
 
             // Use Option to track the value as we try to bind it
@@ -419,35 +418,35 @@ impl Signature {
             }
 
             // Try to bind to a kwargs param (keyword-only)
-            if remaining_value.is_some() {
-                if let Some(ref kwargs) = self.kwargs {
-                    for (i, &param_id) in kwargs.iter().enumerate() {
-                        if keyword_name.matches(param_id, interns) {
-                            // Skip past *args slot if present
-                            let ns_idx = total_positional_params + var_args_offset + i;
-                            let idx = total_positional_params + i;
-                            if bound_params[idx] {
-                                let func = interns.get_str(func_name.name_id);
-                                let param = interns.get_str(param_id);
-                                if let Some(v) = remaining_value.take() {
-                                    v.drop_with_heap(heap);
-                                }
-                                if let Some(dup_key) = key_value.take() {
-                                    dup_key.drop_with_heap(heap);
-                                }
-                                cleanup_on_error(namespace, var_args_value, excess_kwargs, heap);
-                                return Err(ExcType::type_error_duplicate_arg(func, param));
-                            }
-                            // Store the value for this keyword-only param
+            if remaining_value.is_some()
+                && let Some(ref kwargs) = self.kwargs
+            {
+                for (i, &param_id) in kwargs.iter().enumerate() {
+                    if keyword_name.matches(param_id, interns) {
+                        // Skip past *args slot if present
+                        let ns_idx = total_positional_params + var_args_offset + i;
+                        let idx = total_positional_params + i;
+                        if bound_params[idx] {
+                            let func = interns.get_str(func_name.name_id);
+                            let param = interns.get_str(param_id);
                             if let Some(v) = remaining_value.take() {
-                                namespace[ns_idx] = v;
+                                v.drop_with_heap(heap);
                             }
-                            bound_params[idx] = true;
-                            if let Some(bound_key) = key_value.take() {
-                                bound_key.drop_with_heap(heap);
+                            if let Some(dup_key) = key_value.take() {
+                                dup_key.drop_with_heap(heap);
                             }
-                            break;
+                            cleanup_on_error(namespace, var_args_value, excess_kwargs, heap);
+                            return Err(ExcType::type_error_duplicate_arg(func, param));
                         }
+                        // Store the value for this keyword-only param
+                        if let Some(v) = remaining_value.take() {
+                            namespace[ns_idx] = v;
+                        }
+                        bound_params[idx] = true;
+                        if let Some(bound_key) = key_value.take() {
+                            bound_key.drop_with_heap(heap);
+                        }
+                        break;
                     }
                 }
             }

@@ -202,14 +202,14 @@ impl FromStr for ParsedFormatSpec {
         }
 
         // Parse type character: s, d, f, e, g, etc.
-        if let Some(&c) = chars.peek() {
-            if matches!(
+        if let Some(&c) = chars.peek()
+            && matches!(
                 c,
                 's' | 'd' | 'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'n' | '%' | 'b' | 'o' | 'x' | 'X' | 'c'
-            ) {
-                result.type_char = Some(c);
-                chars.next();
-            }
+            )
+        {
+            result.type_char = Some(c);
+            chars.next();
         }
 
         // Error if there are any unconsumed characters

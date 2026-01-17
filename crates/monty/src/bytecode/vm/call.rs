@@ -304,10 +304,10 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         args_tuple: &Value,
         kwargs: Option<&Value>,
     ) -> Result<Vec<Value>, RunError> {
-        if let Value::Ref(id) = args_tuple {
-            if let HeapData::Tuple(tuple) = self.heap.get(*id) {
-                return Ok(tuple.as_vec().iter().map(Value::copy_for_extend).collect());
-            }
+        if let Value::Ref(id) = args_tuple
+            && let HeapData::Tuple(tuple) = self.heap.get(*id)
+        {
+            return Ok(tuple.as_vec().iter().map(Value::copy_for_extend).collect());
         }
         // Error case - clean up and return error
         callable.clone_immediate().drop_with_heap(self.heap);

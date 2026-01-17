@@ -51,12 +51,12 @@ pub(crate) fn prepare(
     // In the root frame, the last expression is implicitly returned
     // if it's not None. This matches Python REPL behavior where the last expression
     // value is displayed/returned.
-    if let Some(Node::Expr(expr_loc)) = prepared_nodes.last() {
-        if !expr_loc.expr.is_none() {
-            let new_expr_loc = expr_loc.clone();
-            prepared_nodes.pop();
-            prepared_nodes.push(Node::Return(new_expr_loc));
-        }
+    if let Some(Node::Expr(expr_loc)) = prepared_nodes.last()
+        && !expr_loc.expr.is_none()
+    {
+        let new_expr_loc = expr_loc.clone();
+        prepared_nodes.pop();
+        prepared_nodes.push(Node::Return(new_expr_loc));
     }
 
     Ok(PrepareResult {
@@ -596,29 +596,25 @@ impl<'i> Prepare<'i> {
         // This is a common pattern in competitive programming (e.g., FizzBuzz checks like `i % 3 == 0`)
         // and can be executed more efficiently with a single modulo operation + comparison
         // instead of separate modulo, then equality check.
-        if let Expr::CmpOp { left, op, right } = &expr {
-            if op == &CmpOperator::Eq {
-                if let Expr::Literal(Literal::Int(value)) = right.expr {
-                    if let Expr::Op {
-                        left: left2,
-                        op,
-                        right: right2,
-                    } = &left.expr
-                    {
-                        if op == &Operator::Mod {
-                            let new_expr = Expr::CmpOp {
-                                left: left2.clone(),
-                                op: CmpOperator::ModEq(value),
-                                right: right2.clone(),
-                            };
-                            return Ok(ExprLoc {
-                                position: left.position,
-                                expr: new_expr,
-                            });
-                        }
-                    }
-                }
-            }
+        if let Expr::CmpOp { left, op, right } = &expr
+            && op == &CmpOperator::Eq
+            && let Expr::Literal(Literal::Int(value)) = right.expr
+            && let Expr::Op {
+                left: left2,
+                op,
+                right: right2,
+            } = &left.expr
+            && op == &Operator::Mod
+        {
+            let new_expr = Expr::CmpOp {
+                left: left2.clone(),
+                op: CmpOperator::ModEq(value),
+                right: right2.clone(),
+            };
+            return Ok(ExprLoc {
+                position: left.position,
+                expr: new_expr,
+            });
         }
 
         Ok(ExprLoc { position, expr })
@@ -866,14 +862,14 @@ impl<'i> Prepare<'i> {
 
         // 1. Check if declared `global`
         if self.global_names.contains(name_str) {
-            if let Some(ref global_map) = self.global_name_map {
-                if let Some(&global_id) = global_map.get(name_str) {
-                    // Name exists in global namespace
-                    return (
-                        Identifier::new_with_scope(ident.name_id, ident.position, global_id, NameScope::Global),
-                        false,
-                    );
-                }
+            if let Some(ref global_map) = self.global_name_map
+                && let Some(&global_id) = global_map.get(name_str)
+            {
+                // Name exists in global namespace
+                return (
+                    Identifier::new_with_scope(ident.name_id, ident.position, global_id, NameScope::Global),
+                    false,
+                );
             }
             // Declared global but doesn't exist yet - it will be created when assigned
             // For now, we still need a global index. We'll use a placeholder approach:
@@ -938,24 +934,24 @@ impl<'i> Prepare<'i> {
 
         // 5. Check if exists in enclosing scope (implicit closure capture)
         // This handles reading variables from enclosing functions without explicit `nonlocal`
-        if let Some(ref enclosing) = self.enclosing_locals {
-            if enclosing.contains(name_str) {
-                // This is an implicit capture - add to free_var_map with a namespace slot
-                let slot = if let Some(&existing_slot) = self.free_var_map.get(name_str) {
-                    existing_slot
-                } else {
-                    // Allocate a namespace slot for this free variable
-                    let slot = NamespaceId::new(self.namespace_size);
-                    self.namespace_size += 1;
-                    self.name_map.insert(name_str.to_string(), slot);
-                    self.free_var_map.insert(name_str.to_string(), slot);
-                    slot
-                };
-                return (
-                    Identifier::new_with_scope(ident.name_id, ident.position, slot, NameScope::Cell),
-                    false, // Not a new local - it's captured from enclosing scope
-                );
-            }
+        if let Some(ref enclosing) = self.enclosing_locals
+            && enclosing.contains(name_str)
+        {
+            // This is an implicit capture - add to free_var_map with a namespace slot
+            let slot = if let Some(&existing_slot) = self.free_var_map.get(name_str) {
+                existing_slot
+            } else {
+                // Allocate a namespace slot for this free variable
+                let slot = NamespaceId::new(self.namespace_size);
+                self.namespace_size += 1;
+                self.name_map.insert(name_str.to_string(), slot);
+                self.free_var_map.insert(name_str.to_string(), slot);
+                slot
+            };
+            return (
+                Identifier::new_with_scope(ident.name_id, ident.position, slot, NameScope::Cell),
+                false, // Not a new local - it's captured from enclosing scope
+            );
         }
 
         // 6. Check if name was pre-populated in name_map (from function parameters)
@@ -970,13 +966,13 @@ impl<'i> Prepare<'i> {
         }
 
         // 7. Check if exists in global namespace (implicit global read)
-        if let Some(ref global_map) = self.global_name_map {
-            if let Some(&global_id) = global_map.get(name_str) {
-                return (
-                    Identifier::new_with_scope(ident.name_id, ident.position, global_id, NameScope::Global),
-                    false,
-                );
-            }
+        if let Some(ref global_map) = self.global_name_map
+            && let Some(&global_id) = global_map.get(name_str)
+        {
+            return (
+                Identifier::new_with_scope(ident.name_id, ident.position, global_id, NameScope::Global),
+                false,
+            );
         }
 
         // 8. Name not found anywhere - resolve to local (will be NameError at runtime)

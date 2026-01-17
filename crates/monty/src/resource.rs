@@ -335,13 +335,13 @@ impl LimitedTracker {
 impl ResourceTracker for LimitedTracker {
     fn on_allocate(&mut self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError> {
         // Check allocation count limit
-        if let Some(max) = self.limits.max_allocations {
-            if self.allocation_count >= max {
-                return Err(ResourceError::Allocation {
-                    limit: max,
-                    count: self.allocation_count + 1,
-                });
-            }
+        if let Some(max) = self.limits.max_allocations
+            && self.allocation_count >= max
+        {
+            return Err(ResourceError::Allocation {
+                limit: max,
+                count: self.allocation_count + 1,
+            });
         }
 
         let size = get_size();

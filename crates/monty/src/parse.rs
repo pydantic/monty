@@ -765,13 +765,13 @@ impl<'a> Parser<'a> {
         }
 
         // Optimization: if only one literal part, return as simple string literal
-        if parts.len() == 1 {
-            if let FStringPart::Literal(string_id) = parts[0] {
-                return Ok(ExprLoc::new(
-                    self.convert_range(range),
-                    Expr::Literal(Literal::Str(string_id)),
-                ));
-            }
+        if parts.len() == 1
+            && let FStringPart::Literal(string_id) = parts[0]
+        {
+            return Ok(ExprLoc::new(
+                self.convert_range(range),
+                Expr::Literal(Literal::Str(string_id)),
+            ));
         }
 
         Ok(ExprLoc::new(self.convert_range(range), Expr::FString(parts)))

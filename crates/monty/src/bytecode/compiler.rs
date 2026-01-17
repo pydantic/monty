@@ -718,30 +718,29 @@ impl<'a> Compiler<'a> {
         // Check if we can use the optimized CallBuiltinFunction path:
         // - Callable must be a builtin function (known at compile time)
         // - Arguments must be positional-only (Empty, One, Two, or Args)
-        if let Callable::Builtin(Builtins::Function(builtin_func)) = callable {
-            if let Some(arg_count) = self.compile_builtin_call(args, call_pos)? {
-                // Optimization applied - CallBuiltinFunction emitted
-                self.code.set_location(call_pos, None);
-                self.code.emit_call_builtin_function(*builtin_func as u8, arg_count);
-                return Ok(());
-            }
-            // Fall through to standard path for kwargs/unpacking
+        if let Callable::Builtin(Builtins::Function(builtin_func)) = callable
+            && let Some(arg_count) = self.compile_builtin_call(args, call_pos)?
+        {
+            // Optimization applied - CallBuiltinFunction emitted
+            self.code.set_location(call_pos, None);
+            self.code.emit_call_builtin_function(*builtin_func as u8, arg_count);
+            return Ok(());
         }
+        // Fall through to standard path for kwargs/unpacking
 
         // Check if we can use the optimized CallBuiltinType path:
         // - Callable must be a builtin type constructor (known at compile time)
         // - Arguments must be positional-only (Empty, One, Two, or Args)
-        if let Callable::Builtin(Builtins::Type(t)) = callable {
-            if let Some(type_id) = t.callable_to_u8() {
-                if let Some(arg_count) = self.compile_builtin_call(args, call_pos)? {
-                    // Optimization applied - CallBuiltinType emitted
-                    self.code.set_location(call_pos, None);
-                    self.code.emit_call_builtin_type(type_id, arg_count);
-                    return Ok(());
-                }
-            }
-            // Fall through to standard path for kwargs/unpacking or non-callable types
+        if let Callable::Builtin(Builtins::Type(t)) = callable
+            && let Some(type_id) = t.callable_to_u8()
+            && let Some(arg_count) = self.compile_builtin_call(args, call_pos)?
+        {
+            // Optimization applied - CallBuiltinType emitted
+            self.code.set_location(call_pos, None);
+            self.code.emit_call_builtin_type(type_id, arg_count);
+            return Ok(());
         }
+        // Fall through to standard path for kwargs/unpacking or non-callable types
 
         // Standard path: push callable, compile args, emit CallFunction/CallFunctionKw
         // Push the callable (use name position for NameError caret range)
@@ -1418,15 +1417,13 @@ impl<'a> Compiler<'a> {
 
         // Entry 4: Else block -> finally cleanup (only if has_finally and has_else)
         // Exceptions in else block should go through finally
-        if has_else {
-            if let Some(cleanup_start) = finally_cleanup_start {
-                self.code.add_exception_entry(ExceptionEntry::new(
-                    u32::try_from(else_start).expect("bytecode offset exceeds u32"),
-                    u32::try_from(else_end).expect("bytecode offset exceeds u32"),
-                    u32::try_from(cleanup_start).expect("bytecode offset exceeds u32"),
-                    stack_depth,
-                ));
-            }
+        if has_else && let Some(cleanup_start) = finally_cleanup_start {
+            self.code.add_exception_entry(ExceptionEntry::new(
+                u32::try_from(else_start).expect("bytecode offset exceeds u32"),
+                u32::try_from(else_end).expect("bytecode offset exceeds u32"),
+                u32::try_from(cleanup_start).expect("bytecode offset exceeds u32"),
+                stack_depth,
+            ));
         }
 
         Ok(())

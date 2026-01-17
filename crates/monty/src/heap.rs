@@ -1064,7 +1064,7 @@ impl<T: ResourceTracker> Heap<T> {
         // Take the source data temporarily
         let source_data = take_data!(self, source_id, "iadd_extend_list");
 
-        let success = if let HeapData::List(list) = &source_data {
+        if let HeapData::List(list) = &source_data {
             // Copy items and track which refs need incrementing
             let items: Vec<Value> = list.as_vec().iter().map(Value::copy_for_extend).collect();
             let ref_ids: Vec<HeapId> = items.iter().filter_map(Value::ref_id).collect();
@@ -1084,9 +1084,7 @@ impl<T: ResourceTracker> Heap<T> {
             // Not a list, restore and return false
             restore_data!(self, source_id, source_data, "iadd_extend_list");
             false
-        };
-
-        success
+        }
     }
 
     /// Multiplies (repeats) a sequence by an integer count.
@@ -1107,7 +1105,7 @@ impl<T: ResourceTracker> Heap<T> {
         // Take the data out to avoid borrow conflicts
         let data = take_data!(self, id, "mult_sequence");
 
-        let result = match &data {
+        match &data {
             HeapData::Str(s) => {
                 let repeated = s.as_str().repeat(count);
                 restore_data!(self, id, data, "mult_sequence");
@@ -1202,9 +1200,7 @@ impl<T: ResourceTracker> Heap<T> {
                 restore_data!(self, id, data, "mult_sequence");
                 Ok(None)
             }
-        };
-
-        result
+        }
     }
 
     /// Runs mark-sweep garbage collection to free unreachable cycles.
@@ -1237,10 +1233,10 @@ impl<T: ResourceTracker> Heap<T> {
             reachable[idx] = true;
 
             // Add children to work list
-            if let Some(Some(entry)) = self.entries.get(idx) {
-                if let Some(ref data) = entry.data {
-                    collect_child_ids(data, &mut work_list);
-                }
+            if let Some(Some(entry)) = self.entries.get(idx)
+                && let Some(ref data) = entry.data
+            {
+                collect_child_ids(data, &mut work_list);
             }
         }
 

@@ -261,10 +261,10 @@ impl ForIterator {
     #[inline]
     pub fn advance(&mut self, string_char_len: Option<usize>) {
         self.index += 1;
-        if let Some(char_len) = string_char_len {
-            if let ForIterValue::IterStr { byte_offset, .. } = &mut self.iter_value {
-                *byte_offset += char_len;
-            }
+        if let Some(char_len) = string_char_len
+            && let ForIterValue::IterStr { byte_offset, .. } = &mut self.iter_value
+        {
+            *byte_offset += char_len;
         }
     }
 

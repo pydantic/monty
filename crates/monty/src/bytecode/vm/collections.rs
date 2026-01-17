@@ -115,10 +115,10 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         }
 
         // Extend the list
-        if let Value::Ref(id) = &list_ref {
-            if let HeapData::List(list) = self.heap.get_mut(*id) {
-                list.as_vec_mut().extend(copied_items);
-            }
+        if let Value::Ref(id) = &list_ref
+            && let HeapData::List(list) = self.heap.get_mut(*id)
+        {
+            list.as_vec_mut().extend(copied_items);
         }
 
         iterable.drop_with_heap(self.heap);

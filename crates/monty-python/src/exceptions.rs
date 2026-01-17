@@ -384,10 +384,10 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
         ExcType::AssertionError => exceptions::PyAssertionError::new_err(msg),
         ExcType::AttributeError => exceptions::PyAttributeError::new_err(msg),
         ExcType::FrozenInstanceError => {
-            if let Ok(exc_cls) = get_frozen_instance_error(py) {
-                if let Ok(exc_instance) = exc_cls.call1((PyString::new(py, &msg),)) {
-                    return PyErr::from_value(exc_instance);
-                }
+            if let Ok(exc_cls) = get_frozen_instance_error(py)
+                && let Ok(exc_instance) = exc_cls.call1((PyString::new(py, &msg),))
+            {
+                return PyErr::from_value(exc_instance);
             }
             // if creating the right exception fails, fallback to AttributeError which it's a subclass of
             exceptions::PyAttributeError::new_err(msg)
