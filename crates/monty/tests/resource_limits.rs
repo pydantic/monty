@@ -496,3 +496,26 @@ fn bigint_builtin_pow_memory_limit() {
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
 }
+
+/// Test that large BigInt operations are rejected BEFORE allocation via check_large_result.
+///
+/// The pre-allocation size check estimates result size and rejects operations that would
+/// exceed the memory limit before any memory is actually consumed.
+#[test]
+fn bigint_rejected_before_allocation() {
+    // 2**1000000: base 2 has 2 bits, so estimate = 2 * 1000000 bits = 250KB
+    // Set limit to 100KB - the pre-check should reject before allocating
+    let code = "2 ** 1000000";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000); // 100KB limit
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_err(), "should be rejected before allocation");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert_eq!(
+        exc.message(),
+        Some("memory limit exceeded: 250000 bytes > 100000 bytes")
+    );
+}
