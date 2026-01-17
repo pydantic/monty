@@ -24,23 +24,41 @@ use crate::{
 /// When values are added to the list (via append, insert, etc.), their
 /// reference counts are incremented if they are heap-allocated (Ref variants).
 /// This ensures values remain valid while referenced by the list.
+///
+/// # GC Optimization
+/// The `contains_refs` flag tracks whether the list contains any `Value::Ref` items.
+/// This allows `collect_child_ids` and `py_dec_ref_ids` to skip iteration when the
+/// list contains only primitive values (ints, bools, None, etc.), significantly
+/// improving GC performance for lists of primitives.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) struct List(Vec<Value>);
+pub(crate) struct List {
+    items: Vec<Value>,
+    /// True if any item in the list is a `Value::Ref`. Used to skip iteration
+    /// in `collect_child_ids` and `py_dec_ref_ids` when no refs are present.
+    contains_refs: bool,
+}
 
 impl List {
     /// Creates a new list from a vector of values.
+    ///
+    /// Automatically computes the `contains_refs` flag by checking if any value
+    /// is a `Value::Ref`.
     ///
     /// Note: This does NOT increment reference counts - the caller must
     /// ensure refcounts are properly managed.
     #[must_use]
     pub fn new(vec: Vec<Value>) -> Self {
-        Self(vec)
+        let contains_refs = vec.iter().any(|v| matches!(v, Value::Ref(_)));
+        Self {
+            items: vec,
+            contains_refs,
+        }
     }
 
     /// Returns a reference to the underlying vector.
     #[must_use]
     pub fn as_vec(&self) -> &Vec<Value> {
-        &self.0
+        &self.items
     }
 
     /// Returns a mutable reference to the underlying vector.
@@ -48,14 +66,24 @@ impl List {
     /// # Safety Considerations
     /// Be careful when mutating the vector directly - you must manually
     /// manage reference counts for any heap values you add or remove.
+    /// After mutation, call `recompute_contains_refs()` if needed.
     pub fn as_vec_mut(&mut self) -> &mut Vec<Value> {
-        &mut self.0
+        &mut self.items
     }
 
     /// Returns the number of elements in the list.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.items.len()
+    }
+
+    /// Returns whether the list contains any heap references.
+    ///
+    /// When false, `collect_child_ids` and `py_dec_ref_ids` can skip iteration.
+    #[inline]
+    #[must_use]
+    pub fn contains_refs(&self) -> bool {
+        self.contains_refs
     }
 
     /// Appends an element to the end of the list.
@@ -65,9 +93,14 @@ impl List {
     /// was already incremented (e.g., via `clone_with_heap` or `evaluate_use`).
     ///
     /// Returns `Value::None`, matching Python's behavior where `list.append()` returns None.
-    pub fn append(&mut self, _heap: &mut Heap<impl ResourceTracker>, item: Value) {
+    pub fn append(&mut self, heap: &mut Heap<impl ResourceTracker>, item: Value) {
+        // Track if we're adding a reference and mark potential cycle
+        if matches!(item, Value::Ref(_)) {
+            self.contains_refs = true;
+            heap.mark_potential_cycle();
+        }
         // Ownership transfer - refcount was already handled by caller
-        self.0.push(item);
+        self.items.push(item);
     }
 
     /// Inserts an element at the specified index.
@@ -81,13 +114,18 @@ impl List {
     ///   the item is appended to the end (matching Python semantics).
     ///
     /// Returns `Value::None`, matching Python's behavior where `list.insert()` returns None.
-    pub fn insert(&mut self, _heap: &mut Heap<impl ResourceTracker>, index: usize, item: Value) {
+    pub fn insert(&mut self, heap: &mut Heap<impl ResourceTracker>, index: usize, item: Value) {
+        // Track if we're adding a reference and mark potential cycle
+        if matches!(item, Value::Ref(_)) {
+            self.contains_refs = true;
+            heap.mark_potential_cycle();
+        }
         // Ownership transfer - refcount was already handled by caller
         // Python's insert() appends if index is out of bounds
-        if index >= self.0.len() {
-            self.0.push(item);
+        if index >= self.items.len() {
+            self.items.push(item);
         } else {
-            self.0.insert(index, item);
+            self.items.insert(index, item);
         }
     }
 
@@ -115,7 +153,7 @@ impl List {
 
 impl From<List> for Vec<Value> {
     fn from(list: List) -> Self {
-        list.0
+        list.items
     }
 }
 
@@ -125,11 +163,11 @@ impl PyTrait for List {
     }
 
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.0.len() * std::mem::size_of::<Value>()
+        std::mem::size_of::<Self>() + self.items.len() * std::mem::size_of::<Value>()
     }
 
     fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
-        Some(self.0.len())
+        Some(self.items.len())
     }
 
     fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
@@ -140,7 +178,7 @@ impl PyTrait for List {
         };
 
         // Convert to usize, handling negative indices (Python-style: -1 = last element)
-        let len = i64::try_from(self.0.len()).expect("list length exceeds i64::MAX");
+        let len = i64::try_from(self.items.len()).expect("list length exceeds i64::MAX");
         let normalized_index = if index < 0 { index + len } else { index };
 
         // Bounds check
@@ -151,14 +189,14 @@ impl PyTrait for List {
         // Return clone of the item with proper refcount increment
         // Safety: normalized_index is validated to be in [0, len) above
         let idx = usize::try_from(normalized_index).expect("list index validated non-negative");
-        Ok(self.0[idx].clone_with_heap(heap))
+        Ok(self.items[idx].clone_with_heap(heap))
     }
 
     fn py_eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool {
-        if self.0.len() != other.0.len() {
+        if self.items.len() != other.items.len() {
             return false;
         }
-        for (i1, i2) in self.0.iter().zip(&other.0) {
+        for (i1, i2) in self.items.iter().zip(&other.items) {
             if !i1.py_eq(i2, heap, interns) {
                 return false;
             }
@@ -167,7 +205,11 @@ impl PyTrait for List {
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        for obj in &mut self.0 {
+        // Skip iteration if no refs - major GC optimization for lists of primitives
+        if !self.contains_refs {
+            return;
+        }
+        for obj in &mut self.items {
             if let Value::Ref(id) = obj {
                 stack.push(*id);
                 #[cfg(feature = "ref-count-panic")]
@@ -177,7 +219,7 @@ impl PyTrait for List {
     }
 
     fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
-        !self.0.is_empty()
+        !self.items.is_empty()
     }
 
     fn py_repr_fmt(
@@ -187,7 +229,7 @@ impl PyTrait for List {
         heap_ids: &mut AHashSet<HeapId>,
         interns: &Interns,
     ) -> std::fmt::Result {
-        repr_sequence_fmt('[', ']', &self.0, f, heap, heap_ids, interns)
+        repr_sequence_fmt('[', ']', &self.items, f, heap, heap_ids, interns)
     }
 
     fn py_add(
@@ -197,8 +239,8 @@ impl PyTrait for List {
         _interns: &Interns,
     ) -> Result<Option<Value>, crate::resource::ResourceError> {
         // Clone both lists' contents with proper refcounting
-        let mut result: Vec<Value> = self.0.iter().map(|obj| obj.clone_with_heap(heap)).collect();
-        let other_cloned: Vec<Value> = other.0.iter().map(|obj| obj.clone_with_heap(heap)).collect();
+        let mut result: Vec<Value> = self.items.iter().map(|obj| obj.clone_with_heap(heap)).collect();
+        let other_cloned: Vec<Value> = other.items.iter().map(|obj| obj.clone_with_heap(heap)).collect();
         result.extend(other_cloned);
         let id = heap.allocate(HeapData::List(Self::new(result)))?;
         Ok(Some(Value::Ref(id)))
@@ -216,13 +258,35 @@ impl PyTrait for List {
 
         if Some(*other_id) == self_id {
             // Self-extend: clone our own items with proper refcounting
-            let items = self.0.iter().map(|obj| obj.clone_with_heap(heap)).collect::<Vec<_>>();
-            self.0.extend(items);
+            let items = self
+                .items
+                .iter()
+                .map(|obj| obj.clone_with_heap(heap))
+                .collect::<Vec<_>>();
+            // If we're self-extending and have refs, mark potential cycle
+            if self.contains_refs {
+                heap.mark_potential_cycle();
+            }
+            self.items.extend(items);
         } else {
             // Get items from other list using iadd_extend_from_heap helper
             // This handles the borrow checker limitations with lifetime propagation
-            if !heap.iadd_extend_list(*other_id, &mut self.0) {
+            let prev_len = self.items.len();
+            if !heap.iadd_extend_list(*other_id, &mut self.items) {
                 return Ok(false);
+            }
+            // Check if we added any refs and mark potential cycle
+            if self.contains_refs {
+                // Already had refs, but adding more may create cycles
+                heap.mark_potential_cycle();
+            } else {
+                for item in &self.items[prev_len..] {
+                    if matches!(item, Value::Ref(_)) {
+                        self.contains_refs = true;
+                        heap.mark_potential_cycle();
+                        break;
+                    }
+                }
             }
         }
 
@@ -264,7 +328,7 @@ impl PyTrait for List {
                         return Err(e);
                     }
                 };
-                let len = self.0.len();
+                let len = self.items.len();
                 let len_i64 = i64::try_from(len).expect("list length exceeds i64::MAX");
                 let index = if index_i64 < 0 {
                     // Negative index: add length, clamp to 0 if still negative

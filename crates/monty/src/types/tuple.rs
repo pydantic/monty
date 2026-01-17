@@ -28,23 +28,49 @@ use crate::{
 /// # Reference Counting
 /// When a tuple is freed, all contained heap references have their refcounts
 /// decremented via `push_stack_ids`.
+///
+/// # GC Optimization
+/// The `contains_refs` flag tracks whether the tuple contains any `Value::Ref` items.
+/// This allows `collect_child_ids` and `py_dec_ref_ids` to skip iteration when the
+/// tuple contains only primitive values (ints, bools, None, etc.).
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Tuple(Vec<Value>);
+pub(crate) struct Tuple {
+    items: Vec<Value>,
+    /// True if any item in the tuple is a `Value::Ref`. Set at creation time
+    /// since tuples are immutable.
+    contains_refs: bool,
+}
 
 impl Tuple {
     /// Creates a new tuple from a vector of values.
+    ///
+    /// Automatically computes the `contains_refs` flag by checking if any value
+    /// is a `Value::Ref`. Since tuples are immutable, this flag never changes.
     ///
     /// Note: This does NOT increment reference counts - the caller must
     /// ensure refcounts are properly managed.
     #[must_use]
     pub fn new(vec: Vec<Value>) -> Self {
-        Self(vec)
+        let contains_refs = vec.iter().any(|v| matches!(v, Value::Ref(_)));
+        Self {
+            items: vec,
+            contains_refs,
+        }
     }
 
     /// Returns a reference to the underlying vector.
     #[must_use]
     pub fn as_vec(&self) -> &Vec<Value> {
-        &self.0
+        &self.items
+    }
+
+    /// Returns whether the tuple contains any heap references.
+    ///
+    /// When false, `collect_child_ids` and `py_dec_ref_ids` can skip iteration.
+    #[inline]
+    #[must_use]
+    pub fn contains_refs(&self) -> bool {
+        self.contains_refs
     }
 
     /// Creates a tuple from the `tuple()` constructor call.
@@ -71,13 +97,13 @@ impl Tuple {
 
 impl FromIterator<Value> for Tuple {
     fn from_iter<I: IntoIterator<Item = Value>>(iter: I) -> Self {
-        Self(iter.into_iter().collect())
+        Self::new(iter.into_iter().collect())
     }
 }
 
 impl From<Tuple> for Vec<Value> {
     fn from(tuple: Tuple) -> Self {
-        tuple.0
+        tuple.items
     }
 }
 
@@ -87,11 +113,11 @@ impl PyTrait for Tuple {
     }
 
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.0.len() * std::mem::size_of::<Value>()
+        std::mem::size_of::<Self>() + self.items.len() * std::mem::size_of::<Value>()
     }
 
     fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
-        Some(self.0.len())
+        Some(self.items.len())
     }
 
     fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
@@ -102,7 +128,7 @@ impl PyTrait for Tuple {
         };
 
         // Convert to usize, handling negative indices (Python-style: -1 = last element)
-        let len = i64::try_from(self.0.len()).expect("tuple length exceeds i64::MAX");
+        let len = i64::try_from(self.items.len()).expect("tuple length exceeds i64::MAX");
         let normalized_index = if index < 0 { index + len } else { index };
 
         // Bounds check
@@ -113,14 +139,14 @@ impl PyTrait for Tuple {
         // Return clone of the item with proper refcount increment
         // Safety: normalized_index is validated to be in [0, len) above
         let idx = usize::try_from(normalized_index).expect("tuple index validated non-negative");
-        Ok(self.0[idx].clone_with_heap(heap))
+        Ok(self.items[idx].clone_with_heap(heap))
     }
 
     fn py_eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool {
-        if self.0.len() != other.0.len() {
+        if self.items.len() != other.items.len() {
             return false;
         }
-        for (i1, i2) in self.0.iter().zip(&other.0) {
+        for (i1, i2) in self.items.iter().zip(&other.items) {
             if !i1.py_eq(i2, heap, interns) {
                 return false;
             }
@@ -133,7 +159,11 @@ impl PyTrait for Tuple {
     /// Called during garbage collection to decrement refcounts of nested values.
     /// When `ref-count-panic` is enabled, also marks all Values as Dereferenced.
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        for obj in &mut self.0 {
+        // Skip iteration if no refs - GC optimization for tuples of primitives
+        if !self.contains_refs {
+            return;
+        }
+        for obj in &mut self.items {
             if let Value::Ref(id) = obj {
                 stack.push(*id);
                 #[cfg(feature = "ref-count-panic")]
@@ -145,7 +175,7 @@ impl PyTrait for Tuple {
     // py_call_attr uses default implementation which returns AttributeError
 
     fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
-        !self.0.is_empty()
+        !self.items.is_empty()
     }
 
     fn py_repr_fmt(
@@ -155,6 +185,6 @@ impl PyTrait for Tuple {
         heap_ids: &mut AHashSet<HeapId>,
         interns: &Interns,
     ) -> std::fmt::Result {
-        repr_sequence_fmt('(', ')', &self.0, f, heap, heap_ids, interns)
+        repr_sequence_fmt('(', ')', &self.items, f, heap, heap_ids, interns)
     }
 }

@@ -98,6 +98,31 @@ pub(crate) enum HeapData {
 }
 
 impl HeapData {
+    /// Returns whether this heap data type can participate in reference cycles.
+    ///
+    /// Only container types that can hold references to other heap objects need to be
+    /// tracked for GC purposes. Leaf types like Str, Bytes, Range, and Exception cannot
+    /// form cycles and should not count toward the GC allocation threshold.
+    ///
+    /// This optimization allows programs that allocate many leaf objects (like strings)
+    /// to avoid triggering unnecessary GC cycles.
+    #[inline]
+    pub fn is_gc_tracked(&self) -> bool {
+        matches!(
+            self,
+            Self::List(_)
+                | Self::Tuple(_)
+                | Self::Dict(_)
+                | Self::Set(_)
+                | Self::FrozenSet(_)
+                | Self::Closure(_, _, _)
+                | Self::FunctionDefaults(_, _)
+                | Self::Cell(_)
+                | Self::Dataclass(_)
+                | Self::Iterator(_)
+        )
+    }
+
     /// Computes hash for immutable heap types that can be used as dict keys.
     ///
     /// Returns Some(hash) for immutable types (Str, Bytes, Tuple of hashables).
@@ -557,6 +582,11 @@ pub struct HeapValue {
 ///
 /// Serialization requires `T: Serialize` and `T: Deserialize`. Custom serde implementation
 /// handles the Drop constraint by using `std::mem::take` during serialization.
+///
+/// # GC Optimization
+/// The `may_have_cycles` flag tracks whether reference cycles may exist. When a
+/// container stores a reference to another heap object, `mark_potential_cycle()` is
+/// called. GC can skip the mark-sweep phase entirely when this flag is false.
 #[derive(Debug)]
 pub struct Heap<T: ResourceTracker> {
     entries: Vec<Option<HeapValue>>,
@@ -564,15 +594,19 @@ pub struct Heap<T: ResourceTracker> {
     free_list: Vec<HeapId>,
     /// Resource tracker for enforcing limits and scheduling GC.
     tracker: T,
+    /// True if reference cycles may exist. Set when a container stores a Ref,
+    /// cleared after GC completes. When false, GC can skip mark-sweep entirely.
+    may_have_cycles: bool,
 }
 
 impl<T: ResourceTracker + serde::Serialize> serde::Serialize for Heap<T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("Heap", 3)?;
+        let mut state = serializer.serialize_struct("Heap", 4)?;
         state.serialize_field("entries", &self.entries)?;
         state.serialize_field("free_list", &self.free_list)?;
         state.serialize_field("tracker", &self.tracker)?;
+        state.serialize_field("may_have_cycles", &self.may_have_cycles)?;
         state.end()
     }
 }
@@ -584,12 +618,15 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
             entries: Vec<Option<HeapValue>>,
             free_list: Vec<HeapId>,
             tracker: T,
+            #[serde(default)]
+            may_have_cycles: bool,
         }
         let fields = HeapFields::<T>::deserialize(deserializer)?;
         Ok(Self {
             entries: fields.entries,
             free_list: fields.free_list,
             tracker: fields.tracker,
+            may_have_cycles: fields.may_have_cycles,
         })
     }
 }
@@ -629,6 +666,7 @@ impl<T: ResourceTracker> Heap<T> {
             entries: Vec::with_capacity(capacity),
             free_list: Vec::new(),
             tracker,
+            may_have_cycles: false,
         }
     }
 
@@ -647,12 +685,28 @@ impl<T: ResourceTracker> Heap<T> {
         self.entries.len()
     }
 
+    /// Marks that a reference cycle may exist in the heap.
+    ///
+    /// Call this when a container (list, dict, tuple, etc.) stores a reference
+    /// to another heap object. This enables the GC to skip mark-sweep entirely
+    /// when no cycles are possible.
+    #[inline]
+    pub fn mark_potential_cycle(&mut self) {
+        self.may_have_cycles = true;
+    }
+
     /// Allocates a new heap entry.
     ///
     /// Returns `Err(ResourceError)` if allocation would exceed configured limits.
     /// Use this when you need to handle resource limit errors gracefully.
+    ///
+    /// Only GC-tracked types (containers that can hold references) count toward the
+    /// GC allocation threshold. Leaf types like strings don't trigger GC.
     pub fn allocate(&mut self, data: HeapData) -> Result<HeapId, ResourceError> {
         self.tracker.on_allocate(|| data.py_estimate_size())?;
+        if data.is_gc_tracked() {
+            self.tracker.on_gc_tracked_allocate();
+        }
 
         let hash_state = HashState::for_data(&data);
         let new_entry = HeapValue {
@@ -1246,6 +1300,11 @@ impl<T: ResourceTracker> Heap<T> {
     /// This is necessary because reference counting alone cannot free cycles
     /// where objects reference each other but are unreachable from the program.
     ///
+    /// # Optimization
+    /// If `may_have_cycles` is false, the mark-sweep phase is skipped entirely
+    /// since no cycles can exist. This happens when only primitive values are
+    /// stored in containers.
+    ///
     /// # Arguments
     /// * `get_roots` - Closure returning an iterator of HeapIds that are roots
     pub fn collect_garbage<I, F>(&mut self, get_roots: F)
@@ -1253,6 +1312,15 @@ impl<T: ResourceTracker> Heap<T> {
         I: Iterator<Item = HeapId>,
         F: FnOnce() -> I,
     {
+        // Skip mark-sweep if no cycles are possible
+        if !self.may_have_cycles {
+            self.tracker.on_gc_complete(0, 0);
+            return;
+        }
+
+        // Count live objects before GC for adaptive interval tuning
+        let heap_size_before = self.entries.iter().filter(|e| e.is_some()).count();
+
         // Mark phase: collect all reachable IDs using BFS
         // Use Vec<bool> instead of HashSet for O(1) operations without hashing overhead
         let mut reachable: Vec<bool> = vec![false; self.entries.len()];
@@ -1275,6 +1343,7 @@ impl<T: ResourceTracker> Heap<T> {
         }
 
         // Sweep phase: free unreachable values
+        let mut freed_count = 0;
         for (id, value) in self.entries.iter_mut().enumerate() {
             if reachable[id] {
                 continue;
@@ -1282,6 +1351,8 @@ impl<T: ResourceTracker> Heap<T> {
 
             // This entry is unreachable - free it
             if let Some(value) = value.take() {
+                freed_count += 1;
+
                 // Notify tracker of freed memory
                 if let Some(ref data) = value.data {
                     self.tracker.on_free(|| data.py_estimate_size());
@@ -1297,8 +1368,11 @@ impl<T: ResourceTracker> Heap<T> {
             }
         }
 
-        // Notify tracker that GC is complete
-        self.tracker.on_gc_complete();
+        // Reset cycle flag after GC - cycles have been collected
+        self.may_have_cycles = false;
+
+        // Notify tracker that GC is complete with stats for adaptive tuning
+        self.tracker.on_gc_complete(heap_size_before, freed_count);
     }
 }
 
@@ -1308,6 +1382,10 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
         // Leaf types with no heap references
         HeapData::Str(_) | HeapData::Bytes(_) | HeapData::Range(_) | HeapData::Exception(_) | HeapData::LongInt(_) => {}
         HeapData::List(list) => {
+            // Skip iteration if no refs - major GC optimization for lists of primitives
+            if !list.contains_refs() {
+                return;
+            }
             for value in list.as_vec() {
                 if let Value::Ref(id) = value {
                     work_list.push(*id);
@@ -1315,6 +1393,10 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
             }
         }
         HeapData::Tuple(tuple) => {
+            // Skip iteration if no refs - GC optimization for tuples of primitives
+            if !tuple.contains_refs() {
+                return;
+            }
             for value in tuple.as_vec() {
                 if let Value::Ref(id) = value {
                     work_list.push(*id);

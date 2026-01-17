@@ -145,6 +145,10 @@ impl<T: ResourceTracker> ResourceTracker for PySignalTracker<T> {
         self.inner.on_allocate(get_size)
     }
 
+    fn on_gc_tracked_allocate(&mut self) {
+        self.inner.on_gc_tracked_allocate();
+    }
+
     fn on_free(&mut self, get_size: impl FnOnce() -> usize) {
         self.inner.on_free(get_size);
     }
@@ -161,8 +165,8 @@ impl<T: ResourceTracker> ResourceTracker for PySignalTracker<T> {
         self.inner.should_gc()
     }
 
-    fn on_gc_complete(&mut self) {
-        self.inner.on_gc_complete();
+    fn on_gc_complete(&mut self, heap_size: usize, freed: usize) {
+        self.inner.on_gc_complete(heap_size, freed);
     }
 
     fn check_recursion_depth(&self, current_depth: usize) -> Result<(), ResourceError> {

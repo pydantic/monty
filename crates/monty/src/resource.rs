@@ -111,6 +111,16 @@ pub trait ResourceTracker: fmt::Debug {
     /// * `size` - Approximate size in bytes of the allocation
     fn on_allocate(&mut self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError>;
 
+    /// Called after allocating a GC-tracked type (containers that can hold references).
+    ///
+    /// Only container types like List, Dict, Tuple, Set, Closure, etc. count toward
+    /// the GC allocation threshold. Leaf types like Str, Bytes, Range, and Exception
+    /// cannot form cycles and should not trigger GC.
+    ///
+    /// This separation allows programs that allocate many leaf objects (like strings)
+    /// to avoid triggering unnecessary GC cycles.
+    fn on_gc_tracked_allocate(&mut self);
+
     /// Called when memory is freed (during dec_ref or garbage collection).
     ///
     /// # Arguments
@@ -135,7 +145,12 @@ pub trait ResourceTracker: fmt::Debug {
     /// Called after garbage collection completes.
     ///
     /// Used to reset internal counters (e.g., allocations since last GC).
-    fn on_gc_complete(&mut self);
+    /// Also receives stats about the GC run to enable adaptive interval tuning.
+    ///
+    /// # Arguments
+    /// * `heap_size` - Number of live objects before GC
+    /// * `freed` - Number of objects freed by GC
+    fn on_gc_complete(&mut self, heap_size: usize, freed: usize);
 
     /// Called before pushing a new call frame to check recursion depth.
     ///
@@ -153,24 +168,46 @@ pub trait ResourceTracker: fmt::Debug {
 /// eventually collecting reference cycles.
 const DEFAULT_GC_INTERVAL: usize = 100_000;
 
+/// Maximum GC interval for adaptive tuning - cap at 1,000,000 allocations.
+///
+/// This prevents the interval from growing unboundedly for long-running programs.
+const MAX_GC_INTERVAL: usize = 1_000_000;
+
 /// A resource tracker that imposes no limits but still triggers infrequent GC.
 ///
 /// This tracker does not enforce any resource limits (allocations, time, memory),
 /// but still triggers garbage collection periodically to collect reference cycles.
-/// GC runs every 100,000 allocations by default.
+/// GC runs every 100,000 allocations by default, with adaptive tuning that doubles
+/// the interval when GC frees little and resets when it frees a lot.
 ///
 /// Recursion limit is set to the cpython default of 1000.
-#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NoLimitTracker {
-    /// Number of allocations since last garbage collection.
+    /// Number of GC-tracked allocations since last garbage collection.
     allocations_since_gc: usize,
+    /// Current GC interval (adaptive). Starts at DEFAULT_GC_INTERVAL and can grow
+    /// up to MAX_GC_INTERVAL when GC is ineffective.
+    gc_interval: usize,
+}
+
+impl Default for NoLimitTracker {
+    fn default() -> Self {
+        Self {
+            allocations_since_gc: 0,
+            gc_interval: DEFAULT_GC_INTERVAL,
+        }
+    }
 }
 
 impl ResourceTracker for NoLimitTracker {
     #[inline]
     fn on_allocate(&mut self, _: impl FnOnce() -> usize) -> Result<(), ResourceError> {
-        self.allocations_since_gc += 1;
         Ok(())
+    }
+
+    #[inline]
+    fn on_gc_tracked_allocate(&mut self) {
+        self.allocations_since_gc += 1;
     }
 
     #[inline]
@@ -183,12 +220,28 @@ impl ResourceTracker for NoLimitTracker {
 
     #[inline]
     fn should_gc(&self) -> bool {
-        self.allocations_since_gc >= DEFAULT_GC_INTERVAL
+        self.allocations_since_gc >= self.gc_interval
     }
 
     #[inline]
-    fn on_gc_complete(&mut self) {
+    fn on_gc_complete(&mut self, heap_size: usize, freed: usize) {
         self.allocations_since_gc = 0;
+
+        // Adaptive interval tuning: double interval when GC frees little,
+        // reset to default when it frees a lot
+        let freed_ratio = if heap_size > 0 {
+            freed as f64 / heap_size as f64
+        } else {
+            0.0
+        };
+
+        if freed_ratio < 0.10 {
+            // Less than 10% freed - GC is ineffective, double the interval
+            self.gc_interval = (self.gc_interval * 2).min(MAX_GC_INTERVAL);
+        } else {
+            // Significant collection - reset to default interval
+            self.gc_interval = DEFAULT_GC_INTERVAL;
+        }
     }
 
     /// Set the recursion limit to 1000.
@@ -356,12 +409,15 @@ impl ResourceTracker for LimitedTracker {
             }
         }
 
-        // Update tracking state
+        // Update tracking state (but not GC counter - that's done in on_gc_tracked_allocate)
         self.allocation_count += 1;
         self.current_memory += size;
-        self.allocations_since_gc += 1;
 
         Ok(())
+    }
+
+    fn on_gc_tracked_allocate(&mut self) {
+        self.allocations_since_gc += 1;
     }
 
     fn on_free(&mut self, get_size: impl FnOnce() -> usize) {
@@ -384,7 +440,8 @@ impl ResourceTracker for LimitedTracker {
             .is_some_and(|interval| self.allocations_since_gc >= interval)
     }
 
-    fn on_gc_complete(&mut self) {
+    fn on_gc_complete(&mut self, _heap_size: usize, _freed: usize) {
+        // LimitedTracker uses a fixed GC interval (no adaptive tuning)
         self.allocations_since_gc = 0;
     }
 
