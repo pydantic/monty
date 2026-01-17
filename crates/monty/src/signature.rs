@@ -47,40 +47,69 @@ pub(crate) struct Signature {
     /// Positional-only parameters, e.g. `a, b` in `def f(a, b, /): ...`
     ///
     /// These can only be passed by position, not by keyword.
-    pub pos_args: Option<Vec<StringId>>,
+    pos_args: Option<Vec<StringId>>,
 
     /// Number of positional-only parameters with defaults (from the end).
-    pub pos_defaults_count: usize,
+    pos_defaults_count: usize,
 
     /// Positional-or-keyword parameters, e.g. `a, b` in `def f(a, b): ...`
     ///
     /// These can be passed either by position or by keyword.
-    pub args: Option<Vec<StringId>>,
+    args: Option<Vec<StringId>>,
 
     /// Number of positional-or-keyword parameters with defaults (from the end).
-    pub arg_defaults_count: usize,
+    arg_defaults_count: usize,
 
     /// Variable positional parameter name, e.g. `args` in `def f(*args): ...`
     ///
     /// Collects excess positional arguments into a tuple.
-    pub var_args: Option<StringId>,
+    var_args: Option<StringId>,
 
     /// Keyword-only parameters, e.g. `c` in `def f(*, c): ...` or `def f(*args, c): ...`
     ///
     /// These can only be passed by keyword, not by position.
-    pub kwargs: Option<Vec<StringId>>,
+    kwargs: Option<Vec<StringId>>,
 
     /// Mapping from each keyword-only parameter to its default index (if any).
     ///
     /// Each entry corresponds to the same index in `kwargs`. A value of `Some(i)`
     /// points into the kwarg section of the defaults array, while `None` means
     /// the parameter is required.
-    pub kwarg_default_map: Option<Vec<Option<usize>>>,
+    kwarg_default_map: Option<Vec<Option<usize>>>,
 
     /// Variable keyword parameter name, e.g. `kwargs` in `def f(**kwargs): ...`
     ///
     /// Collects excess keyword arguments into a dict.
-    pub var_kwargs: Option<StringId>,
+    var_kwargs: Option<StringId>,
+
+    /// How simple the signature is, used for fast path when binding
+    bind_mode: BindMode,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum BindMode {
+    /// If this is a simple signature (no defaults, no *args/**kwargs).
+    ///
+    /// Simple signatures can use a fast path for argument binding that avoids
+    /// the full binding algorithm overhead. A simple signature has:
+    /// - No positional-only parameters
+    /// - No defaults for any parameters
+    /// - No *args or **kwargs
+    /// - No keyword-only parameters
+    #[default]
+    Simple,
+    /// If this signature has only positional-or-keyword params with defaults.
+    ///
+    /// This identifies the common pattern `def f(a, b=1, c=2)` where:
+    /// - No positional-only parameters
+    /// - No *args or **kwargs
+    /// - No keyword-only parameters
+    /// - Has some default values
+    ///
+    /// These signatures can use a simplified binding that just fills positional
+    /// args and applies defaults without the full algorithm overhead.
+    SimpleWithDefaults,
+    Complex,
 }
 
 impl Signature {
@@ -106,16 +135,39 @@ impl Signature {
         kwarg_default_map: Vec<Option<usize>>,
         var_kwargs: Option<StringId>,
     ) -> Self {
+        let pos_args = if pos_args.is_empty() { None } else { Some(pos_args) };
         let has_kwonly = !kwargs.is_empty();
+        let kwargs = if has_kwonly { Some(kwargs) } else { None };
+
+        let bind_mode = if pos_args.is_none()
+            && pos_defaults_count == 0
+            && arg_defaults_count == 0
+            && var_args.is_none()
+            && kwargs.is_none()
+            && var_kwargs.is_none()
+        {
+            BindMode::Simple
+        } else if pos_args.is_none()
+            && var_args.is_none()
+            && kwargs.is_none()
+            && var_kwargs.is_none()
+            && arg_defaults_count > 0
+        {
+            BindMode::SimpleWithDefaults
+        } else {
+            BindMode::Complex
+        };
+
         Self {
-            pos_args: if pos_args.is_empty() { None } else { Some(pos_args) },
+            pos_args,
             pos_defaults_count,
             args: if args.is_empty() { None } else { Some(args) },
             arg_defaults_count,
             var_args,
-            kwargs: if has_kwonly { Some(kwargs) } else { None },
+            kwargs,
             kwarg_default_map: if has_kwonly { Some(kwarg_default_map) } else { None },
             var_kwargs,
+            bind_mode,
         }
     }
 
@@ -158,10 +210,8 @@ impl Signature {
         // Fast path for simple signatures (no defaults, no special params) and
         // signatures with only positional-or-keyword params and defaults.
         // This avoids the full binding algorithm overhead for common cases.
-        let is_simple = self.is_simple();
-        let is_simple_with_defaults = self.is_simple_with_defaults();
 
-        if is_simple || is_simple_with_defaults {
+        if matches!(self.bind_mode, BindMode::Simple | BindMode::SimpleWithDefaults) {
             // Try to consume args directly into namespace without the full algorithm.
             // Returns Some(args) if kwargs were passed (need full algorithm).
             let opt_args = match args {
@@ -195,9 +245,7 @@ impl Signature {
                 if actual_count == param_count {
                     // Exact match - no defaults needed
                     return Ok(());
-                }
-
-                if is_simple_with_defaults {
+                } else if self.bind_mode == BindMode::SimpleWithDefaults {
                     let required = self.required_positional_count();
                     if actual_count >= required && actual_count < param_count {
                         // Apply defaults for remaining parameters
@@ -554,42 +602,6 @@ impl Signature {
     /// Returns the total number of default values across all parameter groups.
     pub fn total_defaults_count(&self) -> usize {
         self.pos_defaults_count + self.arg_defaults_count + self.kwarg_defaults_count()
-    }
-
-    /// Returns true if this is a simple signature (no defaults, no *args/**kwargs).
-    ///
-    /// Simple signatures can use a fast path for argument binding that avoids
-    /// the full binding algorithm overhead. A simple signature has:
-    /// - No positional-only parameters
-    /// - No defaults for any parameters
-    /// - No *args or **kwargs
-    /// - No keyword-only parameters
-    fn is_simple(&self) -> bool {
-        self.pos_args.is_none()
-            && self.pos_defaults_count == 0
-            && self.arg_defaults_count == 0
-            && self.var_args.is_none()
-            && self.kwargs.is_none()
-            && self.var_kwargs.is_none()
-    }
-
-    /// Returns true if this signature has only positional-or-keyword params with defaults.
-    ///
-    /// This identifies the common pattern `def f(a, b=1, c=2)` where:
-    /// - No positional-only parameters
-    /// - No *args or **kwargs
-    /// - No keyword-only parameters
-    /// - Has some default values
-    ///
-    /// These signatures can use a simplified binding that just fills positional
-    /// args and applies defaults without the full algorithm overhead.
-    #[inline]
-    fn is_simple_with_defaults(&self) -> bool {
-        self.pos_args.is_none()
-            && self.var_args.is_none()
-            && self.kwargs.is_none()
-            && self.var_kwargs.is_none()
-            && self.arg_defaults_count > 0
     }
 
     /// Returns the minimum number of positional arguments required.
