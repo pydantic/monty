@@ -13,7 +13,7 @@ use crate::{
     intern::{ExtFunctionId, FunctionId, StringId},
     io::PrintWriter,
     resource::ResourceTracker,
-    types::{Dict, PyTrait, Type},
+    types::{Dict, PyTrait, Type, str::call_str_method},
     value::{Attr, Value},
 };
 
@@ -167,20 +167,29 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// For heap-allocated objects (`Value::Ref`), dispatches to the type's
     /// `py_call_attr` implementation via `heap.call_attr()`.
+    /// For interned strings (`Value::InternString`), uses the unified `call_str_method`.
     fn call_method(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<Value, RunError> {
         let attr = Attr::Interned(name_id);
 
-        if let Value::Ref(heap_id) = obj {
-            // Call the method on the heap object
-            let result = self.heap.call_attr(heap_id, &attr, args, self.interns);
-            // Drop the object reference after the call
-            obj.drop_with_heap(self.heap);
-            result
-        } else {
-            // Non-heap values don't support method calls
-            let type_name = obj.py_type(self.heap);
-            args.drop_with_heap(self.heap);
-            Err(ExcType::attribute_error(type_name, self.interns.get_str(name_id)))
+        match obj {
+            Value::Ref(heap_id) => {
+                // Call the method on the heap object
+                let result = self.heap.call_attr(heap_id, &attr, args, self.interns);
+                // Drop the object reference after the call
+                obj.drop_with_heap(self.heap);
+                result
+            }
+            Value::InternString(string_id) => {
+                // Call string method on interned string literal using the unified dispatcher
+                let s = self.interns.get_str(string_id);
+                call_str_method(s, name_id, args, self.heap, self.interns)
+            }
+            _ => {
+                // Non-heap values without method support
+                let type_name = obj.py_type(self.heap);
+                args.drop_with_heap(self.heap);
+                Err(ExcType::attribute_error(type_name, self.interns.get_str(name_id)))
+            }
         }
     }
 

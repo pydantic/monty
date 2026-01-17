@@ -23,14 +23,22 @@ pub struct StringId(u32);
 /// The StringId for `"<module>"` - always index 0 in the interner.
 pub const MODULE_STRING_ID: StringId = StringId(0);
 
+/// update MAX_ATTR_ID when adding new attrs
+const MAX_ATTR_ID: u32 = 21;
+
 /// Pre-interned attribute names for container methods.
 ///
 /// These StringIds are assigned at startup in `InternerBuilder::new()` and provide
 /// O(1) comparison for common method names without heap allocation.
 ///
 /// Usage: `use crate::intern::attr;` then `attr::APPEND`, `attr::GET`, etc.
+///
+/// IMPORTANT NOTE: the last (max) attribute ID must be kept as `MAX_ATTR_ID` by updating
+/// `MAX_ATTR_ID` when new attrs are added.
+///
+/// ALSO update `InternerBuilder::new` debug_assertions when adding new attrs!
 pub mod attr {
-    use super::StringId;
+    use super::{MAX_ATTR_ID, StringId};
 
     // List methods
     pub const APPEND: StringId = StringId(1);
@@ -59,6 +67,9 @@ pub mod attr {
     pub const ISSUBSET: StringId = StringId(18);
     pub const ISSUPERSET: StringId = StringId(19);
     pub const ISDISJOINT: StringId = StringId(20);
+
+    // String methods
+    pub const JOIN: StringId = StringId(MAX_ATTR_ID);
 }
 
 impl StringId {
@@ -158,12 +169,13 @@ impl InternerBuilder {
     ///
     /// Pre-interns:
     /// - Index 0: `"<module>"` for module-level code
-    /// - Indices 1-20: Known attribute names (append, insert, get, etc.)
+    /// - Indices 1-MAX_ATTR_ID: Known attribute names (append, insert, get, join, etc.)
     pub fn new(code: &str) -> Self {
         // very rough guess of the number of strings that will need to be interned
         // Dividing by 2 since each string has open+close quotes.
         // This overcounts (escaped quotes, triple quotes) but for capacity that's fine
-        let string_count_guess = 21 + (code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1);
+        let string_count_guess =
+            MAX_ATTR_ID as usize + 1 + (code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1);
         let mut interner = Self {
             string_map: AHashMap::with_capacity(string_count_guess),
             strings: Vec::with_capacity(string_count_guess),
@@ -218,6 +230,8 @@ impl InternerBuilder {
         debug_assert_eq!(id, attr::ISSUPERSET);
         let id = interner.intern("isdisjoint");
         debug_assert_eq!(id, attr::ISDISJOINT);
+        let id = interner.intern("join");
+        debug_assert_eq!(id, attr::JOIN);
 
         interner
     }

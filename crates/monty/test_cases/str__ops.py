@@ -56,3 +56,25 @@ assert s == 'ababab', 'str imult'
 s = 'x'
 s *= 0
 assert s == '', 'str imult zero'
+
+# === String join method ===
+# Basic join on literals
+assert ','.join(['a', 'b', 'c']) == 'a,b,c', 'join list with comma'
+assert ''.join(['a', 'b', 'c']) == 'abc', 'join with empty separator'
+assert '-'.join([]) == '', 'join empty list'
+assert ','.join(['only']) == 'only', 'join single element'
+
+# Join with different iterables
+assert ' '.join(('hello', 'world')) == 'hello world', 'join tuple'
+
+# Join with variable separator
+sep = '-'
+assert sep.join(['a', 'b']) == 'a-b', 'join with variable separator'
+
+# Heap-allocated string separator
+s = str('.')
+assert s.join(['a', 'b']) == 'a.b', 'join with heap string'
+
+# Mixed string types in iterable (interned and heap)
+mixed = ['hello', str('world')]
+assert ' '.join(mixed) == 'hello world', 'join with mixed string types'

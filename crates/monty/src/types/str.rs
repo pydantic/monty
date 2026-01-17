@@ -10,12 +10,13 @@ use ahash::AHashSet;
 use super::PyTrait;
 use crate::{
     args::ArgValues,
-    exception_private::RunResult,
+    exception_private::{ExcType, RunResult},
+    for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
-    intern::Interns,
+    intern::{Interns, StringId, attr},
     resource::ResourceTracker,
     types::Type,
-    value::Value,
+    value::{Attr, Value},
 };
 
 /// Python string value stored on the heap.
@@ -170,7 +171,117 @@ impl PyTrait for Str {
             _ => Ok(false),
         }
     }
-    // py_call_attr uses default implementation which returns AttributeError
+
+    fn py_call_attr(
+        &mut self,
+        heap: &mut Heap<impl ResourceTracker>,
+        attr: &Attr,
+        args: ArgValues,
+        interns: &Interns,
+    ) -> RunResult<Value> {
+        let Some(attr_id) = attr.string_id() else {
+            args.drop_with_heap(heap);
+            return Err(ExcType::attribute_error(Type::Str, attr.as_str(interns)));
+        };
+
+        call_str_method(&self.0, attr_id, args, heap, interns)
+    }
+}
+
+/// Dispatches a method call on a string value.
+///
+/// This is the unified entry point for string method calls, used by both:
+/// - `Str::py_call_attr()` for heap-allocated strings
+/// - VM's `call_method()` for interned string literals
+///
+/// # Arguments
+/// * `s` - The string to call the method on
+/// * `method_id` - The interned method name (e.g., `attr::JOIN`)
+/// * `args` - The method arguments
+/// * `heap` - The heap for allocation and reference counting
+/// * `interns` - The interns table for resolving interned strings
+pub fn call_str_method(
+    s: &str,
+    method_id: StringId,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    if method_id == attr::JOIN {
+        let iterable = args.get_one_arg("str.join")?;
+        str_join(s, iterable, heap, interns)
+    } else {
+        args.drop_with_heap(heap);
+        Err(ExcType::attribute_error(Type::Str, interns.get_str(method_id)))
+    }
+}
+
+/// Implements Python's `str.join(iterable)` method.
+///
+/// Joins elements of the iterable with the separator string, returning
+/// a new heap-allocated string. Each element must be a string.
+///
+/// # Arguments
+/// * `separator` - The separator string (e.g., "," for comma-separated)
+/// * `iterable` - The iterable containing string elements to join
+/// * `heap` - The heap for allocation and reference counting
+/// * `interns` - The interns table for resolving interned strings
+///
+/// # Errors
+/// Returns `TypeError` if any element in the iterable is not a string.
+fn str_join(
+    separator: &str,
+    iterable: Value,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    // Create ForIterator from the iterable
+    let mut iter = ForIterator::new(iterable, heap, interns)?;
+
+    // Build result string
+    let mut result = String::new();
+    let mut first = true;
+
+    while let Some(item) = iter.for_next(heap, interns)? {
+        // Check item is a string and extract its content
+        let item_str = match &item {
+            Value::InternString(id) => {
+                let s = interns.get_str(*id).to_owned();
+                item.drop_with_heap(heap); // No-op for InternString but consistent
+                s
+            }
+            Value::Ref(heap_id) => {
+                if let HeapData::Str(s) = heap.get(*heap_id) {
+                    let owned = s.as_str().to_owned();
+                    item.drop_with_heap(heap);
+                    owned
+                } else {
+                    let t = item.py_type(heap);
+                    item.drop_with_heap(heap);
+                    iter.drop_with_heap(heap);
+                    return Err(ExcType::type_error_join_item(t));
+                }
+            }
+            _ => {
+                let t = item.py_type(heap);
+                item.drop_with_heap(heap);
+                iter.drop_with_heap(heap);
+                return Err(ExcType::type_error_join_item(t));
+            }
+        };
+
+        if !first {
+            result.push_str(separator);
+        }
+        result.push_str(&item_str);
+        first = false;
+    }
+
+    iter.drop_with_heap(heap);
+
+    // Allocate result on heap
+    let heap_id = heap.allocate(HeapData::Str(Str::new(result)))?;
+    Ok(Value::Ref(heap_id))
 }
 
 /// Writes a Python repr() string for a given string slice to a formatter.

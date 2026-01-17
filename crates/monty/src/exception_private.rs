@@ -814,6 +814,19 @@ impl ExcType {
     pub(crate) fn divmod_by_zero() -> RunError {
         SimpleException::new_msg(Self::ZeroDivisionError, "division by zero").into()
     }
+
+    /// Creates a TypeError for str.join() when an item is not a string.
+    ///
+    /// Matches CPython's format: `TypeError: sequence item {index}: expected str instance, {type} found`
+    /// Simplified version without index to avoid complexity.
+    #[must_use]
+    pub(crate) fn type_error_join_item(item_type: Type) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("sequence item: expected str instance, {item_type} found"),
+        )
+        .into()
+    }
 }
 
 /// Simple lightweight representation of an exception.
