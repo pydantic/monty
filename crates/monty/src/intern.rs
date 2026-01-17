@@ -26,7 +26,7 @@ pub struct StringId(u32);
 pub const MODULE_STRING_ID: StringId = StringId(0);
 
 /// update MAX_ATTR_ID when adding new attrs
-const MAX_ATTR_ID: u32 = 21;
+const MAX_ATTR_ID: u32 = 58;
 
 /// Number of ASCII single-character strings pre-interned at startup.
 const ASCII_STRING_COUNT: u32 = 128;
@@ -100,7 +100,50 @@ pub mod attr {
     pub const ISDISJOINT: StringId = StringId(20);
 
     // String methods
-    pub const JOIN: StringId = StringId(MAX_ATTR_ID);
+    pub const JOIN: StringId = StringId(21);
+    // Phase 1: Simple transformations
+    pub const LOWER: StringId = StringId(22);
+    pub const UPPER: StringId = StringId(23);
+    pub const CAPITALIZE: StringId = StringId(24);
+    pub const TITLE: StringId = StringId(25);
+    pub const SWAPCASE: StringId = StringId(26);
+    pub const CASEFOLD: StringId = StringId(27);
+    // Phase 2: Predicate methods
+    pub const ISALPHA: StringId = StringId(28);
+    pub const ISDIGIT: StringId = StringId(29);
+    pub const ISALNUM: StringId = StringId(30);
+    pub const ISNUMERIC: StringId = StringId(31);
+    pub const ISSPACE: StringId = StringId(32);
+    pub const ISLOWER: StringId = StringId(33);
+    pub const ISUPPER: StringId = StringId(34);
+    pub const ISASCII: StringId = StringId(35);
+    pub const ISDECIMAL: StringId = StringId(36);
+    // Phase 3: Search methods
+    pub const FIND: StringId = StringId(37);
+    pub const RFIND: StringId = StringId(38);
+    pub const INDEX: StringId = StringId(39);
+    pub const RINDEX: StringId = StringId(40);
+    pub const COUNT: StringId = StringId(41);
+    pub const STARTSWITH: StringId = StringId(42);
+    pub const ENDSWITH: StringId = StringId(43);
+    // Phase 4: Strip/trim methods
+    pub const STRIP: StringId = StringId(44);
+    pub const LSTRIP: StringId = StringId(45);
+    pub const RSTRIP: StringId = StringId(46);
+    pub const REMOVEPREFIX: StringId = StringId(47);
+    pub const REMOVESUFFIX: StringId = StringId(48);
+    // Phase 5: Split methods
+    pub const SPLIT: StringId = StringId(49);
+    pub const RSPLIT: StringId = StringId(50);
+    pub const SPLITLINES: StringId = StringId(51);
+    pub const PARTITION: StringId = StringId(52);
+    pub const RPARTITION: StringId = StringId(53);
+    // Phase 6: Replace/modify methods
+    pub const REPLACE: StringId = StringId(54);
+    pub const CENTER: StringId = StringId(55);
+    pub const LJUST: StringId = StringId(56);
+    pub const RJUST: StringId = StringId(57);
+    pub const ZFILL: StringId = StringId(MAX_ATTR_ID);
 }
 
 impl StringId {
@@ -265,6 +308,86 @@ impl InternerBuilder {
         debug_assert_eq!(id, attr::ISDISJOINT);
         let id = interner.intern_static("join");
         debug_assert_eq!(id, attr::JOIN);
+        // Phase 1: Simple transformations
+        let id = interner.intern_static("lower");
+        debug_assert_eq!(id, attr::LOWER);
+        let id = interner.intern_static("upper");
+        debug_assert_eq!(id, attr::UPPER);
+        let id = interner.intern_static("capitalize");
+        debug_assert_eq!(id, attr::CAPITALIZE);
+        let id = interner.intern_static("title");
+        debug_assert_eq!(id, attr::TITLE);
+        let id = interner.intern_static("swapcase");
+        debug_assert_eq!(id, attr::SWAPCASE);
+        let id = interner.intern_static("casefold");
+        debug_assert_eq!(id, attr::CASEFOLD);
+        // Phase 2: Predicate methods
+        let id = interner.intern_static("isalpha");
+        debug_assert_eq!(id, attr::ISALPHA);
+        let id = interner.intern_static("isdigit");
+        debug_assert_eq!(id, attr::ISDIGIT);
+        let id = interner.intern_static("isalnum");
+        debug_assert_eq!(id, attr::ISALNUM);
+        let id = interner.intern_static("isnumeric");
+        debug_assert_eq!(id, attr::ISNUMERIC);
+        let id = interner.intern_static("isspace");
+        debug_assert_eq!(id, attr::ISSPACE);
+        let id = interner.intern_static("islower");
+        debug_assert_eq!(id, attr::ISLOWER);
+        let id = interner.intern_static("isupper");
+        debug_assert_eq!(id, attr::ISUPPER);
+        let id = interner.intern_static("isascii");
+        debug_assert_eq!(id, attr::ISASCII);
+        let id = interner.intern_static("isdecimal");
+        debug_assert_eq!(id, attr::ISDECIMAL);
+        // Phase 3: Search methods
+        let id = interner.intern_static("find");
+        debug_assert_eq!(id, attr::FIND);
+        let id = interner.intern_static("rfind");
+        debug_assert_eq!(id, attr::RFIND);
+        let id = interner.intern_static("index");
+        debug_assert_eq!(id, attr::INDEX);
+        let id = interner.intern_static("rindex");
+        debug_assert_eq!(id, attr::RINDEX);
+        let id = interner.intern_static("count");
+        debug_assert_eq!(id, attr::COUNT);
+        let id = interner.intern_static("startswith");
+        debug_assert_eq!(id, attr::STARTSWITH);
+        let id = interner.intern_static("endswith");
+        debug_assert_eq!(id, attr::ENDSWITH);
+        // Phase 4: Strip/trim methods
+        let id = interner.intern_static("strip");
+        debug_assert_eq!(id, attr::STRIP);
+        let id = interner.intern_static("lstrip");
+        debug_assert_eq!(id, attr::LSTRIP);
+        let id = interner.intern_static("rstrip");
+        debug_assert_eq!(id, attr::RSTRIP);
+        let id = interner.intern_static("removeprefix");
+        debug_assert_eq!(id, attr::REMOVEPREFIX);
+        let id = interner.intern_static("removesuffix");
+        debug_assert_eq!(id, attr::REMOVESUFFIX);
+        // Phase 5: Split methods
+        let id = interner.intern_static("split");
+        debug_assert_eq!(id, attr::SPLIT);
+        let id = interner.intern_static("rsplit");
+        debug_assert_eq!(id, attr::RSPLIT);
+        let id = interner.intern_static("splitlines");
+        debug_assert_eq!(id, attr::SPLITLINES);
+        let id = interner.intern_static("partition");
+        debug_assert_eq!(id, attr::PARTITION);
+        let id = interner.intern_static("rpartition");
+        debug_assert_eq!(id, attr::RPARTITION);
+        // Phase 6: Replace/modify methods
+        let id = interner.intern_static("replace");
+        debug_assert_eq!(id, attr::REPLACE);
+        let id = interner.intern_static("center");
+        debug_assert_eq!(id, attr::CENTER);
+        let id = interner.intern_static("ljust");
+        debug_assert_eq!(id, attr::LJUST);
+        let id = interner.intern_static("rjust");
+        debug_assert_eq!(id, attr::RJUST);
+        let id = interner.intern_static("zfill");
+        debug_assert_eq!(id, attr::ZFILL);
 
         // Pre-intern ASCII single-character strings so string iteration can reuse interns.
         for byte in 0u8..=127 {

@@ -114,6 +114,13 @@ impl LongInt {
         self.0.is_negative()
     }
 
+    /// Tries to convert to i64.
+    ///
+    /// Returns `Some(i64)` if the value fits, `None` otherwise.
+    pub fn to_i64(&self) -> Option<i64> {
+        self.0.to_i64()
+    }
+
     /// Tries to convert to f64.
     ///
     /// Returns `Some(f64)` if the conversion is possible, `None` if the value

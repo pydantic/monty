@@ -834,6 +834,30 @@ impl ExcType {
     pub(crate) fn type_error_join_not_iterable() -> RunError {
         SimpleException::new_msg(Self::TypeError, "can only join an iterable").into()
     }
+
+    /// Creates a ValueError for str.index()/str.rindex() when substring is not found.
+    ///
+    /// Matches CPython's format: `ValueError: substring not found`
+    #[must_use]
+    pub(crate) fn value_error_substring_not_found() -> RunError {
+        SimpleException::new_msg(Self::ValueError, "substring not found").into()
+    }
+
+    /// Creates a ValueError for str.partition()/str.rpartition() with empty separator.
+    ///
+    /// Matches CPython's format: `ValueError: empty separator`
+    #[must_use]
+    pub(crate) fn value_error_empty_separator() -> RunError {
+        SimpleException::new_msg(Self::ValueError, "empty separator").into()
+    }
+
+    /// Creates a TypeError for fillchar argument that is not a single character.
+    ///
+    /// Matches CPython's format: `TypeError: The fill character must be exactly one character long`
+    #[must_use]
+    pub(crate) fn type_error_fillchar_must_be_single_char() -> RunError {
+        SimpleException::new_msg(Self::TypeError, "The fill character must be exactly one character long").into()
+    }
 }
 
 /// Simple lightweight representation of an exception.
