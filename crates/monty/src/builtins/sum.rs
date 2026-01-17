@@ -17,7 +17,7 @@ use crate::{
 /// The default start value is 0. String start values are explicitly rejected
 /// (use `''.join(seq)` instead for string concatenation).
 pub fn builtin_sum(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let (iterable, start) = args.get_one_two_args("sum")?;
+    let (iterable, start) = args.get_one_two_args("sum", heap)?;
 
     // Get the start value, defaulting to 0
     let mut accumulator = match start {

@@ -17,7 +17,7 @@ use crate::{
 /// Returns the absolute value of a number. Works with integers, floats, and LongInts.
 /// For `i64::MIN`, which overflows on negation, promotes to LongInt.
 pub fn builtin_abs(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("abs")?;
+    let value = args.get_one_arg("abs", heap)?;
 
     let result = match &value {
         Value::Int(n) => {

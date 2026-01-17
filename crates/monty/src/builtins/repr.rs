@@ -14,7 +14,7 @@ use crate::{
 ///
 /// Returns a string containing a printable representation of an object.
 pub fn builtin_repr(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let value = args.get_one_arg("repr")?;
+    let value = args.get_one_arg("repr", heap)?;
     let heap_id = heap.allocate(HeapData::Str(value.py_repr(heap, interns).into_owned().into()))?;
     value.drop_with_heap(heap);
     Ok(Value::Ref(heap_id))

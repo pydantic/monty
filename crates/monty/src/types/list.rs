@@ -96,7 +96,7 @@ impl List {
     /// - `list()` with no args returns an empty list
     /// - `list(iterable)` creates a list from any iterable (list, tuple, range, str, bytes, dict)
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("list")?;
+        let value = args.get_zero_one_arg("list", heap)?;
         match value {
             None => {
                 let heap_id = heap.allocate(HeapData::List(Self::new(Vec::new())))?;
@@ -245,12 +245,12 @@ impl PyTrait for List {
 
         match attr_id {
             attr::APPEND => {
-                let item = args.get_one_arg("list.append")?;
+                let item = args.get_one_arg("list.append", heap)?;
                 self.append(heap, item);
                 Ok(Value::None)
             }
             attr::INSERT => {
-                let (index_obj, item) = args.get_two_args("insert")?;
+                let (index_obj, item) = args.get_two_args("insert", heap)?;
                 // Python's insert() handles negative indices by adding len
                 // If still negative after adding len, clamps to 0
                 // If >= len, appends to end

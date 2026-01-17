@@ -22,7 +22,7 @@ pub fn normalize_bool_to_int(value: Value) -> Value {
 /// If ndigits is omitted or None, returns the nearest integer.
 /// Uses banker's rounding (round half to even).
 pub fn builtin_round(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (number, ndigits) = args.get_one_two_args("round")?;
+    let (number, ndigits) = args.get_one_two_args("round", heap)?;
     let number = normalize_bool_to_int(number);
 
     // Determine the number of digits (None means round to integer)

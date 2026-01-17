@@ -6,7 +6,7 @@ use crate::{args::ArgValues, exception_private::RunResult, heap::Heap, resource:
 ///
 /// Returns the identity of an object (unique integer for the object's lifetime).
 pub fn builtin_id(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("id")?;
+    let value = args.get_one_arg("id", heap)?;
     let id = value.id();
     // For heap values, we intentionally don't drop to prevent heap slot reuse
     // which would cause id([]) == id([]) to return True (same slot reused).

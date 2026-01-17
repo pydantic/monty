@@ -49,7 +49,7 @@ impl Str {
     /// - `str()` with no args returns an empty string
     /// - `str(x)` converts x to its string representation using `py_str`
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("str")?;
+        let value = args.get_zero_one_arg("str", heap)?;
         match value {
             None => {
                 let heap_id = heap.allocate(HeapData::Str(Self::new(String::new())))?;
@@ -208,7 +208,7 @@ pub fn call_str_method(
     interns: &Interns,
 ) -> RunResult<Value> {
     if method_id == attr::JOIN {
-        let iterable = args.get_one_arg_or_drop("str.join", heap)?;
+        let iterable = args.get_one_arg("str.join", heap)?;
         str_join(s, iterable, heap, interns)
     } else {
         args.drop_with_heap(heap);

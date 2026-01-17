@@ -15,7 +15,7 @@ use crate::{
 /// Returns the hash value of an object (if it has one).
 /// Raises TypeError for unhashable types like lists and dicts.
 pub fn builtin_hash(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let value = args.get_one_arg("hash")?;
+    let value = args.get_one_arg("hash", heap)?;
     let result = match value.py_hash(heap, interns) {
         Some(hash) => {
             // Python's hash() returns a signed integer; reinterpret bits for large values

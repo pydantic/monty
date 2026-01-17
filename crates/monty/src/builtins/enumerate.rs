@@ -20,7 +20,7 @@ pub fn builtin_enumerate(
     args: ArgValues,
     interns: &Interns,
 ) -> RunResult<Value> {
-    let (iterable, start) = args.get_one_two_args("enumerate")?;
+    let (iterable, start) = args.get_one_two_args("enumerate", heap)?;
 
     // Get start index (default 0)
     let mut index: i64 = match &start {

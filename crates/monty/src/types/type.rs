@@ -156,7 +156,7 @@ impl Type {
 
             // Primitive types - inline implementation
             Self::Int => {
-                let value = args.get_zero_one_arg("int")?;
+                let value = args.get_zero_one_arg("int", heap)?;
                 match value {
                     None => Ok(Value::Int(0)),
                     Some(v) => {
@@ -172,7 +172,7 @@ impl Type {
                 }
             }
             Self::Float => {
-                let value = args.get_zero_one_arg("float")?;
+                let value = args.get_zero_one_arg("float", heap)?;
                 match value {
                     None => Ok(Value::Float(0.0)),
                     Some(v) => {
@@ -195,7 +195,7 @@ impl Type {
                 }
             }
             Self::Bool => {
-                let value = args.get_zero_one_arg("bool")?;
+                let value = args.get_zero_one_arg("bool", heap)?;
                 match value {
                     None => Ok(Value::Bool(false)),
                     Some(v) => {

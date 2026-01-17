@@ -10,7 +10,7 @@ use crate::{
 /// Returns True if any element of the iterable is true.
 /// Returns False for an empty iterable. Short-circuits on the first truthy value.
 pub fn builtin_any(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let iterable = args.get_one_arg("any")?;
+    let iterable = args.get_one_arg("any", heap)?;
     let mut iter = ForIterator::new(iterable, heap, interns)?;
 
     while let Some(item) = iter.for_next(heap, interns)? {

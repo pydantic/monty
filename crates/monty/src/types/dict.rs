@@ -331,7 +331,7 @@ impl Dict {
     /// Note: Full Python semantics also support dict(iterable) where iterable
     /// yields (key, value) pairs, and dict(**kwargs) for keyword arguments.
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("dict")?;
+        let value = args.get_zero_one_arg("dict", heap)?;
         match value {
             None => {
                 let heap_id = heap.allocate(HeapData::Dict(Self::new()))?;
@@ -556,7 +556,7 @@ impl PyTrait for Dict {
         match attr_id {
             attr::GET => {
                 // dict.get() accepts 1 or 2 arguments
-                let (key, default) = args.get_one_two_args("get")?;
+                let (key, default) = args.get_one_two_args("get", heap)?;
                 let default = default.unwrap_or(Value::None);
                 // Handle the lookup - may fail for unhashable keys
                 let result = match self.get(&key, heap, interns) {
@@ -603,7 +603,7 @@ impl PyTrait for Dict {
             }
             attr::POP => {
                 // dict.pop() accepts 1 or 2 arguments (key, optional default)
-                let (key, default) = args.get_one_two_args("pop")?;
+                let (key, default) = args.get_one_two_args("pop", heap)?;
                 let result = match self.pop(&key, heap, interns) {
                     Ok(r) => r,
                     Err(e) => {

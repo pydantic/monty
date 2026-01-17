@@ -10,7 +10,7 @@ use crate::{
 /// Returns True if all elements of the iterable are true (or if the iterable is empty).
 /// Short-circuits on the first falsy value.
 pub fn builtin_all(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let iterable = args.get_one_arg("all")?;
+    let iterable = args.get_one_arg("all", heap)?;
     let mut iter = ForIterator::new(iterable, heap, interns)?;
 
     while let Some(item) = iter.for_next(heap, interns)? {

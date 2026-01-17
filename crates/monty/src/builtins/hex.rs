@@ -17,7 +17,7 @@ use crate::{
 /// Converts an integer to a lowercase hexadecimal string prefixed with '0x'.
 /// Supports both i64 and BigInt integers.
 pub fn builtin_hex(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("hex")?;
+    let value = args.get_one_arg("hex", heap)?;
 
     let result = match &value {
         Value::Int(n) => {

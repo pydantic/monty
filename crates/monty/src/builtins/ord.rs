@@ -14,7 +14,7 @@ use crate::{
 ///
 /// Returns the Unicode code point of a one-character string.
 pub fn builtin_ord(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let value = args.get_one_arg("ord")?;
+    let value = args.get_one_arg("ord", heap)?;
 
     let result = match &value {
         Value::InternString(string_id) => {

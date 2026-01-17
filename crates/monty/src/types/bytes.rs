@@ -49,7 +49,7 @@ impl Bytes {
     ///
     /// Note: Full Python semantics for bytes() are more complex (encoding, errors params).
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("bytes")?;
+        let value = args.get_zero_one_arg("bytes", heap)?;
         match value {
             None => {
                 let heap_id = heap.allocate(HeapData::Bytes(Self::new(Vec::new())))?;

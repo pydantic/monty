@@ -17,7 +17,7 @@ use crate::{
 /// Converts an integer to a binary string prefixed with '0b'.
 /// Supports both i64 and BigInt integers.
 pub fn builtin_bin(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("bin")?;
+    let value = args.get_one_arg("bin", heap)?;
 
     let result = match &value {
         Value::Int(n) => {

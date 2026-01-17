@@ -52,7 +52,7 @@ impl Tuple {
     /// - `tuple()` with no args returns an empty tuple
     /// - `tuple(iterable)` creates a tuple from any iterable (list, tuple, range, str, bytes, dict)
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("tuple")?;
+        let value = args.get_zero_one_arg("tuple", heap)?;
         match value {
             None => {
                 let heap_id = heap.allocate(HeapData::Tuple(Self::new(Vec::new())))?;

@@ -17,7 +17,7 @@ use crate::{
 /// Converts an integer to an octal string prefixed with '0o'.
 /// Supports both i64 and BigInt integers.
 pub fn builtin_oct(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("oct")?;
+    let value = args.get_one_arg("oct", heap)?;
 
     let result = match &value {
         Value::Int(n) => {
