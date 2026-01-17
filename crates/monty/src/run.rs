@@ -91,7 +91,7 @@ impl MontyRun {
 
     /// Executes the code to completion with no resource limits, printing to stdout/stderr.
     pub fn run_no_limits(&self, inputs: Vec<MontyObject>) -> Result<MontyObject, MontyException> {
-        self.run(inputs, NoLimitTracker::default(), &mut StdPrint)
+        self.run(inputs, NoLimitTracker, &mut StdPrint)
     }
 
     /// Serializes the runner to a binary format.
@@ -578,7 +578,7 @@ impl Executor {
     fn run_ref_counts(&self, inputs: Vec<MontyObject>) -> Result<RefCountOutput, MontyException> {
         use std::collections::HashSet;
 
-        let mut heap = Heap::new(self.namespace_size, NoLimitTracker::default());
+        let mut heap = Heap::new(self.namespace_size, NoLimitTracker);
         let mut namespaces = self.prepare_namespaces(inputs, &mut heap)?;
 
         // Create and run VM with StdPrint for output

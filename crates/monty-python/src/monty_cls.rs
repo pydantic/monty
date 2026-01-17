@@ -167,14 +167,14 @@ impl PyMonty {
             (None, Some(callback)) => self.run_hold_gil(
                 py,
                 input_values,
-                PySignalTracker::new(NoLimitTracker::default()),
+                PySignalTracker::new(NoLimitTracker),
                 external_functions,
                 CallbackStringPrint(callback),
             ),
             (None, None) => self.run_release_gil(
                 py,
                 input_values,
-                PySignalTracker::new(NoLimitTracker::default()),
+                PySignalTracker::new(NoLimitTracker),
                 external_functions,
                 StdPrint,
             ),
@@ -220,11 +220,11 @@ impl PyMonty {
                 EitherProgress::Limited(start_release_gil!(limits, StdPrint))
             }
             (None, Some(callback)) => {
-                let limits = PySignalTracker::new(NoLimitTracker::default());
+                let limits = PySignalTracker::new(NoLimitTracker);
                 EitherProgress::NoLimit(start_hold_gil!(limits, CallbackStringPrint(callback)))
             }
             (None, None) => {
-                let limits = PySignalTracker::new(NoLimitTracker::default());
+                let limits = PySignalTracker::new(NoLimitTracker);
                 EitherProgress::NoLimit(start_release_gil!(limits, StdPrint))
             }
         };

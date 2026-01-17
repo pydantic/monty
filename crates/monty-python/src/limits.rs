@@ -145,10 +145,6 @@ impl<T: ResourceTracker> ResourceTracker for PySignalTracker<T> {
         self.inner.on_allocate(get_size)
     }
 
-    fn on_gc_tracked_allocate(&mut self) {
-        self.inner.on_gc_tracked_allocate();
-    }
-
     fn on_free(&mut self, get_size: impl FnOnce() -> usize) {
         self.inner.on_free(get_size);
     }
@@ -159,14 +155,6 @@ impl<T: ResourceTracker> ResourceTracker for PySignalTracker<T> {
 
         // then periodically check for Python signals
         self.check_python_signals()
-    }
-
-    fn should_gc(&self) -> bool {
-        self.inner.should_gc()
-    }
-
-    fn on_gc_complete(&mut self) {
-        self.inner.on_gc_complete();
     }
 
     fn check_recursion_depth(&self, current_depth: usize) -> Result<(), ResourceError> {

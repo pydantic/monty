@@ -118,7 +118,7 @@ fn run_progress_dump_load_roundtrip() {
     )
     .unwrap();
 
-    let progress = runner.start(vec![], NoLimitTracker::default(), &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
 
     // Dump the progress at the external call
     let bytes = progress.dump().unwrap();
@@ -148,7 +148,7 @@ fn run_progress_dump_load_multiple_calls() {
     .unwrap();
 
     // First call
-    let progress = runner.start(vec![], NoLimitTracker::default(), &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
     let bytes = progress.dump().unwrap();
     let loaded: RunProgress<NoLimitTracker> = RunProgress::load(&bytes).unwrap();
     let (fn_name, args, _, state) = loaded.into_function_call().unwrap();
@@ -174,7 +174,7 @@ fn run_progress_dump_load_multiple_calls() {
 fn run_progress_complete_roundtrip() {
     // When execution completes, we can still dump/load the Complete variant
     let runner = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker::default(), &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
 
     let bytes = progress.dump().unwrap();
     let loaded: RunProgress<NoLimitTracker> = RunProgress::load(&bytes).unwrap();

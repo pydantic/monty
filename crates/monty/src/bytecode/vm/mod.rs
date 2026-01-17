@@ -405,13 +405,10 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             // For NoLimitTracker, these are inlined no-ops that compile away.
             self.heap.tracker_mut().check_time()?;
             // Only run GC if: (1) allocation threshold reached, (2) cycles may exist
-            if self.heap.may_have_cycles() && self.heap.tracker().should_gc() {
+            if self.heap.should_gc() {
                 // Sync IP before GC for safety
                 self.current_frame_mut().ip = cached_frame.ip;
                 self.run_gc();
-            } else if self.heap.tracker().should_gc() {
-                // Reset allocation counter even if we skip GC
-                self.heap.tracker_mut().on_gc_complete();
             }
 
             // Track instruction IP for exception table lookup

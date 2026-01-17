@@ -597,6 +597,8 @@ pub struct Heap<T: ResourceTracker> {
     /// True if reference cycles may exist. Set when a container stores a Ref,
     /// cleared after GC completes. When false, GC can skip mark-sweep entirely.
     may_have_cycles: bool,
+    /// Number of GC applicable allocations since the last GC.
+    allocations_since_gc: u32,
 }
 
 impl<T: ResourceTracker + serde::Serialize> serde::Serialize for Heap<T> {
@@ -627,6 +629,7 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
             free_list: fields.free_list,
             tracker: fields.tracker,
             may_have_cycles: fields.may_have_cycles,
+            allocations_since_gc: 0,
         })
     }
 }
@@ -657,6 +660,12 @@ macro_rules! restore_data {
     }};
 }
 
+/// GC interval - run GC every 100,000 applicable allocations.
+///
+/// This is intentionally infrequent to minimize overhead while still
+/// eventually collecting reference cycles.
+const GC_INTERVAL: u32 = 100_000;
+
 impl<T: ResourceTracker> Heap<T> {
     /// Creates a new heap with the given resource tracker.
     ///
@@ -667,6 +676,7 @@ impl<T: ResourceTracker> Heap<T> {
             free_list: Vec::new(),
             tracker,
             may_have_cycles: false,
+            allocations_since_gc: 0,
         }
     }
 
@@ -695,15 +705,6 @@ impl<T: ResourceTracker> Heap<T> {
         self.may_have_cycles = true;
     }
 
-    /// Returns whether reference cycles may exist in the heap.
-    ///
-    /// When false, GC can be skipped entirely since no cycles are possible.
-    /// This happens when only primitive values are stored in containers.
-    #[inline]
-    pub fn may_have_cycles(&self) -> bool {
-        self.may_have_cycles
-    }
-
     /// Allocates a new heap entry.
     ///
     /// Returns `Err(ResourceError)` if allocation would exceed configured limits.
@@ -714,7 +715,7 @@ impl<T: ResourceTracker> Heap<T> {
     pub fn allocate(&mut self, data: HeapData) -> Result<HeapId, ResourceError> {
         self.tracker.on_allocate(|| data.py_estimate_size())?;
         if data.is_gc_tracked() {
-            self.tracker.on_gc_tracked_allocate();
+            self.allocations_since_gc = self.allocations_since_gc.wrapping_add(1);
         }
 
         let hash_state = HashState::for_data(&data);
@@ -1300,6 +1301,14 @@ impl<T: ResourceTracker> Heap<T> {
         }
     }
 
+    /// Returns whether garbage collection should run.
+    ///
+    /// True if reference cycles exist in the heap and the number of allocations since the last GC exceeds the interval.
+    #[inline]
+    pub fn should_gc(&self) -> bool {
+        self.may_have_cycles && self.allocations_since_gc > GC_INTERVAL
+    }
+
     /// Runs mark-sweep garbage collection to free unreachable cycles.
     ///
     /// This method takes a closure that provides an iterator of root HeapIds
@@ -1366,9 +1375,7 @@ impl<T: ResourceTracker> Heap<T> {
 
         // Reset cycle flag after GC - cycles have been collected
         self.may_have_cycles = false;
-
-        // Notify tracker that GC is complete
-        self.tracker.on_gc_complete();
+        self.allocations_since_gc = 0;
     }
 }
 

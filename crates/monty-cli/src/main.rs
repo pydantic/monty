@@ -39,7 +39,7 @@ fn main() -> ExitCode {
 
     if EXT_FUNCTIONS {
         let start = Instant::now();
-        let mut progress = match runner.start(inputs, NoLimitTracker::default(), &mut StdPrint) {
+        let mut progress = match runner.start(inputs, NoLimitTracker, &mut StdPrint) {
             Ok(p) => p,
             Err(err) => {
                 let elapsed = start.elapsed();
