@@ -26,6 +26,21 @@ pub const MODULE_STRING_ID: StringId = StringId(0);
 /// update MAX_ATTR_ID when adding new attrs
 const MAX_ATTR_ID: u32 = 21;
 
+/// Number of ASCII single-character strings pre-interned at startup.
+const ASCII_STRING_COUNT: u32 = 128;
+
+/// First StringId reserved for ASCII single-character interns.
+const ASCII_STRING_START_ID: u32 = MAX_ATTR_ID + 1;
+
+/// Returns the interned StringId for an ASCII byte.
+///
+/// These interns are created during `InternerBuilder::new()` and allow
+/// allocation-free iteration over ASCII strings.
+#[must_use]
+pub(crate) fn ascii_string_id(byte: u8) -> StringId {
+    StringId(ASCII_STRING_START_ID + u32::from(byte))
+}
+
 /// Pre-interned attribute names for container methods.
 ///
 /// These StringIds are assigned at startup in `InternerBuilder::new()` and provide
@@ -170,12 +185,14 @@ impl InternerBuilder {
     /// Pre-interns:
     /// - Index 0: `"<module>"` for module-level code
     /// - Indices 1-MAX_ATTR_ID: Known attribute names (append, insert, get, join, etc.)
+    /// - Indices MAX_ATTR_ID+1..: ASCII single-character strings
     pub fn new(code: &str) -> Self {
         // very rough guess of the number of strings that will need to be interned
         // Dividing by 2 since each string has open+close quotes.
         // This overcounts (escaped quotes, triple quotes) but for capacity that's fine
-        let string_count_guess =
-            MAX_ATTR_ID as usize + 1 + (code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1);
+        let string_count_guess = (MAX_ATTR_ID + ASCII_STRING_COUNT) as usize
+            + 1
+            + (code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1);
         let mut interner = Self {
             string_map: AHashMap::with_capacity(string_count_guess),
             strings: Vec::with_capacity(string_count_guess),
@@ -232,6 +249,13 @@ impl InternerBuilder {
         debug_assert_eq!(id, attr::ISDISJOINT);
         let id = interner.intern("join");
         debug_assert_eq!(id, attr::JOIN);
+
+        // Pre-intern ASCII single-character strings so string iteration can reuse interns.
+        for byte in 0u8..=127 {
+            let s = char::from(byte).to_string();
+            let id = interner.intern(&s);
+            debug_assert_eq!(id, ascii_string_id(byte));
+        }
 
         interner
     }

@@ -22,7 +22,7 @@
 use crate::{
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
-    intern::{BytesId, Interns},
+    intern::{BytesId, Interns, ascii_string_id},
     resource::ResourceTracker,
     types::{PyTrait, Range, Str},
     value::Value,
@@ -349,10 +349,16 @@ impl ForIterator {
                     .expect("index < len implies char exists");
                 *byte_offset += c.len_utf8();
                 self.index += 1;
-                // Allocate a new single-character string on the heap
-                let char_str = c.to_string();
-                let char_id = heap.allocate(HeapData::Str(Str::new(char_str)))?;
-                Ok(Some(Value::Ref(char_id)))
+                // intern ascii chars instead of allocating a new string on the heap
+                let value = if c.is_ascii() {
+                    Value::InternString(ascii_string_id(c as u8))
+                } else {
+                    // Allocate a new single-character string on the heap for non-ASCII.
+                    let char_str = c.to_string();
+                    let char_id = heap.allocate(HeapData::Str(Str::new(char_str)))?;
+                    Value::Ref(char_id)
+                };
+                Ok(Some(value))
             }
             ForIterValue::HeapBytes { heap_id, len } => {
                 if self.index >= *len {
