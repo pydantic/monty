@@ -212,19 +212,19 @@ impl PyMonty {
         // separate code paths due to generics
         let progress = match (limits, print_callback) {
             (Some(limits), Some(callback)) => {
-                let limits = LimitedTracker::new(extract_limits(limits)?);
+                let limits = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
                 EitherProgress::Limited(start_hold_gil!(limits, CallbackStringPrint(callback)))
             }
             (Some(limits), None) => {
-                let limits = LimitedTracker::new(extract_limits(limits)?);
+                let limits = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
                 EitherProgress::Limited(start_release_gil!(limits, StdPrint))
             }
             (None, Some(callback)) => {
-                let limits = NoLimitTracker::default();
+                let limits = PySignalTracker::new(NoLimitTracker::default());
                 EitherProgress::NoLimit(start_hold_gil!(limits, CallbackStringPrint(callback)))
             }
             (None, None) => {
-                let limits = NoLimitTracker::default();
+                let limits = PySignalTracker::new(NoLimitTracker::default());
                 EitherProgress::NoLimit(start_release_gil!(limits, StdPrint))
             }
         };
@@ -410,8 +410,8 @@ impl PyMonty {
 /// pyclass doesn't support generic types, hence hard coding the generics
 #[derive(Debug)]
 enum EitherProgress {
-    NoLimit(RunProgress<NoLimitTracker>),
-    Limited(RunProgress<LimitedTracker>),
+    NoLimit(RunProgress<PySignalTracker<NoLimitTracker>>),
+    Limited(RunProgress<PySignalTracker<LimitedTracker>>),
 }
 
 impl EitherProgress {
@@ -470,8 +470,8 @@ impl EitherProgress {
 /// The `Done` variant indicates the snapshot has been consumed.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 enum EitherSnapshot {
-    NoLimit(Snapshot<NoLimitTracker>),
-    Limited(Snapshot<LimitedTracker>),
+    NoLimit(Snapshot<PySignalTracker<NoLimitTracker>>),
+    Limited(Snapshot<PySignalTracker<LimitedTracker>>),
     /// Done is used when taking the snapshot to run it
     /// should only be done after execution is complete
     Done,

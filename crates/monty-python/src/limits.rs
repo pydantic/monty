@@ -103,18 +103,18 @@ fn extract_optional_f64(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<
 /// This balances responsiveness to Ctrl+C against performance overhead.
 /// With ~1000 checks, signal handling adds negligible overhead while still
 /// responding to interrupts within a reasonable timeframe.
-const SIGNAL_CHECK_INTERVAL: u64 = 1000;
+const SIGNAL_CHECK_INTERVAL: u16 = 1000;
 
 /// A resource tracker that wraps another ResourceTracker and periodically checks Python signals.
 ///
 /// This allows Ctrl+C and other Python signals to interrupt long-running code
 /// executed through the monty interpreter. Signals are checked every
 /// `SIGNAL_CHECK_INTERVAL` calls to `check_time` (at statement boundaries).
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct PySignalTracker<T: ResourceTracker> {
     inner: T,
     /// Counter for check_time calls, used to rate-limit signal checks.
-    check_counter: u64,
+    check_counter: u16,
 }
 
 impl<T: ResourceTracker> PySignalTracker<T> {
@@ -128,7 +128,7 @@ impl<T: ResourceTracker> PySignalTracker<T> {
 
     fn check_python_signals(&mut self) -> Result<(), ResourceError> {
         // Periodically check Python signals
-        self.check_counter += 1;
+        self.check_counter = self.check_counter.wrapping_add(1);
 
         if self.check_counter.is_multiple_of(SIGNAL_CHECK_INTERVAL) {
             Python::attach(|py| {

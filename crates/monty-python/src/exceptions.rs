@@ -136,6 +136,11 @@ impl MontySyntaxError {
     }
 
     #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __str__(slf: PyRef<'_, Self>) -> String {
+        slf.as_super().message().unwrap_or_default().to_string()
+    }
+
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
     fn __repr__(slf: PyRef<'_, Self>) -> String {
         let parent = slf.as_super();
         if let Some(msg) = parent.message() {
@@ -261,7 +266,14 @@ impl MontyRuntimeError {
 
     #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
     fn __str__(slf: PyRef<'_, Self>) -> String {
-        slf.as_super().message().unwrap_or_default().to_string()
+        let parent = slf.as_super();
+        let exc_type_name = parent.exc_type();
+        if let Some(msg) = parent.message() {
+            if !msg.is_empty() {
+                return format!("{exc_type_name}: {msg}");
+            }
+        }
+        format!("{exc_type_name}")
     }
 
     #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
@@ -269,10 +281,11 @@ impl MontyRuntimeError {
         let parent = slf.as_super();
         let exc_type_name = parent.exc_type();
         if let Some(msg) = parent.message() {
-            format!("MontyRuntimeError({exc_type_name}: {msg})")
-        } else {
-            format!("MontyRuntimeError({exc_type_name})")
+            if !msg.is_empty() {
+                return format!("MontyRuntimeError({exc_type_name}: {msg})");
+            }
         }
+        format!("MontyRuntimeError({exc_type_name})")
     }
 }
 

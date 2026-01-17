@@ -211,7 +211,7 @@ def test_str_returns_msg():
     m = monty.Monty("raise ValueError('test message')")
     with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run()
-    assert str(exc_info.value) == snapshot('test message')
+    assert str(exc_info.value) == snapshot('ValueError: test message')
 
 
 def test_syntax_error_display():
