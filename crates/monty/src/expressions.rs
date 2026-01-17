@@ -153,6 +153,10 @@ pub enum Expr {
     Not(Box<ExprLoc>),
     /// Unary minus expression - negates a numeric value.
     UnaryMinus(Box<ExprLoc>),
+    /// Unary plus expression - returns value as-is for numbers, converts bools to int.
+    UnaryPlus(Box<ExprLoc>),
+    /// Unary bitwise NOT expression - inverts all bits of an integer.
+    UnaryInvert(Box<ExprLoc>),
     /// F-string expression containing literal and interpolated parts.
     ///
     /// At evaluation time, each part is processed in sequence:

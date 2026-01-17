@@ -577,6 +577,8 @@ impl<'i> Prepare<'i> {
             }
             Expr::Not(operand) => Expr::Not(Box::new(self.prepare_expression(*operand)?)),
             Expr::UnaryMinus(operand) => Expr::UnaryMinus(Box::new(self.prepare_expression(*operand)?)),
+            Expr::UnaryPlus(operand) => Expr::UnaryPlus(Box::new(self.prepare_expression(*operand)?)),
+            Expr::UnaryInvert(operand) => Expr::UnaryInvert(Box::new(self.prepare_expression(*operand)?)),
             Expr::FString(parts) => {
                 let prepared_parts = parts
                     .into_iter()
@@ -1392,7 +1394,7 @@ fn collect_referenced_names_from_expr(
             collect_referenced_names_from_expr(left, referenced, interner);
             collect_referenced_names_from_expr(right, referenced, interner);
         }
-        Expr::Not(operand) | Expr::UnaryMinus(operand) => {
+        Expr::Not(operand) | Expr::UnaryMinus(operand) | Expr::UnaryPlus(operand) | Expr::UnaryInvert(operand) => {
             collect_referenced_names_from_expr(operand, referenced, interner);
         }
         Expr::FString(parts) => {

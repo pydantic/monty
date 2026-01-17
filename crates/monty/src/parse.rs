@@ -459,7 +459,14 @@ impl<'a> Parser<'a> {
                     let operand = Box::new(self.parse_expression(*operand)?);
                     Ok(ExprLoc::new(self.convert_range(range), Expr::UnaryMinus(operand)))
                 }
-                _ => Err(ParseError::not_implemented("unary operators other than 'not' and '-'")),
+                UnaryOp::UAdd => {
+                    let operand = Box::new(self.parse_expression(*operand)?);
+                    Ok(ExprLoc::new(self.convert_range(range), Expr::UnaryPlus(operand)))
+                }
+                UnaryOp::Invert => {
+                    let operand = Box::new(self.parse_expression(*operand)?);
+                    Ok(ExprLoc::new(self.convert_range(range), Expr::UnaryInvert(operand)))
+                }
             },
             AstExpr::Lambda(_) => Err(ParseError::not_implemented("lambda expressions")),
             AstExpr::If(ast::ExprIf {

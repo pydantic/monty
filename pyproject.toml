@@ -101,6 +101,8 @@ reportAttributeAccessIssue = false
 reportUnusedVariable = false
 reportAssignmentType = false
 reportFunctionMemberAccess = false
+# ~bool is deprecated in Python 3.16 but valid in 3.14
+reportDeprecated = false
 
 [[tool.pyright.executionEnvironments]]
 root = "crates/monty-type-checking"

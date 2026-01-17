@@ -142,3 +142,36 @@ assert False**False == 1, 'false pow false'
 assert True**2.0 == 1.0, 'bool pow float'
 assert 2.0**True == 2.0, 'float pow bool true'
 assert 2.0**False == 1.0, 'float pow bool false'
+
+# === Unary positive (no-op for numbers, converts bools to int) ===
+assert +5 == 5, 'unary pos int'
+assert +(-3) == -3, 'unary pos neg int'
+assert +0 == 0, 'unary pos zero'
+assert +3.14 == 3.14, 'unary pos float'
+assert +(-2.5) == -2.5, 'unary pos neg float'
+assert +0.0 == 0.0, 'unary pos zero float'
+assert +True == 1, 'unary pos true'
+assert +False == 0, 'unary pos false'
+# Verify +bool returns int type, not bool
+assert type(+True) == int, 'unary pos true returns int type'
+assert type(+False) == int, 'unary pos false returns int type'
+
+# === Unary negative ===
+assert -5 == -5, 'unary neg int'
+assert -(-3) == 3, 'unary neg neg int'
+assert -0 == 0, 'unary neg zero'
+assert -3.14 == -3.14, 'unary neg float'
+assert -(-2.5) == 2.5, 'unary neg neg float'
+assert -True == -1, 'unary neg true'
+assert repr(-True) == '-1', 'unary neg true repr'
+assert -False == 0, 'unary neg false'
+assert repr(-False) == '0', 'unary neg false repr'
+
+# === Unary invert (bitwise NOT) ===
+assert ~0 == -1, 'unary invert zero'
+assert ~1 == -2, 'unary invert one'
+assert ~(-1) == 0, 'unary invert neg one'
+assert ~True == -2, 'unary invert true'
+assert repr(~True) == '-2', 'unary invert true repr'
+assert ~False == -1, 'unary invert false'
+assert repr(~False) == '-1', 'unary invert false repr'

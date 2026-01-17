@@ -442,6 +442,20 @@ impl<'a> Compiler<'a> {
                 self.code.emit(Opcode::UnaryNeg);
             }
 
+            Expr::UnaryPlus(operand) => {
+                self.compile_expr(operand)?;
+                // Restore the full expression's position for traceback caret range
+                self.code.set_location(expr_loc.position, None);
+                self.code.emit(Opcode::UnaryPos);
+            }
+
+            Expr::UnaryInvert(operand) => {
+                self.compile_expr(operand)?;
+                // Restore the full expression's position for traceback caret range
+                self.code.set_location(expr_loc.position, None);
+                self.code.emit(Opcode::UnaryInvert);
+            }
+
             Expr::List(elements) => {
                 for elem in elements {
                     self.compile_expr(elem)?;

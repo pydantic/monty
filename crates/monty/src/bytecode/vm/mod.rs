@@ -594,18 +594,26 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     }
                 }
                 Opcode::UnaryPos => {
-                    // Unary plus - typically a no-op for numbers
+                    // Unary plus - converts bools to int, no-op for other numbers
                     let value = self.pop();
-                    let value_type = value.py_type(self.heap);
-                    let result = match &value {
-                        Value::Int(_) | Value::Float(_) | Value::Bool(_) => Some(value.clone_immediate()),
-                        _ => None,
-                    };
-                    value.drop_with_heap(self.heap);
-                    if let Some(v) = result {
-                        self.push(v);
-                    } else {
-                        catch_sync!(self, cached_frame, ExcType::unary_type_error("+", value_type));
+                    match value {
+                        Value::Int(_) | Value::Float(_) => self.push(value),
+                        Value::Bool(b) => self.push(Value::Int(i64::from(b))),
+                        Value::Ref(id) => {
+                            if matches!(self.heap.get(id), HeapData::LongInt(_)) {
+                                // LongInt - return as-is (value already has correct refcount)
+                                self.push(value);
+                            } else {
+                                let value_type = value.py_type(self.heap);
+                                value.drop_with_heap(self.heap);
+                                catch_sync!(self, cached_frame, ExcType::unary_type_error("+", value_type));
+                            }
+                        }
+                        _ => {
+                            let value_type = value.py_type(self.heap);
+                            value.drop_with_heap(self.heap);
+                            catch_sync!(self, cached_frame, ExcType::unary_type_error("+", value_type));
+                        }
                     }
                 }
                 Opcode::UnaryInvert => {
