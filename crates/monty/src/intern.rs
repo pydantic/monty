@@ -48,6 +48,12 @@ static ASCII_STRS: LazyLock<[&'static str; 128]> = LazyLock::new(|| {
     })
 });
 
+/// Base interner with all pre-interned strings, built once on first access.
+///
+/// Contains `<module>`, all attribute names, and ASCII single-character strings.
+/// `InternerBuilder::new()` clones this to avoid rebuilding the base set each time.
+static BASE_INTERNER: LazyLock<InternerBuilder> = LazyLock::new(InternerBuilder::build_base);
+
 /// Returns the interned StringId for an ASCII byte.
 ///
 /// These interns are created during `InternerBuilder::new()` and allow
@@ -228,7 +234,7 @@ impl ExtFunctionId {
 ///
 /// The interner is not thread-safe. It's designed to be used single-threaded during
 /// parsing/preparation, then the values are accessed read-only during execution.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct InternerBuilder {
     /// Maps strings to their indices for deduplication during interning.
     string_map: AHashMap<Cow<'static, str>, StringId>,
@@ -242,23 +248,42 @@ pub struct InternerBuilder {
 impl InternerBuilder {
     /// Creates a new string interner with pre-interned strings.
     ///
-    /// # Arguments
-    /// * `code` - The code being parsed, used for a very rough guess at how many strings will be interned.
+    /// Clones from a lazily-initialized base interner that contains all pre-interned
+    /// strings (`<module>`, attribute names, ASCII chars). This avoids rebuilding
+    /// the base set on every call.
     ///
-    /// Pre-interns:
+    /// # Arguments
+    /// * `code` - The code being parsed, used for a very rough guess at how many
+    ///   additional strings will be interned beyond the base set.
+    ///
+    /// Pre-interns (via `BASE_INTERNER`):
     /// - Index 0: `"<module>"` for module-level code
     /// - Indices 1-MAX_ATTR_ID: Known attribute names (append, insert, get, join, etc.)
     /// - Indices MAX_ATTR_ID+1..: ASCII single-character strings
     pub fn new(code: &str) -> Self {
-        // very rough guess of the number of strings that will need to be interned
-        // Dividing by 2 since each string has open+close quotes.
-        // This overcounts (escaped quotes, triple quotes) but for capacity that's fine
-        let string_count_guess = (MAX_ATTR_ID + ASCII_STRING_COUNT) as usize
-            + 1
-            + (code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1);
+        // Clone the base interner with all pre-interned strings
+        let mut interner = BASE_INTERNER.clone();
+
+        // Reserve additional capacity for code-specific strings
+        // Rough guess: count quotes and divide by 2 (open+close per string)
+        let additional_strings = code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1;
+        if additional_strings > 0 {
+            interner.string_map.reserve(additional_strings);
+            interner.strings.reserve(additional_strings);
+        }
+
+        interner
+    }
+
+    /// Builds the base interner with all pre-interned strings.
+    ///
+    /// Called once by `BASE_INTERNER` lazy initialization. Contains `<module>`,
+    /// all attribute names, and ASCII single-character strings.
+    fn build_base() -> Self {
+        let base_count = (MAX_ATTR_ID + ASCII_STRING_COUNT + 1) as usize;
         let mut interner = Self {
-            string_map: AHashMap::with_capacity(string_count_guess),
-            strings: Vec::with_capacity(string_count_guess),
+            string_map: AHashMap::with_capacity(base_count),
+            strings: Vec::with_capacity(base_count),
             bytes: Vec::new(),
         };
 
@@ -266,7 +291,7 @@ impl InternerBuilder {
         let id = interner.intern_static("<module>");
         debug_assert_eq!(id, MODULE_STRING_ID);
 
-        // Pre-intern known attribute names (indices 1-20).
+        // Pre-intern known attribute names.
         // Order must match the attr::* constants defined above.
         // Note: We separate the intern() call from debug_assert_eq! because
         // debug_assert_eq! is completely removed in release builds.
