@@ -1125,7 +1125,7 @@ impl PyTrait for Value {
         match (self, other) {
             (Self::Int(base), Self::Int(exp)) => {
                 if *base == 0 && *exp < 0 {
-                    Err(ExcType::zero_pow_negative().into())
+                    Err(ExcType::zero_negative_power())
                 } else if *exp >= 0 {
                     // Positive exponent: try to return int, promote to LongInt on overflow
                     if let Ok(exp_u32) = u32::try_from(*exp) {
@@ -1159,7 +1159,7 @@ impl PyTrait for Value {
             (Self::Ref(id), Self::Int(exp)) => {
                 if let HeapData::LongInt(li) = heap.get(*id) {
                     if li.is_zero() && *exp < 0 {
-                        Err(ExcType::zero_pow_negative().into())
+                        Err(ExcType::zero_negative_power())
                     } else if *exp >= 0 {
                         // Use BigInt pow for positive exponents
                         if let Ok(exp_u32) = u32::try_from(*exp) {
@@ -1193,7 +1193,7 @@ impl PyTrait for Value {
             (Self::Int(base), Self::Ref(id)) => {
                 if let HeapData::LongInt(li) = heap.get(*id) {
                     if *base == 0 && li.is_negative() {
-                        Err(ExcType::zero_pow_negative().into())
+                        Err(ExcType::zero_negative_power())
                     } else if !li.is_negative() {
                         // For very large exponents, most results are huge or 0/1
                         // Check for x ** 0 = 1 first (including 0 ** 0 = 1)
@@ -1234,21 +1234,21 @@ impl PyTrait for Value {
             }
             (Self::Float(base), Self::Float(exp)) => {
                 if *base == 0.0 && *exp < 0.0 {
-                    Err(ExcType::zero_pow_negative().into())
+                    Err(ExcType::zero_negative_power())
                 } else {
                     Ok(Some(Self::Float(base.powf(*exp))))
                 }
             }
             (Self::Int(base), Self::Float(exp)) => {
                 if *base == 0 && *exp < 0.0 {
-                    Err(ExcType::zero_pow_negative().into())
+                    Err(ExcType::zero_negative_power())
                 } else {
                     Ok(Some(Self::Float((*base as f64).powf(*exp))))
                 }
             }
             (Self::Float(base), Self::Int(exp)) => {
                 if *base == 0.0 && *exp < 0 {
-                    Err(ExcType::zero_pow_negative().into())
+                    Err(ExcType::zero_negative_power())
                 } else if let Ok(exp_i32) = i32::try_from(*exp) {
                     // Use powi if exp fits in i32
                     Ok(Some(Self::Float(base.powi(exp_i32))))
@@ -1261,7 +1261,7 @@ impl PyTrait for Value {
             (Self::Bool(base), Self::Int(exp)) => {
                 let base_int = i64::from(*base);
                 if base_int == 0 && *exp < 0 {
-                    Err(ExcType::zero_pow_negative().into())
+                    Err(ExcType::zero_negative_power())
                 } else if *exp >= 0 {
                     // Positive exponent: 1**n=1, 0**n=0 (for n>0), 0**0=1
                     if let Ok(exp_u32) = u32::try_from(*exp) {
@@ -1292,7 +1292,7 @@ impl PyTrait for Value {
             (Self::Bool(base), Self::Float(exp)) => {
                 let base_float = f64::from(*base);
                 if base_float == 0.0 && *exp < 0.0 {
-                    Err(ExcType::zero_pow_negative().into())
+                    Err(ExcType::zero_negative_power())
                 } else {
                     Ok(Some(Self::Float(base_float.powf(*exp))))
                 }

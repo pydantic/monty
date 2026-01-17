@@ -723,14 +723,6 @@ impl ExcType {
         SimpleException::new_msg(Self::ZeroDivisionError, "division by zero")
     }
 
-    /// Creates a ZeroDivisionError for 0 raised to a negative power.
-    ///
-    /// Matches CPython 3.14's format: `ZeroDivisionError('zero to a negative power')`
-    #[must_use]
-    pub(crate) fn zero_pow_negative() -> SimpleException {
-        SimpleException::new_msg(Self::ZeroDivisionError, "zero to a negative power")
-    }
-
     /// Creates an OverflowError for string/sequence repetition with count too large.
     ///
     /// Matches CPython's format: `OverflowError('cannot fit 'int' into an index-sized integer')`

@@ -231,11 +231,7 @@ fn int_pow_int(b: i64, e: i64, heap: &mut Heap<impl ResourceTracker>) -> RunResu
     if e < 0 {
         // Negative exponent returns float
         if b == 0 {
-            return Err(SimpleException::new_msg(
-                ExcType::ZeroDivisionError,
-                "0.0 cannot be raised to a negative power",
-            )
-            .into());
+            return Err(ExcType::zero_negative_power());
         }
         Ok(Value::Float((b as f64).powf(e as f64)))
     } else if let Ok(exp_u32) = u32::try_from(e) {
