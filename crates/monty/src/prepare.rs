@@ -779,13 +779,13 @@ impl<'i> Prepare<'i> {
         }
 
         let signature = Signature::new(
-            &pos_args,
+            pos_args,
             pos_defaults_count,
-            &args,
+            args,
             arg_defaults_count,
             parsed_sig.var_args,
-            &kwargs,
-            &kwarg_default_map,
+            kwargs,
+            kwarg_default_map,
             parsed_sig.var_kwargs,
         );
 
