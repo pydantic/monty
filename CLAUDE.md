@@ -184,7 +184,7 @@ cargo test -p monty --test datatest_runner --features ref-count-panic str__ops
 make test-cases
 
 # Run the interpreter on a Python file
-cargo run -p monty-cli -- <file.py>
+cargo run -- <file.py>
 ```
 
 ### Experimentation and Playground
@@ -196,9 +196,9 @@ DO NOT run `cargo run --`, it will fail because of issues with Python bindings.
 You can use the `./playground` directory (excluded from git, create with `mkdir -p playground`) to write files
 when you want to experiment by running a file with cpython or monty, e.g.:
 * `python3 playground/test.py` to run the file with cpython
-* `cargo run -p monty-cli -- playground/test.py` to run the file with monty
+* `cargo run -- playground/test.py` to run the file with monty
 
-DO NOT use `/tmp` or pipeing code to the interpreter as it requires extra permissions and can slow you down!
+DO NOT use `/tmp` or pipe code to the interpreter as it requires extra permissions and can slow you down!
 
 More details in the "python-playground" skill.
 
@@ -346,6 +346,8 @@ uv run pytest crates/monty-python/tests/test_basic.py::test_simple_expression
 Check and follow the style of other python tests.
 
 Make sure you put tests in the correct file.
+
+**DO NOT use python/pytest tests for `monty` core functionality!** When testing core functionality, add tests to `crates/monty/test_cases/` or `crates/monty/tests/`. Only use python/pytest tests for `monty-python` functionality testing.
 
 **NEVER use class-based tests.** All tests should be simple functions.
 

@@ -83,12 +83,41 @@ big_double = big_a * 2
 assert big_double > big_b, 'larger bigint > smaller bigint'
 
 # === Hash consistency ===
+# When a BigInt demotes to i64 range, its hash must match the equivalent int hash
+# This is critical for dict key lookups to work correctly
+
+# Test hash equality for values that fit in i64
+computed_42 = (big_a - big_a) + 42  # Goes through BigInt arithmetic, demotes to 42
+assert hash(computed_42) == hash(42), 'hash of computed int must match literal int'
+assert hash(bigger - 1) == hash(MAX_I64), 'hash of demoted bigint must match MAX_I64'
+assert hash(smaller + 1) == hash(MIN_I64), 'hash of demoted bigint must match MIN_I64'
+
+# Test that hash(0) is consistent across computation paths
+zero_via_bigint = big_a - big_a
+assert hash(zero_via_bigint) == hash(0), 'hash of bigint zero must match int zero'
+
+# Test dict key lookup works when inserting with int and looking up with computed bigint
 d = {42: 'a'}
 assert d[42] == 'a', 'int as key'
+assert d[computed_42] == 'a', 'lookup with computed bigint finds int key'
+
+# Test dict key lookup works when inserting with bigint and looking up with int
+d2 = {computed_42: 'value'}
+assert d2[42] == 'value', 'lookup with int finds bigint key'
+
+# Large bigints (outside i64 range) as dict keys
 d[bigger] = 'b'
 assert d[bigger] == 'b', 'bigint as key'
 d[big_a] = 'c'
 assert d[big_a] == 'c', 'large bigint as key'
+
+# Verify large bigints with same value hash the same
+big_copy = 2**100
+assert hash(big_a) == hash(big_copy), 'equal large bigints must hash the same'
+
+# Verify large bigints can be used interchangeably as dict keys
+d3 = {big_a: 'original'}
+assert d3[big_copy] == 'original', 'lookup with equal large bigint works'
 
 # === Unary neg overflow ===
 # Use 0 - MIN_I64 instead of -MIN_I64 to avoid type checker overflow

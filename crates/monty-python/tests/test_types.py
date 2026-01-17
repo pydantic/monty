@@ -350,3 +350,56 @@ def test_bigint_as_dict_key():
     result = m.run(inputs={'x': {big: 'value'}})
     assert result == {big: 'value'}
     assert big in result
+
+
+def test_bigint_hash_consistency_small_values():
+    """Hash of small values computed as BigInt must match regular int hash.
+
+    This is critical for dict key lookups: inserting with int and looking up
+    with a computed BigInt (or vice versa) must work correctly.
+    """
+    # Value 42 computed via BigInt arithmetic
+    big = 2**100
+    m = monty.Monty('(x - x) + 42', inputs=['x'])
+    computed_42 = m.run(inputs={'x': big})
+
+    # Hash must match
+    assert hash(computed_42) == hash(42), 'hash of computed int must match literal'
+
+    # Dict lookup must work both ways
+    d = {42: 'value'}
+    assert d[computed_42] == 'value', 'lookup with computed bigint finds int key'
+
+    d2 = {computed_42: 'value'}
+    assert d2[42] == 'value', 'lookup with int finds computed bigint key'
+
+
+def test_bigint_hash_consistency_boundary():
+    """Hash consistency at i64 boundary values."""
+    max_i64 = 9223372036854775807
+
+    # Compute MAX_I64 via BigInt arithmetic
+    m = monty.Monty('(x - 1)', inputs=['x'])
+    computed_max = m.run(inputs={'x': max_i64 + 1})
+
+    assert hash(computed_max) == hash(max_i64), 'hash at MAX_I64 boundary must match'
+
+
+def test_bigint_hash_consistency_large_values():
+    """Equal large BigInts must hash the same."""
+    big1 = 2**100
+    big2 = 2**100
+
+    # Verify they hash the same in Python first
+    assert hash(big1) == hash(big2), 'precondition: equal bigints hash same in Python'
+
+    # Verify hashes match after round-trip through Monty
+    m = monty.Monty('x', inputs=['x'])
+    result1 = m.run(inputs={'x': big1})
+    result2 = m.run(inputs={'x': big2})
+
+    assert hash(result1) == hash(result2), 'equal bigints from Monty must hash same'
+
+    # Dict lookup must work
+    d = {result1: 'value'}
+    assert d[result2] == 'value', 'lookup with equal bigint works'
