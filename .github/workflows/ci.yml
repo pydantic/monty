@@ -276,10 +276,12 @@ jobs:
           dockerRunArgs: --volume "${{ github.workspace }}/dist:/dist"
           install: |
             apt-get update
-            apt-get install -y --no-install-recommends python3 python3-pip
+            apt-get install -y --no-install-recommends python3 python3-pip python3-venv
           run: |
             ls -lh /dist/
-            pip3 install monty-python --no-index --find-links /dist --force-reinstall --break-system-packages
+            python3 -m venv venv
+            source venv/bin/activate
+            python3 -m pip install monty-python --no-index --no-deps --find-links /dist --force-reinstall
             python3 -c "import monty; print(monty.Monty('1 + 2').run())"
 
   # Test wheels on main OS platforms
