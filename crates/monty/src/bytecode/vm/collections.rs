@@ -7,7 +7,7 @@ use crate::{
     intern::StringId,
     io::PrintWriter,
     resource::ResourceTracker,
-    types::{Dict, List, PyTrait, Set, Str, Tuple, Type},
+    types::{Dict, List, PyTrait, Set, Tuple, Type},
     value::Value,
 };
 
@@ -77,8 +77,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                     let chars: Vec<char> = s.as_str().chars().collect();
                     let mut items = Vec::with_capacity(chars.len());
                     for c in chars {
-                        let heap_id = self.heap.allocate(HeapData::Str(Str::new(c.to_string())))?;
-                        items.push(Value::Ref(heap_id));
+                        items.push(self.heap.allocate_char(c)?);
                     }
                     items
                 }
@@ -94,8 +93,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 let chars: Vec<char> = s.chars().collect();
                 let mut items = Vec::with_capacity(chars.len());
                 for c in chars {
-                    let heap_id = self.heap.allocate(HeapData::Str(Str::new(c.to_string())))?;
-                    items.push(Value::Ref(heap_id));
+                    items.push(self.heap.allocate_char(c)?);
                 }
                 items
             }
@@ -288,8 +286,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 // Allocate each character as a new string
                 let mut items = Vec::with_capacity(str_len);
                 for c in s.chars() {
-                    let char_id = self.heap.allocate(HeapData::Str(Str::new(c.to_string())))?;
-                    items.push(Value::Ref(char_id));
+                    items.push(self.heap.allocate_char(c)?);
                 }
                 // Push items in reverse order so first item is on top
                 for item in items.into_iter().rev() {
@@ -328,8 +325,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                     // Allocate each character as a new string
                     let mut items = Vec::with_capacity(chars.len());
                     for c in chars {
-                        let char_id = self.heap.allocate(HeapData::Str(Str::new(c.to_string())))?;
-                        items.push(Value::Ref(char_id));
+                        items.push(self.heap.allocate_char(c)?);
                     }
                     // Push items in reverse order so first item is on top
                     for item in items.into_iter().rev() {
