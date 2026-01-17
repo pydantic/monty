@@ -123,6 +123,34 @@ impl HeapData {
         )
     }
 
+    /// Returns whether this heap data currently contains any heap references (`Value::Ref`).
+    ///
+    /// Used during allocation to determine if this data could create reference cycles.
+    /// When true, `mark_potential_cycle()` should be called to enable GC.
+    ///
+    /// Note: This is separate from `is_gc_tracked()` - a container may be GC-tracked
+    /// (capable of holding refs) but not currently contain any refs.
+    #[inline]
+    pub fn has_refs(&self) -> bool {
+        match self {
+            Self::List(list) => list.contains_refs(),
+            Self::Tuple(tuple) => tuple.contains_refs(),
+            Self::Dict(dict) => dict.has_refs(),
+            Self::Set(set) => set.has_refs(),
+            Self::FrozenSet(fset) => fset.has_refs(),
+            // Closures always have refs when they have captured cells (HeapIds)
+            Self::Closure(_, cells, defaults) => {
+                !cells.is_empty() || defaults.iter().any(|v| matches!(v, Value::Ref(_)))
+            }
+            Self::FunctionDefaults(_, defaults) => defaults.iter().any(|v| matches!(v, Value::Ref(_))),
+            Self::Cell(value) => matches!(value, Value::Ref(_)),
+            Self::Dataclass(dc) => dc.has_refs(),
+            Self::Iterator(iter) => iter.has_refs(),
+            // Leaf types cannot have refs
+            Self::Str(_) | Self::Bytes(_) | Self::Range(_) | Self::Exception(_) => false,
+        }
+    }
+
     /// Computes hash for immutable heap types that can be used as dict keys.
     ///
     /// Returns Some(hash) for immutable types (Str, Bytes, Tuple of hashables).
@@ -708,10 +736,17 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// Only GC-tracked types (containers that can hold references) count toward the
     /// GC allocation threshold. Leaf types like strings don't trigger GC.
+    ///
+    /// When allocating a container that contains heap references, marks potential
+    /// cycles to enable garbage collection.
     pub fn allocate(&mut self, data: HeapData) -> Result<HeapId, ResourceError> {
         self.tracker.on_allocate(|| data.py_estimate_size())?;
         if data.is_gc_tracked() {
             self.allocations_since_gc = self.allocations_since_gc.wrapping_add(1);
+            // Mark potential cycles if this container has heap references
+            if data.has_refs() {
+                self.may_have_cycles = true;
+            }
         }
 
         let hash_state = HashState::for_data(&data);
@@ -1303,7 +1338,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// and the number of allocations since the last GC exceeds the interval.
     #[inline]
     pub fn should_gc(&self) -> bool {
-        self.may_have_cycles && self.allocations_since_gc > GC_INTERVAL
+        self.may_have_cycles && self.allocations_since_gc >= GC_INTERVAL
     }
 
     /// Runs mark-sweep garbage collection to free unreachable cycles.

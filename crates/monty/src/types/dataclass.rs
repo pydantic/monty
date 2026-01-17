@@ -103,6 +103,15 @@ impl Dataclass {
         &self.field_names
     }
 
+    /// Returns whether this dataclass contains any heap references (`Value::Ref`).
+    ///
+    /// Delegates to the underlying attrs Dict.
+    #[inline]
+    #[must_use]
+    pub fn has_refs(&self) -> bool {
+        self.attrs.has_refs()
+    }
+
     /// Returns a reference to the methods set.
     #[must_use]
     pub fn methods(&self) -> &AHashSet<String> {

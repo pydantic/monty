@@ -60,6 +60,17 @@ impl Dict {
         }
     }
 
+    /// Returns whether this dict contains any heap references (`Value::Ref`).
+    ///
+    /// Used during allocation to determine if this container could create cycles.
+    #[inline]
+    #[must_use]
+    pub fn has_refs(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| matches!(e.key, Value::Ref(_)) || matches!(e.value, Value::Ref(_)))
+    }
+
     /// Creates a dict from a vector of (key, value) pairs.
     ///
     /// Assumes the caller is transferring ownership of all keys and values in the pairs.

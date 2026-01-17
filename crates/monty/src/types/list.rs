@@ -66,7 +66,8 @@ impl List {
     /// # Safety Considerations
     /// Be careful when mutating the vector directly - you must manually
     /// manage reference counts for any heap values you add or remove.
-    /// After mutation, call `recompute_contains_refs()` if needed.
+    /// The `contains_refs` flag is NOT automatically updated by direct
+    /// vector mutations. Prefer using `append()` or `insert()` instead.
     pub fn as_vec_mut(&mut self) -> &mut Vec<Value> {
         &mut self.items
     }

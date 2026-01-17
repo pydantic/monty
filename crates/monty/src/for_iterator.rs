@@ -133,6 +133,15 @@ impl ForIterator {
         self.value.py_dec_ref_ids(stack);
     }
 
+    /// Returns whether this iterator holds a heap reference (`Value::Ref`).
+    ///
+    /// Used during allocation to determine if this container could create cycles.
+    #[inline]
+    #[must_use]
+    pub fn has_refs(&self) -> bool {
+        matches!(self.value, Value::Ref(_))
+    }
+
     /// Returns a reference to the underlying value being iterated.
     ///
     /// Used by GC to traverse heap references held by the iterator.
