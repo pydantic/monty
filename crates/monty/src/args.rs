@@ -27,10 +27,16 @@ pub(crate) enum ArgValues {
 
 impl ArgValues {
     /// Checks that zero arguments were passed.
-    pub fn check_zero_args(&self, name: &str) -> RunResult<()> {
+    ///
+    /// On error, properly drops all contained values to maintain reference counts.
+    pub fn check_zero_args(self, name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<()> {
         match self {
             Self::Empty => Ok(()),
-            _ => Err(ExcType::type_error_no_args(name, self.count())),
+            other => {
+                let count = other.count();
+                other.drop_with_heap(heap);
+                Err(ExcType::type_error_no_args(name, count))
+            }
         }
     }
 

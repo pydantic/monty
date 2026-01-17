@@ -633,16 +633,16 @@ impl PyTrait for Set {
                 Ok(Value::None)
             }
             attr::POP => {
-                args.check_zero_args("set.pop")?;
+                args.check_zero_args("set.pop", heap)?;
                 self.pop()
             }
             attr::CLEAR => {
-                args.check_zero_args("set.clear")?;
+                args.check_zero_args("set.clear", heap)?;
                 self.clear(heap);
                 Ok(Value::None)
             }
             attr::COPY => {
-                args.check_zero_args("set.copy")?;
+                args.check_zero_args("set.copy", heap)?;
                 let copy = self.copy(heap);
                 let heap_id = heap.allocate(HeapData::Set(copy))?;
                 Ok(Value::Ref(heap_id))
@@ -1108,7 +1108,7 @@ impl PyTrait for FrozenSet {
 
         match attr_id {
             attr::COPY => {
-                args.check_zero_args("frozenset.copy")?;
+                args.check_zero_args("frozenset.copy", heap)?;
                 let copy = self.copy(heap);
                 let heap_id = heap.allocate(HeapData::FrozenSet(copy))?;
                 Ok(Value::Ref(heap_id))

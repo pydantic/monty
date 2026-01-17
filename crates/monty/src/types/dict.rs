@@ -578,19 +578,19 @@ impl PyTrait for Dict {
                 Ok(value)
             }
             attr::KEYS => {
-                args.check_zero_args("dict.keys")?;
+                args.check_zero_args("dict.keys", heap)?;
                 let keys = self.keys(heap);
                 let list_id = heap.allocate(HeapData::List(List::new(keys)))?;
                 Ok(Value::Ref(list_id))
             }
             attr::VALUES => {
-                args.check_zero_args("dict.values")?;
+                args.check_zero_args("dict.values", heap)?;
                 let values = self.values(heap);
                 let list_id = heap.allocate(HeapData::List(List::new(values)))?;
                 Ok(Value::Ref(list_id))
             }
             attr::ITEMS => {
-                args.check_zero_args("dict.items")?;
+                args.check_zero_args("dict.items", heap)?;
                 // Return list of tuples
                 let items = self.items(heap);
                 let mut tuples: Vec<Value> = Vec::with_capacity(items.len());

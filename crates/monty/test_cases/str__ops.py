@@ -67,6 +67,9 @@ assert ','.join(['only']) == 'only', 'join single element'
 # Join with different iterables
 assert ' '.join(('hello', 'world')) == 'hello world', 'join tuple'
 
+# Join with string iterable (iterates over characters)
+assert ','.join('abc') == 'a,b,c', 'join string iterable'
+
 # Join with variable separator
 sep = '-'
 assert sep.join(['a', 'b']) == 'a-b', 'join with variable separator'

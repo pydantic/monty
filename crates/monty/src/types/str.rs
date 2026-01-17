@@ -244,19 +244,32 @@ fn str_join(
     let mut result = String::new();
     let mut index = 0usize;
 
-    while let Some(item) = iter.for_next(heap, interns)? {
+    // Use explicit match to properly drop iter on for_next errors (e.g., dict/set size change
+    // during iteration, or allocation failure). The `?` operator would leak the iterator.
+    loop {
+        let item = match iter.for_next(heap, interns) {
+            Ok(Some(item)) => item,
+            Ok(None) => break,
+            Err(e) => {
+                iter.drop_with_heap(heap);
+                return Err(e);
+            }
+        };
+
+        if index > 0 {
+            result.push_str(separator);
+        }
+
         // Check item is a string and extract its content
-        let item_str = match &item {
+        match &item {
             Value::InternString(id) => {
-                let s = interns.get_str(*id).to_owned();
+                result.push_str(interns.get_str(*id));
                 item.drop_with_heap(heap); // No-op for InternString but consistent
-                s
             }
             Value::Ref(heap_id) => {
                 if let HeapData::Str(s) = heap.get(*heap_id) {
-                    let owned = s.as_str().to_owned();
+                    result.push_str(s.as_str());
                     item.drop_with_heap(heap);
-                    owned
                 } else {
                     let t = item.py_type(heap);
                     item.drop_with_heap(heap);
@@ -270,12 +283,8 @@ fn str_join(
                 iter.drop_with_heap(heap);
                 return Err(ExcType::type_error_join_item(index, t));
             }
-        };
-
-        if index > 0 {
-            result.push_str(separator);
         }
-        result.push_str(&item_str);
+
         index += 1;
     }
 
