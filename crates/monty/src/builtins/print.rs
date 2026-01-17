@@ -26,7 +26,7 @@ pub fn builtin_print(
     print: &mut impl PrintWriter,
 ) -> RunResult<Value> {
     // Split into positional args and kwargs
-    let (positional, kwargs) = args.split();
+    let (positional, kwargs) = args.into_parts();
 
     // Extract kwargs first, consuming them - this handles cleanup on error
     let (sep, end) = match extract_print_kwargs(kwargs, heap, interns) {
@@ -39,18 +39,18 @@ pub fn builtin_print(
         }
     };
 
-    // Print positional args with separator
-    let mut iter = positional.iter();
-    if let Some(value) = iter.next() {
-        print.stdout_write(value.py_str(heap, interns))?;
-        for value in iter {
-            if let Some(sep) = &sep {
-                print.stdout_write(sep.as_str().into())?;
-            } else {
-                print.stdout_push(' ')?;
-            }
-            print.stdout_write(value.py_str(heap, interns))?;
+    // Print positional args with separator, dropping each value after use
+    let mut first = true;
+    for value in positional {
+        if first {
+            first = false;
+        } else if let Some(sep) = &sep {
+            print.stdout_write(sep.as_str().into())?;
+        } else {
+            print.stdout_push(' ')?;
         }
+        print.stdout_write(value.py_str(heap, interns))?;
+        value.drop_with_heap(heap);
     }
 
     // Append end string
@@ -58,11 +58,6 @@ pub fn builtin_print(
         print.stdout_write(end.into())?;
     } else {
         print.stdout_push('\n')?;
-    }
-
-    // Drop positional args
-    for value in positional {
-        value.drop_with_heap(heap);
     }
 
     Ok(Value::None)

@@ -69,17 +69,15 @@ impl ArgValues {
         }
     }
 
-    /// Splits arguments into positional and keyword components.
-    ///
-    /// Returns (positional_args, keyword_args) where keyword_args is a Vec
-    /// of (key, value) pairs with keys as Values (InternString).
-    pub fn split(self) -> (Vec<Value>, KwargsValues) {
+    /// Splits into positional iterator and keyword values without allocating
+    /// for the common One/Two cases.
+    pub fn into_parts(self) -> (ArgPosIter, KwargsValues) {
         match self {
-            Self::Empty => (vec![], KwargsValues::Empty),
-            Self::One(v) => (vec![v], KwargsValues::Empty),
-            Self::Two(v1, v2) => (vec![v1, v2], KwargsValues::Empty),
-            Self::Kwargs(kwargs) => (vec![], kwargs),
-            Self::ArgsKargs { args, kwargs } => (args, kwargs),
+            Self::Empty => (ArgPosIter::Empty, KwargsValues::Empty),
+            Self::One(v) => (ArgPosIter::One(Some(v)), KwargsValues::Empty),
+            Self::Two(v1, v2) => (ArgPosIter::Two(Some(v1), Some(v2)), KwargsValues::Empty),
+            Self::Kwargs(kwargs) => (ArgPosIter::Empty, kwargs),
+            Self::ArgsKargs { args, kwargs } => (ArgPosIter::Vec(args.into_iter()), kwargs),
         }
     }
 
@@ -140,18 +138,6 @@ impl ArgValues {
                 }
                 kwargs.drop_with_heap(heap);
             }
-        }
-    }
-
-    /// Splits into positional iterator and keyword values without allocating
-    /// for the common One/Two cases.
-    pub fn into_parts(self) -> (ArgPosIter, KwargsValues) {
-        match self {
-            Self::Empty => (ArgPosIter::Empty, KwargsValues::Empty),
-            Self::One(v) => (ArgPosIter::One(Some(v)), KwargsValues::Empty),
-            Self::Two(v1, v2) => (ArgPosIter::Two(Some(v1), Some(v2)), KwargsValues::Empty),
-            Self::Kwargs(kwargs) => (ArgPosIter::Empty, kwargs),
-            Self::ArgsKargs { args, kwargs } => (ArgPosIter::Vec(args.into_iter()), kwargs),
         }
     }
 }

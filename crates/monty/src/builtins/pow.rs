@@ -15,7 +15,7 @@ use crate::{
 /// Handles negative exponents by returning a float.
 pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     // pow() accepts 2 or 3 arguments
-    let (positional, kwargs) = args.split();
+    let (mut positional, kwargs) = args.into_parts();
     if !kwargs.is_empty() {
         for (k, v) in kwargs {
             k.drop_with_heap(heap);
@@ -28,14 +28,12 @@ pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
     }
 
     let (base, exp, modulo) = match positional.len() {
-        2 => {
-            let mut iter = positional.into_iter();
-            (iter.next().unwrap(), iter.next().unwrap(), None)
-        }
-        3 => {
-            let mut iter = positional.into_iter();
-            (iter.next().unwrap(), iter.next().unwrap(), Some(iter.next().unwrap()))
-        }
+        2 => (positional.next().unwrap(), positional.next().unwrap(), None),
+        3 => (
+            positional.next().unwrap(),
+            positional.next().unwrap(),
+            Some(positional.next().unwrap()),
+        ),
         n => {
             for v in positional {
                 v.drop_with_heap(heap);

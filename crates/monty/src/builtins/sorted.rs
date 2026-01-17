@@ -18,7 +18,7 @@ use crate::{
 /// Returns a new sorted list from the items in an iterable.
 /// Note: Currently does not support key or reverse arguments.
 pub fn builtin_sorted(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let (positional, kwargs) = args.split();
+    let (mut positional, kwargs) = args.into_parts();
 
     // Check for unsupported kwargs
     if !kwargs.is_empty() {
@@ -46,7 +46,7 @@ pub fn builtin_sorted(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, in
         .into());
     }
 
-    let iterable = positional.into_iter().next().unwrap();
+    let iterable = positional.next().unwrap();
     let mut iter = ForIterator::new(iterable, heap, interns)?;
     let mut items = iter.collect(heap, interns)?;
     iter.drop_with_heap(heap);

@@ -43,7 +43,7 @@ fn builtin_min_max(
     is_min: bool,
 ) -> RunResult<Value> {
     let func_name = if is_min { "min" } else { "max" };
-    let (positional, kwargs) = args.split();
+    let (mut positional, kwargs) = args.into_parts();
 
     // Check for unsupported kwargs (key, default not yet implemented)
     if !kwargs.is_empty() {
@@ -69,7 +69,7 @@ fn builtin_min_max(
         .into()),
         1 => {
             // Single argument: iterate over it
-            let iterable = positional.into_iter().next().unwrap();
+            let iterable = positional.next().unwrap();
             let mut iter = ForIterator::new(iterable, heap, interns)?;
 
             let Some(mut result) = iter.for_next(heap, interns)? else {
@@ -113,10 +113,9 @@ fn builtin_min_max(
         }
         _ => {
             // Multiple arguments: compare them directly
-            let mut iter = positional.into_iter();
-            let mut result = iter.next().unwrap();
+            let mut result = positional.next().unwrap();
 
-            for item in iter {
+            for item in positional {
                 let should_replace = match result.py_cmp(&item, heap, interns) {
                     Some(Ordering::Greater) => is_min,
                     Some(Ordering::Less) => !is_min,

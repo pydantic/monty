@@ -17,7 +17,7 @@ use crate::{
 /// from each of the argument iterables. Stops when the shortest iterable is exhausted.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
 pub fn builtin_zip(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let (positional, kwargs) = args.split();
+    let (positional, kwargs) = args.into_parts();
 
     // Check for unsupported kwargs (strict not yet implemented)
     if !kwargs.is_empty() {
@@ -33,7 +33,7 @@ pub fn builtin_zip(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
         );
     }
 
-    if positional.is_empty() {
+    if positional.len() == 0 {
         // zip() with no arguments returns empty list
         let heap_id = heap.allocate(HeapData::List(List::new(Vec::new())))?;
         return Ok(Value::Ref(heap_id));
