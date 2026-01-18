@@ -1115,19 +1115,32 @@ impl<'i> Prepare<'i> {
 
         // At module level, all names are local (which is also the global namespace)
         if self.is_module_scope {
-            let (id, is_new) = match self.name_map.entry(name_str.to_string()) {
-                Entry::Occupied(e) => (*e.get(), false),
+            return match self.name_map.entry(name_str.to_string()) {
+                Entry::Occupied(e) => {
+                    // Name already exists (from prior assignment or pre-registered)
+                    (
+                        Identifier::new_with_scope(ident.name_id, ident.position, *e.get(), NameScope::Local),
+                        false,
+                    )
+                }
                 Entry::Vacant(e) => {
                     let id = NamespaceId::new(self.namespace_size);
                     self.namespace_size += 1;
                     e.insert(id);
-                    (id, true)
+                    // Determine scope: if the name is assigned somewhere (even later in the file),
+                    // it's a true local that will raise UnboundLocalError if accessed before assignment.
+                    // If the name is never assigned, it's an undefined reference that raises NameError.
+                    let scope = if self.names_assigned_in_order.contains(name_str) {
+                        NameScope::Local
+                    } else {
+                        NameScope::LocalUnassigned
+                    };
+                    (
+                        Identifier::new_with_scope(ident.name_id, ident.position, id, scope),
+                        true,
+                    )
                 }
             };
-            return (
-                Identifier::new_with_scope(ident.name_id, ident.position, id, NameScope::Local),
-                is_new,
-            );
         }
 
         // In a function: determine scope based on global_names, nonlocal_names, assigned_names, global_name_map

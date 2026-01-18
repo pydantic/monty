@@ -139,8 +139,8 @@ def test_undeclared_function_raises_name_error():
     with pytest.raises(monty.MontyRuntimeError) as exc_info:
         m.run()
     inner = exc_info.value.exception()
-    assert isinstance(inner, UnboundLocalError)
-    assert str(inner) == snapshot("cannot access local variable 'unknown_func' where it is not associated with a value")
+    assert type(inner) is NameError
+    assert str(inner) == snapshot("name 'unknown_func' is not defined")
 
 
 def test_external_function_raises_exception():
