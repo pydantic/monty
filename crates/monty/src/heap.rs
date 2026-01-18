@@ -16,7 +16,8 @@ use crate::{
     intern::{FunctionId, Interns},
     resource::{ResourceError, ResourceTracker},
     types::{
-        Bytes, Dataclass, Dict, FrozenSet, List, LongInt, PyTrait, Range, Set, Str, Tuple, Type, str::allocate_char,
+        Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, PyTrait, Range, Set, Str, Tuple, Type,
+        str::allocate_char,
     },
     value::{Attr, Value},
 };
@@ -97,6 +98,11 @@ pub(crate) enum HeapData {
     /// when values fit, and promote to LongInt on overflow. When LongInt results fit back
     /// in i64, they are demoted back to `Value::Int` for performance.
     LongInt(LongInt),
+    /// A Python module (e.g., `sys`, `typing`).
+    ///
+    /// Modules have a name and a dictionary of attributes. They are created by
+    /// import statements and can have refs to other heap values in their attributes.
+    Module(Module),
 }
 
 impl HeapData {
@@ -122,6 +128,7 @@ impl HeapData {
                 | Self::Cell(_)
                 | Self::Dataclass(_)
                 | Self::Iterator(_)
+                | Self::Module(_)
         )
     }
 
@@ -148,6 +155,7 @@ impl HeapData {
             Self::Cell(value) => matches!(value, Value::Ref(_)),
             Self::Dataclass(dc) => dc.has_refs(),
             Self::Iterator(iter) => iter.has_refs(),
+            Self::Module(m) => m.has_refs(),
             // Leaf types cannot have refs
             Self::Str(_) | Self::Bytes(_) | Self::Range(_) | Self::Exception(_) | Self::LongInt(_) => false,
         }
@@ -205,11 +213,15 @@ impl HeapData {
             }
             // Dataclass hashability depends on the mutable flag
             Self::Dataclass(dc) => dc.compute_hash(heap, interns),
-            // Mutable types, exceptions, and iterators cannot be hashed
+            // Mutable types, exceptions, iterators, and modules cannot be hashed
             // (Cell is handled specially in get_or_compute_hash)
-            Self::List(_) | Self::Dict(_) | Self::Set(_) | Self::Cell(_) | Self::Exception(_) | Self::Iterator(_) => {
-                None
-            }
+            Self::List(_)
+            | Self::Dict(_)
+            | Self::Set(_)
+            | Self::Cell(_)
+            | Self::Exception(_)
+            | Self::Iterator(_)
+            | Self::Module(_) => None,
             // LongInt is immutable and hashable
             Self::LongInt(li) => Some(li.hash()),
         }
@@ -238,6 +250,7 @@ impl PyTrait for HeapData {
             Self::Iterator(_) => Type::Iterator,
             // LongInt is still `int` in Python - it's an implementation detail
             Self::LongInt(_) => Type::Int,
+            Self::Module(_) => Type::Module,
         }
     }
 
@@ -258,6 +271,7 @@ impl PyTrait for HeapData {
             Self::Dataclass(dc) => dc.py_estimate_size(),
             Self::Iterator(_) => std::mem::size_of::<ForIterator>(),
             Self::LongInt(li) => li.estimate_size(),
+            Self::Module(m) => std::mem::size_of::<Module>() + m.attrs().py_estimate_size(),
         }
     }
 
@@ -271,14 +285,15 @@ impl PyTrait for HeapData {
             Self::Set(s) => PyTrait::py_len(s, heap, interns),
             Self::FrozenSet(fs) => PyTrait::py_len(fs, heap, interns),
             Self::Range(r) => Some(r.len()),
-            // Cells, Exceptions, Dataclasses, Iterators, and LongInts don't have length
+            // Cells, Exceptions, Dataclasses, Iterators, LongInts, and Modules don't have length
             Self::Cell(_)
             | Self::Closure(_, _, _)
             | Self::FunctionDefaults(_, _)
             | Self::Exception(_)
             | Self::Dataclass(_)
             | Self::Iterator(_)
-            | Self::LongInt(_) => None,
+            | Self::LongInt(_)
+            | Self::Module(_) => None,
         }
     }
 
@@ -297,10 +312,11 @@ impl PyTrait for HeapData {
             (Self::Dataclass(a), Self::Dataclass(b)) => a.py_eq(b, heap, interns),
             // LongInt equality
             (Self::LongInt(a), Self::LongInt(b)) => a == b,
-            // Cells, Exceptions, and Iterators compare by identity only (handled at Value level via HeapId comparison)
+            // Cells, Exceptions, Iterators, and Modules compare by identity only (handled at Value level via HeapId comparison)
             (Self::Cell(_), Self::Cell(_))
             | (Self::Exception(_), Self::Exception(_))
-            | (Self::Iterator(_), Self::Iterator(_)) => false,
+            | (Self::Iterator(_), Self::Iterator(_))
+            | (Self::Module(_), Self::Module(_)) => false,
             _ => false, // Different types are never equal
         }
     }
@@ -331,6 +347,7 @@ impl PyTrait for HeapData {
             Self::Cell(v) => v.py_dec_ref_ids(stack),
             Self::Dataclass(dc) => dc.py_dec_ref_ids(stack),
             Self::Iterator(iter) => iter.py_dec_ref_ids(stack),
+            Self::Module(m) => m.py_dec_ref_ids(stack),
             // Range, Exception, and LongInt have no nested heap references
             Self::Range(_) | Self::Exception(_) | Self::LongInt(_) => {}
         }
@@ -352,6 +369,7 @@ impl PyTrait for HeapData {
             Self::Dataclass(dc) => dc.py_bool(heap, interns),
             Self::Iterator(_) => true, // Iterators are always truthy
             Self::LongInt(li) => !li.is_zero(),
+            Self::Module(_) => true, // Modules are always truthy
         }
     }
 
@@ -380,6 +398,7 @@ impl PyTrait for HeapData {
             Self::Dataclass(dc) => dc.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Iterator(_) => write!(f, "<iterator>"),
             Self::LongInt(li) => write!(f, "{li}"),
+            Self::Module(m) => write!(f, "<module '{}'>", interns.get_str(m.name())),
         }
     }
 
@@ -570,12 +589,13 @@ impl HashState {
                     Self::Unhashable
                 }
             }
-            // Mutable containers, exceptions, and iterators are unhashable
+            // Mutable containers, exceptions, iterators, and modules are unhashable
             HeapData::List(_)
             | HeapData::Dict(_)
             | HeapData::Set(_)
             | HeapData::Exception(_)
-            | HeapData::Iterator(_) => Self::Unhashable,
+            | HeapData::Iterator(_)
+            | HeapData::Module(_) => Self::Unhashable,
         }
     }
 }
@@ -1514,6 +1534,20 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
             // Iterator holds a reference to the iterable being iterated
             if let Value::Ref(id) = iter.value() {
                 work_list.push(*id);
+            }
+        }
+        HeapData::Module(m) => {
+            // Module attrs can contain references to heap values
+            if !m.has_refs() {
+                return;
+            }
+            for (k, v) in m.attrs() {
+                if let Value::Ref(id) = k {
+                    work_list.push(*id);
+                }
+                if let Value::Ref(id) = v {
+                    work_list.push(*id);
+                }
             }
         }
     }

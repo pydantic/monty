@@ -44,6 +44,10 @@ pub enum Type {
     BuiltinFunction,
     Cell,
     Iterator,
+    Module,
+    /// Marker types like stdout/stderr - displays as "TextIOWrapper"
+    #[strum(disabled)]
+    TextIOWrapper,
 }
 
 impl fmt::Display for Type {
@@ -69,6 +73,8 @@ impl fmt::Display for Type {
             Self::BuiltinFunction => f.write_str("builtin_function_or_method"),
             Self::Cell => f.write_str("cell"),
             Self::Iterator => f.write_str("iterator"),
+            Self::Module => f.write_str("module"),
+            Self::TextIOWrapper => f.write_str("TextIOWrapper"),
         }
     }
 }

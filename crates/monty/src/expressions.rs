@@ -388,6 +388,27 @@ pub enum Node<F> {
     /// Executes body, catches matching exceptions with handlers, runs else if no exception,
     /// and always runs finally.
     Try(Try<Self>),
+    /// Import statement (e.g., `import sys`, `import sys as s`).
+    ///
+    /// Loads a module and binds it to a name in the current namespace.
+    Import {
+        /// The module name to import (e.g., "sys", "typing").
+        module_name: StringId,
+        /// The binding target - contains the name (or alias), position, and namespace slot.
+        /// After prepare phase, this includes the resolved namespace slot for storing the module.
+        binding: Identifier,
+    },
+    /// From-import statement (e.g., `from typing import TYPE_CHECKING`).
+    ///
+    /// Imports specific names from a module into the current namespace.
+    ImportFrom {
+        /// The module name to import from (e.g., "typing").
+        module_name: StringId,
+        /// Names to import: (name, optional_alias) pairs.
+        names: Vec<(StringId, Option<StringId>)>,
+        /// Source position for error reporting.
+        position: CodeRange,
+    },
 }
 
 /// A prepared function definition with resolved names and scope information.

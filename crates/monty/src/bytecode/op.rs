@@ -333,6 +333,13 @@ pub enum Opcode {
     // === Special ===
     /// No operation (for patching/alignment).
     Nop,
+
+    // === Module Operations ===
+    /// Load a built-in module onto the stack. Operand: u8 module_id.
+    ///
+    /// The module_id maps to `BuiltinModule` (0=sys, 1=typing).
+    /// Creates the module on the heap and pushes a `Value::Ref` to it.
+    LoadModule,
 }
 
 impl TryFrom<u8> for Opcode {
@@ -361,8 +368,8 @@ mod tests {
 
     #[test]
     fn test_opcode_roundtrip() {
-        // Verify that all opcodes from 0 to Nop can be converted to u8 and back
-        for byte in 0..=Opcode::Nop as u8 {
+        // Verify that all opcodes from 0 to LoadModule (last opcode) can be converted to u8 and back
+        for byte in 0..=Opcode::LoadModule as u8 {
             let opcode = Opcode::try_from(byte).unwrap();
             assert_eq!(opcode as u8, byte, "opcode {opcode:?} has wrong discriminant");
         }
@@ -371,7 +378,7 @@ mod tests {
     #[test]
     fn test_invalid_opcode() {
         // Byte just after the last valid opcode should fail
-        let result = Opcode::try_from(Opcode::Nop as u8 + 1);
+        let result = Opcode::try_from(Opcode::LoadModule as u8 + 1);
         assert!(result.is_err());
         // 255 should also fail
         let result = Opcode::try_from(255u8);

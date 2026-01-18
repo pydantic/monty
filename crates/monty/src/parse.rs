@@ -340,8 +340,56 @@ impl<'a> Parser<'a> {
                 };
                 Ok(Node::Assert { test, msg })
             }
-            Stmt::Import(_) => Err(ParseError::not_implemented("import statements")),
-            Stmt::ImportFrom(_) => Err(ParseError::not_implemented("from...import statements")),
+            Stmt::Import(ast::StmtImport { names, range, .. }) => {
+                // We only support single module imports (e.g., `import sys`)
+                // Multi-module imports (e.g., `import sys, os`) are not supported
+                let position = self.convert_range(range);
+                if names.len() != 1 {
+                    return Err(ParseError::not_implemented("multi-module import statements"));
+                }
+                let alias_node = &names[0];
+                let module_name = self.interner.intern(&alias_node.name);
+                // The binding name is the alias if present, otherwise the module name
+                let binding_name = alias_node
+                    .asname
+                    .as_ref()
+                    .map_or(module_name, |n| self.interner.intern(&n.id));
+                // Create an unresolved identifier (namespace slot will be set during prepare)
+                let binding = Identifier::new(binding_name, position);
+                Ok(Node::Import { module_name, binding })
+            }
+            Stmt::ImportFrom(ast::StmtImportFrom {
+                module,
+                names,
+                level,
+                range,
+                ..
+            }) => {
+                let position = self.convert_range(range);
+                // We only support absolute imports (level 0)
+                if level != 0 {
+                    return Err(ParseError::not_implemented("relative imports"));
+                }
+                // Module name is required for absolute imports
+                let module_name = match module {
+                    Some(m) => self.interner.intern(&m),
+                    None => return Err(ParseError::not_implemented("relative imports without module name")),
+                };
+                // Parse the imported names
+                let names = names
+                    .iter()
+                    .map(|alias| {
+                        let name = self.interner.intern(&alias.name);
+                        let asname = alias.asname.as_ref().map(|n| self.interner.intern(&n.id));
+                        (name, asname)
+                    })
+                    .collect();
+                Ok(Node::ImportFrom {
+                    module_name,
+                    names,
+                    position,
+                })
+            }
             Stmt::Global(ast::StmtGlobal { names, range, .. }) => {
                 let names = names
                     .iter()

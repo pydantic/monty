@@ -1071,8 +1071,26 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::Nop => {
                     // No operation
                 }
+                // Module Operations
+                Opcode::LoadModule => {
+                    let module_id = fetch_u8!(cached_frame);
+                    try_catch_sync!(self, cached_frame, self.load_module(module_id));
+                }
             }
         }
+    }
+
+    /// Loads a built-in module and pushes it onto the stack.
+    fn load_module(&mut self, module_id: u8) -> RunResult<()> {
+        use crate::modules::{BuiltinModule, create_builtin_module};
+
+        let module = BuiltinModule::from_u8(module_id)
+            .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, format!("unknown module id: {module_id}")))?;
+
+        // Create the module on the heap using pre-interned strings
+        let heap_id = create_builtin_module(module, self.heap, self.interns)?;
+        self.push(Value::Ref(heap_id));
+        Ok(())
     }
 
     /// Resumes execution after an external call completes.

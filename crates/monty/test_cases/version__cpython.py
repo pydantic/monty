@@ -1,4 +1,4 @@
-# xfail=monty
 import sys
 
-assert sys.version_info[:2] == (3, 14), f'Expected Python 3.14, got {sys.version_info[:2]}'
+v = sys.version_info
+assert (v[0], v[1]) == (3, 14), f'Expected Python 3.14, got ({v[0]}, {v[1]})'

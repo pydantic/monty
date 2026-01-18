@@ -52,9 +52,10 @@ mod not_implemented_error {
     }
 
     #[test]
-    fn imports_return_not_implemented_error() {
+    fn unknown_imports_return_syntax_error() {
+        // Unknown modules (not sys or typing) return a SyntaxError
         let result = MontyRun::new("import os".to_owned(), "test.py", vec![], vec![]);
-        assert_eq!(get_exc_type(result), ExcType::NotImplementedError);
+        assert_eq!(get_exc_type(result), ExcType::SyntaxError);
     }
 
     #[test]

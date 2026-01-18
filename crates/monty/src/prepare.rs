@@ -10,6 +10,7 @@ use crate::{
     },
     fstring::{FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
+    modules::BuiltinModule,
     namespace::NamespaceId,
     parse::{ExceptHandler, ParseError, ParseNode, ParseResult, ParsedSignature, RawFunctionDef, Try},
     signature::Signature,
@@ -46,7 +47,10 @@ pub(crate) fn prepare(
     input_names: Vec<String>,
     external_functions: &[String],
 ) -> Result<PrepareResult, ParseError> {
-    let ParseResult { nodes, interner } = parse_result;
+    let ParseResult { nodes, mut interner } = parse_result;
+    // Pre-intern module attributes for any imports before creating Prepare
+    // This must happen while we still have mutable access to the interner
+    scan_and_pre_intern_imports(&nodes, &mut interner)?;
     let mut p = Prepare::new_module(input_names, external_functions, &interner);
     let mut prepared_nodes = p.prepare_nodes(nodes)?;
 
@@ -466,6 +470,69 @@ impl<'i> Prepare<'i> {
                         or_else,
                         finally,
                     }));
+                }
+                Node::Import { module_name, binding } => {
+                    let position = binding.position;
+                    // Validate that the module is known
+                    // Convert to owned String to avoid borrow conflict with interner
+                    let module_name_str = self.interner.get_str(module_name).to_owned();
+                    if !is_known_module(&module_name_str) {
+                        return Err(ParseError::syntax(
+                            format!("import of module '{module_name_str}' not supported"),
+                            position,
+                        ));
+                    }
+                    // Module attributes were pre-interned in scan_and_pre_intern_imports
+                    // Register the binding name in the namespace
+                    self.names_assigned_in_order
+                        .insert(self.interner.get_str(binding.name_id).to_string());
+                    // Resolve the binding identifier to get the namespace slot
+                    let (resolved_binding, _) = self.get_id(binding);
+                    new_nodes.push(Node::Import {
+                        module_name,
+                        binding: resolved_binding,
+                    });
+                }
+                Node::ImportFrom {
+                    module_name,
+                    names,
+                    position,
+                } => {
+                    let module_name_str = self.interner.get_str(module_name);
+                    if module_name_str == "typing" {
+                        // For typing module, handle specially:
+                        // - TYPE_CHECKING becomes an assignment to False
+                        // - Other names are silently ignored (they're type hints)
+                        for (name, alias) in names {
+                            let name_str = self.interner.get_str(name);
+                            if name_str == "TYPE_CHECKING" {
+                                // Transform to: TYPE_CHECKING = False
+                                let binding_name = alias.unwrap_or(name);
+                                self.names_assigned_in_order
+                                    .insert(self.interner.get_str(binding_name).to_string());
+                                let binding = Identifier::new(binding_name, position);
+                                let (resolved_binding, _) = self.get_id(binding);
+                                // Create an expression for False
+                                let false_expr = ExprLoc::new(position, Expr::Literal(Literal::Bool(false)));
+                                new_nodes.push(Node::Assign {
+                                    target: resolved_binding,
+                                    object: false_expr,
+                                });
+                            }
+                            // Other typing imports are silently ignored - they're just type hints
+                        }
+                    } else if module_name_str == "sys" {
+                        // from sys import ... is not supported yet
+                        return Err(ParseError::syntax(
+                            "from sys import ... not supported (use 'import sys' instead)",
+                            position,
+                        ));
+                    } else {
+                        return Err(ParseError::syntax(
+                            format!("from {module_name_str} import ... not supported"),
+                            position,
+                        ));
+                    }
                 }
             }
         }
@@ -1493,6 +1560,17 @@ fn collect_scope_info_from_node(
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
             }
         }
+        // Import creates a binding for the module name (or alias)
+        Node::Import { binding, .. } => {
+            assigned_names.insert(interner.get_str(binding.name_id).to_string());
+        }
+        // ImportFrom creates bindings for each imported name (or alias)
+        Node::ImportFrom { names, .. } => {
+            for (name, alias) in names {
+                let binding_name = alias.unwrap_or(*name);
+                assigned_names.insert(interner.get_str(binding_name).to_string());
+            }
+        }
         // These don't create new names
         Node::Pass | Node::Expr(_) | Node::Return(_) | Node::ReturnNone | Node::Raise(_) | Node::Assert { .. } => {}
     }
@@ -1672,6 +1750,8 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
                 collect_referenced_names_from_node(n, referenced, interner);
             }
         }
+        // Imports create bindings but don't reference names
+        Node::Import { .. } | Node::ImportFrom { .. } => {}
         Node::Pass | Node::ReturnNone | Node::Global { .. } | Node::Nonlocal { .. } => {}
     }
 }
@@ -1854,5 +1934,110 @@ fn collect_names_from_unpack_target(target: &UnpackTarget, names: &mut AHashSet<
                 collect_names_from_unpack_target(t, names, interner);
             }
         }
+    }
+}
+
+/// Scans all nodes for import statements and pre-interns the module attributes.
+///
+/// This must be called before creating the Prepare struct because we need mutable
+/// access to the interner, and Prepare only holds an immutable reference.
+///
+/// Returns an error if an unknown module is imported (for early error detection).
+fn scan_and_pre_intern_imports(nodes: &[ParseNode], interner: &mut InternerBuilder) -> Result<(), ParseError> {
+    for node in nodes {
+        scan_node_for_imports(node, interner)?;
+    }
+    Ok(())
+}
+
+/// Recursively scans a node and its children for import statements.
+fn scan_node_for_imports(node: &ParseNode, interner: &mut InternerBuilder) -> Result<(), ParseError> {
+    match node {
+        Node::Import { module_name, binding } => {
+            // Convert to owned String to avoid borrow conflict with interner
+            let module_name_str = interner.get_str(*module_name).to_owned();
+            if is_known_module(&module_name_str) {
+                pre_intern_module_attrs(&module_name_str, interner);
+            } else {
+                return Err(ParseError::syntax(
+                    format!("import of module '{module_name_str}' not supported"),
+                    binding.position,
+                ));
+            }
+        }
+        Node::ImportFrom {
+            module_name, position, ..
+        } => {
+            // Convert to owned String to avoid borrow conflict with interner
+            let module_name_str = interner.get_str(*module_name).to_owned();
+            if is_known_module(&module_name_str) {
+                pre_intern_module_attrs(&module_name_str, interner);
+            } else {
+                return Err(ParseError::syntax(
+                    format!("import from module '{module_name_str}' not supported"),
+                    *position,
+                ));
+            }
+        }
+        // Recursively scan nested structures
+        Node::If { body, or_else, .. } => {
+            scan_and_pre_intern_imports(body, interner)?;
+            scan_and_pre_intern_imports(or_else, interner)?;
+        }
+        Node::For { body, or_else, .. } => {
+            scan_and_pre_intern_imports(body, interner)?;
+            scan_and_pre_intern_imports(or_else, interner)?;
+        }
+        Node::Try(Try {
+            body,
+            handlers,
+            or_else,
+            finally,
+        }) => {
+            scan_and_pre_intern_imports(body, interner)?;
+            for handler in handlers {
+                scan_and_pre_intern_imports(&handler.body, interner)?;
+            }
+            scan_and_pre_intern_imports(or_else, interner)?;
+            scan_and_pre_intern_imports(finally, interner)?;
+        }
+        Node::FunctionDef(func_def) => {
+            scan_and_pre_intern_imports(&func_def.body, interner)?;
+        }
+        // Other nodes don't contain nested imports
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Checks if a module name is a known built-in module.
+///
+/// Returns true for modules that can be imported (e.g., sys, typing).
+fn is_known_module(name: &str) -> bool {
+    BuiltinModule::from_name(name).is_some()
+}
+
+/// Pre-interns all attribute names for a module so they're available at runtime.
+///
+/// This must be called during the prepare phase for each imported module so that
+/// the module creation at runtime can find the StringIds without mutable access to Interns.
+fn pre_intern_module_attrs(module_name: &str, interner: &mut InternerBuilder) {
+    match module_name {
+        "sys" => {
+            // sys module attributes
+            interner.intern("sys");
+            interner.intern("version");
+            interner.intern("version_info");
+            interner.intern("platform");
+            interner.intern("stdout");
+            interner.intern("stderr");
+            interner.intern("final");
+        }
+        "typing" => {
+            // typing module attributes
+            interner.intern("typing");
+            interner.intern("TYPE_CHECKING");
+        }
+        _ => {}
     }
 }

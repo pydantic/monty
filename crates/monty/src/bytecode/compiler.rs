@@ -306,6 +306,15 @@ impl<'a> Compiler<'a> {
                 self.compile_try(try_block)?;
             }
 
+            Node::Import { module_name, binding } => {
+                self.compile_import(*module_name, binding)?;
+            }
+
+            // ImportFrom is transformed during prepare phase - this shouldn't be reached
+            Node::ImportFrom { .. } => {
+                unreachable!("ImportFrom should be transformed during prepare phase");
+            }
+
             // These are handled during the prepare phase and produce no bytecode
             Node::Pass | Node::Global { .. } | Node::Nonlocal { .. } => {}
         }
@@ -389,6 +398,32 @@ impl<'a> Compiler<'a> {
 
         // 5. Store the function object to its name slot
         self.compile_store(&func_def.name);
+
+        Ok(())
+    }
+
+    /// Compiles an import statement.
+    ///
+    /// Emits `LoadModule` to create the module, then stores it to the binding name.
+    fn compile_import(
+        &mut self,
+        module_name: crate::intern::StringId,
+        binding: &crate::expressions::Identifier,
+    ) -> Result<(), CompileError> {
+        let position = binding.position;
+        // Look up the module by name
+        let module_name_str = self.interns.get_str(module_name);
+        let builtin_module = crate::modules::BuiltinModule::from_name(module_name_str)
+            .ok_or_else(|| CompileError::new(format!("unknown module '{module_name_str}'"), position))?;
+
+        // Emit LoadModule with the module ID
+        self.code.set_location(position, None);
+        self.code.emit_u8(Opcode::LoadModule, builtin_module.to_u8());
+
+        // Store to the binding using its resolved namespace slot
+        let slot = u16::try_from(binding.namespace_id().index()).expect("global slot exceeds u16");
+        // Import always creates a global binding
+        self.code.emit_u16(Opcode::StoreGlobal, slot);
 
         Ok(())
     }

@@ -221,6 +221,23 @@ impl ExcType {
         .into()
     }
 
+    /// Creates an AttributeError for a missing module attribute.
+    ///
+    /// Matches CPython's format: `AttributeError: module 'name' has no attribute 'attr'`
+    /// Sets `hide_caret: true` because CPython doesn't show carets for attribute GET errors.
+    #[must_use]
+    pub(crate) fn attribute_error_module(module_name: &str, attr_name: &str) -> RunError {
+        let exc = SimpleException::new_msg(
+            Self::AttributeError,
+            format!("module '{module_name}' has no attribute '{attr_name}'"),
+        );
+        RunError::Exc(ExceptionRaise {
+            exc,
+            frame: None,
+            hide_caret: true, // CPython doesn't show carets for attribute GET errors
+        })
+    }
+
     /// Creates a FrozenInstanceError for assigning to a frozen dataclass.
     ///
     /// Matches CPython's `dataclasses.FrozenInstanceError` which is a subclass of `AttributeError`.

@@ -554,4 +554,16 @@ impl Interns {
     pub fn set_functions(&mut self, functions: Vec<Function>) {
         self.functions = functions;
     }
+
+    /// Finds the StringId for an existing interned string.
+    ///
+    /// Returns `None` if the string has not been interned.
+    /// This is O(n) but fine for occasional lookups like module attribute names.
+    pub fn find_string_id(&self, s: &str) -> Option<StringId> {
+        self.strings
+            .iter()
+            .position(|stored| stored.as_ref() == s)
+            .and_then(|pos| u16::try_from(pos).ok())
+            .map(StringId::from_index)
+    }
 }
