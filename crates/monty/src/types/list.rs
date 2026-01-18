@@ -334,11 +334,7 @@ impl PyTrait for List {
                 let index = if index_i64 < 0 {
                     // Negative index: add length, clamp to 0 if still negative
                     let adjusted = index_i64 + len_i64;
-                    if adjusted < 0 {
-                        0
-                    } else {
-                        usize::try_from(adjusted).expect("adjusted index fits in usize")
-                    }
+                    usize::try_from(adjusted).unwrap_or(0)
                 } else {
                     // Positive index: clamp to len if too large
                     usize::try_from(index_i64).unwrap_or(len)

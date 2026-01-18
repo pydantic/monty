@@ -1628,9 +1628,8 @@ impl<'a> Compiler<'a> {
         let slot = u16::try_from(target.namespace_id().index()).expect("local slot exceeds u16");
         match target.scope {
             NameScope::Local => {
-                if slot <= 255 {
-                    self.code
-                        .emit_u8(Opcode::DeleteLocal, u8::try_from(slot).expect("slot <= 255 validated"));
+                if let Ok(s) = u8::try_from(slot) {
+                    self.code.emit_u8(Opcode::DeleteLocal, s);
                 } else {
                     // Wide variant not implemented yet
                     todo!("DeleteLocalW for slot > 255");

@@ -277,15 +277,20 @@ impl CodeBuilder {
             1 => self.emit(Opcode::LoadLocal1),
             2 => self.emit(Opcode::LoadLocal2),
             3 => self.emit(Opcode::LoadLocal3),
-            s if s <= 255 => self.emit_u8(Opcode::LoadLocal, u8::try_from(s).expect("slot <= 255 validated")),
-            s => self.emit_u16(Opcode::LoadLocalW, s),
+            _ => {
+                if let Ok(s) = u8::try_from(slot) {
+                    self.emit_u8(Opcode::LoadLocal, s);
+                } else {
+                    self.emit_u16(Opcode::LoadLocalW, slot);
+                }
+            }
         }
     }
 
     /// Emits `StoreLocal`, using wide variant for slots > 255.
     pub fn emit_store_local(&mut self, slot: u16) {
-        if slot <= 255 {
-            self.emit_u8(Opcode::StoreLocal, u8::try_from(slot).expect("slot <= 255 validated"));
+        if let Ok(s) = u8::try_from(slot) {
+            self.emit_u8(Opcode::StoreLocal, s);
         } else {
             self.emit_u16(Opcode::StoreLocalW, slot);
         }
