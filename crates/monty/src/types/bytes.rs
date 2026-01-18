@@ -8,8 +8,8 @@
 /// - `count(sub[, start[, end]])` - Count non-overlapping occurrences
 /// - `find(sub[, start[, end]])` - Find first occurrence (-1 if not found)
 /// - `index(sub[, start[, end]])` - Find first occurrence (raises ValueError)
-/// - `startswith(prefix)` - Check if starts with prefix
-/// - `endswith(suffix)` - Check if ends with suffix
+/// - `startswith(prefix[, start[, end]])` - Check if starts with prefix
+/// - `endswith(suffix[, start[, end]])` - Check if ends with suffix
 ///
 /// # Unimplemented Methods
 /// - `capitalize()`, `center()`, `expandtabs()`, `ljust()`, `lower()`,
@@ -429,50 +429,173 @@ fn bytes_index(
     }
 }
 
-/// Implements Python's `bytes.startswith(prefix)` method.
+/// Implements Python's `bytes.startswith(prefix[, start[, end]])` method.
 ///
 /// Returns True if bytes starts with the specified prefix.
+/// Only accepts bytes as prefix (not str), matching CPython behavior.
 fn bytes_startswith(
     bytes: &[u8],
     args: ArgValues,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
-    let prefix = args.get_one_arg("bytes.startswith", heap)?;
+    let (prefix_bytes, start, end) =
+        parse_bytes_prefix_suffix_args("bytes.startswith", bytes.len(), args, heap, interns)?;
 
-    let prefix_bytes = extract_bytes_arg(&prefix, heap, interns)?;
-    prefix.drop_with_heap(heap);
-
-    let result = bytes.starts_with(&prefix_bytes);
+    let slice = &bytes[start..end];
+    let result = slice.starts_with(&prefix_bytes);
     Ok(Value::Bool(result))
 }
 
-/// Implements Python's `bytes.endswith(suffix)` method.
+/// Implements Python's `bytes.endswith(suffix[, start[, end]])` method.
 ///
 /// Returns True if bytes ends with the specified suffix.
+/// Only accepts bytes as suffix (not str), matching CPython behavior.
 fn bytes_endswith(
     bytes: &[u8],
     args: ArgValues,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
-    let suffix = args.get_one_arg("bytes.endswith", heap)?;
+    let (suffix_bytes, start, end) =
+        parse_bytes_prefix_suffix_args("bytes.endswith", bytes.len(), args, heap, interns)?;
 
-    let suffix_bytes = extract_bytes_arg(&suffix, heap, interns)?;
-    suffix.drop_with_heap(heap);
-
-    let result = bytes.ends_with(&suffix_bytes);
+    let slice = &bytes[start..end];
+    let result = slice.ends_with(&suffix_bytes);
     Ok(Value::Bool(result))
 }
 
-/// Extracts bytes from a Value (bytes or str).
-fn extract_bytes_arg(value: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Vec<u8>> {
+/// Parses arguments for bytes.startswith/endswith methods.
+///
+/// Returns (prefix/suffix_bytes, start, end) where start and end are normalized indices.
+/// Guarantees `start <= end` to prevent slice panics.
+fn parse_bytes_prefix_suffix_args(
+    method: &str,
+    len: usize,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<(Vec<u8>, usize, usize)> {
+    let (pos, kwargs) = args.into_parts();
+    if !kwargs.is_empty() {
+        kwargs.drop_with_heap(heap);
+        return Err(ExcType::type_error_no_kwargs(method));
+    }
+
+    let mut pos_iter = pos;
+    let prefix_value = pos_iter
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
+    let start_value = pos_iter.next();
+    let end_value = pos_iter.next();
+
+    // Check no extra arguments
+    if pos_iter.next().is_some() {
+        for v in pos_iter {
+            v.drop_with_heap(heap);
+        }
+        prefix_value.drop_with_heap(heap);
+        if let Some(v) = start_value {
+            v.drop_with_heap(heap);
+        }
+        if let Some(v) = end_value {
+            v.drop_with_heap(heap);
+        }
+        return Err(ExcType::type_error_at_most(method, 3, 4));
+    }
+
+    // Extract prefix/suffix bytes (only bytes allowed, not str)
+    // Use method-specific error message matching CPython
+    let prefix = match extract_bytes_for_prefix_suffix(&prefix_value, method, heap, interns) {
+        Ok(b) => b,
+        Err(e) => {
+            prefix_value.drop_with_heap(heap);
+            if let Some(v) = start_value {
+                v.drop_with_heap(heap);
+            }
+            if let Some(v) = end_value {
+                v.drop_with_heap(heap);
+            }
+            return Err(e);
+        }
+    };
+    prefix_value.drop_with_heap(heap);
+
+    // Extract start (default 0)
+    let start = if let Some(v) = start_value {
+        let result = v.as_int(heap);
+        v.drop_with_heap(heap);
+        match result {
+            Ok(i) => normalize_bytes_index(i, len),
+            Err(e) => {
+                if let Some(ev) = end_value {
+                    ev.drop_with_heap(heap);
+                }
+                return Err(e);
+            }
+        }
+    } else {
+        0
+    };
+
+    // Extract end (default len)
+    let end = if let Some(v) = end_value {
+        let result = v.as_int(heap);
+        v.drop_with_heap(heap);
+        normalize_bytes_index(result?, len)
+    } else {
+        len
+    };
+
+    // Ensure start <= end to prevent slice panics
+    let end = end.max(start);
+
+    Ok((prefix, start, end))
+}
+
+/// Extracts bytes for startswith/endswith methods with CPython-compatible error messages.
+fn extract_bytes_for_prefix_suffix(
+    value: &Value,
+    method: &str,
+    heap: &Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Vec<u8>> {
+    // Extract the method name (e.g., "startswith" from "bytes.startswith")
+    let method_name = method.strip_prefix("bytes.").unwrap_or(method);
+
     match value {
         Value::InternBytes(id) => Ok(interns.get_bytes(*id).to_vec()),
-        Value::InternString(id) => Ok(interns.get_str(*id).as_bytes().to_vec()),
+        Value::InternString(_) => Err(ExcType::type_error(format!(
+            "{method_name} first arg must be bytes or a tuple of bytes, not str"
+        ))),
         Value::Ref(id) => match heap.get(*id) {
             HeapData::Bytes(b) => Ok(b.as_slice().to_vec()),
-            HeapData::Str(s) => Ok(s.as_str().as_bytes().to_vec()),
+            HeapData::Str(_) => Err(ExcType::type_error(format!(
+                "{method_name} first arg must be bytes or a tuple of bytes, not str"
+            ))),
+            _ => Err(ExcType::type_error(format!(
+                "{method_name} first arg must be bytes or a tuple of bytes, not {}",
+                value.py_type(heap)
+            ))),
+        },
+        _ => Err(ExcType::type_error(format!(
+            "{method_name} first arg must be bytes or a tuple of bytes, not {}",
+            value.py_type(heap)
+        ))),
+    }
+}
+
+/// Extracts bytes from a Value (bytes only, NOT str - matches CPython behavior).
+///
+/// CPython raises `TypeError: a bytes-like object is required, not 'str'` when
+/// a str is passed to bytes methods like find, count, index, startswith, endswith.
+fn extract_bytes_only(value: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Vec<u8>> {
+    match value {
+        Value::InternBytes(id) => Ok(interns.get_bytes(*id).to_vec()),
+        Value::InternString(_) => Err(ExcType::type_error("a bytes-like object is required, not 'str'")),
+        Value::Ref(id) => match heap.get(*id) {
+            HeapData::Bytes(b) => Ok(b.as_slice().to_vec()),
+            HeapData::Str(_) => Err(ExcType::type_error("a bytes-like object is required, not 'str'")),
             _ => Err(ExcType::type_error("a bytes-like object is required")),
         },
         _ => Err(ExcType::type_error("a bytes-like object is required")),
@@ -482,6 +605,7 @@ fn extract_bytes_arg(value: &Value, heap: &Heap<impl ResourceTracker>, interns: 
 /// Parses arguments for bytes.find/count/index methods.
 ///
 /// Returns (sub_bytes, start, end) where start and end are normalized indices.
+/// Guarantees `start <= end` to prevent slice panics.
 fn parse_bytes_sub_args(
     method: &str,
     len: usize,
@@ -517,8 +641,8 @@ fn parse_bytes_sub_args(
         return Err(ExcType::type_error_at_most(method, 3, 4));
     }
 
-    // Extract sub bytes
-    let sub = match extract_bytes_arg(&sub_value, heap, interns) {
+    // Extract sub bytes (only bytes allowed, not str)
+    let sub = match extract_bytes_only(&sub_value, heap, interns) {
         Ok(b) => b,
         Err(e) => {
             sub_value.drop_with_heap(heap);
@@ -558,6 +682,9 @@ fn parse_bytes_sub_args(
     } else {
         len
     };
+
+    // Ensure start <= end to prevent slice panics (Python treats start > end as empty slice)
+    let end = end.max(start);
 
     Ok((sub, start, end))
 }

@@ -44,9 +44,26 @@ assert b'hello'.startswith(b''), 'startswith empty'
 assert b''.startswith(b''), 'empty startswith empty'
 assert not b''.startswith(b'x'), 'empty startswith non-empty'
 
+# startswith with start/end
+assert b'abcdef'.startswith(b'bc', 1), 'startswith with start'
+assert b'abcdef'.startswith(b'bc', 1, 3), 'startswith with start and end'
+assert not b'abcdef'.startswith(b'bc', 2), 'startswith with start past match'
+assert not b'abcdef'.startswith(b'abc', 0, 2), 'startswith with end before match ends'
+
 # === bytes.endswith() ===
 assert b'hello'.endswith(b'lo'), 'endswith true'
 assert not b'hello'.endswith(b'he'), 'endswith false'
 assert b'hello'.endswith(b''), 'endswith empty'
 assert b''.endswith(b''), 'empty endswith empty'
 assert not b''.endswith(b'x'), 'empty endswith non-empty'
+
+# endswith with start/end
+assert b'abcdef'.endswith(b'de', 0, 5), 'endswith with end'
+assert b'abcdef'.endswith(b'cd', 1, 4), 'endswith with start and end'
+assert not b'abcdef'.endswith(b'de', 0, 4), 'endswith before suffix'
+
+# === Edge case: start > end (should not panic, treat as empty slice) ===
+assert b'hello'.find(b'e', 5, 2) == -1, 'find with start > end returns -1'
+assert b'hello'.count(b'l', 5, 2) == 0, 'count with start > end returns 0'
+assert not b'hello'.startswith(b'h', 5, 2), 'startswith with start > end is false'
+assert not b'hello'.endswith(b'o', 5, 2), 'endswith with start > end is false'

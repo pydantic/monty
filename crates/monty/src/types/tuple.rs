@@ -265,6 +265,7 @@ fn tuple_count(
 /// Parses arguments for tuple.index() method.
 ///
 /// Returns (value, start, end) where start and end are normalized indices.
+/// Guarantees `start <= end` to prevent slice panics.
 fn parse_tuple_index_args(
     method: &str,
     len: usize,
@@ -331,6 +332,9 @@ fn parse_tuple_index_args(
     } else {
         len
     };
+
+    // Ensure start <= end to prevent slice panics (Python treats start > end as empty slice)
+    let end = end.max(start);
 
     Ok((value, start, end))
 }

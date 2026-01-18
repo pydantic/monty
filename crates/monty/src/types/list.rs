@@ -679,6 +679,7 @@ fn list_sort(
 /// Parses arguments for list.index() and similar methods.
 ///
 /// Returns (value, start, end) where start and end are normalized indices.
+/// Guarantees `start <= end` to prevent slice panics.
 fn parse_index_count_args(
     method: &str,
     len: usize,
@@ -745,6 +746,9 @@ fn parse_index_count_args(
     } else {
         len
     };
+
+    // Ensure start <= end to prevent slice panics (Python treats start > end as empty slice)
+    let end = end.max(start);
 
     Ok((value, start, end))
 }
