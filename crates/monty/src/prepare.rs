@@ -4,11 +4,13 @@ use ahash::{AHashMap, AHashSet};
 
 use crate::{
     args::ArgExprs,
-    expressions::{Callable, Expr, ExprLoc, Identifier, Literal, NameScope, Node, PreparedFunctionDef, PreparedNode},
+    expressions::{
+        Callable, CmpOperator, Expr, ExprLoc, Identifier, Literal, NameScope, Node, Operator, PreparedFunctionDef,
+        PreparedNode,
+    },
     fstring::{FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
     namespace::NamespaceId,
-    operators::{CmpOperator, Operator},
     parse::{ExceptHandler, ParseError, ParseNode, ParseResult, ParsedSignature, RawFunctionDef, Try},
     signature::Signature,
 };

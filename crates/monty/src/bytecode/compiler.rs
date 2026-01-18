@@ -20,11 +20,13 @@ use crate::{
     builtins::Builtins,
     exception_private::ExcType,
     exception_public::{MontyException, StackFrame},
-    expressions::{Callable, Expr, ExprLoc, Identifier, Literal, NameScope, PreparedFunctionDef, PreparedNode},
+    expressions::{
+        Callable, CmpOperator, Expr, ExprLoc, Identifier, Literal, NameScope, Operator, PreparedFunctionDef,
+        PreparedNode,
+    },
     fstring::{ConversionFlag, FStringPart, FormatSpec, encode_format_spec},
     function::Function,
     intern::Interns,
-    operators::{CmpOperator, Operator},
     parse::{CodeRange, ExceptHandler, Try},
     value::{Attr, Value},
 };

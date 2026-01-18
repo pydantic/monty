@@ -4,7 +4,6 @@ use crate::{
     fstring::FStringPart,
     intern::{BytesId, StringId},
     namespace::NamespaceId,
-    operators::{CmpOperator, Operator},
     parse::{CodeRange, Try},
     signature::Signature,
     value::{Attr, Value},
@@ -367,3 +366,58 @@ pub struct PreparedFunctionDef {
 
 /// Type alias for prepared AST nodes (output of prepare phase).
 pub type PreparedNode = Node<PreparedFunctionDef>;
+
+/// Binary operators for arithmetic, bitwise, and boolean operations.
+///
+/// Uses strum `Display` derive with per-variant serialization for operator symbols.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum Operator {
+    // `+`
+    Add,
+    // `-`
+    Sub,
+    // `*`
+    Mult,
+    // `@`
+    MatMult,
+    // `/`
+    Div,
+    // `%`
+    Mod,
+    // `**`
+    Pow,
+    // `<<`
+    LShift,
+    // `>>`
+    RShift,
+    // `|`
+    BitOr,
+    // `^`
+    BitXor,
+    // `&`
+    BitAnd,
+    // `//`
+    FloorDiv,
+    // bool operators
+    // `and`
+    And,
+    // `or`
+    Or,
+}
+
+/// Defined separately since these operators always return a bool
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum CmpOperator {
+    Eq,
+    NotEq,
+    Lt,
+    LtE,
+    Gt,
+    GtE,
+    Is,
+    IsNot,
+    In,
+    NotIn,
+    // we should support floats too, either via a Number type, or ModEqInt and ModEqFloat
+    ModEq(i64),
+}
