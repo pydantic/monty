@@ -53,6 +53,16 @@ compare = 5 >= 5 and 5 <= 5 and 4 != 5
 # Assert with message
 assert total > 0, 'total should be positive'
 
+# List comprehension
+squares = [x * x for x in range(10)]
+comp_sum = sum(squares)
+
+# Dict comprehension
+square_dict = {x: x * x for x in range(5)}
+dict_comp_sum = sum(square_dict.values())
+
 # Final result
-list_len + list_item + dict_val + dict_len + tuple_item + tuple_len + str_len + func_result + total
-# Return=58
+result = list_len + list_item + dict_val + dict_len + tuple_item + tuple_len
+result += str_len + func_result + total + comp_sum + dict_comp_sum
+result
+# Return=373

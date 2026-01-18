@@ -131,6 +131,12 @@ def fib(n):
 fib(25)
 ";
 
+/// List comprehension benchmark - creates 1000 elements.
+const LIST_COMP: &str = "len([x * 2 for x in range(1000)])";
+
+/// Dict comprehension benchmark - creates 500 unique keys (i // 2 deduplicates pairs).
+const DICT_COMP: &str = "len({i // 2: i * 2 for i in range(1000)})";
+
 /// Benchmarks end-to-end execution (parsing + running) using Monty.
 /// This is different from other benchmarks as it includes parsing in the loop.
 fn end_to_end_monty(bench: &mut Bencher) {
@@ -179,9 +185,9 @@ fn criterion_benchmark(c: &mut Criterion) {
     #[cfg(not(codspeed))]
     c.bench_function("end_to_end__cpython", end_to_end_cpython);
 
-    c.bench_function("kitchen_sink__monty", |b| run_monty(b, KITCHEN_SINK, 58));
+    c.bench_function("kitchen_sink__monty", |b| run_monty(b, KITCHEN_SINK, 373));
     #[cfg(not(codspeed))]
-    c.bench_function("kitchen_sink__cpython", |b| run_cpython(b, KITCHEN_SINK, 58));
+    c.bench_function("kitchen_sink__cpython", |b| run_cpython(b, KITCHEN_SINK, 373));
 
     c.bench_function("func_call_kwargs__monty", |b| run_monty(b, FUNC_CALL_KWARGS, 3));
     #[cfg(not(codspeed))]
@@ -202,6 +208,14 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("fib__monty", |b| run_monty(b, FIB_25, 75_025));
     #[cfg(not(codspeed))]
     c.bench_function("fib__cpython", |b| run_cpython(b, FIB_25, 75_025));
+
+    c.bench_function("list_comp__monty", |b| run_monty(b, LIST_COMP, 1000));
+    #[cfg(not(codspeed))]
+    c.bench_function("list_comp__cpython", |b| run_cpython(b, LIST_COMP, 1000));
+
+    c.bench_function("dict_comp__monty", |b| run_monty(b, DICT_COMP, 500));
+    #[cfg(not(codspeed))]
+    c.bench_function("dict_comp__cpython", |b| run_cpython(b, DICT_COMP, 500));
 }
 
 // Use pprof flamegraph profiler when running locally (not on CodSpeed)
