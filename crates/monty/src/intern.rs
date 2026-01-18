@@ -60,7 +60,7 @@ static BASE_INTERNER: LazyLock<InternerBuilder> = LazyLock::new(InternerBuilder:
 
 /// Returns the interned StringId for an ASCII byte.
 ///
-/// These interns are created during `InternerBuilder::new()` and allow
+/// These interns are created during `InternerBuilder::build_base()` and allow
 /// allocation-free iteration over ASCII strings.
 #[must_use]
 pub(crate) fn ascii_string_id(byte: u8) -> StringId {
@@ -69,7 +69,7 @@ pub(crate) fn ascii_string_id(byte: u8) -> StringId {
 
 /// Pre-interned attribute names for container methods.
 ///
-/// These StringIds are assigned at startup in `InternerBuilder::new()` and provide
+/// These StringIds are assigned at startup in `InternerBuilder::build_base()` and provide
 /// O(1) comparison for common method names without heap allocation.
 ///
 /// Usage: `use crate::intern::attr;` then `attr::APPEND`, `attr::GET`, etc.
@@ -79,100 +79,108 @@ pub(crate) fn ascii_string_id(byte: u8) -> StringId {
 ///
 /// ALSO update `InternerBuilder::new` debug_assertions when adding new attrs!
 pub mod attr {
-    use super::{MAX_ATTR_ID, StringId};
+    use super::StringId;
 
+    // ==========================
     // List methods
+    // Also uses shared: POP, CLEAR, COPY, REMOVE
+    // Also uses string-shared: INDEX, COUNT
     pub const APPEND: StringId = StringId(1);
     pub const INSERT: StringId = StringId(2);
+    pub const EXTEND: StringId = StringId(3);
+    pub const REVERSE: StringId = StringId(4);
+    pub const SORT: StringId = StringId(5);
 
+    // ==========================
     // Dict methods
-    pub const GET: StringId = StringId(3);
-    pub const KEYS: StringId = StringId(4);
-    pub const VALUES: StringId = StringId(5);
-    pub const ITEMS: StringId = StringId(6);
+    // Also uses shared: POP, CLEAR, COPY, UPDATE
+    pub const GET: StringId = StringId(6);
+    pub const KEYS: StringId = StringId(7);
+    pub const VALUES: StringId = StringId(8);
+    pub const ITEMS: StringId = StringId(9);
+    pub const SETDEFAULT: StringId = StringId(10);
+    pub const POPITEM: StringId = StringId(11);
+    pub const FROMKEYS: StringId = StringId(12); // classmethod
 
-    // Shared methods (list, dict, set)
-    pub const POP: StringId = StringId(7);
-    pub const CLEAR: StringId = StringId(8);
-    pub const COPY: StringId = StringId(9);
+    // ==========================
+    // Shared methods
+    // Used by multiple container types: list, dict, set
+    pub const POP: StringId = StringId(13);
+    pub const CLEAR: StringId = StringId(14);
+    pub const COPY: StringId = StringId(15);
 
+    // ==========================
     // Set methods
-    pub const ADD: StringId = StringId(10);
-    pub const REMOVE: StringId = StringId(11);
-    pub const DISCARD: StringId = StringId(12);
-    pub const UPDATE: StringId = StringId(13);
-    pub const UNION: StringId = StringId(14);
-    pub const INTERSECTION: StringId = StringId(15);
-    pub const DIFFERENCE: StringId = StringId(16);
-    pub const SYMMETRIC_DIFFERENCE: StringId = StringId(17);
-    pub const ISSUBSET: StringId = StringId(18);
-    pub const ISSUPERSET: StringId = StringId(19);
-    pub const ISDISJOINT: StringId = StringId(20);
+    // Also uses shared: POP, CLEAR, COPY
+    pub const ADD: StringId = StringId(16);
+    pub const REMOVE: StringId = StringId(17); // also used by list
+    pub const DISCARD: StringId = StringId(18);
+    pub const UPDATE: StringId = StringId(19); // also used by dict
+    pub const UNION: StringId = StringId(20);
+    pub const INTERSECTION: StringId = StringId(21);
+    pub const DIFFERENCE: StringId = StringId(22);
+    pub const SYMMETRIC_DIFFERENCE: StringId = StringId(23);
+    pub const ISSUBSET: StringId = StringId(24);
+    pub const ISSUPERSET: StringId = StringId(25);
+    pub const ISDISJOINT: StringId = StringId(26);
 
     // ==========================
     // String methods
-    pub const JOIN: StringId = StringId(21);
-    // Phase 1: Simple transformations
-    pub const LOWER: StringId = StringId(22);
-    pub const UPPER: StringId = StringId(23);
-    pub const CAPITALIZE: StringId = StringId(24);
-    pub const TITLE: StringId = StringId(25);
-    pub const SWAPCASE: StringId = StringId(26);
-    pub const CASEFOLD: StringId = StringId(27);
-    // Phase 2: Predicate methods
-    pub const ISALPHA: StringId = StringId(28);
-    pub const ISDIGIT: StringId = StringId(29);
-    pub const ISALNUM: StringId = StringId(30);
-    pub const ISNUMERIC: StringId = StringId(31);
-    pub const ISSPACE: StringId = StringId(32);
-    pub const ISLOWER: StringId = StringId(33);
-    pub const ISUPPER: StringId = StringId(34);
-    pub const ISASCII: StringId = StringId(35);
-    pub const ISDECIMAL: StringId = StringId(36);
-    // Phase 3: Search methods
-    pub const FIND: StringId = StringId(37);
-    pub const RFIND: StringId = StringId(38);
-    pub const INDEX: StringId = StringId(39);
-    pub const RINDEX: StringId = StringId(40);
-    pub const COUNT: StringId = StringId(41);
-    pub const STARTSWITH: StringId = StringId(42);
-    pub const ENDSWITH: StringId = StringId(43);
-    // Phase 4: Strip/trim methods
-    pub const STRIP: StringId = StringId(44);
-    pub const LSTRIP: StringId = StringId(45);
-    pub const RSTRIP: StringId = StringId(46);
-    pub const REMOVEPREFIX: StringId = StringId(47);
-    pub const REMOVESUFFIX: StringId = StringId(48);
-    // Phase 5: Split methods
-    pub const SPLIT: StringId = StringId(49);
-    pub const RSPLIT: StringId = StringId(50);
-    pub const SPLITLINES: StringId = StringId(51);
-    pub const PARTITION: StringId = StringId(52);
-    pub const RPARTITION: StringId = StringId(53);
-    // Phase 6: Replace/modify methods
-    pub const REPLACE: StringId = StringId(54);
-    pub const CENTER: StringId = StringId(55);
-    pub const LJUST: StringId = StringId(56);
-    pub const RJUST: StringId = StringId(57);
-    pub const ZFILL: StringId = StringId(58);
-    // Additional methods
-    pub const ENCODE: StringId = StringId(59);
-    pub const ISIDENTIFIER: StringId = StringId(60);
-    pub const ISTITLE: StringId = StringId(61);
-    // end string methods
-    // ==========================
+    // Some methods shared with bytes: FIND, INDEX, COUNT, STARTSWITH, ENDSWITH
+    // Some methods shared with list/tuple: INDEX, COUNT
+    pub const JOIN: StringId = StringId(27);
+    // Simple transformations
+    pub const LOWER: StringId = StringId(28);
+    pub const UPPER: StringId = StringId(29);
+    pub const CAPITALIZE: StringId = StringId(30);
+    pub const TITLE: StringId = StringId(31);
+    pub const SWAPCASE: StringId = StringId(32);
+    pub const CASEFOLD: StringId = StringId(33);
+    // Predicate methods
+    pub const ISALPHA: StringId = StringId(34);
+    pub const ISDIGIT: StringId = StringId(35);
+    pub const ISALNUM: StringId = StringId(36);
+    pub const ISNUMERIC: StringId = StringId(37);
+    pub const ISSPACE: StringId = StringId(38);
+    pub const ISLOWER: StringId = StringId(39);
+    pub const ISUPPER: StringId = StringId(40);
+    pub const ISASCII: StringId = StringId(41);
+    pub const ISDECIMAL: StringId = StringId(42);
+    // Search methods (some shared with bytes, list, tuple)
+    pub const FIND: StringId = StringId(43);
+    pub const RFIND: StringId = StringId(44);
+    pub const INDEX: StringId = StringId(45); // also used by list, tuple
+    pub const RINDEX: StringId = StringId(46);
+    pub const COUNT: StringId = StringId(47); // also used by list, tuple, bytes
+    pub const STARTSWITH: StringId = StringId(48); // also used by bytes
+    pub const ENDSWITH: StringId = StringId(49); // also used by bytes
+    // Strip/trim methods
+    pub const STRIP: StringId = StringId(50);
+    pub const LSTRIP: StringId = StringId(51);
+    pub const RSTRIP: StringId = StringId(52);
+    pub const REMOVEPREFIX: StringId = StringId(53);
+    pub const REMOVESUFFIX: StringId = StringId(54);
+    // Split methods
+    pub const SPLIT: StringId = StringId(55);
+    pub const RSPLIT: StringId = StringId(56);
+    pub const SPLITLINES: StringId = StringId(57);
+    pub const PARTITION: StringId = StringId(58);
+    pub const RPARTITION: StringId = StringId(59);
+    // Replace/padding methods
+    pub const REPLACE: StringId = StringId(60);
+    pub const CENTER: StringId = StringId(61);
+    pub const LJUST: StringId = StringId(62);
+    pub const RJUST: StringId = StringId(63);
+    pub const ZFILL: StringId = StringId(64);
+    // Additional string methods
+    pub const ENCODE: StringId = StringId(65);
+    pub const ISIDENTIFIER: StringId = StringId(66);
+    pub const ISTITLE: StringId = StringId(67);
 
-    // List methods (beyond append/insert which are defined earlier)
-    pub const EXTEND: StringId = StringId(62);
-    pub const REVERSE: StringId = StringId(63);
-    pub const SORT: StringId = StringId(64);
-    // Dict methods (beyond get/keys/values/items/pop/clear/copy/update which are defined earlier)
-    pub const SETDEFAULT: StringId = StringId(65);
-    pub const POPITEM: StringId = StringId(66);
+    // ==========================
     // Bytes methods
-    pub const DECODE: StringId = StringId(67);
-    // Dict classmethod
-    pub const FROMKEYS: StringId = StringId(MAX_ATTR_ID);
+    // Also uses string-shared: FIND, INDEX, COUNT, STARTSWITH, ENDSWITH
+    pub const DECODE: StringId = StringId(68);
 }
 
 impl StringId {
@@ -315,10 +323,20 @@ impl InternerBuilder {
         // Order must match the attr::* constants defined above.
         // Note: We separate the intern() call from debug_assert_eq! because
         // debug_assert_eq! is completely removed in release builds.
+
+        // List methods (IDs 1-5)
         let id = interner.intern_static("append");
         debug_assert_eq!(id, attr::APPEND);
         let id = interner.intern_static("insert");
         debug_assert_eq!(id, attr::INSERT);
+        let id = interner.intern_static("extend");
+        debug_assert_eq!(id, attr::EXTEND);
+        let id = interner.intern_static("reverse");
+        debug_assert_eq!(id, attr::REVERSE);
+        let id = interner.intern_static("sort");
+        debug_assert_eq!(id, attr::SORT);
+
+        // Dict methods (IDs 6-12)
         let id = interner.intern_static("get");
         debug_assert_eq!(id, attr::GET);
         let id = interner.intern_static("keys");
@@ -327,12 +345,22 @@ impl InternerBuilder {
         debug_assert_eq!(id, attr::VALUES);
         let id = interner.intern_static("items");
         debug_assert_eq!(id, attr::ITEMS);
+        let id = interner.intern_static("setdefault");
+        debug_assert_eq!(id, attr::SETDEFAULT);
+        let id = interner.intern_static("popitem");
+        debug_assert_eq!(id, attr::POPITEM);
+        let id = interner.intern_static("fromkeys");
+        debug_assert_eq!(id, attr::FROMKEYS);
+
+        // Shared methods (IDs 13-15)
         let id = interner.intern_static("pop");
         debug_assert_eq!(id, attr::POP);
         let id = interner.intern_static("clear");
         debug_assert_eq!(id, attr::CLEAR);
         let id = interner.intern_static("copy");
         debug_assert_eq!(id, attr::COPY);
+
+        // Set methods (IDs 16-26)
         let id = interner.intern_static("add");
         debug_assert_eq!(id, attr::ADD);
         let id = interner.intern_static("remove");
@@ -355,9 +383,11 @@ impl InternerBuilder {
         debug_assert_eq!(id, attr::ISSUPERSET);
         let id = interner.intern_static("isdisjoint");
         debug_assert_eq!(id, attr::ISDISJOINT);
+
+        // String methods (IDs 27-67)
         let id = interner.intern_static("join");
         debug_assert_eq!(id, attr::JOIN);
-        // Phase 1: Simple transformations
+        // Simple transformations
         let id = interner.intern_static("lower");
         debug_assert_eq!(id, attr::LOWER);
         let id = interner.intern_static("upper");
@@ -370,7 +400,7 @@ impl InternerBuilder {
         debug_assert_eq!(id, attr::SWAPCASE);
         let id = interner.intern_static("casefold");
         debug_assert_eq!(id, attr::CASEFOLD);
-        // Phase 2: Predicate methods
+        // Predicate methods
         let id = interner.intern_static("isalpha");
         debug_assert_eq!(id, attr::ISALPHA);
         let id = interner.intern_static("isdigit");
@@ -389,7 +419,7 @@ impl InternerBuilder {
         debug_assert_eq!(id, attr::ISASCII);
         let id = interner.intern_static("isdecimal");
         debug_assert_eq!(id, attr::ISDECIMAL);
-        // Phase 3: Search methods
+        // Search methods
         let id = interner.intern_static("find");
         debug_assert_eq!(id, attr::FIND);
         let id = interner.intern_static("rfind");
@@ -404,7 +434,7 @@ impl InternerBuilder {
         debug_assert_eq!(id, attr::STARTSWITH);
         let id = interner.intern_static("endswith");
         debug_assert_eq!(id, attr::ENDSWITH);
-        // Phase 4: Strip/trim methods
+        // Strip/trim methods
         let id = interner.intern_static("strip");
         debug_assert_eq!(id, attr::STRIP);
         let id = interner.intern_static("lstrip");
@@ -415,7 +445,7 @@ impl InternerBuilder {
         debug_assert_eq!(id, attr::REMOVEPREFIX);
         let id = interner.intern_static("removesuffix");
         debug_assert_eq!(id, attr::REMOVESUFFIX);
-        // Phase 5: Split methods
+        // Split methods
         let id = interner.intern_static("split");
         debug_assert_eq!(id, attr::SPLIT);
         let id = interner.intern_static("rsplit");
@@ -426,7 +456,7 @@ impl InternerBuilder {
         debug_assert_eq!(id, attr::PARTITION);
         let id = interner.intern_static("rpartition");
         debug_assert_eq!(id, attr::RPARTITION);
-        // Phase 6: Replace/modify methods
+        // Replace/padding methods
         let id = interner.intern_static("replace");
         debug_assert_eq!(id, attr::REPLACE);
         let id = interner.intern_static("center");
@@ -437,33 +467,17 @@ impl InternerBuilder {
         debug_assert_eq!(id, attr::RJUST);
         let id = interner.intern_static("zfill");
         debug_assert_eq!(id, attr::ZFILL);
-        // Additional methods
+        // Additional string methods
         let id = interner.intern_static("encode");
         debug_assert_eq!(id, attr::ENCODE);
         let id = interner.intern_static("isidentifier");
         debug_assert_eq!(id, attr::ISIDENTIFIER);
         let id = interner.intern_static("istitle");
         debug_assert_eq!(id, attr::ISTITLE);
-        // end string methods
 
-        // List methods
-        let id = interner.intern_static("extend");
-        debug_assert_eq!(id, attr::EXTEND);
-        let id = interner.intern_static("reverse");
-        debug_assert_eq!(id, attr::REVERSE);
-        let id = interner.intern_static("sort");
-        debug_assert_eq!(id, attr::SORT);
-        // Dict methods
-        let id = interner.intern_static("setdefault");
-        debug_assert_eq!(id, attr::SETDEFAULT);
-        let id = interner.intern_static("popitem");
-        debug_assert_eq!(id, attr::POPITEM);
-        // Bytes methods
+        // Bytes methods (ID 68)
         let id = interner.intern_static("decode");
         debug_assert_eq!(id, attr::DECODE);
-        // Dict classmethod
-        let id = interner.intern_static("fromkeys");
-        debug_assert_eq!(id, attr::FROMKEYS);
 
         // Pre-intern the empty string for allocation-free empty string returns
         let id = interner.intern_static("");
