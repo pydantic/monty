@@ -17,8 +17,23 @@ use crate::{
 /// Python list type, wrapping a Vec of Values.
 ///
 /// This type provides Python list semantics including dynamic growth,
-/// reference counting for heap values, and standard list methods like
-/// append and insert.
+/// reference counting for heap values, and standard list methods.
+///
+/// # Implemented Methods
+/// - `append(item)` - Add item to end
+/// - `insert(index, item)` - Insert item at index
+/// - `pop([index])` - Remove and return item (default: last)
+/// - `remove(value)` - Remove first occurrence of value
+/// - `clear()` - Remove all items
+/// - `copy()` - Shallow copy
+/// - `extend(iterable)` - Append items from iterable
+/// - `index(value[, start[, end]])` - Find first index of value
+/// - `count(value)` - Count occurrences
+/// - `reverse()` - Reverse in place
+/// - `sort([reverse])` - Sort in place (key parameter not supported)
+///
+/// # Unimplemented Methods
+/// - `sort(key=...)` - Sort with custom key function
 ///
 /// # Reference Counting
 /// When values are added to the list (via append, insert, etc.), their

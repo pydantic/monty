@@ -18,8 +18,22 @@ use crate::{
 /// Python dict type preserving insertion order.
 ///
 /// This type provides Python dict semantics including dynamic key-value namespaces,
-/// reference counting for heap values, and standard dict methods like get, keys,
-/// values, items, and pop.
+/// reference counting for heap values, and standard dict methods.
+///
+/// # Implemented Methods
+/// - `get(key[, default])` - Get value or default
+/// - `keys()` - Return view of keys
+/// - `values()` - Return view of values
+/// - `items()` - Return view of (key, value) pairs
+/// - `pop(key[, default])` - Remove and return value
+/// - `clear()` - Remove all items
+/// - `copy()` - Shallow copy
+/// - `update(other)` - Update from dict or iterable of pairs
+/// - `setdefault(key[, default])` - Get or set default value
+/// - `popitem()` - Remove and return last (key, value) pair
+///
+/// # Unimplemented Methods
+/// - `fromkeys(iterable[, value])` - Create dict from keys (classmethod)
 ///
 /// # Storage Strategy
 /// Uses a `HashTable<usize>` for hash lookups combined with a dense `Vec<DictEntry>`

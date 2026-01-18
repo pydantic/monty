@@ -1,7 +1,32 @@
 /// Python bytes type, wrapping a `Vec<u8>`.
 ///
-/// This type provides Python bytes semantics. Currently supports basic
-/// operations like length and equality comparison.
+/// This type provides Python bytes semantics including searching, decoding,
+/// and prefix/suffix operations.
+///
+/// # Implemented Methods
+/// - `decode([encoding[, errors]])` - Decode to string (UTF-8 only)
+/// - `count(sub[, start[, end]])` - Count non-overlapping occurrences
+/// - `find(sub[, start[, end]])` - Find first occurrence (-1 if not found)
+/// - `index(sub[, start[, end]])` - Find first occurrence (raises ValueError)
+/// - `startswith(prefix)` - Check if starts with prefix
+/// - `endswith(suffix)` - Check if ends with suffix
+///
+/// # Unimplemented Methods
+/// - `capitalize()`, `center()`, `expandtabs()`, `ljust()`, `lower()`,
+///   `lstrip()`, `rjust()`, `rstrip()`, `strip()`, `swapcase()`, `title()`,
+///   `upper()`, `zfill()` - Case/whitespace transformations
+/// - `hex()` - Hex string representation
+/// - `isalnum()`, `isalpha()`, `isascii()`, `isdigit()`, `islower()`,
+///   `isspace()`, `istitle()`, `isupper()` - Character class tests
+/// - `join()` - Join bytes sequences
+/// - `partition()`, `rpartition()` - Split into 3 parts
+/// - `replace()` - Replace occurrences
+/// - `removeprefix()`, `removesuffix()` - Remove prefix/suffix
+/// - `rfind()`, `rindex()` - Find from right
+/// - `split()`, `rsplit()`, `splitlines()` - Split into list
+/// - `translate()` - Character translation
+/// - `fromhex()` - Create from hex string (classmethod)
+/// - `maketrans()` - Create translation table (staticmethod)
 use std::fmt::Write;
 
 use ahash::AHashSet;
@@ -19,6 +44,7 @@ use crate::{
 /// Python bytes value stored on the heap.
 ///
 /// Wraps a `Vec<u8>` and provides Python-compatible operations.
+/// See the module-level documentation for implemented and unimplemented methods.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Bytes(Vec<u8>);
 

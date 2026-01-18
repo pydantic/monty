@@ -3,6 +3,12 @@
 /// This type provides Python tuple semantics. Tuples are immutable sequences
 /// that can contain any Python object. Like lists, tuples properly handle
 /// reference counting for heap-allocated values.
+///
+/// # Implemented Methods
+/// - `index(value[, start[, end]])` - Find first index of value
+/// - `count(value)` - Count occurrences
+///
+/// All tuple methods from Python's builtins are implemented.
 use std::fmt::Write;
 
 use ahash::AHashSet;
