@@ -1637,6 +1637,26 @@ impl Value {
                         }
                     })
                 }
+                HeapData::NamedTuple(nt) => {
+                    // Look up attribute by field name
+                    // Copy the value (and type_name for error) without incrementing refcount while we hold the borrow
+                    let result = if let Some(value) = nt.get_by_name(name_id) {
+                        Ok(value.copy_for_extend())
+                    } else {
+                        Err(nt.type_name().to_owned())
+                    };
+                    // Now the borrow of heap_data ends, we can safely mutate heap
+                    match result {
+                        Ok(copied) => {
+                            // Increment refcount for heap refs
+                            if let Self::Ref(ref_id) = &copied {
+                                heap.inc_ref(*ref_id);
+                            }
+                            Ok(copied)
+                        }
+                        Err(type_name) => Err(ExcType::attribute_error_not_found(&type_name, attr_name)),
+                    }
+                }
                 _ => {
                     let type_name = heap_data.py_type(heap);
                     Err(ExcType::attribute_error(type_name, attr_name))

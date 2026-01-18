@@ -11,7 +11,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId},
     intern::Interns,
     resource::{ResourceError, ResourceTracker},
-    types::{Dict, Module, Tuple},
+    types::{Dict, Module, NamedTuple},
     value::{Marker, Value},
 };
 
@@ -35,16 +35,26 @@ pub fn create_sys_module(heap: &mut Heap<impl ResourceTracker>, interns: &Intern
     // Unwrap is safe because InternString keys are always hashable
     attrs.set(version_key, version_value, heap, interns).unwrap();
 
-    // sys.version_info - (3, 14, 0, 'final', 0)
+    // sys.version_info - named tuple with (major=3, minor=14, micro=0, releaselevel='final', serial=0)
     let version_info_key = Value::InternString(find_string(interns, "version_info"));
-    let version_info_tuple = Tuple::new(vec![
-        Value::Int(3),
-        Value::Int(14),
-        Value::Int(0),
-        Value::InternString(find_string(interns, "final")),
-        Value::Int(0),
-    ]);
-    let version_info_id = heap.allocate(HeapData::Tuple(version_info_tuple))?;
+    let version_info = NamedTuple::new(
+        "sys.version_info".to_string(),
+        vec![
+            find_string(interns, "major"),
+            find_string(interns, "minor"),
+            find_string(interns, "micro"),
+            find_string(interns, "releaselevel"),
+            find_string(interns, "serial"),
+        ],
+        vec![
+            Value::Int(3),
+            Value::Int(14),
+            Value::Int(0),
+            Value::InternString(find_string(interns, "final")),
+            Value::Int(0),
+        ],
+    );
+    let version_info_id = heap.allocate(HeapData::NamedTuple(version_info))?;
     attrs
         .set(version_info_key, Value::Ref(version_info_id), heap, interns)
         .unwrap();

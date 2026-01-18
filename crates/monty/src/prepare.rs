@@ -2032,6 +2032,12 @@ fn pre_intern_module_attrs(module_name: &str, interner: &mut InternerBuilder) {
             interner.intern("stdout");
             interner.intern("stderr");
             interner.intern("final");
+            // sys.version_info field names (for NamedTuple attribute access)
+            interner.intern("major");
+            interner.intern("minor");
+            interner.intern("micro");
+            interner.intern("releaselevel");
+            interner.intern("serial");
         }
         "typing" => {
             // typing module attributes
