@@ -21,7 +21,8 @@ use crate::{
     exception_private::ExcType,
     exception_public::{MontyException, StackFrame},
     expressions::{
-        Callable, Comprehension, Expr, ExprLoc, Identifier, Literal, NameScope, PreparedFunctionDef, PreparedNode,
+        Callable, Comprehension, ComprehensionTarget, Expr, ExprLoc, Identifier, Literal, NameScope,
+        PreparedFunctionDef, PreparedNode,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec, encode_format_spec},
     function::Function,
@@ -1301,8 +1302,8 @@ impl<'a> Compiler<'a> {
         // FOR_ITER: advance iterator or jump to end
         let end_jump = self.code.emit_jump(Opcode::ForIter);
 
-        // Store current value to target
-        self.compile_store(&generator.target);
+        // Store current value to target (single variable or tuple unpacking)
+        self.compile_comprehension_store(&generator.target);
 
         // Compile filter conditions - jump back to loop start if any fails
         for cond in &generator.ifs {
@@ -1327,6 +1328,31 @@ impl<'a> Compiler<'a> {
         self.code.patch_jump(end_jump);
 
         Ok(())
+    }
+
+    /// Compiles storage of a comprehension target - either single variable or tuple unpacking.
+    ///
+    /// For single variables: emits a simple store.
+    /// For tuple unpacking: emits `UnpackSequence` followed by stores for each target.
+    fn compile_comprehension_store(&mut self, target: &ComprehensionTarget) {
+        match target {
+            ComprehensionTarget::Name(ident) => {
+                // Single variable - just store directly
+                self.compile_store(ident);
+            }
+            ComprehensionTarget::Tuple { targets, position } => {
+                // Tuple unpacking - emit UnpackSequence then store each
+                let count = u8::try_from(targets.len()).expect("too many targets in comprehension unpack");
+                // Set location to targets for proper caret in tracebacks
+                self.code.set_location(*position, None);
+                self.code.emit_u8(Opcode::UnpackSequence, count);
+                // After UnpackSequence, values are on stack with first item on top
+                // Store them in order (first target gets first item)
+                for ident in targets {
+                    self.compile_store(ident);
+                }
+            }
+        }
     }
 
     // ========================================================================

@@ -202,14 +202,31 @@ pub enum Expr {
     },
 }
 
+/// Target for comprehension loop variable - either a single name or tuple unpacking.
+///
+/// For single variables: `for x in items`
+/// For tuple unpacking: `for x, y in pairs` or `for a, b, c in triples`
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum ComprehensionTarget {
+    /// Single identifier: `for x in ...`
+    Name(Identifier),
+    /// Tuple unpacking: `for x, y in ...`
+    Tuple {
+        /// The identifiers to unpack into (in order)
+        targets: Vec<Identifier>,
+        /// Source position covering all targets (for error caret placement)
+        position: CodeRange,
+    },
+}
+
 /// A generator clause in a comprehension: `for target in iter [if cond1] [if cond2]...`
 ///
 /// Represents one `for` clause with zero or more `if` filters. Multiple generators
 /// create nested iteration (the rightmost varies fastest).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Comprehension {
-    /// Loop variable (single identifier; tuple unpacking not yet supported).
-    pub target: Identifier,
+    /// Loop variable - either single identifier or tuple unpacking pattern.
+    pub target: ComprehensionTarget,
     /// Iterable expression to loop over.
     pub iter: ExprLoc,
     /// Zero or more filter conditions (all must be truthy for the element to be included).

@@ -92,3 +92,74 @@ def outer_nested_comp():
 
 
 assert outer_nested_comp() == [1, 2, 3, 4], 'nested comp in closure'
+
+# === Tuple unpacking in comprehensions ===
+pairs = [(1, 'a'), (2, 'b'), (3, 'c')]
+assert [x for x, y in pairs] == [1, 2, 3], 'unpack first element'
+assert [y for x, y in pairs] == ['a', 'b', 'c'], 'unpack second element'
+assert [str(x) + str(y) for x, y in [(1, 2), (3, 4)]] == ['12', '34'], 'unpack and use both'
+assert [(y, x) for x, y in pairs] == [('a', 1), ('b', 2), ('c', 3)], 'swap unpacked elements'
+
+# Tuple unpacking with filter
+assert [x for x, y in pairs if x > 1] == [2, 3], 'unpack with filter'
+assert [y for x, y in pairs if y != 'b'] == ['a', 'c'], 'unpack filter on second'
+
+# Triple unpacking
+triples = [(1, 2, 3), (4, 5, 6)]
+assert [a + b + c for a, b, c in triples] == [6, 15], 'triple unpack sum'
+assert [b for a, b, c in triples] == [2, 5], 'triple unpack middle'
+
+# Dict comprehension with unpacking
+d = {k: v for k, v in pairs}
+assert d == {1: 'a', 2: 'b', 3: 'c'}, 'dict comp with unpack'
+assert {v: k for k, v in pairs} == {'a': 1, 'b': 2, 'c': 3}, 'dict comp swap key/value'
+
+# Set comprehension with unpacking
+assert {x for x, y in pairs} == {1, 2, 3}, 'set comp unpack first'
+assert {y for x, y in pairs} == {'a', 'b', 'c'}, 'set comp unpack second'
+
+# Unpacking with dict.items()
+d2 = {'x': 10, 'y': 20, 'z': 30}
+assert [k for k, v in d2.items()] == ['x', 'y', 'z'], 'unpack dict items keys'
+assert [v for k, v in d2.items()] == [10, 20, 30], 'unpack dict items values'
+assert {v: k for k, v in d2.items()} == {10: 'x', 20: 'y', 30: 'z'}, 'dict comp invert dict'
+
+# Nested comprehension with unpacking
+matrix = [[(1, 2), (3, 4)], [(5, 6), (7, 8)]]
+assert [[a + b for a, b in row] for row in matrix] == [[3, 7], [11, 15]], 'nested comp unpack'
+
+# Scope isolation with unpacking (vars don't leak)
+x = 'outer_x'
+y = 'outer_y'
+result = [x + y for x, y in [(1, 2)]]
+assert x == 'outer_x', 'x does not leak from unpack'
+assert y == 'outer_y', 'y does not leak from unpack'
+
+
+# Unpacking in closure
+def outer_unpack():
+    items = [(1, 2), (3, 4)]
+
+    def inner():
+        return [a * b for a, b in items]
+
+    return inner()
+
+
+assert outer_unpack() == [2, 12], 'unpack in closure'
+
+
+# Capture variable used in unpacking pattern
+def outer_shadow_unpack():
+    x = 100
+
+    def inner():
+        # x in unpacking shadows the outer x, but we can still reference outer x in expression
+        # Actually, the x in the comprehension shadows outer x, so this tests scope isolation
+        pairs = [(1, 2), (3, 4)]
+        return [x + y for x, y in pairs]
+
+    return inner()
+
+
+assert outer_shadow_unpack() == [3, 7], 'shadow unpack in closure'

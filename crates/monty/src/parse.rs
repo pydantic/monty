@@ -14,7 +14,7 @@ use crate::{
     builtins::Builtins,
     exception_private::ExcType,
     exception_public::{CodeLoc, MontyException},
-    expressions::{Callable, Comprehension, Expr, ExprLoc, Identifier, Literal, Node},
+    expressions::{Callable, Comprehension, ComprehensionTarget, Expr, ExprLoc, Identifier, Literal, Node},
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
     operators::{CmpOperator, Operator},
@@ -778,7 +778,8 @@ impl<'a> Parser<'a> {
     /// Parses comprehension generators (the `for ... in ... if ...` clauses).
     ///
     /// Each generator represents one `for` clause with zero or more `if` filters.
-    /// Multiple generators create nested iteration.
+    /// Multiple generators create nested iteration. Supports both single identifiers
+    /// (`for x in ...`) and tuple unpacking (`for x, y in ...`).
     fn parse_comprehension_generators(
         &mut self,
         generators: Vec<ast::Comprehension>,
@@ -789,7 +790,7 @@ impl<'a> Parser<'a> {
                 if comp.is_async {
                     return Err(ParseError::not_implemented("async comprehensions"));
                 }
-                let target = self.parse_identifier(comp.target)?;
+                let target = self.parse_comprehension_target(comp.target)?;
                 let iter = self.parse_expression(comp.iter)?;
                 let ifs = comp
                     .ifs
@@ -799,6 +800,36 @@ impl<'a> Parser<'a> {
                 Ok(Comprehension { target, iter, ifs })
             })
             .collect()
+    }
+
+    /// Parses a comprehension target - either a single identifier or tuple unpacking.
+    ///
+    /// Handles patterns like `x` (single variable) or `x, y` (tuple unpacking).
+    fn parse_comprehension_target(&mut self, target: AstExpr) -> Result<ComprehensionTarget, ParseError> {
+        match target {
+            // Single identifier: `for x in ...`
+            AstExpr::Name(ast::ExprName { id, range, .. }) => {
+                let ident = self.identifier(&id, range);
+                Ok(ComprehensionTarget::Name(ident))
+            }
+            // Tuple unpacking: `for x, y in ...`
+            AstExpr::Tuple(ast::ExprTuple { elts, range, .. }) => {
+                let position = self.convert_range(range);
+                let targets = elts
+                    .into_iter()
+                    .map(|e| self.parse_identifier(e))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if targets.is_empty() {
+                    return Err(ParseError::syntax("empty tuple in comprehension target", position));
+                }
+                Ok(ComprehensionTarget::Tuple { targets, position })
+            }
+            // Other patterns not supported (e.g., nested tuples like `for (a, b), c in ...`)
+            other => Err(ParseError::syntax(
+                format!("unsupported comprehension target pattern: {other:?}"),
+                self.convert_range(other.range()),
+            )),
+        }
     }
 
     /// Parses an f-string value into expression parts.

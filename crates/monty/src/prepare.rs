@@ -5,7 +5,8 @@ use ahash::{AHashMap, AHashSet};
 use crate::{
     args::ArgExprs,
     expressions::{
-        Callable, Comprehension, Expr, ExprLoc, Identifier, Literal, NameScope, Node, PreparedFunctionDef, PreparedNode,
+        Callable, Comprehension, ComprehensionTarget, Expr, ExprLoc, Identifier, Literal, NameScope, Node,
+        PreparedFunctionDef, PreparedNode,
     },
     fstring::{FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
@@ -693,31 +694,8 @@ impl<'i> Prepare<'i> {
             // For subsequent generators, the iter expression can see prior loop variables.
             let iter = self.prepare_expression(comp.iter)?;
 
-            // Force allocation of a NEW slot for the comprehension loop variable.
-            // This is critical for scope isolation: the loop variable must NOT reuse
-            // any existing slot from the enclosing scope.
-            let name_str = self.interner.get_str(comp.target.name_id).to_string();
-            let comp_var_id = NamespaceId::new(self.namespace_size);
-            self.namespace_size += 1;
-
-            // Temporarily shadow any existing binding. We must update ALL maps that get_id checks
-            // BEFORE name_map, otherwise the wrong scope will be returned.
-            // The lookup order in get_id is: global_declarations, free_var_map, cell_var_map,
-            // assigned_names, enclosing_locals, then name_map. So we must remove from all maps
-            // checked before name_map to ensure the comprehension variable shadows any captured
-            // variable with the same name.
-            self.name_map.insert(name_str.clone(), comp_var_id);
-            self.names_assigned_in_order.insert(name_str.clone());
-            self.free_var_map.remove(&name_str);
-            self.cell_var_map.remove(&name_str);
-            // Also remove from enclosing_locals to prevent get_id from re-capturing the variable
-            if let Some(ref mut enclosing) = self.enclosing_locals {
-                enclosing.remove(&name_str);
-            }
-
-            // Create the target identifier with the new scope
-            let target =
-                Identifier::new_with_scope(comp.target.name_id, comp.target.position, comp_var_id, NameScope::Local);
+            // Prepare the target - either single identifier or tuple unpacking
+            let prepared_target = self.prepare_comprehension_target(comp.target);
 
             // Prepare filter conditions (can see this loop variable)
             let ifs = comp
@@ -726,7 +704,11 @@ impl<'i> Prepare<'i> {
                 .map(|cond| self.prepare_expression(cond))
                 .collect::<Result<Vec<_>, _>>()?;
 
-            prepared_generators.push(Comprehension { target, iter, ifs });
+            prepared_generators.push(Comprehension {
+                target: prepared_target,
+                iter,
+                ifs,
+            });
         }
 
         // Prepare the element expression(s) - can see all loop variables
@@ -747,6 +729,72 @@ impl<'i> Prepare<'i> {
         self.enclosing_locals = saved_enclosing_locals;
 
         Ok((prepared_generators, prepared_elt, prepared_key_value))
+    }
+
+    /// Prepares a comprehension target by allocating namespace slots and resolving identifiers.
+    ///
+    /// For single identifiers (`for x in ...`): allocates one slot.
+    /// For tuple unpacking (`for x, y in ...`): allocates a slot for each target.
+    ///
+    /// This method handles scope shadowing to ensure comprehension loop variables are isolated.
+    fn prepare_comprehension_target(&mut self, target: ComprehensionTarget) -> ComprehensionTarget {
+        match target {
+            ComprehensionTarget::Name(ident) => {
+                // Force allocation of a NEW slot for the comprehension loop variable.
+                // This is critical for scope isolation: the loop variable must NOT reuse
+                // any existing slot from the enclosing scope.
+                let name_str = self.interner.get_str(ident.name_id).to_string();
+                let comp_var_id = NamespaceId::new(self.namespace_size);
+                self.namespace_size += 1;
+
+                // Temporarily shadow any existing binding
+                self.shadow_for_comprehension(&name_str, comp_var_id);
+
+                // Create the resolved identifier
+                let resolved = Identifier::new_with_scope(ident.name_id, ident.position, comp_var_id, NameScope::Local);
+                ComprehensionTarget::Name(resolved)
+            }
+            ComprehensionTarget::Tuple { targets, position } => {
+                // Allocate a slot for each target in the tuple
+                let resolved_targets: Vec<Identifier> = targets
+                    .into_iter()
+                    .map(|ident| {
+                        let name_str = self.interner.get_str(ident.name_id).to_string();
+                        let comp_var_id = NamespaceId::new(self.namespace_size);
+                        self.namespace_size += 1;
+
+                        // Shadow each name
+                        self.shadow_for_comprehension(&name_str, comp_var_id);
+
+                        Identifier::new_with_scope(ident.name_id, ident.position, comp_var_id, NameScope::Local)
+                    })
+                    .collect();
+
+                ComprehensionTarget::Tuple {
+                    targets: resolved_targets,
+                    position,
+                }
+            }
+        }
+    }
+
+    /// Shadows a name in all scope maps for comprehension isolation.
+    ///
+    /// This ensures the comprehension loop variable takes precedence over any
+    /// variable with the same name from enclosing scopes.
+    fn shadow_for_comprehension(&mut self, name_str: &str, comp_var_id: NamespaceId) {
+        // The lookup order in get_id is: global_declarations, free_var_map, cell_var_map,
+        // assigned_names, enclosing_locals, then name_map. So we must update/remove from all maps
+        // checked before name_map to ensure the comprehension variable shadows any captured
+        // variable with the same name.
+        self.name_map.insert(name_str.to_string(), comp_var_id);
+        self.names_assigned_in_order.insert(name_str.to_string());
+        self.free_var_map.remove(name_str);
+        self.cell_var_map.remove(name_str);
+        // Also remove from enclosing_locals to prevent get_id from re-capturing the variable
+        if let Some(ref mut enclosing) = self.enclosing_locals {
+            enclosing.remove(name_str);
+        }
     }
 
     /// Prepares a function definition using a two-pass approach for correct scope resolution.
@@ -1635,8 +1683,17 @@ fn collect_referenced_names_from_comprehension(
             collect_referenced_names_from_expr(&comp.iter, &mut inner_refs, interner);
         }
 
-        // Add this generator's target to local set
-        comp_locals.insert(interner.get_str(comp.target.name_id).to_string());
+        // Add this generator's target(s) to local set
+        match &comp.target {
+            ComprehensionTarget::Name(ident) => {
+                comp_locals.insert(interner.get_str(ident.name_id).to_string());
+            }
+            ComprehensionTarget::Tuple { targets, .. } => {
+                for ident in targets {
+                    comp_locals.insert(interner.get_str(ident.name_id).to_string());
+                }
+            }
+        }
 
         // Filter conditions can see prior loop variables - collect separately
         for cond in &comp.ifs {
