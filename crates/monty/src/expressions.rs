@@ -220,7 +220,7 @@ pub enum UnpackTarget {
     /// Nested tuple: `(a, b)` - can contain further nested tuples
     Tuple {
         /// The targets to unpack into (can be names or nested tuples)
-        targets: Vec<UnpackTarget>,
+        targets: Vec<Self>,
         /// Source position covering all targets (for error caret placement)
         position: CodeRange,
     },
