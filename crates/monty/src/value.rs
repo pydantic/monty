@@ -21,52 +21,6 @@ use crate::{
     types::{LongInt, PyTrait, Type, bytes::bytes_repr_fmt, str::string_repr_fmt},
 };
 
-/// Bitwise operation type for `py_bitwise`.
-#[derive(Debug, Clone, Copy)]
-pub enum BitwiseOp {
-    And,
-    Or,
-    Xor,
-    LShift,
-    RShift,
-}
-
-impl BitwiseOp {
-    /// Returns the operator symbol for error messages.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::And => "&",
-            Self::Or => "|",
-            Self::Xor => "^",
-            Self::LShift => "<<",
-            Self::RShift => ">>",
-        }
-    }
-}
-
-/// Marker values for special objects that exist but have minimal functionality.
-///
-/// These are used for objects like `sys.stdout` and `sys.stderr` that need to exist
-/// for code that checks `hasattr(sys, 'stdout')` but don't provide any real functionality
-/// in the sandboxed environment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub enum Marker {
-    /// Represents `sys.stdout` - a placeholder for standard output.
-    Stdout,
-    /// Represents `sys.stderr` - a placeholder for standard error.
-    Stderr,
-}
-
-impl Marker {
-    /// Returns the repr string for this marker.
-    fn repr(self) -> &'static str {
-        match self {
-            Self::Stdout => "<stdout>",
-            Self::Stderr => "<stderr>",
-        }
-    }
-}
-
 /// Primary value type representing Python objects at runtime.
 ///
 /// This enum uses a hybrid design: small immediate values (Int, Bool, None) are stored
@@ -1996,6 +1950,52 @@ impl Attr {
         match self {
             Self::Interned(id) => Some(*id),
             Self::Other(_) => None,
+        }
+    }
+}
+
+/// Bitwise operation type for `py_bitwise`.
+#[derive(Debug, Clone, Copy)]
+pub enum BitwiseOp {
+    And,
+    Or,
+    Xor,
+    LShift,
+    RShift,
+}
+
+impl BitwiseOp {
+    /// Returns the operator symbol for error messages.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::And => "&",
+            Self::Or => "|",
+            Self::Xor => "^",
+            Self::LShift => "<<",
+            Self::RShift => ">>",
+        }
+    }
+}
+
+/// Marker values for special objects that exist but have minimal functionality.
+///
+/// These are used for objects like `sys.stdout` and `sys.stderr` that need to exist
+/// for code that checks `hasattr(sys, 'stdout')` but don't provide any real functionality
+/// in the sandboxed environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum Marker {
+    /// Represents `sys.stdout` - a placeholder for standard output.
+    Stdout,
+    /// Represents `sys.stderr` - a placeholder for standard error.
+    Stderr,
+}
+
+impl Marker {
+    /// Returns the repr string for this marker.
+    fn repr(self) -> &'static str {
+        match self {
+            Self::Stdout => "<stdout>",
+            Self::Stderr => "<stderr>",
         }
     }
 }
