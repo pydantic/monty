@@ -31,9 +31,9 @@ use crate::{
 /// - `update(other)` - Update from dict or iterable of pairs
 /// - `setdefault(key[, default])` - Get or set default value
 /// - `popitem()` - Remove and return last (key, value) pair
-///
-/// # Unimplemented Methods
 /// - `fromkeys(iterable[, value])` - Create dict from keys (classmethod)
+///
+/// All dict methods from Python's builtins are implemented.
 ///
 /// # Storage Strategy
 /// Uses a `HashTable<usize>` for hash lookups combined with a dense `Vec<DictEntry>`
@@ -940,4 +940,38 @@ impl<'de> serde::Deserialize<'de> for Dict {
             contains_refs: fields.contains_refs,
         })
     }
+}
+
+/// Implements Python's `dict.fromkeys(iterable[, value])` classmethod.
+///
+/// Creates a new dictionary with keys from `iterable` and all values set to `value`
+/// (default: None).
+///
+/// This is a classmethod that can be called directly on the dict type:
+/// ```python
+/// dict.fromkeys(['a', 'b', 'c'])  # {'a': None, 'b': None, 'c': None}
+/// dict.fromkeys(['a', 'b'], 0)    # {'a': 0, 'b': 0}
+/// ```
+pub fn dict_fromkeys(args: ArgValues, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Value> {
+    let (iterable, default) = args.get_one_two_args("dict.fromkeys", heap)?;
+    let default = default.unwrap_or(Value::None);
+
+    // Iterate over the iterable to get keys
+    let mut iter = ForIterator::new(iterable, heap, interns)?;
+
+    let mut dict = Dict::new();
+
+    while let Some(key) = iter.for_next(heap, interns)? {
+        // Clone the default value for each key
+        let value = default.clone_with_heap(heap);
+        if let Some(old_value) = dict.set(key, value, heap, interns)? {
+            old_value.drop_with_heap(heap);
+        }
+    }
+
+    iter.drop_with_heap(heap);
+    default.drop_with_heap(heap);
+
+    let heap_id = heap.allocate(HeapData::Dict(dict))?;
+    Ok(Value::Ref(heap_id))
 }

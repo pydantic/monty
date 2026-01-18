@@ -26,7 +26,7 @@ pub struct StringId(u32);
 pub const MODULE_STRING_ID: StringId = StringId(0);
 
 /// update MAX_ATTR_ID when adding new attrs
-const MAX_ATTR_ID: u32 = 67;
+const MAX_ATTR_ID: u32 = 68;
 
 /// The StringId for the empty string `""` - interned for allocation-free empty string returns.
 pub const EMPTY_STRING: StringId = StringId(MAX_ATTR_ID + 1);
@@ -170,7 +170,9 @@ pub mod attr {
     pub const SETDEFAULT: StringId = StringId(65);
     pub const POPITEM: StringId = StringId(66);
     // Bytes methods
-    pub const DECODE: StringId = StringId(MAX_ATTR_ID);
+    pub const DECODE: StringId = StringId(67);
+    // Dict classmethod
+    pub const FROMKEYS: StringId = StringId(MAX_ATTR_ID);
 }
 
 impl StringId {
@@ -459,6 +461,9 @@ impl InternerBuilder {
         // Bytes methods
         let id = interner.intern_static("decode");
         debug_assert_eq!(id, attr::DECODE);
+        // Dict classmethod
+        let id = interner.intern_static("fromkeys");
+        debug_assert_eq!(id, attr::FROMKEYS);
 
         // Pre-intern the empty string for allocation-free empty string returns
         let id = interner.intern_static("");

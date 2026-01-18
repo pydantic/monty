@@ -237,3 +237,34 @@ assert lst == [], 'sort empty list'
 lst = [1]
 lst.sort()
 assert lst == [1], 'sort single element'
+
+# === list.sort(key=...) ===
+lst = ['banana', 'apple', 'cherry']
+lst.sort(key=len)
+assert lst == ['apple', 'banana', 'cherry'], 'sort by len'
+
+lst = [[1, 2, 3], [4], [5, 6]]
+lst.sort(key=len)
+assert lst == [[4], [5, 6], [1, 2, 3]], 'sort nested lists by len'
+
+lst = [[1, 2, 3], [4], [5, 6]]
+lst.sort(key=len, reverse=True)
+assert lst == [[1, 2, 3], [5, 6], [4]], 'sort by len reverse'
+
+lst = [-3, 1, -2, 4]
+lst.sort(key=abs)
+assert lst == [1, -2, -3, 4], 'sort by abs'
+
+# key=None is same as no key
+lst = [3, 1, 2]
+lst.sort(key=None)
+assert lst == [1, 2, 3], 'sort with key=None'
+
+lst = [3, 1, 2]
+lst.sort(key=None, reverse=True)
+assert lst == [3, 2, 1], 'sort with key=None reverse'
+
+# Empty list with key
+lst = []
+lst.sort(key=len)
+assert lst == [], 'sort empty list with key'

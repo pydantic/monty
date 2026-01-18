@@ -30,10 +30,13 @@ use crate::{
 /// - `index(value[, start[, end]])` - Find first index of value
 /// - `count(value)` - Count occurrences
 /// - `reverse()` - Reverse in place
-/// - `sort([reverse])` - Sort in place (key parameter not supported)
+/// - `sort([key][, reverse])` - Sort in place
 ///
-/// # Unimplemented Methods
-/// - `sort(key=...)` - Sort with custom key function
+/// Note: `sort(key=...)` supports builtin key functions (len, abs, etc.)
+/// but not user-defined functions. This is handled at VM level for access
+/// to function calling machinery.
+///
+/// All list methods from Python's builtins are implemented.
 ///
 /// # Reference Counting
 /// When values are added to the list (via append, insert, etc.), their

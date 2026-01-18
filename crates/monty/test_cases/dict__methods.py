@@ -62,3 +62,27 @@ d = {'x': 10}
 item = d.popitem()
 assert item == ('x', 10), 'popitem on single-item dict'
 assert d == {}, 'dict is now empty'
+
+# === dict.fromkeys() ===
+d = dict.fromkeys(['a', 'b', 'c'])
+assert d == {'a': None, 'b': None, 'c': None}, 'fromkeys with list, default None'
+
+d = dict.fromkeys(['a', 'b'], 0)
+assert d == {'a': 0, 'b': 0}, 'fromkeys with default value'
+
+d = dict.fromkeys([])
+assert d == {}, 'fromkeys with empty iterable'
+
+d = dict.fromkeys('abc')
+assert d == {'a': None, 'b': None, 'c': None}, 'fromkeys with string iterable'
+
+d = dict.fromkeys(range(3), 'x')
+assert d == {0: 'x', 1: 'x', 2: 'x'}, 'fromkeys with range iterable'
+
+d = dict.fromkeys((1, 2, 3), [])
+assert d[1] is d[2] and d[2] is d[3], 'fromkeys shares same value object for all keys'
+
+# Duplicate keys - later occurrence wins
+d = dict.fromkeys(['a', 'b', 'a'], 1)
+assert d == {'a': 1, 'b': 1}, 'fromkeys with duplicate keys'
+assert list(d.keys()) == ['a', 'b'], 'fromkeys preserves first occurrence order'
