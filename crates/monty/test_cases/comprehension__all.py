@@ -163,3 +163,31 @@ def outer_shadow_unpack():
 
 
 assert outer_shadow_unpack() == [3, 7], 'shadow unpack in closure'
+
+# === Generator expressions (temporary: treated as list comprehensions) ===
+# TODO: When proper generators are implemented, these should return generator objects
+# instead of lists. For now, generator expressions are parsed as list comprehensions.
+# See iter__generator_expr.py for tests, and iter__generator_expr_type.py for
+# a type check test (xfail=cpython since CPython has real generators).
+
+# Generator in list() call - works identically in both Monty and CPython
+assert list(x for x in [1, 2, 3]) == [1, 2, 3], 'generator in list()'
+assert tuple(x for x in [1, 2, 3]) == (1, 2, 3), 'generator in tuple()'
+
+# Generator with condition
+assert list(x for x in range(10) if x % 2 == 0) == [0, 2, 4, 6, 8], 'generator with condition'
+
+# Nested generators
+assert list(x + y for x in range(3) for y in range(2)) == [0, 1, 1, 2, 2, 3], 'nested generator'
+
+# Generator in sum()
+assert sum(x for x in range(5)) == 10, 'generator in sum()'
+
+# Generator with unpacking
+pairs = [(1, 2), (3, 4)]
+assert list(a + b for a, b in pairs) == [3, 7], 'generator with unpacking'
+
+# list of strings join
+assert ''.join(str(x) for x in range(5)) == '01234', 'list of strings join'
+a = '1', '2', '3'
+assert ''.join(a) == '123', 'tuple of strings join'
