@@ -3,7 +3,6 @@
 .PHONY: .cargo
 .cargo: ## Check that cargo is installed
 	@cargo --version || echo 'Please install cargo: https://github.com/rust-lang/cargo'
-	@cargo llvm-cov --version > /dev/null 2>&1 || echo 'Please run: `cargo install cargo-llvm-cov`'
 
 .PHONY: .uv
 .uv: ## Check that uv is installed
@@ -109,6 +108,7 @@ test: test-ref-count-panic test-ref-count-return test-no-features test-type-chec
 
 .PHONY: testcov
 testcov: ## Run Rust tests with coverage, print table, and generate HTML report
+	@cargo llvm-cov --version > /dev/null 2>&1 || echo 'Please run: `cargo install cargo-llvm-cov`'
 	cargo llvm-cov clean --workspace
 	echo "coverage for `make test-no-features`"
 	cargo llvm-cov --no-report -p monty
