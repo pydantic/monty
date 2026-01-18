@@ -399,6 +399,7 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
         ExcType::TimeoutError => exceptions::PyTimeoutError::new_err(msg),
         ExcType::TypeError => exceptions::PyTypeError::new_err(msg),
         ExcType::ValueError => exceptions::PyValueError::new_err(msg),
+        ExcType::UnicodeDecodeError => exceptions::PyUnicodeDecodeError::new_err(msg),
     }
 }
 
@@ -431,8 +432,13 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
         // put the most commonly used exceptions first
         if exceptions::PyTypeError::type_check(exc) {
             ExcType::TypeError
+        // ValueError hierarchy (check UnicodeDecodeError first as it's a subclass)
         } else if exceptions::PyValueError::type_check(exc) {
-            ExcType::ValueError
+            if exceptions::PyUnicodeDecodeError::type_check(exc) {
+                ExcType::UnicodeDecodeError
+            } else {
+                ExcType::ValueError
+            }
         } else if exceptions::PyAssertionError::type_check(exc) {
             ExcType::AssertionError
         } else if exceptions::PySyntaxError::type_check(exc) {

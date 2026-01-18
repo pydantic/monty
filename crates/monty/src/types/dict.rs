@@ -818,8 +818,9 @@ fn dict_update(
             ));
         };
 
-        // Check for extra elements
-        if pair_iter.for_next(heap, interns)?.is_some() {
+        // Check for extra elements - must drop the first extra element too!
+        if let Some(first_extra) = pair_iter.for_next(heap, interns)? {
+            first_extra.drop_with_heap(heap);
             key.drop_with_heap(heap);
             value.drop_with_heap(heap);
             // Drain remaining elements

@@ -69,13 +69,17 @@ pub enum ExcType {
     /// Subclass of NameError - for accessing local variable before assignment.
     UnboundLocalError,
 
+    // --- ValueError hierarchy ---
+    ValueError,
+    /// Subclass of ValueError - for encoding/decoding errors.
+    UnicodeDecodeError,
+
     // --- Standalone exception types ---
     AssertionError,
     MemoryError,
     SyntaxError,
     TimeoutError,
     TypeError,
-    ValueError,
 }
 
 impl ExcType {
@@ -108,6 +112,8 @@ impl ExcType {
             Self::AttributeError => matches!(self, Self::FrozenInstanceError),
             // NameError catches UnboundLocalError
             Self::NameError => matches!(self, Self::UnboundLocalError),
+            // ValueError catches UnicodeDecodeError
+            Self::ValueError => matches!(self, Self::UnicodeDecodeError),
             // All other types only match exactly (handled by self == handler_type above)
             _ => false,
         }
@@ -932,14 +938,13 @@ impl ExcType {
         SimpleException::new_msg(Self::LookupError, format!("unknown encoding: {encoding}")).into()
     }
 
-    /// Creates a ValueError for invalid UTF-8 bytes in decode().
+    /// Creates a UnicodeDecodeError for invalid UTF-8 bytes in decode().
     ///
-    /// Note: Python raises UnicodeDecodeError, but we use ValueError since
-    /// UnicodeDecodeError is not yet implemented.
+    /// Matches CPython's format: `UnicodeDecodeError: 'utf-8' codec can't decode bytes...`
     #[must_use]
     pub(crate) fn unicode_decode_error_invalid_utf8() -> RunError {
         SimpleException::new_msg(
-            Self::ValueError,
+            Self::UnicodeDecodeError,
             "'utf-8' codec can't decode bytes: invalid utf-8 sequence",
         )
         .into()
