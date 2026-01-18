@@ -489,8 +489,9 @@ fn parse_bytes_prefix_suffix_args(
     let start_value = pos_iter.next();
     let end_value = pos_iter.next();
 
-    // Check no extra arguments
-    if pos_iter.next().is_some() {
+    // Check no extra arguments - must drop the 4th arg consumed by .next()
+    if let Some(fourth) = pos_iter.next() {
+        fourth.drop_with_heap(heap);
         for v in pos_iter {
             v.drop_with_heap(heap);
         }
@@ -626,8 +627,9 @@ fn parse_bytes_sub_args(
     let start_value = pos_iter.next();
     let end_value = pos_iter.next();
 
-    // Check no extra arguments
-    if pos_iter.next().is_some() {
+    // Check no extra arguments - must drop the 4th arg consumed by .next()
+    if let Some(fourth) = pos_iter.next() {
+        fourth.drop_with_heap(heap);
         for v in pos_iter {
             v.drop_with_heap(heap);
         }

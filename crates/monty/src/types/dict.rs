@@ -899,6 +899,8 @@ fn dict_popitem(dict: &mut Dict, heap: &mut Heap<impl ResourceTracker>) -> RunRe
     // Remove from indices - need to find the entry with this index
     // Since we removed the last entry, we need to clear and rebuild indices
     // (This is simpler than trying to find and remove the specific hash entry)
+    // TODO: This O(n) rebuild could be optimized by finding and removing the
+    // specific hash entry directly from the hashbrown table.
     dict.indices.clear();
     for (idx, e) in dict.entries.iter().enumerate() {
         dict.indices.insert_unique(e.hash, idx, |&i| dict.entries[i].hash);

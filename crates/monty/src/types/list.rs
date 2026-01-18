@@ -373,7 +373,7 @@ fn call_list_method(
             list.items.reverse();
             Ok(Value::None)
         }
-        attr::SORT => list_sort(list, args, heap, interns),
+        // Note: list.sort is handled at VM level in call.rs to support key functions
         _ => {
             args.drop_with_heap(heap);
             Err(ExcType::attribute_error(Type::List, interns.get_str(method_id)))
@@ -575,107 +575,6 @@ fn list_count(
     Ok(Value::Int(count_i64))
 }
 
-/// Implements Python's `list.sort(*, key=None, reverse=False)` method.
-///
-/// Sorts the list in place. Currently only supports basic comparison
-/// without key function.
-fn list_sort(
-    list: &mut List,
-    args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<Value> {
-    let (pos, kwargs) = args.into_parts();
-
-    // Check no positional arguments
-    let mut pos_iter = pos;
-    if pos_iter.next().is_some() {
-        for v in pos_iter {
-            v.drop_with_heap(heap);
-        }
-        kwargs.drop_with_heap(heap);
-        return Err(ExcType::type_error_no_args("list.sort", 1));
-    }
-
-    // Parse keyword arguments
-    let mut reverse = false;
-    let mut key_fn: Option<Value> = None;
-
-    for (key, value) in kwargs {
-        let Some(keyword_name) = key.as_either_str(heap) else {
-            key.drop_with_heap(heap);
-            value.drop_with_heap(heap);
-            return Err(ExcType::type_error("keywords must be strings"));
-        };
-
-        let key_str = keyword_name.as_str(interns);
-        match key_str {
-            "reverse" => {
-                reverse = value.py_bool(heap, interns);
-                key.drop_with_heap(heap);
-                value.drop_with_heap(heap);
-            }
-            "key" => {
-                if matches!(value, Value::None) {
-                    key.drop_with_heap(heap);
-                    value.drop_with_heap(heap);
-                } else {
-                    // Store key function for now, but we don't support it yet
-                    key.drop_with_heap(heap);
-                    if let Some(old_key) = key_fn.take() {
-                        old_key.drop_with_heap(heap);
-                    }
-                    key_fn = Some(value);
-                }
-            }
-            _ => {
-                key.drop_with_heap(heap);
-                value.drop_with_heap(heap);
-                if let Some(k) = key_fn {
-                    k.drop_with_heap(heap);
-                }
-                return Err(ExcType::type_error(format!(
-                    "'{key_str}' is an invalid keyword argument for list.sort()"
-                )));
-            }
-        }
-    }
-
-    // If key function provided, we don't support it yet
-    if let Some(k) = key_fn {
-        k.drop_with_heap(heap);
-        return Err(ExcType::type_error("list.sort() key argument is not yet supported"));
-    }
-
-    // Sort the list using comparison
-    // We need to handle errors during sorting (e.g., comparing incompatible types)
-    // For now, we do a simple stable sort that may fail on incompatible types
-    let mut sort_error: Option<RunResult<Value>> = None;
-
-    list.items.sort_by(|a, b| {
-        if sort_error.is_some() {
-            return std::cmp::Ordering::Equal;
-        }
-        if let Some(ord) = a.py_cmp(b, heap, interns) {
-            if reverse { ord.reverse() } else { ord }
-        } else {
-            // incompatible types for comparison
-            sort_error = Some(Err(ExcType::type_error(format!(
-                "'<' not supported between instances of '{}' and '{}'",
-                a.py_type(heap),
-                b.py_type(heap)
-            ))));
-            std::cmp::Ordering::Equal
-        }
-    });
-
-    if let Some(err) = sort_error {
-        return err;
-    }
-
-    Ok(Value::None)
-}
-
 /// Parses arguments for list.index() and similar methods.
 ///
 /// Returns (value, start, end) where start and end are normalized indices.
@@ -699,8 +598,9 @@ fn parse_index_count_args(
     let start_value = pos_iter.next();
     let end_value = pos_iter.next();
 
-    // Check no extra arguments
-    if pos_iter.next().is_some() {
+    // Check no extra arguments - must drop the 4th arg consumed by .next()
+    if let Some(fourth) = pos_iter.next() {
+        fourth.drop_with_heap(heap);
         for v in pos_iter {
             v.drop_with_heap(heap);
         }
