@@ -4,10 +4,9 @@ use super::VM;
 use crate::{
     exception_private::{ExcType, RunError, SimpleException},
     fstring::{ParsedFormatSpec, ascii_escape, decode_format_spec, format_string, format_with_spec},
-    heap::HeapData,
     io::PrintWriter,
     resource::ResourceTracker,
-    types::{PyTrait, Str},
+    types::{PyTrait, str::allocate_string},
     value::Value,
 };
 
@@ -24,8 +23,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             part.drop_with_heap(self.heap);
         }
 
-        let heap_id = self.heap.allocate(HeapData::Str(Str::new(result)))?;
-        self.push(Value::Ref(heap_id));
+        let value = allocate_string(result, self.heap)?;
+        self.push(value);
         Ok(())
     }
 
@@ -120,8 +119,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
         value.drop_with_heap(self.heap);
 
-        let heap_id = self.heap.allocate(HeapData::Str(Str::new(formatted)))?;
-        self.push(Value::Ref(heap_id));
+        let value = allocate_string(formatted, self.heap)?;
+        self.push(value);
         Ok(())
     }
 
