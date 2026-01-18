@@ -13,10 +13,10 @@ use crate::{
     exception_private::{ExcType, RunResult},
     for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
-    intern::Interns,
+    intern::{Interns, attr},
     resource::ResourceTracker,
     types::Type,
-    value::Value,
+    value::{Attr, Value},
 };
 
 /// Python tuple value stored on the heap.
@@ -172,7 +172,27 @@ impl PyTrait for Tuple {
         }
     }
 
-    // py_call_attr uses default implementation which returns AttributeError
+    fn py_call_attr(
+        &mut self,
+        heap: &mut Heap<impl ResourceTracker>,
+        attr: &Attr,
+        args: ArgValues,
+        interns: &Interns,
+    ) -> RunResult<Value> {
+        let Some(attr_id) = attr.string_id() else {
+            args.drop_with_heap(heap);
+            return Err(ExcType::attribute_error(Type::Tuple, attr.as_str(interns)));
+        };
+
+        match attr_id {
+            attr::INDEX => tuple_index(self, args, heap, interns),
+            attr::COUNT => tuple_count(self, args, heap, interns),
+            _ => {
+                args.drop_with_heap(heap);
+                Err(ExcType::attribute_error(Type::Tuple, interns.get_str(attr_id)))
+            }
+        }
+    }
 
     fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
         !self.items.is_empty()
@@ -186,5 +206,135 @@ impl PyTrait for Tuple {
         interns: &Interns,
     ) -> std::fmt::Result {
         repr_sequence_fmt('(', ')', &self.items, f, heap, heap_ids, interns)
+    }
+}
+
+/// Implements Python's `tuple.index(value[, start[, end]])` method.
+///
+/// Returns the index of the first occurrence of value.
+/// Raises ValueError if the value is not found.
+fn tuple_index(
+    tuple: &Tuple,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let (value, start, end) = parse_tuple_index_args("tuple.index", tuple.as_vec().len(), args, heap)?;
+
+    // Search for the value in the specified range
+    for (i, item) in tuple.as_vec()[start..end].iter().enumerate() {
+        if value.py_eq(item, heap, interns) {
+            value.drop_with_heap(heap);
+            let idx = i64::try_from(start + i).expect("index exceeds i64::MAX");
+            return Ok(Value::Int(idx));
+        }
+    }
+
+    value.drop_with_heap(heap);
+    Err(ExcType::value_error_not_in_tuple())
+}
+
+/// Implements Python's `tuple.count(value)` method.
+///
+/// Returns the number of occurrences of value in the tuple.
+fn tuple_count(
+    tuple: &Tuple,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let value = args.get_one_arg("tuple.count", heap)?;
+
+    let count = tuple
+        .as_vec()
+        .iter()
+        .filter(|item| value.py_eq(item, heap, interns))
+        .count();
+
+    value.drop_with_heap(heap);
+    let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
+    Ok(Value::Int(count_i64))
+}
+
+/// Parses arguments for tuple.index() method.
+///
+/// Returns (value, start, end) where start and end are normalized indices.
+fn parse_tuple_index_args(
+    method: &str,
+    len: usize,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+) -> RunResult<(Value, usize, usize)> {
+    let (pos, kwargs) = args.into_parts();
+    if !kwargs.is_empty() {
+        kwargs.drop_with_heap(heap);
+        return Err(ExcType::type_error_no_kwargs(method));
+    }
+
+    let mut pos_iter = pos;
+    let value = pos_iter
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
+    let start_value = pos_iter.next();
+    let end_value = pos_iter.next();
+
+    // Check no extra arguments
+    if pos_iter.next().is_some() {
+        for v in pos_iter {
+            v.drop_with_heap(heap);
+        }
+        value.drop_with_heap(heap);
+        if let Some(v) = start_value {
+            v.drop_with_heap(heap);
+        }
+        if let Some(v) = end_value {
+            v.drop_with_heap(heap);
+        }
+        return Err(ExcType::type_error_at_most(method, 3, 4));
+    }
+
+    // Extract start (default 0)
+    let start = if let Some(v) = start_value {
+        let result = v.as_int(heap);
+        v.drop_with_heap(heap);
+        match result {
+            Ok(i) => normalize_tuple_index(i, len),
+            Err(e) => {
+                value.drop_with_heap(heap);
+                if let Some(ev) = end_value {
+                    ev.drop_with_heap(heap);
+                }
+                return Err(e);
+            }
+        }
+    } else {
+        0
+    };
+
+    // Extract end (default len)
+    let end = if let Some(v) = end_value {
+        let result = v.as_int(heap);
+        v.drop_with_heap(heap);
+        match result {
+            Ok(i) => normalize_tuple_index(i, len),
+            Err(e) => {
+                value.drop_with_heap(heap);
+                return Err(e);
+            }
+        }
+    } else {
+        len
+    };
+
+    Ok((value, start, end))
+}
+
+/// Normalizes a Python-style tuple index to a valid index in range [0, len].
+fn normalize_tuple_index(index: i64, len: usize) -> usize {
+    if index < 0 {
+        let abs_index = usize::try_from(-index).unwrap_or(usize::MAX);
+        len.saturating_sub(abs_index)
+    } else {
+        usize::try_from(index).unwrap_or(len).min(len)
     }
 }

@@ -13,7 +13,7 @@ use crate::{
     intern::{ExtFunctionId, FunctionId, StringId},
     io::PrintWriter,
     resource::ResourceTracker,
-    types::{Dict, PyTrait, Type, str::call_str_method},
+    types::{Dict, PyTrait, Type, bytes::call_bytes_method, str::call_str_method},
     value::{Attr, Value},
 };
 
@@ -207,6 +207,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// For heap-allocated objects (`Value::Ref`), dispatches to the type's
     /// `py_call_attr` implementation via `heap.call_attr()`.
     /// For interned strings (`Value::InternString`), uses the unified `call_str_method`.
+    /// For interned bytes (`Value::InternBytes`), uses the unified `call_bytes_method`.
     fn call_method(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<Value, RunError> {
         let attr = Attr::Interned(name_id);
 
@@ -222,6 +223,11 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 // Call string method on interned string literal using the unified dispatcher
                 let s = self.interns.get_str(string_id);
                 call_str_method(s, name_id, args, self.heap, self.interns)
+            }
+            Value::InternBytes(bytes_id) => {
+                // Call bytes method on interned bytes literal using the unified dispatcher
+                let b = self.interns.get_bytes(bytes_id);
+                call_bytes_method(b, name_id, args, self.heap, self.interns)
             }
             _ => {
                 // Non-heap values without method support

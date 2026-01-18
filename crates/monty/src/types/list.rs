@@ -8,8 +8,8 @@ use crate::{
     exception_private::{ExcType, RunResult},
     for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
-    intern::{Interns, attr},
-    resource::ResourceTracker,
+    intern::{Interns, StringId, attr},
+    resource::{ResourceError, ResourceTracker},
     types::Type,
     value::{Attr, Value},
 };
@@ -308,45 +308,436 @@ impl PyTrait for List {
             return Err(ExcType::attribute_error(Type::List, attr.as_str(interns)));
         };
 
-        match attr_id {
-            attr::APPEND => {
-                let item = args.get_one_arg("list.append", heap)?;
-                self.append(heap, item);
-                Ok(Value::None)
+        call_list_method(self, attr_id, args, heap, interns)
+    }
+}
+
+/// Dispatches a method call on a list value.
+///
+/// This is the unified entry point for list method calls.
+///
+/// # Arguments
+/// * `list` - The list to call the method on
+/// * `method_id` - The interned method name (e.g., `attr::APPEND`)
+/// * `args` - The method arguments
+/// * `heap` - The heap for allocation and reference counting
+/// * `interns` - The interns table for resolving interned strings
+fn call_list_method(
+    list: &mut List,
+    method_id: StringId,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    match method_id {
+        attr::APPEND => {
+            let item = args.get_one_arg("list.append", heap)?;
+            list.append(heap, item);
+            Ok(Value::None)
+        }
+        attr::INSERT => list_insert(list, args, heap),
+        attr::POP => list_pop(list, args, heap),
+        attr::REMOVE => list_remove(list, args, heap, interns),
+        attr::CLEAR => {
+            args.check_zero_args("list.clear", heap)?;
+            list_clear(list, heap);
+            Ok(Value::None)
+        }
+        attr::COPY => {
+            args.check_zero_args("list.copy", heap)?;
+            Ok(list_copy(list, heap)?)
+        }
+        attr::EXTEND => list_extend(list, args, heap, interns),
+        attr::INDEX => list_index(list, args, heap, interns),
+        attr::COUNT => list_count(list, args, heap, interns),
+        attr::REVERSE => {
+            args.check_zero_args("list.reverse", heap)?;
+            list.items.reverse();
+            Ok(Value::None)
+        }
+        attr::SORT => list_sort(list, args, heap, interns),
+        _ => {
+            args.drop_with_heap(heap);
+            Err(ExcType::attribute_error(Type::List, interns.get_str(method_id)))
+        }
+    }
+}
+
+/// Implements Python's `list.insert(index, item)` method.
+fn list_insert(list: &mut List, args: ArgValues, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    let (index_obj, item) = args.get_two_args("insert", heap)?;
+    // Python's insert() handles negative indices by adding len
+    // If still negative after adding len, clamps to 0
+    // If >= len, appends to end
+    let index_result = index_obj.as_int(heap);
+    // Drop index_obj before propagating error - it could be a Ref (e.g., dict)
+    index_obj.drop_with_heap(heap);
+    let index_i64 = match index_result {
+        Ok(i) => i,
+        Err(e) => {
+            item.drop_with_heap(heap);
+            return Err(e);
+        }
+    };
+    let len = list.items.len();
+    let len_i64 = i64::try_from(len).expect("list length exceeds i64::MAX");
+    let index = if index_i64 < 0 {
+        // Negative index: add length, clamp to 0 if still negative
+        let adjusted = index_i64 + len_i64;
+        usize::try_from(adjusted).unwrap_or(0)
+    } else {
+        // Positive index: clamp to len if too large
+        usize::try_from(index_i64).unwrap_or(len)
+    };
+    list.insert(heap, index, item);
+    Ok(Value::None)
+}
+
+/// Implements Python's `list.pop([index])` method.
+///
+/// Removes the item at the given index (default: -1) and returns it.
+/// Raises IndexError if the list is empty or the index is out of range.
+fn list_pop(list: &mut List, args: ArgValues, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    let index_arg = args.get_zero_one_arg("list.pop", heap)?;
+
+    // Handle empty list case first
+    if list.items.is_empty() {
+        if let Some(v) = index_arg {
+            v.drop_with_heap(heap);
+        }
+        return Err(ExcType::index_error_pop_empty_list());
+    }
+
+    // Get index, defaulting to -1 (last element)
+    let index_i64 = if let Some(v) = index_arg {
+        let result = v.as_int(heap);
+        v.drop_with_heap(heap);
+        result?
+    } else {
+        -1
+    };
+
+    // Normalize index
+    let len = list.items.len();
+    let len_i64 = i64::try_from(len).expect("list length exceeds i64::MAX");
+    let normalized = if index_i64 < 0 { index_i64 + len_i64 } else { index_i64 };
+
+    // Bounds check
+    if normalized < 0 || normalized >= len_i64 {
+        return Err(ExcType::index_error_pop_out_of_range());
+    }
+
+    // Remove and return the item
+    let idx = usize::try_from(normalized).expect("index validated non-negative");
+    Ok(list.items.remove(idx))
+}
+
+/// Implements Python's `list.remove(value)` method.
+///
+/// Removes the first occurrence of value. Raises ValueError if not found.
+fn list_remove(
+    list: &mut List,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let value = args.get_one_arg("list.remove", heap)?;
+
+    // Find the first matching element
+    let mut found_idx = None;
+    for (i, item) in list.items.iter().enumerate() {
+        if value.py_eq(item, heap, interns) {
+            found_idx = Some(i);
+            break;
+        }
+    }
+
+    value.drop_with_heap(heap);
+
+    match found_idx {
+        Some(idx) => {
+            // Remove the element and drop its refcount
+            let removed = list.items.remove(idx);
+            removed.drop_with_heap(heap);
+            Ok(Value::None)
+        }
+        None => Err(ExcType::value_error_remove_not_in_list()),
+    }
+}
+
+/// Implements Python's `list.clear()` method.
+///
+/// Removes all items from the list.
+fn list_clear(list: &mut List, heap: &mut Heap<impl ResourceTracker>) {
+    for item in list.items.drain(..) {
+        item.drop_with_heap(heap);
+    }
+    // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
+}
+
+/// Implements Python's `list.copy()` method.
+///
+/// Returns a shallow copy of the list.
+fn list_copy(list: &List, heap: &mut Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
+    let items: Vec<Value> = list.items.iter().map(|v| v.clone_with_heap(heap)).collect();
+    let heap_id = heap.allocate(HeapData::List(List::new(items)))?;
+    Ok(Value::Ref(heap_id))
+}
+
+/// Implements Python's `list.extend(iterable)` method.
+///
+/// Extends the list by appending all items from the iterable.
+fn list_extend(
+    list: &mut List,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let iterable = args.get_one_arg("list.extend", heap)?;
+
+    // Create iterator for the iterable
+    let mut iter = ForIterator::new(iterable, heap, interns)?;
+
+    // Collect all items from the iterator
+    let items = iter.collect(heap, interns)?;
+    iter.drop_with_heap(heap);
+
+    // Add each item to the list
+    for item in items {
+        list.append(heap, item);
+    }
+
+    Ok(Value::None)
+}
+
+/// Implements Python's `list.index(value[, start[, end]])` method.
+///
+/// Returns the index of the first occurrence of value.
+/// Raises ValueError if the value is not found.
+fn list_index(
+    list: &List,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let (value, start, end) = parse_index_count_args("list.index", list.items.len(), args, heap)?;
+
+    // Search for the value in the specified range
+    for (i, item) in list.items[start..end].iter().enumerate() {
+        if value.py_eq(item, heap, interns) {
+            value.drop_with_heap(heap);
+            let idx = i64::try_from(start + i).expect("index exceeds i64::MAX");
+            return Ok(Value::Int(idx));
+        }
+    }
+
+    value.drop_with_heap(heap);
+    Err(ExcType::value_error_not_in_list())
+}
+
+/// Implements Python's `list.count(value)` method.
+///
+/// Returns the number of occurrences of value in the list.
+fn list_count(
+    list: &List,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let value = args.get_one_arg("list.count", heap)?;
+
+    let count = list
+        .items
+        .iter()
+        .filter(|item| value.py_eq(item, heap, interns))
+        .count();
+
+    value.drop_with_heap(heap);
+    let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
+    Ok(Value::Int(count_i64))
+}
+
+/// Implements Python's `list.sort(*, key=None, reverse=False)` method.
+///
+/// Sorts the list in place. Currently only supports basic comparison
+/// without key function.
+fn list_sort(
+    list: &mut List,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let (pos, kwargs) = args.into_parts();
+
+    // Check no positional arguments
+    let mut pos_iter = pos;
+    if pos_iter.next().is_some() {
+        for v in pos_iter {
+            v.drop_with_heap(heap);
+        }
+        kwargs.drop_with_heap(heap);
+        return Err(ExcType::type_error_no_args("list.sort", 1));
+    }
+
+    // Parse keyword arguments
+    let mut reverse = false;
+    let mut key_fn: Option<Value> = None;
+
+    for (key, value) in kwargs {
+        let Some(keyword_name) = key.as_either_str(heap) else {
+            key.drop_with_heap(heap);
+            value.drop_with_heap(heap);
+            return Err(ExcType::type_error("keywords must be strings"));
+        };
+
+        let key_str = keyword_name.as_str(interns);
+        match key_str {
+            "reverse" => {
+                reverse = value.py_bool(heap, interns);
+                key.drop_with_heap(heap);
+                value.drop_with_heap(heap);
             }
-            attr::INSERT => {
-                let (index_obj, item) = args.get_two_args("insert", heap)?;
-                // Python's insert() handles negative indices by adding len
-                // If still negative after adding len, clamps to 0
-                // If >= len, appends to end
-                let index_result = index_obj.as_int(heap);
-                // Drop index_obj before propagating error - it could be a Ref (e.g., dict)
-                index_obj.drop_with_heap(heap);
-                let index_i64 = match index_result {
-                    Ok(i) => i,
-                    Err(e) => {
-                        item.drop_with_heap(heap);
-                        return Err(e);
-                    }
-                };
-                let len = self.items.len();
-                let len_i64 = i64::try_from(len).expect("list length exceeds i64::MAX");
-                let index = if index_i64 < 0 {
-                    // Negative index: add length, clamp to 0 if still negative
-                    let adjusted = index_i64 + len_i64;
-                    usize::try_from(adjusted).unwrap_or(0)
+            "key" => {
+                if matches!(value, Value::None) {
+                    key.drop_with_heap(heap);
+                    value.drop_with_heap(heap);
                 } else {
-                    // Positive index: clamp to len if too large
-                    usize::try_from(index_i64).unwrap_or(len)
-                };
-                self.insert(heap, index, item);
-                Ok(Value::None)
+                    // Store key function for now, but we don't support it yet
+                    key.drop_with_heap(heap);
+                    if let Some(old_key) = key_fn.take() {
+                        old_key.drop_with_heap(heap);
+                    }
+                    key_fn = Some(value);
+                }
             }
             _ => {
-                args.drop_with_heap(heap);
-                Err(ExcType::attribute_error(Type::List, attr.as_str(interns)))
+                key.drop_with_heap(heap);
+                value.drop_with_heap(heap);
+                if let Some(k) = key_fn {
+                    k.drop_with_heap(heap);
+                }
+                return Err(ExcType::type_error(format!(
+                    "'{key_str}' is an invalid keyword argument for list.sort()"
+                )));
             }
         }
+    }
+
+    // If key function provided, we don't support it yet
+    if let Some(k) = key_fn {
+        k.drop_with_heap(heap);
+        return Err(ExcType::type_error("list.sort() key argument is not yet supported"));
+    }
+
+    // Sort the list using comparison
+    // We need to handle errors during sorting (e.g., comparing incompatible types)
+    // For now, we do a simple stable sort that may fail on incompatible types
+    let mut sort_error: Option<RunResult<Value>> = None;
+
+    list.items.sort_by(|a, b| {
+        if sort_error.is_some() {
+            return std::cmp::Ordering::Equal;
+        }
+        if let Some(ord) = a.py_cmp(b, heap, interns) {
+            if reverse { ord.reverse() } else { ord }
+        } else {
+            // incompatible types for comparison
+            sort_error = Some(Err(ExcType::type_error(format!(
+                "'<' not supported between instances of '{}' and '{}'",
+                a.py_type(heap),
+                b.py_type(heap)
+            ))));
+            std::cmp::Ordering::Equal
+        }
+    });
+
+    if let Some(err) = sort_error {
+        return err;
+    }
+
+    Ok(Value::None)
+}
+
+/// Parses arguments for list.index() and similar methods.
+///
+/// Returns (value, start, end) where start and end are normalized indices.
+fn parse_index_count_args(
+    method: &str,
+    len: usize,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+) -> RunResult<(Value, usize, usize)> {
+    let (pos, kwargs) = args.into_parts();
+    if !kwargs.is_empty() {
+        kwargs.drop_with_heap(heap);
+        return Err(ExcType::type_error_no_kwargs(method));
+    }
+
+    let mut pos_iter = pos;
+    let value = pos_iter
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
+    let start_value = pos_iter.next();
+    let end_value = pos_iter.next();
+
+    // Check no extra arguments
+    if pos_iter.next().is_some() {
+        for v in pos_iter {
+            v.drop_with_heap(heap);
+        }
+        value.drop_with_heap(heap);
+        if let Some(v) = start_value {
+            v.drop_with_heap(heap);
+        }
+        if let Some(v) = end_value {
+            v.drop_with_heap(heap);
+        }
+        return Err(ExcType::type_error_at_most(method, 3, 4));
+    }
+
+    // Extract start (default 0)
+    let start = if let Some(v) = start_value {
+        let result = v.as_int(heap);
+        v.drop_with_heap(heap);
+        match result {
+            Ok(i) => normalize_list_index(i, len),
+            Err(e) => {
+                value.drop_with_heap(heap);
+                if let Some(ev) = end_value {
+                    ev.drop_with_heap(heap);
+                }
+                return Err(e);
+            }
+        }
+    } else {
+        0
+    };
+
+    // Extract end (default len)
+    let end = if let Some(v) = end_value {
+        let result = v.as_int(heap);
+        v.drop_with_heap(heap);
+        match result {
+            Ok(i) => normalize_list_index(i, len),
+            Err(e) => {
+                value.drop_with_heap(heap);
+                return Err(e);
+            }
+        }
+    } else {
+        len
+    };
+
+    Ok((value, start, end))
+}
+
+/// Normalizes a Python-style list index to a valid index in range [0, len].
+fn normalize_list_index(index: i64, len: usize) -> usize {
+    if index < 0 {
+        let abs_index = usize::try_from(-index).unwrap_or(usize::MAX);
+        len.saturating_sub(abs_index)
+    } else {
+        usize::try_from(index).unwrap_or(len).min(len)
     }
 }
 

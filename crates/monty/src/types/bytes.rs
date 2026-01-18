@@ -6,14 +6,14 @@ use std::fmt::Write;
 
 use ahash::AHashSet;
 
-use super::{PyTrait, Type};
+use super::{PyTrait, Type, str::Str};
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
-    intern::Interns,
+    intern::{Interns, StringId, attr},
     resource::ResourceTracker,
-    value::Value,
+    value::{Attr, Value},
 };
 
 /// Python bytes value stored on the heap.
@@ -156,7 +156,47 @@ impl PyTrait for Bytes {
     ) -> std::fmt::Result {
         bytes_repr_fmt(&self.0, f)
     }
-    // py_call_attr uses default implementation which returns AttributeError
+
+    fn py_call_attr(
+        &mut self,
+        heap: &mut Heap<impl ResourceTracker>,
+        attr: &Attr,
+        args: ArgValues,
+        interns: &Interns,
+    ) -> RunResult<Value> {
+        let Some(attr_id) = attr.string_id() else {
+            args.drop_with_heap(heap);
+            return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(interns)));
+        };
+
+        call_bytes_method(self.as_slice(), attr_id, args, heap, interns)
+    }
+}
+
+/// Calls a bytes method on a byte slice.
+///
+/// This is the unified entry point for bytes method calls, used by both
+/// heap-allocated `Bytes` (via `py_call_attr`) and interned bytes literals
+/// (`Value::InternBytes`).
+pub fn call_bytes_method(
+    bytes: &[u8],
+    method_id: StringId,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    match method_id {
+        attr::DECODE => bytes_decode(bytes, args, heap, interns),
+        attr::COUNT => bytes_count(bytes, args, heap, interns),
+        attr::FIND => bytes_find(bytes, args, heap, interns),
+        attr::INDEX => bytes_index(bytes, args, heap, interns),
+        attr::STARTSWITH => bytes_startswith(bytes, args, heap, interns),
+        attr::ENDSWITH => bytes_endswith(bytes, args, heap, interns),
+        _ => {
+            args.drop_with_heap(heap);
+            Err(ExcType::attribute_error(Type::Bytes, interns.get_str(method_id)))
+        }
+    }
 }
 
 /// Writes a CPython-compatible repr string for bytes to a formatter.
@@ -201,4 +241,307 @@ pub fn bytes_repr(bytes: &[u8]) -> String {
     // Writing to String never fails
     bytes_repr_fmt(bytes, &mut result).unwrap();
     result
+}
+
+/// Implements Python's `bytes.decode([encoding[, errors]])` method.
+///
+/// Converts bytes to a string. Currently only supports UTF-8 encoding.
+fn bytes_decode(
+    bytes: &[u8],
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let (encoding, errors) = args.get_zero_one_two_args("bytes.decode", heap)?;
+
+    // Check encoding (default UTF-8)
+    let encoding_str = if let Some(enc) = encoding {
+        let result = get_encoding_str(&enc, heap, interns);
+        enc.drop_with_heap(heap);
+        match result {
+            Ok(s) => s,
+            Err(e) => {
+                if let Some(err) = errors {
+                    err.drop_with_heap(heap);
+                }
+                return Err(e);
+            }
+        }
+    } else {
+        "utf-8".to_owned()
+    };
+
+    // Drop the errors argument (we don't use it yet)
+    if let Some(err) = errors {
+        err.drop_with_heap(heap);
+    }
+
+    // Only support UTF-8 family
+    let normalized = encoding_str.to_lowercase();
+    if !matches!(normalized.as_str(), "utf-8" | "utf8" | "utf_8") {
+        return Err(ExcType::lookup_error_unknown_encoding(&encoding_str));
+    }
+
+    // Decode as UTF-8
+    match std::str::from_utf8(bytes) {
+        Ok(s) => {
+            let heap_id = heap.allocate(HeapData::Str(Str::from(s.to_owned())))?;
+            Ok(Value::Ref(heap_id))
+        }
+        Err(_) => Err(ExcType::unicode_decode_error_invalid_utf8()),
+    }
+}
+
+/// Helper function to extract encoding string from a value.
+fn get_encoding_str(encoding: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<String> {
+    match encoding {
+        Value::InternString(id) => Ok(interns.get_str(*id).to_owned()),
+        Value::Ref(id) => match heap.get(*id) {
+            HeapData::Str(s) => Ok(s.as_str().to_owned()),
+            _ => Err(ExcType::type_error(
+                "decode() argument 'encoding' must be str, not bytes",
+            )),
+        },
+        _ => Err(ExcType::type_error("decode() argument 'encoding' must be str, not int")),
+    }
+}
+
+/// Implements Python's `bytes.count(sub[, start[, end]])` method.
+///
+/// Returns the number of non-overlapping occurrences of the subsequence.
+fn bytes_count(
+    bytes: &[u8],
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let (sub, start, end) = parse_bytes_sub_args("bytes.count", bytes.len(), args, heap, interns)?;
+
+    let slice = &bytes[start..end];
+    let count = if sub.is_empty() {
+        // Empty subsequence: count positions between each byte plus 1
+        slice.len() + 1
+    } else {
+        count_non_overlapping(slice, &sub)
+    };
+
+    let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
+    Ok(Value::Int(count_i64))
+}
+
+/// Counts non-overlapping occurrences of needle in haystack.
+fn count_non_overlapping(haystack: &[u8], needle: &[u8]) -> usize {
+    let mut count = 0;
+    let mut pos = 0;
+    while pos + needle.len() <= haystack.len() {
+        if &haystack[pos..pos + needle.len()] == needle {
+            count += 1;
+            pos += needle.len();
+        } else {
+            pos += 1;
+        }
+    }
+    count
+}
+
+/// Implements Python's `bytes.find(sub[, start[, end]])` method.
+///
+/// Returns the lowest index where the subsequence is found, or -1 if not found.
+fn bytes_find(
+    bytes: &[u8],
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let (sub, start, end) = parse_bytes_sub_args("bytes.find", bytes.len(), args, heap, interns)?;
+
+    let slice = &bytes[start..end];
+    let result = if sub.is_empty() {
+        // Empty subsequence: always found at start position
+        Some(0)
+    } else {
+        find_subsequence(slice, &sub)
+    };
+
+    let idx = match result {
+        Some(i) => i64::try_from(start + i).expect("index exceeds i64::MAX"),
+        None => -1,
+    };
+    Ok(Value::Int(idx))
+}
+
+/// Finds the first occurrence of needle in haystack.
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|window| window == needle)
+}
+
+/// Implements Python's `bytes.index(sub[, start[, end]])` method.
+///
+/// Like find(), but raises ValueError if the subsequence is not found.
+fn bytes_index(
+    bytes: &[u8],
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let (sub, start, end) = parse_bytes_sub_args("bytes.index", bytes.len(), args, heap, interns)?;
+
+    let slice = &bytes[start..end];
+    let result = if sub.is_empty() {
+        // Empty subsequence: always found at start position
+        Some(0)
+    } else {
+        find_subsequence(slice, &sub)
+    };
+
+    match result {
+        Some(i) => {
+            let idx = i64::try_from(start + i).expect("index exceeds i64::MAX");
+            Ok(Value::Int(idx))
+        }
+        None => Err(ExcType::value_error_subsequence_not_found()),
+    }
+}
+
+/// Implements Python's `bytes.startswith(prefix)` method.
+///
+/// Returns True if bytes starts with the specified prefix.
+fn bytes_startswith(
+    bytes: &[u8],
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let prefix = args.get_one_arg("bytes.startswith", heap)?;
+
+    let prefix_bytes = extract_bytes_arg(&prefix, heap, interns)?;
+    prefix.drop_with_heap(heap);
+
+    let result = bytes.starts_with(&prefix_bytes);
+    Ok(Value::Bool(result))
+}
+
+/// Implements Python's `bytes.endswith(suffix)` method.
+///
+/// Returns True if bytes ends with the specified suffix.
+fn bytes_endswith(
+    bytes: &[u8],
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let suffix = args.get_one_arg("bytes.endswith", heap)?;
+
+    let suffix_bytes = extract_bytes_arg(&suffix, heap, interns)?;
+    suffix.drop_with_heap(heap);
+
+    let result = bytes.ends_with(&suffix_bytes);
+    Ok(Value::Bool(result))
+}
+
+/// Extracts bytes from a Value (bytes or str).
+fn extract_bytes_arg(value: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Vec<u8>> {
+    match value {
+        Value::InternBytes(id) => Ok(interns.get_bytes(*id).to_vec()),
+        Value::InternString(id) => Ok(interns.get_str(*id).as_bytes().to_vec()),
+        Value::Ref(id) => match heap.get(*id) {
+            HeapData::Bytes(b) => Ok(b.as_slice().to_vec()),
+            HeapData::Str(s) => Ok(s.as_str().as_bytes().to_vec()),
+            _ => Err(ExcType::type_error("a bytes-like object is required")),
+        },
+        _ => Err(ExcType::type_error("a bytes-like object is required")),
+    }
+}
+
+/// Parses arguments for bytes.find/count/index methods.
+///
+/// Returns (sub_bytes, start, end) where start and end are normalized indices.
+fn parse_bytes_sub_args(
+    method: &str,
+    len: usize,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<(Vec<u8>, usize, usize)> {
+    let (pos, kwargs) = args.into_parts();
+    if !kwargs.is_empty() {
+        kwargs.drop_with_heap(heap);
+        return Err(ExcType::type_error_no_kwargs(method));
+    }
+
+    let mut pos_iter = pos;
+    let sub_value = pos_iter
+        .next()
+        .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
+    let start_value = pos_iter.next();
+    let end_value = pos_iter.next();
+
+    // Check no extra arguments
+    if pos_iter.next().is_some() {
+        for v in pos_iter {
+            v.drop_with_heap(heap);
+        }
+        sub_value.drop_with_heap(heap);
+        if let Some(v) = start_value {
+            v.drop_with_heap(heap);
+        }
+        if let Some(v) = end_value {
+            v.drop_with_heap(heap);
+        }
+        return Err(ExcType::type_error_at_most(method, 3, 4));
+    }
+
+    // Extract sub bytes
+    let sub = match extract_bytes_arg(&sub_value, heap, interns) {
+        Ok(b) => b,
+        Err(e) => {
+            sub_value.drop_with_heap(heap);
+            if let Some(v) = start_value {
+                v.drop_with_heap(heap);
+            }
+            if let Some(v) = end_value {
+                v.drop_with_heap(heap);
+            }
+            return Err(e);
+        }
+    };
+    sub_value.drop_with_heap(heap);
+
+    // Extract start (default 0)
+    let start = if let Some(v) = start_value {
+        let result = v.as_int(heap);
+        v.drop_with_heap(heap);
+        match result {
+            Ok(i) => normalize_bytes_index(i, len),
+            Err(e) => {
+                if let Some(ev) = end_value {
+                    ev.drop_with_heap(heap);
+                }
+                return Err(e);
+            }
+        }
+    } else {
+        0
+    };
+
+    // Extract end (default len)
+    let end = if let Some(v) = end_value {
+        let result = v.as_int(heap);
+        v.drop_with_heap(heap);
+        normalize_bytes_index(result?, len)
+    } else {
+        len
+    };
+
+    Ok((sub, start, end))
+}
+
+/// Normalizes a Python-style bytes index to a valid index in range [0, len].
+fn normalize_bytes_index(index: i64, len: usize) -> usize {
+    if index < 0 {
+        let abs_index = usize::try_from(-index).unwrap_or(usize::MAX);
+        len.saturating_sub(abs_index)
+    } else {
+        usize::try_from(index).unwrap_or(len).min(len)
+    }
 }

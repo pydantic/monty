@@ -26,7 +26,7 @@ pub struct StringId(u32);
 pub const MODULE_STRING_ID: StringId = StringId(0);
 
 /// update MAX_ATTR_ID when adding new attrs
-const MAX_ATTR_ID: u32 = 61;
+const MAX_ATTR_ID: u32 = 67;
 
 /// The StringId for the empty string `""` - interned for allocation-free empty string returns.
 pub const EMPTY_STRING: StringId = StringId(MAX_ATTR_ID + 1);
@@ -109,6 +109,7 @@ pub mod attr {
     pub const ISSUPERSET: StringId = StringId(19);
     pub const ISDISJOINT: StringId = StringId(20);
 
+    // ==========================
     // String methods
     pub const JOIN: StringId = StringId(21);
     // Phase 1: Simple transformations
@@ -157,7 +158,19 @@ pub mod attr {
     // Additional methods
     pub const ENCODE: StringId = StringId(59);
     pub const ISIDENTIFIER: StringId = StringId(60);
-    pub const ISTITLE: StringId = StringId(MAX_ATTR_ID);
+    pub const ISTITLE: StringId = StringId(61);
+    // end string methods
+    // ==========================
+
+    // List methods (beyond append/insert which are defined earlier)
+    pub const EXTEND: StringId = StringId(62);
+    pub const REVERSE: StringId = StringId(63);
+    pub const SORT: StringId = StringId(64);
+    // Dict methods (beyond get/keys/values/items/pop/clear/copy/update which are defined earlier)
+    pub const SETDEFAULT: StringId = StringId(65);
+    pub const POPITEM: StringId = StringId(66);
+    // Bytes methods
+    pub const DECODE: StringId = StringId(MAX_ATTR_ID);
 }
 
 impl StringId {
@@ -429,6 +442,23 @@ impl InternerBuilder {
         debug_assert_eq!(id, attr::ISIDENTIFIER);
         let id = interner.intern_static("istitle");
         debug_assert_eq!(id, attr::ISTITLE);
+        // end string methods
+
+        // List methods
+        let id = interner.intern_static("extend");
+        debug_assert_eq!(id, attr::EXTEND);
+        let id = interner.intern_static("reverse");
+        debug_assert_eq!(id, attr::REVERSE);
+        let id = interner.intern_static("sort");
+        debug_assert_eq!(id, attr::SORT);
+        // Dict methods
+        let id = interner.intern_static("setdefault");
+        debug_assert_eq!(id, attr::SETDEFAULT);
+        let id = interner.intern_static("popitem");
+        debug_assert_eq!(id, attr::POPITEM);
+        // Bytes methods
+        let id = interner.intern_static("decode");
+        debug_assert_eq!(id, attr::DECODE);
 
         // Pre-intern the empty string for allocation-free empty string returns
         let id = interner.intern_static("");

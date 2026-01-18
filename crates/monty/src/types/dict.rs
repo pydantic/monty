@@ -7,6 +7,7 @@ use super::{List, PyTrait, Tuple};
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},
+    for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, attr},
     resource::ResourceTracker,
@@ -677,9 +678,221 @@ impl PyTrait for Dict {
                     }
                 }
             }
+            attr::CLEAR => {
+                args.check_zero_args("dict.clear", heap)?;
+                dict_clear(self, heap);
+                Ok(Value::None)
+            }
+            attr::COPY => {
+                args.check_zero_args("dict.copy", heap)?;
+                dict_copy(self, heap, interns)
+            }
+            attr::UPDATE => dict_update(self, args, heap, interns),
+            attr::SETDEFAULT => dict_setdefault(self, args, heap, interns),
+            attr::POPITEM => {
+                args.check_zero_args("dict.popitem", heap)?;
+                dict_popitem(self, heap)
+            }
             _ => Err(ExcType::attribute_error(Type::Dict, attr.as_str(interns))),
         }
     }
+}
+
+/// Implements Python's `dict.clear()` method.
+///
+/// Removes all items from the dict.
+fn dict_clear(dict: &mut Dict, heap: &mut Heap<impl ResourceTracker>) {
+    for entry in dict.entries.drain(..) {
+        entry.key.drop_with_heap(heap);
+        entry.value.drop_with_heap(heap);
+    }
+    dict.indices.clear();
+    // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
+}
+
+/// Implements Python's `dict.copy()` method.
+///
+/// Returns a shallow copy of the dict.
+fn dict_copy(dict: &Dict, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Value> {
+    // Copy all key-value pairs (incrementing refcounts)
+    let pairs: Vec<(Value, Value)> = dict
+        .iter()
+        .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)))
+        .collect();
+
+    let new_dict = Dict::from_pairs(pairs, heap, interns)?;
+    let heap_id = heap.allocate(HeapData::Dict(new_dict))?;
+    Ok(Value::Ref(heap_id))
+}
+
+/// Implements Python's `dict.update(other)` method.
+///
+/// Updates the dict with key-value pairs from `other`.
+/// If `other` is a dict, copies its key-value pairs.
+/// If `other` is an iterable, expects pairs of (key, value).
+fn dict_update(
+    dict: &mut Dict,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let other = args.get_zero_one_arg("dict.update", heap)?;
+
+    // No argument - nothing to do
+    let Some(other_value) = other else {
+        return Ok(Value::None);
+    };
+
+    // Check if it's a dict first
+    if let Value::Ref(id) = &other_value {
+        let is_dict = matches!(heap.get(*id), HeapData::Dict(_));
+        if is_dict {
+            // Get key-value pairs from the source dict
+            let pairs: Vec<(Value, Value)> = {
+                let HeapData::Dict(src_dict) = heap.get(*id) else {
+                    unreachable!()
+                };
+                src_dict
+                    .iter()
+                    .map(|(k, v)| (k.copy_for_extend(), v.copy_for_extend()))
+                    .collect()
+            };
+
+            // Increment refcounts after releasing the borrow
+            for (k, v) in &pairs {
+                if let Value::Ref(key_id) = k {
+                    heap.inc_ref(*key_id);
+                }
+                if let Value::Ref(val_id) = v {
+                    heap.inc_ref(*val_id);
+                }
+            }
+
+            // Now set each pair
+            for (key, value) in pairs {
+                if let Some(old_value) = dict.set(key, value, heap, interns)? {
+                    old_value.drop_with_heap(heap);
+                }
+            }
+
+            other_value.drop_with_heap(heap);
+            return Ok(Value::None);
+        }
+    }
+
+    // Try as an iterable of pairs
+    let mut iter = ForIterator::new(other_value, heap, interns)?;
+
+    while let Some(item) = iter.for_next(heap, interns)? {
+        // Each item should be a pair (iterable of 2 elements)
+        let mut pair_iter = ForIterator::new(item, heap, interns)?;
+
+        let Some(key) = pair_iter.for_next(heap, interns)? else {
+            pair_iter.drop_with_heap(heap);
+            iter.drop_with_heap(heap);
+            return Err(ExcType::type_error(
+                "dictionary update sequence element has length 0; 2 is required",
+            ));
+        };
+
+        let Some(value) = pair_iter.for_next(heap, interns)? else {
+            key.drop_with_heap(heap);
+            pair_iter.drop_with_heap(heap);
+            iter.drop_with_heap(heap);
+            return Err(ExcType::type_error(
+                "dictionary update sequence element has length 1; 2 is required",
+            ));
+        };
+
+        // Check for extra elements
+        if pair_iter.for_next(heap, interns)?.is_some() {
+            key.drop_with_heap(heap);
+            value.drop_with_heap(heap);
+            // Drain remaining elements
+            while let Some(extra) = pair_iter.for_next(heap, interns)? {
+                extra.drop_with_heap(heap);
+            }
+            pair_iter.drop_with_heap(heap);
+            iter.drop_with_heap(heap);
+            return Err(ExcType::type_error(
+                "dictionary update sequence element has length > 2; 2 is required",
+            ));
+        }
+        pair_iter.drop_with_heap(heap);
+
+        if let Some(old_value) = dict.set(key, value, heap, interns)? {
+            old_value.drop_with_heap(heap);
+        }
+    }
+
+    iter.drop_with_heap(heap);
+    Ok(Value::None)
+}
+
+/// Implements Python's `dict.setdefault(key[, default])` method.
+///
+/// If key is in the dict, return its value.
+/// If not, insert key with a value of default (or None) and return default.
+fn dict_setdefault(
+    dict: &mut Dict,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let (key, default) = args.get_one_two_args("setdefault", heap)?;
+    let default = default.unwrap_or(Value::None);
+
+    // Check if key exists
+    let result = match dict.get(&key, heap, interns) {
+        Ok(r) => r,
+        Err(e) => {
+            key.drop_with_heap(heap);
+            default.drop_with_heap(heap);
+            return Err(e);
+        }
+    };
+
+    if let Some(existing) = result {
+        // Key exists - return its value (cloned)
+        let value = existing.clone_with_heap(heap);
+        key.drop_with_heap(heap);
+        default.drop_with_heap(heap);
+        Ok(value)
+    } else {
+        // Key doesn't exist - insert default and return it (cloned before insertion)
+        let return_value = default.clone_with_heap(heap);
+        if let Some(old_value) = dict.set(key, default, heap, interns)? {
+            // This shouldn't happen since we checked, but handle it anyway
+            old_value.drop_with_heap(heap);
+        }
+        Ok(return_value)
+    }
+}
+
+/// Implements Python's `dict.popitem()` method.
+///
+/// Removes and returns the last inserted key-value pair as a tuple.
+/// Raises KeyError if the dict is empty.
+fn dict_popitem(dict: &mut Dict, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    if dict.is_empty() {
+        return Err(ExcType::key_error_popitem_empty_dict());
+    }
+
+    // Remove the last entry (LIFO order)
+    let entry = dict.entries.pop().expect("dict is not empty");
+
+    // Remove from indices - need to find the entry with this index
+    // Since we removed the last entry, we need to clear and rebuild indices
+    // (This is simpler than trying to find and remove the specific hash entry)
+    dict.indices.clear();
+    for (idx, e) in dict.entries.iter().enumerate() {
+        dict.indices.insert_unique(e.hash, idx, |&i| dict.entries[i].hash);
+    }
+
+    // Create tuple (key, value)
+    let tuple = Tuple::new(vec![entry.key, entry.value]);
+    let heap_id = heap.allocate(HeapData::Tuple(tuple))?;
+    Ok(Value::Ref(heap_id))
 }
 
 // Custom serde implementation for Dict.

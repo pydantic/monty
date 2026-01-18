@@ -876,12 +876,81 @@ impl ExcType {
         SimpleException::new_msg(Self::TypeError, "The fill character must be exactly one character long").into()
     }
 
+    /// Creates a ValueError for list.index() when item is not found.
+    ///
+    /// Matches CPython's format: `ValueError: list.index(x): x not in list`
+    #[must_use]
+    pub(crate) fn value_error_not_in_list() -> RunError {
+        SimpleException::new_msg(Self::ValueError, "list.index(x): x not in list").into()
+    }
+
+    /// Creates a ValueError for tuple.index() when item is not found.
+    ///
+    /// Matches CPython's format: `ValueError: tuple.index(x): x not in tuple`
+    #[must_use]
+    pub(crate) fn value_error_not_in_tuple() -> RunError {
+        SimpleException::new_msg(Self::ValueError, "tuple.index(x): x not in tuple").into()
+    }
+
+    /// Creates a ValueError for list.remove() when item is not found.
+    ///
+    /// Matches CPython's format: `ValueError: list.remove(x): x not in list`
+    #[must_use]
+    pub(crate) fn value_error_remove_not_in_list() -> RunError {
+        SimpleException::new_msg(Self::ValueError, "list.remove(x): x not in list").into()
+    }
+
+    /// Creates an IndexError for popping from an empty list.
+    ///
+    /// Matches CPython's format: `IndexError: pop from empty list`
+    #[must_use]
+    pub(crate) fn index_error_pop_empty_list() -> RunError {
+        SimpleException::new_msg(Self::IndexError, "pop from empty list").into()
+    }
+
+    /// Creates an IndexError for list.pop(index) with invalid index.
+    ///
+    /// Matches CPython's format: `IndexError: pop index out of range`
+    #[must_use]
+    pub(crate) fn index_error_pop_out_of_range() -> RunError {
+        SimpleException::new_msg(Self::IndexError, "pop index out of range").into()
+    }
+
+    /// Creates a KeyError for popping from an empty dict.
+    ///
+    /// Matches CPython's format: `KeyError: 'popitem(): dictionary is empty'`
+    #[must_use]
+    pub(crate) fn key_error_popitem_empty_dict() -> RunError {
+        SimpleException::new_msg(Self::KeyError, "'popitem(): dictionary is empty'").into()
+    }
+
     /// Creates a LookupError for unknown encoding.
     ///
     /// Matches CPython's format: `LookupError: unknown encoding: {encoding}`
     #[must_use]
     pub(crate) fn lookup_error_unknown_encoding(encoding: &str) -> RunError {
         SimpleException::new_msg(Self::LookupError, format!("unknown encoding: {encoding}")).into()
+    }
+
+    /// Creates a ValueError for invalid UTF-8 bytes in decode().
+    ///
+    /// Note: Python raises UnicodeDecodeError, but we use ValueError since
+    /// UnicodeDecodeError is not yet implemented.
+    #[must_use]
+    pub(crate) fn unicode_decode_error_invalid_utf8() -> RunError {
+        SimpleException::new_msg(
+            Self::ValueError,
+            "'utf-8' codec can't decode bytes: invalid utf-8 sequence",
+        )
+        .into()
+    }
+
+    /// Creates a ValueError for subsequence not found in bytes/str.
+    ///
+    /// Matches CPython's format: `ValueError: subsection not found`
+    #[must_use]
+    pub(crate) fn value_error_subsequence_not_found() -> RunError {
+        SimpleException::new_msg(Self::ValueError, "subsection not found").into()
     }
 
     /// Creates a LookupError for unknown error handler.
