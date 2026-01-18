@@ -23,6 +23,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --all-packages --only-dev
@@ -44,6 +47,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - uses: taiki-e/install-action@cargo-llvm-cov
 
@@ -96,6 +102,9 @@ jobs:
       - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - uses: actions/setup-python@v6
         with:
