@@ -5,8 +5,8 @@ use ahash::{AHashMap, AHashSet};
 use crate::{
     args::ArgExprs,
     expressions::{
-        Callable, Comprehension, ComprehensionTarget, Expr, ExprLoc, Identifier, Literal, NameScope, Node,
-        PreparedFunctionDef, PreparedNode,
+        Callable, Comprehension, Expr, ExprLoc, Identifier, Literal, NameScope, Node, PreparedFunctionDef,
+        PreparedNode, UnpackTarget,
     },
     fstring::{FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
@@ -311,14 +311,10 @@ impl<'i> Prepare<'i> {
                     object,
                 } => {
                     let object = self.prepare_expression(object)?;
-                    // Track that each target name was assigned and resolve identifiers
+                    // Recursively resolve all targets (supports nested tuples)
                     let targets = targets
                         .into_iter()
-                        .map(|target| {
-                            self.names_assigned_in_order
-                                .insert(self.interner.get_str(target.name_id).to_string());
-                            self.get_id(target).0
-                        })
+                        .map(|target| self.prepare_unpack_target(target))
                         .collect();
                     new_nodes.push(Node::UnpackAssign {
                         targets,
@@ -363,11 +359,10 @@ impl<'i> Prepare<'i> {
                     body,
                     or_else,
                 } => {
-                    // Track that the loop variable is assigned
-                    self.names_assigned_in_order
-                        .insert(self.interner.get_str(target.name_id).to_string());
+                    // Prepare target with normal scoping (not comprehension isolation)
+                    let target = self.prepare_unpack_target(target);
                     new_nodes.push(Node::For {
-                        target: self.get_id(target).0,
+                        target,
                         iter: self.prepare_expression(iter)?,
                         body: self.prepare_nodes(body)?,
                         or_else: self.prepare_nodes(or_else)?,
@@ -697,7 +692,7 @@ impl<'i> Prepare<'i> {
         // We allocate slots but don't mark them as "assigned" yet - this causes
         // UnboundLocalError if a later generator's iter references an earlier-declared
         // but not-yet-assigned loop variable.
-        let first_target = self.prepare_comprehension_target(first_gen.target);
+        let first_target = self.prepare_unpack_target_for_comprehension(first_gen.target);
 
         // Collect remaining generators so we can pre-shadow their targets
         let remaining_gens: Vec<Comprehension> = generators_iter.collect();
@@ -705,9 +700,9 @@ impl<'i> Prepare<'i> {
         // Pre-shadow ALL remaining loop variables before evaluating their iters.
         // This is the key CPython behavior: all loop vars are local to the comprehension,
         // so referencing a later loop var in an earlier iter raises UnboundLocalError.
-        let mut preshadowed_targets: Vec<ComprehensionTarget> = Vec::with_capacity(remaining_gens.len());
+        let mut preshadowed_targets: Vec<UnpackTarget> = Vec::with_capacity(remaining_gens.len());
         for generator in &remaining_gens {
-            preshadowed_targets.push(self.prepare_comprehension_target_shadow_only(generator.target.clone()));
+            preshadowed_targets.push(self.prepare_unpack_target_shadow_only(generator.target.clone()));
         }
 
         // Prepare first generator's filters (can see first loop variable)
@@ -760,55 +755,22 @@ impl<'i> Prepare<'i> {
         Ok((prepared_generators, prepared_elt, prepared_key_value))
     }
 
-    /// Pre-shadows a comprehension target by allocating namespace slots without marking as assigned.
+    /// Prepares an unpack target by resolving identifiers recursively.
     ///
-    /// This is used to implement CPython's scoping where ALL loop variables are local to the
-    /// comprehension from the start. By shadowing without marking as assigned, references to
-    /// these variables before their generator runs will resolve to local scope but find no
-    /// value, producing UnboundLocalError.
-    fn prepare_comprehension_target_shadow_only(&mut self, target: ComprehensionTarget) -> ComprehensionTarget {
+    /// Handles both single identifiers and nested tuples like `(a, b), c`.
+    fn prepare_unpack_target(&mut self, target: UnpackTarget) -> UnpackTarget {
         match target {
-            ComprehensionTarget::Name(ident) => {
-                let name_str = self.interner.get_str(ident.name_id).to_string();
-                let comp_var_id = NamespaceId::new(self.namespace_size);
-                self.namespace_size += 1;
-
-                // Shadow but do NOT add to names_assigned_in_order yet - this causes
-                // UnboundLocalError if accessed before assignment
-                self.name_map.insert(name_str.clone(), comp_var_id);
-                self.free_var_map.remove(&name_str);
-                self.cell_var_map.remove(&name_str);
-                if let Some(ref mut enclosing) = self.enclosing_locals {
-                    enclosing.remove(&name_str);
-                }
-
-                ComprehensionTarget::Name(Identifier::new_with_scope(
-                    ident.name_id,
-                    ident.position,
-                    comp_var_id,
-                    NameScope::Local,
-                ))
+            UnpackTarget::Name(ident) => {
+                self.names_assigned_in_order
+                    .insert(self.interner.get_str(ident.name_id).to_string());
+                UnpackTarget::Name(self.get_id(ident).0)
             }
-            ComprehensionTarget::Tuple { targets, position } => {
-                let resolved_targets: Vec<Identifier> = targets
+            UnpackTarget::Tuple { targets, position } => {
+                let resolved_targets: Vec<UnpackTarget> = targets
                     .into_iter()
-                    .map(|ident| {
-                        let name_str = self.interner.get_str(ident.name_id).to_string();
-                        let comp_var_id = NamespaceId::new(self.namespace_size);
-                        self.namespace_size += 1;
-
-                        self.name_map.insert(name_str.clone(), comp_var_id);
-                        self.free_var_map.remove(&name_str);
-                        self.cell_var_map.remove(&name_str);
-                        if let Some(ref mut enclosing) = self.enclosing_locals {
-                            enclosing.remove(&name_str);
-                        }
-
-                        Identifier::new_with_scope(ident.name_id, ident.position, comp_var_id, NameScope::Local)
-                    })
+                    .map(|t| self.prepare_unpack_target(t)) // Recursive call
                     .collect();
-
-                ComprehensionTarget::Tuple {
+                UnpackTarget::Tuple {
                     targets: resolved_targets,
                     position,
                 }
@@ -816,46 +778,72 @@ impl<'i> Prepare<'i> {
         }
     }
 
-    /// Prepares a comprehension target by allocating namespace slots and resolving identifiers.
+    /// Prepares an unpack target for comprehension by allocating fresh namespace slots.
     ///
-    /// For single identifiers (`for x in ...`): allocates one slot.
-    /// For tuple unpacking (`for x, y in ...`): allocates a slot for each target.
-    ///
-    /// This method handles scope shadowing to ensure comprehension loop variables are isolated.
-    fn prepare_comprehension_target(&mut self, target: ComprehensionTarget) -> ComprehensionTarget {
+    /// Unlike regular unpack targets, comprehension targets need new slots to shadow
+    /// any existing bindings with the same name.
+    fn prepare_unpack_target_for_comprehension(&mut self, target: UnpackTarget) -> UnpackTarget {
         match target {
-            ComprehensionTarget::Name(ident) => {
-                // Force allocation of a NEW slot for the comprehension loop variable.
-                // This is critical for scope isolation: the loop variable must NOT reuse
-                // any existing slot from the enclosing scope.
+            UnpackTarget::Name(ident) => {
                 let name_str = self.interner.get_str(ident.name_id).to_string();
                 let comp_var_id = NamespaceId::new(self.namespace_size);
                 self.namespace_size += 1;
 
-                // Temporarily shadow any existing binding
+                // Shadow any existing binding
                 self.shadow_for_comprehension(&name_str, comp_var_id);
 
-                // Create the resolved identifier
-                let resolved = Identifier::new_with_scope(ident.name_id, ident.position, comp_var_id, NameScope::Local);
-                ComprehensionTarget::Name(resolved)
+                UnpackTarget::Name(Identifier::new_with_scope(
+                    ident.name_id,
+                    ident.position,
+                    comp_var_id,
+                    NameScope::Local,
+                ))
             }
-            ComprehensionTarget::Tuple { targets, position } => {
-                // Allocate a slot for each target in the tuple
-                let resolved_targets: Vec<Identifier> = targets
+            UnpackTarget::Tuple { targets, position } => {
+                let resolved_targets: Vec<UnpackTarget> = targets
                     .into_iter()
-                    .map(|ident| {
-                        let name_str = self.interner.get_str(ident.name_id).to_string();
-                        let comp_var_id = NamespaceId::new(self.namespace_size);
-                        self.namespace_size += 1;
-
-                        // Shadow each name
-                        self.shadow_for_comprehension(&name_str, comp_var_id);
-
-                        Identifier::new_with_scope(ident.name_id, ident.position, comp_var_id, NameScope::Local)
-                    })
+                    .map(|t| self.prepare_unpack_target_for_comprehension(t)) // Recursive call
                     .collect();
+                UnpackTarget::Tuple {
+                    targets: resolved_targets,
+                    position,
+                }
+            }
+        }
+    }
 
-                ComprehensionTarget::Tuple {
+    /// Pre-shadows an unpack target for comprehension scoping.
+    ///
+    /// Allocates namespace slots without marking as assigned, causing UnboundLocalError
+    /// if accessed before assignment.
+    fn prepare_unpack_target_shadow_only(&mut self, target: UnpackTarget) -> UnpackTarget {
+        match target {
+            UnpackTarget::Name(ident) => {
+                let name_str = self.interner.get_str(ident.name_id).to_string();
+                let comp_var_id = NamespaceId::new(self.namespace_size);
+                self.namespace_size += 1;
+
+                // Shadow but do NOT add to names_assigned_in_order yet
+                self.name_map.insert(name_str.clone(), comp_var_id);
+                self.free_var_map.remove(&name_str);
+                self.cell_var_map.remove(&name_str);
+                if let Some(ref mut enclosing) = self.enclosing_locals {
+                    enclosing.remove(&name_str);
+                }
+
+                UnpackTarget::Name(Identifier::new_with_scope(
+                    ident.name_id,
+                    ident.position,
+                    comp_var_id,
+                    NameScope::Local,
+                ))
+            }
+            UnpackTarget::Tuple { targets, position } => {
+                let resolved_targets: Vec<UnpackTarget> = targets
+                    .into_iter()
+                    .map(|t| self.prepare_unpack_target_shadow_only(t)) // Recursive call
+                    .collect();
+                UnpackTarget::Tuple {
                     targets: resolved_targets,
                     position,
                 }
@@ -1439,8 +1427,9 @@ fn collect_scope_info_from_node(
             assigned_names.insert(interner.get_str(target.name_id).to_string());
         }
         Node::UnpackAssign { targets, .. } => {
+            // Recursively collect all names from nested unpack targets
             for target in targets {
-                assigned_names.insert(interner.get_str(target.name_id).to_string());
+                collect_names_from_unpack_target(target, assigned_names, interner);
             }
         }
         Node::OpAssign { target, .. } => {
@@ -1455,8 +1444,8 @@ fn collect_scope_info_from_node(
         Node::For {
             target, body, or_else, ..
         } => {
-            // For loop target is assigned
-            assigned_names.insert(interner.get_str(target.name_id).to_string());
+            // For loop target is assigned - collect all names from the target
+            collect_names_from_unpack_target(target, assigned_names, interner);
             // Recurse into body and else
             for n in body {
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
@@ -1785,16 +1774,7 @@ fn collect_referenced_names_from_comprehension(
         }
 
         // Add this generator's target(s) to local set
-        match &comp.target {
-            ComprehensionTarget::Name(ident) => {
-                comp_locals.insert(interner.get_str(ident.name_id).to_string());
-            }
-            ComprehensionTarget::Tuple { targets, .. } => {
-                for ident in targets {
-                    comp_locals.insert(interner.get_str(ident.name_id).to_string());
-                }
-            }
-        }
+        collect_names_from_unpack_target(&comp.target, &mut comp_locals, interner);
 
         // Filter conditions can see prior loop variables - collect separately
         for cond in &comp.ifs {
@@ -1857,6 +1837,22 @@ fn collect_referenced_names_from_fstring_parts(
             // Also check dynamic format specs which can contain interpolated expressions
             if let Some(FormatSpec::Dynamic(spec_parts)) = format_spec {
                 collect_referenced_names_from_fstring_parts(spec_parts, referenced, interner);
+            }
+        }
+    }
+}
+
+/// Collects all names from an unpack target into the given set.
+///
+/// Recursively traverses nested tuples to find all identifier names.
+fn collect_names_from_unpack_target(target: &UnpackTarget, names: &mut AHashSet<String>, interner: &InternerBuilder) {
+    match target {
+        UnpackTarget::Name(ident) => {
+            names.insert(interner.get_str(ident.name_id).to_string());
+        }
+        UnpackTarget::Tuple { targets, .. } => {
+            for t in targets {
+                collect_names_from_unpack_target(t, names, interner);
             }
         }
     }

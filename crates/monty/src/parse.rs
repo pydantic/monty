@@ -14,7 +14,7 @@ use crate::{
     builtins::Builtins,
     exception_private::ExcType,
     exception_public::{CodeLoc, MontyException},
-    expressions::{Callable, Comprehension, ComprehensionTarget, Expr, ExprLoc, Identifier, Literal, Node},
+    expressions::{Callable, Comprehension, Expr, ExprLoc, Identifier, Literal, Node, UnpackTarget},
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
     operators::{CmpOperator, Operator},
@@ -271,7 +271,7 @@ impl<'a> Parser<'a> {
                     return Err(ParseError::not_implemented("async for loops"));
                 }
                 Ok(Node::For {
-                    target: self.parse_identifier(*target)?,
+                    target: self.parse_unpack_target(*target)?,
                     iter: self.parse_expression(*iter)?,
                     body: self.parse_statements(body)?,
                     or_else: self.parse_statements(orelse)?,
@@ -387,12 +387,12 @@ impl<'a> Parser<'a> {
                 target_position: self.convert_range(range),
                 value: self.parse_expression(rhs)?,
             }),
-            // Tuple unpacking like a, b = value
+            // Tuple unpacking like a, b = value or (a, b), c = nested
             AstExpr::Tuple(ast::ExprTuple { elts, range, .. }) => {
                 let targets_position = self.convert_range(range);
                 let targets = elts
                     .into_iter()
-                    .map(|e| self.parse_identifier(e))
+                    .map(|e| self.parse_unpack_target(e)) // Use parse_unpack_target for recursion
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Node::UnpackAssign {
                     targets,
@@ -751,6 +751,30 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parses an unpack target - either a single identifier or a nested tuple.
+    ///
+    /// Handles patterns like `a` (single variable), `a, b` (flat tuple), or `(a, b), c` (nested).
+    fn parse_unpack_target(&mut self, ast: AstExpr) -> Result<UnpackTarget, ParseError> {
+        match ast {
+            AstExpr::Name(ast::ExprName { id, range, .. }) => Ok(UnpackTarget::Name(self.identifier(&id, range))),
+            AstExpr::Tuple(ast::ExprTuple { elts, range, .. }) => {
+                let position = self.convert_range(range);
+                let targets = elts
+                    .into_iter()
+                    .map(|e| self.parse_unpack_target(e)) // Recursive call for nested tuples
+                    .collect::<Result<Vec<_>, _>>()?;
+                if targets.is_empty() {
+                    return Err(ParseError::syntax("empty tuple in unpack target", position));
+                }
+                Ok(UnpackTarget::Tuple { targets, position })
+            }
+            other => Err(ParseError::syntax(
+                format!("invalid unpacking target: {other:?}"),
+                self.convert_range(other.range()),
+            )),
+        }
+    }
+
     fn identifier(&mut self, id: &Name, range: TextRange) -> Identifier {
         let string_id = self.interner.intern(id);
         Identifier::new(string_id, self.convert_range(range))
@@ -790,7 +814,7 @@ impl<'a> Parser<'a> {
                 if comp.is_async {
                     return Err(ParseError::not_implemented("async comprehensions"));
                 }
-                let target = self.parse_comprehension_target(comp.target)?;
+                let target = self.parse_unpack_target(comp.target)?;
                 let iter = self.parse_expression(comp.iter)?;
                 let ifs = comp
                     .ifs
@@ -800,36 +824,6 @@ impl<'a> Parser<'a> {
                 Ok(Comprehension { target, iter, ifs })
             })
             .collect()
-    }
-
-    /// Parses a comprehension target - either a single identifier or tuple unpacking.
-    ///
-    /// Handles patterns like `x` (single variable) or `x, y` (tuple unpacking).
-    fn parse_comprehension_target(&mut self, target: AstExpr) -> Result<ComprehensionTarget, ParseError> {
-        match target {
-            // Single identifier: `for x in ...`
-            AstExpr::Name(ast::ExprName { id, range, .. }) => {
-                let ident = self.identifier(&id, range);
-                Ok(ComprehensionTarget::Name(ident))
-            }
-            // Tuple unpacking: `for x, y in ...`
-            AstExpr::Tuple(ast::ExprTuple { elts, range, .. }) => {
-                let position = self.convert_range(range);
-                let targets = elts
-                    .into_iter()
-                    .map(|e| self.parse_identifier(e))
-                    .collect::<Result<Vec<_>, _>>()?;
-                if targets.is_empty() {
-                    return Err(ParseError::syntax("empty tuple in comprehension target", position));
-                }
-                Ok(ComprehensionTarget::Tuple { targets, position })
-            }
-            // Other patterns not supported (e.g., nested tuples like `for (a, b), c in ...`)
-            other => Err(ParseError::syntax(
-                format!("unsupported comprehension target pattern: {other:?}"),
-                self.convert_range(other.range()),
-            )),
-        }
     }
 
     /// Parses an f-string value into expression parts.

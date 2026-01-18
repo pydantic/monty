@@ -21,8 +21,8 @@ use crate::{
     exception_private::ExcType,
     exception_public::{MontyException, StackFrame},
     expressions::{
-        Callable, Comprehension, ComprehensionTarget, Expr, ExprLoc, Identifier, Literal, NameScope,
-        PreparedFunctionDef, PreparedNode,
+        Callable, Comprehension, Expr, ExprLoc, Identifier, Literal, NameScope, PreparedFunctionDef, PreparedNode,
+        UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec, encode_format_spec},
     function::Function,
@@ -234,9 +234,9 @@ impl<'a> Compiler<'a> {
                 self.code.set_location(*targets_position, None);
                 self.code.emit_u8(Opcode::UnpackSequence, count);
                 // After UnpackSequence, values are on stack with first item on top
-                // Store them in order (first target gets first item)
+                // Store them in order (first target gets first item), handling nesting
                 for target in targets {
-                    self.compile_store(target);
+                    self.compile_unpack_target(target);
                 }
             }
 
@@ -1156,7 +1156,7 @@ impl<'a> Compiler<'a> {
     /// Compiles a for loop.
     fn compile_for(
         &mut self,
-        target: &Identifier,
+        target: &UnpackTarget,
         iter: &ExprLoc,
         body: &[PreparedNode],
         or_else: &[PreparedNode],
@@ -1178,8 +1178,8 @@ impl<'a> Compiler<'a> {
         // ForIter: advance iterator or jump to end
         let end_jump = self.code.emit_jump(Opcode::ForIter);
 
-        // Store current value to target
-        self.compile_store(target);
+        // Store current value to target (handles both single identifiers and tuple unpacking)
+        self.compile_unpack_target(target);
 
         // Compile body
         self.compile_block(body)?;
@@ -1309,7 +1309,7 @@ impl<'a> Compiler<'a> {
         let end_jump = self.code.emit_jump(Opcode::ForIter);
 
         // Store current value to target (single variable or tuple unpacking)
-        self.compile_comprehension_store(&generator.target);
+        self.compile_unpack_target(&generator.target);
 
         // Compile filter conditions - jump back to loop start if any fails
         for cond in &generator.ifs {
@@ -1336,26 +1336,26 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles storage of a comprehension target - either single variable or tuple unpacking.
+    /// Compiles storage of an unpack target - either a single identifier or nested tuple.
     ///
-    /// For single variables: emits a simple store.
-    /// For tuple unpacking: emits `UnpackSequence` followed by stores for each target.
-    fn compile_comprehension_store(&mut self, target: &ComprehensionTarget) {
+    /// For single identifiers: emits a simple store.
+    /// For nested tuples: emits `UnpackSequence` and recursively handles each sub-target.
+    fn compile_unpack_target(&mut self, target: &UnpackTarget) {
         match target {
-            ComprehensionTarget::Name(ident) => {
-                // Single variable - just store directly
+            UnpackTarget::Name(ident) => {
+                // Single identifier - just store directly
                 self.compile_store(ident);
             }
-            ComprehensionTarget::Tuple { targets, position } => {
-                // Tuple unpacking - emit UnpackSequence then store each
-                let count = u8::try_from(targets.len()).expect("too many targets in comprehension unpack");
+            UnpackTarget::Tuple { targets, position } => {
+                // Nested tuple - emit UnpackSequence then recursively store each
+                let count = u8::try_from(targets.len()).expect("too many targets in nested unpack");
                 // Set location to targets for proper caret in tracebacks
                 self.code.set_location(*position, None);
                 self.code.emit_u8(Opcode::UnpackSequence, count);
                 // After UnpackSequence, values are on stack with first item on top
-                // Store them in order (first target gets first item)
-                for ident in targets {
-                    self.compile_store(ident);
+                // Store them in order, recursively handling further nesting
+                for target in targets {
+                    self.compile_unpack_target(target);
                 }
             }
         }

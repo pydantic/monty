@@ -209,18 +209,18 @@ pub enum Expr {
     },
 }
 
-/// Target for comprehension loop variable - either a single name or tuple unpacking.
+/// Target for tuple unpacking - can be a single name or nested tuple.
 ///
-/// For single variables: `for x in items`
-/// For tuple unpacking: `for x, y in pairs` or `for a, b, c in triples`
+/// Supports recursive structures like `(a, b), c` or `a, (b, c)`.
+/// Used in assignment statements, for loop targets, and comprehension targets.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum ComprehensionTarget {
-    /// Single identifier: `for x in ...`
+pub enum UnpackTarget {
+    /// Single identifier: `a`
     Name(Identifier),
-    /// Tuple unpacking: `for x, y in ...`
+    /// Nested tuple: `(a, b)` - can contain further nested tuples
     Tuple {
-        /// The identifiers to unpack into (in order)
-        targets: Vec<Identifier>,
+        /// The targets to unpack into (can be names or nested tuples)
+        targets: Vec<UnpackTarget>,
         /// Source position covering all targets (for error caret placement)
         position: CodeRange,
     },
@@ -233,7 +233,7 @@ pub enum ComprehensionTarget {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Comprehension {
     /// Loop variable - either single identifier or tuple unpacking pattern.
-    pub target: ComprehensionTarget,
+    pub target: UnpackTarget,
     /// Iterable expression to loop over.
     pub iter: ExprLoc,
     /// Zero or more filter conditions (all must be truthy for the element to be included).
@@ -323,12 +323,13 @@ pub enum Node<F> {
         target: Identifier,
         object: ExprLoc,
     },
-    /// Tuple unpacking assignment (e.g., `a, b = some_tuple`).
+    /// Tuple unpacking assignment (e.g., `a, b = some_tuple` or `(a, b), c = nested`).
     ///
     /// The right-hand side is evaluated, then unpacked into the targets in order.
-    /// The number of targets must match the length of the sequence being unpacked.
+    /// Supports nested unpacking like `(a, b), c = ((1, 2), 'x')`.
     UnpackAssign {
-        targets: Vec<Identifier>,
+        /// The targets to unpack into (can be names or nested tuples)
+        targets: Vec<UnpackTarget>,
         /// Source position covering all targets (for error message caret placement)
         targets_position: CodeRange,
         object: ExprLoc,
@@ -355,7 +356,8 @@ pub enum Node<F> {
         value: ExprLoc,
     },
     For {
-        target: Identifier,
+        /// Loop target - either a single identifier or tuple unpacking pattern.
+        target: UnpackTarget,
         iter: ExprLoc,
         body: Vec<Self>,
         or_else: Vec<Self>,
