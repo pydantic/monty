@@ -156,8 +156,8 @@ impl<'i> Prepare<'i> {
 
     /// Creates a new Prepare instance for function-level code.
     ///
-    /// Pre-populates `free_var_map` with nonlocal declarations and `cell_var_map` with
-    /// cell variables (excluding pass-through variables that are both nonlocal and cell).
+    /// Pre-populates `free_var_map` with nonlocal declarations and implicit captures,
+    /// and `cell_var_map` with cell variables (excluding pass-through variables).
     ///
     /// # Arguments
     /// * `capacity` - Expected number of nodes
@@ -165,6 +165,7 @@ impl<'i> Prepare<'i> {
     /// * `assigned_names` - Names that are assigned in this function (from first-pass scan)
     /// * `global_names` - Names declared as `global` in this function
     /// * `nonlocal_names` - Names declared as `nonlocal` in this function
+    /// * `implicit_captures` - Names captured from enclosing scope without explicit nonlocal
     /// * `global_name_map` - Copy of the module-level name map for global resolution
     /// * `enclosing_locals` - Names that exist as locals in the enclosing function (for nonlocal resolution)
     /// * `cell_var_names` - Names that are captured by nested functions (must be stored in cells)
@@ -1182,13 +1183,19 @@ struct FunctionScopeInfo {
     potential_captures: AHashSet<String>,
 }
 
-/// Scans a function body to collect scope information (first pass of two-pass preparation).
+/// Scans a function body to collect scope information (first phase of preparation).
 ///
-/// This function recursively walks the AST to find:
+/// This function performs three passes over the AST:
+/// 1. Collect global, nonlocal, and assigned names
+/// 2. Identify cell_vars (names captured by nested functions)
+/// 3. Collect potential implicit captures (referenced but not local/global/nonlocal)
+///
+/// The collected information includes:
 /// - Names declared as `global` (from Global statements)
 /// - Names declared as `nonlocal` (from Nonlocal statements)
 /// - Names that are assigned (from Assign, OpAssign, For targets, etc.)
 /// - Names that are captured by nested functions (cell_var_names)
+/// - Names that might be captured from enclosing scope (potential_captures)
 ///
 /// This information is used to determine whether each name reference should resolve
 /// to the local namespace, global namespace, or an enclosing scope via cells.
@@ -1612,14 +1619,21 @@ fn collect_referenced_names_from_comprehension(
     // Track loop variable names (these are local to the comprehension)
     let mut comp_locals: AHashSet<String> = AHashSet::new();
 
-    // Collect references from element/filter expressions separately.
-    // These CAN use comprehension locals, so we need to filter those out.
+    // Collect references from expressions that can see prior loop variables.
+    // These need to be filtered against comp_locals before adding to referenced.
     let mut inner_refs: AHashSet<String> = AHashSet::new();
 
-    for comp in generators {
-        // Iterator expression ALWAYS references enclosing scope (evaluated before
-        // the loop variable is defined). These go directly into `referenced`.
-        collect_referenced_names_from_expr(&comp.iter, referenced, interner);
+    for (i, comp) in generators.iter().enumerate() {
+        if i == 0 {
+            // FIRST generator's iter expression truly references enclosing scope
+            // (evaluated before any loop variable is defined).
+            collect_referenced_names_from_expr(&comp.iter, referenced, interner);
+        } else {
+            // SUBSEQUENT generators' iter expressions can reference prior loop variables.
+            // For example, in `[y for x in xs for y in x]`, the `x` in the second
+            // generator's iter is the first generator's loop variable, not outer scope.
+            collect_referenced_names_from_expr(&comp.iter, &mut inner_refs, interner);
+        }
 
         // Add this generator's target to local set
         comp_locals.insert(interner.get_str(comp.target.name_id).to_string());

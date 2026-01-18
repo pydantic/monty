@@ -75,3 +75,20 @@ assert {x: x for x in [1, 2, 3] if x > 10} == {}, 'dict filter all'
 assert [x**2 for x in [1, 2, 3, 4]] == [1, 4, 9, 16], 'square'
 assert [len(s) for s in ['a', 'bb', 'ccc']] == [1, 2, 3], 'len'
 assert [[y for y in range(x)] for x in [1, 2, 3]] == [[0], [0, 1], [0, 1, 2]], 'nested comprehension'
+
+# === Nested generator referencing prior loop var ===
+# Second generator's iter references first generator's loop variable
+assert [y for x in [[1, 2], [3, 4]] for y in x] == [1, 2, 3, 4], 'flatten nested lists'
+assert [(x, y) for x in [1, 2] for y in range(x)] == [(1, 0), (2, 0), (2, 1)], 'second iter uses first var'
+
+
+def outer_nested_comp():
+    xs = [[1, 2], [3, 4]]
+
+    def inner():
+        return [y for x in xs for y in x]
+
+    return inner()
+
+
+assert outer_nested_comp() == [1, 2, 3, 4], 'nested comp in closure'
