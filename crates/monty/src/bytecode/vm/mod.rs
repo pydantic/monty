@@ -1272,18 +1272,25 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
 
     /// Loads a local variable and pushes it onto the stack.
     ///
-    /// Returns a NameError if the variable is undefined.
+    /// Returns `UnboundLocalError` if this is a true local (assigned somewhere in the function)
+    /// or `NameError` if the name doesn't exist in any scope.
     fn load_local(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) -> RunResult<()> {
         let namespace = self.namespaces.get(cached_frame.namespace_idx);
         // Copy without incrementing refcount first (avoids borrow conflict)
         let value = namespace.get(NamespaceId::new(usize::from(slot))).copy_for_extend();
 
-        // Check for undefined value - raise NameError if so
-        // Note: Python distinguishes between UnboundLocalError (local accessed before assignment)
-        // and NameError (name doesn't exist). We raise NameError for both to keep things simple.
+        // Check for undefined value - raise appropriate error based on whether
+        // this is a true local (assigned somewhere) or an undefined reference
         if matches!(value, Value::Undefined) {
             let name = cached_frame.code.local_name(slot);
-            return Err(self.name_error_for_local(slot, name));
+            let err = if cached_frame.code.is_assigned_local(slot) {
+                // True local accessed before assignment
+                self.unbound_local_error(slot, name)
+            } else {
+                // Name doesn't exist in any scope
+                self.name_error_for_local(slot, name)
+            };
+            return Err(err);
         }
 
         // Now we can safely increment refcount and push
@@ -1295,10 +1302,6 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     }
 
     /// Creates an UnboundLocalError for a local variable accessed before assignment.
-    ///
-    /// Currently unused - we raise NameError for both undefined locals and undefined names.
-    /// Kept for future use when we distinguish between the two cases.
-    #[expect(dead_code)]
     fn unbound_local_error(&self, slot: u16, name: Option<StringId>) -> RunError {
         let name_str = match name {
             Some(id) => self.interns.get_str(id).to_string(),

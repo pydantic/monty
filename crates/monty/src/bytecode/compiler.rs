@@ -602,7 +602,13 @@ impl<'a> Compiler<'a> {
         let slot = u16::try_from(ident.namespace_id().index()).expect("local slot exceeds u16");
         match ident.scope {
             NameScope::Local => {
-                // Register the name for NameError messages
+                // True local - register name and mark as assigned for UnboundLocalError
+                self.code.register_local_name(slot, ident.name_id);
+                self.code.register_assigned_local(slot);
+                self.code.emit_load_local(slot);
+            }
+            NameScope::LocalUnassigned => {
+                // Undefined reference - register name but NOT as assigned for NameError
                 self.code.register_local_name(slot, ident.name_id);
                 self.code.emit_load_local(slot);
             }
@@ -632,8 +638,8 @@ impl<'a> Compiler<'a> {
     fn compile_store(&mut self, target: &Identifier) {
         let slot = u16::try_from(target.namespace_id().index()).expect("local slot exceeds u16");
         match target.scope {
-            NameScope::Local => {
-                // Register the name for NameError messages
+            NameScope::Local | NameScope::LocalUnassigned => {
+                // Both true locals and initially-unassigned slots use local storage
                 self.code.register_local_name(slot, target.name_id);
                 self.code.emit_store_local(slot);
             }
@@ -1799,7 +1805,7 @@ impl<'a> Compiler<'a> {
     fn compile_delete(&mut self, target: &Identifier) {
         let slot = u16::try_from(target.namespace_id().index()).expect("local slot exceeds u16");
         match target.scope {
-            NameScope::Local => {
+            NameScope::Local | NameScope::LocalUnassigned => {
                 if let Ok(s) = u8::try_from(slot) {
                     self.code.emit_u8(Opcode::DeleteLocal, s);
                 } else {

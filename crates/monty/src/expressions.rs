@@ -20,9 +20,16 @@ use crate::{
 ///   are accessed through Cells
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum NameScope {
-    /// Variable is in the current frame's local namespace
+    /// Variable is in the current frame's local namespace (assigned somewhere in this function).
+    ///
+    /// If accessed before assignment, raises `UnboundLocalError`.
     #[default]
     Local,
+    /// Variable reference that doesn't exist in any scope.
+    ///
+    /// A local slot is allocated but never assigned. Accessing raises `NameError`
+    /// (not `UnboundLocalError`) because the name was never defined anywhere.
+    LocalUnassigned,
     /// Variable is in the module-level global namespace
     Global,
     /// Variable accessed through a cell (heap-allocated container).

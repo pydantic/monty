@@ -1250,7 +1250,7 @@ impl<'i> Prepare<'i> {
         // 8. Name not found anywhere - allocate a local slot (will be NameError at runtime)
         // This handles names that are only read (never assigned) and don't exist globally.
         // We allocate a local slot that will never be written to.
-        // At runtime, load_local checks for Undefined and raises NameError.
+        // Mark as LocalUnassigned so runtime raises NameError (not UnboundLocalError).
         let (id, is_new) = match self.name_map.entry(name_str.to_string()) {
             Entry::Occupied(e) => (*e.get(), false),
             Entry::Vacant(e) => {
@@ -1261,7 +1261,7 @@ impl<'i> Prepare<'i> {
             }
         };
         (
-            Identifier::new_with_scope(ident.name_id, ident.position, id, NameScope::Local),
+            Identifier::new_with_scope(ident.name_id, ident.position, id, NameScope::LocalUnassigned),
             is_new,
         )
     }
