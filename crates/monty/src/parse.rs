@@ -14,10 +14,11 @@ use crate::{
     builtins::Builtins,
     exception_private::ExcType,
     exception_public::{CodeLoc, MontyException},
-    expressions::{Callable, Comprehension, Expr, ExprLoc, Identifier, Literal, Node, UnpackTarget},
+    expressions::{
+        Callable, CmpOperator, Comprehension, Expr, ExprLoc, Identifier, Literal, Node, Operator, UnpackTarget,
+    },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
-    operators::{CmpOperator, Operator},
     value::Attr,
 };
 

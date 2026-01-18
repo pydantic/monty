@@ -42,6 +42,10 @@ jobs:
       - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools
+
+      - uses: taiki-e/install-action@cargo-llvm-cov
 
       # this means pyo3 will use Python 3.14 in tests
       - uses: actions/setup-python@v6
@@ -53,12 +57,8 @@ jobs:
         # don't use .venv python in CI
       - run: rm .cargo/config.toml
 
-      # run rust tests in all flavors
-      - run: make test-no-features
-      - run: make test-ref-count-panic
-      - run: make test-ref-count-return
-      # test the type checking logic
-      - run: make test-type-checking
+      # run rust tests with coverage
+      - run: make testcov
 
   test-python:
     name: test python ${{ matrix.python-version }}

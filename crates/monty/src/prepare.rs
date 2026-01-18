@@ -5,13 +5,12 @@ use ahash::{AHashMap, AHashSet};
 use crate::{
     args::ArgExprs,
     expressions::{
-        Callable, Comprehension, Expr, ExprLoc, Identifier, Literal, NameScope, Node, PreparedFunctionDef,
-        PreparedNode, UnpackTarget,
+        Callable, CmpOperator, Comprehension, Expr, ExprLoc, Identifier, Literal, NameScope, Node, Operator,
+        PreparedFunctionDef, PreparedNode, UnpackTarget,
     },
     fstring::{FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
     namespace::NamespaceId,
-    operators::{CmpOperator, Operator},
     parse::{ExceptHandler, ParseError, ParseNode, ParseResult, ParsedSignature, RawFunctionDef, Try},
     signature::Signature,
 };

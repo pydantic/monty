@@ -13,7 +13,6 @@ mod intern;
 mod io;
 mod namespace;
 mod object;
-mod operators;
 mod parse;
 mod prepare;
 mod resource;

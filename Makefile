@@ -106,6 +106,24 @@ test-docs: dev-py ## Test docs examples only
 .PHONY: test
 test: test-ref-count-panic test-ref-count-return test-no-features test-type-checking test-py ## Run rust tests
 
+.PHONY: testcov
+testcov: ## Run Rust tests with coverage, print table, and generate HTML report
+	@cargo llvm-cov --version > /dev/null 2>&1 || echo 'Please run: `cargo install cargo-llvm-cov`'
+	cargo llvm-cov clean --workspace
+	echo "coverage for `make test-no-features`"
+	cargo llvm-cov --no-report -p monty
+	echo "coverage for `make test-ref-count-panic`"
+	cargo llvm-cov --no-report -p monty --features ref-count-panic
+	echo "coverage for `make test-ref-count-return`"
+	cargo llvm-cov --no-report -p monty --features ref-count-return
+	echo "coverage for `make test-type-checking`"
+	cargo llvm-cov --no-report -p monty_type_checking -p monty_typeshed
+	echo "Generating reports:"
+	cargo llvm-cov report --ignore-filename-regex '(tests/|test_cases/|/tests\.rs$$)'
+	cargo llvm-cov report --html --ignore-filename-regex '(tests/|test_cases/|/tests\.rs$$)'
+	@echo ""
+	@echo "HTML report: $${CARGO_TARGET_DIR:-target}/llvm-cov/html/index.html"
+
 .PHONY: complete-tests
 complete-tests: ## Fill in incomplete test expectations using CPython
 	uv run scripts/complete_tests.py
