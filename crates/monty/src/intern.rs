@@ -440,6 +440,10 @@ impl InternerBuilder {
             debug_assert_eq!(id, ascii_string_id(byte));
         }
 
+        // Pre-intern module strings so they're always available
+        crate::modules::sys::intern_module_strings(&mut interner);
+        crate::modules::typing::intern_module_strings(&mut interner);
+
         interner
     }
 
@@ -488,6 +492,7 @@ impl InternerBuilder {
 /// This provides lookup by `StringId`, `BytesId` and `FunctionId` for interned literals and functions
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Interns {
+    string_map: AHashMap<Cow<'static, str>, StringId>,
     strings: Vec<Cow<'static, str>>,
     bytes: Vec<Vec<u8>>,
     functions: Vec<Function>,
@@ -497,6 +502,7 @@ pub(crate) struct Interns {
 impl Interns {
     pub fn new(interner: InternerBuilder, functions: Vec<Function>, external_functions: Vec<String>) -> Self {
         Self {
+            string_map: interner.string_map,
             strings: interner.strings,
             bytes: interner.bytes,
             functions,
@@ -555,15 +561,13 @@ impl Interns {
         self.functions = functions;
     }
 
-    /// Finds the StringId for an existing interned string.
+    /// Finds the StringId for an existing interned string, assuming it's already interned.
     ///
-    /// Returns `None` if the string has not been interned.
-    /// This is O(n) but fine for occasional lookups like module attribute names.
-    pub fn find_string_id(&self, s: &str) -> Option<StringId> {
-        self.strings
-            .iter()
-            .position(|stored| stored.as_ref() == s)
-            .and_then(|pos| u16::try_from(pos).ok())
-            .map(StringId::from_index)
+    /// Panics if the string is not found.
+    pub fn find_known_string_id(&self, s: &str) -> StringId {
+        match self.string_map.get(s) {
+            Some(id) => *id,
+            None => panic!("string '{s}' not pre-interned during prepare phase"),
+        }
     }
 }

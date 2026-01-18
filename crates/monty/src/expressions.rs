@@ -6,7 +6,7 @@ use crate::{
     namespace::NamespaceId,
     parse::{CodeRange, Try},
     signature::Signature,
-    value::{Attr, Value},
+    value::{Attr, Marker, Value},
 };
 
 /// Indicates which namespace a variable reference belongs to.
@@ -265,6 +265,8 @@ pub enum Literal {
     Str(StringId),
     /// An interned bytes literal. The BytesId references the bytes in the Interns table.
     Bytes(BytesId),
+    /// A marker value (e.g., typing constructs like Any, Optional, etc.).
+    Marker(Marker),
 }
 
 impl From<Literal> for Value {
@@ -281,6 +283,7 @@ impl From<Literal> for Value {
             Literal::Float(v) => Self::Float(v),
             Literal::Str(string_id) => Self::InternString(string_id),
             Literal::Bytes(bytes_id) => Self::InternBytes(bytes_id),
+            Literal::Marker(marker) => Self::Marker(marker),
         }
     }
 }

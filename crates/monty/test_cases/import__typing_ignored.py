@@ -1,9 +1,12 @@
-# Tests that typing imports other than TYPE_CHECKING are silently ignored
+# xfail=cpython
+# Tests that unknown typing imports are silently ignored
+# xfail reason: CPython raises ImportError for unknown typing names,
+# Monty silently ignores them to be more permissive with type hints
 
-# These imports should not raise any errors (they are silently ignored)
+from typing import SomeUnknownTypingConstruct
 
-# If we got here, the imports were silently ignored (no NameError raised)
-# Note: The names List, Dict, Optional are NOT defined - they were just ignored
-# We can't test this directly without dir(), but the code below would fail
-# if they were somehow defined to something that breaks comparison
-assert True, 'typing imports were silently ignored'
+# Unknown typing constructs are silently ignored - they don't raise errors
+# but they also don't create any binding, so accessing them would fail
+
+# We can verify the import succeeded without error by reaching this point
+assert True, 'unknown typing imports were silently ignored'

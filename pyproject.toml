@@ -54,7 +54,10 @@ known-first-party = ["monty"]
     "F811", # Redefinition of unused variable
     "F821", # traceback undefined call test intentionally uses undefined name
     "F841", # unused variable - needed for testing exception variable cleanup
+    "F401", # Intentionally imports unknown typing constructs to test silent ignore behavior
+    "E402", # Typing test file has multiple import sections to test different import patterns
 ]
+
 "crates/monty-typeshed/vendor/typeshed/stdlib/**/*.pyi" = [
     "F403", # unable to detect undefined names
     "F821", # Undefined name
@@ -97,8 +100,9 @@ reportPossiblyUnboundVariable = false
 reportUnboundVariable = false
 # attribute error tests intentionally access/assign non-existent attributes
 reportAttributeAccessIssue = false
-# unused variables are fine
+# unused variables and imports are fine in test cases
 reportUnusedVariable = false
+reportUnusedImport = false
 reportAssignmentType = false
 reportFunctionMemberAccess = false
 # ~bool is deprecated in Python 3.16 but valid in 3.14

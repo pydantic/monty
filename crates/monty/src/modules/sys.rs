@@ -9,11 +9,34 @@
 
 use crate::{
     heap::{Heap, HeapData, HeapId},
-    intern::Interns,
+    intern::{InternerBuilder, Interns},
     resource::{ResourceError, ResourceTracker},
-    types::{Dict, Module, NamedTuple},
+    types::{Module, NamedTuple},
     value::{Marker, Value},
 };
+
+/// Pre-interns all strings needed by the sys module.
+///
+/// Called during `InternerBuilder::build_base` to ensure all sys module
+/// strings are always available without needing to check for imports.
+pub(crate) fn intern_module_strings(interner: &mut InternerBuilder) {
+    // Module name and attributes
+    interner.intern("sys");
+    interner.intern("version");
+    interner.intern("version_info");
+    interner.intern("platform");
+    interner.intern("stdout");
+    interner.intern("stderr");
+    // sys.version_info field names (for NamedTuple attribute access)
+    interner.intern("major");
+    interner.intern("minor");
+    interner.intern("micro");
+    interner.intern("releaselevel");
+    interner.intern("serial");
+    interner.intern("final");
+    interner.intern("3.14.0 (Monty)");
+    interner.intern("monty");
+}
 
 /// Creates the `sys` module and allocates it on the heap.
 ///
@@ -23,81 +46,42 @@ use crate::{
 ///
 /// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_sys_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Result<HeapId, ResourceError> {
-    let name = find_string(interns, "sys");
-
-    // Create the attributes dictionary
-    let mut attrs = Dict::new();
+    let mut module = Module::new("sys", interns);
 
     // sys.version - Python version string
-    // Note: "3.14.0 (Monty)" may not be interned, so we use a pre-interned version string
-    let version_key = Value::InternString(find_string(interns, "version"));
-    let version_value = create_version_string(heap)?;
-    // Unwrap is safe because InternString keys are always hashable
-    attrs.set(version_key, version_value, heap, interns).unwrap();
+    let version_str_id = interns.find_known_string_id("3.14.0 (Monty)");
+    module.set_attr("version", Value::InternString(version_str_id), heap, interns);
 
     // sys.version_info - named tuple with (major=3, minor=14, micro=0, releaselevel='final', serial=0)
-    let version_info_key = Value::InternString(find_string(interns, "version_info"));
     let version_info = NamedTuple::new(
         "sys.version_info".to_string(),
         vec![
-            find_string(interns, "major"),
-            find_string(interns, "minor"),
-            find_string(interns, "micro"),
-            find_string(interns, "releaselevel"),
-            find_string(interns, "serial"),
+            interns.find_known_string_id("major"),
+            interns.find_known_string_id("minor"),
+            interns.find_known_string_id("micro"),
+            interns.find_known_string_id("releaselevel"),
+            interns.find_known_string_id("serial"),
         ],
         vec![
             Value::Int(3),
             Value::Int(14),
             Value::Int(0),
-            Value::InternString(find_string(interns, "final")),
+            Value::InternString(interns.find_known_string_id("final")),
             Value::Int(0),
         ],
     );
     let version_info_id = heap.allocate(HeapData::NamedTuple(version_info))?;
-    attrs
-        .set(version_info_key, Value::Ref(version_info_id), heap, interns)
-        .unwrap();
+    module.set_attr("version_info", Value::Ref(version_info_id), heap, interns);
 
     // sys.platform - "monty"
-    let platform_key = Value::InternString(find_string(interns, "platform"));
-    let platform_value = create_platform_string(heap)?;
-    attrs.set(platform_key, platform_value, heap, interns).unwrap();
+    let platform_str_id = interns.find_known_string_id("monty");
+    module.set_attr("platform", Value::InternString(platform_str_id), heap, interns);
 
     // sys.stdout - marker for stdout
-    let stdout_key = Value::InternString(find_string(interns, "stdout"));
-    let stdout_value = Value::Marker(Marker::Stdout);
-    attrs.set(stdout_key, stdout_value, heap, interns).unwrap();
+    module.set_attr("stdout", Value::Marker(Marker::Stdout), heap, interns);
 
     // sys.stderr - marker for stderr
-    let stderr_key = Value::InternString(find_string(interns, "stderr"));
-    let stderr_value = Value::Marker(Marker::Stderr);
-    attrs.set(stderr_key, stderr_value, heap, interns).unwrap();
+    module.set_attr("stderr", Value::Marker(Marker::Stderr), heap, interns);
 
-    // Create and allocate the module
-    let module = Module::new(name, attrs);
     heap.allocate(HeapData::Module(module))
-}
-
-/// Finds a pre-interned string, panicking if not found.
-fn find_string(interns: &Interns, s: &str) -> crate::intern::StringId {
-    interns
-        .find_string_id(s)
-        .unwrap_or_else(|| panic!("string '{s}' not pre-interned during prepare phase"))
-}
-
-/// Creates the version string as a heap-allocated Str.
-fn create_version_string(heap: &mut Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
-    use crate::types::Str;
-    let s = Str::new("3.14.0 (Monty)".to_string());
-    let id = heap.allocate(HeapData::Str(s))?;
-    Ok(Value::Ref(id))
-}
-
-/// Creates the platform string as a heap-allocated Str.
-fn create_platform_string(heap: &mut Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
-    use crate::types::Str;
-    let s = Str::new("monty".to_string());
-    let id = heap.allocate(HeapData::Str(s))?;
-    Ok(Value::Ref(id))
 }

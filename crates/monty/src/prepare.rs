@@ -1,4 +1,4 @@
-use std::collections::hash_map::Entry;
+use std::{collections::hash_map::Entry, str::FromStr};
 
 use ahash::{AHashMap, AHashSet};
 
@@ -14,6 +14,7 @@ use crate::{
     namespace::NamespaceId,
     parse::{ExceptHandler, ParseError, ParseNode, ParseResult, ParsedSignature, RawFunctionDef, Try},
     signature::Signature,
+    value::Marker,
 };
 
 /// Result of the prepare phase, containing everything needed to compile and execute code.
@@ -502,24 +503,31 @@ impl<'i> Prepare<'i> {
                     if module_name_str == "typing" {
                         // For typing module, handle specially:
                         // - TYPE_CHECKING becomes an assignment to False
-                        // - Other names are silently ignored (they're type hints)
+                        // - Known type hints become assignments to Marker values
+                        // - Unknown names are silently ignored
                         for (name, alias) in names {
                             let name_str = self.interner.get_str(name);
-                            if name_str == "TYPE_CHECKING" {
-                                // Transform to: TYPE_CHECKING = False
-                                let binding_name = alias.unwrap_or(name);
+                            let binding_name = alias.unwrap_or(name);
+
+                            // Determine the value to assign based on the imported name
+                            let value_expr = if name_str == "TYPE_CHECKING" {
+                                Some(Expr::Literal(Literal::Bool(false)))
+                            } else {
+                                Marker::from_str(name_str)
+                                    .ok()
+                                    .map(|m| Expr::Literal(Literal::Marker(m)))
+                            };
+
+                            if let Some(expr) = value_expr {
                                 self.names_assigned_in_order
                                     .insert(self.interner.get_str(binding_name).to_string());
                                 let binding = Identifier::new(binding_name, position);
                                 let (resolved_binding, _) = self.get_id(binding);
-                                // Create an expression for False
-                                let false_expr = ExprLoc::new(position, Expr::Literal(Literal::Bool(false)));
                                 new_nodes.push(Node::Assign {
                                     target: resolved_binding,
-                                    object: false_expr,
+                                    object: ExprLoc::new(position, expr),
                                 });
                             }
-                            // Other typing imports are silently ignored - they're just type hints
                         }
                     } else if module_name_str == "sys" {
                         // from sys import ... is not supported yet
@@ -1954,11 +1962,8 @@ fn scan_and_pre_intern_imports(nodes: &[ParseNode], interner: &mut InternerBuild
 fn scan_node_for_imports(node: &ParseNode, interner: &mut InternerBuilder) -> Result<(), ParseError> {
     match node {
         Node::Import { module_name, binding } => {
-            // Convert to owned String to avoid borrow conflict with interner
-            let module_name_str = interner.get_str(*module_name).to_owned();
-            if is_known_module(&module_name_str) {
-                pre_intern_module_attrs(&module_name_str, interner);
-            } else {
+            let module_name_str = interner.get_str(*module_name);
+            if !is_known_module(module_name_str) {
                 return Err(ParseError::syntax(
                     format!("import of module '{module_name_str}' not supported"),
                     binding.position,
@@ -1968,11 +1973,8 @@ fn scan_node_for_imports(node: &ParseNode, interner: &mut InternerBuilder) -> Re
         Node::ImportFrom {
             module_name, position, ..
         } => {
-            // Convert to owned String to avoid borrow conflict with interner
-            let module_name_str = interner.get_str(*module_name).to_owned();
-            if is_known_module(&module_name_str) {
-                pre_intern_module_attrs(&module_name_str, interner);
-            } else {
+            let module_name_str = interner.get_str(*module_name);
+            if !is_known_module(module_name_str) {
                 return Err(ParseError::syntax(
                     format!("import from module '{module_name_str}' not supported"),
                     *position,
@@ -2015,35 +2017,4 @@ fn scan_node_for_imports(node: &ParseNode, interner: &mut InternerBuilder) -> Re
 /// Returns true for modules that can be imported (e.g., sys, typing).
 fn is_known_module(name: &str) -> bool {
     BuiltinModule::from_name(name).is_some()
-}
-
-/// Pre-interns all attribute names for a module so they're available at runtime.
-///
-/// This must be called during the prepare phase for each imported module so that
-/// the module creation at runtime can find the StringIds without mutable access to Interns.
-fn pre_intern_module_attrs(module_name: &str, interner: &mut InternerBuilder) {
-    match module_name {
-        "sys" => {
-            // sys module attributes
-            interner.intern("sys");
-            interner.intern("version");
-            interner.intern("version_info");
-            interner.intern("platform");
-            interner.intern("stdout");
-            interner.intern("stderr");
-            interner.intern("final");
-            // sys.version_info field names (for NamedTuple attribute access)
-            interner.intern("major");
-            interner.intern("minor");
-            interner.intern("micro");
-            interner.intern("releaselevel");
-            interner.intern("serial");
-        }
-        "typing" => {
-            // typing module attributes
-            interner.intern("typing");
-            interner.intern("TYPE_CHECKING");
-        }
-        _ => {}
-    }
 }

@@ -14,17 +14,26 @@ use crate::{
 /// and a dictionary of attributes. This is sufficient for built-in modules like
 /// `sys` and `typing` where we control the available attributes.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct Module {
+pub(crate) struct Module {
     /// The module name (e.g., "sys", "typing").
     name: StringId,
-    /// The module's attributes (e.g., `sys.version`, `sys.platform`).
+    /// The module's attributes (e.g., `version`, `platform` for `sys`).
     attrs: Dict,
 }
 
 impl Module {
-    /// Creates a new module with the given name and attributes.
-    pub fn new(name: StringId, attrs: Dict) -> Self {
-        Self { name, attrs }
+    /// Creates a new module with an empty attributes dictionary.
+    ///
+    /// The module name must be pre-interned during the prepare phase.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the module name string has not been pre-interned.
+    pub fn new(name: &str, interns: &Interns) -> Self {
+        Self {
+            name: interns.find_known_string_id(name),
+            attrs: Dict::new(),
+        }
     }
 
     /// Returns the module's name StringId.
@@ -35,6 +44,19 @@ impl Module {
     /// Returns a reference to the module's attribute dictionary.
     pub fn attrs(&self) -> &Dict {
         &self.attrs
+    }
+
+    /// Sets an attribute in the module's dictionary.
+    ///
+    /// The attribute name must be pre-interned during the prepare phase.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the attribute name string has not been pre-interned.
+    pub fn set_attr(&mut self, name: &str, value: Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) {
+        let key = Value::InternString(interns.find_known_string_id(name));
+        // Unwrap is safe because InternString keys are always hashable
+        self.attrs.set(key, value, heap, interns).unwrap();
     }
 
     /// Looks up an attribute by name in the module's attribute dictionary.

@@ -3,8 +3,8 @@
 //! This module provides implementations for Python built-in modules like `sys` and `typing`.
 //! These are created on-demand when import statements are executed.
 
-mod sys;
-mod typing;
+pub(crate) mod sys;
+pub(crate) mod typing;
 
 use crate::{
     heap::{Heap, HeapId},
