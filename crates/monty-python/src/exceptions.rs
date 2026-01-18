@@ -394,6 +394,7 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
         }
         ExcType::MemoryError => exceptions::PyMemoryError::new_err(msg),
         ExcType::NameError => exceptions::PyNameError::new_err(msg),
+        ExcType::UnboundLocalError => exceptions::PyUnboundLocalError::new_err(msg),
         ExcType::SyntaxError => exceptions::PySyntaxError::new_err(msg),
         ExcType::TimeoutError => exceptions::PyTimeoutError::new_err(msg),
         ExcType::TypeError => exceptions::PyTypeError::new_err(msg),
@@ -470,9 +471,14 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
             } else {
                 ExcType::AttributeError
             }
-        // other standalone exception types
+        // NameError hierarchy (check UnboundLocalError first as it's a subclass)
         } else if exceptions::PyNameError::type_check(exc) {
-            ExcType::NameError
+            if exceptions::PyUnboundLocalError::type_check(exc) {
+                ExcType::UnboundLocalError
+            } else {
+                ExcType::NameError
+            }
+        // other standalone exception types
         } else if exceptions::PyTimeoutError::type_check(exc) {
             ExcType::TimeoutError
         } else if exceptions::PyMemoryError::type_check(exc) {

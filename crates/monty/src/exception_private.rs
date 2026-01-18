@@ -64,10 +64,14 @@ pub enum ExcType {
     /// Subclass of AttributeError (from dataclasses module).
     FrozenInstanceError,
 
+    // --- NameError hierarchy ---
+    NameError,
+    /// Subclass of NameError - for accessing local variable before assignment.
+    UnboundLocalError,
+
     // --- Standalone exception types ---
     AssertionError,
     MemoryError,
-    NameError,
     SyntaxError,
     TimeoutError,
     TypeError,
@@ -102,6 +106,8 @@ impl ExcType {
             Self::RuntimeError => matches!(self, Self::RecursionError | Self::NotImplementedError),
             // AttributeError catches FrozenInstanceError
             Self::AttributeError => matches!(self, Self::FrozenInstanceError),
+            // NameError catches UnboundLocalError
+            Self::NameError => matches!(self, Self::UnboundLocalError),
             // All other types only match exactly (handled by self == handler_type above)
             _ => false,
         }
@@ -701,6 +707,17 @@ impl ExcType {
     #[must_use]
     pub(crate) fn name_error(name: &str) -> SimpleException {
         SimpleException::new_msg(Self::NameError, format!("name '{name}' is not defined"))
+    }
+
+    /// Creates an UnboundLocalError for accessing a local variable before assignment.
+    ///
+    /// Matches CPython's format: `UnboundLocalError: cannot access local variable 'x' where it is not associated with a value`
+    #[must_use]
+    pub(crate) fn unbound_local_error(name: &str) -> SimpleException {
+        SimpleException::new_msg(
+            Self::UnboundLocalError,
+            format!("cannot access local variable '{name}' where it is not associated with a value"),
+        )
     }
 
     /// Creates a NotImplementedError for an unimplemented Python feature.

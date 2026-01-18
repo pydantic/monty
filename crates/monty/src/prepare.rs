@@ -278,7 +278,6 @@ impl<'i> Prepare<'i> {
                                 Expr::Name(id) => {
                                     // Handle raising a variable - could be an exception type or instance.
                                     // The runtime will determine whether to call it (type) or raise it directly (instance).
-                                    // Don't error here if undefined - let runtime raise NameError with proper traceback.
                                     let position = id.position;
                                     let (resolved_id, _is_new) = self.get_id(id);
                                     Some(ExprLoc::new(position, Expr::Name(resolved_id)))
@@ -660,11 +659,15 @@ impl<'i> Prepare<'i> {
     /// Prepares a comprehension with scope isolation for loop variables.
     ///
     /// Comprehension loop variables are isolated from the enclosing scope - they do not
-    /// leak after the comprehension completes. This is achieved by:
-    /// 1. Saving the current name_map and assigned state
-    /// 2. Processing generators in order (each generator's iter can see prior loop vars)
-    /// 3. Processing the element expression(s)
-    /// 4. Restoring the saved state so loop vars don't affect enclosing scope
+    /// leak after the comprehension completes. CPython scoping rules require:
+    ///
+    /// 1. The FIRST generator's iter is evaluated in the enclosing scope
+    /// 2. ALL loop variables from ALL generators are then shadowed as local
+    /// 3. Subsequent generators' iters see all loop vars as local (even if unassigned)
+    ///
+    /// This means `[y for x in [1] for y in z for z in [[2]]]` raises UnboundLocalError
+    /// because `z` is treated as local (it's a loop var in generator 3) when evaluating
+    /// generator 2's iter.
     ///
     /// For list/set comprehensions, pass `elt` as Some and `key_value` as None.
     /// For dict comprehensions, pass `elt` as None and `key_value` as Some((key, value)).
@@ -675,37 +678,63 @@ impl<'i> Prepare<'i> {
         elt: Option<ExprLoc>,
         key_value: Option<(ExprLoc, ExprLoc)>,
     ) -> Result<(Vec<Comprehension>, Option<ExprLoc>, Option<(ExprLoc, ExprLoc)>), ParseError> {
-        // Save current scope state for isolation. We need to save and restore:
-        // - name_map: local variable bindings
-        // - names_assigned_in_order: tracks which names have been assigned
-        // - free_var_map: captured variables from enclosing scope (must shadow in comprehension)
-        // - cell_var_map: variables captured by nested functions (must shadow in comprehension)
-        // - enclosing_locals: names from enclosing scope (must shadow to prevent re-capture)
+        // Save current scope state for isolation
         let saved_name_map = self.name_map.clone();
         let saved_assigned_names = self.names_assigned_in_order.clone();
         let saved_free_var_map = self.free_var_map.clone();
         let saved_cell_var_map = self.cell_var_map.clone();
         let saved_enclosing_locals = self.enclosing_locals.clone();
 
-        // Process generators in order
-        let mut prepared_generators = Vec::with_capacity(generators.len());
-        for comp in generators {
-            // For the first generator, the iter expression is evaluated in the enclosing scope.
-            // For subsequent generators, the iter expression can see prior loop variables.
-            let iter = self.prepare_expression(comp.iter)?;
+        // Step 1: Prepare first generator's iter in enclosing scope (before any shadowing)
+        let mut generators_iter = generators.into_iter();
+        let first_gen = generators_iter
+            .next()
+            .expect("comprehension must have at least one generator");
+        let first_iter = self.prepare_expression(first_gen.iter)?;
 
-            // Prepare the target - either single identifier or tuple unpacking
-            let prepared_target = self.prepare_comprehension_target(comp.target);
+        // Step 2: Collect and shadow ALL loop variable names from ALL generators.
+        // This must happen BEFORE evaluating any subsequent generator's iter expression.
+        // We allocate slots but don't mark them as "assigned" yet - this causes
+        // UnboundLocalError if a later generator's iter references an earlier-declared
+        // but not-yet-assigned loop variable.
+        let first_target = self.prepare_comprehension_target(first_gen.target);
 
-            // Prepare filter conditions (can see this loop variable)
-            let ifs = comp
+        // Collect remaining generators so we can pre-shadow their targets
+        let remaining_gens: Vec<Comprehension> = generators_iter.collect();
+
+        // Pre-shadow ALL remaining loop variables before evaluating their iters.
+        // This is the key CPython behavior: all loop vars are local to the comprehension,
+        // so referencing a later loop var in an earlier iter raises UnboundLocalError.
+        let mut preshadowed_targets: Vec<ComprehensionTarget> = Vec::with_capacity(remaining_gens.len());
+        for generator in &remaining_gens {
+            preshadowed_targets.push(self.prepare_comprehension_target_shadow_only(generator.target.clone()));
+        }
+
+        // Prepare first generator's filters (can see first loop variable)
+        let first_ifs = first_gen
+            .ifs
+            .into_iter()
+            .map(|cond| self.prepare_expression(cond))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut prepared_generators = Vec::with_capacity(1 + remaining_gens.len());
+        prepared_generators.push(Comprehension {
+            target: first_target,
+            iter: first_iter,
+            ifs: first_ifs,
+        });
+
+        // Step 3: Process remaining generators - their iters now see all loop vars as local
+        for (generator, preshadowed_target) in remaining_gens.into_iter().zip(preshadowed_targets) {
+            let iter = self.prepare_expression(generator.iter)?;
+            let ifs = generator
                 .ifs
                 .into_iter()
                 .map(|cond| self.prepare_expression(cond))
                 .collect::<Result<Vec<_>, _>>()?;
 
             prepared_generators.push(Comprehension {
-                target: prepared_target,
+                target: preshadowed_target,
                 iter,
                 ifs,
             });
@@ -729,6 +758,62 @@ impl<'i> Prepare<'i> {
         self.enclosing_locals = saved_enclosing_locals;
 
         Ok((prepared_generators, prepared_elt, prepared_key_value))
+    }
+
+    /// Pre-shadows a comprehension target by allocating namespace slots without marking as assigned.
+    ///
+    /// This is used to implement CPython's scoping where ALL loop variables are local to the
+    /// comprehension from the start. By shadowing without marking as assigned, references to
+    /// these variables before their generator runs will resolve to local scope but find no
+    /// value, producing UnboundLocalError.
+    fn prepare_comprehension_target_shadow_only(&mut self, target: ComprehensionTarget) -> ComprehensionTarget {
+        match target {
+            ComprehensionTarget::Name(ident) => {
+                let name_str = self.interner.get_str(ident.name_id).to_string();
+                let comp_var_id = NamespaceId::new(self.namespace_size);
+                self.namespace_size += 1;
+
+                // Shadow but do NOT add to names_assigned_in_order yet - this causes
+                // UnboundLocalError if accessed before assignment
+                self.name_map.insert(name_str.clone(), comp_var_id);
+                self.free_var_map.remove(&name_str);
+                self.cell_var_map.remove(&name_str);
+                if let Some(ref mut enclosing) = self.enclosing_locals {
+                    enclosing.remove(&name_str);
+                }
+
+                ComprehensionTarget::Name(Identifier::new_with_scope(
+                    ident.name_id,
+                    ident.position,
+                    comp_var_id,
+                    NameScope::Local,
+                ))
+            }
+            ComprehensionTarget::Tuple { targets, position } => {
+                let resolved_targets: Vec<Identifier> = targets
+                    .into_iter()
+                    .map(|ident| {
+                        let name_str = self.interner.get_str(ident.name_id).to_string();
+                        let comp_var_id = NamespaceId::new(self.namespace_size);
+                        self.namespace_size += 1;
+
+                        self.name_map.insert(name_str.clone(), comp_var_id);
+                        self.free_var_map.remove(&name_str);
+                        self.cell_var_map.remove(&name_str);
+                        if let Some(ref mut enclosing) = self.enclosing_locals {
+                            enclosing.remove(&name_str);
+                        }
+
+                        Identifier::new_with_scope(ident.name_id, ident.position, comp_var_id, NameScope::Local)
+                    })
+                    .collect();
+
+                ComprehensionTarget::Tuple {
+                    targets: resolved_targets,
+                    position,
+                }
+            }
+        }
     }
 
     /// Prepares a comprehension target by allocating namespace slots and resolving identifiers.
@@ -1162,7 +1247,10 @@ impl<'i> Prepare<'i> {
             );
         }
 
-        // 8. Name not found anywhere - resolve to local (will be NameError at runtime)
+        // 8. Name not found anywhere - allocate a local slot (will be NameError at runtime)
+        // This handles names that are only read (never assigned) and don't exist globally.
+        // We allocate a local slot that will never be written to.
+        // At runtime, load_local checks for Undefined and raises NameError.
         let (id, is_new) = match self.name_map.entry(name_str.to_string()) {
             Entry::Occupied(e) => (*e.get(), false),
             Entry::Vacant(e) => {
