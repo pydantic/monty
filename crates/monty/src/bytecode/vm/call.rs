@@ -15,7 +15,12 @@ use crate::{
     intern::{ExtFunctionId, FunctionId, Interns, StringId, attr},
     io::PrintWriter,
     resource::ResourceTracker,
-    types::{Dict, PyTrait, Type, bytes::call_bytes_method, dict::dict_fromkeys, str::call_str_method},
+    types::{
+        Dict, PyTrait, Type,
+        bytes::{bytes_fromhex, call_bytes_method},
+        dict::dict_fromkeys,
+        str::call_str_method,
+    },
     value::{Attr, Value},
 };
 
@@ -804,8 +809,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
 /// Dispatches a classmethod call on a type object.
 ///
-/// Handles classmethods like `dict.fromkeys()` that are called on the type itself
-/// rather than on an instance.
+/// Handles classmethods like `dict.fromkeys()` and `bytes.fromhex()` that are
+/// called on the type itself rather than on an instance.
 fn call_type_method(
     t: Type,
     method_id: StringId,
@@ -813,8 +818,10 @@ fn call_type_method(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> Result<Value, RunError> {
-    if t == Type::Dict && method_id == attr::FROMKEYS {
-        return dict_fromkeys(args, heap, interns);
+    match (t, method_id) {
+        (Type::Dict, m) if m == attr::FROMKEYS => return dict_fromkeys(args, heap, interns),
+        (Type::Bytes, m) if m == attr::FROMHEX => return bytes_fromhex(args, heap, interns),
+        _ => {}
     }
     // Other types or unknown methods
     args.drop_with_heap(heap);

@@ -26,7 +26,7 @@ pub struct StringId(u32);
 pub const MODULE_STRING_ID: StringId = StringId(0);
 
 /// update MAX_ATTR_ID when adding new attrs
-const MAX_ATTR_ID: u32 = 68;
+const MAX_ATTR_ID: u32 = 70;
 
 /// The StringId for the empty string `""` - interned for allocation-free empty string returns.
 pub const EMPTY_STRING: StringId = StringId(MAX_ATTR_ID + 1);
@@ -180,7 +180,14 @@ pub mod attr {
     // ==========================
     // Bytes methods
     // Also uses string-shared: FIND, INDEX, COUNT, STARTSWITH, ENDSWITH
+    // Also uses most string methods: LOWER, UPPER, CAPITALIZE, TITLE, SWAPCASE,
+    // ISALPHA, ISDIGIT, ISALNUM, ISSPACE, ISLOWER, ISUPPER, ISASCII, ISTITLE,
+    // RFIND, RINDEX, STRIP, LSTRIP, RSTRIP, REMOVEPREFIX, REMOVESUFFIX,
+    // SPLIT, RSPLIT, SPLITLINES, PARTITION, RPARTITION, REPLACE,
+    // CENTER, LJUST, RJUST, ZFILL, JOIN
     pub const DECODE: StringId = StringId(68);
+    pub const HEX: StringId = StringId(69);
+    pub const FROMHEX: StringId = StringId(70);
 }
 
 impl StringId {
@@ -475,9 +482,13 @@ impl InternerBuilder {
         let id = interner.intern_static("istitle");
         debug_assert_eq!(id, attr::ISTITLE);
 
-        // Bytes methods (ID 68)
+        // Bytes methods (IDs 68-70)
         let id = interner.intern_static("decode");
         debug_assert_eq!(id, attr::DECODE);
+        let id = interner.intern_static("hex");
+        debug_assert_eq!(id, attr::HEX);
+        let id = interner.intern_static("fromhex");
+        debug_assert_eq!(id, attr::FROMHEX);
 
         // Pre-intern the empty string for allocation-free empty string returns
         let id = interner.intern_static("");

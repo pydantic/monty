@@ -67,3 +67,211 @@ assert b'hello'.find(b'e', 5, 2) == -1, 'find with start > end returns -1'
 assert b'hello'.count(b'l', 5, 2) == 0, 'count with start > end returns 0'
 assert not b'hello'.startswith(b'h', 5, 2), 'startswith with start > end is false'
 assert not b'hello'.endswith(b'o', 5, 2), 'endswith with start > end is false'
+
+# === bytes.lower() ===
+assert b'HELLO'.lower() == b'hello', 'lower basic'
+assert b'Hello World'.lower() == b'hello world', 'lower mixed case'
+assert b'hello'.lower() == b'hello', 'lower already lowercase'
+assert b''.lower() == b'', 'lower empty'
+assert b'123ABC'.lower() == b'123abc', 'lower with digits'
+assert b'\x80\xff'.lower() == b'\x80\xff', 'lower non-ascii unchanged'
+
+# === bytes.upper() ===
+assert b'hello'.upper() == b'HELLO', 'upper basic'
+assert b'Hello World'.upper() == b'HELLO WORLD', 'upper mixed case'
+assert b'HELLO'.upper() == b'HELLO', 'upper already uppercase'
+assert b''.upper() == b'', 'upper empty'
+assert b'123abc'.upper() == b'123ABC', 'upper with digits'
+
+# === bytes.capitalize() ===
+assert b'hello'.capitalize() == b'Hello', 'capitalize basic'
+assert b'HELLO'.capitalize() == b'Hello', 'capitalize uppercase'
+assert b'hELLO wORLD'.capitalize() == b'Hello world', 'capitalize mixed'
+assert b''.capitalize() == b'', 'capitalize empty'
+assert b'123hello'.capitalize() == b'123hello', 'capitalize starting with digit'
+
+# === bytes.title() ===
+assert b'hello world'.title() == b'Hello World', 'title basic'
+assert b'HELLO WORLD'.title() == b'Hello World', 'title uppercase'
+assert b"they're bill's".title() == b"They'Re Bill'S", 'title with apostrophe'
+assert b''.title() == b'', 'title empty'
+
+# === bytes.swapcase() ===
+assert b'Hello World'.swapcase() == b'hELLO wORLD', 'swapcase basic'
+assert b'HELLO'.swapcase() == b'hello', 'swapcase uppercase'
+assert b'hello'.swapcase() == b'HELLO', 'swapcase lowercase'
+assert b''.swapcase() == b'', 'swapcase empty'
+
+# === bytes.isalpha() ===
+assert b'hello'.isalpha(), 'isalpha all letters'
+assert not b'hello123'.isalpha(), 'isalpha with digits'
+assert not b'hello world'.isalpha(), 'isalpha with space'
+assert not b''.isalpha(), 'isalpha empty is false'
+assert b'ABC'.isalpha(), 'isalpha uppercase'
+
+# === bytes.isdigit() ===
+assert b'123'.isdigit(), 'isdigit all digits'
+assert not b'123abc'.isdigit(), 'isdigit with letters'
+assert not b''.isdigit(), 'isdigit empty is false'
+
+# === bytes.isalnum() ===
+assert b'hello123'.isalnum(), 'isalnum letters and digits'
+assert b'hello'.isalnum(), 'isalnum all letters'
+assert b'123'.isalnum(), 'isalnum all digits'
+assert not b'hello world'.isalnum(), 'isalnum with space'
+assert not b''.isalnum(), 'isalnum empty is false'
+
+# === bytes.isspace() ===
+assert b' \t\n\r'.isspace(), 'isspace whitespace chars'
+assert not b'hello'.isspace(), 'isspace not all whitespace'
+assert not b''.isspace(), 'isspace empty is false'
+assert b' '.isspace(), 'isspace single space'
+
+# === bytes.islower() ===
+assert b'hello'.islower(), 'islower all lowercase'
+assert b'hello123'.islower(), 'islower with digits'
+assert not b'Hello'.islower(), 'islower with uppercase'
+assert not b'HELLO'.islower(), 'islower all uppercase'
+assert not b''.islower(), 'islower empty is false'
+assert not b'123'.islower(), 'islower no cased chars is false'
+
+# === bytes.isupper() ===
+assert b'HELLO'.isupper(), 'isupper all uppercase'
+assert b'HELLO123'.isupper(), 'isupper with digits'
+assert not b'Hello'.isupper(), 'isupper with lowercase'
+assert not b'hello'.isupper(), 'isupper all lowercase'
+assert not b''.isupper(), 'isupper empty is false'
+assert not b'123'.isupper(), 'isupper no cased chars is false'
+
+# === bytes.isascii() ===
+assert b'hello'.isascii(), 'isascii all ascii'
+assert b''.isascii(), 'isascii empty is true'
+assert b'\x00\x7f'.isascii(), 'isascii boundary values'
+assert not b'\x80'.isascii(), 'isascii non-ascii byte'
+assert not b'hello\xff'.isascii(), 'isascii with non-ascii'
+
+# === bytes.istitle() ===
+assert b'Hello World'.istitle(), 'istitle basic'
+assert not b'hello world'.istitle(), 'istitle lowercase'
+assert not b'HELLO WORLD'.istitle(), 'istitle uppercase'
+assert b'Hello'.istitle(), 'istitle single word'
+assert not b''.istitle(), 'istitle empty is false'
+
+# === bytes.rfind() ===
+assert b'hello'.rfind(b'l') == 3, 'rfind finds last occurrence'
+assert b'hello'.rfind(b'x') == -1, 'rfind not found'
+assert b'hello'.rfind(b'') == 5, 'rfind empty at end'
+assert b'aaaa'.rfind(b'aa') == 2, 'rfind non-overlapping from right'
+assert b'hello'.rfind(b'l', 0, 3) == 2, 'rfind with range'
+
+# === bytes.rindex() ===
+assert b'hello'.rindex(b'l') == 3, 'rindex finds last occurrence'
+assert b'hello'.rindex(b'') == 5, 'rindex empty at end'
+
+# === bytes.strip() ===
+assert b'  hello  '.strip() == b'hello', 'strip whitespace'
+assert b'hello'.strip() == b'hello', 'strip no whitespace'
+assert b'xxxhelloxxx'.strip(b'x') == b'hello', 'strip custom chars'
+assert b''.strip() == b'', 'strip empty'
+assert b'   '.strip() == b'', 'strip all whitespace'
+
+# === bytes.lstrip() ===
+assert b'  hello  '.lstrip() == b'hello  ', 'lstrip whitespace'
+assert b'xxxhello'.lstrip(b'x') == b'hello', 'lstrip custom chars'
+assert b''.lstrip() == b'', 'lstrip empty'
+
+# === bytes.rstrip() ===
+assert b'  hello  '.rstrip() == b'  hello', 'rstrip whitespace'
+assert b'helloxxx'.rstrip(b'x') == b'hello', 'rstrip custom chars'
+assert b''.rstrip() == b'', 'rstrip empty'
+
+# === bytes.removeprefix() ===
+assert b'hello'.removeprefix(b'he') == b'llo', 'removeprefix found'
+assert b'hello'.removeprefix(b'xxx') == b'hello', 'removeprefix not found'
+assert b'hello'.removeprefix(b'') == b'hello', 'removeprefix empty'
+assert b''.removeprefix(b'x') == b'', 'removeprefix empty bytes'
+
+# === bytes.removesuffix() ===
+assert b'hello'.removesuffix(b'lo') == b'hel', 'removesuffix found'
+assert b'hello'.removesuffix(b'xxx') == b'hello', 'removesuffix not found'
+assert b'hello'.removesuffix(b'') == b'hello', 'removesuffix empty'
+assert b''.removesuffix(b'x') == b'', 'removesuffix empty bytes'
+
+# === bytes.split() ===
+assert b'a,b,c'.split(b',') == [b'a', b'b', b'c'], 'split basic'
+assert b'a b c'.split() == [b'a', b'b', b'c'], 'split whitespace'
+assert b'a  b  c'.split() == [b'a', b'b', b'c'], 'split multiple whitespace'
+assert b'a,b,c'.split(b',', 1) == [b'a', b'b,c'], 'split maxsplit'
+assert b''.split() == [], 'split empty bytes'
+assert b'hello'.split(b'x') == [b'hello'], 'split not found'
+
+# === bytes.rsplit() ===
+assert b'a,b,c'.rsplit(b',') == [b'a', b'b', b'c'], 'rsplit basic'
+assert b'a,b,c'.rsplit(b',', 1) == [b'a,b', b'c'], 'rsplit maxsplit'
+assert b'a b c'.rsplit() == [b'a', b'b', b'c'], 'rsplit whitespace'
+
+# === bytes.splitlines() ===
+assert b'a\nb\nc'.splitlines() == [b'a', b'b', b'c'], 'splitlines newline'
+assert b'a\r\nb\rc'.splitlines() == [b'a', b'b', b'c'], 'splitlines mixed'
+assert b'a\nb\n'.splitlines() == [b'a', b'b'], 'splitlines trailing'
+assert b'a\nb'.splitlines(True) == [b'a\n', b'b'], 'splitlines keepends'
+assert b''.splitlines() == [], 'splitlines empty'
+
+# === bytes.partition() ===
+assert b'hello world'.partition(b' ') == (b'hello', b' ', b'world'), 'partition found'
+assert b'hello'.partition(b'x') == (b'hello', b'', b''), 'partition not found'
+assert b'hello world here'.partition(b' ') == (b'hello', b' ', b'world here'), 'partition first'
+
+# === bytes.rpartition() ===
+assert b'hello world'.rpartition(b' ') == (b'hello', b' ', b'world'), 'rpartition found'
+assert b'hello'.rpartition(b'x') == (b'', b'', b'hello'), 'rpartition not found'
+assert b'hello world here'.rpartition(b' ') == (b'hello world', b' ', b'here'), 'rpartition last'
+
+# === bytes.replace() ===
+assert b'hello'.replace(b'l', b'L') == b'heLLo', 'replace all'
+assert b'hello'.replace(b'l', b'L', 1) == b'heLlo', 'replace count'
+assert b'hello'.replace(b'x', b'y') == b'hello', 'replace not found'
+assert b'aaa'.replace(b'a', b'bb') == b'bbbbbb', 'replace longer'
+assert b'aaa'.replace(b'aa', b'b') == b'ba', 'replace non-overlapping'
+
+# === bytes.center() ===
+assert b'hello'.center(10) == b'  hello   ', 'center basic'
+assert b'hello'.center(10, b'*') == b'**hello***', 'center fillbyte'
+assert b'hello'.center(3) == b'hello', 'center too short'
+
+# === bytes.ljust() ===
+assert b'hello'.ljust(10) == b'hello     ', 'ljust basic'
+assert b'hello'.ljust(10, b'*') == b'hello*****', 'ljust fillbyte'
+assert b'hello'.ljust(3) == b'hello', 'ljust too short'
+
+# === bytes.rjust() ===
+assert b'hello'.rjust(10) == b'     hello', 'rjust basic'
+assert b'hello'.rjust(10, b'*') == b'*****hello', 'rjust fillbyte'
+assert b'hello'.rjust(3) == b'hello', 'rjust too short'
+
+# === bytes.zfill() ===
+assert b'42'.zfill(5) == b'00042', 'zfill basic'
+assert b'-42'.zfill(5) == b'-0042', 'zfill negative'
+assert b'+42'.zfill(5) == b'+0042', 'zfill positive'
+assert b'hello'.zfill(3) == b'hello', 'zfill too short'
+
+# === bytes.join() ===
+assert b','.join([b'a', b'b', b'c']) == b'a,b,c', 'join list'
+assert b''.join([b'a', b'b']) == b'ab', 'join empty separator'
+assert b','.join([]) == b'', 'join empty iterable'
+assert b'-'.join([b'hello']) == b'hello', 'join single item'
+
+# === bytes.hex() ===
+assert b'\xde\xad\xbe\xef'.hex() == 'deadbeef', 'hex basic'
+assert b''.hex() == '', 'hex empty'
+assert b'AB'.hex() == '4142', 'hex letters'
+assert b'\x00\xff'.hex() == '00ff', 'hex boundary'
+assert b'\xde\xad\xbe\xef'.hex(':') == 'de:ad:be:ef', 'hex with separator'
+assert b'\xde\xad\xbe\xef'.hex(':', 2) == 'dead:beef', 'hex with bytes_per_sep'
+
+# === bytes.fromhex() ===
+assert bytes.fromhex('deadbeef') == b'\xde\xad\xbe\xef', 'fromhex basic'
+assert bytes.fromhex('DEADBEEF') == b'\xde\xad\xbe\xef', 'fromhex uppercase'
+assert bytes.fromhex('') == b'', 'fromhex empty'
+assert bytes.fromhex('de ad be ef') == b'\xde\xad\xbe\xef', 'fromhex with spaces'
+assert bytes.fromhex('4142') == b'AB', 'fromhex letters'
