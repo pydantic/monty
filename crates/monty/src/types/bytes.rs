@@ -2217,7 +2217,7 @@ fn bytes_hex(
             let mut result = String::new();
 
             if bytes_per_sep > 0 {
-                // Positive: count from left, so partial group is at the START
+                // Positive: count from right, so partial group is at the START
                 let total_len = hex_chars.len();
                 let first_chunk_len = total_len % chars_per_group;
                 let first_chunk_len = if first_chunk_len == 0 {
@@ -2232,7 +2232,7 @@ fn bytes_hex(
                     result.extend(chunk);
                 }
             } else {
-                // Negative: count from right, so partial group is at the END
+                // Negative: count from left, so partial group is at the END
                 for (i, chunk) in hex_chars.chunks(chars_per_group).enumerate() {
                     if i > 0 {
                         result.push_str(&sep);
@@ -2382,7 +2382,8 @@ fn parse_bytes_hex_args(
 
 /// Implements Python's `bytes.fromhex(string)` classmethod.
 ///
-/// Creates bytes from a hexadecimal string. Whitespace is ignored.
+/// Creates bytes from a hexadecimal string. Whitespace is allowed between byte pairs,
+/// but not between the two digits of a byte.
 pub fn bytes_fromhex(args: ArgValues, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Value> {
     let hex_value = args.get_one_arg("bytes.fromhex", heap)?;
 
@@ -2404,19 +2405,27 @@ pub fn bytes_fromhex(args: ArgValues, heap: &mut Heap<impl ResourceTracker>, int
     };
     hex_value.drop_with_heap(heap);
 
-    // Parse hex string, ignoring whitespace but tracking original positions
+    // CPython allows whitespace BETWEEN byte pairs, but NOT within a pair.
+    // - "de ad" is valid (whitespace between pairs)
+    // - "d e" or "0 1" are NOT valid (whitespace within a pair)
+    // - " 01 " is valid (whitespace before/after)
+    //
+    // Error messages:
+    // - Invalid char (including whitespace in wrong place): "non-hexadecimal number found ... at position X"
+    // - Odd number of valid hex digits: "must contain an even number of hexadecimal digits"
+
     let mut result = Vec::new();
-    let mut chars_iter = hex_str.chars().enumerate().peekable();
+    let mut chars = hex_str.chars().enumerate().peekable();
 
     loop {
-        // Skip whitespace
-        while chars_iter.peek().is_some_and(|(_, c)| c.is_whitespace()) {
-            chars_iter.next();
+        // Skip whitespace BETWEEN byte pairs (before the high nibble)
+        while chars.peek().is_some_and(|(_, c)| c.is_whitespace()) {
+            chars.next();
         }
 
         // Get high nibble
-        let Some((hi_pos, hi_char)) = chars_iter.next() else {
-            break;
+        let Some((hi_pos, hi_char)) = chars.next() else {
+            break; // End of string - we're done
         };
 
         let Some(hi_val) = hex_char_to_value(hi_char) else {
@@ -2427,14 +2436,9 @@ pub fn bytes_fromhex(args: ArgValues, heap: &mut Heap<impl ResourceTracker>, int
             .into());
         };
 
-        // Skip whitespace before low nibble
-        while chars_iter.peek().is_some_and(|(_, c)| c.is_whitespace()) {
-            chars_iter.next();
-        }
-
-        // Get low nibble
-        let Some((lo_pos, lo_char)) = chars_iter.next() else {
-            // Odd number of hex digits
+        // Get low nibble - must be IMMEDIATELY after high nibble (no whitespace)
+        let Some((lo_pos, lo_char)) = chars.next() else {
+            // End of string after high nibble = odd number of hex digits
             return Err(SimpleException::new_msg(
                 ExcType::ValueError,
                 "fromhex() arg must contain an even number of hexadecimal digits",
@@ -2443,6 +2447,7 @@ pub fn bytes_fromhex(args: ArgValues, heap: &mut Heap<impl ResourceTracker>, int
         };
 
         let Some(lo_val) = hex_char_to_value(lo_char) else {
+            // Invalid character (including whitespace) in low nibble position
             return Err(SimpleException::new_msg(
                 ExcType::ValueError,
                 format!("non-hexadecimal number found in fromhex() arg at position {lo_pos}"),

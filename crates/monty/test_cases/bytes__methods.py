@@ -281,3 +281,44 @@ assert bytes.fromhex('DEADBEEF') == b'\xde\xad\xbe\xef', 'fromhex uppercase'
 assert bytes.fromhex('') == b'', 'fromhex empty'
 assert bytes.fromhex('de ad be ef') == b'\xde\xad\xbe\xef', 'fromhex with spaces'
 assert bytes.fromhex('4142') == b'AB', 'fromhex letters'
+
+# === bytes.fromhex() with whitespace ===
+# Whitespace is only allowed BETWEEN byte pairs, not within a pair
+assert bytes.fromhex(' 01 ') == b'\x01', 'fromhex whitespace around bytes is stripped'
+assert bytes.fromhex('01 23') == b'\x01\x23', 'fromhex whitespace between byte pairs'
+
+# === bytes.fromhex() errors ===
+# Odd number of hex digits (no invalid chars, just odd count)
+try:
+    bytes.fromhex('0')
+    assert False, 'fromhex odd digits should error'
+except ValueError as e:
+    assert str(e) == 'fromhex() arg must contain an even number of hexadecimal digits', (
+        f'fromhex odd digits message, error: {e}'
+    )
+
+try:
+    bytes.fromhex(' 0')
+    assert False, 'fromhex odd digits after whitespace should error'
+except ValueError as e:
+    assert str(e) == 'fromhex() arg must contain an even number of hexadecimal digits', (
+        f'fromhex odd digits after whitespace message, error: {e}'
+    )
+
+# Whitespace within a byte pair is invalid (space is not a hex digit)
+try:
+    bytes.fromhex('0 1')
+    assert False, 'fromhex whitespace within pair should error'
+except ValueError as e:
+    assert str(e) == 'non-hexadecimal number found in fromhex() arg at position 1', (
+        f'fromhex whitespace within pair message, error: {e}'
+    )
+
+# Invalid hex character
+try:
+    bytes.fromhex('0g')
+    assert False, 'fromhex invalid hex char should error'
+except ValueError as e:
+    assert str(e) == 'non-hexadecimal number found in fromhex() arg at position 1', (
+        f'fromhex invalid hex char message, error: {e}'
+    )

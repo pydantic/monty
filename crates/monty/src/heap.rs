@@ -389,6 +389,8 @@ impl PyTrait for HeapData {
             Self::Str(s) => s.py_str(heap, interns),
             // LongInt returns its string representation
             Self::LongInt(li) => Cow::Owned(li.to_string()),
+            // Exceptions return just the message (or empty string if no message)
+            Self::Exception(e) => Cow::Owned(e.arg().cloned().unwrap_or_default()),
             // All other types use repr
             _ => self.py_repr(heap, interns),
         }
