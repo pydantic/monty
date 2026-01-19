@@ -2217,15 +2217,7 @@ fn bytes_hex(
             let mut result = String::new();
 
             if bytes_per_sep > 0 {
-                // From left to right
-                for (i, chunk) in hex_chars.chunks(chars_per_group).enumerate() {
-                    if i > 0 {
-                        result.push_str(&sep);
-                    }
-                    result.extend(chunk);
-                }
-            } else {
-                // From right to left - we need to handle the first chunk specially
+                // Positive: count from left, so partial group is at the START
                 let total_len = hex_chars.len();
                 let first_chunk_len = total_len % chars_per_group;
                 let first_chunk_len = if first_chunk_len == 0 {
@@ -2237,6 +2229,14 @@ fn bytes_hex(
                 result.extend(&hex_chars[..first_chunk_len]);
                 for chunk in hex_chars[first_chunk_len..].chunks(chars_per_group) {
                     result.push_str(&sep);
+                    result.extend(chunk);
+                }
+            } else {
+                // Negative: count from right, so partial group is at the END
+                for (i, chunk) in hex_chars.chunks(chars_per_group).enumerate() {
+                    if i > 0 {
+                        result.push_str(&sep);
+                    }
                     result.extend(chunk);
                 }
             }
@@ -2404,49 +2404,53 @@ pub fn bytes_fromhex(args: ArgValues, heap: &mut Heap<impl ResourceTracker>, int
     };
     hex_value.drop_with_heap(heap);
 
-    // Parse hex string, ignoring whitespace
+    // Parse hex string, ignoring whitespace but tracking original positions
     let mut result = Vec::new();
-    let mut chars = hex_str.chars().filter(|c| !c.is_whitespace()).peekable();
+    let mut chars_iter = hex_str.chars().enumerate().peekable();
 
-    while chars.peek().is_some() {
-        let hi = chars.next().unwrap();
-        let lo = chars.next();
-
-        let hi_val = hex_char_to_value(hi);
-        let lo_val = lo.map(hex_char_to_value);
-
-        match (hi_val, lo_val) {
-            (Some(h), Some(Some(l))) => {
-                result.push((h << 4) | l);
-            }
-            (Some(_), Some(None)) => {
-                return Err(SimpleException::new_msg(
-                    ExcType::ValueError,
-                    format!(
-                        "non-hexadecimal number found in fromhex() arg at position {}",
-                        result.len() * 2 + 1
-                    ),
-                )
-                .into());
-            }
-            (Some(_), None) => {
-                return Err(SimpleException::new_msg(
-                    ExcType::ValueError,
-                    "non-hexadecimal number found in fromhex() arg at position 1",
-                )
-                .into());
-            }
-            (None, _) => {
-                return Err(SimpleException::new_msg(
-                    ExcType::ValueError,
-                    format!(
-                        "non-hexadecimal number found in fromhex() arg at position {}",
-                        result.len() * 2
-                    ),
-                )
-                .into());
-            }
+    loop {
+        // Skip whitespace
+        while chars_iter.peek().is_some_and(|(_, c)| c.is_whitespace()) {
+            chars_iter.next();
         }
+
+        // Get high nibble
+        let Some((hi_pos, hi_char)) = chars_iter.next() else {
+            break;
+        };
+
+        let Some(hi_val) = hex_char_to_value(hi_char) else {
+            return Err(SimpleException::new_msg(
+                ExcType::ValueError,
+                format!("non-hexadecimal number found in fromhex() arg at position {hi_pos}"),
+            )
+            .into());
+        };
+
+        // Skip whitespace before low nibble
+        while chars_iter.peek().is_some_and(|(_, c)| c.is_whitespace()) {
+            chars_iter.next();
+        }
+
+        // Get low nibble
+        let Some((lo_pos, lo_char)) = chars_iter.next() else {
+            // Odd number of hex digits
+            return Err(SimpleException::new_msg(
+                ExcType::ValueError,
+                "fromhex() arg must contain an even number of hexadecimal digits",
+            )
+            .into());
+        };
+
+        let Some(lo_val) = hex_char_to_value(lo_char) else {
+            return Err(SimpleException::new_msg(
+                ExcType::ValueError,
+                format!("non-hexadecimal number found in fromhex() arg at position {lo_pos}"),
+            )
+            .into());
+        };
+
+        result.push((hi_val << 4) | lo_val);
     }
 
     allocate_bytes(result, heap)

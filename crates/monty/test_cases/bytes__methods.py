@@ -268,6 +268,12 @@ assert b'AB'.hex() == '4142', 'hex letters'
 assert b'\x00\xff'.hex() == '00ff', 'hex boundary'
 assert b'\xde\xad\xbe\xef'.hex(':') == 'de:ad:be:ef', 'hex with separator'
 assert b'\xde\xad\xbe\xef'.hex(':', 2) == 'dead:beef', 'hex with bytes_per_sep'
+# Test positive bytes_per_sep (partial group at start)
+assert b'\x01\x02\x03\x04\x05'.hex(':', 2) == '01:0203:0405', 'hex +2 odd bytes'
+assert b'\x01\x02\x03'.hex(':', 2) == '01:0203', 'hex +2 three bytes'
+# Test negative bytes_per_sep (partial group at end)
+assert b'\x01\x02\x03\x04\x05'.hex(':', -2) == '0102:0304:05', 'hex -2 odd bytes'
+assert b'\x01\x02\x03'.hex(':', -2) == '0102:03', 'hex -2 three bytes'
 
 # === bytes.fromhex() ===
 assert bytes.fromhex('deadbeef') == b'\xde\xad\xbe\xef', 'fromhex basic'
