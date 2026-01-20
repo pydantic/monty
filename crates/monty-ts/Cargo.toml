@@ -1,0 +1,22 @@
+[workspace]
+
+[package]
+name = "monty-ts"
+authors = ["Samuel Colvin <samuel@pydantic.dev>"]
+edition = "2021"
+version = "0.1.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+monty = { path = "../monty" }
+napi = { version = "3.0.0", default-features = false, features = ["napi4"] }
+napi-derive = "3.0.0"
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+lto = true
+strip = "symbols"
