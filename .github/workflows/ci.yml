@@ -585,9 +585,9 @@ jobs:
       id-token: write
     needs:
       - lint
-      - test-macOS-windows-binding
-      - test-linux-binding
-      - test-wasi
+      - test-ts-macOS-windows-binding
+      - test-ts-linux-binding
+      - test-ts-wasi
     steps:
       - uses: actions/checkout@v6
       - name: Setup node
