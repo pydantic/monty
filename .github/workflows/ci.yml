@@ -41,11 +41,11 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: crates/monty-ts/package-lock.json
+          cache-dependency-path: crates/monty-js/package-lock.json
 
       - name: Install dependencies
         run: npm install
-        working-directory: crates/monty-ts
+        working-directory: crates/monty-js
 
       - run: uvx pre-commit run --color=always --all-files --verbose
         env:
@@ -364,7 +364,7 @@ jobs:
 
       - uses: pypa/gh-action-pypi-publish@release/v1
 
-  build-ts:
+  build-js:
     strategy:
       fail-fast: false
       matrix:
@@ -384,7 +384,7 @@ jobs:
           - host: ubuntu-latest
             target: wasm32-wasip1-threads
             build: npm run build -- --target wasm32-wasip1-threads
-    name: build TS - ${{ matrix.settings.target }} - node@22
+    name: build JS - ${{ matrix.settings.target }} - node@22
     runs-on: ${{ matrix.settings.host }}
     steps:
       - uses: actions/checkout@v6
@@ -393,7 +393,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: crates/monty-ts/package-lock.json
+          cache-dependency-path: crates/monty-js/package-lock.json
       - name: Install
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -425,27 +425,27 @@ jobs:
         shell: bash
       - name: Install dependencies
         run: npm install
-        working-directory: crates/monty-ts
+        working-directory: crates/monty-js
       - name: Build
         run: ${{ matrix.settings.build }}
         shell: bash
-        working-directory: crates/monty-ts
+        working-directory: crates/monty-js
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
           name: bindings-${{ matrix.settings.target }}
           path: |
-            crates/monty-ts/monty.*.node
-            crates/monty-ts/monty.*.wasm
+            crates/monty-js/monty.*.node
+            crates/monty-js/monty.*.wasm
           if-no-files-found: error
     env:
       MACOSX_DEPLOYMENT_TARGET: '10.13'
       CARGO_INCREMENTAL: '1'
 
-  test-ts-macOS-windows-binding:
-    name: Test TS bindings on ${{ matrix.settings.target }} - node@${{ matrix.node }}
+  test-js-macOS-windows-binding:
+    name: Test JS bindings on ${{ matrix.settings.target }} - node@${{ matrix.node }}
     needs:
-      - build-ts
+      - build-js
     strategy:
       fail-fast: false
       matrix:
@@ -470,28 +470,28 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-          cache-dependency-path: crates/monty-ts/package-lock.json
+          cache-dependency-path: crates/monty-js/package-lock.json
           architecture: ${{ matrix.settings.architecture }}
       - name: Install dependencies
         run: npm install
-        working-directory: crates/monty-ts
+        working-directory: crates/monty-js
       - name: Download artifacts
         uses: actions/download-artifact@v7
         with:
           name: bindings-${{ matrix.settings.target }}
-          path: crates/monty-ts
+          path: crates/monty-js
       - name: List packages
         run: ls -R .
         shell: bash
-        working-directory: crates/monty-ts
+        working-directory: crates/monty-js
       - name: Test bindings
         run: npm test
-        working-directory: crates/monty-ts
+        working-directory: crates/monty-js
 
-  test-ts-linux-binding:
-    name: Test TS ${{ matrix.target }} - node@${{ matrix.node }}
+  test-js-linux-binding:
+    name: Test JS ${{ matrix.target }} - node@${{ matrix.node }}
     needs:
-      - build-ts
+      - build-js
     strategy:
       fail-fast: false
       matrix:
@@ -508,7 +508,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-          cache-dependency-path: crates/monty-ts/package-lock.json
+          cache-dependency-path: crates/monty-js/package-lock.json
       - name: Output docker params
         id: docker
         run: |
@@ -530,16 +530,16 @@ jobs:
           " >> $GITHUB_OUTPUT
       - name: Install dependencies
         run: npm install
-        working-directory: crates/monty-ts
+        working-directory: crates/monty-js
       - name: Download artifacts
         uses: actions/download-artifact@v7
         with:
           name: bindings-${{ matrix.target }}
-          path: crates/monty-ts
+          path: crates/monty-js
       - name: List packages
         run: ls -R .
         shell: bash
-        working-directory: crates/monty-ts
+        working-directory: crates/monty-js
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         if: ${{ contains(matrix.target, 'armv7') }}
@@ -551,13 +551,13 @@ jobs:
         uses: addnab/docker-run-action@v3
         with:
           image: ${{ steps.docker.outputs.IMAGE }}
-          options: '-v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }}/crates/monty-ts --platform ${{ steps.docker.outputs.PLATFORM }}'
+          options: '-v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }}/crates/monty-js --platform ${{ steps.docker.outputs.PLATFORM }}'
           run: npm test
 
-  test-ts-wasi:
+  test-js-wasi:
     name: Test WASI target
     needs:
-      - build-ts
+      - build-js
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -566,36 +566,36 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: crates/monty-ts/package-lock.json
+          cache-dependency-path: crates/monty-js/package-lock.json
       - name: Install dependencies
         run: npm install --cpu wasm32
-        working-directory: crates/monty-ts
+        working-directory: crates/monty-js
       - name: Download artifacts
         uses: actions/download-artifact@v7
         with:
           name: bindings-wasm32-wasip1-threads
-          path: crates/monty-ts
+          path: crates/monty-js
       - name: List packages
         run: ls -R .
         shell: bash
-        working-directory: crates/monty-ts
+        working-directory: crates/monty-js
       - name: Test bindings
         run: npm test
         env:
           NAPI_RS_FORCE_WASI: 1
-        working-directory: crates/monty-ts
+        working-directory: crates/monty-js
 
-  publish-ts:
-    name: Publish TS
+  publish-js:
+    name: Publish JS
     runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
     needs:
       - lint
-      - test-ts-macOS-windows-binding
-      - test-ts-linux-binding
-      - test-ts-wasi
+      - test-js-macOS-windows-binding
+      - test-js-linux-binding
+      - test-js-wasi
     steps:
       - uses: actions/checkout@v6
       - name: Setup node
@@ -603,24 +603,24 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: crates/monty-ts/package-lock.json
+          cache-dependency-path: crates/monty-js/package-lock.json
       - name: Install dependencies
         run: npm install
-        working-directory: crates/monty-ts
+        working-directory: crates/monty-js
       - name: create npm dirs
         run: npm run create-npm-dirs
-        working-directory: crates/monty-ts
+        working-directory: crates/monty-js
       - name: Download all artifacts
         uses: actions/download-artifact@v7
         with:
-          path: crates/monty-ts/artifacts
+          path: crates/monty-js/artifacts
       - name: Move artifacts
         run: npm run artifacts
-        working-directory: crates/monty-ts
+        working-directory: crates/monty-js
       - name: List packages
         run: ls -R ./npm
         shell: bash
-        working-directory: crates/monty-ts
+        working-directory: crates/monty-js
       - name: Publish
         run: |
           npm config set provenance true
@@ -635,7 +635,7 @@ jobs:
           else
             echo "Not a release, skipping publish"
           fi
-        working-directory: crates/monty-ts
+        working-directory: crates/monty-js
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

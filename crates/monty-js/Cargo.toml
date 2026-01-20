@@ -1,5 +1,5 @@
 [package]
-name = "monty-ts"
+name = "monty-js"
 authors = ["Samuel Colvin <samuel@pydantic.dev>"]
 edition = "2021"
 version = "0.1.0"

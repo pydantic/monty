@@ -26,29 +26,29 @@ install: .cargo .pre-commit install-py ## Install the package, dependencies, and
 dev-py: ## Install the python package for development
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml
 
-.PHONY: install-ts
-install-ts: ## Install TypeScript package dependencies
-	cd crates/monty-ts && npm install
+.PHONY: install-js
+install-js: ## Install JS package dependencies
+	cd crates/monty-js && npm install
 
-.PHONY: build-ts
-build-ts: ## Build the TypeScript package (debug)
-	cd crates/monty-ts && npm run build:debug
+.PHONY: build-js
+build-js: ## Build the JS package (debug)
+	cd crates/monty-js && npm run build:debug
 
-.PHONY: build-ts-release
-build-ts-release: ## Build the TypeScript package (release)
-	cd crates/monty-ts && npm run build
+.PHONY: build-js-release
+build-js-release: ## Build the JS package (release)
+	cd crates/monty-js && npm run build
 
-.PHONY: format-ts
-format-ts: install-ts ## Format TypeScript code with prettier
-	cd crates/monty-ts && npm run format:prettier
+.PHONY: format-js
+format-js: install-js ## Format JS code with prettier
+	cd crates/monty-js && npm run format:prettier
 
-.PHONY: lint-ts
-lint-ts: install-ts ## Lint TypeScript code with oxlint
-	cd crates/monty-ts && npm run lint
+.PHONY: lint-js
+lint-js: install-js ## Lint JS code with oxlint
+	cd crates/monty-js && npm run lint
 
-.PHONY: test-ts
-test-ts: build-ts ## Build and test the TypeScript package
-	cd crates/monty-ts && npm test
+.PHONY: test-js
+test-js: build-js ## Build and test the JS package
+	cd crates/monty-js && npm test
 
 .PHONY: dev-py-release
 dev-py-release: ## Install the python package for development with a release build

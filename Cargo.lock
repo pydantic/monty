@@ -1556,6 +1556,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "monty-js"
+version = "0.1.0"
+dependencies = [
+ "monty",
+ "napi",
+ "napi-build",
+ "napi-derive",
+]
+
+[[package]]
 name = "monty-python"
 version = "0.0.0"
 dependencies = [
@@ -1567,16 +1577,6 @@ dependencies = [
  "pyo3",
  "pyo3-build-config",
  "serde",
-]
-
-[[package]]
-name = "monty-ts"
-version = "0.1.0"
-dependencies = [
- "monty",
- "napi",
- "napi-build",
- "napi-derive",
 ]
 
 [[package]]
