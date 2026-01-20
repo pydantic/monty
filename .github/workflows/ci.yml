@@ -12,6 +12,7 @@ env:
   COLUMNS: 150
   UV_PYTHON: "3.14"
   UV_FROZEN: "1"
+  DEBUG: napi:*
 
 jobs:
   lint:
@@ -109,7 +110,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
-        # don't use .venv python in CI
+          # don't use .venv python in CI
       - run: rm .cargo/config.toml
 
       - run: make dev-bench
@@ -350,3 +351,283 @@ jobs:
         run: ls -lhR dist/
 
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  build-ts:
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - host: macos-latest
+            target: x86_64-apple-darwin
+            build: npm run build -- --target x86_64-apple-darwin
+          - host: windows-latest
+            build: npm run build -- --target x86_64-pc-windows-msvc
+            target: x86_64-pc-windows-msvc
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            build: npm run build -- --target x86_64-unknown-linux-gnu --use-napi-cross
+          - host: macos-latest
+            target: aarch64-apple-darwin
+            build: npm run build -- --target aarch64-apple-darwin
+          - host: ubuntu-latest
+            target: wasm32-wasip1-threads
+            build: npm run build -- --target wasm32-wasip1-threads
+    name: build TS - ${{ matrix.settings.target }} - node@22
+    runs-on: ${{ matrix.settings.host }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: crates/monty-ts/package-lock.json
+      - name: Install
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.settings.target }}
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ~/.napi-rs
+            .cargo-cache
+            target/
+          key: ${{ matrix.settings.target }}-cargo-${{ matrix.settings.host }}
+      - uses: mlugg/setup-zig@v2
+        if: ${{ contains(matrix.settings.target, 'musl') }}
+        with:
+          version: 0.14.1
+      - name: Install cargo-zigbuild
+        uses: taiki-e/install-action@v2
+        if: ${{ contains(matrix.settings.target, 'musl') }}
+        with:
+          tool: cargo-zigbuild
+      - name: Setup toolchain
+        run: ${{ matrix.settings.setup }}
+        if: ${{ matrix.settings.setup }}
+        shell: bash
+      - name: Install dependencies
+        run: npm install
+        working-directory: crates/monty-ts
+      - name: Build
+        run: ${{ matrix.settings.build }}
+        shell: bash
+        working-directory: crates/monty-ts
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: bindings-${{ matrix.settings.target }}
+          path: |
+            crates/monty-ts/monty.*.node
+            crates/monty-ts/monty.*.wasm
+          if-no-files-found: error
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '10.13'
+      CARGO_INCREMENTAL: '1'
+
+  test-ts-macOS-windows-binding:
+    name: Test TS bindings on ${{ matrix.settings.target }} - node@${{ matrix.node }}
+    needs:
+      - build
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+            architecture: x64
+          - host: macos-latest
+            target: aarch64-apple-darwin
+            architecture: arm64
+          - host: macos-latest
+            target: x86_64-apple-darwin
+            architecture: x64
+        node:
+          - '20'
+          - '22'
+    runs-on: ${{ matrix.settings.host }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: crates/monty-ts/package-lock.json
+          architecture: ${{ matrix.settings.architecture }}
+      - name: Install dependencies
+        run: npm install
+        working-directory: crates/monty-ts
+      - name: Download artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: bindings-${{ matrix.settings.target }}
+          path: crates/monty-ts
+      - name: List packages
+        run: ls -R .
+        shell: bash
+        working-directory: crates/monty-ts
+      - name: Test bindings
+        run: npm test
+        working-directory: crates/monty-ts
+
+  test-ts-linux-binding:
+    name: Test TS ${{ matrix.target }} - node@${{ matrix.node }}
+    needs:
+      - build
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+        node:
+          - '20'
+          - '22'
+    runs-on: ${{ contains(matrix.target, 'aarch64') && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: crates/monty-ts/package-lock.json
+      - name: Output docker params
+        id: docker
+        run: |
+          node -e "
+            if ('${{ matrix.target }}'.startsWith('aarch64')) {
+              console.log('PLATFORM=linux/arm64')
+            } else if ('${{ matrix.target }}'.startsWith('armv7')) {
+              console.log('PLATFORM=linux/arm/v7')
+            } else {
+              console.log('PLATFORM=linux/amd64')
+            }
+          " >> $GITHUB_OUTPUT
+          node -e "
+            if ('${{ matrix.target }}'.endsWith('-musl')) {
+              console.log('IMAGE=node:${{ matrix.node }}-alpine')
+            } else {
+              console.log('IMAGE=node:${{ matrix.node }}-slim')
+            }
+          " >> $GITHUB_OUTPUT
+      - name: Install dependencies
+        run: |
+          npm config set --json supportedArchitectures.cpu '["current", "arm64", "x64", "arm"]'
+          npm config set --json supportedArchitectures.libc '["current", "musl", "gnu"]'
+          npm install
+        working-directory: crates/monty-ts
+      - name: Download artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: bindings-${{ matrix.target }}
+          path: crates/monty-ts
+      - name: List packages
+        run: ls -R .
+        shell: bash
+        working-directory: crates/monty-ts
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        if: ${{ contains(matrix.target, 'armv7') }}
+        with:
+          platforms: all
+      - run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+        if: ${{ contains(matrix.target, 'armv7') }}
+      - name: Test bindings
+        uses: addnab/docker-run-action@v3
+        with:
+          image: ${{ steps.docker.outputs.IMAGE }}
+          options: '-v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }} --platform ${{ steps.docker.outputs.PLATFORM }}'
+          run: npm test
+
+  test-ts-wasi:
+    name: Test WASI target
+    needs:
+      - build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: crates/monty-ts/package-lock.json
+      - name: Install dependencies
+        run: |
+          npm config set supportedArchitectures.cpu "wasm32"
+          npm install
+      - name: Download artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: bindings-wasm32-wasip1-threads
+          path: crates/monty-ts
+      - name: List packages
+        run: ls -R .
+        shell: bash
+        working-directory: crates/monty-ts
+      - name: Test bindings
+        run: npm test
+        env:
+          NAPI_RS_FORCE_WASI: 1
+        working-directory: crates/monty-ts
+
+  publish-ts:
+    name: Publish TS
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    needs:
+      - lint
+      - test-macOS-windows-binding
+      - test-linux-binding
+      - test-wasi
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: crates/monty-ts/package-lock.json
+      - name: Install dependencies
+        run: npm install
+        working-directory: crates/monty-ts
+      - name: create npm dirs
+        run: npm napi create-npm-dirs
+        working-directory: crates/monty-ts
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: crates/monty-ts/artifacts
+      - name: Move artifacts
+        run: npm artifacts
+        working-directory: crates/monty-ts
+      - name: List packages
+        run: ls -R ./npm
+        shell: bash
+        working-directory: crates/monty-ts
+      - name: Publish
+        run: |
+          npm config set provenance true
+          if git log -1 --pretty=%B | grep "^[0-9]\+\.[0-9]\+\.[0-9]\+$";
+          then
+            echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
+            npm publish --access public
+          elif git log -1 --pretty=%B | grep "^[0-9]\+\.[0-9]\+\.[0-9]\+";
+          then
+            echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
+            npm publish --tag next --access public
+          else
+            echo "Not a release, skipping publish"
+          fi
+        working-directory: crates/monty-ts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
