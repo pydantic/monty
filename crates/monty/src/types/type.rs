@@ -8,7 +8,7 @@ use crate::{
     heap::{Heap, HeapData},
     intern::Interns,
     resource::ResourceTracker,
-    types::{Bytes, Dict, FrozenSet, List, PyTrait, Range, Set, Str, Tuple},
+    types::{Bytes, Dict, FrozenSet, List, PyTrait, Range, Set, Str, Tuple, str::StringRepr},
     value::Value,
 };
 
@@ -164,6 +164,11 @@ impl Type {
                             Value::Int(i) => Ok(Value::Int(*i)),
                             Value::Float(f) => Ok(Value::Int(f64_to_i64_truncate(*f))),
                             Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
+                            Value::InternString(string_id) => parse_i64_from_str(interns.get_str(*string_id)),
+                            Value::Ref(heap_id) => match heap.get(*heap_id) {
+                                HeapData::Str(s) => parse_i64_from_str(s.as_str()),
+                                _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
+                            },
                             _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
                         };
                         v.drop_with_heap(heap);
@@ -267,6 +272,35 @@ fn value_error_could_not_convert_string_to_float(value: &str) -> RunError {
     SimpleException::new_msg(
         ExcType::ValueError,
         format!("could not convert string to float: '{value}'"),
+    )
+    .into()
+}
+
+/// Parses a Python `int()` string argument into an `i64`.
+///
+/// Handles whitespace stripping and removing _ and returns appropriate `ValueError` on failure.
+fn parse_i64_from_str(value: &str) -> RunResult<Value> {
+    if let Ok(int) = value.parse::<i64>() {
+        return Ok(Value::Int(int));
+    }
+    let trimmed = value.trim();
+
+    if let Ok(int) = trimmed.parse::<i64>() {
+        Ok(Value::Int(int))
+    } else if let Ok(int) = trimmed.replace('_', "").parse::<i64>() {
+        Ok(Value::Int(int))
+    } else {
+        Err(value_error_invalid_literal_for_int(value))
+    }
+}
+
+/// Creates the `ValueError` raised by `int()` when a string cannot be parsed.
+///
+/// Matches CPython's message format: `invalid literal for int() with base 10: '...'`.
+fn value_error_invalid_literal_for_int(value: &str) -> RunError {
+    SimpleException::new_msg(
+        ExcType::ValueError,
+        format!("invalid literal for int() with base 10: {}", StringRepr(value)),
     )
     .into()
 }

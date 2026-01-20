@@ -20,7 +20,7 @@ use crate::{
         dict::Dict,
         list::List,
         set::{FrozenSet, Set},
-        str::{Str, string_repr},
+        str::{Str, StringRepr, string_repr_fmt},
         tuple::Tuple,
     },
     value::Value,
@@ -435,7 +435,7 @@ impl MontyObject {
                 }
                 Ok(())
             }
-            Self::String(s) => f.write_str(&string_repr(s)),
+            Self::String(s) => string_repr_fmt(s, f),
             Self::Bytes(b) => f.write_str(&bytes_repr(b)),
             Self::List(l) => {
                 f.write_char('[')?;
@@ -514,7 +514,7 @@ impl MontyObject {
                 write!(f, "{type_str}(")?;
 
                 if let Some(arg) = &arg {
-                    f.write_str(&string_repr(arg))?;
+                    string_repr_fmt(arg, f)?;
                 }
                 f.write_char(')')
             }
@@ -548,7 +548,7 @@ impl MontyObject {
             }
             Self::Type(t) => write!(f, "<class '{t}'>"),
             Self::BuiltinFunction(func) => write!(f, "<built-in function {func}>"),
-            Self::Repr(s) => write!(f, "Repr({})", string_repr(s)),
+            Self::Repr(s) => write!(f, "Repr({})", StringRepr(s)),
             Self::Cycle(_, placeholder) => f.write_str(placeholder),
         }
     }

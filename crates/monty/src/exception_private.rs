@@ -14,7 +14,7 @@ use crate::{
     intern::{Interns, StringId},
     parse::CodeRange,
     resource::ResourceTracker,
-    types::{PyTrait, Type, str::string_repr},
+    types::{PyTrait, Type, str::string_repr_fmt},
     value::Value,
 };
 
@@ -1033,7 +1033,7 @@ impl SimpleException {
         write!(f, "{type_str}(")?;
 
         if let Some(arg) = &self.arg {
-            f.write_str(&string_repr(arg))?;
+            string_repr_fmt(arg, f)?;
         }
 
         f.write_char(')')

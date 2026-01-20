@@ -1,9 +1,9 @@
+use std::fmt::Write;
 /// Python string type, wrapping a Rust `String`.
 ///
 /// This type provides Python string semantics. Currently supports basic
 /// operations like length and equality comparison.
-use std::borrow::Cow;
-use std::fmt::Write;
+use std::{borrow::Cow, fmt};
 
 use ahash::AHashSet;
 
@@ -159,7 +159,7 @@ impl PyTrait for Str {
         _heap: &Heap<impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
         _interns: &Interns,
-    ) -> std::fmt::Result {
+    ) -> fmt::Result {
         string_repr_fmt(&self.0, f)
     }
 
@@ -452,59 +452,46 @@ fn str_join(
 /// - Uses single quotes by default, escaping any contained single quotes
 ///
 /// Common escape sequences (backslash, newline, tab, carriage return) are always escaped.
-pub fn string_repr_fmt(s: &str, f: &mut impl Write) -> std::fmt::Result {
+pub fn string_repr_fmt(s: &str, f: &mut impl Write) -> fmt::Result {
     // Check if the string contains single quotes but not double quotes
     if s.contains('\'') && !s.contains('"') {
         // Use double quotes if string contains only single quotes
         f.write_char('"')?;
-        write_escaped_string(s, f)?;
+        for c in s.chars() {
+            match c {
+                '\\' => f.write_str("\\\\")?,
+                '\n' => f.write_str("\\n")?,
+                '\t' => f.write_str("\\t")?,
+                '\r' => f.write_str("\\r")?,
+                _ => f.write_char(c)?,
+            }
+        }
         f.write_char('"')
     } else {
         // Use single quotes by default, escape any single quotes in the string
         f.write_char('\'')?;
-        write_escaped_string_with_single_quote(s, f)?;
+        for c in s.chars() {
+            match c {
+                '\\' => f.write_str("\\\\")?,
+                '\n' => f.write_str("\\n")?,
+                '\t' => f.write_str("\\t")?,
+                '\r' => f.write_str("\\r")?,
+                '\'' => f.write_str("\\'")?,
+                _ => f.write_char(c)?,
+            }
+        }
         f.write_char('\'')
     }
 }
 
-/// Writes the string with common escape sequences replaced.
-fn write_escaped_string(s: &str, f: &mut impl Write) -> std::fmt::Result {
-    for c in s.chars() {
-        match c {
-            '\\' => f.write_str("\\\\")?,
-            '\n' => f.write_str("\\n")?,
-            '\t' => f.write_str("\\t")?,
-            '\r' => f.write_str("\\r")?,
-            _ => f.write_char(c)?,
-        }
-    }
-    Ok(())
-}
+/// Formatter for a Python repr() string.
+#[derive(Debug)]
+pub struct StringRepr<'a>(pub &'a str);
 
-/// Writes the string with common escape sequences replaced, plus single quotes escaped.
-fn write_escaped_string_with_single_quote(s: &str, f: &mut impl Write) -> std::fmt::Result {
-    for c in s.chars() {
-        match c {
-            '\\' => f.write_str("\\\\")?,
-            '\n' => f.write_str("\\n")?,
-            '\t' => f.write_str("\\t")?,
-            '\r' => f.write_str("\\r")?,
-            '\'' => f.write_str("\\'")?,
-            _ => f.write_char(c)?,
-        }
+impl fmt::Display for StringRepr<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        string_repr_fmt(self.0, f)
     }
-    Ok(())
-}
-
-/// Returns a Python repr() string for a given string slice.
-///
-/// Convenience wrapper around `string_repr_fmt` that returns an owned String.
-#[must_use]
-pub fn string_repr(s: &str) -> String {
-    let mut result = String::new();
-    // Writing to String never fails
-    string_repr_fmt(s, &mut result).unwrap();
-    result
 }
 
 // =============================================================================
