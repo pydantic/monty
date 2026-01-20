@@ -9,7 +9,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult},
     for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings, StringId},
+    intern::{Interns, StaticStrings},
     io::PrintWriter,
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -323,12 +323,12 @@ impl PyTrait for List {
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
-        let Some(attr_id) = attr.string_id() else {
+        let Some(method) = attr.static_string() else {
             args.drop_with_heap(heap);
             return Err(ExcType::attribute_error(Type::List, attr.as_str(interns)));
         };
 
-        call_list_method(self, attr_id, args, heap, interns)
+        call_list_method(self, method, args, heap, interns)
     }
 }
 
@@ -338,21 +338,17 @@ impl PyTrait for List {
 ///
 /// # Arguments
 /// * `list` - The list to call the method on
-/// * `method_id` - The interned method name (e.g., `StaticStrings::Append`)
+/// * `method` - The method to call (e.g., `StaticStrings::Append`)
 /// * `args` - The method arguments
 /// * `heap` - The heap for allocation and reference counting
 /// * `interns` - The interns table for resolving interned strings
 fn call_list_method(
     list: &mut List,
-    method_id: StringId,
+    method: StaticStrings,
     args: ArgValues,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
-    let Some(method) = StaticStrings::from_string_id(method_id) else {
-        args.drop_with_heap(heap);
-        return Err(ExcType::attribute_error(Type::List, interns.get_str(method_id)));
-    };
     match method {
         StaticStrings::Append => {
             let item = args.get_one_arg("list.append", heap)?;
@@ -382,7 +378,7 @@ fn call_list_method(
         // Note: list.sort is handled at VM level in call.rs to support key functions
         _ => {
             args.drop_with_heap(heap);
-            Err(ExcType::attribute_error(Type::List, interns.get_str(method_id)))
+            Err(ExcType::attribute_error(Type::List, method.into()))
         }
     }
 }

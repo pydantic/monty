@@ -625,10 +625,7 @@ impl PyTrait for Set {
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
-        let Some(attr_id) = attr.string_id() else {
-            return Err(ExcType::attribute_error(Type::Set, attr.as_str(interns)));
-        };
-        let Some(method) = StaticStrings::from_string_id(attr_id) else {
+        let Some(method) = attr.static_string() else {
             return Err(ExcType::attribute_error(Type::Set, attr.as_str(interns)));
         };
 
@@ -1131,10 +1128,7 @@ impl PyTrait for FrozenSet {
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
-        let Some(attr_id) = attr.string_id() else {
-            return Err(ExcType::attribute_error(Type::FrozenSet, attr.as_str(interns)));
-        };
-        let Some(method) = StaticStrings::from_string_id(attr_id) else {
+        let Some(method) = attr.static_string() else {
             return Err(ExcType::attribute_error(Type::FrozenSet, attr.as_str(interns)));
         };
 

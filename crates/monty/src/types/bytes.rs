@@ -244,20 +244,19 @@ impl PyTrait for Bytes {
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
-        let Some(attr_id) = attr.string_id() else {
+        let Some(method) = attr.static_string() else {
             args.drop_with_heap(heap);
             return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(interns)));
         };
 
-        call_bytes_method(self.as_slice(), attr_id, args, heap, interns)
+        call_bytes_method_impl(self.as_slice(), method, args, heap, interns)
     }
 }
 
-/// Calls a bytes method on a byte slice.
+/// Calls a bytes method on a byte slice by method name.
 ///
-/// This is the unified entry point for bytes method calls, used by both
-/// heap-allocated `Bytes` (via `py_call_attr`) and interned bytes literals
-/// (`Value::InternBytes`).
+/// This is the entry point for bytes method calls from the VM on interned bytes.
+/// Converts the `StringId` to `StaticStrings` and delegates to `call_bytes_method_impl`.
 pub fn call_bytes_method(
     bytes: &[u8],
     method_id: StringId,
@@ -269,6 +268,21 @@ pub fn call_bytes_method(
         args.drop_with_heap(heap);
         return Err(ExcType::attribute_error(Type::Bytes, interns.get_str(method_id)));
     };
+    call_bytes_method_impl(bytes, method, args, heap, interns)
+}
+
+/// Calls a bytes method on a byte slice.
+///
+/// This is the unified implementation for bytes method calls, used by both
+/// heap-allocated `Bytes` (via `py_call_attr`) and interned bytes literals
+/// (`Value::InternBytes`).
+fn call_bytes_method_impl(
+    bytes: &[u8],
+    method: StaticStrings,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
     match method {
         // Decode method
         StaticStrings::Decode => bytes_decode(bytes, args, heap, interns),
@@ -363,7 +377,7 @@ pub fn call_bytes_method(
         StaticStrings::Fromhex => bytes_fromhex(args, heap, interns),
         _ => {
             args.drop_with_heap(heap);
-            Err(ExcType::attribute_error(Type::Bytes, interns.get_str(method_id)))
+            Err(ExcType::attribute_error(Type::Bytes, method.into()))
         }
     }
 }

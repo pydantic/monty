@@ -214,27 +214,38 @@ impl PyTrait for Str {
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
-        let Some(attr_id) = attr.string_id() else {
+        let Some(method) = attr.static_string() else {
             args.drop_with_heap(heap);
             return Err(ExcType::attribute_error(Type::Str, attr.as_str(interns)));
         };
 
-        call_str_method(&self.0, attr_id, args, heap, interns)
+        call_str_method_impl(&self.0, method, args, heap, interns)
     }
+}
+
+/// Dispatches a method call on a string value by method name.
+///
+/// This is the entry point for string method calls from the VM on interned strings.
+/// Converts the `StringId` to `StaticStrings` and delegates to `call_str_method_impl`.
+pub fn call_str_method(
+    s: &str,
+    method_id: StringId,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let Some(method) = StaticStrings::from_string_id(method_id) else {
+        args.drop_with_heap(heap);
+        return Err(ExcType::attribute_error(Type::Str, interns.get_str(method_id)));
+    };
+    call_str_method_impl(s, method, args, heap, interns)
 }
 
 /// Dispatches a method call on a string value.
 ///
-/// This is the unified entry point for string method calls, used by both:
+/// This is the unified implementation for string method calls, used by both:
 /// - `Str::py_call_attr()` for heap-allocated strings
-/// - VM's `call_method()` for interned string literals
-///
-/// # Arguments
-/// * `s` - The string to call the method on
-/// * `method_id` - The interned method name (e.g., `StaticStrings::Join`)
-/// * `args` - The method arguments
-/// * `heap` - The heap for allocation and reference counting
-/// * `interns` - The interns table for resolving interned strings
+/// - `call_str_method()` for interned string literals from the VM
 ///
 /// # Not Yet Implemented
 ///
@@ -249,17 +260,13 @@ impl PyTrait for Str {
 /// - `expandtabs(tabsize=8)` - Tab expansion; simple but rarely used in practice.
 /// - `isprintable()` - Checks if all characters are printable; requires accurate Unicode
 ///   category data for the "printable" property.
-pub fn call_str_method(
+fn call_str_method_impl(
     s: &str,
-    method_id: StringId,
+    method: StaticStrings,
     args: ArgValues,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
-    let Some(method) = StaticStrings::from_string_id(method_id) else {
-        args.drop_with_heap(heap);
-        return Err(ExcType::attribute_error(Type::Str, interns.get_str(method_id)));
-    };
     match method {
         // Simple transformations (no arguments)
         StaticStrings::Lower => {
@@ -366,7 +373,7 @@ pub fn call_str_method(
         }
         _ => {
             args.drop_with_heap(heap);
-            Err(ExcType::attribute_error(Type::Str, interns.get_str(method_id)))
+            Err(ExcType::attribute_error(Type::Str, method.into()))
         }
     }
 }

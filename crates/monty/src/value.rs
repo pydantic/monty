@@ -16,7 +16,7 @@ use crate::{
     builtins::Builtins,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId},
-    intern::{BytesId, ExtFunctionId, FunctionId, Interns, StringId},
+    intern::{BytesId, ExtFunctionId, FunctionId, Interns, StaticStrings, StringId},
     resource::{LARGE_RESULT_THRESHOLD, ResourceTracker},
     types::{LongInt, PyTrait, Type, bytes::bytes_repr_fmt, str::string_repr_fmt},
 };
@@ -1908,6 +1908,15 @@ impl Attr {
     pub fn string_id(&self) -> Option<StringId> {
         match self {
             Self::Interned(id) => Some(*id),
+            Self::Other(_) => None,
+        }
+    }
+
+    /// Returns the `StaticStrings` if this is an interned attribute from `StaticStrings`s.
+    #[inline]
+    pub fn static_string(&self) -> Option<StaticStrings> {
+        match self {
+            Self::Interned(id) => StaticStrings::from_string_id(*id),
             Self::Other(_) => None,
         }
     }

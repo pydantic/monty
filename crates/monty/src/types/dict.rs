@@ -605,10 +605,7 @@ impl PyTrait for Dict {
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
-        let Some(attr_id) = attr.string_id() else {
-            return Err(ExcType::attribute_error(Type::Dict, attr.as_str(interns)));
-        };
-        let Some(method) = StaticStrings::from_string_id(attr_id) else {
+        let Some(method) = attr.static_string() else {
             return Err(ExcType::attribute_error(Type::Dict, attr.as_str(interns)));
         };
 
