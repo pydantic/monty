@@ -420,15 +420,8 @@ fn list_insert(list: &mut List, args: ArgValues, heap: &mut Heap<impl ResourceTr
 fn list_pop(list: &mut List, args: ArgValues, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
     let index_arg = args.get_zero_one_arg("list.pop", heap)?;
 
-    // Handle empty list case first
-    if list.items.is_empty() {
-        if let Some(v) = index_arg {
-            v.drop_with_heap(heap);
-        }
-        return Err(ExcType::index_error_pop_empty_list());
-    }
-
-    // Get index, defaulting to -1 (last element)
+    // Validate index type FIRST (if provided), matching Python's validation order.
+    // Python raises TypeError for bad index type even on empty list.
     let index_i64 = if let Some(v) = index_arg {
         let result = v.as_int(heap);
         v.drop_with_heap(heap);
@@ -436,6 +429,11 @@ fn list_pop(list: &mut List, args: ArgValues, heap: &mut Heap<impl ResourceTrack
     } else {
         -1
     };
+
+    // THEN check empty list
+    if list.items.is_empty() {
+        return Err(ExcType::index_error_pop_empty_list());
+    }
 
     // Normalize index
     let len = list.items.len();
@@ -851,10 +849,10 @@ fn call_key_function(
             let args = ArgValues::One(elem);
             builtin.call(heap, args, interns, print_writer)
         }
-        Value::Builtin(_) => {
-            // Other builtins (types like int, str) are not valid key functions
-            elem.drop_with_heap(heap);
-            Err(ExcType::type_error("list.sort() key must be callable or None"))
+        Value::Builtin(Builtins::Type(t)) => {
+            // Type constructors (int, str, float, etc.) are callable key functions
+            let args = ArgValues::One(elem);
+            t.call(heap, args, interns)
         }
         Value::DefFunction(_) | Value::ExtFunction(_) | Value::Ref(_) => {
             // User-defined or external functions require VM frame management

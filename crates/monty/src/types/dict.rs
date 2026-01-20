@@ -5,7 +5,7 @@ use hashbrown::{HashTable, hash_table::Entry};
 
 use super::{List, PyTrait, Tuple};
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, KwargsValues},
     exception_private::{ExcType, RunResult},
     for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
@@ -707,6 +707,8 @@ impl PyTrait for Dict {
                 args.check_zero_args("dict.popitem", heap)?;
                 dict_popitem(self, heap)
             }
+            // fromkeys is a classmethod but also accessible on instances
+            attr::FROMKEYS => dict_fromkeys(args, heap, interns),
             _ => Err(ExcType::attribute_error(Type::Dict, attr.as_str(interns))),
         }
     }
@@ -739,22 +741,40 @@ fn dict_copy(dict: &Dict, heap: &mut Heap<impl ResourceTracker>, interns: &Inter
     Ok(Value::Ref(heap_id))
 }
 
-/// Implements Python's `dict.update(other)` method.
+/// Implements Python's `dict.update([other], **kwargs)` method.
 ///
-/// Updates the dict with key-value pairs from `other`.
+/// Updates the dict with key-value pairs from `other` and/or `kwargs`.
 /// If `other` is a dict, copies its key-value pairs.
 /// If `other` is an iterable, expects pairs of (key, value).
+/// Keyword arguments are also added to the dict.
 fn dict_update(
     dict: &mut Dict,
     args: ArgValues,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
-    let other = args.get_zero_one_arg("dict.update", heap)?;
+    let (pos, kwargs) = args.into_parts();
 
-    // No argument - nothing to do
+    let mut pos_iter = pos;
+    let other = pos_iter.next();
+
+    // Check no extra positional arguments
+    if let Some(extra) = pos_iter.next() {
+        extra.drop_with_heap(heap);
+        for v in pos_iter {
+            v.drop_with_heap(heap);
+        }
+        if let Some(v) = other {
+            v.drop_with_heap(heap);
+        }
+        kwargs.drop_with_heap(heap);
+        return Err(ExcType::type_error_at_most("dict.update", 1, 2));
+    }
+
+    // Process positional argument if present
     let Some(other_value) = other else {
-        return Ok(Value::None);
+        // No positional argument - just process kwargs
+        return dict_update_from_kwargs(dict, kwargs, heap, interns);
     };
 
     // Check if it's a dict first
@@ -790,57 +810,158 @@ fn dict_update(
             }
 
             other_value.drop_with_heap(heap);
-            return Ok(Value::None);
+            // Process kwargs after the dict update
+            return dict_update_from_kwargs(dict, kwargs, heap, interns);
         }
     }
 
     // Try as an iterable of pairs
-    let mut iter = ForIterator::new(other_value, heap, interns)?;
+    // Drop kwargs before propagating error to avoid refcount leak
+    let mut iter = match ForIterator::new(other_value, heap, interns) {
+        Ok(i) => i,
+        Err(e) => {
+            kwargs.drop_with_heap(heap);
+            return Err(e);
+        }
+    };
 
-    while let Some(item) = iter.for_next(heap, interns)? {
-        // Each item should be a pair (iterable of 2 elements)
-        let mut pair_iter = ForIterator::new(item, heap, interns)?;
-
-        let Some(key) = pair_iter.for_next(heap, interns)? else {
-            pair_iter.drop_with_heap(heap);
-            iter.drop_with_heap(heap);
-            return Err(ExcType::type_error(
-                "dictionary update sequence element has length 0; 2 is required",
-            ));
+    loop {
+        // Drop iter and kwargs before propagating error to avoid refcount leak
+        let item = match iter.for_next(heap, interns) {
+            Ok(Some(i)) => i,
+            Ok(None) => break,
+            Err(e) => {
+                iter.drop_with_heap(heap);
+                kwargs.drop_with_heap(heap);
+                return Err(e);
+            }
         };
 
-        let Some(value) = pair_iter.for_next(heap, interns)? else {
-            key.drop_with_heap(heap);
-            pair_iter.drop_with_heap(heap);
-            iter.drop_with_heap(heap);
-            return Err(ExcType::type_error(
-                "dictionary update sequence element has length 1; 2 is required",
-            ));
+        // Each item should be a pair (iterable of 2 elements)
+        // Drop iter and kwargs before propagating error to avoid refcount leak
+        let mut pair_iter = match ForIterator::new(item, heap, interns) {
+            Ok(pi) => pi,
+            Err(e) => {
+                iter.drop_with_heap(heap);
+                kwargs.drop_with_heap(heap);
+                return Err(e);
+            }
+        };
+
+        // Drop pair_iter, iter, and kwargs before propagating error to avoid refcount leak
+        let key = match pair_iter.for_next(heap, interns) {
+            Ok(Some(k)) => k,
+            Ok(None) => {
+                pair_iter.drop_with_heap(heap);
+                iter.drop_with_heap(heap);
+                kwargs.drop_with_heap(heap);
+                return Err(ExcType::type_error(
+                    "dictionary update sequence element has length 0; 2 is required",
+                ));
+            }
+            Err(e) => {
+                pair_iter.drop_with_heap(heap);
+                iter.drop_with_heap(heap);
+                kwargs.drop_with_heap(heap);
+                return Err(e);
+            }
+        };
+
+        // Drop key, pair_iter, iter, and kwargs before propagating error to avoid refcount leak
+        let value = match pair_iter.for_next(heap, interns) {
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                key.drop_with_heap(heap);
+                pair_iter.drop_with_heap(heap);
+                iter.drop_with_heap(heap);
+                kwargs.drop_with_heap(heap);
+                return Err(ExcType::type_error(
+                    "dictionary update sequence element has length 1; 2 is required",
+                ));
+            }
+            Err(e) => {
+                key.drop_with_heap(heap);
+                pair_iter.drop_with_heap(heap);
+                iter.drop_with_heap(heap);
+                kwargs.drop_with_heap(heap);
+                return Err(e);
+            }
         };
 
         // Check for extra elements - must drop the first extra element too!
-        if let Some(first_extra) = pair_iter.for_next(heap, interns)? {
-            first_extra.drop_with_heap(heap);
-            key.drop_with_heap(heap);
-            value.drop_with_heap(heap);
-            // Drain remaining elements
-            while let Some(extra) = pair_iter.for_next(heap, interns)? {
-                extra.drop_with_heap(heap);
+        match pair_iter.for_next(heap, interns) {
+            Ok(Some(first_extra)) => {
+                first_extra.drop_with_heap(heap);
+                key.drop_with_heap(heap);
+                value.drop_with_heap(heap);
+                // Drain remaining elements
+                loop {
+                    match pair_iter.for_next(heap, interns) {
+                        Ok(Some(extra)) => extra.drop_with_heap(heap),
+                        Ok(None) => break,
+                        Err(_) => break, // Error while draining - just stop
+                    }
+                }
+                pair_iter.drop_with_heap(heap);
+                iter.drop_with_heap(heap);
+                kwargs.drop_with_heap(heap);
+                return Err(ExcType::type_error(
+                    "dictionary update sequence element has length > 2; 2 is required",
+                ));
             }
-            pair_iter.drop_with_heap(heap);
-            iter.drop_with_heap(heap);
-            return Err(ExcType::type_error(
-                "dictionary update sequence element has length > 2; 2 is required",
-            ));
+            Ok(None) => {}
+            Err(e) => {
+                key.drop_with_heap(heap);
+                value.drop_with_heap(heap);
+                pair_iter.drop_with_heap(heap);
+                iter.drop_with_heap(heap);
+                kwargs.drop_with_heap(heap);
+                return Err(e);
+            }
         }
         pair_iter.drop_with_heap(heap);
 
-        if let Some(old_value) = dict.set(key, value, heap, interns)? {
-            old_value.drop_with_heap(heap);
+        // Drop iter and kwargs before propagating error to avoid refcount leak
+        // Note: key and value are consumed by dict.set
+        match dict.set(key, value, heap, interns) {
+            Ok(Some(old_value)) => old_value.drop_with_heap(heap),
+            Ok(None) => {}
+            Err(e) => {
+                iter.drop_with_heap(heap);
+                kwargs.drop_with_heap(heap);
+                return Err(e);
+            }
         }
     }
 
     iter.drop_with_heap(heap);
+    // Process kwargs after the iterable update
+    dict_update_from_kwargs(dict, kwargs, heap, interns)
+}
+
+/// Helper to update a dict from keyword arguments.
+fn dict_update_from_kwargs(
+    dict: &mut Dict,
+    kwargs: KwargsValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    // Use while let to allow draining on error
+    let mut kwargs_iter = kwargs.into_iter();
+    while let Some((key, value)) = kwargs_iter.next() {
+        // Drop key, value, and remaining kwargs before propagating error
+        match dict.set(key, value, heap, interns) {
+            Ok(Some(old_value)) => old_value.drop_with_heap(heap),
+            Ok(None) => {}
+            Err(e) => {
+                for (k, v) in kwargs_iter {
+                    k.drop_with_heap(heap);
+                    v.drop_with_heap(heap);
+                }
+                return Err(e);
+            }
+        }
+    }
     Ok(Value::None)
 }
 
@@ -960,15 +1081,44 @@ pub fn dict_fromkeys(args: ArgValues, heap: &mut Heap<impl ResourceTracker>, int
     let default = default.unwrap_or(Value::None);
 
     // Iterate over the iterable to get keys
-    let mut iter = ForIterator::new(iterable, heap, interns)?;
+    // Drop default before propagating error to avoid refcount leak
+    let iter_result = ForIterator::new(iterable, heap, interns);
+    let mut iter = match iter_result {
+        Ok(i) => i,
+        Err(e) => {
+            default.drop_with_heap(heap);
+            return Err(e);
+        }
+    };
 
     let mut dict = Dict::new();
 
-    while let Some(key) = iter.for_next(heap, interns)? {
+    loop {
+        // Drop iter and default before propagating error to avoid refcount leak
+        let next_result = iter.for_next(heap, interns);
+        let key = match next_result {
+            Ok(Some(k)) => k,
+            Ok(None) => break,
+            Err(e) => {
+                iter.drop_with_heap(heap);
+                default.drop_with_heap(heap);
+                return Err(e);
+            }
+        };
+
         // Clone the default value for each key
         let value = default.clone_with_heap(heap);
-        if let Some(old_value) = dict.set(key, value, heap, interns)? {
-            old_value.drop_with_heap(heap);
+        // Drop key, value, iter, default before propagating error
+        let set_result = dict.set(key, value, heap, interns);
+        match set_result {
+            Ok(Some(old_value)) => old_value.drop_with_heap(heap),
+            Ok(None) => {}
+            Err(e) => {
+                // Note: key and value are consumed by dict.set, so we only drop iter and default
+                iter.drop_with_heap(heap);
+                default.drop_with_heap(heap);
+                return Err(e);
+            }
         }
     }
 

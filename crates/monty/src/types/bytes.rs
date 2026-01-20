@@ -355,6 +355,8 @@ pub fn call_bytes_method(
         }
         // Hex method
         attr::HEX => bytes_hex(bytes, args, heap, interns),
+        // fromhex is a classmethod but also accessible on instances
+        attr::FROMHEX => bytes_fromhex(args, heap, interns),
         _ => {
             args.drop_with_heap(heap);
             Err(ExcType::attribute_error(Type::Bytes, interns.get_str(method_id)))
@@ -569,42 +571,61 @@ fn bytes_index(
 /// Implements Python's `bytes.startswith(prefix[, start[, end]])` method.
 ///
 /// Returns True if bytes starts with the specified prefix.
-/// Only accepts bytes as prefix (not str), matching CPython behavior.
+/// Accepts bytes or a tuple of bytes as prefix. If a tuple is given, returns True
+/// if any of the prefixes match.
 fn bytes_startswith(
     bytes: &[u8],
     args: ArgValues,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
-    let (prefix_bytes, start, end) =
+    let (prefix_arg, start, end) =
         parse_bytes_prefix_suffix_args("bytes.startswith", bytes.len(), args, heap, interns)?;
 
     let slice = &bytes[start..end];
-    let result = slice.starts_with(&prefix_bytes);
+    let result = match prefix_arg {
+        PrefixSuffixArg::Single(prefix_bytes) => slice.starts_with(&prefix_bytes),
+        PrefixSuffixArg::Multiple(prefixes) => prefixes.iter().any(|p| slice.starts_with(p)),
+    };
     Ok(Value::Bool(result))
 }
 
 /// Implements Python's `bytes.endswith(suffix[, start[, end]])` method.
 ///
 /// Returns True if bytes ends with the specified suffix.
-/// Only accepts bytes as suffix (not str), matching CPython behavior.
+/// Accepts bytes or a tuple of bytes as suffix. If a tuple is given, returns True
+/// if any of the suffixes match.
 fn bytes_endswith(
     bytes: &[u8],
     args: ArgValues,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
-    let (suffix_bytes, start, end) =
-        parse_bytes_prefix_suffix_args("bytes.endswith", bytes.len(), args, heap, interns)?;
+    let (suffix_arg, start, end) = parse_bytes_prefix_suffix_args("bytes.endswith", bytes.len(), args, heap, interns)?;
 
     let slice = &bytes[start..end];
-    let result = slice.ends_with(&suffix_bytes);
+    let result = match suffix_arg {
+        PrefixSuffixArg::Single(suffix_bytes) => slice.ends_with(&suffix_bytes),
+        PrefixSuffixArg::Multiple(suffixes) => suffixes.iter().any(|s| slice.ends_with(s)),
+    };
     Ok(Value::Bool(result))
+}
+
+/// Argument type for prefix/suffix matching methods.
+///
+/// Represents either a single bytes value or a tuple of bytes values
+/// for matching in startswith/endswith.
+enum PrefixSuffixArg {
+    /// A single bytes value to match
+    Single(Vec<u8>),
+    /// Multiple bytes values to match (from a tuple)
+    Multiple(Vec<Vec<u8>>),
 }
 
 /// Parses arguments for bytes.startswith/endswith methods.
 ///
-/// Returns (prefix/suffix_bytes, start, end) where start and end are normalized indices.
+/// Returns (prefix/suffix_arg, start, end) where start and end are normalized indices.
+/// The prefix/suffix_arg can be a single bytes value or a tuple of bytes values.
 /// Guarantees `start <= end` to prevent slice panics.
 fn parse_bytes_prefix_suffix_args(
     method: &str,
@@ -612,7 +633,7 @@ fn parse_bytes_prefix_suffix_args(
     args: ArgValues,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
-) -> RunResult<(Vec<u8>, usize, usize)> {
+) -> RunResult<(PrefixSuffixArg, usize, usize)> {
     let (pos, kwargs) = args.into_parts();
     if !kwargs.is_empty() {
         kwargs.drop_with_heap(heap);
@@ -691,26 +712,46 @@ fn parse_bytes_prefix_suffix_args(
     Ok((prefix, start, end))
 }
 
-/// Extracts bytes for startswith/endswith methods with CPython-compatible error messages.
+/// Extracts bytes (or tuple of bytes) for startswith/endswith methods.
+///
+/// Returns `PrefixSuffixArg::Single` for a single bytes value, or
+/// `PrefixSuffixArg::Multiple` for a tuple of bytes values.
 fn extract_bytes_for_prefix_suffix(
     value: &Value,
     method: &str,
     heap: &Heap<impl ResourceTracker>,
     interns: &Interns,
-) -> RunResult<Vec<u8>> {
+) -> RunResult<PrefixSuffixArg> {
     // Extract the method name (e.g., "startswith" from "bytes.startswith")
     let method_name = method.strip_prefix("bytes.").unwrap_or(method);
 
     match value {
-        Value::InternBytes(id) => Ok(interns.get_bytes(*id).to_vec()),
+        Value::InternBytes(id) => Ok(PrefixSuffixArg::Single(interns.get_bytes(*id).to_vec())),
         Value::InternString(_) => Err(ExcType::type_error(format!(
             "{method_name} first arg must be bytes or a tuple of bytes, not str"
         ))),
         Value::Ref(id) => match heap.get(*id) {
-            HeapData::Bytes(b) => Ok(b.as_slice().to_vec()),
+            HeapData::Bytes(b) => Ok(PrefixSuffixArg::Single(b.as_slice().to_vec())),
             HeapData::Str(_) => Err(ExcType::type_error(format!(
                 "{method_name} first arg must be bytes or a tuple of bytes, not str"
             ))),
+            HeapData::Tuple(tuple) => {
+                // Extract each element as bytes
+                let items = tuple.as_vec();
+                let mut prefixes = Vec::with_capacity(items.len());
+                for (i, item) in items.iter().enumerate() {
+                    if let Ok(b) = extract_single_bytes_for_prefix_suffix(item, heap, interns) {
+                        prefixes.push(b);
+                    } else {
+                        let item_type = item.py_type(heap);
+                        return Err(ExcType::type_error(format!(
+                            "{method_name} first arg must be bytes or a tuple of bytes, \
+                             not tuple containing {item_type} at index {i}"
+                        )));
+                    }
+                }
+                Ok(PrefixSuffixArg::Multiple(prefixes))
+            }
             _ => Err(ExcType::type_error(format!(
                 "{method_name} first arg must be bytes or a tuple of bytes, not {}",
                 value.py_type(heap)
@@ -720,6 +761,23 @@ fn extract_bytes_for_prefix_suffix(
             "{method_name} first arg must be bytes or a tuple of bytes, not {}",
             value.py_type(heap)
         ))),
+    }
+}
+
+/// Extracts a single bytes value for tuple element in startswith/endswith.
+fn extract_single_bytes_for_prefix_suffix(
+    value: &Value,
+    heap: &Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Vec<u8>> {
+    match value {
+        Value::InternBytes(id) => Ok(interns.get_bytes(*id).to_vec()),
+        Value::InternString(_) => Err(ExcType::type_error("expected bytes, not str")),
+        Value::Ref(id) => match heap.get(*id) {
+            HeapData::Bytes(b) => Ok(b.as_slice().to_vec()),
+            _ => Err(ExcType::type_error("expected bytes")),
+        },
+        _ => Err(ExcType::type_error("expected bytes")),
     }
 }
 
@@ -1360,35 +1418,57 @@ fn parse_bytes_split_args(
     }
 
     // Extract positional sep (default None)
+    // Drop before propagating error to avoid refcount leak
     let mut has_pos_sep = sep_value.is_some();
     let mut sep = if let Some(v) = sep_value {
         if matches!(v, Value::None) {
             v.drop_with_heap(heap);
             None
         } else {
-            let result = extract_bytes_only(&v, heap, interns)?;
+            let result = extract_bytes_only(&v, heap, interns);
             v.drop_with_heap(heap);
-            Some(result)
+            match result {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    if let Some(ms) = maxsplit_value {
+                        ms.drop_with_heap(heap);
+                    }
+                    kwargs.drop_with_heap(heap);
+                    return Err(e);
+                }
+            }
         }
     } else {
         None
     };
 
     // Extract positional maxsplit (default -1)
+    // Drop before propagating error to avoid refcount leak
     let mut has_pos_maxsplit = maxsplit_value.is_some();
     let mut maxsplit = if let Some(v) = maxsplit_value {
-        let result = v.as_int(heap)?;
+        let result = v.as_int(heap);
         v.drop_with_heap(heap);
-        result
+        match result {
+            Ok(r) => r,
+            Err(e) => {
+                kwargs.drop_with_heap(heap);
+                return Err(e);
+            }
+        }
     } else {
         -1
     };
 
-    // Process kwargs
-    for (key, value) in kwargs {
+    // Process kwargs - use while let to allow draining on error
+    let mut kwargs_iter = kwargs.into_iter();
+    while let Some((key, value)) = kwargs_iter.next() {
         let Some(keyword_name) = key.as_either_str(heap) else {
             key.drop_with_heap(heap);
             value.drop_with_heap(heap);
+            for (k, v) in kwargs_iter {
+                k.drop_with_heap(heap);
+                v.drop_with_heap(heap);
+            }
             return Err(ExcType::type_error("keywords must be strings"));
         };
 
@@ -1398,14 +1478,33 @@ fn parse_bytes_split_args(
                 if has_pos_sep {
                     key.drop_with_heap(heap);
                     value.drop_with_heap(heap);
+                    for (k, v) in kwargs_iter {
+                        k.drop_with_heap(heap);
+                        v.drop_with_heap(heap);
+                    }
                     return Err(ExcType::type_error(format!(
                         "{method}() got multiple values for argument 'sep'"
                     )));
                 }
                 if matches!(value, Value::None) {
                     sep = None;
+                    key.drop_with_heap(heap);
+                    value.drop_with_heap(heap);
                 } else {
-                    sep = Some(extract_bytes_only(&value, heap, interns)?);
+                    // Drop before propagating error to avoid refcount leak
+                    let result = extract_bytes_only(&value, heap, interns);
+                    key.drop_with_heap(heap);
+                    value.drop_with_heap(heap);
+                    match result {
+                        Ok(r) => sep = Some(r),
+                        Err(e) => {
+                            for (k, v) in kwargs_iter {
+                                k.drop_with_heap(heap);
+                                v.drop_with_heap(heap);
+                            }
+                            return Err(e);
+                        }
+                    }
                 }
                 has_pos_sep = true;
             }
@@ -1413,23 +1512,42 @@ fn parse_bytes_split_args(
                 if has_pos_maxsplit {
                     key.drop_with_heap(heap);
                     value.drop_with_heap(heap);
+                    for (k, v) in kwargs_iter {
+                        k.drop_with_heap(heap);
+                        v.drop_with_heap(heap);
+                    }
                     return Err(ExcType::type_error(format!(
                         "{method}() got multiple values for argument 'maxsplit'"
                     )));
                 }
-                maxsplit = value.as_int(heap)?;
+                // Drop before propagating error to avoid refcount leak
+                let result = value.as_int(heap);
+                key.drop_with_heap(heap);
+                value.drop_with_heap(heap);
+                match result {
+                    Ok(r) => maxsplit = r,
+                    Err(e) => {
+                        for (k, v) in kwargs_iter {
+                            k.drop_with_heap(heap);
+                            v.drop_with_heap(heap);
+                        }
+                        return Err(e);
+                    }
+                }
                 has_pos_maxsplit = true;
             }
             _ => {
                 key.drop_with_heap(heap);
                 value.drop_with_heap(heap);
+                for (k, v) in kwargs_iter {
+                    k.drop_with_heap(heap);
+                    v.drop_with_heap(heap);
+                }
                 return Err(ExcType::type_error(format!(
                     "'{key_str}' is an invalid keyword argument for {method}()"
                 )));
             }
         }
-        key.drop_with_heap(heap);
-        value.drop_with_heap(heap);
     }
 
     Ok((sep, maxsplit))
@@ -1817,26 +1935,61 @@ fn parse_bytes_replace_args(
         return Err(ExcType::type_error_at_most(method, 3, 4));
     }
 
-    let old = extract_bytes_only(&old_value, heap, interns)?;
+    // Drop before propagating error to avoid refcount leak
+    let old_result = extract_bytes_only(&old_value, heap, interns);
     old_value.drop_with_heap(heap);
+    let old = match old_result {
+        Ok(o) => o,
+        Err(e) => {
+            new_value.drop_with_heap(heap);
+            if let Some(v) = count_value {
+                v.drop_with_heap(heap);
+            }
+            kwargs.drop_with_heap(heap);
+            return Err(e);
+        }
+    };
 
-    let new = extract_bytes_only(&new_value, heap, interns)?;
+    // Drop before propagating error to avoid refcount leak
+    let new_result = extract_bytes_only(&new_value, heap, interns);
     new_value.drop_with_heap(heap);
+    let new = match new_result {
+        Ok(n) => n,
+        Err(e) => {
+            if let Some(v) = count_value {
+                v.drop_with_heap(heap);
+            }
+            kwargs.drop_with_heap(heap);
+            return Err(e);
+        }
+    };
 
     let mut has_pos_count = count_value.is_some();
     let mut count = if let Some(v) = count_value {
-        let result = v.as_int(heap)?;
+        // Drop before propagating error to avoid refcount leak
+        let result = v.as_int(heap);
         v.drop_with_heap(heap);
-        result
+        match result {
+            Ok(c) => c,
+            Err(e) => {
+                kwargs.drop_with_heap(heap);
+                return Err(e);
+            }
+        }
     } else {
         -1
     };
 
-    // Process kwargs
-    for (key, value) in kwargs {
+    // Process kwargs - use while let to allow draining on error
+    let mut kwargs_iter = kwargs.into_iter();
+    while let Some((key, value)) = kwargs_iter.next() {
         let Some(keyword_name) = key.as_either_str(heap) else {
             key.drop_with_heap(heap);
             value.drop_with_heap(heap);
+            for (k, v) in kwargs_iter {
+                k.drop_with_heap(heap);
+                v.drop_with_heap(heap);
+            }
             return Err(ExcType::type_error("keywords must be strings"));
         };
 
@@ -1845,21 +1998,40 @@ fn parse_bytes_replace_args(
             if has_pos_count {
                 key.drop_with_heap(heap);
                 value.drop_with_heap(heap);
+                for (k, v) in kwargs_iter {
+                    k.drop_with_heap(heap);
+                    v.drop_with_heap(heap);
+                }
                 return Err(ExcType::type_error(format!(
                     "{method}() got multiple values for argument 'count'"
                 )));
             }
-            count = value.as_int(heap)?;
+            // Drop before propagating error to avoid refcount leak
+            let result = value.as_int(heap);
+            key.drop_with_heap(heap);
+            value.drop_with_heap(heap);
+            match result {
+                Ok(c) => count = c,
+                Err(e) => {
+                    for (k, v) in kwargs_iter {
+                        k.drop_with_heap(heap);
+                        v.drop_with_heap(heap);
+                    }
+                    return Err(e);
+                }
+            }
             has_pos_count = true;
         } else {
             key.drop_with_heap(heap);
             value.drop_with_heap(heap);
+            for (k, v) in kwargs_iter {
+                k.drop_with_heap(heap);
+                v.drop_with_heap(heap);
+            }
             return Err(ExcType::type_error(format!(
                 "'{key_str}' is an invalid keyword argument for {method}()"
             )));
         }
-        key.drop_with_heap(heap);
-        value.drop_with_heap(heap);
     }
 
     Ok((old, new, count))
@@ -2042,8 +2214,18 @@ fn parse_bytes_justify_args(
         return Err(ExcType::type_error_at_most(method, 2, 3));
     }
 
-    let width_i64 = width_value.as_int(heap)?;
+    // Drop before propagating error to avoid refcount leak
+    let result = width_value.as_int(heap);
     width_value.drop_with_heap(heap);
+    let width_i64 = match result {
+        Ok(w) => w,
+        Err(e) => {
+            if let Some(v) = fillbyte_value {
+                v.drop_with_heap(heap);
+            }
+            return Err(e);
+        }
+    };
 
     let width = if width_i64 < 0 {
         0
@@ -2052,8 +2234,10 @@ fn parse_bytes_justify_args(
     };
 
     let fillbyte = if let Some(v) = fillbyte_value {
-        let fill_bytes = extract_bytes_only(&v, heap, interns)?;
+        // Drop before propagating error to avoid refcount leak
+        let result = extract_bytes_only(&v, heap, interns);
         v.drop_with_heap(heap);
+        let fill_bytes = result?;
         if fill_bytes.len() != 1 {
             return Err(ExcType::type_error(format!(
                 "{method}() argument 2 must be a byte string of length 1, not bytes of length {}",
@@ -2073,8 +2257,10 @@ fn parse_bytes_justify_args(
 /// Returns a copy of the bytes left filled with ASCII '0' digits.
 fn bytes_zfill(bytes: &[u8], args: ArgValues, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
     let width_value = args.get_one_arg("bytes.zfill", heap)?;
-    let width_i64 = width_value.as_int(heap)?;
+    // Drop before propagating error to avoid refcount leak
+    let result = width_value.as_int(heap);
     width_value.drop_with_heap(heap);
+    let width_i64 = result?;
 
     let width = if width_i64 < 0 {
         0

@@ -590,7 +590,7 @@ fn call_type_method(
         (Type::Bytes, m) if m == attr::FROMHEX => return bytes_fromhex(args, heap, interns),
         _ => {}
     }
-    // Other types or unknown methods
+    // Other types or unknown methods - report actual type name, not 'type'
     args.drop_with_heap(heap);
-    Err(ExcType::attribute_error(Type::Type, interns.get_str(method_id)))
+    Err(ExcType::attribute_error(t, interns.get_str(method_id)))
 }
