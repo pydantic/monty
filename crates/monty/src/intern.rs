@@ -12,8 +12,9 @@
 //! * 1000 to count(StaticStrings) - strings StaticStrings
 //! * 10_000+ - strings interned per executor
 
+use std::{str::FromStr, sync::LazyLock};
+
 use ahash::AHashMap;
-use std::sync::LazyLock;
 use strum::{EnumString, FromRepr, IntoStaticStr};
 
 use crate::function::Function;
@@ -40,6 +41,12 @@ impl StringId {
     pub fn index(self) -> usize {
         self.0 as usize
     }
+
+    /// Returns the StringId for an ASCII byte.
+    #[must_use]
+    pub fn from_ascii(byte: u8) -> Self {
+        Self(u32::from(byte))
+    }
 }
 
 /// ascii string
@@ -59,14 +66,6 @@ static ASCII_STRS: LazyLock<[&'static str; 128]> = LazyLock::new(|| {
         &*Box::leak(s.into_boxed_str())
     })
 });
-
-/// Returns the StringId for an ASCII byte.
-///
-/// These interns are not
-#[must_use]
-pub(crate) fn ascii_string_id(byte: u8) -> StringId {
-    StringId(u32::from(byte))
-}
 
 /// Static string values which are known at compile time and don't need to be interned.
 ///
@@ -190,9 +189,34 @@ pub enum StaticStrings {
 }
 
 impl StaticStrings {
+    /// Converts this static string variant to its corresponding `StringId`.
     pub fn as_string_id(self) -> StringId {
         let string_id = self as u32;
         StringId(string_id + STATIC_STRING_ID_OFFSET)
+    }
+
+    /// Attempts to convert a `StringId` back to a `StaticStrings` variant.
+    ///
+    /// Returns `None` if the `StringId` doesn't correspond to a static string
+    /// (e.g., it's an ASCII char or a dynamically interned string).
+    pub fn from_string_id(id: StringId) -> Option<Self> {
+        if id.0 < STATIC_STRING_ID_OFFSET {
+            return None;
+        }
+        let enum_id = id.0 - STATIC_STRING_ID_OFFSET;
+        u8::try_from(enum_id).ok().and_then(Self::from_repr)
+    }
+}
+
+impl PartialEq<StaticStrings> for StringId {
+    fn eq(&self, other: &StaticStrings) -> bool {
+        *self == other.as_string_id()
+    }
+}
+
+impl PartialEq<StringId> for StaticStrings {
+    fn eq(&self, other: &StringId) -> bool {
+        self.as_string_id() == *other
     }
 }
 
@@ -296,12 +320,14 @@ impl InternerBuilder {
 
     /// Interns a string, returning its `StringId`.
     ///
-    /// If the string was already interned, returns the existing `StringId`.
-    /// Otherwise, stores the string and returns a new `StringId`.
+    /// * If the string is ascii, return the pre-interned string id
+    /// * If the string is a known static string, return the pre-interned string id
+    /// * If the string was already interned, returns the existing string id
+    /// * Otherwise, stores the string and returns a new string id
     pub fn intern(&mut self, s: &str) -> StringId {
         if s.len() == 1 {
-            ascii_string_id(s.as_bytes()[0])
-        } else if let Ok(ss) = s.parse::<StaticStrings>() {
+            StringId::from_ascii(s.as_bytes()[0])
+        } else if let Ok(ss) = StaticStrings::from_str(s) {
             ss.as_string_id()
         } else {
             *self.string_map.entry(s.to_owned()).or_insert_with(|| {
@@ -336,7 +362,7 @@ impl InternerBuilder {
 /// Panics if the `StringId` is invalid - not from this interner or ascii chars or StaticStrings.
 fn get_str(strings: &[String], id: StringId) -> &str {
     if let Ok(c) = u8::try_from(id.0) {
-        return ASCII_STRS[c as usize];
+        ASCII_STRS[c as usize]
     } else if id.index() < INTERN_STRING_ID_OFFSET {
         let enum_id = u8::try_from(id.0 - STATIC_STRING_ID_OFFSET).expect("Invalid static string ID offset");
         let static_str = StaticStrings::from_repr(enum_id).expect("Invalid static string ID");

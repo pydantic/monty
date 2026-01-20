@@ -10,7 +10,7 @@ use crate::{
     builtins::{Builtins, BuiltinsFunctions},
     exception_private::{ExcType, RunError},
     heap::{Heap, HeapData, HeapId},
-    intern::{ExtFunctionId, FunctionId, Interns, StringId, StaticStrings},
+    intern::{ExtFunctionId, FunctionId, Interns, StaticStrings, StringId},
     io::PrintWriter,
     resource::ResourceTracker,
     types::{
@@ -223,7 +223,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         match obj {
             Value::Ref(heap_id) => {
                 // Check for list.sort - needs special handling for key functions
-                if name_id == attr::SORT && matches!(self.heap.get(heap_id), HeapData::List(_)) {
+                if name_id == StaticStrings::Sort && matches!(self.heap.get(heap_id), HeapData::List(_)) {
                     let result = do_list_sort(heap_id, args, self.heap, self.interns, self.print_writer);
                     obj.drop_with_heap(self.heap);
                     return result.map(|()| Value::None);
@@ -586,8 +586,8 @@ fn call_type_method(
     interns: &Interns,
 ) -> Result<Value, RunError> {
     match (t, method_id) {
-        (Type::Dict, m) if m == attr::FROMKEYS => return dict_fromkeys(args, heap, interns),
-        (Type::Bytes, m) if m == attr::FROMHEX => return bytes_fromhex(args, heap, interns),
+        (Type::Dict, m) if m == StaticStrings::Fromkeys => return dict_fromkeys(args, heap, interns),
+        (Type::Bytes, m) if m == StaticStrings::Fromhex => return bytes_fromhex(args, heap, interns),
         _ => {}
     }
     // Other types or unknown methods - report actual type name, not 'type'

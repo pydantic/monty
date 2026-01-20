@@ -5,7 +5,7 @@ use crate::{
     builtins::Builtins,
     exception_private::{ExcType, ExceptionRaise, RawStackFrame, RunError, SimpleException},
     heap::HeapData,
-    intern::{MODULE_STRING_ID, StringId},
+    intern::{StaticStrings, StringId},
     io::PrintWriter,
     resource::ResourceTracker,
     types::{PyTrait, Type},
@@ -21,7 +21,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         let frame = self.current_frame();
         match frame.function_id {
             Some(func_id) => self.interns.get_function(func_id).name.name_id,
-            None => MODULE_STRING_ID,
+            None => StaticStrings::Module.as_string_id(),
         }
     }
 

@@ -189,10 +189,14 @@ impl PyTrait for Tuple {
             args.drop_with_heap(heap);
             return Err(ExcType::attribute_error(Type::Tuple, attr.as_str(interns)));
         };
+        let Some(method) = StaticStrings::from_string_id(attr_id) else {
+            args.drop_with_heap(heap);
+            return Err(ExcType::attribute_error(Type::Tuple, attr.as_str(interns)));
+        };
 
-        match attr_id {
-            attr::INDEX => tuple_index(self, args, heap, interns),
-            attr::COUNT => tuple_count(self, args, heap, interns),
+        match method {
+            StaticStrings::Index => tuple_index(self, args, heap, interns),
+            StaticStrings::Count => tuple_count(self, args, heap, interns),
             _ => {
                 args.drop_with_heap(heap);
                 Err(ExcType::attribute_error(Type::Tuple, interns.get_str(attr_id)))

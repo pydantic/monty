@@ -75,7 +75,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StringId, StaticStrings},
+    intern::{Interns, StaticStrings, StringId},
     resource::ResourceTracker,
     types::List,
     value::{Attr, Value},
@@ -265,98 +265,102 @@ pub fn call_bytes_method(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
-    match method_id {
+    let Some(method) = StaticStrings::from_string_id(method_id) else {
+        args.drop_with_heap(heap);
+        return Err(ExcType::attribute_error(Type::Bytes, interns.get_str(method_id)));
+    };
+    match method {
         // Decode method
-        attr::DECODE => bytes_decode(bytes, args, heap, interns),
+        StaticStrings::Decode => bytes_decode(bytes, args, heap, interns),
         // Simple transformations (no arguments)
-        attr::LOWER => {
+        StaticStrings::Lower => {
             args.check_zero_args("bytes.lower", heap)?;
             bytes_lower(bytes, heap)
         }
-        attr::UPPER => {
+        StaticStrings::Upper => {
             args.check_zero_args("bytes.upper", heap)?;
             bytes_upper(bytes, heap)
         }
-        attr::CAPITALIZE => {
+        StaticStrings::Capitalize => {
             args.check_zero_args("bytes.capitalize", heap)?;
             bytes_capitalize(bytes, heap)
         }
-        attr::TITLE => {
+        StaticStrings::Title => {
             args.check_zero_args("bytes.title", heap)?;
             bytes_title(bytes, heap)
         }
-        attr::SWAPCASE => {
+        StaticStrings::Swapcase => {
             args.check_zero_args("bytes.swapcase", heap)?;
             bytes_swapcase(bytes, heap)
         }
         // Predicate methods (no arguments, return bool)
-        attr::ISALPHA => {
+        StaticStrings::Isalpha => {
             args.check_zero_args("bytes.isalpha", heap)?;
             Ok(Value::Bool(bytes_isalpha(bytes)))
         }
-        attr::ISDIGIT => {
+        StaticStrings::Isdigit => {
             args.check_zero_args("bytes.isdigit", heap)?;
             Ok(Value::Bool(bytes_isdigit(bytes)))
         }
-        attr::ISALNUM => {
+        StaticStrings::Isalnum => {
             args.check_zero_args("bytes.isalnum", heap)?;
             Ok(Value::Bool(bytes_isalnum(bytes)))
         }
-        attr::ISSPACE => {
+        StaticStrings::Isspace => {
             args.check_zero_args("bytes.isspace", heap)?;
             Ok(Value::Bool(bytes_isspace(bytes)))
         }
-        attr::ISLOWER => {
+        StaticStrings::Islower => {
             args.check_zero_args("bytes.islower", heap)?;
             Ok(Value::Bool(bytes_islower(bytes)))
         }
-        attr::ISUPPER => {
+        StaticStrings::Isupper => {
             args.check_zero_args("bytes.isupper", heap)?;
             Ok(Value::Bool(bytes_isupper(bytes)))
         }
-        attr::ISASCII => {
+        StaticStrings::Isascii => {
             args.check_zero_args("bytes.isascii", heap)?;
             Ok(Value::Bool(bytes.iter().all(|&b| b <= 127)))
         }
-        attr::ISTITLE => {
+        StaticStrings::Istitle => {
             args.check_zero_args("bytes.istitle", heap)?;
             Ok(Value::Bool(bytes_istitle(bytes)))
         }
         // Search methods
-        attr::COUNT => bytes_count(bytes, args, heap, interns),
-        attr::FIND => bytes_find(bytes, args, heap, interns),
-        attr::RFIND => bytes_rfind(bytes, args, heap, interns),
-        attr::INDEX => bytes_index(bytes, args, heap, interns),
-        attr::RINDEX => bytes_rindex(bytes, args, heap, interns),
-        attr::STARTSWITH => bytes_startswith(bytes, args, heap, interns),
-        attr::ENDSWITH => bytes_endswith(bytes, args, heap, interns),
+        StaticStrings::Count => bytes_count(bytes, args, heap, interns),
+        StaticStrings::Find => bytes_find(bytes, args, heap, interns),
+        StaticStrings::Rfind => bytes_rfind(bytes, args, heap, interns),
+        StaticStrings::Index => bytes_index(bytes, args, heap, interns),
+        StaticStrings::Rindex => bytes_rindex(bytes, args, heap, interns),
+        StaticStrings::Startswith => bytes_startswith(bytes, args, heap, interns),
+        StaticStrings::Endswith => bytes_endswith(bytes, args, heap, interns),
         // Strip/trim methods
-        attr::STRIP => bytes_strip(bytes, args, heap, interns),
-        attr::LSTRIP => bytes_lstrip(bytes, args, heap, interns),
-        attr::RSTRIP => bytes_rstrip(bytes, args, heap, interns),
-        attr::REMOVEPREFIX => bytes_removeprefix(bytes, args, heap, interns),
-        attr::REMOVESUFFIX => bytes_removesuffix(bytes, args, heap, interns),
+        StaticStrings::Strip => bytes_strip(bytes, args, heap, interns),
+        StaticStrings::Lstrip => bytes_lstrip(bytes, args, heap, interns),
+        StaticStrings::Rstrip => bytes_rstrip(bytes, args, heap, interns),
+        StaticStrings::Removeprefix => bytes_removeprefix(bytes, args, heap, interns),
+        StaticStrings::Removesuffix => bytes_removesuffix(bytes, args, heap, interns),
         // Split methods
-        attr::SPLIT => bytes_split(bytes, args, heap, interns),
-        attr::RSPLIT => bytes_rsplit(bytes, args, heap, interns),
-        attr::SPLITLINES => bytes_splitlines(bytes, args, heap, interns),
-        attr::PARTITION => bytes_partition(bytes, args, heap, interns),
-        attr::RPARTITION => bytes_rpartition(bytes, args, heap, interns),
+        StaticStrings::Split => bytes_split(bytes, args, heap, interns),
+        StaticStrings::Rsplit => bytes_rsplit(bytes, args, heap, interns),
+        StaticStrings::Splitlines => bytes_splitlines(bytes, args, heap, interns),
+        StaticStrings::Partition => bytes_partition(bytes, args, heap, interns),
+        StaticStrings::Rpartition => bytes_rpartition(bytes, args, heap, interns),
         // Replace/padding methods
-        attr::REPLACE => bytes_replace(bytes, args, heap, interns),
-        attr::CENTER => bytes_center(bytes, args, heap, interns),
-        attr::LJUST => bytes_ljust(bytes, args, heap, interns),
-        attr::RJUST => bytes_rjust(bytes, args, heap, interns),
-        attr::ZFILL => bytes_zfill(bytes, args, heap),
+        StaticStrings::Replace => bytes_replace(bytes, args, heap, interns),
+        StaticStrings::Center => bytes_center(bytes, args, heap, interns),
+        StaticStrings::Ljust => bytes_ljust(bytes, args, heap, interns),
+        StaticStrings::Rjust => bytes_rjust(bytes, args, heap, interns),
+        StaticStrings::Zfill => bytes_zfill(bytes, args, heap),
         // Join method
-        attr::JOIN => {
+        StaticStrings::Join => {
             let iterable = args.get_one_arg("bytes.join", heap)?;
             bytes_join(bytes, iterable, heap, interns)
         }
         // Hex method
-        attr::HEX => bytes_hex(bytes, args, heap, interns),
+        StaticStrings::Hex => bytes_hex(bytes, args, heap, interns),
         // fromhex is a classmethod but also accessible on instances
-        attr::FROMHEX => bytes_fromhex(args, heap, interns),
+        StaticStrings::Fromhex => bytes_fromhex(args, heap, interns),
         _ => {
             args.drop_with_heap(heap);
             Err(ExcType::attribute_error(Type::Bytes, interns.get_str(method_id)))

@@ -13,7 +13,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
-    intern::{EMPTY_STRING, Interns, StringId, ascii_string_id, StaticStrings},
+    intern::{Interns, StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker},
     types::Type,
     value::{Attr, Value},
@@ -51,7 +51,7 @@ impl Str {
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
         let value = args.get_zero_one_arg("str", heap)?;
         match value {
-            None => Ok(Value::InternString(EMPTY_STRING)),
+            None => Ok(Value::InternString(StaticStrings::EmptyString.as_string_id())),
             Some(v) => {
                 let s = v.py_str(heap, interns).into_owned();
                 v.drop_with_heap(heap);
@@ -82,7 +82,7 @@ impl From<Str> for String {
 /// Allocates a string, using interned versions when possible.
 ///
 /// Optimizations:
-/// - Empty strings return the pre-interned `EMPTY_STRING`
+/// - Empty strings return the pre-interned `StaticStrings::EmptyString`
 /// - Single ASCII characters return pre-interned ASCII strings
 /// - Other strings are allocated on the heap
 ///
@@ -90,11 +90,11 @@ impl From<Str> for String {
 /// `split()`, string iteration, etc.
 pub fn allocate_string(s: String, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
     match s.len() {
-        0 => Ok(Value::InternString(EMPTY_STRING)),
+        0 => Ok(Value::InternString(StaticStrings::EmptyString.as_string_id())),
         1 => {
             // Single byte means single ASCII character
             let byte = s.as_bytes()[0];
-            Ok(Value::InternString(ascii_string_id(byte)))
+            Ok(Value::InternString(StringId::from_ascii(byte)))
         }
         _ => {
             let heap_id = heap.allocate(HeapData::Str(Str::new(s)))?;
@@ -111,7 +111,7 @@ pub fn allocate_string(s: String, heap: &mut Heap<impl ResourceTracker>) -> RunR
 /// This is used by string iteration and `chr()` builtin.
 pub fn allocate_char(c: char, heap: &mut Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
     if c.is_ascii() {
-        Ok(Value::InternString(ascii_string_id(c as u8)))
+        Ok(Value::InternString(StringId::from_ascii(c as u8)))
     } else {
         let heap_id = heap.allocate(HeapData::Str(Str::new(c.to_string())))?;
         Ok(Value::Ref(heap_id))
@@ -231,7 +231,7 @@ impl PyTrait for Str {
 ///
 /// # Arguments
 /// * `s` - The string to call the method on
-/// * `method_id` - The interned method name (e.g., `attr::JOIN`)
+/// * `method_id` - The interned method name (e.g., `StaticStrings::Join`)
 /// * `args` - The method arguments
 /// * `heap` - The heap for allocation and reference counting
 /// * `interns` - The interns table for resolving interned strings
@@ -256,107 +256,111 @@ pub fn call_str_method(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
-    match method_id {
+    let Some(method) = StaticStrings::from_string_id(method_id) else {
+        args.drop_with_heap(heap);
+        return Err(ExcType::attribute_error(Type::Str, interns.get_str(method_id)));
+    };
+    match method {
         // Simple transformations (no arguments)
-        attr::LOWER => {
+        StaticStrings::Lower => {
             args.check_zero_args("str.lower", heap)?;
             str_lower(s, heap)
         }
-        attr::UPPER => {
+        StaticStrings::Upper => {
             args.check_zero_args("str.upper", heap)?;
             str_upper(s, heap)
         }
-        attr::CAPITALIZE => {
+        StaticStrings::Capitalize => {
             args.check_zero_args("str.capitalize", heap)?;
             str_capitalize(s, heap)
         }
-        attr::TITLE => {
+        StaticStrings::Title => {
             args.check_zero_args("str.title", heap)?;
             str_title(s, heap)
         }
-        attr::SWAPCASE => {
+        StaticStrings::Swapcase => {
             args.check_zero_args("str.swapcase", heap)?;
             str_swapcase(s, heap)
         }
-        attr::CASEFOLD => {
+        StaticStrings::Casefold => {
             args.check_zero_args("str.casefold", heap)?;
             str_casefold(s, heap)
         }
         // Predicate methods (no arguments, return bool)
-        attr::ISALPHA => {
+        StaticStrings::Isalpha => {
             args.check_zero_args("str.isalpha", heap)?;
             Ok(Value::Bool(str_isalpha(s)))
         }
-        attr::ISDIGIT => {
+        StaticStrings::Isdigit => {
             args.check_zero_args("str.isdigit", heap)?;
             Ok(Value::Bool(str_isdigit(s)))
         }
-        attr::ISALNUM => {
+        StaticStrings::Isalnum => {
             args.check_zero_args("str.isalnum", heap)?;
             Ok(Value::Bool(str_isalnum(s)))
         }
-        attr::ISNUMERIC => {
+        StaticStrings::Isnumeric => {
             args.check_zero_args("str.isnumeric", heap)?;
             Ok(Value::Bool(str_isnumeric(s)))
         }
-        attr::ISSPACE => {
+        StaticStrings::Isspace => {
             args.check_zero_args("str.isspace", heap)?;
             Ok(Value::Bool(str_isspace(s)))
         }
-        attr::ISLOWER => {
+        StaticStrings::Islower => {
             args.check_zero_args("str.islower", heap)?;
             Ok(Value::Bool(str_islower(s)))
         }
-        attr::ISUPPER => {
+        StaticStrings::Isupper => {
             args.check_zero_args("str.isupper", heap)?;
             Ok(Value::Bool(str_isupper(s)))
         }
-        attr::ISASCII => {
+        StaticStrings::Isascii => {
             args.check_zero_args("str.isascii", heap)?;
             Ok(Value::Bool(s.is_ascii()))
         }
-        attr::ISDECIMAL => {
+        StaticStrings::Isdecimal => {
             args.check_zero_args("str.isdecimal", heap)?;
             Ok(Value::Bool(str_isdecimal(s)))
         }
         // Search methods
-        attr::FIND => str_find(s, args, heap, interns),
-        attr::RFIND => str_rfind(s, args, heap, interns),
-        attr::INDEX => str_index(s, args, heap, interns),
-        attr::RINDEX => str_rindex(s, args, heap, interns),
-        attr::COUNT => str_count(s, args, heap, interns),
-        attr::STARTSWITH => str_startswith(s, args, heap, interns),
-        attr::ENDSWITH => str_endswith(s, args, heap, interns),
+        StaticStrings::Find => str_find(s, args, heap, interns),
+        StaticStrings::Rfind => str_rfind(s, args, heap, interns),
+        StaticStrings::Index => str_index(s, args, heap, interns),
+        StaticStrings::Rindex => str_rindex(s, args, heap, interns),
+        StaticStrings::Count => str_count(s, args, heap, interns),
+        StaticStrings::Startswith => str_startswith(s, args, heap, interns),
+        StaticStrings::Endswith => str_endswith(s, args, heap, interns),
         // Strip/trim methods
-        attr::STRIP => str_strip(s, args, heap, interns),
-        attr::LSTRIP => str_lstrip(s, args, heap, interns),
-        attr::RSTRIP => str_rstrip(s, args, heap, interns),
-        attr::REMOVEPREFIX => str_removeprefix(s, args, heap, interns),
-        attr::REMOVESUFFIX => str_removesuffix(s, args, heap, interns),
+        StaticStrings::Strip => str_strip(s, args, heap, interns),
+        StaticStrings::Lstrip => str_lstrip(s, args, heap, interns),
+        StaticStrings::Rstrip => str_rstrip(s, args, heap, interns),
+        StaticStrings::Removeprefix => str_removeprefix(s, args, heap, interns),
+        StaticStrings::Removesuffix => str_removesuffix(s, args, heap, interns),
         // Split methods
-        attr::SPLIT => str_split(s, args, heap, interns),
-        attr::RSPLIT => str_rsplit(s, args, heap, interns),
-        attr::SPLITLINES => str_splitlines(s, args, heap, interns),
-        attr::PARTITION => str_partition(s, args, heap, interns),
-        attr::RPARTITION => str_rpartition(s, args, heap, interns),
+        StaticStrings::Split => str_split(s, args, heap, interns),
+        StaticStrings::Rsplit => str_rsplit(s, args, heap, interns),
+        StaticStrings::Splitlines => str_splitlines(s, args, heap, interns),
+        StaticStrings::Partition => str_partition(s, args, heap, interns),
+        StaticStrings::Rpartition => str_rpartition(s, args, heap, interns),
         // Replace/modify methods
-        attr::REPLACE => str_replace(s, args, heap, interns),
-        attr::CENTER => str_center(s, args, heap, interns),
-        attr::LJUST => str_ljust(s, args, heap, interns),
-        attr::RJUST => str_rjust(s, args, heap, interns),
-        attr::ZFILL => str_zfill(s, args, heap),
+        StaticStrings::Replace => str_replace(s, args, heap, interns),
+        StaticStrings::Center => str_center(s, args, heap, interns),
+        StaticStrings::Ljust => str_ljust(s, args, heap, interns),
+        StaticStrings::Rjust => str_rjust(s, args, heap, interns),
+        StaticStrings::Zfill => str_zfill(s, args, heap),
         // Additional methods
-        attr::ENCODE => str_encode(s, args, heap, interns),
-        attr::ISIDENTIFIER => {
+        StaticStrings::Encode => str_encode(s, args, heap, interns),
+        StaticStrings::Isidentifier => {
             args.check_zero_args("str.isidentifier", heap)?;
             Ok(Value::Bool(str_isidentifier(s)))
         }
-        attr::ISTITLE => {
+        StaticStrings::Istitle => {
             args.check_zero_args("str.istitle", heap)?;
             Ok(Value::Bool(str_istitle(s)))
         }
         // Existing method
-        attr::JOIN => {
+        StaticStrings::Join => {
             let iterable = args.get_one_arg("str.join", heap)?;
             str_join(s, iterable, heap, interns)
         }

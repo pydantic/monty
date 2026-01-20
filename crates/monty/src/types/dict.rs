@@ -608,9 +608,12 @@ impl PyTrait for Dict {
         let Some(attr_id) = attr.string_id() else {
             return Err(ExcType::attribute_error(Type::Dict, attr.as_str(interns)));
         };
+        let Some(method) = StaticStrings::from_string_id(attr_id) else {
+            return Err(ExcType::attribute_error(Type::Dict, attr.as_str(interns)));
+        };
 
-        match attr_id {
-            attr::GET => {
+        match method {
+            StaticStrings::Get => {
                 // dict.get() accepts 1 or 2 arguments
                 let (key, default) = args.get_one_two_args("get", heap)?;
                 let default = default.unwrap_or(Value::None);
@@ -633,19 +636,19 @@ impl PyTrait for Dict {
                 default.drop_with_heap(heap);
                 Ok(value)
             }
-            attr::KEYS => {
+            StaticStrings::Keys => {
                 args.check_zero_args("dict.keys", heap)?;
                 let keys = self.keys(heap);
                 let list_id = heap.allocate(HeapData::List(List::new(keys)))?;
                 Ok(Value::Ref(list_id))
             }
-            attr::VALUES => {
+            StaticStrings::Values => {
                 args.check_zero_args("dict.values", heap)?;
                 let values = self.values(heap);
                 let list_id = heap.allocate(HeapData::List(List::new(values)))?;
                 Ok(Value::Ref(list_id))
             }
-            attr::ITEMS => {
+            StaticStrings::Items => {
                 args.check_zero_args("dict.items", heap)?;
                 // Return list of tuples
                 let items = self.items(heap);
@@ -657,7 +660,7 @@ impl PyTrait for Dict {
                 let list_id = heap.allocate(HeapData::List(List::new(tuples)))?;
                 Ok(Value::Ref(list_id))
             }
-            attr::POP => {
+            StaticStrings::Pop => {
                 // dict.pop() accepts 1 or 2 arguments (key, optional default)
                 let (key, default) = args.get_one_two_args("pop", heap)?;
                 let result = match self.pop(&key, heap, interns) {
@@ -692,23 +695,23 @@ impl PyTrait for Dict {
                     }
                 }
             }
-            attr::CLEAR => {
+            StaticStrings::Clear => {
                 args.check_zero_args("dict.clear", heap)?;
                 dict_clear(self, heap);
                 Ok(Value::None)
             }
-            attr::COPY => {
+            StaticStrings::Copy => {
                 args.check_zero_args("dict.copy", heap)?;
                 dict_copy(self, heap, interns)
             }
-            attr::UPDATE => dict_update(self, args, heap, interns),
-            attr::SETDEFAULT => dict_setdefault(self, args, heap, interns),
-            attr::POPITEM => {
+            StaticStrings::Update => dict_update(self, args, heap, interns),
+            StaticStrings::Setdefault => dict_setdefault(self, args, heap, interns),
+            StaticStrings::Popitem => {
                 args.check_zero_args("dict.popitem", heap)?;
                 dict_popitem(self, heap)
             }
             // fromkeys is a classmethod but also accessible on instances
-            attr::FROMKEYS => dict_fromkeys(args, heap, interns),
+            StaticStrings::Fromkeys => dict_fromkeys(args, heap, interns),
             _ => Err(ExcType::attribute_error(Type::Dict, attr.as_str(interns))),
         }
     }

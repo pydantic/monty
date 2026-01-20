@@ -9,7 +9,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult},
     for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StringId, StaticStrings},
+    intern::{Interns, StaticStrings, StringId},
     io::PrintWriter,
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -338,7 +338,7 @@ impl PyTrait for List {
 ///
 /// # Arguments
 /// * `list` - The list to call the method on
-/// * `method_id` - The interned method name (e.g., `attr::APPEND`)
+/// * `method_id` - The interned method name (e.g., `StaticStrings::Append`)
 /// * `args` - The method arguments
 /// * `heap` - The heap for allocation and reference counting
 /// * `interns` - The interns table for resolving interned strings
@@ -349,28 +349,32 @@ fn call_list_method(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
-    match method_id {
-        attr::APPEND => {
+    let Some(method) = StaticStrings::from_string_id(method_id) else {
+        args.drop_with_heap(heap);
+        return Err(ExcType::attribute_error(Type::List, interns.get_str(method_id)));
+    };
+    match method {
+        StaticStrings::Append => {
             let item = args.get_one_arg("list.append", heap)?;
             list.append(heap, item);
             Ok(Value::None)
         }
-        attr::INSERT => list_insert(list, args, heap),
-        attr::POP => list_pop(list, args, heap),
-        attr::REMOVE => list_remove(list, args, heap, interns),
-        attr::CLEAR => {
+        StaticStrings::Insert => list_insert(list, args, heap),
+        StaticStrings::Pop => list_pop(list, args, heap),
+        StaticStrings::Remove => list_remove(list, args, heap, interns),
+        StaticStrings::Clear => {
             args.check_zero_args("list.clear", heap)?;
             list_clear(list, heap);
             Ok(Value::None)
         }
-        attr::COPY => {
+        StaticStrings::Copy => {
             args.check_zero_args("list.copy", heap)?;
             Ok(list_copy(list, heap)?)
         }
-        attr::EXTEND => list_extend(list, args, heap, interns),
-        attr::INDEX => list_index(list, args, heap, interns),
-        attr::COUNT => list_count(list, args, heap, interns),
-        attr::REVERSE => {
+        StaticStrings::Extend => list_extend(list, args, heap, interns),
+        StaticStrings::Index => list_index(list, args, heap, interns),
+        StaticStrings::Count => list_count(list, args, heap, interns),
+        StaticStrings::Reverse => {
             args.check_zero_args("list.reverse", heap)?;
             list.items.reverse();
             Ok(Value::None)
