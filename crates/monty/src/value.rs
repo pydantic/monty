@@ -1763,23 +1763,21 @@ impl Value {
     /// # Important
     /// This method MUST be called before overwriting a namespace slot or discarding
     /// a value to prevent memory leaks.
-    ///
+    #[cfg(not(feature = "ref-count-panic"))]
+    pub fn drop_with_heap(self, heap: &mut Heap<impl ResourceTracker>) {
+        if let Self::Ref(id) = self {
+            heap.dec_ref(id);
+        }
+    }
     /// With `ref-count-panic` enabled, `Ref` variants are replaced with `Dereferenced` and
     /// the original is forgotten to prevent the Drop impl from panicking. Non-Ref variants
     /// are left unchanged since they don't trigger the Drop panic.
-    #[cfg_attr(not(feature = "ref-count-return"), expect(unused_mut))]
+    #[cfg(feature = "ref-count-panic")]
     pub fn drop_with_heap(mut self, heap: &mut Heap<impl ResourceTracker>) {
-        #[cfg(feature = "ref-count-panic")]
-        {
-            let old = std::mem::replace(&mut self, Self::Dereferenced);
-            if let Self::Ref(id) = &old {
-                heap.dec_ref(*id);
-                std::mem::forget(old);
-            }
-        }
-        #[cfg(not(feature = "ref-count-panic"))]
-        if let Self::Ref(id) = self {
-            heap.dec_ref(id);
+        let old = std::mem::replace(&mut self, Self::Dereferenced);
+        if let Self::Ref(id) = &old {
+            heap.dec_ref(*id);
+            std::mem::forget(old);
         }
     }
 
