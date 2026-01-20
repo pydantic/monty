@@ -608,14 +608,14 @@ jobs:
         run: npm install
         working-directory: crates/monty-ts
       - name: create npm dirs
-        run: npm napi create-npm-dirs
+        run: npm run create-npm-dirs
         working-directory: crates/monty-ts
       - name: Download all artifacts
         uses: actions/download-artifact@v7
         with:
           path: crates/monty-ts/artifacts
       - name: Move artifacts
-        run: npm artifacts
+        run: npm run artifacts
         working-directory: crates/monty-ts
       - name: List packages
         run: ls -R ./npm
