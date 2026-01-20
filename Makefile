@@ -26,6 +26,30 @@ install: .cargo .pre-commit install-py ## Install the package, dependencies, and
 dev-py: ## Install the python package for development
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml
 
+.PHONY: install-ts
+install-ts: ## Install TypeScript package dependencies
+	cd crates/monty-ts && npm install
+
+.PHONY: build-ts
+build-ts: ## Build the TypeScript package (debug)
+	cd crates/monty-ts && npm run build:debug
+
+.PHONY: build-ts-release
+build-ts-release: ## Build the TypeScript package (release)
+	cd crates/monty-ts && npm run build
+
+.PHONY: format-ts
+format-ts: ## Format TypeScript code with prettier
+	cd crates/monty-ts && npm run format:prettier
+
+.PHONY: lint-ts
+lint-ts: ## Lint TypeScript code with oxlint
+	cd crates/monty-ts && npm run lint
+
+.PHONY: test-ts
+test-ts: build-ts ## Build and test the TypeScript package
+	cd crates/monty-ts && npm test
+
 .PHONY: dev-py-release
 dev-py-release: ## Install the python package for development with a release build
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release

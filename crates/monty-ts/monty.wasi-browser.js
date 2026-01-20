@@ -5,15 +5,12 @@ import {
   WASI as __WASI,
 } from '@napi-rs/wasm-runtime'
 
-
-
 const __wasi = new __WASI({
   version: 'preview1',
 })
 
 const __wasmUrl = new URL('./monty.wasm32-wasi.wasm', import.meta.url).href
 const __emnapiContext = __emnapiGetDefaultContext()
-
 
 const __sharedMemory = new WebAssembly.Memory({
   initial: 4000,
