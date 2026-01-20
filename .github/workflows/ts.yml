@@ -150,9 +150,11 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
+          cache-dependency-path: crates/monty-ts/package-lock.json
           architecture: ${{ matrix.settings.architecture }}
       - name: Install dependencies
         run: npm install
+        working-directory: crates/monty-ts
       - name: Download artifacts
         uses: actions/download-artifact@v7
         with:
@@ -185,6 +187,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
+          cache-dependency-path: crates/monty-ts/package-lock.json
       - name: Output docker params
         id: docker
         run: |
@@ -209,6 +212,7 @@ jobs:
           npm config set --json supportedArchitectures.cpu '["current", "arm64", "x64", "arm"]'
           npm config set --json supportedArchitectures.libc '["current", "musl", "gnu"]'
           npm install
+        working-directory: crates/monty-ts
       - name: Download artifacts
         uses: actions/download-artifact@v7
         with:
@@ -217,6 +221,7 @@ jobs:
       - name: List packages
         run: ls -R .
         shell: bash
+        working-directory: crates/monty-ts
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         if: ${{ contains(matrix.target, 'armv7') }}
