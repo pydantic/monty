@@ -9,7 +9,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult},
     for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StringId, attr},
+    intern::{Interns, StringId, StaticStrings},
     io::PrintWriter,
     resource::{ResourceError, ResourceTracker},
     types::Type,

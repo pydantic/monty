@@ -75,7 +75,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StringId, attr},
+    intern::{Interns, StringId, StaticStrings},
     resource::ResourceTracker,
     types::List,
     value::{Attr, Value},

@@ -13,7 +13,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
-    intern::{EMPTY_STRING, Interns, StringId, ascii_string_id, attr},
+    intern::{EMPTY_STRING, Interns, StringId, ascii_string_id, StaticStrings},
     resource::{ResourceError, ResourceTracker},
     types::Type,
     value::{Attr, Value},

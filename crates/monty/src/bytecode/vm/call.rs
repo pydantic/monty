@@ -10,7 +10,7 @@ use crate::{
     builtins::{Builtins, BuiltinsFunctions},
     exception_private::{ExcType, RunError},
     heap::{Heap, HeapData, HeapId},
-    intern::{ExtFunctionId, FunctionId, Interns, StringId, attr},
+    intern::{ExtFunctionId, FunctionId, Interns, StringId, StaticStrings},
     io::PrintWriter,
     resource::ResourceTracker,
     types::{
