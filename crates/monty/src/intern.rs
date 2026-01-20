@@ -201,10 +201,11 @@ impl StaticStrings {
     /// (e.g., it's an ASCII char or a dynamically interned string).
     pub fn from_string_id(id: StringId) -> Option<Self> {
         if id.0 < STATIC_STRING_ID_OFFSET {
-            return None;
+            None
+        } else {
+            let enum_id = id.0.checked_sub(STATIC_STRING_ID_OFFSET)?;
+            u8::try_from(enum_id).ok().and_then(Self::from_repr)
         }
-        let enum_id = id.0 - STATIC_STRING_ID_OFFSET;
-        u8::try_from(enum_id).ok().and_then(Self::from_repr)
     }
 }
 
@@ -363,12 +364,11 @@ impl InternerBuilder {
 fn get_str(strings: &[String], id: StringId) -> &str {
     if let Ok(c) = u8::try_from(id.0) {
         ASCII_STRS[c as usize]
-    } else if id.index() < INTERN_STRING_ID_OFFSET {
-        let enum_id = u8::try_from(id.0 - STATIC_STRING_ID_OFFSET).expect("Invalid static string ID offset");
-        let static_str = StaticStrings::from_repr(enum_id).expect("Invalid static string ID");
-        static_str.into()
+    } else if let Some(intern_index) = id.index().checked_sub(INTERN_STRING_ID_OFFSET) {
+        &strings[intern_index]
     } else {
-        &strings[id.index()]
+        let static_str = StaticStrings::from_string_id(id).expect("Invalid static string ID");
+        static_str.into()
     }
 }
 
