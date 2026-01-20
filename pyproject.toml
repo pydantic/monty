@@ -111,7 +111,12 @@ reportUnnecessaryIsInstance = false
 [tool.codespell]
 # Ref: https://github.com/codespell-project/codespell#using-a-config-file
 ignore-words-list = 'crate,NotIn,ser'
-skip = ["crates/monty-typeshed/vendor/typeshed/stdlib/*", "Cargo.lock", "crates/monty/src/types/str.rs"]
+skip = [
+    "Cargo.lock",
+    "crates/monty-ts/package-lock.json",
+    "crates/monty-typeshed/vendor/typeshed/stdlib/*",
+    "crates/monty/src/types/str.rs",
+]
 
 [tool.inline-snapshot]
 format-command="ruff format --stdin-filename {filename}"
