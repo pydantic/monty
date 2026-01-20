@@ -54,6 +54,7 @@
     "@oxc-node/core": "^0.0.35",
     "@taplo/cli": "^0.7.0",
     "@tybys/wasm-util": "^0.10.0",
+    "@types/node": "^25.0.9",
     "ava": "^6.4.1",
     "chalk": "^5.6.2",
     "npm-run-all2": "^8.0.4",
