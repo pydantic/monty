@@ -52,8 +52,7 @@
     "prepublishOnly": "napi prepublish -t npm",
     "test": "ava",
     "preversion": "napi build --platform && git add .",
-    "version": "napi version",
-    "prepare": "husky"
+    "version": "napi version"
   },
   "devDependencies": {
     "@emnapi/core": "^1.5.0",
