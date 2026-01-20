@@ -35,6 +35,14 @@ jobs:
         with:
           path: ~/.cache/pre-commit
           key: pre-commit|${{ env.UV_PYTHON }}|${{ hashFiles('.pre-commit-config.yaml') }}
+
+      - name: Setup node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: crates/monty-ts/package-lock.json
+
       - run: uvx pre-commit run --color=always --all-files --verbose
         env:
           SKIP: test

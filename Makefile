@@ -39,11 +39,11 @@ build-ts-release: ## Build the TypeScript package (release)
 	cd crates/monty-ts && npm run build
 
 .PHONY: format-ts
-format-ts: ## Format TypeScript code with prettier
+format-ts: install-ts ## Format TypeScript code with prettier
 	cd crates/monty-ts && npm run format:prettier
 
 .PHONY: lint-ts
-lint-ts: ## Lint TypeScript code with oxlint
+lint-ts: install-ts ## Lint TypeScript code with oxlint
 	cd crates/monty-ts && npm run lint
 
 .PHONY: test-ts
