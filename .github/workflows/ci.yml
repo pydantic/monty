@@ -525,10 +525,7 @@ jobs:
             }
           " >> $GITHUB_OUTPUT
       - name: Install dependencies
-        run: |
-          npm config set --json supportedArchitectures.cpu '["current", "arm64", "x64", "arm"]'
-          npm config set --json supportedArchitectures.libc '["current", "musl", "gnu"]'
-          npm install
+        run: npm install
         working-directory: crates/monty-ts
       - name: Download artifacts
         uses: actions/download-artifact@v7
@@ -567,9 +564,8 @@ jobs:
           cache: npm
           cache-dependency-path: crates/monty-ts/package-lock.json
       - name: Install dependencies
-        run: |
-          npm config set supportedArchitectures.cpu "wasm32"
-          npm install
+        run: npm install --cpu wasm32
+        working-directory: crates/monty-ts
       - name: Download artifacts
         uses: actions/download-artifact@v7
         with:
