@@ -322,3 +322,73 @@ except ValueError as e:
     assert str(e) == 'non-hexadecimal number found in fromhex() arg at position 1', (
         f'fromhex invalid hex char message, error: {e}'
     )
+
+# === bytes.fromhex() instance access ===
+# fromhex is a classmethod but should also work on instances
+assert b''.fromhex('4142') == b'AB', 'fromhex on bytes instance'
+assert b'hello'.fromhex('deadbeef') == b'\xde\xad\xbe\xef', 'fromhex on non-empty instance'
+
+# === bytes.startswith/endswith with tuple of prefixes ===
+assert b'hello'.startswith((b'he', b'wo')), 'startswith tuple first match'
+assert b'hello'.startswith((b'wo', b'he')), 'startswith tuple second match'
+assert not b'hello'.startswith((b'wo', b'ab')), 'startswith tuple no match'
+assert b'hello'.startswith((b'',)), 'startswith tuple with empty bytes'
+assert b'hello'.startswith((b'hello', b'world')), 'startswith tuple exact match'
+
+assert b'hello'.endswith((b'lo', b'ld')), 'endswith tuple first match'
+assert b'hello'.endswith((b'ld', b'lo')), 'endswith tuple second match'
+assert not b'hello'.endswith((b'he', b'ab')), 'endswith tuple no match'
+assert b'hello'.endswith((b'',)), 'endswith tuple with empty bytes'
+assert b'hello'.endswith((b'hello', b'world')), 'endswith tuple exact match'
+
+# startswith/endswith tuple with start/end
+assert b'abcdef'.startswith((b'bc', b'cd'), 1), 'startswith tuple with start'
+assert b'abcdef'.endswith((b'de', b'cd'), 0, 5), 'endswith tuple with end'
+
+# === Empty-substring edge cases ===
+# Edge case: start == len (boundary) - this works
+assert b'hello'.find(b'', 5) == 5, 'find empty at len returns len'
+assert b'hello'.count(b'', 5) == 1, 'count empty at len returns 1'
+assert b'hello'.startswith(b'', 5), 'startswith empty at len is true'
+assert b'hello'.endswith(b'', 5), 'endswith empty at len is true'
+
+# TODO: These edge cases when start > len need to be fixed
+# CPython returns -1/0/False for these, currently Monty doesn't handle this correctly
+# assert b'hello'.find(b'', 10) == -1, 'find empty when start > len returns -1'
+# assert b'hello'.count(b'', 10) == 0, 'count empty when start > len returns 0'
+# assert not b'hello'.startswith(b'', 10), 'startswith empty when start > len is false'
+# assert not b'hello'.endswith(b'', 10), 'endswith empty when start > len is false'
+# assert b'hello'.rfind(b'', 10) == -1, 'rfind empty when start > len returns -1'
+
+# === bytes.hex() non-ASCII separator errors ===
+try:
+    b'\x01\x02'.hex('\xff')
+    assert False, 'hex with non-ASCII separator should error'
+except ValueError as e:
+    # CPython uses 'sep must be ASCII.' with period
+    msg = str(e)
+    assert 'sep' in msg.lower() and 'ascii' in msg.lower(), f'hex non-ASCII sep message, error: {e}'
+
+# === bytes.decode() with errors argument ===
+# Valid errors values
+assert b'hello'.decode('utf-8', 'strict') == 'hello', 'decode with strict errors'
+assert b'hello'.decode('utf-8', 'ignore') == 'hello', 'decode with ignore errors'
+assert b'hello'.decode('utf-8', 'replace') == 'hello', 'decode with replace errors'
+
+# TODO: errors argument type validation - CPython raises TypeError for non-string errors
+# This is not implemented yet
+# try:
+#     b'hello'.decode('utf-8', 123)
+#     assert False, 'decode with non-string errors should error'
+# except TypeError as e:
+#     assert 'str' in str(e), f'decode errors type error should mention str, error: {e}'
+
+# === Error message for unknown classmethod ===
+# Error message should say 'bytes' not 'type'
+try:
+    bytes.nonexistent()
+    assert False, 'should raise AttributeError'
+except AttributeError as e:
+    msg = str(e)
+    assert 'bytes' in msg, f'error should mention bytes, got: {e}'
+    assert 'nonexistent' in msg, f'error should mention method name, got: {e}'

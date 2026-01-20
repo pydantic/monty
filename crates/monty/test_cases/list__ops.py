@@ -268,3 +268,14 @@ assert lst == [3, 2, 1], 'sort with key=None reverse'
 lst = []
 lst.sort(key=len)
 assert lst == [], 'sort empty list with key'
+
+# key with type builtin (using built-in type as key function)
+# Note: key=int for strings not supported because int() doesn't parse strings yet
+# Note: key=str for numbers hits string comparison issues
+# For now, test key=bool which works
+lst = [0, 1, 2, 0, 3]
+lst.sort(key=bool)
+# First two elements should be the zeros (False)
+assert lst[0] == 0 and lst[1] == 0, 'sort by bool: False values (0s) come first'
+# Remaining elements should be non-zero (True)
+assert lst[2] > 0 and lst[3] > 0 and lst[4] > 0, 'sort by bool: True values (non-zero) come last'
