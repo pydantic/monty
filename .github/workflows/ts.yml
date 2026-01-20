@@ -72,6 +72,7 @@ jobs:
         with:
           node-version: 24
           cache: yarn
+          cache-dependency-path: crates/monty-ts/yarn.lock
       - name: Install
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -236,6 +237,7 @@ jobs:
         with:
           node-version: 24
           cache: yarn
+          cache-dependency-path: crates/monty-ts/yarn.lock
       - name: Install dependencies
         run: |
           yarn config set supportedArchitectures.cpu "wasm32"
@@ -272,6 +274,7 @@ jobs:
         with:
           node-version: 24
           cache: yarn
+          cache-dependency-path: crates/monty-ts/yarn.lock
       - name: Install dependencies
         run: yarn install
       - name: create npm dirs
