@@ -22,29 +22,29 @@ use napi_derive::napi;
 /// Returns an error if the code fails to parse or encounters a runtime error.
 #[napi]
 pub fn run(code: String) -> Result<RunResult> {
-  let runner = MontyRun::new(code, "main.py", vec![], vec![]).map_err(monty_err_to_napi)?;
+    let runner = MontyRun::new(code, "main.py", vec![], vec![]).map_err(monty_err_to_napi)?;
 
-  let mut print_output = CollectStringPrint::default();
-  let result = runner
-    .run(vec![], NoLimitTracker, &mut print_output)
-    .map_err(monty_err_to_napi)?;
+    let mut print_output = CollectStringPrint::default();
+    let result = runner
+        .run(vec![], NoLimitTracker, &mut print_output)
+        .map_err(monty_err_to_napi)?;
 
-  Ok(RunResult {
-    output: print_output.into_output(),
-    result: format!("{result:?}"),
-  })
+    Ok(RunResult {
+        output: print_output.into_output(),
+        result: format!("{result:?}"),
+    })
 }
 
 /// Result of running Python code.
 #[napi(object)]
 pub struct RunResult {
-  /// Any output from print statements during execution.
-  pub output: String,
-  /// The debug representation of the final result.
-  pub result: String,
+    /// Any output from print statements during execution.
+    pub output: String,
+    /// The debug representation of the final result.
+    pub result: String,
 }
 
 /// Converts a `MontyException` to a napi `Error`.
 fn monty_err_to_napi(e: monty::MontyException) -> Error {
-  Error::from_reason(e.to_string())
+    Error::from_reason(e.to_string())
 }
