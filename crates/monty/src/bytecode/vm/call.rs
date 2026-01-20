@@ -17,7 +17,7 @@ use crate::{
         Dict, PyTrait, Type,
         bytes::{bytes_fromhex, call_bytes_method},
         dict::dict_fromkeys,
-        list::{SortArgs, do_list_sort},
+        list::do_list_sort,
         str::call_str_method,
     },
     value::{Attr, Value},
@@ -224,8 +224,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             Value::Ref(heap_id) => {
                 // Check for list.sort - needs special handling for key functions
                 if name_id == attr::SORT && matches!(self.heap.get(heap_id), HeapData::List(_)) {
-                    let sort_args = SortArgs::parse(args, self.heap, self.interns)?;
-                    let result = do_list_sort(heap_id, sort_args, self.heap, self.interns, self.print_writer);
+                    let result = do_list_sort(heap_id, args, self.heap, self.interns, self.print_writer);
                     obj.drop_with_heap(self.heap);
                     return result.map(|()| Value::None);
                 }

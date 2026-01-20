@@ -665,91 +665,6 @@ fn normalize_list_index(index: i64, len: usize) -> usize {
     }
 }
 
-/// Parsed arguments for `list.sort()`.
-///
-/// This struct separates argument parsing from VM execution, allowing the parsing
-/// logic to be tested independently and reused for similar methods like `sorted()`.
-pub(crate) struct SortArgs {
-    /// Optional callable to compute sort keys for each element. If `None`,
-    /// elements are compared directly. Only builtin functions are currently supported.
-    pub key_fn: Option<Value>,
-    /// If `true`, sort in descending order. Defaults to `false`.
-    pub reverse: bool,
-}
-
-impl SortArgs {
-    /// Parses `list.sort()` arguments from `ArgValues`.
-    ///
-    /// Validates that:
-    /// - No positional arguments are provided
-    /// - Only `key` and `reverse` keyword arguments are accepted
-    /// - `reverse` is treated as a boolean via `py_bool()`
-    /// - `key=None` is treated as no key function
-    ///
-    /// On error, all values in `args` are properly dropped to maintain reference counts.
-    pub fn parse(args: ArgValues, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
-        let (pos, kwargs) = args.into_parts();
-
-        // Check no positional arguments
-        let mut pos_iter = pos;
-        if pos_iter.next().is_some() {
-            for v in pos_iter {
-                v.drop_with_heap(heap);
-            }
-            kwargs.drop_with_heap(heap);
-            return Err(ExcType::type_error_no_args("list.sort", 1));
-        }
-
-        // Parse keyword arguments
-        let mut reverse = false;
-        let mut key_fn: Option<Value> = None;
-
-        for (key, value) in kwargs {
-            let Some(keyword_name) = key.as_either_str(heap) else {
-                key.drop_with_heap(heap);
-                value.drop_with_heap(heap);
-                if let Some(k) = key_fn {
-                    k.drop_with_heap(heap);
-                }
-                return Err(ExcType::type_error("keywords must be strings"));
-            };
-
-            let key_str = keyword_name.as_str(interns);
-            match key_str {
-                "reverse" => {
-                    reverse = value.py_bool(heap, interns);
-                    key.drop_with_heap(heap);
-                    value.drop_with_heap(heap);
-                }
-                "key" => {
-                    if matches!(value, Value::None) {
-                        key.drop_with_heap(heap);
-                        value.drop_with_heap(heap);
-                    } else {
-                        key.drop_with_heap(heap);
-                        if let Some(old_key) = key_fn.take() {
-                            old_key.drop_with_heap(heap);
-                        }
-                        key_fn = Some(value);
-                    }
-                }
-                _ => {
-                    key.drop_with_heap(heap);
-                    value.drop_with_heap(heap);
-                    if let Some(k) = key_fn {
-                        k.drop_with_heap(heap);
-                    }
-                    return Err(ExcType::type_error(format!(
-                        "'{key_str}' is an invalid keyword argument for list.sort()"
-                    )));
-                }
-            }
-        }
-
-        Ok(Self { key_fn, reverse })
-    }
-}
-
 /// Performs an in-place sort on a list with optional key function and reverse flag.
 ///
 /// This is called from the VM's `call_method` when `list.sort()` is invoked.
@@ -757,25 +672,45 @@ impl SortArgs {
 /// with the VM only passing through its resources.
 ///
 /// Uses a staged approach to avoid borrow checker issues:
-/// 1. Extract items from the list (temporarily empties it)
-/// 2. Compute key values if a key function is provided
-/// 3. Sort indices based on items or key values
-/// 4. Rearrange items in sorted order and put back into the list
+/// 1. Parse and validate arguments
+/// 2. Extract items from the list (temporarily empties it)
+/// 3. Compute key values if a key function is provided
+/// 4. Sort indices based on items or key values
+/// 5. Rearrange items in sorted order and put back into the list
 ///
 /// # Arguments
 /// * `list_id` - The heap ID of the list to sort
-/// * `sort_args` - Parsed sort arguments (key function and reverse flag)
+/// * `args` - The method arguments (keyword-only: `key` and `reverse`)
 /// * `heap` - The heap for memory management
 /// * `interns` - Interned strings for comparisons
 /// * `print_writer` - Output writer (needed for builtin function calls)
 pub(crate) fn do_list_sort(
     list_id: HeapId,
-    sort_args: SortArgs,
+    args: ArgValues,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
     print_writer: &mut impl PrintWriter,
 ) -> Result<(), RunError> {
-    let SortArgs { key_fn, reverse } = sort_args;
+    // Parse keyword-only arguments: key and reverse
+    let (key_arg, reverse_arg) = args.extract_two_kwargs_only("list.sort", "key", "reverse", heap, interns)?;
+
+    // Convert reverse to bool (default false)
+    let reverse = if let Some(v) = reverse_arg {
+        let result = v.py_bool(heap, interns);
+        v.drop_with_heap(heap);
+        result
+    } else {
+        false
+    };
+
+    // Handle key function (None means no key function)
+    let key_fn = match key_arg {
+        Some(v) if matches!(v, Value::None) => {
+            v.drop_with_heap(heap);
+            None
+        }
+        other => other,
+    };
 
     // Step 1: Extract items from the list (temporarily empties it)
     let mut items: Vec<Value> = {
