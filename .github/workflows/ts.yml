@@ -30,15 +30,16 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: yarn
+          cache: npm
+          cache-dependency-path: crates/monty-ts/package-lock.json
       - name: Install
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - name: Install dependencies
-        run: yarn install
+        run: npm install
       - name: Oxlint
-        run: yarn lint
+        run: npm lint
       - name: Cargo fmt
         run: cargo fmt -- --check
       - name: Clippy
@@ -50,19 +51,19 @@ jobs:
         settings:
           - host: macos-latest
             target: x86_64-apple-darwin
-            build: yarn build --target x86_64-apple-darwin
+            build: npm build --target x86_64-apple-darwin
           - host: windows-latest
-            build: yarn build --target x86_64-pc-windows-msvc
+            build: npm build --target x86_64-pc-windows-msvc
             target: x86_64-pc-windows-msvc
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            build: yarn build --target x86_64-unknown-linux-gnu --use-napi-cross
+            build: npm build --target x86_64-unknown-linux-gnu --use-napi-cross
           - host: macos-latest
             target: aarch64-apple-darwin
-            build: yarn build --target aarch64-apple-darwin
+            build: npm build --target aarch64-apple-darwin
           - host: ubuntu-latest
             target: wasm32-wasip1-threads
-            build: yarn build --target wasm32-wasip1-threads
+            build: npm build --target wasm32-wasip1-threads
     name: stable - ${{ matrix.settings.target }} - node@22
     runs-on: ${{ matrix.settings.host }}
     steps:
@@ -71,8 +72,8 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: yarn
-          cache-dependency-path: crates/monty-ts/yarn.lock
+          cache: npm
+          cache-dependency-path: crates/monty-ts/package-lock.json
       - name: Install
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -103,7 +104,7 @@ jobs:
         if: ${{ matrix.settings.setup }}
         shell: bash
       - name: Install dependencies
-        run: yarn install
+        run: npm install
         working-directory: crates/monty-ts
       - name: Build
         run: ${{ matrix.settings.build }}
@@ -144,10 +145,10 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node }}
-          cache: yarn
+          cache: npm
           architecture: ${{ matrix.settings.architecture }}
       - name: Install dependencies
-        run: yarn install
+        run: npm install
       - name: Download artifacts
         uses: actions/download-artifact@v7
         with:
@@ -158,7 +159,7 @@ jobs:
         shell: bash
         working-directory: crates/monty-ts
       - name: Test bindings
-        run: yarn test
+        run: npm test
         working-directory: crates/monty-ts
   test-linux-binding:
     name: Test ${{ matrix.target }} - node@${{ matrix.node }}
@@ -179,7 +180,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node }}
-          cache: yarn
+          cache: npm
       - name: Output docker params
         id: docker
         run: |
@@ -201,9 +202,9 @@ jobs:
           " >> $GITHUB_OUTPUT
       - name: Install dependencies
         run: |
-          yarn config set --json supportedArchitectures.cpu '["current", "arm64", "x64", "arm"]'
-          yarn config set --json supportedArchitectures.libc '["current", "musl", "gnu"]'
-          yarn install
+          npm config set --json supportedArchitectures.cpu '["current", "arm64", "x64", "arm"]'
+          npm config set --json supportedArchitectures.libc '["current", "musl", "gnu"]'
+          npm install
       - name: Download artifacts
         uses: actions/download-artifact@v7
         with:
@@ -224,7 +225,7 @@ jobs:
         with:
           image: ${{ steps.docker.outputs.IMAGE }}
           options: '-v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }} --platform ${{ steps.docker.outputs.PLATFORM }}'
-          run: yarn test
+          run: npm test
   test-wasi:
     name: Test WASI target
     needs:
@@ -236,12 +237,12 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: yarn
-          cache-dependency-path: crates/monty-ts/yarn.lock
+          cache: npm
+          cache-dependency-path: crates/monty-ts/package-lock.json
       - name: Install dependencies
         run: |
-          yarn config set supportedArchitectures.cpu "wasm32"
-          yarn install
+          npm config set supportedArchitectures.cpu "wasm32"
+          npm install
       - name: Download artifacts
         uses: actions/download-artifact@v7
         with:
@@ -252,7 +253,7 @@ jobs:
         shell: bash
         working-directory: crates/monty-ts
       - name: Test bindings
-        run: yarn test
+        run: npm test
         env:
           NAPI_RS_FORCE_WASI: 1
         working-directory: crates/monty-ts
@@ -273,18 +274,18 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: yarn
-          cache-dependency-path: crates/monty-ts/yarn.lock
+          cache: npm
+          cache-dependency-path: crates/monty-ts/package-lock.json
       - name: Install dependencies
-        run: yarn install
+        run: npm install
       - name: create npm dirs
-        run: yarn napi create-npm-dirs
+        run: npm napi create-npm-dirs
       - name: Download all artifacts
         uses: actions/download-artifact@v7
         with:
           path: artifacts
       - name: Move artifacts
-        run: yarn artifacts
+        run: npm artifacts
       - name: List packages
         run: ls -R ./npm
         shell: bash
