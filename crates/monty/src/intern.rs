@@ -49,7 +49,7 @@ impl StringId {
     }
 }
 
-/// ascii string
+/// StringId offsets
 const STATIC_STRING_ID_OFFSET: u32 = 1000;
 const INTERN_STRING_ID_OFFSET: usize = 10_000;
 
@@ -200,12 +200,8 @@ impl StaticStrings {
     /// Returns `None` if the `StringId` doesn't correspond to a static string
     /// (e.g., it's an ASCII char or a dynamically interned string).
     pub fn from_string_id(id: StringId) -> Option<Self> {
-        if id.0 < STATIC_STRING_ID_OFFSET {
-            None
-        } else {
-            let enum_id = id.0.checked_sub(STATIC_STRING_ID_OFFSET)?;
-            u8::try_from(enum_id).ok().and_then(Self::from_repr)
-        }
+        let enum_id = id.0.checked_sub(STATIC_STRING_ID_OFFSET)?;
+        u8::try_from(enum_id).ok().and_then(Self::from_repr)
     }
 }
 
