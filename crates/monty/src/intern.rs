@@ -71,7 +71,9 @@ static ASCII_STRS: LazyLock<[&'static str; 128]> = LazyLock::new(|| {
 ///
 /// StringIds are derived from `as_string_id()`.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, FromRepr, EnumString, IntoStaticStr, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, FromRepr, EnumString, IntoStaticStr, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[strum(serialize_all = "snake_case")]
 pub enum StaticStrings {
     #[strum(serialize = "")]

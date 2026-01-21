@@ -9,7 +9,7 @@ use crate::{
         PreparedFunctionDef, PreparedNode, UnpackTarget,
     },
     fstring::{FStringPart, FormatSpec},
-    intern::{InternerBuilder, StringId},
+    intern::{InternerBuilder, StaticStrings, StringId},
     modules::BuiltinModule,
     namespace::NamespaceId,
     parse::{ExceptHandler, ParseError, ParseNode, ParseResult, ParsedSignature, RawFunctionDef, Try},
@@ -513,9 +513,9 @@ impl<'i> Prepare<'i> {
                             let value_expr = if name_str == "TYPE_CHECKING" {
                                 Some(Expr::Literal(Literal::Bool(false)))
                             } else {
-                                Marker::from_str(name_str)
+                                StaticStrings::from_str(name_str)
                                     .ok()
-                                    .map(|m| Expr::Literal(Literal::Marker(m)))
+                                    .map(|ss| Expr::Literal(Literal::Marker(Marker(ss))))
                             };
 
                             if let Some(expr) = value_expr {

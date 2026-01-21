@@ -63,10 +63,20 @@ pub fn create_sys_module(heap: &mut Heap<impl ResourceTracker>, interns: &Intern
     module.set_attr(StaticStrings::Platform, StaticStrings::Monty.into(), heap, interns);
 
     // sys.stdout - marker for stdout
-    module.set_attr(StaticStrings::Stdout, Value::Marker(Marker::Stdout), heap, interns);
+    module.set_attr(
+        StaticStrings::Stdout,
+        Value::Marker(Marker(StaticStrings::Stdout)),
+        heap,
+        interns,
+    );
 
     // sys.stderr - marker for stderr
-    module.set_attr(StaticStrings::Stderr, Value::Marker(Marker::Stderr), heap, interns);
+    module.set_attr(
+        StaticStrings::Stderr,
+        Value::Marker(Marker(StaticStrings::Stderr)),
+        heap,
+        interns,
+    );
 
     heap.allocate(HeapData::Module(module))
 }

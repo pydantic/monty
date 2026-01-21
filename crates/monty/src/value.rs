@@ -11,7 +11,6 @@ use ahash::AHashSet;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{ToPrimitive, Zero};
-use strum::{Display, EnumString, IntoStaticStr};
 
 use crate::{
     builtins::Builtins,
@@ -1990,75 +1989,9 @@ impl BitwiseOp {
 /// - Typing constructs from the `typing` module that are imported for type hints but
 ///   don't need runtime functionality
 ///
-/// Uses strum derives for automatic string conversion. The `Display` impl returns
-/// the repr format, while `IntoStaticStr` and `EnumString` use the variant name directly.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, IntoStaticStr, serde::Serialize, serde::Deserialize,
-)]
-pub enum Marker {
-    // === System markers ===
-    /// Represents `sys.stdout` - a placeholder for standard output.
-    #[strum(to_string = "<stdout>")]
-    Stdout,
-    /// Represents `sys.stderr` - a placeholder for standard error.
-    #[strum(to_string = "<stderr>")]
-    Stderr,
-
-    // === Typing markers ===
-    // These use the default strum behavior (variant name = parse string).
-    // The `typing.` prefix is added in `py_repr()`.
-    /// `typing.Any` - represents any type.
-    Any,
-    /// `typing.Optional` - represents an optional type (T | None).
-    Optional,
-    /// `typing.Union` - represents a union of types.
-    Union,
-    /// `typing.List` - generic list type hint.
-    List,
-    /// `typing.Dict` - generic dict type hint.
-    Dict,
-    /// `typing.Tuple` - generic tuple type hint.
-    Tuple,
-    /// `typing.Set` - generic set type hint.
-    Set,
-    /// `typing.FrozenSet` - generic frozenset type hint.
-    FrozenSet,
-    /// `typing.Callable` - callable type hint.
-    Callable,
-    /// `typing.Type` - type hint for class objects.
-    Type,
-    /// `typing.Sequence` - abstract sequence type.
-    Sequence,
-    /// `typing.Mapping` - abstract mapping type.
-    Mapping,
-    /// `typing.Iterable` - abstract iterable type.
-    Iterable,
-    /// `typing.Iterator` - abstract iterator type.
-    Iterator,
-    /// `typing.Generator` - generator type hint.
-    Generator,
-    /// `typing.ClassVar` - class variable annotation.
-    ClassVar,
-    /// `typing.Final` - final value annotation.
-    Final,
-    /// `typing.Literal` - literal type hint.
-    Literal,
-    /// `typing.TypeVar` - type variable.
-    TypeVar,
-    /// `typing.Generic` - generic base class.
-    Generic,
-    /// `typing.Protocol` - protocol base class.
-    Protocol,
-    /// `typing.Annotated` - annotated type hint.
-    Annotated,
-    /// `typing.Self` - self type hint. Named `TypeSelf` since `Self` is a Rust keyword.
-    #[strum(to_string = "Self")]
-    TypeSelf,
-    /// `typing.Never` - never type (bottom type).
-    Never,
-    /// `typing.NoReturn` - function never returns.
-    NoReturn,
-}
+/// Wraps a `StaticStrings` variant to leverage its string conversion capabilities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Marker(pub StaticStrings);
 
 impl Marker {
     /// Writes the Python repr for this marker.
@@ -2066,10 +1999,12 @@ impl Marker {
     /// System markers have special repr formats ("<stdout>", "<stderr>").
     /// Typing markers are prefixed with "typing." (e.g., "typing.Any").
     fn py_repr_fmt(self, f: &mut impl Write) -> fmt::Result {
-        match self {
-            Self::Stdout | Self::Stderr => write!(f, "{self}")?,
-            Self::Union => f.write_str("<class 'typing.Union'>")?,
-            _ => write!(f, "typing.{self}")?,
+        let s: &'static str = self.0.into();
+        match self.0 {
+            StaticStrings::Stdout => f.write_str("<stdout>")?,
+            StaticStrings::Stderr => f.write_str("<stderr>")?,
+            StaticStrings::UnionType => f.write_str("<class 'typing.Union'>")?,
+            _ => write!(f, "typing.{s}")?,
         }
         Ok(())
     }
@@ -2195,7 +2130,7 @@ fn ext_function_value_id(f_id: ExtFunctionId) -> usize {
 /// Computes a deterministic ID for a marker value based on its discriminant.
 #[inline]
 fn marker_value_id(m: Marker) -> usize {
-    MARKER_ID_TAG | ((m as usize) & MARKER_ID_MASK)
+    MARKER_ID_TAG | ((m.0 as usize) & MARKER_ID_MASK)
 }
 
 /// Converts an i64 repeat count to usize, handling negative values and overflow.
