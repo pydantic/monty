@@ -31,7 +31,7 @@ dev-py: ## Install the python package for development
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml
 
 .PHONY: dev-js
-build-js: ## Build the JS package (debug)
+dev-js: ## Build the JS package (debug)
 	cd crates/monty-js && npm run build:debug
 
 .PHONY: lint-js
@@ -39,7 +39,7 @@ lint-js: install-js ## Lint JS code with oxlint
 	cd crates/monty-js && npm run lint
 
 .PHONY: test-js
-test-js: build-js ## Build and test the JS package
+test-js: dev-js ## Build and test the JS package
 	cd crates/monty-js && npm test
 
 .PHONY: dev-py-release
@@ -47,7 +47,7 @@ dev-py-release: ## Install the python package for development with a release bui
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
 
 .PHONY: dev-js-release
-build-js-release: ## Build the JS package (release)
+dev-js-release: ## Build the JS package (release)
 	cd crates/monty-js && npm run build
 
 .PHONY: format-rs

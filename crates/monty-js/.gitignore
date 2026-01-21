@@ -128,3 +128,12 @@ Cargo.lock
 !.yarn/sdks
 !.yarn/versions
 /npm
+
+# napi generated js files
+browser.js
+index.js
+index.d.ts
+monty.wasi.cjs
+monty.wasi-browser.js
+wasi-worker.mjs
+wasi-worker-browser.mjs
