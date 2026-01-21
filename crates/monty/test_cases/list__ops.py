@@ -281,3 +281,58 @@ assert lst == ['1', '2', '10', '100'], 'sort numeric strings by int value'
 lst = ['10', '2', '1', '100']
 lst.sort(key=int, reverse=True)
 assert lst == ['100', '10', '2', '1'], 'sort numeric strings by int reverse'
+
+# === List assignment (setitem) ===
+# Basic assignment
+lst = [1, 2, 3]
+lst[0] = 10
+assert lst == [10, 2, 3], 'setitem at index 0'
+
+lst = [1, 2, 3]
+lst[1] = 20
+assert lst == [1, 20, 3], 'setitem at index 1'
+
+lst = [1, 2, 3]
+lst[2] = 30
+assert lst == [1, 2, 30], 'setitem at last index'
+
+# Negative index assignment
+lst = [1, 2, 3]
+lst[-1] = 100
+assert lst == [1, 2, 100], 'setitem at -1'
+
+lst = [1, 2, 3]
+lst[-2] = 200
+assert lst == [1, 200, 3], 'setitem at -2'
+
+lst = [1, 2, 3]
+lst[-3] = 300
+assert lst == [300, 2, 3], 'setitem at -3'
+
+# Assigning different types
+lst = [1, 2, 3]
+lst[0] = 'hello'
+assert lst == ['hello', 2, 3], 'setitem string value'
+
+lst = [1, 2, 3]
+lst[1] = [4, 5]
+assert lst == [1, [4, 5], 3], 'setitem list value'
+
+lst = [1, 2, 3]
+lst[0] = None
+assert lst == [None, 2, 3], 'setitem None value'
+
+# Multiple assignments
+lst = [0, 0, 0]
+lst[0] = 1
+lst[1] = 2
+lst[2] = 3
+assert lst == [1, 2, 3], 'multiple setitem'
+
+# Assignment preserves other elements
+lst = ['a', 'b', 'c', 'd']
+lst[1] = 'B'
+assert lst[0] == 'a', 'setitem preserves element 0'
+assert lst[1] == 'B', 'setitem changes element 1'
+assert lst[2] == 'c', 'setitem preserves element 2'
+assert lst[3] == 'd', 'setitem preserves element 3'

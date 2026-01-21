@@ -18,7 +18,11 @@ use crate::{
     heap::{Heap, HeapData, HeapId},
     intern::{BytesId, ExtFunctionId, FunctionId, Interns, StaticStrings, StringId},
     resource::{LARGE_RESULT_THRESHOLD, ResourceTracker},
-    types::{LongInt, PyTrait, Type, bytes::bytes_repr_fmt, str::string_repr_fmt},
+    types::{
+        LongInt, PyTrait, Type,
+        bytes::bytes_repr_fmt,
+        str::{allocate_char, string_repr_fmt},
+    },
 };
 
 /// Bitwise operation type for `py_bitwise`.
@@ -1367,6 +1371,43 @@ impl PyTrait for Value {
                 // Need to take entry out to allow mutable heap access
                 let id = *id;
                 heap.with_entry_mut(id, |heap, data| data.py_getitem(key, heap, interns))
+            }
+            Self::InternString(string_id) => {
+                // Handle interned string indexing
+                let index = match key {
+                    Self::Int(i) => *i,
+                    _ => return Err(ExcType::type_error_indices(Type::Str, key.py_type(heap))),
+                };
+
+                let s = interns.get_str(*string_id);
+                let chars: Vec<char> = s.chars().collect();
+                let len = i64::try_from(chars.len()).expect("string length exceeds i64::MAX");
+                let normalized = if index < 0 { index + len } else { index };
+
+                if normalized < 0 || normalized >= len {
+                    return Err(ExcType::str_index_error());
+                }
+
+                let idx = usize::try_from(normalized).expect("index validated non-negative");
+                Ok(allocate_char(chars[idx], heap)?)
+            }
+            Self::InternBytes(bytes_id) => {
+                // Handle interned bytes indexing - returns integer byte value
+                let index = match key {
+                    Self::Int(i) => *i,
+                    _ => return Err(ExcType::type_error_indices(Type::Bytes, key.py_type(heap))),
+                };
+
+                let bytes = interns.get_bytes(*bytes_id);
+                let len = i64::try_from(bytes.len()).expect("bytes length exceeds i64::MAX");
+                let normalized = if index < 0 { index + len } else { index };
+
+                if normalized < 0 || normalized >= len {
+                    return Err(ExcType::bytes_index_error());
+                }
+
+                let idx = usize::try_from(normalized).expect("index validated non-negative");
+                Ok(Self::Int(i64::from(bytes[idx])))
             }
             _ => Err(ExcType::type_error_not_sub(self.py_type(heap))),
         }

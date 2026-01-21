@@ -515,6 +515,7 @@ impl PyTrait for HeapData {
             Self::List(l) => l.py_getitem(key, heap, interns),
             Self::Tuple(t) => t.py_getitem(key, heap, interns),
             Self::Dict(d) => d.py_getitem(key, heap, interns),
+            Self::Range(r) => r.py_getitem(key, heap, interns),
             _ => Err(ExcType::type_error_not_sub(self.py_type(heap))),
         }
     }

@@ -667,12 +667,20 @@ impl ExcType {
         SimpleException::new_msg(Self::TypeError, format!("{name}() takes no keyword arguments")).into()
     }
 
-    /// Creates an IndexError for list index out of range.
+    /// Creates an IndexError for list index out of range (getitem).
     ///
     /// Matches CPython's format: `IndexError('list index out of range')`
     #[must_use]
     pub(crate) fn list_index_error() -> RunError {
         SimpleException::new_msg(Self::IndexError, "list index out of range").into()
+    }
+
+    /// Creates an IndexError for list assignment index out of range (setitem).
+    ///
+    /// Matches CPython's format: `IndexError('list assignment index out of range')`
+    #[must_use]
+    pub(crate) fn list_assignment_index_error() -> RunError {
+        SimpleException::new_msg(Self::IndexError, "list assignment index out of range").into()
     }
 
     /// Creates an IndexError for tuple index out of range.
@@ -683,7 +691,31 @@ impl ExcType {
         SimpleException::new_msg(Self::IndexError, "tuple index out of range").into()
     }
 
-    /// Creates a TypeError for non-integer sequence indices.
+    /// Creates an IndexError for string index out of range.
+    ///
+    /// Matches CPython's format: `IndexError('string index out of range')`
+    #[must_use]
+    pub(crate) fn str_index_error() -> RunError {
+        SimpleException::new_msg(Self::IndexError, "string index out of range").into()
+    }
+
+    /// Creates an IndexError for bytes index out of range.
+    ///
+    /// Matches CPython's format: `IndexError('index out of range')`
+    #[must_use]
+    pub(crate) fn bytes_index_error() -> RunError {
+        SimpleException::new_msg(Self::IndexError, "index out of range").into()
+    }
+
+    /// Creates an IndexError for range index out of range.
+    ///
+    /// Matches CPython's format: `IndexError('range object index out of range')`
+    #[must_use]
+    pub(crate) fn range_index_error() -> RunError {
+        SimpleException::new_msg(Self::IndexError, "range object index out of range").into()
+    }
+
+    /// Creates a TypeError for non-integer sequence indices (getitem).
     ///
     /// Matches CPython's format: `TypeError('{type}' indices must be integers, not '{index_type}')`
     #[must_use]
@@ -691,6 +723,18 @@ impl ExcType {
         SimpleException::new_msg(
             Self::TypeError,
             format!("{type_str} indices must be integers, not '{index_type}'"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for non-integer list indices (setitem/assignment).
+    ///
+    /// Matches CPython's format: `TypeError('list indices must be integers or slices, not {index_type}')`
+    #[must_use]
+    pub(crate) fn type_error_list_assignment_indices(index_type: Type) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("list indices must be integers or slices, not {index_type}"),
         )
         .into()
     }

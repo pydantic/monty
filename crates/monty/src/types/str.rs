@@ -140,6 +140,28 @@ impl PyTrait for Str {
         Some(self.0.chars().count())
     }
 
+    fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
+        // Extract integer index from key, returning TypeError if not an int
+        let index = match key {
+            Value::Int(i) => *i,
+            _ => return Err(ExcType::type_error_indices(Type::Str, key.py_type(heap))),
+        };
+
+        // Get chars for length and indexing (Unicode-aware)
+        let chars: Vec<char> = self.0.chars().collect();
+        let len = i64::try_from(chars.len()).expect("string length exceeds i64::MAX");
+        let normalized = if index < 0 { index + len } else { index };
+
+        // Bounds check
+        if normalized < 0 || normalized >= len {
+            return Err(ExcType::str_index_error());
+        }
+
+        // Return single-character string (Python semantics: "hello"[1] returns "e")
+        let idx = usize::try_from(normalized).expect("index validated non-negative");
+        Ok(allocate_char(chars[idx], heap)?)
+    }
+
     fn py_eq(&self, other: &Self, _heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
         self.0 == other.0
     }

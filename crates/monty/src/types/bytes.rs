@@ -214,6 +214,27 @@ impl PyTrait for Bytes {
         Some(self.0.len())
     }
 
+    fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
+        // Extract integer index from key, returning TypeError if not an int
+        let index = match key {
+            Value::Int(i) => *i,
+            _ => return Err(ExcType::type_error_indices(Type::Bytes, key.py_type(heap))),
+        };
+
+        // Normalize negative indices (Python-style: -1 = last byte)
+        let len = i64::try_from(self.0.len()).expect("bytes length exceeds i64::MAX");
+        let normalized = if index < 0 { index + len } else { index };
+
+        // Bounds check
+        if normalized < 0 || normalized >= len {
+            return Err(ExcType::bytes_index_error());
+        }
+
+        // Return the byte value as an integer (Python semantics: b'hello'[1] returns 101)
+        let idx = usize::try_from(normalized).expect("index validated non-negative");
+        Ok(Value::Int(i64::from(self.0[idx])))
+    }
+
     fn py_eq(&self, other: &Self, _heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
         self.0 == other.0
     }
