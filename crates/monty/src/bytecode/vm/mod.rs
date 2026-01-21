@@ -735,7 +735,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let value = self.pop();
                     let result = obj.py_setitem(index, value, self.heap, self.interns);
                     obj.drop_with_heap(self.heap);
-                    result?;
+                    if let Err(e) = result {
+                        catch_sync!(self, cached_frame, e);
+                    }
                 }
                 Opcode::DeleteSubscr => {
                     // TODO: Implement py_delitem on Value

@@ -1,3 +1,10 @@
 lst = [1, 2, 3]
 lst[10] = 'value'
-# Raise=IndexError('list assignment index out of range')
+"""
+TRACEBACK:
+Traceback (most recent call last):
+  File "list__setitem_index_error.py", line 2, in <module>
+    lst[10] = 'value'
+    ~~~~~~~
+IndexError: list assignment index out of range
+"""

@@ -329,12 +329,22 @@ impl<'i> Prepare<'i> {
                     let object = self.prepare_expression(object)?;
                     new_nodes.push(Node::OpAssign { target, op, object });
                 }
-                Node::SubscriptAssign { target, index, value } => {
+                Node::SubscriptAssign {
+                    target,
+                    index,
+                    value,
+                    target_position,
+                } => {
                     // SubscriptAssign doesn't assign to the target itself, just modifies it
                     let target = self.get_id(target).0;
                     let index = self.prepare_expression(index)?;
                     let value = self.prepare_expression(value)?;
-                    new_nodes.push(Node::SubscriptAssign { target, index, value });
+                    new_nodes.push(Node::SubscriptAssign {
+                        target,
+                        index,
+                        value,
+                        target_position,
+                    });
                 }
                 Node::AttrAssign {
                     object,
@@ -1615,7 +1625,9 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
             referenced.insert(interner.get_str(target.name_id).to_string());
             collect_referenced_names_from_expr(object, referenced, interner);
         }
-        Node::SubscriptAssign { target, index, value } => {
+        Node::SubscriptAssign {
+            target, index, value, ..
+        } => {
             referenced.insert(interner.get_str(target.name_id).to_string());
             collect_referenced_names_from_expr(index, referenced, interner);
             collect_referenced_names_from_expr(value, referenced, interner);

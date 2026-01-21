@@ -246,11 +246,18 @@ impl<'a> Compiler<'a> {
                 self.compile_store(target);
             }
 
-            Node::SubscriptAssign { target, index, value } => {
+            Node::SubscriptAssign {
+                target,
+                index,
+                value,
+                target_position,
+            } => {
                 // Stack order for StoreSubscr: value, obj, index
                 self.compile_expr(value)?;
                 self.compile_name(target);
                 self.compile_expr(index)?;
+                // Set location to the target (e.g., `lst[10]`) for proper caret in tracebacks
+                self.code.set_location(*target_position, None);
                 self.code.emit(Opcode::StoreSubscr);
             }
 

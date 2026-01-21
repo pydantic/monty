@@ -342,6 +342,8 @@ pub enum Node<F> {
         target: Identifier,
         index: ExprLoc,
         value: ExprLoc,
+        /// Position of the subscript expression (e.g., `lst[10]`) for traceback carets.
+        target_position: CodeRange,
     },
     /// Attribute assignment (e.g., `point.x = 5` or `a.b.c = 5`).
     ///

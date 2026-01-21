@@ -376,10 +376,13 @@ impl<'a> Parser<'a> {
     fn parse_assignment(&mut self, lhs: AstExpr, rhs: AstExpr) -> Result<ParseNode, ParseError> {
         match lhs {
             // Subscript assignment like dict[key] = value
-            AstExpr::Subscript(ast::ExprSubscript { value, slice, .. }) => Ok(Node::SubscriptAssign {
+            AstExpr::Subscript(ast::ExprSubscript {
+                value, slice, range, ..
+            }) => Ok(Node::SubscriptAssign {
                 target: self.parse_identifier(*value)?,
                 index: self.parse_expression(*slice)?,
                 value: self.parse_expression(rhs)?,
+                target_position: self.convert_range(range),
             }),
             // Attribute assignment like obj.attr = value (supports chained like a.b.c = value)
             AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => Ok(Node::AttrAssign {
