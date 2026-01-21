@@ -171,7 +171,7 @@ Each `assert` should have a descriptive message.
 Only create a separate test file when you MUST use one of these special expectation formats:
 
 - `"""TRACEBACK:..."""` - Test expects an exception with full traceback (PREFERRED for error tests)
-- `# Raise=Exception('message')` - Test expects an exception without traceback verification
+- `# Raise=Exception('message')` - Test expects an exception without traceback verification - NOT RECOMMENDED, use `TRACEBACK` instead
 - `# ref-counts={...}` - Test checks reference counts (special mode)
 - you're writing tests for a different behavior or section of the language
 

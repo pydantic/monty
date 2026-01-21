@@ -259,6 +259,23 @@ impl StackFrame {
             hide_caret: false,
         }
     }
+
+    /// Creates a `StackFrame` from a `CodeRange` without caret markers.
+    ///
+    /// Used for errors like `ImportError` where CPython doesn't show caret markers.
+    pub(crate) fn from_position_no_caret(position: CodeRange, filename: &str, source: &str) -> Self {
+        Self {
+            filename: filename.to_string(),
+            start: position.start(),
+            end: position.end(),
+            frame_name: None,
+            preview_line: position
+                .preview_line_number()
+                .and_then(|ln| source.lines().nth(ln as usize))
+                .map(str::to_string),
+            hide_caret: true,
+        }
+    }
 }
 
 /// A line and column position in source code.

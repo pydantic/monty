@@ -394,14 +394,17 @@ impl<'a> Parser<'a> {
                 let position = self.convert_range(range);
                 // We only support absolute imports (level 0)
                 if level != 0 {
-                    return Err(ParseError::not_implemented("relative imports", position));
+                    return Err(ParseError::import_error(
+                        "attempted relative import with no known parent package",
+                        position,
+                    ));
                 }
                 // Module name is required for absolute imports
                 let module_name = match module {
                     Some(m) => self.interner.intern(&m),
                     None => {
-                        return Err(ParseError::not_implemented(
-                            "relative imports without module name",
+                        return Err(ParseError::import_error(
+                            "attempted relative import with no known parent package",
                             position,
                         ));
                     }
@@ -1273,6 +1276,11 @@ pub enum ParseError {
         msg: Cow<'static, str>,
         position: CodeRange,
     },
+    /// Import error (e.g., relative imports without a package).
+    Import {
+        msg: Cow<'static, str>,
+        position: CodeRange,
+    },
 }
 
 impl ParseError {
@@ -1285,6 +1293,13 @@ impl ParseError {
 
     fn not_supported(msg: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
         Self::NotSupported {
+            msg: msg.into(),
+            position,
+        }
+    }
+
+    fn import_error(msg: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
+        Self::Import {
             msg: msg.into(),
             position,
         }
@@ -1315,6 +1330,11 @@ impl ParseError {
                 ExcType::NotImplementedError,
                 Some(msg.into_owned()),
                 vec![StackFrame::from_position(position, filename, source)],
+            ),
+            Self::Import { msg, position } => MontyException::new_full(
+                ExcType::ImportError,
+                Some(msg.into_owned()),
+                vec![StackFrame::from_position_no_caret(position, filename, source)],
             ),
         }
     }
