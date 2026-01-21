@@ -412,6 +412,84 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// Compiles a lambda expression.
+    ///
+    /// This is similar to `compile_function_def` but:
+    /// - Does NOT store the function to a name slot (it stays on the stack as an expression result)
+    ///
+    /// The lambda's `PreparedFunctionDef` already has `<lambda>` as its name.
+    fn compile_lambda(&mut self, func_def: &PreparedFunctionDef) -> Result<(), CompileError> {
+        let func_pos = func_def.name.position;
+
+        // Check bytecode operand limits
+        if func_def.default_exprs.len() > MAX_CALL_ARGS {
+            return Err(CompileError::new(
+                format!("more than {MAX_CALL_ARGS} default parameter values"),
+                func_pos,
+            ));
+        }
+        if func_def.free_var_enclosing_slots.len() > MAX_CALL_ARGS {
+            return Err(CompileError::new(
+                format!("more than {MAX_CALL_ARGS} closure variables"),
+                func_pos,
+            ));
+        }
+
+        // 1. Compile the function body recursively
+        let functions = std::mem::take(&mut self.functions);
+        let cell_base = u16::try_from(func_def.signature.param_count()).expect("function parameter count exceeds u16");
+        let namespace_size = u16::try_from(func_def.namespace_size).expect("function namespace size exceeds u16");
+        let (body_code, mut functions) =
+            Self::compile_function_body(&func_def.body, self.interns, functions, namespace_size, cell_base)?;
+
+        // 2. Create the compiled Function and add to the vector
+        let func_id = functions.len();
+        let function = Function::new(
+            func_def.name,
+            func_def.signature.clone(),
+            func_def.namespace_size,
+            func_def.free_var_enclosing_slots.clone(),
+            func_def.cell_var_count,
+            func_def.cell_param_indices.clone(),
+            func_def.default_exprs.len(),
+            body_code,
+        );
+        functions.push(function);
+
+        // Restore functions to self
+        self.functions = functions;
+
+        // 3. Compile and push default values (evaluated at definition time)
+        for default_expr in &func_def.default_exprs {
+            self.compile_expr(default_expr)?;
+        }
+        let defaults_count =
+            u8::try_from(func_def.default_exprs.len()).expect("function default argument count exceeds u8");
+        let func_id_u16 = u16::try_from(func_id).expect("function count exceeds u16");
+
+        // 4. Emit MakeFunction or MakeClosure (if has free vars)
+        if func_def.free_var_enclosing_slots.is_empty() {
+            // MakeFunction: func_id (u16) + defaults_count (u8)
+            self.code.emit_u16_u8(Opcode::MakeFunction, func_id_u16, defaults_count);
+        } else {
+            // Push captured cells from enclosing scope
+            for &slot in &func_def.free_var_enclosing_slots {
+                let slot_u16 = u16::try_from(slot.index()).expect("closure slot index exceeds u16");
+                self.code.emit_load_local(slot_u16);
+            }
+            let cell_count =
+                u8::try_from(func_def.free_var_enclosing_slots.len()).expect("closure cell count exceeds u8");
+            // MakeClosure: func_id (u16) + defaults_count (u8) + cell_count (u8)
+            self.code
+                .emit_u16_u8_u8(Opcode::MakeClosure, func_id_u16, defaults_count, cell_count);
+        }
+
+        // NOTE: Unlike compile_function_def, we do NOT call compile_store here.
+        // The function object stays on the stack as an expression result.
+
+        Ok(())
+    }
+
     /// Compiles an import statement.
     ///
     /// Emits `LoadModule` to create the module, then stores it to the binding name.
@@ -610,6 +688,14 @@ impl<'a> Compiler<'a> {
                 self.compile_method_call(attr, args, expr_loc.position)?;
             }
 
+            Expr::IndirectCall { callable, args } => {
+                // Compile the callable expression (e.g., a lambda)
+                self.compile_expr(callable)?;
+
+                // Compile arguments and emit the call
+                self.compile_call_args(args, expr_loc.position)?;
+            }
+
             Expr::FString(parts) => {
                 // Compile each part and build the f-string
                 let part_count = self.compile_fstring_parts(parts)?;
@@ -626,6 +712,15 @@ impl<'a> Compiler<'a> {
 
             Expr::DictComp { key, value, generators } => {
                 self.compile_dict_comp(key, value, generators)?;
+            }
+
+            Expr::Lambda { func_def } => {
+                self.compile_lambda(func_def)?;
+            }
+
+            Expr::LambdaRaw { .. } => {
+                // LambdaRaw should be converted to Lambda during prepare phase
+                unreachable!("Expr::LambdaRaw should not exist after prepare phase")
             }
         }
         Ok(())
@@ -974,6 +1069,106 @@ impl<'a> Compiler<'a> {
                         &kwname_ids,
                     );
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Compiles function call arguments and emits the call instruction.
+    ///
+    /// This is used when the callable is already on the stack (e.g., from compiling an expression).
+    /// It compiles the arguments, then emits `CallFunction` or `CallFunctionKw` as appropriate.
+    fn compile_call_args(&mut self, args: &ArgExprs, call_pos: CodeRange) -> Result<(), CompileError> {
+        match args {
+            ArgExprs::Empty => {
+                self.code.set_location(call_pos, None);
+                self.code.emit_u8(Opcode::CallFunction, 0);
+            }
+            ArgExprs::One(arg) => {
+                self.compile_expr(arg)?;
+                self.code.set_location(call_pos, None);
+                self.code.emit_u8(Opcode::CallFunction, 1);
+            }
+            ArgExprs::Two(arg1, arg2) => {
+                self.compile_expr(arg1)?;
+                self.compile_expr(arg2)?;
+                self.code.set_location(call_pos, None);
+                self.code.emit_u8(Opcode::CallFunction, 2);
+            }
+            ArgExprs::Args(args) => {
+                if args.len() > MAX_CALL_ARGS {
+                    return Err(CompileError::new(
+                        format!("more than {MAX_CALL_ARGS} positional arguments in function call"),
+                        call_pos,
+                    ));
+                }
+                for arg in args {
+                    self.compile_expr(arg)?;
+                }
+                let arg_count = u8::try_from(args.len()).expect("argument count exceeds u8");
+                self.code.set_location(call_pos, None);
+                self.code.emit_u8(Opcode::CallFunction, arg_count);
+            }
+            ArgExprs::Kwargs(kwargs) => {
+                if kwargs.len() > MAX_CALL_ARGS {
+                    return Err(CompileError::new(
+                        format!("more than {MAX_CALL_ARGS} keyword arguments in function call"),
+                        call_pos,
+                    ));
+                }
+                let mut kwname_ids = Vec::with_capacity(kwargs.len());
+                for kwarg in kwargs {
+                    self.compile_expr(&kwarg.value)?;
+                    kwname_ids.push(u16::try_from(kwarg.key.name_id.index()).expect("name index exceeds u16"));
+                }
+                self.code.set_location(call_pos, None);
+                self.code.emit_call_function_kw(0, &kwname_ids);
+            }
+            ArgExprs::ArgsKargs {
+                args,
+                kwargs,
+                var_args,
+                var_kwargs,
+            } => {
+                // Complex call with both positional and keyword args
+                // Note: For ExprCall, we can't use CallFunctionEx since it requires a callable
+                // from the Callable enum. Instead, we use CallFunction or CallFunctionKw.
+                if var_args.is_some() || var_kwargs.is_some() {
+                    return Err(CompileError::new(
+                        "* or ** unpacking not supported for expression calls",
+                        call_pos,
+                    ));
+                }
+
+                let pos_args = args.as_deref().unwrap_or(&[]);
+                let kw_args = kwargs.as_deref().unwrap_or(&[]);
+                let pos_count = pos_args.len();
+                let kw_count = kw_args.len();
+
+                if pos_count + kw_count > MAX_CALL_ARGS {
+                    return Err(CompileError::new(
+                        format!("more than {MAX_CALL_ARGS} arguments in function call"),
+                        call_pos,
+                    ));
+                }
+
+                // Compile positional args
+                for arg in pos_args {
+                    self.compile_expr(arg)?;
+                }
+
+                // Compile keyword args
+                let mut kwname_ids = Vec::with_capacity(kw_count);
+                for kwarg in kw_args {
+                    self.compile_expr(&kwarg.value)?;
+                    kwname_ids.push(u16::try_from(kwarg.key.name_id.index()).expect("name index exceeds u16"));
+                }
+
+                self.code.set_location(call_pos, None);
+                self.code.emit_call_function_kw(
+                    u8::try_from(pos_count).expect("positional arg count exceeds u8"),
+                    &kwname_ids,
+                );
             }
         }
         Ok(())

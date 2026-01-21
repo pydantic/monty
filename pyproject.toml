@@ -49,6 +49,7 @@ known-first-party = ["monty"]
     "E712", # Comparison to True/False - needed for testing boolean behavior
     "E714", # Test for object identity should be `is not`
     "E721", # Use `is` and `is not` for type comparisons, or `isinstance()` for isinstance checks
+    "E731", # Do not assign a lambda expression, use a def - needed for testing lambda expressions
     "F541", # f-string without any placeholders
     "F632", # ignore replace `is` with `==` - we have lots of these tests
     "F811", # Redefinition of unused variable
@@ -93,6 +94,7 @@ reportUnhashable = false
 reportCallIssue = false
 reportUnknownParameterType = false
 reportMissingParameterType = false
+reportUnknownLambdaType = false
 reportArgumentType = false
 # iter mode tests use external functions defined in the test runner
 reportUndefinedVariable = false

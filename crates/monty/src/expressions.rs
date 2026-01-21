@@ -4,7 +4,7 @@ use crate::{
     fstring::FStringPart,
     intern::{BytesId, StringId},
     namespace::NamespaceId,
-    parse::{CodeRange, Try},
+    parse::{CodeRange, ParsedSignature, Try},
     signature::Signature,
     value::{Attr, Marker, Value},
 };
@@ -125,6 +125,15 @@ pub enum Expr {
         /// same as above for Box
         args: Box<ArgExprs>,
     },
+    /// Expression call (e.g., `(lambda x: x + 1)(5)` or `get_func()(args)`).
+    ///
+    /// Calls an arbitrary expression as a callable. The callable expression
+    /// is evaluated first, then called with the given arguments.
+    IndirectCall {
+        /// The expression that evaluates to a callable.
+        callable: Box<ExprLoc>,
+        args: Box<ArgExprs>,
+    },
     /// Attribute access expression (e.g., `point.x` or `a.b.c`).
     ///
     /// Retrieves the value of an attribute from an object. For dataclasses,
@@ -205,6 +214,30 @@ pub enum Expr {
         key: Box<ExprLoc>,
         value: Box<ExprLoc>,
         generators: Vec<Comprehension>,
+    },
+    /// Raw lambda expression from the parser, before preparation.
+    ///
+    /// This variant is produced during parsing and contains unprepared data.
+    /// During the prepare phase, it gets converted to `Expr::Lambda` with a
+    /// fully prepared `PreparedFunctionDef`.
+    LambdaRaw {
+        /// The interned `<lambda>` name ID.
+        name_id: StringId,
+        /// The parsed lambda signature (parameters and defaults).
+        signature: ParsedSignature,
+        /// The lambda body expression (not yet prepared).
+        body: Box<ExprLoc>,
+    },
+    /// Lambda expression: `lambda args: body` (prepared form).
+    ///
+    /// A lambda is an anonymous function that returns a single expression.
+    /// It's compiled identically to a regular function, but with the name `<lambda>`
+    /// and an implicit return of the body expression. The resulting function value
+    /// stays on the stack as an expression result (not stored to a name).
+    Lambda {
+        /// The prepared function definition containing signature, body, and closure info.
+        /// The body is wrapped as `[Node::Return(body_expr)]` during preparation.
+        func_def: Box<PreparedFunctionDef>,
     },
 }
 

@@ -65,12 +65,6 @@ mod not_implemented_error {
     }
 
     #[test]
-    fn lambda_returns_not_implemented_error() {
-        let result = MontyRun::new("x = lambda: 1".to_owned(), "test.py", vec![], vec![]);
-        assert_eq!(get_exc_type(result), ExcType::NotImplementedError);
-    }
-
-    #[test]
     fn error_display_format() {
         // Verify the Display format matches Python's exception output with traceback
         let result = MontyRun::new("1 + 2j".to_owned(), "test.py", vec![], vec![]);

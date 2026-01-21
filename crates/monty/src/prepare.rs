@@ -11,7 +11,7 @@ use crate::{
     fstring::{FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
     namespace::NamespaceId,
-    parse::{ExceptHandler, ParseError, ParseNode, ParseResult, ParsedSignature, RawFunctionDef, Try},
+    parse::{CodeRange, ExceptHandler, ParseError, ParseNode, ParseResult, ParsedSignature, RawFunctionDef, Try},
     signature::Signature,
 };
 
@@ -580,6 +580,12 @@ impl<'i> Prepare<'i> {
                 args.prepare_args(|expr| self.prepare_expression(expr))?;
                 Expr::AttrCall { object, attr, args }
             }
+            Expr::IndirectCall { callable, mut args } => {
+                // Prepare the callable expression (e.g., lambda or any expression returning a callable)
+                let callable = Box::new(self.prepare_expression(*callable)?);
+                args.prepare_args(|expr| self.prepare_expression(expr))?;
+                Expr::IndirectCall { callable, args }
+            }
             Expr::AttrGet { object, attr } => {
                 // Prepare the object expression (supports chained access like a.b.c)
                 let object = Box::new(self.prepare_expression(*object)?);
@@ -655,6 +661,18 @@ impl<'i> Prepare<'i> {
                     value: Box::new(value),
                     generators,
                 }
+            }
+            Expr::LambdaRaw {
+                name_id,
+                signature,
+                body,
+            } => {
+                // Convert the raw lambda into a prepared lambda expression
+                return self.prepare_lambda(name_id, &signature, &body, position);
+            }
+            Expr::Lambda { .. } => {
+                // Lambda should only be created during prepare, never during parsing
+                unreachable!("Expr::Lambda should not exist before prepare phase")
             }
         };
 
@@ -1115,6 +1133,209 @@ impl<'i> Prepare<'i> {
             cell_param_indices,
             default_exprs,
         }))
+    }
+
+    /// Prepares a lambda expression, converting it into a prepared function definition.
+    ///
+    /// Lambdas are essentially anonymous functions with an implicit return of their body
+    /// expression. This method follows the same preparation logic as `prepare_function_def`
+    /// but:
+    /// - Uses `<lambda>` as the function name (not registered in scope)
+    /// - Wraps the body expression as `Node::Return(body)`
+    /// - Returns `ExprLoc` with `Expr::Lambda` instead of `PreparedNode`
+    fn prepare_lambda(
+        &mut self,
+        lambda_name_id: StringId,
+        parsed_sig: &ParsedSignature,
+        body: &ExprLoc,
+        position: CodeRange,
+    ) -> Result<ExprLoc, ParseError> {
+        // Create a synthetic <lambda> name identifier (not registered in scope)
+        let lambda_name = Identifier::new_with_scope(
+            lambda_name_id,
+            position,
+            NamespaceId::new(0), // Placeholder, not actually used for storage
+            NameScope::Local,
+        );
+
+        // Wrap the body expression as a return statement for scope analysis
+        let body_as_node: ParseNode = Node::Return(body.clone());
+        let body_nodes = vec![body_as_node];
+
+        // Extract param names from the parsed signature for scope analysis
+        let param_names: Vec<StringId> = parsed_sig.param_names().collect();
+
+        // Pass 1: Collect scope information from the lambda body
+        // (Lambdas can't have global/nonlocal declarations, but can have nested functions)
+        let scope_info = collect_function_scope_info(&body_nodes, &param_names, self.interner);
+
+        // Get the global name map to pass to the function preparer
+        let global_name_map = if self.is_module_scope {
+            self.name_map.clone()
+        } else {
+            self.global_name_map.clone().unwrap_or_default()
+        };
+
+        // Build enclosing_locals: names that are local to this scope or captured from enclosing scope.
+        // This includes free_vars so that nested lambdas can capture pass-through variables.
+        let enclosing_locals: AHashSet<String> = if self.is_module_scope {
+            AHashSet::new()
+        } else {
+            let mut locals = self.assigned_names.clone();
+            for key in self.name_map.keys() {
+                locals.insert(key.clone());
+            }
+            // Include free_vars so nested functions/lambdas can capture pass-through variables
+            for key in self.free_var_map.keys() {
+                locals.insert(key.clone());
+            }
+            locals
+        };
+
+        // Filter potential_captures to get actual implicit captures
+        let implicit_captures: AHashSet<String> = scope_info
+            .potential_captures
+            .into_iter()
+            .filter(|name| enclosing_locals.contains(name))
+            .collect();
+
+        // Pass 2: Create child preparer for lambda body with scope info
+        let mut inner_prepare = Prepare::new_function(
+            body_nodes.len(),
+            &param_names,
+            scope_info.assigned_names,
+            scope_info.global_names,
+            scope_info.nonlocal_names,
+            implicit_captures,
+            global_name_map,
+            Some(enclosing_locals),
+            scope_info.cell_var_names,
+            self.interner,
+        );
+
+        // Prepare the lambda body
+        let prepared_body = inner_prepare.prepare_nodes(body_nodes)?;
+
+        // Mark variables that the inner function captures as our cell_vars
+        for captured_name in inner_prepare.free_var_map.keys() {
+            if !self.cell_var_map.contains_key(captured_name) && !self.free_var_map.contains_key(captured_name) {
+                let slot = match self.name_map.entry(captured_name.clone()) {
+                    Entry::Occupied(e) => *e.get(),
+                    Entry::Vacant(e) => {
+                        let slot = NamespaceId::new(self.namespace_size);
+                        self.namespace_size += 1;
+                        e.insert(slot);
+                        slot
+                    }
+                };
+                self.cell_var_map.insert(captured_name.clone(), slot);
+            }
+        }
+
+        // Build free_var_enclosing_slots
+        let mut free_var_entries: Vec<_> = inner_prepare.free_var_map.into_iter().collect();
+        free_var_entries.sort_by_key(|(_, our_slot)| *our_slot);
+
+        let free_var_enclosing_slots: Vec<NamespaceId> = free_var_entries
+            .into_iter()
+            .map(|(var_name, _our_slot)| {
+                if let Some(&slot) = self.cell_var_map.get(&var_name) {
+                    slot
+                } else if let Some(&slot) = self.free_var_map.get(&var_name) {
+                    slot
+                } else {
+                    panic!("free_var '{var_name}' not found in enclosing scope's cell_var_map or free_var_map");
+                }
+            })
+            .collect();
+
+        // Build cell_param_indices
+        let cell_var_count = inner_prepare.cell_var_map.len();
+        let namespace_size = inner_prepare.namespace_size;
+
+        let cell_param_indices: Vec<Option<usize>> = if cell_var_count == 0 {
+            Vec::new()
+        } else {
+            let param_name_to_index: AHashMap<String, usize> = param_names
+                .iter()
+                .enumerate()
+                .map(|(idx, &name_id)| (self.interner.get_str(name_id).to_string(), idx))
+                .collect();
+
+            let mut cell_entries: Vec<_> = inner_prepare.cell_var_map.iter().collect();
+            cell_entries.sort_by_key(|&(_, slot)| slot);
+
+            cell_entries
+                .into_iter()
+                .map(|(name, _slot)| param_name_to_index.get(name).copied())
+                .collect()
+        };
+
+        // Build the runtime Signature from the parsed signature
+        let pos_args: Vec<StringId> = parsed_sig.pos_args.iter().map(|p| p.name).collect();
+        let pos_defaults_count = parsed_sig.pos_args.iter().filter(|p| p.default.is_some()).count();
+        let args: Vec<StringId> = parsed_sig.args.iter().map(|p| p.name).collect();
+        let arg_defaults_count = parsed_sig.args.iter().filter(|p| p.default.is_some()).count();
+        let mut kwargs: Vec<StringId> = Vec::with_capacity(parsed_sig.kwargs.len());
+        let mut kwarg_default_map: Vec<Option<usize>> = Vec::with_capacity(parsed_sig.kwargs.len());
+        let mut kwarg_default_index = 0;
+        for param in &parsed_sig.kwargs {
+            kwargs.push(param.name);
+            if param.default.is_some() {
+                kwarg_default_map.push(Some(kwarg_default_index));
+                kwarg_default_index += 1;
+            } else {
+                kwarg_default_map.push(None);
+            }
+        }
+
+        let signature = Signature::new(
+            pos_args,
+            pos_defaults_count,
+            args,
+            arg_defaults_count,
+            parsed_sig.var_args,
+            kwargs,
+            kwarg_default_map,
+            parsed_sig.var_kwargs,
+        );
+
+        // Collect and prepare default expressions (evaluated in enclosing scope)
+        let mut default_exprs = Vec::with_capacity(signature.total_defaults_count());
+        for param in &parsed_sig.pos_args {
+            if let Some(ref expr) = param.default {
+                default_exprs.push(self.prepare_expression(expr.clone())?);
+            }
+        }
+        for param in &parsed_sig.args {
+            if let Some(ref expr) = param.default {
+                default_exprs.push(self.prepare_expression(expr.clone())?);
+            }
+        }
+        for param in &parsed_sig.kwargs {
+            if let Some(ref expr) = param.default {
+                default_exprs.push(self.prepare_expression(expr.clone())?);
+            }
+        }
+
+        // Create the prepared function definition
+        let func_def = PreparedFunctionDef {
+            name: lambda_name,
+            signature,
+            body: prepared_body,
+            namespace_size,
+            free_var_enclosing_slots,
+            cell_var_count,
+            cell_param_indices,
+            default_exprs,
+        };
+
+        Ok(ExprLoc::new(
+            position,
+            Expr::Lambda {
+                func_def: Box::new(func_def),
+            },
+        ))
     }
 
     /// Resolves an identifier to its namespace index and scope, creating a new entry if needed.
@@ -1631,8 +1852,207 @@ fn collect_cell_vars_from_node(
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }
         }
-        // Other nodes don't contain nested function definitions
+        // Handle expressions that may contain lambdas
+        Node::Expr(expr) | Node::Return(expr) => {
+            collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
+        }
+        Node::Assign { object, .. } | Node::UnpackAssign { object, .. } => {
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+        }
+        Node::OpAssign { object, .. } => {
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+        }
+        Node::SubscriptAssign { index, value, .. } => {
+            collect_cell_vars_from_expr(index, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+        }
+        Node::AttrAssign { object, value, .. } => {
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+        }
+        // Other nodes don't contain nested function definitions or lambdas
         _ => {}
+    }
+}
+
+/// Collects cell_vars from lambda expressions within an expression.
+///
+/// Recursively searches through an expression tree to find lambda expressions
+/// that capture variables from the enclosing scope.
+fn collect_cell_vars_from_expr(
+    expr: &ExprLoc,
+    our_locals: &AHashSet<String>,
+    cell_vars: &mut AHashSet<String>,
+    interner: &InternerBuilder,
+) {
+    use crate::expressions::Expr;
+    match &expr.expr {
+        Expr::LambdaRaw { signature, body, .. } => {
+            // This lambda captures variables from our scope
+            // Find what names are referenced in the lambda body
+            let mut referenced = AHashSet::new();
+            collect_referenced_names_from_expr(body, &mut referenced, interner);
+            // Also collect from default expressions
+            for param in &signature.pos_args {
+                if let Some(ref default) = param.default {
+                    collect_referenced_names_from_expr(default, &mut referenced, interner);
+                }
+            }
+            for param in &signature.args {
+                if let Some(ref default) = param.default {
+                    collect_referenced_names_from_expr(default, &mut referenced, interner);
+                }
+            }
+            for param in &signature.kwargs {
+                if let Some(ref default) = param.default {
+                    collect_referenced_names_from_expr(default, &mut referenced, interner);
+                }
+            }
+
+            // Extract param names from signature
+            let param_names: Vec<StringId> = signature.param_names().collect();
+
+            // Any name that is:
+            // - Referenced by the lambda
+            // - Not a param of the lambda
+            // - In our locals
+            // becomes a cell_var
+            for name in &referenced {
+                if !param_names.iter().any(|p| interner.get_str(*p) == name) && our_locals.contains(name) {
+                    cell_vars.insert(name.clone());
+                }
+            }
+
+            // Recursively check the lambda body for nested lambdas.
+            // For nested lambdas, extend our_locals to include this lambda's parameters
+            // so that inner lambdas can find them for closure capture.
+            let mut extended_locals = our_locals.clone();
+            for param_id in &param_names {
+                extended_locals.insert(interner.get_str(*param_id).to_string());
+            }
+            collect_cell_vars_from_expr(body, &extended_locals, cell_vars, interner);
+        }
+        // Recurse into sub-expressions
+        Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
+            for item in items {
+                collect_cell_vars_from_expr(item, our_locals, cell_vars, interner);
+            }
+        }
+        Expr::Dict(pairs) => {
+            for (key, value) in pairs {
+                collect_cell_vars_from_expr(key, our_locals, cell_vars, interner);
+                collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+            }
+        }
+        Expr::Op { left, right, .. } | Expr::CmpOp { left, right, .. } => {
+            collect_cell_vars_from_expr(left, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(right, our_locals, cell_vars, interner);
+        }
+        Expr::Not(operand) | Expr::UnaryMinus(operand) | Expr::UnaryPlus(operand) | Expr::UnaryInvert(operand) => {
+            collect_cell_vars_from_expr(operand, our_locals, cell_vars, interner);
+        }
+        Expr::Subscript { object, index } => {
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(index, our_locals, cell_vars, interner);
+        }
+        Expr::Call { args, .. } => {
+            collect_cell_vars_from_args(args, our_locals, cell_vars, interner);
+        }
+        Expr::AttrCall { object, args, .. } => {
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+            collect_cell_vars_from_args(args, our_locals, cell_vars, interner);
+        }
+        Expr::IndirectCall { callable, args } => {
+            collect_cell_vars_from_expr(callable, our_locals, cell_vars, interner);
+            collect_cell_vars_from_args(args, our_locals, cell_vars, interner);
+        }
+        Expr::AttrGet { object, .. } => {
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+        }
+        Expr::IfElse { test, body, orelse } => {
+            collect_cell_vars_from_expr(test, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(body, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(orelse, our_locals, cell_vars, interner);
+        }
+        Expr::ListComp { elt, generators } | Expr::SetComp { elt, generators } => {
+            collect_cell_vars_from_expr(elt, our_locals, cell_vars, interner);
+            for generator in generators {
+                collect_cell_vars_from_expr(&generator.iter, our_locals, cell_vars, interner);
+                for cond in &generator.ifs {
+                    collect_cell_vars_from_expr(cond, our_locals, cell_vars, interner);
+                }
+            }
+        }
+        Expr::DictComp { key, value, generators } => {
+            collect_cell_vars_from_expr(key, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+            for generator in generators {
+                collect_cell_vars_from_expr(&generator.iter, our_locals, cell_vars, interner);
+                for cond in &generator.ifs {
+                    collect_cell_vars_from_expr(cond, our_locals, cell_vars, interner);
+                }
+            }
+        }
+        Expr::FString(parts) => {
+            for part in parts {
+                if let crate::fstring::FStringPart::Interpolation { expr, .. } = part {
+                    collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
+                }
+            }
+        }
+        // Leaf expressions
+        Expr::Literal(_) | Expr::Builtin(_) | Expr::Name(_) | Expr::Lambda { .. } => {}
+    }
+}
+
+/// Helper to collect cell vars from argument expressions.
+fn collect_cell_vars_from_args(
+    args: &ArgExprs,
+    our_locals: &AHashSet<String>,
+    cell_vars: &mut AHashSet<String>,
+    interner: &InternerBuilder,
+) {
+    use crate::args::ArgExprs;
+    match args {
+        ArgExprs::Empty => {}
+        ArgExprs::One(arg) => collect_cell_vars_from_expr(arg, our_locals, cell_vars, interner),
+        ArgExprs::Two(arg1, arg2) => {
+            collect_cell_vars_from_expr(arg1, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(arg2, our_locals, cell_vars, interner);
+        }
+        ArgExprs::Args(args) => {
+            for arg in args {
+                collect_cell_vars_from_expr(arg, our_locals, cell_vars, interner);
+            }
+        }
+        ArgExprs::Kwargs(kwargs) => {
+            for kwarg in kwargs {
+                collect_cell_vars_from_expr(&kwarg.value, our_locals, cell_vars, interner);
+            }
+        }
+        ArgExprs::ArgsKargs {
+            args,
+            kwargs,
+            var_args,
+            var_kwargs,
+        } => {
+            if let Some(args) = args {
+                for arg in args {
+                    collect_cell_vars_from_expr(arg, our_locals, cell_vars, interner);
+                }
+            }
+            if let Some(kwargs) = kwargs {
+                for kwarg in kwargs {
+                    collect_cell_vars_from_expr(&kwarg.value, our_locals, cell_vars, interner);
+                }
+            }
+            if let Some(var_args) = var_args {
+                collect_cell_vars_from_expr(var_args, our_locals, cell_vars, interner);
+            }
+            if let Some(var_kwargs) = var_kwargs {
+                collect_cell_vars_from_expr(var_kwargs, our_locals, cell_vars, interner);
+            }
+        }
     }
 }
 
@@ -1779,6 +2199,11 @@ fn collect_referenced_names_from_expr(
         Expr::AttrGet { object, .. } => {
             collect_referenced_names_from_expr(object, referenced, interner);
         }
+        Expr::IndirectCall { callable, args } => {
+            // Collect references from the callable expression and arguments
+            collect_referenced_names_from_expr(callable, referenced, interner);
+            collect_referenced_names_from_args(args, referenced, interner);
+        }
         Expr::IfElse { test, body, orelse } => {
             collect_referenced_names_from_expr(test, referenced, interner);
             collect_referenced_names_from_expr(body, referenced, interner);
@@ -1789,6 +2214,30 @@ fn collect_referenced_names_from_expr(
         }
         Expr::DictComp { key, value, generators } => {
             collect_referenced_names_from_comprehension(generators, None, Some((key, value)), referenced, interner);
+        }
+        Expr::LambdaRaw { signature, body, .. } => {
+            // Collect references from the body expression (lambda can reference outer scope)
+            collect_referenced_names_from_expr(body, referenced, interner);
+            // Collect references from default value expressions
+            for param in &signature.pos_args {
+                if let Some(ref default) = param.default {
+                    collect_referenced_names_from_expr(default, referenced, interner);
+                }
+            }
+            for param in &signature.args {
+                if let Some(ref default) = param.default {
+                    collect_referenced_names_from_expr(default, referenced, interner);
+                }
+            }
+            for param in &signature.kwargs {
+                if let Some(ref default) = param.default {
+                    collect_referenced_names_from_expr(default, referenced, interner);
+                }
+            }
+        }
+        Expr::Lambda { .. } => {
+            // Lambda should only exist after preparation; this function operates on raw expressions
+            unreachable!("Expr::Lambda should not exist during scope analysis")
         }
     }
 }

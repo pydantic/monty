@@ -23,7 +23,7 @@ use crate::{
 };
 
 /// A parameter in a function signature with optional default value.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ParsedParam {
     /// The parameter name.
     pub name: StringId,
@@ -36,7 +36,7 @@ pub struct ParsedParam {
 /// This intermediate representation captures the structure of Python function
 /// parameters before name resolution. Default value expressions are stored
 /// as unevaluated AST and will be evaluated during the prepare phase.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ParsedSignature {
     /// Positional-only parameters (before `/`).
     pub pos_args: Vec<ParsedParam>,
@@ -576,10 +576,58 @@ impl<'a> Parser<'a> {
                     Ok(ExprLoc::new(self.convert_range(range), Expr::UnaryInvert(operand)))
                 }
             },
-            AstExpr::Lambda(l) => Err(ParseError::not_implemented(
-                "lambda expressions",
-                self.convert_range(l.range),
-            )),
+            AstExpr::Lambda(ast::ExprLambda {
+                parameters,
+                body,
+                range,
+                ..
+            }) => {
+                let position = self.convert_range(range);
+
+                // Intern the lambda name
+                let name_id = self.interner.intern("<lambda>");
+
+                // Parse lambda parameters (similar to function parameters)
+                let signature = if let Some(params) = parameters {
+                    // Parse positional-only parameters (before /)
+                    let pos_args = self.parse_params_with_defaults(&params.posonlyargs)?;
+
+                    // Parse positional-or-keyword parameters
+                    let args = self.parse_params_with_defaults(&params.args)?;
+
+                    // Parse *args
+                    let var_args = params.vararg.as_ref().map(|p| self.interner.intern(&p.name.id));
+
+                    // Parse keyword-only parameters (after * or *args)
+                    let kwargs = self.parse_params_with_defaults(&params.kwonlyargs)?;
+
+                    // Parse **kwargs
+                    let var_kwargs = params.kwarg.as_ref().map(|p| self.interner.intern(&p.name.id));
+
+                    ParsedSignature {
+                        pos_args,
+                        args,
+                        var_args,
+                        kwargs,
+                        var_kwargs,
+                    }
+                } else {
+                    // No parameters (e.g., `lambda: 42`)
+                    ParsedSignature::default()
+                };
+
+                // Parse the body expression
+                let body = Box::new(self.parse_expression(*body)?);
+
+                Ok(ExprLoc::new(
+                    position,
+                    Expr::LambdaRaw {
+                        name_id,
+                        signature,
+                        body,
+                    },
+                ))
+            }
             AstExpr::If(ast::ExprIf {
                 test,
                 body,
@@ -753,10 +801,17 @@ impl<'a> Parser<'a> {
                             },
                         ))
                     }
-                    other => Err(ParseError::syntax(
-                        format!("Expected name or attribute, got {other:?}"),
-                        position,
-                    )),
+                    other => {
+                        // Handle arbitrary expression as callable (e.g., lambda calls)
+                        let callable = Box::new(self.parse_expression(other)?);
+                        Ok(ExprLoc::new(
+                            position,
+                            Expr::IndirectCall {
+                                callable,
+                                args: Box::new(args),
+                            },
+                        ))
+                    }
                 }
             }
             AstExpr::FString(ast::ExprFString { value, range, .. }) => self.parse_fstring(&value, range),
