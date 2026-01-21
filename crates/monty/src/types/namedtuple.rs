@@ -48,7 +48,7 @@ use crate::{
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct NamedTuple {
     /// Type name for repr (e.g., "sys.version_info").
-    type_name: String,
+    type_name: StringId,
     /// Field names in order, e.g., `major`, `minor`, `micro`, `releaselevel`, `serial`.
     field_names: Vec<StringId>,
     /// Values in order (same length as field_names).
@@ -70,7 +70,7 @@ impl NamedTuple {
     ///
     /// Panics if `field_names.len() != items.len()`.
     #[must_use]
-    pub fn new(type_name: String, field_names: Vec<StringId>, items: Vec<Value>) -> Self {
+    pub fn new(type_name: StringId, field_names: Vec<StringId>, items: Vec<Value>) -> Self {
         assert_eq!(
             field_names.len(),
             items.len(),
@@ -87,8 +87,8 @@ impl NamedTuple {
 
     /// Returns the type name (e.g., "sys.version_info").
     #[must_use]
-    pub fn type_name(&self) -> &str {
-        &self.type_name
+    pub fn type_name(&self) -> StringId {
+        self.type_name
     }
 
     /// Returns a reference to the underlying items vector.
@@ -152,7 +152,6 @@ impl PyTrait for NamedTuple {
 
     fn py_estimate_size(&self) -> usize {
         std::mem::size_of::<Self>()
-            + self.type_name.len()
             + self.field_names.len() * std::mem::size_of::<StringId>()
             + self.items.len() * std::mem::size_of::<Value>()
     }
@@ -218,7 +217,7 @@ impl PyTrait for NamedTuple {
         interns: &Interns,
     ) -> std::fmt::Result {
         // Format: type_name(field1=value1, field2=value2, ...)
-        f.write_str(&self.type_name)?;
+        f.write_str(interns.get_str(self.type_name))?;
         f.write_char('(')?;
 
         let mut first = true;

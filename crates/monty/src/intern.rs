@@ -7,13 +7,17 @@
 //! The interners are populated during parsing and preparation, then owned by the `Executor`.
 //! During execution, lookups are needed only for error messages and repr output.
 //!
-//! The first string entry (index 0) is always `"<module>"` for module-level code.
+//! StringIds are laid out as follows:
+//! * 0 to 128 - single character strings for all 128 ASCII characters
+//! * 1000 to count(StaticStrings) - strings StaticStrings
+//! * 10_000+ - strings interned per executor
 
-use std::{borrow::Cow, sync::LazyLock};
+use std::{str::FromStr, sync::LazyLock};
 
 use ahash::AHashMap;
+use strum::{EnumString, FromRepr, IntoStaticStr};
 
-use crate::function::Function;
+use crate::{function::Function, value::Value};
 
 /// Index into the string interner's storage.
 ///
@@ -21,144 +25,6 @@ use crate::function::Function;
 /// ~4 billion unique interns, which is more than sufficient.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
 pub struct StringId(u32);
-
-/// The StringId for `"<module>"` - always index 0 in the interner.
-pub const MODULE_STRING_ID: StringId = StringId(0);
-
-/// update MAX_ATTR_ID when adding new attrs
-const MAX_ATTR_ID: u32 = 61;
-
-/// The StringId for the empty string `""` - interned for allocation-free empty string returns.
-pub const EMPTY_STRING: StringId = StringId(MAX_ATTR_ID + 1);
-
-/// Number of ASCII single-character strings pre-interned at startup.
-const ASCII_STRING_COUNT: u32 = 128;
-
-/// First StringId reserved for ASCII single-character interns.
-/// Starts after MAX_ATTR_ID and EMPTY_STRING.
-const ASCII_STRING_START_ID: u32 = MAX_ATTR_ID + 2;
-
-/// Static strings for all 128 ASCII characters, built once on first access.
-///
-/// Uses `LazyLock` to build the array at runtime (once), leaking the strings to get
-/// `'static` lifetime. The leak is intentional and bounded (128 single-byte strings).
-static ASCII_STRS: LazyLock<[&'static str; 128]> = LazyLock::new(|| {
-    std::array::from_fn(|i| {
-        // Safe: i is always 0-127 for a 128-element array
-        let s = char::from(u8::try_from(i).expect("index out of u8 range")).to_string();
-        // Leak to get 'static lifetime - this is intentional and bounded (128 bytes total)
-        // Reborrow as immutable since we won't mutate
-        &*Box::leak(s.into_boxed_str())
-    })
-});
-
-/// Base interner with all pre-interned strings, built once on first access.
-///
-/// Contains `<module>`, all attribute names, and ASCII single-character strings.
-/// `InternerBuilder::new()` clones this to avoid rebuilding the base set each time.
-static BASE_INTERNER: LazyLock<InternerBuilder> = LazyLock::new(InternerBuilder::build_base);
-
-/// Returns the interned StringId for an ASCII byte.
-///
-/// These interns are created during `InternerBuilder::new()` and allow
-/// allocation-free iteration over ASCII strings.
-#[must_use]
-pub(crate) fn ascii_string_id(byte: u8) -> StringId {
-    StringId(ASCII_STRING_START_ID + u32::from(byte))
-}
-
-/// Pre-interned attribute names for container methods.
-///
-/// These StringIds are assigned at startup in `InternerBuilder::new()` and provide
-/// O(1) comparison for common method names without heap allocation.
-///
-/// Usage: `use crate::intern::attr;` then `attr::APPEND`, `attr::GET`, etc.
-///
-/// IMPORTANT NOTE: the last (max) attribute ID must be kept as `MAX_ATTR_ID` by updating
-/// `MAX_ATTR_ID` when new attrs are added.
-///
-/// ALSO update `InternerBuilder::new` debug_assertions when adding new attrs!
-pub mod attr {
-    use super::{MAX_ATTR_ID, StringId};
-
-    // List methods
-    pub const APPEND: StringId = StringId(1);
-    pub const INSERT: StringId = StringId(2);
-
-    // Dict methods
-    pub const GET: StringId = StringId(3);
-    pub const KEYS: StringId = StringId(4);
-    pub const VALUES: StringId = StringId(5);
-    pub const ITEMS: StringId = StringId(6);
-
-    // Shared methods (list, dict, set)
-    pub const POP: StringId = StringId(7);
-    pub const CLEAR: StringId = StringId(8);
-    pub const COPY: StringId = StringId(9);
-
-    // Set methods
-    pub const ADD: StringId = StringId(10);
-    pub const REMOVE: StringId = StringId(11);
-    pub const DISCARD: StringId = StringId(12);
-    pub const UPDATE: StringId = StringId(13);
-    pub const UNION: StringId = StringId(14);
-    pub const INTERSECTION: StringId = StringId(15);
-    pub const DIFFERENCE: StringId = StringId(16);
-    pub const SYMMETRIC_DIFFERENCE: StringId = StringId(17);
-    pub const ISSUBSET: StringId = StringId(18);
-    pub const ISSUPERSET: StringId = StringId(19);
-    pub const ISDISJOINT: StringId = StringId(20);
-
-    // String methods
-    pub const JOIN: StringId = StringId(21);
-    // Phase 1: Simple transformations
-    pub const LOWER: StringId = StringId(22);
-    pub const UPPER: StringId = StringId(23);
-    pub const CAPITALIZE: StringId = StringId(24);
-    pub const TITLE: StringId = StringId(25);
-    pub const SWAPCASE: StringId = StringId(26);
-    pub const CASEFOLD: StringId = StringId(27);
-    // Phase 2: Predicate methods
-    pub const ISALPHA: StringId = StringId(28);
-    pub const ISDIGIT: StringId = StringId(29);
-    pub const ISALNUM: StringId = StringId(30);
-    pub const ISNUMERIC: StringId = StringId(31);
-    pub const ISSPACE: StringId = StringId(32);
-    pub const ISLOWER: StringId = StringId(33);
-    pub const ISUPPER: StringId = StringId(34);
-    pub const ISASCII: StringId = StringId(35);
-    pub const ISDECIMAL: StringId = StringId(36);
-    // Phase 3: Search methods
-    pub const FIND: StringId = StringId(37);
-    pub const RFIND: StringId = StringId(38);
-    pub const INDEX: StringId = StringId(39);
-    pub const RINDEX: StringId = StringId(40);
-    pub const COUNT: StringId = StringId(41);
-    pub const STARTSWITH: StringId = StringId(42);
-    pub const ENDSWITH: StringId = StringId(43);
-    // Phase 4: Strip/trim methods
-    pub const STRIP: StringId = StringId(44);
-    pub const LSTRIP: StringId = StringId(45);
-    pub const RSTRIP: StringId = StringId(46);
-    pub const REMOVEPREFIX: StringId = StringId(47);
-    pub const REMOVESUFFIX: StringId = StringId(48);
-    // Phase 5: Split methods
-    pub const SPLIT: StringId = StringId(49);
-    pub const RSPLIT: StringId = StringId(50);
-    pub const SPLITLINES: StringId = StringId(51);
-    pub const PARTITION: StringId = StringId(52);
-    pub const RPARTITION: StringId = StringId(53);
-    // Phase 6: Replace/modify methods
-    pub const REPLACE: StringId = StringId(54);
-    pub const CENTER: StringId = StringId(55);
-    pub const LJUST: StringId = StringId(56);
-    pub const RJUST: StringId = StringId(57);
-    pub const ZFILL: StringId = StringId(58);
-    // Additional methods
-    pub const ENCODE: StringId = StringId(59);
-    pub const ISIDENTIFIER: StringId = StringId(60);
-    pub const ISTITLE: StringId = StringId(MAX_ATTR_ID);
-}
 
 impl StringId {
     /// Creates a StringId from a raw index value.
@@ -174,6 +40,266 @@ impl StringId {
     #[inline]
     pub fn index(self) -> usize {
         self.0 as usize
+    }
+
+    /// Returns the StringId for an ASCII byte.
+    #[must_use]
+    pub fn from_ascii(byte: u8) -> Self {
+        Self(u32::from(byte))
+    }
+}
+
+/// StringId offsets
+const STATIC_STRING_ID_OFFSET: u32 = 1000;
+const INTERN_STRING_ID_OFFSET: usize = 10_000;
+
+/// Static strings for all 128 ASCII characters, built once on first access.
+///
+/// Uses `LazyLock` to build the array at runtime (once), leaking the strings to get
+/// `'static` lifetime. The leak is intentional and bounded (128 single-byte strings).
+static ASCII_STRS: LazyLock<[&'static str; 128]> = LazyLock::new(|| {
+    std::array::from_fn(|i| {
+        // Safe: i is always 0-127 for a 128-element array
+        let s = char::from(u8::try_from(i).expect("index out of u8 range")).to_string();
+        // Leak to get 'static lifetime - this is intentional and bounded (128 bytes total)
+        // Reborrow as immutable since we won't mutate
+        &*Box::leak(s.into_boxed_str())
+    })
+});
+
+/// Static string values which are known at compile time and don't need to be interned.
+///
+/// StringIds are derived from `as_string_id()`.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, FromRepr, EnumString, IntoStaticStr, PartialEq, Eq)]
+#[strum(serialize_all = "snake_case")]
+pub enum StaticStrings {
+    #[strum(serialize = "")]
+    EmptyString,
+    #[strum(serialize = "<module>")]
+    Module,
+    // ==========================
+    // List methods
+    // Also uses shared: POP, CLEAR, COPY, REMOVE
+    // Also uses string-shared: INDEX, COUNT
+    Append,
+    Insert,
+    Extend,
+    Reverse,
+    Sort,
+
+    // ==========================
+    // Dict methods
+    // Also uses shared: POP, CLEAR, COPY, UPDATE
+    Get,
+    Keys,
+    Values,
+    Items,
+    Setdefault,
+    Popitem,
+    Fromkeys,
+
+    // ==========================
+    // Shared methods
+    // Used by multiple container types: list, dict, set
+    Pop,
+    Clear,
+    Copy,
+
+    // ==========================
+    // Set methods
+    // Also uses shared: POP, CLEAR, COPY
+    Add,
+    Remove,
+    Discard,
+    Update,
+    Union,
+    Intersection,
+    Difference,
+    #[strum(serialize = "symmetric_difference")]
+    SymmetricDifference,
+    Issubset,
+    Issuperset,
+    Isdisjoint,
+
+    // ==========================
+    // String methods
+    // Some methods shared with bytes: FIND, INDEX, COUNT, STARTSWITH, ENDSWITH
+    // Some methods shared with list/tuple: INDEX, COUNT
+    Join,
+    // Simple transformations
+    Lower,
+    Upper,
+    Capitalize,
+    Title,
+    Swapcase,
+    Casefold,
+    // Predicate methods
+    Isalpha,
+    Isdigit,
+    Isalnum,
+    Isnumeric,
+    Isspace,
+    Islower,
+    Isupper,
+    Isascii,
+    Isdecimal,
+    // Search methods (some shared with bytes, list, tuple)
+    Find,
+    Rfind,
+    Index,
+    Rindex,
+    Count,
+    Startswith,
+    Endswith,
+    // Strip/trim methods
+    Strip,
+    Lstrip,
+    Rstrip,
+    Removeprefix,
+    Removesuffix,
+    // Split methods
+    Split,
+    Rsplit,
+    Splitlines,
+    Partition,
+    Rpartition,
+    // Replace/padding methods
+    Replace,
+    Center,
+    Ljust,
+    Rjust,
+    Zfill,
+    // Additional string methods
+    Encode,
+    Isidentifier,
+    Istitle,
+
+    // ==========================
+    // Bytes methods
+    // Also uses string-shared: FIND, INDEX, COUNT, STARTSWITH, ENDSWITH
+    // Also uses most string methods: LOWER, UPPER, CAPITALIZE, TITLE, SWAPCASE,
+    // ISALPHA, ISDIGIT, ISALNUM, ISSPACE, ISLOWER, ISUPPER, ISASCII, ISTITLE,
+    // RFIND, RINDEX, STRIP, LSTRIP, RSTRIP, REMOVEPREFIX, REMOVESUFFIX,
+    // SPLIT, RSPLIT, SPLITLINES, PARTITION, RPARTITION, REPLACE,
+    // CENTER, LJUST, RJUST, ZFILL, JOIN
+    Decode,
+    Hex,
+    Fromhex,
+
+    // ==========================
+    // sys module strings
+    #[strum(serialize = "sys")]
+    Sys,
+    #[strum(serialize = "sys.version_info")]
+    SysVersionInfo,
+    #[strum(serialize = "version")]
+    Version,
+    #[strum(serialize = "version_info")]
+    VersionInfo,
+    #[strum(serialize = "platform")]
+    Platform,
+    #[strum(serialize = "stdout")]
+    Stdout,
+    #[strum(serialize = "stderr")]
+    Stderr,
+    #[strum(serialize = "major")]
+    Major,
+    #[strum(serialize = "minor")]
+    Minor,
+    #[strum(serialize = "micro")]
+    Micro,
+    #[strum(serialize = "releaselevel")]
+    Releaselevel,
+    #[strum(serialize = "serial")]
+    Serial,
+    #[strum(serialize = "final")]
+    Final,
+    #[strum(serialize = "3.14.0 (Monty)")]
+    MontyVersionString,
+    #[strum(serialize = "monty")]
+    Monty,
+
+    // ==========================
+    // typing module strings
+    #[strum(serialize = "typing")]
+    Typing,
+    #[strum(serialize = "TYPE_CHECKING")]
+    TypeChecking,
+    #[strum(serialize = "Any")]
+    Any,
+    #[strum(serialize = "Optional")]
+    Optional,
+    #[strum(serialize = "Union")]
+    UnionType,
+    #[strum(serialize = "List")]
+    ListType,
+    #[strum(serialize = "Dict")]
+    DictType,
+    #[strum(serialize = "Tuple")]
+    TupleType,
+    #[strum(serialize = "Set")]
+    SetType,
+    #[strum(serialize = "FrozenSet")]
+    FrozenSet,
+    #[strum(serialize = "Callable")]
+    Callable,
+    #[strum(serialize = "Type")]
+    Type,
+    #[strum(serialize = "Sequence")]
+    Sequence,
+    #[strum(serialize = "Mapping")]
+    Mapping,
+    #[strum(serialize = "Iterable")]
+    Iterable,
+    #[strum(serialize = "Iterator")]
+    IteratorType,
+    #[strum(serialize = "Generator")]
+    Generator,
+    #[strum(serialize = "ClassVar")]
+    ClassVar,
+    #[strum(serialize = "Final")]
+    FinalType,
+}
+
+impl StaticStrings {
+    /// Converts this static string variant to its corresponding `StringId`.
+    pub fn as_string_id(self) -> StringId {
+        let string_id = self as u32;
+        StringId(string_id + STATIC_STRING_ID_OFFSET)
+    }
+
+    /// Attempts to convert a `StringId` back to a `StaticStrings` variant.
+    ///
+    /// Returns `None` if the `StringId` doesn't correspond to a static string
+    /// (e.g., it's an ASCII char or a dynamically interned string).
+    pub fn from_string_id(id: StringId) -> Option<Self> {
+        let enum_id = id.0.checked_sub(STATIC_STRING_ID_OFFSET)?;
+        u8::try_from(enum_id).ok().and_then(Self::from_repr)
+    }
+}
+
+impl From<StaticStrings> for StringId {
+    fn from(value: StaticStrings) -> Self {
+        value.as_string_id()
+    }
+}
+
+impl From<StaticStrings> for Value {
+    fn from(value: StaticStrings) -> Self {
+        Self::InternString(value.into())
+    }
+}
+
+impl PartialEq<StaticStrings> for StringId {
+    fn eq(&self, other: &StaticStrings) -> bool {
+        *self == other.as_string_id()
+    }
+}
+
+impl PartialEq<StringId> for StaticStrings {
+    fn eq(&self, other: &StringId) -> bool {
+        self.as_string_id() == *other
     }
 }
 
@@ -241,9 +367,9 @@ impl ExtFunctionId {
 #[derive(Debug, Default, Clone)]
 pub struct InternerBuilder {
     /// Maps strings to their indices for deduplication during interning.
-    string_map: AHashMap<Cow<'static, str>, StringId>,
+    string_map: AHashMap<String, StringId>,
     /// Storage for interned interns, indexed by `StringId`.
-    strings: Vec<Cow<'static, str>>,
+    strings: Vec<String>,
     /// Storage for interned bytes literals, indexed by `BytesId`.
     /// Not deduplicated since bytes literals are rare.
     bytes: Vec<Vec<u8>>,
@@ -265,206 +391,35 @@ impl InternerBuilder {
     /// - Indices 1-MAX_ATTR_ID: Known attribute names (append, insert, get, join, etc.)
     /// - Indices MAX_ATTR_ID+1..: ASCII single-character strings
     pub fn new(code: &str) -> Self {
-        // Clone the base interner with all pre-interned strings
-        let mut interner = BASE_INTERNER.clone();
-
-        // Reserve additional capacity for code-specific strings
+        // Reserve capacity for code-specific strings
         // Rough guess: count quotes and divide by 2 (open+close per string)
-        let additional_strings = code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1;
-        if additional_strings > 0 {
-            interner.string_map.reserve(additional_strings);
-            interner.strings.reserve(additional_strings);
-        }
-
-        interner
-    }
-
-    /// Builds the base interner with all pre-interned strings.
-    ///
-    /// Called once by `BASE_INTERNER` lazy initialization. Contains `<module>`,
-    /// all attribute names, and ASCII single-character strings.
-    fn build_base() -> Self {
-        // +1 for <module>, +1 for empty string
-        let base_count = (MAX_ATTR_ID + ASCII_STRING_COUNT + 2) as usize;
-        let mut interner = Self {
-            string_map: AHashMap::with_capacity(base_count),
-            strings: Vec::with_capacity(base_count),
+        let capacity = code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1;
+        Self {
+            string_map: AHashMap::with_capacity(capacity),
+            strings: Vec::with_capacity(capacity),
             bytes: Vec::new(),
-        };
-
-        // Index 0: "<module>" for module-level code
-        let id = interner.intern_static("<module>");
-        debug_assert_eq!(id, MODULE_STRING_ID);
-
-        // Pre-intern known attribute names.
-        // Order must match the attr::* constants defined above.
-        // Note: We separate the intern() call from debug_assert_eq! because
-        // debug_assert_eq! is completely removed in release builds.
-        let id = interner.intern_static("append");
-        debug_assert_eq!(id, attr::APPEND);
-        let id = interner.intern_static("insert");
-        debug_assert_eq!(id, attr::INSERT);
-        let id = interner.intern_static("get");
-        debug_assert_eq!(id, attr::GET);
-        let id = interner.intern_static("keys");
-        debug_assert_eq!(id, attr::KEYS);
-        let id = interner.intern_static("values");
-        debug_assert_eq!(id, attr::VALUES);
-        let id = interner.intern_static("items");
-        debug_assert_eq!(id, attr::ITEMS);
-        let id = interner.intern_static("pop");
-        debug_assert_eq!(id, attr::POP);
-        let id = interner.intern_static("clear");
-        debug_assert_eq!(id, attr::CLEAR);
-        let id = interner.intern_static("copy");
-        debug_assert_eq!(id, attr::COPY);
-        let id = interner.intern_static("add");
-        debug_assert_eq!(id, attr::ADD);
-        let id = interner.intern_static("remove");
-        debug_assert_eq!(id, attr::REMOVE);
-        let id = interner.intern_static("discard");
-        debug_assert_eq!(id, attr::DISCARD);
-        let id = interner.intern_static("update");
-        debug_assert_eq!(id, attr::UPDATE);
-        let id = interner.intern_static("union");
-        debug_assert_eq!(id, attr::UNION);
-        let id = interner.intern_static("intersection");
-        debug_assert_eq!(id, attr::INTERSECTION);
-        let id = interner.intern_static("difference");
-        debug_assert_eq!(id, attr::DIFFERENCE);
-        let id = interner.intern_static("symmetric_difference");
-        debug_assert_eq!(id, attr::SYMMETRIC_DIFFERENCE);
-        let id = interner.intern_static("issubset");
-        debug_assert_eq!(id, attr::ISSUBSET);
-        let id = interner.intern_static("issuperset");
-        debug_assert_eq!(id, attr::ISSUPERSET);
-        let id = interner.intern_static("isdisjoint");
-        debug_assert_eq!(id, attr::ISDISJOINT);
-        let id = interner.intern_static("join");
-        debug_assert_eq!(id, attr::JOIN);
-        // Phase 1: Simple transformations
-        let id = interner.intern_static("lower");
-        debug_assert_eq!(id, attr::LOWER);
-        let id = interner.intern_static("upper");
-        debug_assert_eq!(id, attr::UPPER);
-        let id = interner.intern_static("capitalize");
-        debug_assert_eq!(id, attr::CAPITALIZE);
-        let id = interner.intern_static("title");
-        debug_assert_eq!(id, attr::TITLE);
-        let id = interner.intern_static("swapcase");
-        debug_assert_eq!(id, attr::SWAPCASE);
-        let id = interner.intern_static("casefold");
-        debug_assert_eq!(id, attr::CASEFOLD);
-        // Phase 2: Predicate methods
-        let id = interner.intern_static("isalpha");
-        debug_assert_eq!(id, attr::ISALPHA);
-        let id = interner.intern_static("isdigit");
-        debug_assert_eq!(id, attr::ISDIGIT);
-        let id = interner.intern_static("isalnum");
-        debug_assert_eq!(id, attr::ISALNUM);
-        let id = interner.intern_static("isnumeric");
-        debug_assert_eq!(id, attr::ISNUMERIC);
-        let id = interner.intern_static("isspace");
-        debug_assert_eq!(id, attr::ISSPACE);
-        let id = interner.intern_static("islower");
-        debug_assert_eq!(id, attr::ISLOWER);
-        let id = interner.intern_static("isupper");
-        debug_assert_eq!(id, attr::ISUPPER);
-        let id = interner.intern_static("isascii");
-        debug_assert_eq!(id, attr::ISASCII);
-        let id = interner.intern_static("isdecimal");
-        debug_assert_eq!(id, attr::ISDECIMAL);
-        // Phase 3: Search methods
-        let id = interner.intern_static("find");
-        debug_assert_eq!(id, attr::FIND);
-        let id = interner.intern_static("rfind");
-        debug_assert_eq!(id, attr::RFIND);
-        let id = interner.intern_static("index");
-        debug_assert_eq!(id, attr::INDEX);
-        let id = interner.intern_static("rindex");
-        debug_assert_eq!(id, attr::RINDEX);
-        let id = interner.intern_static("count");
-        debug_assert_eq!(id, attr::COUNT);
-        let id = interner.intern_static("startswith");
-        debug_assert_eq!(id, attr::STARTSWITH);
-        let id = interner.intern_static("endswith");
-        debug_assert_eq!(id, attr::ENDSWITH);
-        // Phase 4: Strip/trim methods
-        let id = interner.intern_static("strip");
-        debug_assert_eq!(id, attr::STRIP);
-        let id = interner.intern_static("lstrip");
-        debug_assert_eq!(id, attr::LSTRIP);
-        let id = interner.intern_static("rstrip");
-        debug_assert_eq!(id, attr::RSTRIP);
-        let id = interner.intern_static("removeprefix");
-        debug_assert_eq!(id, attr::REMOVEPREFIX);
-        let id = interner.intern_static("removesuffix");
-        debug_assert_eq!(id, attr::REMOVESUFFIX);
-        // Phase 5: Split methods
-        let id = interner.intern_static("split");
-        debug_assert_eq!(id, attr::SPLIT);
-        let id = interner.intern_static("rsplit");
-        debug_assert_eq!(id, attr::RSPLIT);
-        let id = interner.intern_static("splitlines");
-        debug_assert_eq!(id, attr::SPLITLINES);
-        let id = interner.intern_static("partition");
-        debug_assert_eq!(id, attr::PARTITION);
-        let id = interner.intern_static("rpartition");
-        debug_assert_eq!(id, attr::RPARTITION);
-        // Phase 6: Replace/modify methods
-        let id = interner.intern_static("replace");
-        debug_assert_eq!(id, attr::REPLACE);
-        let id = interner.intern_static("center");
-        debug_assert_eq!(id, attr::CENTER);
-        let id = interner.intern_static("ljust");
-        debug_assert_eq!(id, attr::LJUST);
-        let id = interner.intern_static("rjust");
-        debug_assert_eq!(id, attr::RJUST);
-        let id = interner.intern_static("zfill");
-        debug_assert_eq!(id, attr::ZFILL);
-        // Additional methods
-        let id = interner.intern_static("encode");
-        debug_assert_eq!(id, attr::ENCODE);
-        let id = interner.intern_static("isidentifier");
-        debug_assert_eq!(id, attr::ISIDENTIFIER);
-        let id = interner.intern_static("istitle");
-        debug_assert_eq!(id, attr::ISTITLE);
-
-        // Pre-intern the empty string for allocation-free empty string returns
-        let id = interner.intern_static("");
-        debug_assert_eq!(id, EMPTY_STRING);
-
-        // Pre-intern ASCII single-character strings so string iteration can reuse interns.
-        for byte in 0u8..=127 {
-            let id = interner.intern_static(ASCII_STRS[byte as usize]);
-            debug_assert_eq!(id, ascii_string_id(byte));
         }
-
-        // Pre-intern module strings so they're always available
-        crate::modules::sys::intern_module_strings(&mut interner);
-        crate::modules::typing::intern_module_strings(&mut interner);
-
-        interner
     }
 
     /// Interns a string, returning its `StringId`.
     ///
-    /// If the string was already interned, returns the existing `StringId`.
-    /// Otherwise, stores the string and returns a new `StringId`.
+    /// * If the string is ascii, return the pre-interned string id
+    /// * If the string is a known static string, return the pre-interned string id
+    /// * If the string was already interned, returns the existing string id
+    /// * Otherwise, stores the string and returns a new string id
     pub fn intern(&mut self, s: &str) -> StringId {
-        *self.string_map.entry(s.to_owned().into()).or_insert_with(|| {
-            let id = StringId(self.strings.len().try_into().expect("StringId overflow"));
-            self.strings.push(s.to_owned().into());
-            id
-        })
-    }
-
-    fn intern_static(&mut self, s: &'static str) -> StringId {
-        *self.string_map.entry(s.into()).or_insert_with(|| {
-            let id = StringId(self.strings.len().try_into().expect("StringId overflow"));
-            self.strings.push(s.into());
-            id
-        })
+        if s.len() == 1 {
+            StringId::from_ascii(s.as_bytes()[0])
+        } else if let Ok(ss) = StaticStrings::from_str(s) {
+            ss.as_string_id()
+        } else {
+            *self.string_map.entry(s.to_owned()).or_insert_with(|| {
+                let string_id = self.strings.len() + INTERN_STRING_ID_OFFSET;
+                let id = StringId(string_id.try_into().expect("StringId overflow"));
+                self.strings.push(s.to_owned());
+                id
+            })
+        }
     }
 
     /// Interns bytes, returning its `BytesId`.
@@ -477,13 +432,25 @@ impl InternerBuilder {
     }
 
     /// Looks up a string by its `StringId`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the `StringId` is invalid (not from this interner).
     #[inline]
     pub fn get_str(&self, id: StringId) -> &str {
-        &self.strings[id.index()]
+        get_str(&self.strings, id)
+    }
+}
+
+/// Looks up a string by its `StringId`.
+///
+/// # Panics
+///
+/// Panics if the `StringId` is invalid - not from this interner or ascii chars or StaticStrings.
+fn get_str(strings: &[String], id: StringId) -> &str {
+    if let Ok(c) = u8::try_from(id.0) {
+        ASCII_STRS[c as usize]
+    } else if let Some(intern_index) = id.index().checked_sub(INTERN_STRING_ID_OFFSET) {
+        &strings[intern_index]
+    } else {
+        let static_str = StaticStrings::from_string_id(id).expect("Invalid static string ID");
+        static_str.into()
     }
 }
 
@@ -492,8 +459,7 @@ impl InternerBuilder {
 /// This provides lookup by `StringId`, `BytesId` and `FunctionId` for interned literals and functions
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Interns {
-    string_map: AHashMap<Cow<'static, str>, StringId>,
-    strings: Vec<Cow<'static, str>>,
+    strings: Vec<String>,
     bytes: Vec<Vec<u8>>,
     functions: Vec<Function>,
     external_functions: Vec<String>,
@@ -502,7 +468,6 @@ pub(crate) struct Interns {
 impl Interns {
     pub fn new(interner: InternerBuilder, functions: Vec<Function>, external_functions: Vec<String>) -> Self {
         Self {
-            string_map: interner.string_map,
             strings: interner.strings,
             bytes: interner.bytes,
             functions,
@@ -517,7 +482,7 @@ impl Interns {
     /// Panics if the `StringId` is invalid.
     #[inline]
     pub fn get_str(&self, id: StringId) -> &str {
-        &self.strings[id.index()]
+        get_str(&self.strings, id)
     }
 
     /// Looks up bytes by their `BytesId`.
@@ -559,15 +524,5 @@ impl Interns {
     /// compiled from `PreparedFunctionDef` nodes.
     pub fn set_functions(&mut self, functions: Vec<Function>) {
         self.functions = functions;
-    }
-
-    /// Finds the StringId for an existing interned string, assuming it's already interned.
-    ///
-    /// Panics if the string is not found.
-    pub fn find_known_string_id(&self, s: &str) -> StringId {
-        match self.string_map.get(s) {
-            Some(id) => *id,
-            None => panic!("string '{s}' not pre-interned during prepare phase"),
-        }
     }
 }

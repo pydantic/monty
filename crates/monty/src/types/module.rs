@@ -29,9 +29,9 @@ impl Module {
     /// # Panics
     ///
     /// Panics if the module name string has not been pre-interned.
-    pub fn new(name: &str, interns: &Interns) -> Self {
+    pub fn new(name: impl Into<StringId>) -> Self {
         Self {
-            name: interns.find_known_string_id(name),
+            name: name.into(),
             attrs: Dict::new(),
         }
     }
@@ -53,8 +53,14 @@ impl Module {
     /// # Panics
     ///
     /// Panics if the attribute name string has not been pre-interned.
-    pub fn set_attr(&mut self, name: &str, value: Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) {
-        let key = Value::InternString(interns.find_known_string_id(name));
+    pub fn set_attr(
+        &mut self,
+        name: impl Into<StringId>,
+        value: Value,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) {
+        let key = Value::InternString(name.into());
         // Unwrap is safe because InternString keys are always hashable
         self.attrs.set(key, value, heap, interns).unwrap();
     }

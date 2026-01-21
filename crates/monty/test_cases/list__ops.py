@@ -121,3 +121,163 @@ assert lst == [1, 'a', 2, 3], 'insert at -2'
 lst = [1, 2, 3]
 lst.insert(-100, 'a')
 assert lst == ['a', 1, 2, 3], 'insert very negative clamps to 0'
+
+# === list.pop() ===
+lst = [1, 2, 3]
+assert lst.pop() == 3, 'pop without argument returns last'
+assert lst == [1, 2], 'pop removes last element'
+
+lst = [1, 2, 3]
+assert lst.pop(0) == 1, 'pop(0) returns first'
+assert lst == [2, 3], 'pop(0) removes first element'
+
+lst = [1, 2, 3]
+assert lst.pop(1) == 2, 'pop(1) returns middle'
+assert lst == [1, 3], 'pop(1) removes middle element'
+
+lst = [1, 2, 3]
+assert lst.pop(-1) == 3, 'pop(-1) returns last'
+assert lst == [1, 2], 'pop(-1) removes last element'
+
+lst = [1, 2, 3]
+assert lst.pop(-2) == 2, 'pop(-2) returns second to last'
+assert lst == [1, 3], 'pop(-2) removes second to last element'
+
+# === list.remove() ===
+lst = [1, 2, 3, 2]
+lst.remove(2)
+assert lst == [1, 3, 2], 'remove removes first occurrence'
+
+lst = ['a', 'b', 'c']
+lst.remove('b')
+assert lst == ['a', 'c'], 'remove string element'
+
+# === list.clear() ===
+lst = [1, 2, 3]
+lst.clear()
+assert lst == [], 'clear empties the list'
+
+lst = []
+lst.clear()
+assert lst == [], 'clear on empty list is no-op'
+
+# === list.copy() ===
+lst = [1, 2, 3]
+copy = lst.copy()
+assert copy == [1, 2, 3], 'copy creates equal list'
+assert copy is not lst, 'copy creates new list object'
+lst.append(4)
+assert copy == [1, 2, 3], 'copy is independent'
+
+# === list.extend() ===
+lst = [1, 2]
+lst.extend([3, 4])
+assert lst == [1, 2, 3, 4], 'extend with list'
+
+lst = [1]
+lst.extend((2, 3))
+assert lst == [1, 2, 3], 'extend with tuple'
+
+lst = [1]
+lst.extend(range(2, 5))
+assert lst == [1, 2, 3, 4], 'extend with range'
+
+lst = [1]
+lst.extend('ab')
+assert lst == [1, 'a', 'b'], 'extend with string'
+
+lst = []
+lst.extend([])
+assert lst == [], 'extend empty with empty'
+
+# === list.index() ===
+lst = [1, 2, 3, 2]
+assert lst.index(2) == 1, 'index finds first occurrence'
+assert lst.index(3) == 2, 'index finds element'
+assert lst.index(2, 2) == 3, 'index with start'
+assert lst.index(2, 1, 4) == 1, 'index with start and end'
+
+# === list.count() ===
+lst = [1, 2, 2, 3, 2]
+assert lst.count(2) == 3, 'count multiple occurrences'
+assert lst.count(1) == 1, 'count single occurrence'
+assert lst.count(4) == 0, 'count zero occurrences'
+assert [].count(1) == 0, 'count on empty list'
+
+# === list.reverse() ===
+lst = [1, 2, 3]
+lst.reverse()
+assert lst == [3, 2, 1], 'reverse modifies in place'
+
+lst = [1]
+lst.reverse()
+assert lst == [1], 'reverse single element'
+
+lst = []
+lst.reverse()
+assert lst == [], 'reverse empty list'
+
+# === list.sort() ===
+lst = [3, 1, 2]
+lst.sort()
+assert lst == [1, 2, 3], 'sort integers'
+
+lst = ['b', 'c', 'a']
+lst.sort()
+assert lst == ['a', 'b', 'c'], 'sort strings'
+
+lst = [3, 1, 2]
+lst.sort(reverse=True)
+assert lst == [3, 2, 1], 'sort with reverse=True'
+
+lst = []
+lst.sort()
+assert lst == [], 'sort empty list'
+
+lst = [1]
+lst.sort()
+assert lst == [1], 'sort single element'
+
+# === list.sort(key=...) ===
+lst = ['banana', 'apple', 'cherry']
+lst.sort(key=len)
+assert lst == ['apple', 'banana', 'cherry'], 'sort by len'
+
+lst = [[1, 2, 3], [4], [5, 6]]
+lst.sort(key=len)
+assert lst == [[4], [5, 6], [1, 2, 3]], 'sort nested lists by len'
+
+lst = [[1, 2, 3], [4], [5, 6]]
+lst.sort(key=len, reverse=True)
+assert lst == [[1, 2, 3], [5, 6], [4]], 'sort by len reverse'
+
+lst = [-3, 1, -2, 4]
+lst.sort(key=abs)
+assert lst == [1, -2, -3, 4], 'sort by abs'
+
+# key=None is same as no key
+lst = [3, 1, 2]
+lst.sort(key=None)
+assert lst == [1, 2, 3], 'sort with key=None'
+
+lst = [3, 1, 2]
+lst.sort(key=None, reverse=True)
+assert lst == [3, 2, 1], 'sort with key=None reverse'
+
+# Empty list with key
+lst = []
+lst.sort(key=len)
+assert lst == [], 'sort empty list with key'
+
+# key=int for string-to-int conversion
+lst = ['-3', '1', '-2', '4']
+lst.sort(key=int)
+assert lst == ['-3', '-2', '1', '4'], 'sort strings by int value'
+
+lst = ['10', '2', '1', '100']
+lst.sort(key=int)
+assert lst == ['1', '2', '10', '100'], 'sort numeric strings by int value'
+
+lst = ['10', '2', '1', '100']
+lst.sort(key=int, reverse=True)
+assert lst == ['100', '10', '2', '1'], 'sort numeric strings by int reverse'

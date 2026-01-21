@@ -4,7 +4,7 @@ use crate::{
     exception_private::{ExcType, RawStackFrame},
     intern::Interns,
     parse::CodeRange,
-    types::str::string_repr,
+    types::str::StringRepr,
 };
 
 /// Public representation of a Monty exception.
@@ -135,7 +135,7 @@ impl MontyException {
     pub fn py_repr(&self) -> String {
         let type_str: &'static str = self.exc_type.into();
         if let Some(msg) = &self.message {
-            format!("{}({})", type_str, string_repr(msg))
+            format!("{}({})", type_str, StringRepr(msg))
         } else {
             format!("{type_str}()")
         }

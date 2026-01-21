@@ -175,3 +175,28 @@ assert ~True == -2, 'unary invert true'
 assert repr(~True) == '-2', 'unary invert true repr'
 assert ~False == -1, 'unary invert false'
 assert repr(~False) == '-1', 'unary invert false repr'
+
+assert int('123') == 123, 'int conversion from string'
+assert int('  123  ') == 123, 'int conversion from string trim'
+assert int('1_234 ') == 1234, 'int conversion from string'
+
+try:
+    int('abc')
+except ValueError as e:
+    assert str(e) == "invalid literal for int() with base 10: 'abc'", f'got err: {e}'
+else:
+    raise AssertionError('int conversion from string should fail')
+
+try:
+    int(' ')
+except ValueError as e:
+    assert str(e) == "invalid literal for int() with base 10: ' '", f'got err: {e}'
+else:
+    raise AssertionError('int conversion from string should fail')
+
+try:
+    int('a\tbc')
+except ValueError as e:
+    assert str(e) == "invalid literal for int() with base 10: 'a\\tbc'", f'got err: {e}'
+else:
+    raise AssertionError('int conversion from string should fail')

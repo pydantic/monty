@@ -17,7 +17,7 @@ use crate::{
     builtins::Builtins,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId},
-    intern::{BytesId, ExtFunctionId, FunctionId, Interns, StringId},
+    intern::{BytesId, ExtFunctionId, FunctionId, Interns, StaticStrings, StringId},
     resource::{LARGE_RESULT_THRESHOLD, ResourceTracker},
     types::{LongInt, PyTrait, Type, bytes::bytes_repr_fmt, str::string_repr_fmt},
 };
@@ -1595,21 +1595,18 @@ impl Value {
                 HeapData::NamedTuple(nt) => {
                     // Look up attribute by field name
                     // Copy the value (and type_name for error) without incrementing refcount while we hold the borrow
-                    let result = if let Some(value) = nt.get_by_name(name_id) {
-                        Ok(value.copy_for_extend())
-                    } else {
-                        Err(nt.type_name().to_owned())
-                    };
-                    // Now the borrow of heap_data ends, we can safely mutate heap
-                    match result {
-                        Ok(copied) => {
-                            // Increment refcount for heap refs
-                            if let Self::Ref(ref_id) = &copied {
-                                heap.inc_ref(*ref_id);
-                            }
-                            Ok(copied)
+                    if let Some(value) = nt.get_by_name(name_id) {
+                        let copied = value.copy_for_extend();
+                        // Increment refcount for heap refs
+                        if let Self::Ref(ref_id) = &copied {
+                            heap.inc_ref(*ref_id);
                         }
-                        Err(type_name) => Err(ExcType::attribute_error_not_found(&type_name, attr_name)),
+                        Ok(copied)
+                    } else {
+                        Err(ExcType::attribute_error_not_found(
+                            interns.get_str(nt.type_name()),
+                            attr_name,
+                        ))
                     }
                 }
                 _ => {
@@ -1802,23 +1799,21 @@ impl Value {
     /// # Important
     /// This method MUST be called before overwriting a namespace slot or discarding
     /// a value to prevent memory leaks.
-    ///
+    #[cfg(not(feature = "ref-count-panic"))]
+    pub fn drop_with_heap(self, heap: &mut Heap<impl ResourceTracker>) {
+        if let Self::Ref(id) = self {
+            heap.dec_ref(id);
+        }
+    }
     /// With `ref-count-panic` enabled, `Ref` variants are replaced with `Dereferenced` and
     /// the original is forgotten to prevent the Drop impl from panicking. Non-Ref variants
     /// are left unchanged since they don't trigger the Drop panic.
-    #[cfg_attr(not(feature = "ref-count-return"), expect(unused_mut))]
+    #[cfg(feature = "ref-count-panic")]
     pub fn drop_with_heap(mut self, heap: &mut Heap<impl ResourceTracker>) {
-        #[cfg(feature = "ref-count-panic")]
-        {
-            let old = std::mem::replace(&mut self, Self::Dereferenced);
-            if let Self::Ref(id) = &old {
-                heap.dec_ref(*id);
-                std::mem::forget(old);
-            }
-        }
-        #[cfg(not(feature = "ref-count-panic"))]
-        if let Self::Ref(id) = self {
-            heap.dec_ref(id);
+        let old = std::mem::replace(&mut self, Self::Dereferenced);
+        if let Self::Ref(id) = &old {
+            heap.dec_ref(*id);
+            std::mem::forget(old);
         }
     }
 
@@ -1950,6 +1945,15 @@ impl Attr {
     pub fn string_id(&self) -> Option<StringId> {
         match self {
             Self::Interned(id) => Some(*id),
+            Self::Other(_) => None,
+        }
+    }
+
+    /// Returns the `StaticStrings` if this is an interned attribute from `StaticStrings`s.
+    #[inline]
+    pub fn static_string(&self) -> Option<StaticStrings> {
+        match self {
+            Self::Interned(id) => StaticStrings::from_string_id(*id),
             Self::Other(_) => None,
         }
     }
