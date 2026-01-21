@@ -8,29 +8,12 @@
 //! - `stderr`: Marker for standard error (no real functionality)
 
 use crate::{
-    expressions::{Expr, Literal},
     heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings, StringId},
+    intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
     types::{Module, NamedTuple},
     value::{Marker, Value},
 };
-
-/// Resolves a `from sys import X` to an expression value.
-///
-/// Returns the expression to assign for known names:
-/// - `version` → Version string
-/// - `platform` → "monty"
-/// - `stdout` → Marker for stdout
-/// - `stderr` → Marker for stderr
-/// - `version_info` → `None` (not supported, requires heap allocation)
-/// - Unknown names → `None`
-pub fn import_from(name: StringId) -> Option<Expr> {
-    let static_name = StaticStrings::from_string_id(name)?;
-    simple_attrs()
-        .find(|(key, _)| *key == static_name)
-        .map(|(_, value)| value_to_expr(&value))
-}
 
 /// Creates the `sys` module and allocates it on the heap.
 ///
@@ -42,13 +25,32 @@ pub fn import_from(name: StringId) -> Option<Expr> {
 pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Sys);
 
-    // Add all simple attributes
-    for (attr_name, value) in simple_attrs() {
-        module.set_attr(attr_name, value, heap, interns);
-    }
+    // sys.version
+    module.set_attr(
+        StaticStrings::Version,
+        StaticStrings::MontyVersionString.into(),
+        heap,
+        interns,
+    );
 
-    // sys.version_info - named tuple with (major=3, minor=14, micro=0, releaselevel='final', serial=0)
-    // This requires heap allocation so cannot be in simple_attrs()
+    // sys.platform
+    module.set_attr(StaticStrings::Platform, StaticStrings::Monty.into(), heap, interns);
+
+    // sys.stdout / sys.stderr - markers for standard output/error
+    module.set_attr(
+        StaticStrings::Stdout,
+        Value::Marker(Marker(StaticStrings::Stdout)),
+        heap,
+        interns,
+    );
+    module.set_attr(
+        StaticStrings::Stderr,
+        Value::Marker(Marker(StaticStrings::Stderr)),
+        heap,
+        interns,
+    );
+
+    // sys.version_info - named tuple (major=3, minor=14, micro=0, releaselevel='final', serial=0)
     let version_info = NamedTuple::new(
         StaticStrings::SysVersionInfo.into(),
         vec![
@@ -70,36 +72,4 @@ pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -
     module.set_attr(StaticStrings::VersionInfo, Value::Ref(version_info_id), heap, interns);
 
     heap.allocate(HeapData::Module(module))
-}
-
-/// Returns all simple sys attributes as (key, value) pairs.
-///
-/// Simple attributes are those that can be represented without heap allocation.
-/// This is used by both `create_module` and `import_from` to avoid duplication.
-fn simple_attrs() -> impl Iterator<Item = (StaticStrings, Value)> {
-    [
-        (
-            StaticStrings::Version,
-            Value::InternString(StaticStrings::MontyVersionString.into()),
-        ),
-        (StaticStrings::Platform, StaticStrings::Monty.into()),
-        (StaticStrings::Stdout, Value::Marker(Marker(StaticStrings::Stdout))),
-        (StaticStrings::Stderr, Value::Marker(Marker(StaticStrings::Stderr))),
-    ]
-    .into_iter()
-}
-
-/// Converts a simple `Value` to its compile-time `Expr` representation.
-///
-/// Only handles value types that don't require heap allocation.
-fn value_to_expr(value: &Value) -> Expr {
-    match value {
-        Value::Bool(b) => Expr::Literal(Literal::Bool(*b)),
-        Value::Int(i) => Expr::Literal(Literal::Int(*i)),
-        Value::Float(f) => Expr::Literal(Literal::Float(*f)),
-        Value::InternString(id) => Expr::Literal(Literal::Str(*id)),
-        Value::Marker(m) => Expr::Literal(Literal::Marker(*m)),
-        Value::None => Expr::Literal(Literal::None),
-        _ => panic!("Cannot convert heap-allocated Value to Expr"),
-    }
 }

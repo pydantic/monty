@@ -229,6 +229,11 @@ pub enum Opcode {
     DeleteSubscr,
     /// Pop obj, push obj.attr. Operand: u16 name_id.
     LoadAttr,
+    /// Pop module, push module.attr for `from ... import`. Operand: u16 name_id.
+    ///
+    /// Like `LoadAttr` but raises `ImportError` instead of `AttributeError`
+    /// when the attribute is not found. Used for `from module import name`.
+    LoadAttrImport,
     /// Pop value, pop obj, set obj.attr. Operand: u16 name_id.
     StoreAttr,
     /// Pop obj, delete obj.attr. Operand: u16 name_id.

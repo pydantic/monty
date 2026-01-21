@@ -1427,6 +1427,19 @@ impl Value {
         }
     }
 
+    /// Returns the module name if this value is a module, otherwise returns "<unknown>".
+    ///
+    /// Used for error messages in `from module import name` when the name doesn't exist.
+    pub fn module_name(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> String {
+        match self {
+            Self::Ref(id) => match heap.get(*id) {
+                HeapData::Module(module) => interns.get_str(module.name()).to_string(),
+                _ => "<unknown>".to_string(),
+            },
+            _ => "<unknown>".to_string(),
+        }
+    }
+
     /// Equivalent of Python's `is` operator.
     ///
     /// Compares value identity by comparing their IDs.

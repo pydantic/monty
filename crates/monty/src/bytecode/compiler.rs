@@ -428,9 +428,8 @@ impl<'a> Compiler<'a> {
 
     /// Compiles a `from module import name, ...` statement.
     ///
-    /// Resolves imports at compile time by looking up names in the built-in module.
-    /// Each imported name is resolved to an expression value that is compiled and
-    /// stored to the binding identifier.
+    /// Creates the module once, then loads each attribute and stores to the binding.
+    /// Invalid attribute names will raise `AttributeError` at runtime.
     fn compile_import_from(
         &mut self,
         module_name: StringId,
@@ -443,25 +442,20 @@ impl<'a> Compiler<'a> {
         let builtin_module = BuiltinModule::from_string_id(module_name)
             .ok_or_else(|| CompileError::new_module_not_found(module_name_str, position))?;
 
+        // Load the module once
+        self.code.set_location(position, None);
+        self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
+
         // For each name to import
-        for (import_name, binding) in names {
-            let import_name_str = self.interns.get_str(*import_name);
-
-            // Try to resolve at compile time
-            let expr = builtin_module
-                .import_from(*import_name)
-                .ok_or_else(|| CompileError::new_cannot_import(import_name_str, module_name_str, position))?;
-
-            // Compile the expression value
-            self.code.set_location(position, None);
-            match &expr {
-                Expr::Literal(lit) => self.compile_literal(lit),
-                Expr::Builtin(builtin) => {
-                    let idx = self.code.add_const(Value::Builtin(*builtin));
-                    self.code.emit_u16(Opcode::LoadConst, idx);
-                }
-                _ => panic!("import_from should only return literals or builtins"),
+        for (i, (import_name, binding)) in names.iter().enumerate() {
+            // Dup the module if this isn't the last import (last one consumes the module)
+            if i < names.len() - 1 {
+                self.code.emit(Opcode::Dup);
             }
+
+            // Load the attribute from the module (raises ImportError if not found)
+            let name_idx = u16::try_from(import_name.index()).expect("name index exceeds u16");
+            self.code.emit_u16(Opcode::LoadAttrImport, name_idx);
 
             // Store to the binding
             self.compile_store(binding);
@@ -1937,26 +1931,14 @@ impl CompileError {
         }
     }
 
-    /// Creates an ImportError for when a name cannot be imported from a module.
-    ///
-    /// Matches CPython's format for built-in modules:
-    /// `ImportError: cannot import name 'name' from 'module' (unknown location)`
-    fn new_cannot_import(name: &str, module_name: &str, position: CodeRange) -> Self {
-        Self {
-            message: format!("cannot import name '{name}' from '{module_name}' (unknown location)").into(),
-            position,
-            exc_type: ExcType::ImportError,
-        }
-    }
-
     /// Converts this compile error into a Python exception.
     ///
-    /// Uses the stored exception type (SyntaxError, ModuleNotFoundError, ImportError, etc.).
-    /// Import errors have `hide_caret: true` since CPython doesn't show carets for these.
+    /// Uses the stored exception type (SyntaxError or ModuleNotFoundError).
+    /// Module errors have `hide_caret: true` since CPython doesn't show carets for these.
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
         let mut frame = StackFrame::from_position(self.position, filename, source);
-        // CPython doesn't show carets for import errors
-        if matches!(self.exc_type, ExcType::ImportError | ExcType::ModuleNotFoundError) {
+        // CPython doesn't show carets for module not found errors
+        if self.exc_type == ExcType::ModuleNotFoundError {
             frame.hide_caret = true;
         }
         MontyException::new_full(self.exc_type, Some(self.message.into_owned()), vec![frame])

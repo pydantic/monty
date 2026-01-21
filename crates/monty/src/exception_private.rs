@@ -779,6 +779,25 @@ impl ExcType {
         SimpleException::new_msg(Self::OverflowError, "cannot fit 'int' into an index-sized integer")
     }
 
+    /// Creates an ImportError for when a name cannot be imported from a module.
+    ///
+    /// Matches CPython's format for built-in modules:
+    /// `ImportError: cannot import name 'name' from 'module' (unknown location)`
+    ///
+    /// Sets `hide_caret: true` because CPython doesn't show carets for import errors.
+    #[must_use]
+    pub(crate) fn cannot_import_name(name: &str, module_name: &str) -> RunError {
+        let exc = SimpleException::new_msg(
+            Self::ImportError,
+            format!("cannot import name '{name}' from '{module_name}' (unknown location)"),
+        );
+        RunError::Exc(ExceptionRaise {
+            exc,
+            frame: None,
+            hide_caret: true,
+        })
+    }
+
     /// Creates a ValueError for negative shift count in bitwise shift operations.
     ///
     /// Matches CPython's format: `ValueError: negative shift count`

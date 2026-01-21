@@ -3,6 +3,7 @@
 //! The VM uses a stack-based execution model with an operand stack for computation
 //! and a call stack for function frames. Each frame owns its instruction pointer (IP).
 
+mod attr;
 mod binary;
 mod call;
 mod collections;
@@ -751,6 +752,11 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let name_id = StringId::from_index(name_idx);
                     try_catch_sync!(self, cached_frame, self.load_attr(name_id));
                 }
+                Opcode::LoadAttrImport => {
+                    let name_idx = fetch_u16!(cached_frame);
+                    let name_id = StringId::from_index(name_idx);
+                    try_catch_sync!(self, cached_frame, self.load_attr_import(name_id));
+                }
                 Opcode::StoreAttr => {
                     let name_idx = fetch_u16!(cached_frame);
                     let name_id = StringId::from_index(name_idx);
@@ -984,7 +990,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let mut cells = Vec::with_capacity(cell_count);
                     for _ in 0..cell_count {
                         // mut needed for dec_ref_forget when ref-count-panic feature is enabled
-                        #[cfg_attr(not(feature = "ref-count-return"), expect(unused_mut))]
+                        #[cfg_attr(not(feature = "ref-count-panic"), expect(unused_mut))]
                         let mut cell_val = self.pop();
                         match &cell_val {
                             Value::Ref(heap_id) => {

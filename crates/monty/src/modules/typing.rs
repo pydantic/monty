@@ -8,13 +8,33 @@
 //! though Monty doesn't perform static type checking.
 
 use crate::{
-    expressions::{Expr, Literal},
     heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings, StringId},
+    intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
     types::Module,
     value::{Marker, Value},
 };
+
+/// Creates the `typing` module and allocates it on the heap.
+///
+/// Returns a HeapId pointing to the newly allocated module.
+///
+/// # Panics
+///
+/// Panics if the required strings have not been pre-interned during prepare phase.
+pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Result<HeapId, ResourceError> {
+    let mut module = Module::new(StaticStrings::Typing);
+
+    // typing.TYPE_CHECKING - always False
+    module.set_attr(StaticStrings::TypeChecking, Value::Bool(false), heap, interns);
+
+    // Export all typing markers as module attributes
+    for ss in MARKER_ATTRS {
+        module.set_attr(*ss, Value::Marker(Marker(*ss)), heap, interns);
+    }
+
+    heap.allocate(HeapData::Module(module))
+}
 
 /// Typing marker attributes exported by this module.
 ///
@@ -47,42 +67,3 @@ const MARKER_ATTRS: &[StaticStrings] = &[
     StaticStrings::Never,
     StaticStrings::NoReturn,
 ];
-
-/// Resolves a `from typing import X` to an expression value.
-///
-/// Returns the expression to assign for known names:
-/// - `TYPE_CHECKING` → `False`
-/// - Known type hints (Any, Optional, etc.) → `Marker` values
-/// - Unknown names → `None`
-pub fn import_from(name: StringId) -> Option<Expr> {
-    let static_name = StaticStrings::from_string_id(name)?;
-    if static_name == StaticStrings::TypeChecking {
-        Some(Expr::Literal(Literal::Bool(false)))
-    } else {
-        MARKER_ATTRS
-            .iter()
-            .find(|ss| **ss == name)
-            .map(|ss| Expr::Literal(Literal::Marker(Marker(*ss))))
-    }
-}
-
-/// Creates the `typing` module and allocates it on the heap.
-///
-/// Returns a HeapId pointing to the newly allocated module.
-///
-/// # Panics
-///
-/// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Result<HeapId, ResourceError> {
-    let mut module = Module::new(StaticStrings::Typing);
-
-    // typing.TYPE_CHECKING - always False
-    module.set_attr(StaticStrings::TypeChecking, Value::Bool(false), heap, interns);
-
-    // Export all typing markers as module attributes
-    for ss in MARKER_ATTRS {
-        module.set_attr(*ss, Value::Marker(Marker(*ss)), heap, interns);
-    }
-
-    heap.allocate(HeapData::Module(module))
-}

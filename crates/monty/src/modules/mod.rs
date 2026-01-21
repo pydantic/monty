@@ -6,7 +6,6 @@
 use strum::FromRepr;
 
 use crate::{
-    expressions::Expr,
     heap::{Heap, HeapId},
     intern::{Interns, StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker},
@@ -46,17 +45,6 @@ impl BuiltinModule {
         match self {
             Self::Sys => sys::create_module(heap, interns),
             Self::Typing => typing::create_module(heap, interns),
-        }
-    }
-
-    /// Resolves a `from <module> import X` to an expression value.
-    ///
-    /// Returns the expression to assign for known names, or `None` if the name
-    /// is not found in the module.
-    pub fn import_from(self, name: StringId) -> Option<Expr> {
-        match self {
-            Self::Sys => sys::import_from(name),
-            Self::Typing => typing::import_from(name),
         }
     }
 }
