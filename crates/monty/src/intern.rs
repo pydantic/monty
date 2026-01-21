@@ -260,6 +260,22 @@ pub enum StaticStrings {
     ClassVar,
     #[strum(serialize = "Final")]
     FinalType,
+    #[strum(serialize = "Literal")]
+    Literal,
+    #[strum(serialize = "TypeVar")]
+    TypeVar,
+    #[strum(serialize = "Generic")]
+    Generic,
+    #[strum(serialize = "Protocol")]
+    Protocol,
+    #[strum(serialize = "Annotated")]
+    Annotated,
+    #[strum(serialize = "Self")]
+    SelfType,
+    #[strum(serialize = "Never")]
+    Never,
+    #[strum(serialize = "NoReturn")]
+    NoReturn,
 }
 
 impl StaticStrings {

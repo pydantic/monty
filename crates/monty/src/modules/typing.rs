@@ -31,7 +31,7 @@ pub fn create_typing_module(heap: &mut Heap<impl ResourceTracker>, interns: &Int
     // Export all typing markers as module attributes
     module.set_attr(StaticStrings::Any, Value::Marker(Marker::Any), heap, interns);
     module.set_attr(StaticStrings::Optional, Value::Marker(Marker::Optional), heap, interns);
-    module.set_attr(StaticStrings::Union, Value::Marker(Marker::Union), heap, interns);
+    module.set_attr(StaticStrings::UnionType, Value::Marker(Marker::Union), heap, interns);
     module.set_attr(StaticStrings::ListType, Value::Marker(Marker::List), heap, interns);
     module.set_attr(StaticStrings::DictType, Value::Marker(Marker::Dict), heap, interns);
     module.set_attr(StaticStrings::TupleType, Value::Marker(Marker::Tuple), heap, interns);
@@ -60,20 +60,20 @@ pub fn create_typing_module(heap: &mut Heap<impl ResourceTracker>, interns: &Int
         interns,
     );
     module.set_attr(StaticStrings::ClassVar, Value::Marker(Marker::ClassVar), heap, interns);
-    // module.set_attr(StaticStrings::Final, Value::Marker(Marker::Final), heap, interns);
-    // module.set_attr(StaticStrings::Literal, Value::Marker(Marker::Literal), heap, interns);
-    // module.set_attr(StaticStrings::TypeVar, Value::Marker(Marker::TypeVar), heap, interns);
-    // module.set_attr(StaticStrings::Generic, Value::Marker(Marker::Generic), heap, interns);
-    // module.set_attr(StaticStrings::Protocol, Value::Marker(Marker::Protocol), heap, interns);
-    // module.set_attr(
-    //     StaticStrings::Annotated,
-    //     Value::Marker(Marker::Annotated),
-    //     heap,
-    //     interns,
-    // );
-    // module.set_attr(StaticStrings::Self, Value::Marker(Marker::TypeSelf), heap, interns);
-    // module.set_attr(StaticStrings::Never, Value::Marker(Marker::Never), heap, interns);
-    // module.set_attr(StaticStrings::NoReturn, Value::Marker(Marker::NoReturn), heap, interns);
+    module.set_attr(StaticStrings::FinalType, Value::Marker(Marker::Final), heap, interns);
+    module.set_attr(StaticStrings::Literal, Value::Marker(Marker::Literal), heap, interns);
+    module.set_attr(StaticStrings::TypeVar, Value::Marker(Marker::TypeVar), heap, interns);
+    module.set_attr(StaticStrings::Generic, Value::Marker(Marker::Generic), heap, interns);
+    module.set_attr(StaticStrings::Protocol, Value::Marker(Marker::Protocol), heap, interns);
+    module.set_attr(
+        StaticStrings::Annotated,
+        Value::Marker(Marker::Annotated),
+        heap,
+        interns,
+    );
+    module.set_attr(StaticStrings::SelfType, Value::Marker(Marker::TypeSelf), heap, interns);
+    module.set_attr(StaticStrings::Never, Value::Marker(Marker::Never), heap, interns);
+    module.set_attr(StaticStrings::NoReturn, Value::Marker(Marker::NoReturn), heap, interns);
 
     heap.allocate(HeapData::Module(module))
 }
