@@ -202,9 +202,7 @@ impl HeapData {
             Self::NamedTuple(nt) => {
                 let mut hasher = DefaultHasher::new();
                 discriminant(self).hash(&mut hasher);
-                // Hash type name for uniqueness across different named tuple types
-                nt.type_name().hash(&mut hasher);
-                // NamedTuple is hashable only if all elements are hashable
+                // Hash only by elements (not type_name) to match equality semantics
                 for obj in nt.as_vec() {
                     let h = obj.py_hash(heap, interns)?;
                     h.hash(&mut hasher);
@@ -322,6 +320,18 @@ impl PyTrait for HeapData {
             (Self::List(a), Self::List(b)) => a.py_eq(b, heap, interns),
             (Self::Tuple(a), Self::Tuple(b)) => a.py_eq(b, heap, interns),
             (Self::NamedTuple(a), Self::NamedTuple(b)) => a.py_eq(b, heap, interns),
+            // NamedTuple can compare with Tuple by elements (matching CPython behavior)
+            (Self::NamedTuple(nt), Self::Tuple(t)) | (Self::Tuple(t), Self::NamedTuple(nt)) => {
+                let nt_items = nt.as_vec();
+                let t_items = t.as_vec();
+                if nt_items.len() != t_items.len() {
+                    return false;
+                }
+                nt_items
+                    .iter()
+                    .zip(t_items.iter())
+                    .all(|(a, b)| a.py_eq(b, heap, interns))
+            }
             (Self::Dict(a), Self::Dict(b)) => a.py_eq(b, heap, interns),
             (Self::Set(a), Self::Set(b)) => a.py_eq(b, heap, interns),
             (Self::FrozenSet(a), Self::FrozenSet(b)) => a.py_eq(b, heap, interns),

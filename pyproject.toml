@@ -55,6 +55,7 @@ known-first-party = ["monty"]
     "F821", # traceback undefined call test intentionally uses undefined name
     "F841", # unused variable - needed for testing exception variable cleanup
     "F401", # Intentionally imports unknown typing constructs to test silent ignore behavior
+    "F403", # star import test intentionally uses `from sys import *`
     "E402", # Typing test file has multiple import sections to test different import patterns
 ]
 
@@ -108,6 +109,8 @@ reportAssignmentType = false
 reportFunctionMemberAccess = false
 # ~bool is deprecated in Python 3.16 but valid in 3.14
 reportDeprecated = false
+# star import test intentionally uses `from sys import *`
+reportWildcardImportFromLibrary = false
 
 [[tool.pyright.executionEnvironments]]
 root = "crates/monty-type-checking"

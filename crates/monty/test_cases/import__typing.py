@@ -5,7 +5,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 # Test repr() to verify they have the correct string representation
 assert repr(Any) == 'typing.Any', f'Any repr should be Any, got {Any!r}'
 assert repr(Optional) == 'typing.Optional', f'Optional repr should be Optional, got {Optional!r}'
-assert repr(Union) == "<class 'typing.Union'>", f'Union repr should be Union, got {Union!r}'
+assert repr(Union) == "<class 'typing.Union'>", f'Union repr should be <class typing.Union>, got {Union!r}'
 assert repr(List) == 'typing.List', f'List repr should be List, got {List!r}'
 assert repr(Dict) == 'typing.Dict', f'Dict repr should be Dict, got {Dict!r}'
 assert repr(Tuple) == 'typing.Tuple', f'Tuple repr should be Tuple, got {Tuple!r}'

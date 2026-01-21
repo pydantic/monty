@@ -27,20 +27,23 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     pub(super) fn load_attr_import(&mut self, name_id: StringId) -> Result<(), RunError> {
         let obj = self.pop();
         let result = obj.py_get_attr(name_id, self.heap, self.interns);
-        // Get module name for error message before dropping obj
-        let module_name = obj.module_name(self.heap, self.interns);
-        obj.drop_with_heap(self.heap);
         match result {
             Ok(value) => {
+                obj.drop_with_heap(self.heap);
                 self.push(value);
                 Ok(())
             }
             Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => {
-                // Convert AttributeError to ImportError
+                // Only compute module_name when we need it for the error message
+                let module_name = obj.module_name(self.heap, self.interns);
+                obj.drop_with_heap(self.heap);
                 let name_str = self.interns.get_str(name_id);
                 Err(ExcType::cannot_import_name(name_str, &module_name))
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                obj.drop_with_heap(self.heap);
+                Err(e)
+            }
         }
     }
 

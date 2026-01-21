@@ -126,22 +126,15 @@ impl NamedTuple {
     /// Gets a field value by index, supporting negative indexing.
     ///
     /// Returns `Some(value)` if the index is in bounds, `None` otherwise.
+    /// Uses `index + len` instead of `-index` to avoid overflow on `i64::MIN`.
     #[must_use]
     pub fn get_by_index(&self, index: i64) -> Option<&Value> {
-        let len = self.items.len();
-        let normalized = if index < 0 {
-            // For negative indices, convert to positive by adding length
-            if let Ok(neg_offset) = usize::try_from(-index) {
-                len.checked_sub(neg_offset)?
-            } else {
-                return None; // Index too negative
-            }
-        } else if let Ok(idx) = usize::try_from(index) {
-            idx
-        } else {
-            return None; // Index too large
-        };
-        self.items.get(normalized)
+        let len = i64::try_from(self.items.len()).ok()?;
+        let normalized = if index < 0 { index + len } else { index };
+        if normalized < 0 || normalized >= len {
+            return None;
+        }
+        self.items.get(usize::try_from(normalized).ok()?)
     }
 }
 
@@ -175,8 +168,9 @@ impl PyTrait for NamedTuple {
     }
 
     fn py_eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool {
-        // Same type name and equal items
-        if self.type_name != other.type_name || self.items.len() != other.items.len() {
+        // Compare only by items (not type_name) to match tuple semantics
+        // This allows sys.version_info == (3, 14, 0, 'final', 0) to work
+        if self.items.len() != other.items.len() {
             return false;
         }
         for (i1, i2) in self.items.iter().zip(&other.items) {

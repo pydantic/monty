@@ -1626,9 +1626,9 @@ impl Value {
                     Err(ExcType::attribute_error(type_name, attr_name))
                 }
             }
-        } else if let Self::Marker(_) = self {
-            // Markers don't support attribute access
-            Err(ExcType::attribute_error(Type::TextIOWrapper, attr_name))
+        } else if let Self::Marker(marker) = self {
+            // Markers don't support attribute access - report the marker's actual type
+            Err(ExcType::attribute_error(marker.py_type(), attr_name))
         } else {
             let type_name = self.py_type(heap);
             Err(ExcType::attribute_error(type_name, attr_name))
@@ -2010,7 +2010,8 @@ impl Marker {
     /// Returns the Python type of this marker.
     ///
     /// System markers (stdout, stderr) are `TextIOWrapper`.
-    /// Typing markers (Any, Optional, etc.) are `_SpecialForm`.
+    /// `typing.Union` has type `type` (matching CPython).
+    /// Other typing markers (Any, Optional, etc.) are `_SpecialForm`.
     pub(crate) fn py_type(self) -> Type {
         match self.0 {
             StaticStrings::Stdout | StaticStrings::Stderr => Type::TextIOWrapper,
@@ -2022,7 +2023,8 @@ impl Marker {
     /// Writes the Python repr for this marker.
     ///
     /// System markers have special repr formats ("<stdout>", "<stderr>").
-    /// Typing markers are prefixed with "typing." (e.g., "typing.Any").
+    /// `typing.Union` uses `<class 'typing.Union'>` format (matching CPython).
+    /// Other typing markers are prefixed with "typing." (e.g., "typing.Any").
     fn py_repr_fmt(self, f: &mut impl Write) -> fmt::Result {
         let s: &'static str = self.0.into();
         match self.0 {

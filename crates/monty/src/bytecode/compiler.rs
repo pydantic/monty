@@ -418,10 +418,8 @@ impl<'a> Compiler<'a> {
         self.code.set_location(position, None);
         self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
 
-        // Store to the binding using its resolved namespace slot
-        let slot = u16::try_from(binding.namespace_id().index()).expect("global slot exceeds u16");
-        // Import always creates a global binding
-        self.code.emit_u16(Opcode::StoreGlobal, slot);
+        // Store to the binding (respects Local/Global/Cell scope)
+        self.compile_store(binding);
 
         Ok(())
     }

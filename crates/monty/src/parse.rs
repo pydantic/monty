@@ -379,14 +379,18 @@ impl<'a> Parser<'a> {
                 let names = names
                     .iter()
                     .map(|alias| {
+                        // Check for star import which is not supported
+                        if alias.name.as_str() == "*" {
+                            return Err(ParseError::not_implemented("from ... import *"));
+                        }
                         let name = self.interner.intern(&alias.name);
                         // The binding name is the alias if provided, otherwise the import name
                         let binding_name = alias.asname.as_ref().map_or(name, |n| self.interner.intern(&n.id));
                         // Create an unresolved identifier (namespace slot will be set during prepare)
                         let binding = Identifier::new(binding_name, position);
-                        (name, binding)
+                        Ok((name, binding))
                     })
-                    .collect();
+                    .collect::<Result<Vec<_>, _>>()?;
                 Ok(Node::ImportFrom {
                     module_name,
                     names,
