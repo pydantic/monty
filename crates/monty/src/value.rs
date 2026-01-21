@@ -99,7 +99,7 @@ impl PyTrait for Value {
             Self::InternBytes(_) => Type::Bytes,
             Self::Builtin(c) => c.py_type(),
             Self::DefFunction(_) | Self::ExtFunction(_) => Type::Function,
-            Self::Marker(_) => Type::TextIOWrapper,
+            Self::Marker(m) => m.py_type(),
             Self::Ref(id) => heap.get(*id).py_type(heap),
             #[cfg(feature = "ref-count-panic")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
@@ -1994,6 +1994,18 @@ impl BitwiseOp {
 pub(crate) struct Marker(pub StaticStrings);
 
 impl Marker {
+    /// Returns the Python type of this marker.
+    ///
+    /// System markers (stdout, stderr) are `TextIOWrapper`.
+    /// Typing markers (Any, Optional, etc.) are `_SpecialForm`.
+    pub(crate) fn py_type(self) -> Type {
+        match self.0 {
+            StaticStrings::Stdout | StaticStrings::Stderr => Type::TextIOWrapper,
+            StaticStrings::UnionType => Type::Type,
+            _ => Type::SpecialForm,
+        }
+    }
+
     /// Writes the Python repr for this marker.
     ///
     /// System markers have special repr formats ("<stdout>", "<stderr>").

@@ -47,8 +47,11 @@ pub enum Type {
     Iterator,
     Module,
     /// Marker types like stdout/stderr - displays as "TextIOWrapper"
-    #[strum(disabled)]
+    #[strum(serialize = "TextIOWrapper")]
     TextIOWrapper,
+    /// typing module special forms (Any, Optional, Union, etc.) - displays as "typing._SpecialForm"
+    #[strum(serialize = "typing._SpecialForm")]
+    SpecialForm,
 }
 
 impl fmt::Display for Type {
@@ -76,7 +79,8 @@ impl fmt::Display for Type {
             Self::Cell => f.write_str("cell"),
             Self::Iterator => f.write_str("iterator"),
             Self::Module => f.write_str("module"),
-            Self::TextIOWrapper => f.write_str("TextIOWrapper"),
+            Self::TextIOWrapper => f.write_str("_io.TextIOWrapper"),
+            Self::SpecialForm => f.write_str("typing._SpecialForm"),
         }
     }
 }
