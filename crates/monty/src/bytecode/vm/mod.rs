@@ -22,7 +22,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId},
     intern::{ExtFunctionId, FunctionId, Interns, StringId},
     io::PrintWriter,
-    modules::{BuiltinModule, create_builtin_module},
+    modules::BuiltinModule,
     namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
     parse::CodeRange,
     resource::ResourceTracker,
@@ -1086,7 +1086,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         let module = BuiltinModule::from_repr(module_id).expect("unknown module id");
 
         // Create the module on the heap using pre-interned strings
-        let heap_id = create_builtin_module(module, self.heap, self.interns)?;
+        let heap_id = module.create(self.heap, self.interns)?;
         self.push(Value::Ref(heap_id));
         Ok(())
     }

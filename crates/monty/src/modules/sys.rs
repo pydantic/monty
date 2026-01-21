@@ -10,7 +10,7 @@
 use crate::{
     expressions::{Expr, Literal},
     heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings},
+    intern::{Interns, StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker},
     types::{Module, NamedTuple},
     value::{Marker, Value},
@@ -25,9 +25,10 @@ use crate::{
 /// - `stderr` → Marker for stderr
 /// - `version_info` → `None` (not supported, requires heap allocation)
 /// - Unknown names → `None`
-pub fn import_from(name: &str) -> Option<Expr> {
+pub fn import_from(name: StringId) -> Option<Expr> {
+    let static_name = StaticStrings::from_string_id(name)?;
     simple_attrs()
-        .find(|(key, _)| <StaticStrings as Into<&str>>::into(*key) == name)
+        .find(|(key, _)| *key == static_name)
         .map(|(_, value)| value_to_expr(&value))
 }
 
@@ -49,29 +50,24 @@ pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -
     // sys.version_info - named tuple with (major=3, minor=14, micro=0, releaselevel='final', serial=0)
     // This requires heap allocation so cannot be in simple_attrs()
     let version_info = NamedTuple::new(
-        StaticStrings::SysVersionInfo.as_string_id(),
+        StaticStrings::SysVersionInfo.into(),
         vec![
-            StaticStrings::Major.as_string_id(),
-            StaticStrings::Minor.as_string_id(),
-            StaticStrings::Micro.as_string_id(),
-            StaticStrings::Releaselevel.as_string_id(),
-            StaticStrings::Serial.as_string_id(),
+            StaticStrings::Major.into(),
+            StaticStrings::Minor.into(),
+            StaticStrings::Micro.into(),
+            StaticStrings::Releaselevel.into(),
+            StaticStrings::Serial.into(),
         ],
         vec![
             Value::Int(3),
             Value::Int(14),
             Value::Int(0),
-            Value::InternString(StaticStrings::Final.as_string_id()),
+            Value::InternString(StaticStrings::Final.into()),
             Value::Int(0),
         ],
     );
     let version_info_id = heap.allocate(HeapData::NamedTuple(version_info))?;
-    module.set_attr(
-        StaticStrings::VersionInfo.as_string_id(),
-        Value::Ref(version_info_id),
-        heap,
-        interns,
-    );
+    module.set_attr(StaticStrings::VersionInfo, Value::Ref(version_info_id), heap, interns);
 
     heap.allocate(HeapData::Module(module))
 }
@@ -84,7 +80,7 @@ fn simple_attrs() -> impl Iterator<Item = (StaticStrings, Value)> {
     [
         (
             StaticStrings::Version,
-            Value::InternString(StaticStrings::MontyVersionString.as_string_id()),
+            Value::InternString(StaticStrings::MontyVersionString.into()),
         ),
         (StaticStrings::Platform, StaticStrings::Monty.into()),
         (StaticStrings::Stdout, Value::Marker(Marker(StaticStrings::Stdout))),

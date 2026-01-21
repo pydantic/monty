@@ -51,7 +51,7 @@ impl Str {
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
         let value = args.get_zero_one_arg("str", heap)?;
         match value {
-            None => Ok(Value::InternString(StaticStrings::EmptyString.as_string_id())),
+            None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
             Some(v) => {
                 let s = v.py_str(heap, interns).into_owned();
                 v.drop_with_heap(heap);
@@ -90,7 +90,7 @@ impl From<Str> for String {
 /// `split()`, string iteration, etc.
 pub fn allocate_string(s: String, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
     match s.len() {
-        0 => Ok(Value::InternString(StaticStrings::EmptyString.as_string_id())),
+        0 => Ok(Value::InternString(StaticStrings::EmptyString.into())),
         1 => {
             // Single byte means single ASCII character
             let byte = s.as_bytes()[0];

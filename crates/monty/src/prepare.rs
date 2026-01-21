@@ -1,4 +1,4 @@
-use std::{collections::hash_map::Entry, str::FromStr};
+use std::collections::hash_map::Entry;
 
 use ahash::{AHashMap, AHashSet};
 
@@ -10,7 +10,6 @@ use crate::{
     },
     fstring::{FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
-    modules::BuiltinModule,
     namespace::NamespaceId,
     parse::{ExceptHandler, ParseError, ParseNode, ParseResult, ParsedSignature, RawFunctionDef, Try},
     signature::Signature,
@@ -47,10 +46,7 @@ pub(crate) fn prepare(
     input_names: Vec<String>,
     external_functions: &[String],
 ) -> Result<PrepareResult, ParseError> {
-    let ParseResult { nodes, mut interner } = parse_result;
-    // Pre-intern module attributes for any imports before creating Prepare
-    // This must happen while we still have mutable access to the interner
-    scan_and_pre_intern_imports(&nodes, &mut interner)?;
+    let ParseResult { nodes, interner } = parse_result;
     let mut p = Prepare::new_module(input_names, external_functions, &interner);
     let mut prepared_nodes = p.prepare_nodes(nodes)?;
 
@@ -472,20 +468,6 @@ impl<'i> Prepare<'i> {
                     }));
                 }
                 Node::Import { module_name, binding } => {
-                    let position = binding.position;
-                    // Validate that the module is known
-                    // Convert to owned String to avoid borrow conflict with interner
-                    let module_name_str = self.interner.get_str(module_name).to_owned();
-                    if BuiltinModule::from_str(&module_name_str).is_err() {
-                        return Err(ParseError::syntax(
-                            format!("import of module '{module_name_str}' not supported"),
-                            position,
-                        ));
-                    }
-                    // Module attributes were pre-interned in scan_and_pre_intern_imports
-                    // Register the binding name in the namespace
-                    self.names_assigned_in_order
-                        .insert(self.interner.get_str(binding.name_id).to_string());
                     // Resolve the binding identifier to get the namespace slot
                     let (resolved_binding, _) = self.get_id(binding);
                     new_nodes.push(Node::Import {
@@ -498,30 +480,12 @@ impl<'i> Prepare<'i> {
                     names,
                     position,
                 } => {
-                    let module_name_str = self.interner.get_str(module_name);
-                    // Try to resolve as a built-in module
-                    if let Ok(builtin_module) = BuiltinModule::from_str(module_name_str) {
-                        for (name, alias) in names {
-                            let name_str = self.interner.get_str(name);
-                            let binding_name = alias.unwrap_or(name);
-
-                            if let Some(expr) = builtin_module.import_from(name_str) {
-                                self.names_assigned_in_order
-                                    .insert(self.interner.get_str(binding_name).to_string());
-                                let binding = Identifier::new(binding_name, position);
-                                let (resolved_binding, _) = self.get_id(binding);
-                                new_nodes.push(Node::Assign {
-                                    target: resolved_binding,
-                                    object: ExprLoc::new(position, expr),
-                                });
-                            }
-                        }
-                    } else {
-                        return Err(ParseError::syntax(
-                            format!("from {module_name_str} import ... not supported"),
-                            position,
-                        ));
-                    }
+                    // unchanged, implement at compile time
+                    new_nodes.push(Node::ImportFrom {
+                        module_name,
+                        names,
+                        position,
+                    })
                 }
             }
         }
@@ -1924,71 +1888,4 @@ fn collect_names_from_unpack_target(target: &UnpackTarget, names: &mut AHashSet<
             }
         }
     }
-}
-
-/// Scans all nodes for import statements and pre-interns the module attributes.
-///
-/// This must be called before creating the Prepare struct because we need mutable
-/// access to the interner, and Prepare only holds an immutable reference.
-///
-/// Returns an error if an unknown module is imported (for early error detection).
-fn scan_and_pre_intern_imports(nodes: &[ParseNode], interner: &mut InternerBuilder) -> Result<(), ParseError> {
-    for node in nodes {
-        scan_node_for_imports(node, interner)?;
-    }
-    Ok(())
-}
-
-/// Recursively scans a node and its children for import statements.
-fn scan_node_for_imports(node: &ParseNode, interner: &mut InternerBuilder) -> Result<(), ParseError> {
-    match node {
-        Node::Import { module_name, binding } => {
-            let module_name_str = interner.get_str(*module_name);
-            if BuiltinModule::from_str(module_name_str).is_err() {
-                return Err(ParseError::syntax(
-                    format!("import of module '{module_name_str}' not supported"),
-                    binding.position,
-                ));
-            }
-        }
-        Node::ImportFrom {
-            module_name, position, ..
-        } => {
-            let module_name_str = interner.get_str(*module_name);
-            if BuiltinModule::from_str(module_name_str).is_err() {
-                return Err(ParseError::syntax(
-                    format!("import from module '{module_name_str}' not supported"),
-                    *position,
-                ));
-            }
-        }
-        // Recursively scan nested structures
-        Node::If { body, or_else, .. } => {
-            scan_and_pre_intern_imports(body, interner)?;
-            scan_and_pre_intern_imports(or_else, interner)?;
-        }
-        Node::For { body, or_else, .. } => {
-            scan_and_pre_intern_imports(body, interner)?;
-            scan_and_pre_intern_imports(or_else, interner)?;
-        }
-        Node::Try(Try {
-            body,
-            handlers,
-            or_else,
-            finally,
-        }) => {
-            scan_and_pre_intern_imports(body, interner)?;
-            for handler in handlers {
-                scan_and_pre_intern_imports(&handler.body, interner)?;
-            }
-            scan_and_pre_intern_imports(or_else, interner)?;
-            scan_and_pre_intern_imports(finally, interner)?;
-        }
-        Node::FunctionDef(func_def) => {
-            scan_and_pre_intern_imports(&func_def.body, interner)?;
-        }
-        // Other nodes don't contain nested imports
-        _ => {}
-    }
-    Ok(())
 }

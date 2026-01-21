@@ -10,7 +10,7 @@
 use crate::{
     expressions::{Expr, Literal},
     heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings},
+    intern::{Interns, StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker},
     types::Module,
     value::{Marker, Value},
@@ -54,13 +54,14 @@ const MARKER_ATTRS: &[StaticStrings] = &[
 /// - `TYPE_CHECKING` → `False`
 /// - Known type hints (Any, Optional, etc.) → `Marker` values
 /// - Unknown names → `None`
-pub fn import_from(name: &str) -> Option<Expr> {
-    if name == <StaticStrings as Into<&str>>::into(StaticStrings::TypeChecking) {
+pub fn import_from(name: StringId) -> Option<Expr> {
+    let static_name = StaticStrings::from_string_id(name)?;
+    if static_name == StaticStrings::TypeChecking {
         Some(Expr::Literal(Literal::Bool(false)))
     } else {
         MARKER_ATTRS
             .iter()
-            .find(|ss| <StaticStrings as Into<&str>>::into(**ss) == name)
+            .find(|ss| **ss == name)
             .map(|ss| Expr::Literal(Literal::Marker(Marker(*ss))))
     }
 }

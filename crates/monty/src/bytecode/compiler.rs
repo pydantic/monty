@@ -310,9 +310,12 @@ impl<'a> Compiler<'a> {
                 self.compile_import(*module_name, binding)?;
             }
 
-            // ImportFrom is transformed during prepare phase - this shouldn't be reached
-            Node::ImportFrom { .. } => {
-                unreachable!("ImportFrom should be transformed during prepare phase");
+            Node::ImportFrom {
+                module_name,
+                names,
+                position,
+            } => {
+                self.compile_import_from(*module_name, names, *position)?;
             }
 
             // These are handled during the prepare phase and produce no bytecode
@@ -422,6 +425,17 @@ impl<'a> Compiler<'a> {
         self.code.emit_u16(Opcode::StoreGlobal, slot);
 
         Ok(())
+    }
+
+    /// Compile a `from module import name` statement.
+    fn compile_import_from(
+        &mut self,
+        module_name: StringId,
+        names: &[(StringId, Option<StringId>)],
+        position: CodeRange,
+    ) -> Result<(), CompileError> {
+        todo!("Implement import from")
+        /// create the module, then take attributes from its dict
     }
 
     // ========================================================================

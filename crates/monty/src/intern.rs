@@ -68,8 +68,6 @@ static ASCII_STRS: LazyLock<[&'static str; 128]> = LazyLock::new(|| {
 });
 
 /// Static string values which are known at compile time and don't need to be interned.
-///
-/// StringIds are derived from `as_string_id()`.
 #[repr(u8)]
 #[derive(
     Debug, Clone, Copy, FromRepr, EnumString, IntoStaticStr, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
@@ -281,12 +279,6 @@ pub enum StaticStrings {
 }
 
 impl StaticStrings {
-    /// Converts this static string variant to its corresponding `StringId`.
-    pub fn as_string_id(self) -> StringId {
-        let string_id = self as u32;
-        StringId(string_id + STATIC_STRING_ID_OFFSET)
-    }
-
     /// Attempts to convert a `StringId` back to a `StaticStrings` variant.
     ///
     /// Returns `None` if the `StringId` doesn't correspond to a static string
@@ -297,9 +289,11 @@ impl StaticStrings {
     }
 }
 
+/// Converts this static string variant to its corresponding `StringId`.
 impl From<StaticStrings> for StringId {
     fn from(value: StaticStrings) -> Self {
-        value.as_string_id()
+        let string_id = value as u32;
+        Self(string_id + STATIC_STRING_ID_OFFSET)
     }
 }
 
@@ -311,13 +305,13 @@ impl From<StaticStrings> for Value {
 
 impl PartialEq<StaticStrings> for StringId {
     fn eq(&self, other: &StaticStrings) -> bool {
-        *self == other.as_string_id()
+        *self == Self::from(*other)
     }
 }
 
 impl PartialEq<StringId> for StaticStrings {
     fn eq(&self, other: &StringId) -> bool {
-        self.as_string_id() == *other
+        StringId::from(*self) == *other
     }
 }
 
@@ -429,7 +423,7 @@ impl InternerBuilder {
         if s.len() == 1 {
             StringId::from_ascii(s.as_bytes()[0])
         } else if let Ok(ss) = StaticStrings::from_str(s) {
-            ss.as_string_id()
+            ss.into()
         } else {
             *self.string_map.entry(s.to_owned()).or_insert_with(|| {
                 let string_id = self.strings.len() + INTERN_STRING_ID_OFFSET;

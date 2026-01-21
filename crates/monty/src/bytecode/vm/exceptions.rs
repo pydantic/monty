@@ -21,7 +21,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         let frame = self.current_frame();
         match frame.function_id {
             Some(func_id) => self.interns.get_function(func_id).name.name_id,
-            None => StaticStrings::Module.as_string_id(),
+            None => StaticStrings::Module.into(),
         }
     }
 

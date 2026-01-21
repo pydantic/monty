@@ -8,7 +8,7 @@ use strum::{EnumString, FromRepr};
 use crate::{
     expressions::Expr,
     heap::{Heap, HeapId},
-    intern::Interns,
+    intern::{Interns, StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker},
 };
 
@@ -27,6 +27,15 @@ pub(crate) enum BuiltinModule {
 }
 
 impl BuiltinModule {
+    /// Get the mode from a string ID.
+    pub fn from_string_id(string_id: StringId) -> Option<Self> {
+        match StaticStrings::from_string_id(string_id)? {
+            StaticStrings::Sys => Some(Self::Sys),
+            StaticStrings::Typing => Some(Self::Typing),
+            _ => None,
+        }
+    }
+
     /// Creates a new instance of this module on the heap.
     ///
     /// Returns a HeapId pointing to the newly allocated module.
@@ -45,21 +54,10 @@ impl BuiltinModule {
     ///
     /// Returns the expression to assign for known names, or `None` if the name
     /// is not found in the module.
-    pub fn import_from(self, name: &str) -> Option<Expr> {
+    pub fn import_from(self, name: StringId) -> Option<Expr> {
         match self {
             Self::Sys => sys::import_from(name),
             Self::Typing => typing::import_from(name),
         }
     }
-}
-
-/// Creates a built-in module and returns its HeapId.
-///
-/// This is a convenience function for the VM to use.
-pub fn create_builtin_module(
-    module: BuiltinModule,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> Result<HeapId, ResourceError> {
-    module.create(heap, interns)
 }
