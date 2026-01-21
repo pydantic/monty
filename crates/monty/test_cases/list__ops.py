@@ -336,3 +336,17 @@ assert lst[0] == 'a', 'setitem preserves element 0'
 assert lst[1] == 'B', 'setitem changes element 1'
 assert lst[2] == 'c', 'setitem preserves element 2'
 assert lst[3] == 'd', 'setitem preserves element 3'
+
+# === Bool indices ===
+# Python allows True/False as indices (True=1, False=0)
+lst = ['a', 'b', 'c']
+assert lst[False] == 'a', 'getitem with False'
+assert lst[True] == 'b', 'getitem with True'
+
+lst = ['x', 'y', 'z']
+lst[False] = 'X'
+assert lst == ['X', 'y', 'z'], 'setitem with False'
+
+lst = ['x', 'y', 'z']
+lst[True] = 'Y'
+assert lst == ['x', 'Y', 'z'], 'setitem with True'

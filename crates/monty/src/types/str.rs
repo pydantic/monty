@@ -118,6 +118,25 @@ pub fn allocate_char(c: char, heap: &mut Heap<impl ResourceTracker>) -> Result<V
     }
 }
 
+/// Gets the character at a given index in a string, handling negative indices.
+///
+/// Returns `None` if the index is out of bounds. This uses a single-pass scan
+/// to avoid allocating a `Vec<char>`.
+///
+/// Negative indices count from the end: -1 is the last character.
+pub fn get_char_at_index(s: &str, index: i64) -> Option<char> {
+    let char_count = s.chars().count();
+    let len = i64::try_from(char_count).ok()?;
+    let normalized = if index < 0 { index + len } else { index };
+
+    if normalized < 0 || normalized >= len {
+        return None;
+    }
+
+    let idx = usize::try_from(normalized).ok()?;
+    s.chars().nth(idx)
+}
+
 impl std::ops::Deref for Str {
     type Target = String;
 
@@ -141,25 +160,16 @@ impl PyTrait for Str {
     }
 
     fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
-        // Extract integer index from key, returning TypeError if not an int
+        // Extract integer index, accepting both Int and Bool (True=1, False=0)
         let index = match key {
             Value::Int(i) => *i,
+            Value::Bool(b) => i64::from(*b),
             _ => return Err(ExcType::type_error_indices(Type::Str, key.py_type(heap))),
         };
 
-        // Get chars for length and indexing (Unicode-aware)
-        let chars: Vec<char> = self.0.chars().collect();
-        let len = i64::try_from(chars.len()).expect("string length exceeds i64::MAX");
-        let normalized = if index < 0 { index + len } else { index };
-
-        // Bounds check
-        if normalized < 0 || normalized >= len {
-            return Err(ExcType::str_index_error());
-        }
-
-        // Return single-character string (Python semantics: "hello"[1] returns "e")
-        let idx = usize::try_from(normalized).expect("index validated non-negative");
-        Ok(allocate_char(chars[idx], heap)?)
+        // Use single-pass indexing to avoid Vec<char> allocation
+        let c = get_char_at_index(&self.0, index).ok_or_else(ExcType::str_index_error)?;
+        Ok(allocate_char(c, heap)?)
     }
 
     fn py_eq(&self, other: &Self, _heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> bool {

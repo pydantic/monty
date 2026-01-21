@@ -127,9 +127,10 @@ impl PyTrait for Tuple {
     }
 
     fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
-        // Extract integer index from key, returning TypeError if not an int
+        // Extract integer index, accepting both Int and Bool (True=1, False=0)
         let index = match key {
             Value::Int(i) => *i,
+            Value::Bool(b) => i64::from(*b),
             _ => return Err(ExcType::type_error_indices(Type::Tuple, key.py_type(heap))),
         };
 

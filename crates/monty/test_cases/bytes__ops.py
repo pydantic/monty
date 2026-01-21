@@ -62,3 +62,8 @@ assert b[i] == 121, 'bytes getitem with variable index'
 val = b'A'[0]
 assert type(val) == int, 'bytes getitem returns int'
 assert val == 65, 'bytes getitem value is correct'
+
+# Bool indices (True=1, False=0)
+b = b'abc'
+assert b[False] == 97, 'bytes getitem with False'
+assert b[True] == 98, 'bytes getitem with True'

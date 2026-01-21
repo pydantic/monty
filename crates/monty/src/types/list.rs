@@ -192,9 +192,10 @@ impl PyTrait for List {
     }
 
     fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
-        // Extract integer index from key, returning TypeError if not an int
+        // Extract integer index, accepting both Int and Bool (True=1, False=0)
         let index = match key {
             Value::Int(i) => *i,
+            Value::Bool(b) => i64::from(*b),
             _ => return Err(ExcType::type_error_indices(Type::List, key.py_type(heap))),
         };
 
@@ -220,10 +221,16 @@ impl PyTrait for List {
         heap: &mut Heap<impl ResourceTracker>,
         _interns: &Interns,
     ) -> RunResult<()> {
-        // Extract integer index, returning TypeError if not an int
-        let Value::Int(index) = key else {
-            value.drop_with_heap(heap);
-            return Err(ExcType::type_error_list_assignment_indices(key.py_type(heap)));
+        // Extract integer index, accepting both Int and Bool (True=1, False=0)
+        let index = match key {
+            Value::Int(i) => i,
+            Value::Bool(b) => i64::from(b),
+            _ => {
+                let key_type = key.py_type(heap);
+                key.drop_with_heap(heap);
+                value.drop_with_heap(heap);
+                return Err(ExcType::type_error_list_assignment_indices(key_type));
+            }
         };
 
         // Normalize negative indices (Python-style: -1 = last element)

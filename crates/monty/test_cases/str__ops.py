@@ -127,3 +127,8 @@ assert s[-1] == 'o', 'heap string negative getitem'
 s = 'abc'
 i = 1
 assert s[i] == 'b', 'getitem with variable index'
+
+# Bool indices (True=1, False=0)
+s = 'abc'
+assert s[False] == 'a', 'str getitem with False'
+assert s[True] == 'b', 'str getitem with True'

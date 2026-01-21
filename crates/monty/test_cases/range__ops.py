@@ -172,3 +172,8 @@ assert r[-1] == 42, 'single element range[-1]'
 r = range(100)
 i = 50
 assert r[i] == 50, 'range getitem with variable index'
+
+# Bool indices (True=1, False=0)
+r = range(10, 15)
+assert r[False] == 10, 'range getitem with False'
+assert r[True] == 11, 'range getitem with True'

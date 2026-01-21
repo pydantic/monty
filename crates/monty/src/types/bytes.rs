@@ -95,6 +95,22 @@ fn is_py_whitespace(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
 }
 
+/// Gets the byte at a given index, handling negative indices.
+///
+/// Returns `None` if the index is out of bounds.
+/// Negative indices count from the end: -1 is the last byte.
+pub fn get_byte_at_index(bytes: &[u8], index: i64) -> Option<u8> {
+    let len = i64::try_from(bytes.len()).ok()?;
+    let normalized = if index < 0 { index + len } else { index };
+
+    if normalized < 0 || normalized >= len {
+        return None;
+    }
+
+    let idx = usize::try_from(normalized).ok()?;
+    Some(bytes[idx])
+}
+
 /// Python bytes value stored on the heap.
 ///
 /// Wraps a `Vec<u8>` and provides Python-compatible operations.
@@ -215,24 +231,16 @@ impl PyTrait for Bytes {
     }
 
     fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
-        // Extract integer index from key, returning TypeError if not an int
+        // Extract integer index, accepting both Int and Bool (True=1, False=0)
         let index = match key {
             Value::Int(i) => *i,
+            Value::Bool(b) => i64::from(*b),
             _ => return Err(ExcType::type_error_indices(Type::Bytes, key.py_type(heap))),
         };
 
-        // Normalize negative indices (Python-style: -1 = last byte)
-        let len = i64::try_from(self.0.len()).expect("bytes length exceeds i64::MAX");
-        let normalized = if index < 0 { index + len } else { index };
-
-        // Bounds check
-        if normalized < 0 || normalized >= len {
-            return Err(ExcType::bytes_index_error());
-        }
-
-        // Return the byte value as an integer (Python semantics: b'hello'[1] returns 101)
-        let idx = usize::try_from(normalized).expect("index validated non-negative");
-        Ok(Value::Int(i64::from(self.0[idx])))
+        // Use helper for byte indexing
+        let byte = get_byte_at_index(&self.0, index).ok_or_else(ExcType::bytes_index_error)?;
+        Ok(Value::Int(i64::from(byte)))
     }
 
     fn py_eq(&self, other: &Self, _heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
