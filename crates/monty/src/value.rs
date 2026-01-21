@@ -19,7 +19,7 @@ use crate::{
     intern::{BytesId, ExtFunctionId, FunctionId, Interns, StaticStrings, StringId},
     resource::{LARGE_RESULT_THRESHOLD, ResourceTracker},
     types::{
-        LongInt, PyTrait, Type,
+        LongInt, PyTrait, Str, Tuple, Type,
         bytes::{bytes_repr_fmt, get_byte_at_index},
         str::{allocate_char, get_char_at_index, string_repr_fmt},
     },
@@ -1580,6 +1580,7 @@ impl Value {
     /// Supports attribute access for:
     /// - Dataclass objects: returns field values
     /// - Module objects: returns module attributes
+    /// - Exception objects: `.args` returns a tuple of exception arguments
     ///
     /// Returns AttributeError for other types.
     pub fn py_get_attr(
@@ -1647,6 +1648,24 @@ impl Value {
                             interns.get_str(nt.type_name()),
                             attr_name,
                         ))
+                    }
+                }
+                HeapData::Exception(exc) => {
+                    if name_id == StaticStrings::Args {
+                        // Clone the arg to avoid borrow conflict when allocating
+                        let arg_clone = exc.arg().cloned();
+                        // Construct tuple with 0 or 1 elements based on whether arg exists
+                        let elements = if let Some(arg_str) = arg_clone {
+                            let str_id = heap.allocate(HeapData::Str(Str::from(arg_str)))?;
+                            vec![Self::Ref(str_id)]
+                        } else {
+                            vec![]
+                        };
+                        let tuple_id = heap.allocate(HeapData::Tuple(Tuple::new(elements)))?;
+                        Ok(Self::Ref(tuple_id))
+                    } else {
+                        let exc_type = exc.py_type();
+                        Err(ExcType::attribute_error(exc_type, attr_name))
                     }
                 }
                 _ => {

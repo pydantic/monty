@@ -276,6 +276,10 @@ pub enum StaticStrings {
     Never,
     #[strum(serialize = "NoReturn")]
     NoReturn,
+
+    // ==========================
+    // Exception attributes
+    Args,
 }
 
 impl StaticStrings {
