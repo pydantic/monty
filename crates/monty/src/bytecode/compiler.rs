@@ -8,7 +8,7 @@
 //! its body is compiled to bytecode and a `Function` struct is created. All compiled
 //! functions are collected and returned along with the module code.
 
-use std::{borrow::Cow, str::FromStr};
+use std::borrow::Cow;
 
 use super::{
     builder::{CodeBuilder, JumpLabel},
@@ -411,9 +411,8 @@ impl<'a> Compiler<'a> {
     fn compile_import(&mut self, module_name: StringId, binding: &Identifier) -> Result<(), CompileError> {
         let position = binding.position;
         // Look up the module by name
-        let module_name_str = self.interns.get_str(module_name);
-        let builtin_module = BuiltinModule::from_str(module_name_str)
-            .map_err(|_| CompileError::new_module_not_found(module_name_str, position))?;
+        let builtin_module = BuiltinModule::from_string_id(module_name)
+            .ok_or_else(|| CompileError::new_module_not_found(self.interns.get_str(module_name), position))?;
 
         // Emit LoadModule with the module ID
         self.code.set_location(position, None);

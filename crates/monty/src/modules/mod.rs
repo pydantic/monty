@@ -3,7 +3,7 @@
 //! This module provides implementations for Python built-in modules like `sys` and `typing`.
 //! These are created on-demand when import statements are executed.
 
-use strum::{EnumString, FromRepr};
+use strum::FromRepr;
 
 use crate::{
     expressions::Expr,
@@ -17,8 +17,7 @@ pub(crate) mod typing;
 
 /// Built-in modules that can be imported.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr, EnumString)]
-#[strum(serialize_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr)]
 pub(crate) enum BuiltinModule {
     /// The `sys` module providing system-specific parameters and functions.
     Sys,
@@ -27,7 +26,7 @@ pub(crate) enum BuiltinModule {
 }
 
 impl BuiltinModule {
-    /// Get the mode from a string ID.
+    /// Get the module from a string ID.
     pub fn from_string_id(string_id: StringId) -> Option<Self> {
         match StaticStrings::from_string_id(string_id)? {
             StaticStrings::Sys => Some(Self::Sys),
