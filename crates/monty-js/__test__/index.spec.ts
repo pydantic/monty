@@ -1,6 +1,6 @@
 import test from 'ava'
 
-import { Monty, type MontyOptions, type RunOptions, type ResourceLimits } from '../index'
+import { Monty, type MontyOptions, type RunOptions, type ResourceLimits } from '../wrapper'
 import { Buffer } from 'node:buffer'
 
 // =============================================================================

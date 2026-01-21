@@ -26,6 +26,8 @@ mod exceptions;
 mod limits;
 mod monty;
 
-pub use exceptions::{ExceptionInfo, Frame, RuntimeErrorInfo};
+pub use exceptions::{
+    ExceptionInfo, Frame, MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, RuntimeErrorInfo,
+};
 pub use limits::JsResourceLimits;
 pub use monty::{Monty, MontyOptions, RunOptions};

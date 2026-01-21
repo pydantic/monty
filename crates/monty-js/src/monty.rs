@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use crate::{
     convert::{monty_to_serde, serde_to_monty},
-    exceptions::monty_exception_to_error,
+    exceptions::{monty_exception_to_error, typing_failure_to_error},
     limits::JsResourceLimits,
 };
 
@@ -261,7 +261,7 @@ fn run_type_check(code: &str, script_name: &str, prefix_code: Option<&str>) -> R
         type_check(&source_code, script_name).map_err(|e| Error::from_reason(format!("Type checking failed: {e}")))?;
 
     if let Some(failure) = result {
-        Err(Error::from_reason(format!("TypeError: {failure}")))
+        Err(typing_failure_to_error(failure))
     } else {
         Ok(())
     }

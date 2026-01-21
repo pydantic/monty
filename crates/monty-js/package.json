@@ -1,8 +1,9 @@
 {
   "name": "@pydantic/monty",
   "version": "1.0.0",
-  "description": "Template project for writing node package with napi-rs",
-  "main": "index.js",
+  "description": "Sandboxed Python interpreter for JavaScript/TypeScript",
+  "main": "wrapper.js",
+  "types": "wrapper.d.ts",
   "repository": {
     "type": "git",
     "url": "github.com/pydantic/monty"
@@ -12,6 +13,8 @@
   "files": [
     "index.d.ts",
     "index.js",
+    "wrapper.js",
+    "wrapper.d.ts",
     "browser.js"
   ],
   "napi": {

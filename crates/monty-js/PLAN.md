@@ -1,17 +1,17 @@
-# monty-ts Implementation Plan
+# monty-js Implementation Plan
 
-This document outlines the plan to bring `monty-ts` to feature parity with `monty-python`.
+This document outlines the plan to bring `monty-js` to feature parity with `monty-python`.
 
 ## Current State
 
-The `monty-ts` package currently has a minimal API:
+The `monty-js` package currently has a minimal API:
 
 ```typescript
 export function run(code: string): RunResult
 
 export interface RunResult {
-  output: string  // captured print output
-  result: string  // debug repr of result
+  output: string // captured print output
+  result: string // debug repr of result
 }
 ```
 
@@ -30,7 +30,7 @@ The main interpreter class that parses code once and can be run multiple times.
 ```typescript
 export class Monty {
   constructor(code: string, options?: MontyOptions)
-  
+
   run(options?: RunOptions): unknown
   typeCheck(prefixCode?: string): void
   dump(): Uint8Array
@@ -38,11 +38,11 @@ export class Monty {
 }
 
 export interface MontyOptions {
-  scriptName?: string           // default: 'main.py'
-  inputs?: string[]             // input variable names
-  externalFunctions?: string[]  // external function names
-  typeCheck?: boolean           // run type checking on init
-  typeCheckPrefixCode?: string  // code to prepend for type checking
+  scriptName?: string // default: 'main.py'
+  inputs?: string[] // input variable names
+  externalFunctions?: string[] // external function names
+  typeCheck?: boolean // run type checking on init
+  typeCheckPrefixCode?: string // code to prepend for type checking
 }
 
 export interface RunOptions {
@@ -61,11 +61,11 @@ export interface LoadOptions {
 
 ```typescript
 export interface ResourceLimits {
-  maxAllocations?: number      // max heap allocations
-  maxDurationSecs?: number     // max execution time in seconds
-  maxMemory?: number           // max heap memory in bytes
-  gcInterval?: number          // run GC every N allocations
-  maxRecursionDepth?: number   // max call stack depth (default: 1000)
+  maxAllocations?: number // max heap allocations
+  maxDurationSecs?: number // max execution time in seconds
+  maxMemory?: number // max heap memory in bytes
+  gcInterval?: number // run GC every N allocations
+  maxRecursionDepth?: number // max call stack depth (default: 1000)
 }
 ```
 
@@ -101,7 +101,7 @@ export class MontyRuntimeError extends MontyError {
 export class MontyTypingError extends MontyError {
   display(
     format?: 'full' | 'concise' | 'azure' | 'json' | 'jsonlines' | 'rdjson' | 'pylint' | 'gitlab' | 'github',
-    color?: boolean
+    color?: boolean,
   ): string
 }
 ```
@@ -117,7 +117,7 @@ export class Frame {
   readonly endColumn: number
   readonly functionName: string | null
   readonly sourceLine: string | null
-  
+
   toObject(): FrameObject
 }
 
@@ -154,10 +154,10 @@ export class MontySnapshot {
   readonly functionName: string
   readonly args: unknown[]
   readonly kwargs: Record<string, unknown>
-  
+
   resume(options: { returnValue: unknown }): MontySnapshot | MontyComplete
   resume(options: { exception: Error }): MontySnapshot | MontyComplete
-  
+
   dump(): Uint8Array
   static load(data: Uint8Array, options?: SnapshotLoadOptions): MontySnapshot
 }
@@ -182,7 +182,7 @@ export class MontyComplete {
 ```typescript
 export class Monty {
   // ... existing methods ...
-  
+
   start(options?: StartOptions): MontySnapshot | MontyComplete
 }
 
@@ -209,36 +209,36 @@ export interface StartOptions {
 
 Support converting these JS types to Monty values:
 
-| JavaScript Type | Monty Type |
-|-----------------|------------|
-| `null` | `None` |
-| `boolean` | `bool` |
-| `number` (integer) | `int` |
-| `number` (float) | `float` |
-| `bigint` | `int` (BigInt) |
-| `string` | `str` |
-| `Uint8Array` | `bytes` |
-| `Array` | `list` |
-| `Object` (plain) | `dict` |
-| `Set` | `set` |
-| `Map` | `dict` |
+| JavaScript Type    | Monty Type     |
+| ------------------ | -------------- |
+| `null`             | `None`         |
+| `boolean`          | `bool`         |
+| `number` (integer) | `int`          |
+| `number` (float)   | `float`        |
+| `bigint`           | `int` (BigInt) |
+| `string`           | `str`          |
+| `Uint8Array`       | `bytes`        |
+| `Array`            | `list`         |
+| `Object` (plain)   | `dict`         |
+| `Set`              | `set`          |
+| `Map`              | `dict`         |
 
 ### 4.2 Monty Value to JavaScript Conversion
 
-| Monty Type | JavaScript Type |
-|------------|-----------------|
-| `None` | `null` |
-| `bool` | `boolean` |
-| `int` (small) | `number` |
-| `int` (big) | `bigint` |
-| `float` | `number` |
-| `str` | `string` |
-| `bytes` | `Uint8Array` |
-| `list` | `Array` |
-| `tuple` | `Array` (with `__tuple__: true`?) |
-| `dict` | `Object` or `Map` |
-| `set` | `Set` |
-| `frozenset` | `Set` (with `__frozen__: true`?) |
+| Monty Type    | JavaScript Type                   |
+| ------------- | --------------------------------- |
+| `None`        | `null`                            |
+| `bool`        | `boolean`                         |
+| `int` (small) | `number`                          |
+| `int` (big)   | `bigint`                          |
+| `float`       | `number`                          |
+| `str`         | `string`                          |
+| `bytes`       | `Uint8Array`                      |
+| `list`        | `Array`                           |
+| `tuple`       | `Array` (with `__tuple__: true`?) |
+| `dict`        | `Object` or `Map`                 |
+| `set`         | `Set`                             |
+| `frozenset`   | `Set` (with `__frozen__: true`?)  |
 
 ### 4.3 Rust Implementation Tasks
 
@@ -327,7 +327,7 @@ Recommended order of implementation:
 ## File Structure
 
 ```
-crates/monty-ts/
+crates/monty-js/
   src/
     lib.rs           # Module root and napi exports
     monty.rs         # Monty class implementation
