@@ -18,3 +18,4 @@ bad_types.py:96:23: error[too-many-positional-arguments] Too many positional arg
 bad_types.py:101:1: error[missing-argument] No argument provided for required parameter `b` of function `takes_two`
 bad_types.py:101:16: error[unknown-argument] Argument `c` does not match any known parameter of function `takes_two`
 bad_types.py:107:1: error[call-non-callable] Object of type `Literal[42]` is not callable
+bad_types.py:109:7: error[unresolved-attribute] Module `sys` has no member `copyright`

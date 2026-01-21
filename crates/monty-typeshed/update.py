@@ -108,13 +108,13 @@ DEPENDENCY_FILES = [
 # Dependency directories (copied recursively)
 DEPENDENCY_DIRS = [
     'collections',
-    'sys',
     '_typeshed',
 ]
 
 SCRIPT_DIR = Path(__file__).parent
 VENDOR_DIR = SCRIPT_DIR / 'vendor' / 'typeshed'
 STDLIB_DIR = VENDOR_DIR / 'stdlib'
+CUSTOM_DIR = SCRIPT_DIR / 'custom'
 
 TYPESHED_REPO = 'git@github.com:python/typeshed.git'
 
@@ -302,15 +302,20 @@ typing: 3.5-
 typing_extensions: 3.7-
 types: 3.0-
 """)
-        (VENDOR_DIR / 'source_commit.txt').write_text(commit + '\n')
 
         # Copy dependency modules
         copy_dependencies(src_stdlib, STDLIB_DIR)
 
-        print(f'Updated to commit {commit}')
-        print(f'Wrote {STDLIB_DIR / "builtins.pyi"}')
-        print(f'Wrote {STDLIB_DIR / "VERSIONS"}')
-        print(f'Wrote {VENDOR_DIR / "source_commit.txt"}')
+    # copy pyi files from CUSTOM_DIR into STDLIB_DIR
+    for file in CUSTOM_DIR.glob('*.pyi'):
+        shutil.copy2(file, STDLIB_DIR)
+
+    (VENDOR_DIR / 'source_commit.txt').write_text(commit + '\n')
+
+    print(f'Updated to commit {commit}')
+    print(f'Wrote {STDLIB_DIR / "builtins.pyi"}')
+    print(f'Wrote {STDLIB_DIR / "VERSIONS"}')
+    print(f'Wrote {VENDOR_DIR / "source_commit.txt"}')
 
     return 0
 

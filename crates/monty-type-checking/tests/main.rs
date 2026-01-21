@@ -125,7 +125,7 @@ fn check_file_content(file_name: &str, mut actual: &str) {
         std::fs::write(&expected_path, actual).unwrap();
         "FILE UPDATE"
     } else {
-        "FILE NOT UPDATED"
+        "file not updated, run with UPDATE_EXPECT=1 to update"
     };
 
     panic!("Type errors don't match expected.\n\nEXPECTED:\n{expected}\n\nACTUAL:\n{actual}\n\n{status}.");

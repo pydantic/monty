@@ -25,14 +25,6 @@ use crate::{
 pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Sys);
 
-    // sys.version
-    module.set_attr(
-        StaticStrings::Version,
-        StaticStrings::MontyVersionString.into(),
-        heap,
-        interns,
-    );
-
     // sys.platform
     module.set_attr(StaticStrings::Platform, StaticStrings::Monty.into(), heap, interns);
 
@@ -50,6 +42,13 @@ pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -
         interns,
     );
 
+    // sys.version
+    module.set_attr(
+        StaticStrings::Version,
+        StaticStrings::MontyVersionString.into(),
+        heap,
+        interns,
+    );
     // sys.version_info - named tuple (major=3, minor=14, micro=0, releaselevel='final', serial=0)
     let version_info = NamedTuple::new(
         StaticStrings::SysVersionInfo.into(),

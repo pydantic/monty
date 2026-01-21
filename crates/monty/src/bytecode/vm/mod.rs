@@ -1373,21 +1373,19 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     fn load_global(&mut self, slot: u16) -> RunResult<()> {
         let namespace = self.namespaces.get(GLOBAL_NS_IDX);
         // Copy without incrementing refcount first (avoids borrow conflict)
-        let value = namespace.get(NamespaceId::new(slot as usize)).copy_for_extend();
+        let value = namespace
+            .get(NamespaceId::new(slot as usize))
+            .clone_with_heap(self.heap);
 
         // Check for undefined value - raise NameError if so
         if matches!(value, Value::Undefined) {
             // For globals, we'd need a global_names table too, but for now use a placeholder
             let name = self.current_frame().code.local_name(slot);
-            return Err(self.name_error(slot, name));
+            Err(self.name_error(slot, name))
+        } else {
+            self.push(value);
+            Ok(())
         }
-
-        // Now we can safely increment refcount and push
-        if let Value::Ref(id) = &value {
-            self.heap.inc_ref(*id);
-        }
-        self.push(value);
-        Ok(())
     }
 
     /// Pops the top of stack and stores it in a global variable.
