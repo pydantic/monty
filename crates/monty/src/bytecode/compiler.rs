@@ -1130,47 +1130,129 @@ impl<'a> Compiler<'a> {
                 var_args,
                 var_kwargs,
             } => {
-                // Complex call with both positional and keyword args
-                // Note: For ExprCall, we can't use CallFunctionEx since it requires a callable
-                // from the Callable enum. Instead, we use CallFunction or CallFunctionKw.
+                // Mixed positional and keyword arguments - may include *args or **kwargs unpacking
                 if var_args.is_some() || var_kwargs.is_some() {
-                    return Err(CompileError::new(
-                        "* or ** unpacking not supported for expression calls",
+                    // Use CallFunctionExtended for unpacking - no limit on this path since
+                    // args are built into a tuple dynamically at runtime.
+                    // Callable is already on stack, so we just need to build args and kwargs.
+                    self.compile_call_args_with_unpacking(
+                        args.as_ref(),
+                        var_args.as_ref(),
+                        kwargs.as_ref(),
+                        var_kwargs.as_ref(),
                         call_pos,
-                    ));
+                    )?;
+                } else {
+                    // No unpacking - use CallFunctionKw for efficiency
+                    let pos_args = args.as_deref().unwrap_or(&[]);
+                    let kw_args = kwargs.as_deref().unwrap_or(&[]);
+                    let pos_count = pos_args.len();
+                    let kw_count = kw_args.len();
+
+                    // Check limits separately (same as direct calls)
+                    if pos_count > MAX_CALL_ARGS {
+                        return Err(CompileError::new(
+                            format!("more than {MAX_CALL_ARGS} positional arguments in function call"),
+                            call_pos,
+                        ));
+                    }
+                    if kw_count > MAX_CALL_ARGS {
+                        return Err(CompileError::new(
+                            format!("more than {MAX_CALL_ARGS} keyword arguments in function call"),
+                            call_pos,
+                        ));
+                    }
+
+                    // Compile positional args
+                    for arg in pos_args {
+                        self.compile_expr(arg)?;
+                    }
+
+                    // Compile keyword args
+                    let mut kwname_ids = Vec::with_capacity(kw_count);
+                    for kwarg in kw_args {
+                        self.compile_expr(&kwarg.value)?;
+                        kwname_ids.push(u16::try_from(kwarg.key.name_id.index()).expect("name index exceeds u16"));
+                    }
+
+                    self.code.set_location(call_pos, None);
+                    self.code.emit_call_function_kw(
+                        u8::try_from(pos_count).expect("positional arg count exceeds u8"),
+                        &kwname_ids,
+                    );
                 }
-
-                let pos_args = args.as_deref().unwrap_or(&[]);
-                let kw_args = kwargs.as_deref().unwrap_or(&[]);
-                let pos_count = pos_args.len();
-                let kw_count = kw_args.len();
-
-                if pos_count + kw_count > MAX_CALL_ARGS {
-                    return Err(CompileError::new(
-                        format!("more than {MAX_CALL_ARGS} arguments in function call"),
-                        call_pos,
-                    ));
-                }
-
-                // Compile positional args
-                for arg in pos_args {
-                    self.compile_expr(arg)?;
-                }
-
-                // Compile keyword args
-                let mut kwname_ids = Vec::with_capacity(kw_count);
-                for kwarg in kw_args {
-                    self.compile_expr(&kwarg.value)?;
-                    kwname_ids.push(u16::try_from(kwarg.key.name_id.index()).expect("name index exceeds u16"));
-                }
-
-                self.code.set_location(call_pos, None);
-                self.code.emit_call_function_kw(
-                    u8::try_from(pos_count).expect("positional arg count exceeds u8"),
-                    &kwname_ids,
-                );
             }
         }
+        Ok(())
+    }
+
+    /// Compiles arguments with `*args` and/or `**kwargs` unpacking when callable is already on stack.
+    ///
+    /// This is used for expression calls (e.g., `(lambda *a: a)(*xs)`) where the callable
+    /// is compiled as an expression and is already on the stack.
+    ///
+    /// Stack layout: callable (on stack) -> callable, args_tuple, kwargs_dict?
+    fn compile_call_args_with_unpacking(
+        &mut self,
+        args: Option<&Vec<ExprLoc>>,
+        var_args: Option<&ExprLoc>,
+        kwargs: Option<&Vec<Kwarg>>,
+        var_kwargs: Option<&ExprLoc>,
+        call_pos: CodeRange,
+    ) -> Result<(), CompileError> {
+        // 1. Build args tuple
+        // Push regular positional args and build list
+        let pos_count = args.map_or(0, Vec::len);
+        if let Some(args) = args {
+            for arg in args {
+                self.compile_expr(arg)?;
+            }
+        }
+        self.code.emit_u16(
+            Opcode::BuildList,
+            u16::try_from(pos_count).expect("positional arg count exceeds u16"),
+        );
+
+        // Extend with *args if present
+        if let Some(var_args_expr) = var_args {
+            self.compile_expr(var_args_expr)?;
+            self.code.emit(Opcode::ListExtend);
+        }
+
+        // Convert list to tuple
+        self.code.emit(Opcode::ListToTuple);
+
+        // 2. Build kwargs dict (if we have kwargs or var_kwargs)
+        let has_kwargs = kwargs.is_some() || var_kwargs.is_some();
+        if has_kwargs {
+            // Build dict from regular kwargs
+            let kw_count = kwargs.map_or(0, Vec::len);
+            if let Some(kwargs) = kwargs {
+                for kwarg in kwargs {
+                    // Push key as interned string constant
+                    let key_const = self.code.add_const(Value::InternString(kwarg.key.name_id));
+                    self.code.emit_u16(Opcode::LoadConst, key_const);
+                    // Push value
+                    self.compile_expr(&kwarg.value)?;
+                }
+            }
+            self.code.emit_u16(
+                Opcode::BuildDict,
+                u16::try_from(kw_count).expect("keyword count exceeds u16"),
+            );
+
+            // Merge **kwargs if present
+            // Use 0xFFFF for func_name_id (like builtins) since we don't have a name
+            if let Some(var_kwargs_expr) = var_kwargs {
+                self.compile_expr(var_kwargs_expr)?;
+                self.code.emit_u16(Opcode::DictMerge, 0xFFFF);
+            }
+        }
+
+        // 3. Call the function
+        self.code.set_location(call_pos, None);
+        let flags = u8::from(has_kwargs);
+        self.code.emit_u8(Opcode::CallFunctionExtended, flags);
         Ok(())
     }
 

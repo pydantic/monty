@@ -2216,9 +2216,26 @@ fn collect_referenced_names_from_expr(
             collect_referenced_names_from_comprehension(generators, None, Some((key, value)), referenced, interner);
         }
         Expr::LambdaRaw { signature, body, .. } => {
-            // Collect references from the body expression (lambda can reference outer scope)
-            collect_referenced_names_from_expr(body, referenced, interner);
-            // Collect references from default value expressions
+            // Build set of parameter names (these are local to the lambda, not free variables)
+            let lambda_params: AHashSet<String> = signature
+                .param_names()
+                .map(|s| interner.get_str(s).to_string())
+                .collect();
+
+            // Collect references from the body expression into a temporary set
+            let mut body_refs: AHashSet<String> = AHashSet::new();
+            collect_referenced_names_from_expr(body, &mut body_refs, interner);
+
+            // Filter out the lambda's own parameters before adding to referenced set.
+            // The lambda's parameters are bound by the lambda, not free from outer scope.
+            for name in body_refs {
+                if !lambda_params.contains(&name) {
+                    referenced.insert(name);
+                }
+            }
+
+            // Default value expressions are evaluated in the enclosing scope, not the lambda's
+            // scope, so they can reference outer scope without filtering.
             for param in &signature.pos_args {
                 if let Some(ref default) = param.default {
                     collect_referenced_names_from_expr(default, referenced, interner);

@@ -113,3 +113,33 @@ assert f(a=1, b=2) == 2, 'lambda kwargs multiple'
 f = lambda a, b=2, *args, c, d=4, **kwargs: (a, b, args, c, d, len(kwargs))
 result = f(1, 2, 3, 4, c=10, d=20, e=30, f=40)
 assert result == (1, 2, (3, 4), 10, 20, 2), 'lambda mixed params'
+
+# === Unpacking in immediate lambda calls ===
+xs = [1, 2, 3]
+assert (lambda *a: a)(*xs) == (1, 2, 3), 'lambda with *args unpacking'
+assert (lambda **k: k)(**{'a': 1}) == {'a': 1}, 'lambda with **kwargs unpacking'
+assert (lambda *a, **k: (a, k))(1, 2, x=3) == ((1, 2), {'x': 3}), 'lambda mixed unpack'
+
+# === Lambda parameter shadowing ===
+# Inner lambda shadows outer variable - outer should not capture it
+
+
+def make_shadowing_lambda():
+    x = 10
+    # inner lambda has param x, so outer lambda should NOT capture x from make_shadowing_lambda
+    return lambda: (lambda x: x + 1)
+
+
+outer_fn = make_shadowing_lambda()
+inner_fn = outer_fn()
+assert inner_fn(5) == 6, 'inner lambda takes x as param'
+
+
+def test_inner_lambda_capture():
+    y = 5
+    # outer lambda binds y as param, inner lambda captures from outer lambda, not test_inner_lambda_capture
+    g = lambda y: (lambda: y)
+    return g(7)()
+
+
+assert test_inner_lambda_capture() == 7, 'inner lambda captures outer lambda param'
