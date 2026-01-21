@@ -38,9 +38,9 @@ repos:
         types: [python]
         language: system
         pass_filenames: false
-      - id: format-lint-ts
+      - id: format-lint-js
         name: Format & Lint TypeScript
-        entry: make format-ts lint-ts
+        entry: make format-js lint-js
         types: [ts]
         language: system
         pass_filenames: false
