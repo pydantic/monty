@@ -380,8 +380,11 @@ impl<'a> Parser<'a> {
                     .iter()
                     .map(|alias| {
                         let name = self.interner.intern(&alias.name);
-                        let asname = alias.asname.as_ref().map(|n| self.interner.intern(&n.id));
-                        (name, asname)
+                        // The binding name is the alias if provided, otherwise the import name
+                        let binding_name = alias.asname.as_ref().map_or(name, |n| self.interner.intern(&n.id));
+                        // Create an unresolved identifier (namespace slot will be set during prepare)
+                        let binding = Identifier::new(binding_name, position);
+                        (name, binding)
                     })
                     .collect();
                 Ok(Node::ImportFrom {

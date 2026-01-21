@@ -82,6 +82,7 @@ root = "crates/monty/test_cases"
 reportUnusedExpression = false
 reportOperatorIssue = false
 reportGeneralTypeIssues = false
+reportMissingImports = false
 reportUnknownMemberType = false
 reportUnnecessaryComparison = false
 reportUnnecessaryIsInstance = false

@@ -407,8 +407,10 @@ pub enum Node<F> {
     ImportFrom {
         /// The module name to import from (e.g., "typing").
         module_name: StringId,
-        /// Names to import: (name, optional_alias) pairs.
-        names: Vec<(StringId, Option<StringId>)>,
+        /// Names to import: (import_name, binding) pairs.
+        /// The import_name is the name in the module, the binding is the local name
+        /// (alias if provided, otherwise the import name) with resolved namespace slot.
+        names: Vec<(StringId, Identifier)>,
         /// Source position for error reporting.
         position: CodeRange,
     },

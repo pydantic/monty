@@ -413,7 +413,7 @@ impl<'a> Compiler<'a> {
         // Look up the module by name
         let module_name_str = self.interns.get_str(module_name);
         let builtin_module = BuiltinModule::from_str(module_name_str)
-            .map_err(|_| CompileError::new(format!("unknown module '{module_name_str}'"), position))?;
+            .map_err(|_| CompileError::new_module_not_found(module_name_str, position))?;
 
         // Emit LoadModule with the module ID
         self.code.set_location(position, None);
@@ -427,15 +427,48 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compile a `from module import name` statement.
+    /// Compiles a `from module import name, ...` statement.
+    ///
+    /// Resolves imports at compile time by looking up names in the built-in module.
+    /// Each imported name is resolved to an expression value that is compiled and
+    /// stored to the binding identifier.
     fn compile_import_from(
         &mut self,
         module_name: StringId,
-        names: &[(StringId, Option<StringId>)],
+        names: &[(StringId, Identifier)],
         position: CodeRange,
     ) -> Result<(), CompileError> {
-        todo!("Implement import from")
-        /// create the module, then take attributes from its dict
+        let module_name_str = self.interns.get_str(module_name);
+
+        // Look up the module
+        let builtin_module = BuiltinModule::from_string_id(module_name)
+            .ok_or_else(|| CompileError::new_module_not_found(module_name_str, position))?;
+
+        // For each name to import
+        for (import_name, binding) in names {
+            let import_name_str = self.interns.get_str(*import_name);
+
+            // Try to resolve at compile time
+            let expr = builtin_module
+                .import_from(*import_name)
+                .ok_or_else(|| CompileError::new_cannot_import(import_name_str, module_name_str, position))?;
+
+            // Compile the expression value
+            self.code.set_location(position, None);
+            match &expr {
+                Expr::Literal(lit) => self.compile_literal(lit),
+                Expr::Builtin(builtin) => {
+                    let idx = self.code.add_const(Value::Builtin(*builtin));
+                    self.code.emit_u16(Opcode::LoadConst, idx);
+                }
+                _ => panic!("import_from should only return literals or builtins"),
+            }
+
+            // Store to the binding
+            self.compile_store(binding);
+        }
+
+        Ok(())
     }
 
     // ========================================================================
@@ -1870,31 +1903,64 @@ impl<'a> Compiler<'a> {
 /// Error that can occur during bytecode compilation.
 ///
 /// These are typically limit violations that can't be represented in the bytecode
-/// format (e.g., too many arguments, too many local variables).
+/// format (e.g., too many arguments, too many local variables), or import errors
+/// detected at compile time.
 #[derive(Debug, Clone)]
 pub struct CompileError {
-    /// Error message describing what limit was exceeded.
+    /// Error message describing the issue.
     message: Cow<'static, str>,
     /// Source location where the error occurred.
     position: CodeRange,
+    /// Exception type to use (defaults to SyntaxError).
+    exc_type: ExcType,
 }
 
 impl CompileError {
     /// Creates a new compile error with the given message and position.
+    ///
+    /// Defaults to `SyntaxError` exception type.
     fn new(message: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
         Self {
             message: message.into(),
             position,
+            exc_type: ExcType::SyntaxError,
         }
     }
 
-    /// Converts this compile error into a Python SyntaxError exception.
+    /// Creates a ModuleNotFoundError for when a module cannot be found.
+    ///
+    /// Matches CPython's format: `ModuleNotFoundError: No module named 'name'`
+    fn new_module_not_found(module_name: &str, position: CodeRange) -> Self {
+        Self {
+            message: format!("No module named '{module_name}'").into(),
+            position,
+            exc_type: ExcType::ModuleNotFoundError,
+        }
+    }
+
+    /// Creates an ImportError for when a name cannot be imported from a module.
+    ///
+    /// Matches CPython's format for built-in modules:
+    /// `ImportError: cannot import name 'name' from 'module' (unknown location)`
+    fn new_cannot_import(name: &str, module_name: &str, position: CodeRange) -> Self {
+        Self {
+            message: format!("cannot import name '{name}' from '{module_name}' (unknown location)").into(),
+            position,
+            exc_type: ExcType::ImportError,
+        }
+    }
+
+    /// Converts this compile error into a Python exception.
+    ///
+    /// Uses the stored exception type (SyntaxError, ModuleNotFoundError, ImportError, etc.).
+    /// Import errors have `hide_caret: true` since CPython doesn't show carets for these.
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
-        MontyException::new_full(
-            ExcType::SyntaxError,
-            Some(self.message.into_owned()),
-            vec![StackFrame::from_position(self.position, filename, source)],
-        )
+        let mut frame = StackFrame::from_position(self.position, filename, source);
+        // CPython doesn't show carets for import errors
+        if matches!(self.exc_type, ExcType::ImportError | ExcType::ModuleNotFoundError) {
+            frame.hide_caret = true;
+        }
+        MontyException::new_full(self.exc_type, Some(self.message.into_owned()), vec![frame])
     }
 }
 

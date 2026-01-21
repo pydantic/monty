@@ -480,12 +480,19 @@ impl<'i> Prepare<'i> {
                     names,
                     position,
                 } => {
-                    // unchanged, implement at compile time
+                    // Resolve each binding identifier to get namespace slots
+                    let resolved_names = names
+                        .into_iter()
+                        .map(|(import_name, binding)| {
+                            let (resolved_binding, _) = self.get_id(binding);
+                            (import_name, resolved_binding)
+                        })
+                        .collect();
                     new_nodes.push(Node::ImportFrom {
                         module_name,
-                        names,
+                        names: resolved_names,
                         position,
-                    })
+                    });
                 }
             }
         }
@@ -1519,9 +1526,8 @@ fn collect_scope_info_from_node(
         }
         // ImportFrom creates bindings for each imported name (or alias)
         Node::ImportFrom { names, .. } => {
-            for (name, alias) in names {
-                let binding_name = alias.unwrap_or(*name);
-                assigned_names.insert(interner.get_str(binding_name).to_string());
+            for (_import_name, binding) in names {
+                assigned_names.insert(interner.get_str(binding.name_id).to_string());
             }
         }
         // These don't create new names

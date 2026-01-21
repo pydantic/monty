@@ -74,6 +74,12 @@ pub enum ExcType {
     /// Subclass of ValueError - for encoding/decoding errors.
     UnicodeDecodeError,
 
+    // --- ImportError hierarchy ---
+    /// Import-related errors (module not found, name not in module).
+    ImportError,
+    /// Subclass of ImportError - for when a module cannot be found.
+    ModuleNotFoundError,
+
     // --- Standalone exception types ---
     AssertionError,
     MemoryError,
@@ -114,6 +120,8 @@ impl ExcType {
             Self::NameError => matches!(self, Self::UnboundLocalError),
             // ValueError catches UnicodeDecodeError
             Self::ValueError => matches!(self, Self::UnicodeDecodeError),
+            // ImportError catches ModuleNotFoundError
+            Self::ImportError => matches!(self, Self::ModuleNotFoundError),
             // All other types only match exactly (handled by self == handler_type above)
             _ => false,
         }

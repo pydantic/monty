@@ -400,6 +400,8 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
         ExcType::TypeError => exceptions::PyTypeError::new_err(msg),
         ExcType::ValueError => exceptions::PyValueError::new_err(msg),
         ExcType::UnicodeDecodeError => exceptions::PyUnicodeDecodeError::new_err(msg),
+        ExcType::ImportError => exceptions::PyImportError::new_err(msg),
+        ExcType::ModuleNotFoundError => exceptions::PyModuleNotFoundError::new_err(msg),
     }
 }
 
