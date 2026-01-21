@@ -11,6 +11,7 @@ mod function;
 mod heap;
 mod intern;
 mod io;
+mod modules;
 mod namespace;
 mod object;
 mod parse;

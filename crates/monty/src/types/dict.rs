@@ -5,10 +5,11 @@ use hashbrown::{HashTable, hash_table::Entry};
 
 use super::{List, PyTrait, Tuple};
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, KwargsValues},
     exception_private::{ExcType, RunResult},
+    for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
-    intern::{Interns, attr},
+    intern::{Interns, StaticStrings},
     resource::ResourceTracker,
     types::Type,
     value::{Attr, Value},
@@ -17,8 +18,22 @@ use crate::{
 /// Python dict type preserving insertion order.
 ///
 /// This type provides Python dict semantics including dynamic key-value namespaces,
-/// reference counting for heap values, and standard dict methods like get, keys,
-/// values, items, and pop.
+/// reference counting for heap values, and standard dict methods.
+///
+/// # Implemented Methods
+/// - `get(key[, default])` - Get value or default
+/// - `keys()` - Return view of keys
+/// - `values()` - Return view of values
+/// - `items()` - Return view of (key, value) pairs
+/// - `pop(key[, default])` - Remove and return value
+/// - `clear()` - Remove all items
+/// - `copy()` - Shallow copy
+/// - `update(other)` - Update from dict or iterable of pairs
+/// - `setdefault(key[, default])` - Get or set default value
+/// - `popitem()` - Remove and return last (key, value) pair
+/// - `fromkeys(iterable[, value])` - Create dict from keys (classmethod)
+///
+/// All dict methods from Python's builtins are implemented.
 ///
 /// # Storage Strategy
 /// Uses a `HashTable<usize>` for hash lookups combined with a dense `Vec<DictEntry>`
@@ -590,12 +605,12 @@ impl PyTrait for Dict {
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
-        let Some(attr_id) = attr.string_id() else {
+        let Some(method) = attr.static_string() else {
             return Err(ExcType::attribute_error(Type::Dict, attr.as_str(interns)));
         };
 
-        match attr_id {
-            attr::GET => {
+        match method {
+            StaticStrings::Get => {
                 // dict.get() accepts 1 or 2 arguments
                 let (key, default) = args.get_one_two_args("get", heap)?;
                 let default = default.unwrap_or(Value::None);
@@ -618,19 +633,19 @@ impl PyTrait for Dict {
                 default.drop_with_heap(heap);
                 Ok(value)
             }
-            attr::KEYS => {
+            StaticStrings::Keys => {
                 args.check_zero_args("dict.keys", heap)?;
                 let keys = self.keys(heap);
                 let list_id = heap.allocate(HeapData::List(List::new(keys)))?;
                 Ok(Value::Ref(list_id))
             }
-            attr::VALUES => {
+            StaticStrings::Values => {
                 args.check_zero_args("dict.values", heap)?;
                 let values = self.values(heap);
                 let list_id = heap.allocate(HeapData::List(List::new(values)))?;
                 Ok(Value::Ref(list_id))
             }
-            attr::ITEMS => {
+            StaticStrings::Items => {
                 args.check_zero_args("dict.items", heap)?;
                 // Return list of tuples
                 let items = self.items(heap);
@@ -642,7 +657,7 @@ impl PyTrait for Dict {
                 let list_id = heap.allocate(HeapData::List(List::new(tuples)))?;
                 Ok(Value::Ref(list_id))
             }
-            attr::POP => {
+            StaticStrings::Pop => {
                 // dict.pop() accepts 1 or 2 arguments (key, optional default)
                 let (key, default) = args.get_one_two_args("pop", heap)?;
                 let result = match self.pop(&key, heap, interns) {
@@ -677,9 +692,345 @@ impl PyTrait for Dict {
                     }
                 }
             }
+            StaticStrings::Clear => {
+                args.check_zero_args("dict.clear", heap)?;
+                dict_clear(self, heap);
+                Ok(Value::None)
+            }
+            StaticStrings::Copy => {
+                args.check_zero_args("dict.copy", heap)?;
+                dict_copy(self, heap, interns)
+            }
+            StaticStrings::Update => dict_update(self, args, heap, interns),
+            StaticStrings::Setdefault => dict_setdefault(self, args, heap, interns),
+            StaticStrings::Popitem => {
+                args.check_zero_args("dict.popitem", heap)?;
+                dict_popitem(self, heap)
+            }
+            // fromkeys is a classmethod but also accessible on instances
+            StaticStrings::Fromkeys => dict_fromkeys(args, heap, interns),
             _ => Err(ExcType::attribute_error(Type::Dict, attr.as_str(interns))),
         }
     }
+}
+
+/// Implements Python's `dict.clear()` method.
+///
+/// Removes all items from the dict.
+fn dict_clear(dict: &mut Dict, heap: &mut Heap<impl ResourceTracker>) {
+    for entry in dict.entries.drain(..) {
+        entry.key.drop_with_heap(heap);
+        entry.value.drop_with_heap(heap);
+    }
+    dict.indices.clear();
+    // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
+}
+
+/// Implements Python's `dict.copy()` method.
+///
+/// Returns a shallow copy of the dict.
+fn dict_copy(dict: &Dict, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Value> {
+    // Copy all key-value pairs (incrementing refcounts)
+    let pairs: Vec<(Value, Value)> = dict
+        .iter()
+        .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)))
+        .collect();
+
+    let new_dict = Dict::from_pairs(pairs, heap, interns)?;
+    let heap_id = heap.allocate(HeapData::Dict(new_dict))?;
+    Ok(Value::Ref(heap_id))
+}
+
+/// Implements Python's `dict.update([other], **kwargs)` method.
+///
+/// Updates the dict with key-value pairs from `other` and/or `kwargs`.
+/// If `other` is a dict, copies its key-value pairs.
+/// If `other` is an iterable, expects pairs of (key, value).
+/// Keyword arguments are also added to the dict.
+fn dict_update(
+    dict: &mut Dict,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let (pos, kwargs) = args.into_parts();
+
+    let mut pos_iter = pos;
+    let other = pos_iter.next();
+
+    // Check no extra positional arguments
+    if let Some(extra) = pos_iter.next() {
+        extra.drop_with_heap(heap);
+        for v in pos_iter {
+            v.drop_with_heap(heap);
+        }
+        if let Some(v) = other {
+            v.drop_with_heap(heap);
+        }
+        kwargs.drop_with_heap(heap);
+        return Err(ExcType::type_error_at_most("dict.update", 1, 2));
+    }
+
+    // Process positional argument if present
+    let Some(other_value) = other else {
+        // No positional argument - just process kwargs
+        return dict_update_from_kwargs(dict, kwargs, heap, interns);
+    };
+
+    // Check if it's a dict first
+    if let Value::Ref(id) = &other_value {
+        let is_dict = matches!(heap.get(*id), HeapData::Dict(_));
+        if is_dict {
+            // Get key-value pairs from the source dict
+            let pairs: Vec<(Value, Value)> = {
+                let HeapData::Dict(src_dict) = heap.get(*id) else {
+                    unreachable!()
+                };
+                src_dict
+                    .iter()
+                    .map(|(k, v)| (k.copy_for_extend(), v.copy_for_extend()))
+                    .collect()
+            };
+
+            // Increment refcounts after releasing the borrow
+            for (k, v) in &pairs {
+                if let Value::Ref(key_id) = k {
+                    heap.inc_ref(*key_id);
+                }
+                if let Value::Ref(val_id) = v {
+                    heap.inc_ref(*val_id);
+                }
+            }
+
+            // Now set each pair
+            for (key, value) in pairs {
+                if let Some(old_value) = dict.set(key, value, heap, interns)? {
+                    old_value.drop_with_heap(heap);
+                }
+            }
+
+            other_value.drop_with_heap(heap);
+            // Process kwargs after the dict update
+            return dict_update_from_kwargs(dict, kwargs, heap, interns);
+        }
+    }
+
+    // Try as an iterable of pairs
+    // Drop kwargs before propagating error to avoid refcount leak
+    let mut iter = match ForIterator::new(other_value, heap, interns) {
+        Ok(i) => i,
+        Err(e) => {
+            kwargs.drop_with_heap(heap);
+            return Err(e);
+        }
+    };
+
+    loop {
+        // Drop iter and kwargs before propagating error to avoid refcount leak
+        let item = match iter.for_next(heap, interns) {
+            Ok(Some(i)) => i,
+            Ok(None) => break,
+            Err(e) => {
+                iter.drop_with_heap(heap);
+                kwargs.drop_with_heap(heap);
+                return Err(e);
+            }
+        };
+
+        // Each item should be a pair (iterable of 2 elements)
+        // Drop iter and kwargs before propagating error to avoid refcount leak
+        let mut pair_iter = match ForIterator::new(item, heap, interns) {
+            Ok(pi) => pi,
+            Err(e) => {
+                iter.drop_with_heap(heap);
+                kwargs.drop_with_heap(heap);
+                return Err(e);
+            }
+        };
+
+        // Drop pair_iter, iter, and kwargs before propagating error to avoid refcount leak
+        let key = match pair_iter.for_next(heap, interns) {
+            Ok(Some(k)) => k,
+            Ok(None) => {
+                pair_iter.drop_with_heap(heap);
+                iter.drop_with_heap(heap);
+                kwargs.drop_with_heap(heap);
+                return Err(ExcType::type_error(
+                    "dictionary update sequence element has length 0; 2 is required",
+                ));
+            }
+            Err(e) => {
+                pair_iter.drop_with_heap(heap);
+                iter.drop_with_heap(heap);
+                kwargs.drop_with_heap(heap);
+                return Err(e);
+            }
+        };
+
+        // Drop key, pair_iter, iter, and kwargs before propagating error to avoid refcount leak
+        let value = match pair_iter.for_next(heap, interns) {
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                key.drop_with_heap(heap);
+                pair_iter.drop_with_heap(heap);
+                iter.drop_with_heap(heap);
+                kwargs.drop_with_heap(heap);
+                return Err(ExcType::type_error(
+                    "dictionary update sequence element has length 1; 2 is required",
+                ));
+            }
+            Err(e) => {
+                key.drop_with_heap(heap);
+                pair_iter.drop_with_heap(heap);
+                iter.drop_with_heap(heap);
+                kwargs.drop_with_heap(heap);
+                return Err(e);
+            }
+        };
+
+        // Check for extra elements - must drop the first extra element too!
+        match pair_iter.for_next(heap, interns) {
+            Ok(Some(first_extra)) => {
+                first_extra.drop_with_heap(heap);
+                key.drop_with_heap(heap);
+                value.drop_with_heap(heap);
+                // Drain remaining elements
+                loop {
+                    match pair_iter.for_next(heap, interns) {
+                        Ok(Some(extra)) => extra.drop_with_heap(heap),
+                        Ok(None) => break,
+                        Err(_) => break, // Error while draining - just stop
+                    }
+                }
+                pair_iter.drop_with_heap(heap);
+                iter.drop_with_heap(heap);
+                kwargs.drop_with_heap(heap);
+                return Err(ExcType::type_error(
+                    "dictionary update sequence element has length > 2; 2 is required",
+                ));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                key.drop_with_heap(heap);
+                value.drop_with_heap(heap);
+                pair_iter.drop_with_heap(heap);
+                iter.drop_with_heap(heap);
+                kwargs.drop_with_heap(heap);
+                return Err(e);
+            }
+        }
+        pair_iter.drop_with_heap(heap);
+
+        // Drop iter and kwargs before propagating error to avoid refcount leak
+        // Note: key and value are consumed by dict.set
+        match dict.set(key, value, heap, interns) {
+            Ok(Some(old_value)) => old_value.drop_with_heap(heap),
+            Ok(None) => {}
+            Err(e) => {
+                iter.drop_with_heap(heap);
+                kwargs.drop_with_heap(heap);
+                return Err(e);
+            }
+        }
+    }
+
+    iter.drop_with_heap(heap);
+    // Process kwargs after the iterable update
+    dict_update_from_kwargs(dict, kwargs, heap, interns)
+}
+
+/// Helper to update a dict from keyword arguments.
+fn dict_update_from_kwargs(
+    dict: &mut Dict,
+    kwargs: KwargsValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    // Use while let to allow draining on error
+    let mut kwargs_iter = kwargs.into_iter();
+    while let Some((key, value)) = kwargs_iter.next() {
+        // Drop key, value, and remaining kwargs before propagating error
+        match dict.set(key, value, heap, interns) {
+            Ok(Some(old_value)) => old_value.drop_with_heap(heap),
+            Ok(None) => {}
+            Err(e) => {
+                for (k, v) in kwargs_iter {
+                    k.drop_with_heap(heap);
+                    v.drop_with_heap(heap);
+                }
+                return Err(e);
+            }
+        }
+    }
+    Ok(Value::None)
+}
+
+/// Implements Python's `dict.setdefault(key[, default])` method.
+///
+/// If key is in the dict, return its value.
+/// If not, insert key with a value of default (or None) and return default.
+fn dict_setdefault(
+    dict: &mut Dict,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let (key, default) = args.get_one_two_args("setdefault", heap)?;
+    let default = default.unwrap_or(Value::None);
+
+    // Check if key exists
+    let result = match dict.get(&key, heap, interns) {
+        Ok(r) => r,
+        Err(e) => {
+            key.drop_with_heap(heap);
+            default.drop_with_heap(heap);
+            return Err(e);
+        }
+    };
+
+    if let Some(existing) = result {
+        // Key exists - return its value (cloned)
+        let value = existing.clone_with_heap(heap);
+        key.drop_with_heap(heap);
+        default.drop_with_heap(heap);
+        Ok(value)
+    } else {
+        // Key doesn't exist - insert default and return it (cloned before insertion)
+        let return_value = default.clone_with_heap(heap);
+        if let Some(old_value) = dict.set(key, default, heap, interns)? {
+            // This shouldn't happen since we checked, but handle it anyway
+            old_value.drop_with_heap(heap);
+        }
+        Ok(return_value)
+    }
+}
+
+/// Implements Python's `dict.popitem()` method.
+///
+/// Removes and returns the last inserted key-value pair as a tuple.
+/// Raises KeyError if the dict is empty.
+fn dict_popitem(dict: &mut Dict, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    if dict.is_empty() {
+        return Err(ExcType::key_error_popitem_empty_dict());
+    }
+
+    // Remove the last entry (LIFO order)
+    let entry = dict.entries.pop().expect("dict is not empty");
+
+    // Remove from indices - need to find the entry with this index
+    // Since we removed the last entry, we need to clear and rebuild indices
+    // (This is simpler than trying to find and remove the specific hash entry)
+    // TODO: This O(n) rebuild could be optimized by finding and removing the
+    // specific hash entry directly from the hashbrown table.
+    dict.indices.clear();
+    for (idx, e) in dict.entries.iter().enumerate() {
+        dict.indices.insert_unique(e.hash, idx, |&i| dict.entries[i].hash);
+    }
+
+    // Create tuple (key, value)
+    let tuple = Tuple::new(vec![entry.key, entry.value]);
+    let heap_id = heap.allocate(HeapData::Tuple(tuple))?;
+    Ok(Value::Ref(heap_id))
 }
 
 // Custom serde implementation for Dict.
@@ -713,4 +1064,67 @@ impl<'de> serde::Deserialize<'de> for Dict {
             contains_refs: fields.contains_refs,
         })
     }
+}
+
+/// Implements Python's `dict.fromkeys(iterable[, value])` classmethod.
+///
+/// Creates a new dictionary with keys from `iterable` and all values set to `value`
+/// (default: None).
+///
+/// This is a classmethod that can be called directly on the dict type:
+/// ```python
+/// dict.fromkeys(['a', 'b', 'c'])  # {'a': None, 'b': None, 'c': None}
+/// dict.fromkeys(['a', 'b'], 0)    # {'a': 0, 'b': 0}
+/// ```
+pub fn dict_fromkeys(args: ArgValues, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Value> {
+    let (iterable, default) = args.get_one_two_args("dict.fromkeys", heap)?;
+    let default = default.unwrap_or(Value::None);
+
+    // Iterate over the iterable to get keys
+    // Drop default before propagating error to avoid refcount leak
+    let iter_result = ForIterator::new(iterable, heap, interns);
+    let mut iter = match iter_result {
+        Ok(i) => i,
+        Err(e) => {
+            default.drop_with_heap(heap);
+            return Err(e);
+        }
+    };
+
+    let mut dict = Dict::new();
+
+    loop {
+        // Drop iter and default before propagating error to avoid refcount leak
+        let next_result = iter.for_next(heap, interns);
+        let key = match next_result {
+            Ok(Some(k)) => k,
+            Ok(None) => break,
+            Err(e) => {
+                iter.drop_with_heap(heap);
+                default.drop_with_heap(heap);
+                return Err(e);
+            }
+        };
+
+        // Clone the default value for each key
+        let value = default.clone_with_heap(heap);
+        // Drop key, value, iter, default before propagating error
+        let set_result = dict.set(key, value, heap, interns);
+        match set_result {
+            Ok(Some(old_value)) => old_value.drop_with_heap(heap),
+            Ok(None) => {}
+            Err(e) => {
+                // Note: key and value are consumed by dict.set, so we only drop iter and default
+                iter.drop_with_heap(heap);
+                default.drop_with_heap(heap);
+                return Err(e);
+            }
+        }
+    }
+
+    iter.drop_with_heap(heap);
+    default.drop_with_heap(heap);
+
+    let heap_id = heap.allocate(HeapData::Dict(dict))?;
+    Ok(Value::Ref(heap_id))
 }

@@ -3,7 +3,6 @@
 use super::VM;
 use crate::{
     exception_private::{ExcType, RunError},
-    intern::StringId,
     io::PrintWriter,
     resource::ResourceTracker,
     types::PyTrait,
@@ -103,28 +102,5 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         } else {
             Err(ExcType::type_error("unsupported operand type(s) for %"))
         }
-    }
-
-    /// Loads an attribute from an object and pushes it onto the stack.
-    ///
-    /// Returns an AttributeError if the attribute doesn't exist.
-    pub(super) fn load_attr(&mut self, name_id: StringId) -> Result<(), RunError> {
-        let obj = self.pop();
-        let result = obj.py_get_attr(name_id, self.heap, self.interns);
-        obj.drop_with_heap(self.heap);
-        self.push(result?);
-        Ok(())
-    }
-
-    /// Stores a value as an attribute on an object.
-    ///
-    /// Returns an AttributeError if the attribute cannot be set.
-    pub(super) fn store_attr(&mut self, name_id: StringId) -> Result<(), RunError> {
-        let obj = self.pop();
-        let value = self.pop();
-        // py_set_attr takes ownership of value and drops it on error
-        let result = obj.py_set_attr(name_id, value, self.heap, self.interns);
-        obj.drop_with_heap(self.heap);
-        result
     }
 }

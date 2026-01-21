@@ -21,12 +21,13 @@ use crate::{
     exception_private::ExcType,
     exception_public::{MontyException, StackFrame},
     expressions::{
-        Callable, CmpOperator, Comprehension, Expr, ExprLoc, Identifier, Literal, NameScope, Operator,
+        Callable, CmpOperator, Comprehension, Expr, ExprLoc, Identifier, Literal, NameScope, Node, Operator,
         PreparedFunctionDef, PreparedNode, UnpackTarget,
     },
-    fstring::{ConversionFlag, FStringPart, FormatSpec, encode_format_spec},
+    fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
     function::Function,
-    intern::Interns,
+    intern::{Interns, StringId},
+    modules::BuiltinModule,
     parse::{CodeRange, ExceptHandler, Try},
     value::{Attr, Value},
 };
@@ -200,7 +201,6 @@ impl<'a> Compiler<'a> {
     /// Compiles a single statement.
     fn compile_stmt(&mut self, node: &PreparedNode) -> Result<(), CompileError> {
         // Node is an alias, use qualified path for matching
-        use crate::expressions::Node;
         match node {
             Node::Expr(expr) => {
                 self.compile_expr(expr)?;
@@ -246,11 +246,18 @@ impl<'a> Compiler<'a> {
                 self.compile_store(target);
             }
 
-            Node::SubscriptAssign { target, index, value } => {
+            Node::SubscriptAssign {
+                target,
+                index,
+                value,
+                target_position,
+            } => {
                 // Stack order for StoreSubscr: value, obj, index
                 self.compile_expr(value)?;
                 self.compile_name(target);
                 self.compile_expr(index)?;
+                // Set location to the target (e.g., `lst[10]`) for proper caret in tracebacks
+                self.code.set_location(*target_position, None);
                 self.code.emit(Opcode::StoreSubscr);
             }
 
@@ -304,6 +311,18 @@ impl<'a> Compiler<'a> {
 
             Node::Try(try_block) => {
                 self.compile_try(try_block)?;
+            }
+
+            Node::Import { module_name, binding } => {
+                self.compile_import(*module_name, binding)?;
+            }
+
+            Node::ImportFrom {
+                module_name,
+                names,
+                position,
+            } => {
+                self.compile_import_from(*module_name, names, *position)?;
             }
 
             // These are handled during the prepare phase and produce no bytecode
@@ -389,6 +408,63 @@ impl<'a> Compiler<'a> {
 
         // 5. Store the function object to its name slot
         self.compile_store(&func_def.name);
+
+        Ok(())
+    }
+
+    /// Compiles an import statement.
+    ///
+    /// Emits `LoadModule` to create the module, then stores it to the binding name.
+    fn compile_import(&mut self, module_name: StringId, binding: &Identifier) -> Result<(), CompileError> {
+        let position = binding.position;
+        // Look up the module by name
+        let builtin_module = BuiltinModule::from_string_id(module_name)
+            .ok_or_else(|| CompileError::new_module_not_found(self.interns.get_str(module_name), position))?;
+
+        // Emit LoadModule with the module ID
+        self.code.set_location(position, None);
+        self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
+
+        // Store to the binding (respects Local/Global/Cell scope)
+        self.compile_store(binding);
+
+        Ok(())
+    }
+
+    /// Compiles a `from module import name, ...` statement.
+    ///
+    /// Creates the module once, then loads each attribute and stores to the binding.
+    /// Invalid attribute names will raise `AttributeError` at runtime.
+    fn compile_import_from(
+        &mut self,
+        module_name: StringId,
+        names: &[(StringId, Identifier)],
+        position: CodeRange,
+    ) -> Result<(), CompileError> {
+        let module_name_str = self.interns.get_str(module_name);
+
+        // Look up the module
+        let builtin_module = BuiltinModule::from_string_id(module_name)
+            .ok_or_else(|| CompileError::new_module_not_found(module_name_str, position))?;
+
+        // Load the module once
+        self.code.set_location(position, None);
+        self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
+
+        // For each name to import
+        for (i, (import_name, binding)) in names.iter().enumerate() {
+            // Dup the module if this isn't the last import (last one consumes the module)
+            if i < names.len() - 1 {
+                self.code.emit(Opcode::Dup);
+            }
+
+            // Load the attribute from the module (raises ImportError if not found)
+            let name_idx = u16::try_from(import_name.index()).expect("name index exceeds u16");
+            self.code.emit_u16(Opcode::LoadAttrImport, name_idx);
+
+            // Store to the binding
+            self.compile_store(binding);
+        }
 
         Ok(())
     }
@@ -1372,9 +1448,9 @@ impl<'a> Compiler<'a> {
         let skip_jump = self.code.emit_jump(Opcode::JumpIfTrue);
 
         // Raise AssertionError
-        let exc_idx = self.code.add_const(Value::Builtin(Builtins::ExcType(
-            crate::exception_private::ExcType::AssertionError,
-        )));
+        let exc_idx = self
+            .code
+            .add_const(Value::Builtin(Builtins::ExcType(ExcType::AssertionError)));
         self.code.emit_u16(Opcode::LoadConst, exc_idx);
 
         if let Some(msg_expr) = msg {
@@ -1485,7 +1561,7 @@ impl<'a> Compiler<'a> {
     ///
     /// Uses the encoding from `fstring::encode_format_spec` and stores it as
     /// a negative integer to distinguish from regular ints.
-    fn add_format_spec_const(&mut self, spec: &crate::fstring::ParsedFormatSpec) -> u16 {
+    fn add_format_spec_const(&mut self, spec: &ParsedFormatSpec) -> u16 {
         let encoded = encode_format_spec(spec);
         // Use negative to distinguish from regular ints (format spec marker)
         // We negate and subtract 1 to ensure it's negative and recoverable
@@ -1825,31 +1901,52 @@ impl<'a> Compiler<'a> {
 /// Error that can occur during bytecode compilation.
 ///
 /// These are typically limit violations that can't be represented in the bytecode
-/// format (e.g., too many arguments, too many local variables).
+/// format (e.g., too many arguments, too many local variables), or import errors
+/// detected at compile time.
 #[derive(Debug, Clone)]
 pub struct CompileError {
-    /// Error message describing what limit was exceeded.
+    /// Error message describing the issue.
     message: Cow<'static, str>,
     /// Source location where the error occurred.
     position: CodeRange,
+    /// Exception type to use (defaults to SyntaxError).
+    exc_type: ExcType,
 }
 
 impl CompileError {
     /// Creates a new compile error with the given message and position.
+    ///
+    /// Defaults to `SyntaxError` exception type.
     fn new(message: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
         Self {
             message: message.into(),
             position,
+            exc_type: ExcType::SyntaxError,
         }
     }
 
-    /// Converts this compile error into a Python SyntaxError exception.
+    /// Creates a ModuleNotFoundError for when a module cannot be found.
+    ///
+    /// Matches CPython's format: `ModuleNotFoundError: No module named 'name'`
+    fn new_module_not_found(module_name: &str, position: CodeRange) -> Self {
+        Self {
+            message: format!("No module named '{module_name}'").into(),
+            position,
+            exc_type: ExcType::ModuleNotFoundError,
+        }
+    }
+
+    /// Converts this compile error into a Python exception.
+    ///
+    /// Uses the stored exception type (SyntaxError or ModuleNotFoundError).
+    /// Module errors have `hide_caret: true` since CPython doesn't show carets for these.
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
-        MontyException::new_full(
-            ExcType::SyntaxError,
-            Some(self.message.into_owned()),
-            vec![StackFrame::from_position(self.position, filename, source)],
-        )
+        let mut frame = StackFrame::from_position(self.position, filename, source);
+        // CPython doesn't show carets for module not found errors
+        if self.exc_type == ExcType::ModuleNotFoundError {
+            frame.hide_caret = true;
+        }
+        MontyException::new_full(self.exc_type, Some(self.message.into_owned()), vec![frame])
     }
 }
 
@@ -1917,28 +2014,5 @@ fn cmp_operator_to_opcode(op: &CmpOperator) -> Opcode {
         CmpOperator::NotIn => Opcode::CompareNotIn,
         // ModEq is handled specially at the call site (needs constant operand)
         CmpOperator::ModEq(_) => unreachable!("ModEq handled at call site"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::intern::InternerBuilder;
-
-    /// Creates an empty Interns for testing.
-    fn test_interns() -> Interns {
-        let builder = InternerBuilder::default();
-        Interns::new(builder, Vec::new(), Vec::new())
-    }
-
-    // Basic smoke test - more comprehensive tests will come with the VM
-    #[test]
-    fn test_compiler_creates_code() {
-        let interns = test_interns();
-        let result = Compiler::compile_module(&[], &interns, 0).unwrap();
-        // Empty module should have LoadNone + ReturnValue
-        assert_eq!(result.code.bytecode().len(), 2);
-        assert_eq!(result.code.bytecode()[0], Opcode::LoadNone as u8);
-        assert_eq!(result.code.bytecode()[1], Opcode::ReturnValue as u8);
     }
 }

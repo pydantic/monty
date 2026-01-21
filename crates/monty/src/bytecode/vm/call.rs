@@ -7,13 +7,19 @@
 use super::{CallFrame, VM};
 use crate::{
     args::{ArgValues, KwargsValues},
-    builtins::BuiltinsFunctions,
+    builtins::{Builtins, BuiltinsFunctions},
     exception_private::{ExcType, RunError},
-    heap::{HeapData, HeapId},
-    intern::{ExtFunctionId, FunctionId, StringId},
+    heap::{Heap, HeapData, HeapId},
+    intern::{ExtFunctionId, FunctionId, Interns, StaticStrings, StringId},
     io::PrintWriter,
     resource::ResourceTracker,
-    types::{Dict, PyTrait, Type, str::call_str_method},
+    types::{
+        Dict, PyTrait, Type,
+        bytes::{bytes_fromhex, call_bytes_method},
+        dict::dict_fromkeys,
+        list::do_list_sort,
+        str::call_str_method,
+    },
     value::{Attr, Value},
 };
 
@@ -207,11 +213,22 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// For heap-allocated objects (`Value::Ref`), dispatches to the type's
     /// `py_call_attr` implementation via `heap.call_attr()`.
     /// For interned strings (`Value::InternString`), uses the unified `call_str_method`.
+    /// For interned bytes (`Value::InternBytes`), uses the unified `call_bytes_method`.
+    ///
+    /// Special handling: `list.sort(key=...)` is intercepted here to allow calling
+    /// builtin key functions with VM access.
     fn call_method(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<Value, RunError> {
         let attr = Attr::Interned(name_id);
 
         match obj {
             Value::Ref(heap_id) => {
+                // Check for list.sort - needs special handling for key functions
+                if name_id == StaticStrings::Sort && matches!(self.heap.get(heap_id), HeapData::List(_)) {
+                    let result = do_list_sort(heap_id, args, self.heap, self.interns, self.print_writer);
+                    obj.drop_with_heap(self.heap);
+                    return result.map(|()| Value::None);
+                }
+
                 // Call the method on the heap object
                 let result = self.heap.call_attr(heap_id, &attr, args, self.interns);
                 // Drop the object reference after the call
@@ -222,6 +239,15 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 // Call string method on interned string literal using the unified dispatcher
                 let s = self.interns.get_str(string_id);
                 call_str_method(s, name_id, args, self.heap, self.interns)
+            }
+            Value::InternBytes(bytes_id) => {
+                // Call bytes method on interned bytes literal using the unified dispatcher
+                let b = self.interns.get_bytes(bytes_id);
+                call_bytes_method(b, name_id, args, self.heap, self.interns)
+            }
+            Value::Builtin(Builtins::Type(t)) => {
+                // Handle classmethods on type objects like dict.fromkeys()
+                call_type_method(t, name_id, args, self.heap, self.interns)
             }
             _ => {
                 // Non-heap values without method support
@@ -546,4 +572,25 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
         Ok(())
     }
+}
+
+/// Dispatches a classmethod call on a type object.
+///
+/// Handles classmethods like `dict.fromkeys()` and `bytes.fromhex()` that are
+/// called on the type itself rather than on an instance.
+fn call_type_method(
+    t: Type,
+    method_id: StringId,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> Result<Value, RunError> {
+    match (t, method_id) {
+        (Type::Dict, m) if m == StaticStrings::Fromkeys => return dict_fromkeys(args, heap, interns),
+        (Type::Bytes, m) if m == StaticStrings::Fromhex => return bytes_fromhex(args, heap, interns),
+        _ => {}
+    }
+    // Other types or unknown methods - report actual type name, not 'type'
+    args.drop_with_heap(heap);
+    Err(ExcType::attribute_error(t, interns.get_str(method_id)))
 }

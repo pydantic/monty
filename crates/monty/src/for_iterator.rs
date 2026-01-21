@@ -48,6 +48,8 @@ pub enum IterState {
     List { list_id: HeapId, index: usize },
     /// Tuple iterator needs to read item at this index.
     Tuple { tuple_id: HeapId, index: usize },
+    /// NamedTuple iterator needs to read item at this index.
+    NamedTuple { namedtuple_id: HeapId, index: usize },
     /// Dict iterator needs to read key at this index; check len for mutation.
     DictKeys {
         dict_id: HeapId,
@@ -181,6 +183,16 @@ impl ForIterator {
                 } else {
                     IterState::Tuple {
                         tuple_id: *heap_id,
+                        index: self.index,
+                    }
+                }
+            }
+            ForIterValue::NamedTuple { heap_id, len } => {
+                if self.index >= *len {
+                    IterState::Exhausted
+                } else {
+                    IterState::NamedTuple {
+                        namedtuple_id: *heap_id,
                         index: self.index,
                     }
                 }
@@ -325,6 +337,20 @@ impl ForIterator {
                 };
                 Ok(Some(clone_and_inc_ref(item, heap)))
             }
+            ForIterValue::NamedTuple { heap_id, len } => {
+                if self.index >= *len {
+                    return Ok(None);
+                }
+                let i = self.index;
+                self.index += 1;
+                let item = {
+                    let HeapData::NamedTuple(namedtuple) = heap.get(*heap_id) else {
+                        unreachable!("ForIterValue::NamedTuple should only hold namedtuple heap IDs")
+                    };
+                    namedtuple.as_vec()[i].copy_for_extend()
+                };
+                Ok(Some(clone_and_inc_ref(item, heap)))
+            }
             ForIterValue::DictKeys { heap_id, len } => {
                 if self.index >= *len {
                     return Ok(None);
@@ -431,6 +457,7 @@ impl ForIterator {
         let len = match &self.iter_value {
             ForIterValue::Range { len, .. }
             | ForIterValue::Tuple { len, .. }
+            | ForIterValue::NamedTuple { len, .. }
             | ForIterValue::IterStr { len, .. }
             | ForIterValue::HeapBytes { len, .. }
             | ForIterValue::InternBytes { len, .. }
@@ -489,6 +516,9 @@ enum ForIterValue {
     /// Iterating over a heap-allocated Tuple, yields cloned items.
     /// Tuples are immutable so we capture the length at construction.
     Tuple { heap_id: HeapId, len: usize },
+    /// Iterating over a heap-allocated NamedTuple, yields cloned items.
+    /// NamedTuples are immutable so we capture the length at construction.
+    NamedTuple { heap_id: HeapId, len: usize },
     /// Iterating over a heap-allocated Dict, yields cloned keys.
     /// Checks `len` against current dict size to detect mutation (raises RuntimeError).
     DictKeys { heap_id: HeapId, len: usize },
@@ -565,6 +595,10 @@ impl ForIterValue {
                 heap_id,
                 len: tuple.as_vec().len(),
             }),
+            HeapData::NamedTuple(namedtuple) => Some(Self::NamedTuple {
+                heap_id,
+                len: namedtuple.len(),
+            }),
             HeapData::Dict(dict) => Some(Self::DictKeys {
                 heap_id,
                 len: dict.len(),
@@ -580,14 +614,15 @@ impl ForIterValue {
                 len: frozenset.len(),
             }),
             HeapData::Range(range) => Some(Self::from_range(range)),
-            // Closures, FunctionDefaults, Cells, Exceptions, Dataclasses, Iterators, and LongInts are not iterable
+            // Closures, FunctionDefaults, Cells, Exceptions, Dataclasses, Iterators, LongInts, and Modules are not iterable
             HeapData::Closure(_, _, _)
             | HeapData::FunctionDefaults(_, _)
             | HeapData::Cell(_)
             | HeapData::Exception(_)
             | HeapData::Dataclass(_)
             | HeapData::Iterator(_)
-            | HeapData::LongInt(_) => None,
+            | HeapData::LongInt(_)
+            | HeapData::Module(_) => None,
         }
     }
 }

@@ -1,4 +1,5 @@
 # absolutely minimal VERSIONS file exposing only the modules required
+# all these modules are required to get type checking working with ty
 
 _collections_abc: 3.3-
 _typeshed: 3.0-  # not present at runtime, only for type checking

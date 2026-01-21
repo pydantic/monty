@@ -102,3 +102,78 @@ assert range(5, 0, -2) == range(5, -1, -2), 'negative step same sequence'
 assert range(0) == range(0), 'empty ranges equal'
 assert range(5, 5) == range(10, 10), 'different empty ranges equal'
 assert range(0, 0) == range(5, 5), 'empty ranges with different params equal'
+
+# === Range indexing (getitem) ===
+# Basic indexing for range(stop)
+r = range(5)
+assert r[0] == 0, 'range(5)[0]'
+assert r[1] == 1, 'range(5)[1]'
+assert r[4] == 4, 'range(5)[4]'
+
+# Negative indexing
+assert r[-1] == 4, 'range(5)[-1]'
+assert r[-2] == 3, 'range(5)[-2]'
+assert r[-5] == 0, 'range(5)[-5]'
+
+# Range with start
+r = range(10, 15)
+assert r[0] == 10, 'range(10, 15)[0]'
+assert r[1] == 11, 'range(10, 15)[1]'
+assert r[4] == 14, 'range(10, 15)[4]'
+assert r[-1] == 14, 'range(10, 15)[-1]'
+assert r[-5] == 10, 'range(10, 15)[-5]'
+
+# Range with step
+r = range(0, 10, 2)
+assert r[0] == 0, 'range(0, 10, 2)[0]'
+assert r[1] == 2, 'range(0, 10, 2)[1]'
+assert r[2] == 4, 'range(0, 10, 2)[2]'
+assert r[3] == 6, 'range(0, 10, 2)[3]'
+assert r[4] == 8, 'range(0, 10, 2)[4]'
+assert r[-1] == 8, 'range(0, 10, 2)[-1]'
+assert r[-2] == 6, 'range(0, 10, 2)[-2]'
+
+# Range with step 3
+r = range(1, 10, 3)
+assert r[0] == 1, 'range(1, 10, 3)[0]'
+assert r[1] == 4, 'range(1, 10, 3)[1]'
+assert r[2] == 7, 'range(1, 10, 3)[2]'
+assert r[-1] == 7, 'range(1, 10, 3)[-1]'
+
+# Range with negative step
+r = range(10, 0, -1)
+assert r[0] == 10, 'range(10, 0, -1)[0]'
+assert r[1] == 9, 'range(10, 0, -1)[1]'
+assert r[9] == 1, 'range(10, 0, -1)[9]'
+assert r[-1] == 1, 'range(10, 0, -1)[-1]'
+assert r[-10] == 10, 'range(10, 0, -1)[-10]'
+
+# Range with negative step and larger step
+r = range(10, 0, -2)
+assert r[0] == 10, 'range(10, 0, -2)[0]'
+assert r[1] == 8, 'range(10, 0, -2)[1]'
+assert r[2] == 6, 'range(10, 0, -2)[2]'
+assert r[3] == 4, 'range(10, 0, -2)[3]'
+assert r[4] == 2, 'range(10, 0, -2)[4]'
+assert r[-1] == 2, 'range(10, 0, -2)[-1]'
+
+# Range starting from negative
+r = range(-5, 0)
+assert r[0] == -5, 'range(-5, 0)[0]'
+assert r[2] == -3, 'range(-5, 0)[2]'
+assert r[-1] == -1, 'range(-5, 0)[-1]'
+
+# Single element range
+r = range(42, 43)
+assert r[0] == 42, 'single element range[0]'
+assert r[-1] == 42, 'single element range[-1]'
+
+# Variable index
+r = range(100)
+i = 50
+assert r[i] == 50, 'range getitem with variable index'
+
+# Bool indices (True=1, False=0)
+r = range(10, 15)
+assert r[False] == 10, 'range getitem with False'
+assert r[True] == 11, 'range getitem with True'

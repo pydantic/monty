@@ -4,7 +4,7 @@ use crate::{
     exception_private::{ExcType, RawStackFrame},
     intern::Interns,
     parse::CodeRange,
-    types::str::string_repr,
+    types::str::StringRepr,
 };
 
 /// Public representation of a Monty exception.
@@ -135,7 +135,7 @@ impl MontyException {
     pub fn py_repr(&self) -> String {
         let type_str: &'static str = self.exc_type.into();
         if let Some(msg) = &self.message {
-            format!("{}({})", type_str, string_repr(msg))
+            format!("{}({})", type_str, StringRepr(msg))
         } else {
             format!("{type_str}()")
         }
@@ -257,6 +257,23 @@ impl StackFrame {
                 .and_then(|ln| source.lines().nth(ln as usize))
                 .map(str::to_string),
             hide_caret: false,
+        }
+    }
+
+    /// Creates a `StackFrame` from a `CodeRange` without caret markers.
+    ///
+    /// Used for errors like `ImportError` where CPython doesn't show caret markers.
+    pub(crate) fn from_position_no_caret(position: CodeRange, filename: &str, source: &str) -> Self {
+        Self {
+            filename: filename.to_string(),
+            start: position.start(),
+            end: position.end(),
+            frame_name: None,
+            preview_line: position
+                .preview_line_number()
+                .and_then(|ln| source.lines().nth(ln as usize))
+                .map(str::to_string),
+            hide_caret: true,
         }
     }
 }

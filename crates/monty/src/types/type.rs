@@ -8,7 +8,7 @@ use crate::{
     heap::{Heap, HeapData},
     intern::Interns,
     resource::ResourceTracker,
-    types::{Bytes, Dict, FrozenSet, List, PyTrait, Range, Set, Str, Tuple},
+    types::{Bytes, Dict, FrozenSet, List, PyTrait, Range, Set, Str, Tuple, str::StringRepr},
     value::Value,
 };
 
@@ -34,6 +34,7 @@ pub enum Type {
     Bytes,
     List,
     Tuple,
+    NamedTuple,
     Dict,
     Set,
     FrozenSet,
@@ -44,6 +45,13 @@ pub enum Type {
     BuiltinFunction,
     Cell,
     Iterator,
+    Module,
+    /// Marker types like stdout/stderr - displays as "TextIOWrapper"
+    #[strum(serialize = "TextIOWrapper")]
+    TextIOWrapper,
+    /// typing module special forms (Any, Optional, Union, etc.) - displays as "typing._SpecialForm"
+    #[strum(serialize = "typing._SpecialForm")]
+    SpecialForm,
 }
 
 impl fmt::Display for Type {
@@ -60,6 +68,7 @@ impl fmt::Display for Type {
             Self::Bytes => f.write_str("bytes"),
             Self::List => f.write_str("list"),
             Self::Tuple => f.write_str("tuple"),
+            Self::NamedTuple => f.write_str("namedtuple"),
             Self::Dict => f.write_str("dict"),
             Self::Set => f.write_str("set"),
             Self::FrozenSet => f.write_str("frozenset"),
@@ -69,6 +78,9 @@ impl fmt::Display for Type {
             Self::BuiltinFunction => f.write_str("builtin_function_or_method"),
             Self::Cell => f.write_str("cell"),
             Self::Iterator => f.write_str("iterator"),
+            Self::Module => f.write_str("module"),
+            Self::TextIOWrapper => f.write_str("_io.TextIOWrapper"),
+            Self::SpecialForm => f.write_str("typing._SpecialForm"),
         }
     }
 }
@@ -164,6 +176,11 @@ impl Type {
                             Value::Int(i) => Ok(Value::Int(*i)),
                             Value::Float(f) => Ok(Value::Int(f64_to_i64_truncate(*f))),
                             Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
+                            Value::InternString(string_id) => parse_i64_from_str(interns.get_str(*string_id)),
+                            Value::Ref(heap_id) => match heap.get(*heap_id) {
+                                HeapData::Str(s) => parse_i64_from_str(s.as_str()),
+                                _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
+                            },
                             _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
                         };
                         v.drop_with_heap(heap);
@@ -267,6 +284,35 @@ fn value_error_could_not_convert_string_to_float(value: &str) -> RunError {
     SimpleException::new_msg(
         ExcType::ValueError,
         format!("could not convert string to float: '{value}'"),
+    )
+    .into()
+}
+
+/// Parses a Python `int()` string argument into an `i64`.
+///
+/// Handles whitespace stripping and removing _ and returns appropriate `ValueError` on failure.
+fn parse_i64_from_str(value: &str) -> RunResult<Value> {
+    if let Ok(int) = value.parse::<i64>() {
+        return Ok(Value::Int(int));
+    }
+    let trimmed = value.trim();
+
+    if let Ok(int) = trimmed.parse::<i64>() {
+        Ok(Value::Int(int))
+    } else if let Ok(int) = trimmed.replace('_', "").parse::<i64>() {
+        Ok(Value::Int(int))
+    } else {
+        Err(value_error_invalid_literal_for_int(value))
+    }
+}
+
+/// Creates the `ValueError` raised by `int()` when a string cannot be parsed.
+///
+/// Matches CPython's message format: `invalid literal for int() with base 10: '...'`.
+fn value_error_invalid_literal_for_int(value: &str) -> RunError {
+    SimpleException::new_msg(
+        ExcType::ValueError,
+        format!("invalid literal for int() with base 10: {}", StringRepr(value)),
     )
     .into()
 }

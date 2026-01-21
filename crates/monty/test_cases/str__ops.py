@@ -81,3 +81,54 @@ assert s.join(['a', 'b']) == 'a.b', 'join with heap string'
 # Mixed string types in iterable (interned and heap)
 mixed = ['hello', str('world')]
 assert ' '.join(mixed) == 'hello world', 'join with mixed string types'
+
+# === String indexing (getitem) ===
+# Basic indexing
+assert 'hello'[0] == 'h', 'getitem index 0'
+assert 'hello'[1] == 'e', 'getitem index 1'
+assert 'hello'[4] == 'o', 'getitem last index'
+
+# Negative indexing
+assert 'hello'[-1] == 'o', 'getitem -1'
+assert 'hello'[-2] == 'l', 'getitem -2'
+assert 'hello'[-5] == 'h', 'getitem -5'
+
+# Single character strings
+assert 'a'[0] == 'a', 'getitem single char at 0'
+assert 'a'[-1] == 'a', 'getitem single char at -1'
+
+# Unicode strings
+s = 'café'
+assert s[0] == 'c', 'unicode getitem 0'
+assert s[1] == 'a', 'unicode getitem 1'
+assert s[2] == 'f', 'unicode getitem 2'
+assert s[3] == 'é', 'unicode getitem 3 (accented)'
+assert s[-1] == 'é', 'unicode getitem -1'
+
+# Multi-byte unicode (CJK characters)
+s = '日本語'
+assert s[0] == '日', 'cjk getitem 0'
+assert s[1] == '本', 'cjk getitem 1'
+assert s[2] == '語', 'cjk getitem 2'
+assert s[-1] == '語', 'cjk getitem -1'
+
+# Emoji (multi-byte UTF-8)
+s = 'a🎉b'
+assert s[0] == 'a', 'emoji string getitem 0'
+assert s[1] == '🎉', 'emoji string getitem 1 (emoji)'
+assert s[2] == 'b', 'emoji string getitem 2'
+
+# Heap-allocated strings
+s = str('hello')
+assert s[0] == 'h', 'heap string getitem'
+assert s[-1] == 'o', 'heap string negative getitem'
+
+# Variable index
+s = 'abc'
+i = 1
+assert s[i] == 'b', 'getitem with variable index'
+
+# Bool indices (True=1, False=0)
+s = 'abc'
+assert s[False] == 'a', 'str getitem with False'
+assert s[True] == 'b', 'str getitem with True'

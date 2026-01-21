@@ -127,6 +127,87 @@ impl ArgValues {
         }
     }
 
+    /// Extracts two keyword-only arguments by name.
+    ///
+    /// Validates that no positional arguments are provided and only the specified
+    /// keyword arguments are present. Returns `(None, None)` for missing kwargs.
+    ///
+    /// # Arguments
+    /// * `method_name` - Method name for error messages (e.g., "list.sort")
+    /// * `kwarg1` - Name of the first keyword argument
+    /// * `kwarg2` - Name of the second keyword argument
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - Any positional arguments are provided
+    /// - A keyword argument other than `kwarg1` or `kwarg2` is provided
+    /// - A keyword is not a string
+    pub fn extract_two_kwargs_only(
+        self,
+        method_name: &str,
+        kwarg1: &str,
+        kwarg2: &str,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<(Option<Value>, Option<Value>)> {
+        let (pos, kwargs) = self.into_parts();
+
+        // Check no positional arguments
+        let mut pos_iter = pos;
+        if pos_iter.next().is_some() {
+            for v in pos_iter {
+                v.drop_with_heap(heap);
+            }
+            kwargs.drop_with_heap(heap);
+            return Err(ExcType::type_error_no_args(method_name, 1));
+        }
+
+        // Parse keyword arguments
+        let mut val1: Option<Value> = None;
+        let mut val2: Option<Value> = None;
+
+        for (key, value) in kwargs {
+            let Some(keyword_name) = key.as_either_str(heap) else {
+                key.drop_with_heap(heap);
+                value.drop_with_heap(heap);
+                if let Some(v) = val1 {
+                    v.drop_with_heap(heap);
+                }
+                if let Some(v) = val2 {
+                    v.drop_with_heap(heap);
+                }
+                return Err(ExcType::type_error("keywords must be strings"));
+            };
+
+            let key_str = keyword_name.as_str(interns);
+            if key_str == kwarg1 {
+                key.drop_with_heap(heap);
+                if let Some(old) = val1.replace(value) {
+                    old.drop_with_heap(heap);
+                }
+            } else if key_str == kwarg2 {
+                key.drop_with_heap(heap);
+                if let Some(old) = val2.replace(value) {
+                    old.drop_with_heap(heap);
+                }
+            } else {
+                key.drop_with_heap(heap);
+                value.drop_with_heap(heap);
+                if let Some(v) = val1 {
+                    v.drop_with_heap(heap);
+                }
+                if let Some(v) = val2 {
+                    v.drop_with_heap(heap);
+                }
+                return Err(ExcType::type_error(format!(
+                    "'{key_str}' is an invalid keyword argument for {method_name}()"
+                )));
+            }
+        }
+
+        Ok((val1, val2))
+    }
+
     /// Splits into positional iterator and keyword values without allocating
     /// for the common One/Two cases.
     pub fn into_parts(self) -> (ArgPosIter, KwargsValues) {

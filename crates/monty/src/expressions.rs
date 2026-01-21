@@ -6,7 +6,7 @@ use crate::{
     namespace::NamespaceId,
     parse::{CodeRange, Try},
     signature::Signature,
-    value::{Attr, Value},
+    value::{Attr, Marker, Value},
 };
 
 /// Indicates which namespace a variable reference belongs to.
@@ -265,6 +265,8 @@ pub enum Literal {
     Str(StringId),
     /// An interned bytes literal. The BytesId references the bytes in the Interns table.
     Bytes(BytesId),
+    /// A marker value (e.g., typing constructs like Any, Optional, etc.).
+    Marker(Marker),
 }
 
 impl From<Literal> for Value {
@@ -281,6 +283,7 @@ impl From<Literal> for Value {
             Literal::Float(v) => Self::Float(v),
             Literal::Str(string_id) => Self::InternString(string_id),
             Literal::Bytes(bytes_id) => Self::InternBytes(bytes_id),
+            Literal::Marker(marker) => Self::Marker(marker),
         }
     }
 }
@@ -342,6 +345,8 @@ pub enum Node<F> {
         target: Identifier,
         index: ExprLoc,
         value: ExprLoc,
+        /// Position of the subscript expression (e.g., `lst[10]`) for traceback carets.
+        target_position: CodeRange,
     },
     /// Attribute assignment (e.g., `point.x = 5` or `a.b.c = 5`).
     ///
@@ -388,6 +393,29 @@ pub enum Node<F> {
     /// Executes body, catches matching exceptions with handlers, runs else if no exception,
     /// and always runs finally.
     Try(Try<Self>),
+    /// Import statement (e.g., `import sys`, `import sys as s`).
+    ///
+    /// Loads a module and binds it to a name in the current namespace.
+    Import {
+        /// The module name to import (e.g., "sys", "typing").
+        module_name: StringId,
+        /// The binding target - contains the name (or alias), position, and namespace slot.
+        /// After prepare phase, this includes the resolved namespace slot for storing the module.
+        binding: Identifier,
+    },
+    /// From-import statement (e.g., `from typing import TYPE_CHECKING`).
+    ///
+    /// Imports specific names from a module into the current namespace.
+    ImportFrom {
+        /// The module name to import from (e.g., "typing").
+        module_name: StringId,
+        /// Names to import: (import_name, binding) pairs.
+        /// The import_name is the name in the module, the binding is the local name
+        /// (alias if provided, otherwise the import name) with resolved namespace slot.
+        names: Vec<(StringId, Identifier)>,
+        /// Source position for error reporting.
+        position: CodeRange,
+    },
 }
 
 /// A prepared function definition with resolved names and scope information.

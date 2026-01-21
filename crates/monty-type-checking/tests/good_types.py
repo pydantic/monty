@@ -1,3 +1,4 @@
+import sys
 from typing import assert_type
 
 # === Type checking helper functions ===
@@ -367,3 +368,9 @@ def may_fail(x_fail: int) -> int:
 
 def not_implemented() -> None:
     raise NotImplementedError('subclass must implement')
+
+
+print(sys.version)
+print(sys.version_info)
+print(None, file=sys.stdout)
+print(None, file=sys.stderr)

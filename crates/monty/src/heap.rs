@@ -16,7 +16,8 @@ use crate::{
     intern::{FunctionId, Interns},
     resource::{ResourceError, ResourceTracker},
     types::{
-        Bytes, Dataclass, Dict, FrozenSet, List, LongInt, PyTrait, Range, Set, Str, Tuple, Type, str::allocate_char,
+        Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, NamedTuple, PyTrait, Range, Set, Str, Tuple, Type,
+        str::allocate_char,
     },
     value::{Attr, Value},
 };
@@ -47,6 +48,7 @@ pub(crate) enum HeapData {
     Bytes(Bytes),
     List(List),
     Tuple(Tuple),
+    NamedTuple(NamedTuple),
     Dict(Dict),
     Set(Set),
     FrozenSet(FrozenSet),
@@ -97,6 +99,11 @@ pub(crate) enum HeapData {
     /// when values fit, and promote to LongInt on overflow. When LongInt results fit back
     /// in i64, they are demoted back to `Value::Int` for performance.
     LongInt(LongInt),
+    /// A Python module (e.g., `sys`, `typing`).
+    ///
+    /// Modules have a name and a dictionary of attributes. They are created by
+    /// import statements and can have refs to other heap values in their attributes.
+    Module(Module),
 }
 
 impl HeapData {
@@ -114,6 +121,7 @@ impl HeapData {
             self,
             Self::List(_)
                 | Self::Tuple(_)
+                | Self::NamedTuple(_)
                 | Self::Dict(_)
                 | Self::Set(_)
                 | Self::FrozenSet(_)
@@ -122,6 +130,7 @@ impl HeapData {
                 | Self::Cell(_)
                 | Self::Dataclass(_)
                 | Self::Iterator(_)
+                | Self::Module(_)
         )
     }
 
@@ -137,6 +146,7 @@ impl HeapData {
         match self {
             Self::List(list) => list.contains_refs(),
             Self::Tuple(tuple) => tuple.contains_refs(),
+            Self::NamedTuple(nt) => nt.contains_refs(),
             Self::Dict(dict) => dict.has_refs(),
             Self::Set(set) => set.has_refs(),
             Self::FrozenSet(fset) => fset.has_refs(),
@@ -148,6 +158,7 @@ impl HeapData {
             Self::Cell(value) => matches!(value, Value::Ref(_)),
             Self::Dataclass(dc) => dc.has_refs(),
             Self::Iterator(iter) => iter.has_refs(),
+            Self::Module(m) => m.has_refs(),
             // Leaf types cannot have refs
             Self::Str(_) | Self::Bytes(_) | Self::Range(_) | Self::Exception(_) | Self::LongInt(_) => false,
         }
@@ -188,6 +199,16 @@ impl HeapData {
                 }
                 Some(hasher.finish())
             }
+            Self::NamedTuple(nt) => {
+                let mut hasher = DefaultHasher::new();
+                discriminant(self).hash(&mut hasher);
+                // Hash only by elements (not type_name) to match equality semantics
+                for obj in nt.as_vec() {
+                    let h = obj.py_hash(heap, interns)?;
+                    h.hash(&mut hasher);
+                }
+                Some(hasher.finish())
+            }
             Self::Closure(f, _, _) | Self::FunctionDefaults(f, _) => {
                 let mut hasher = DefaultHasher::new();
                 discriminant(self).hash(&mut hasher);
@@ -205,11 +226,15 @@ impl HeapData {
             }
             // Dataclass hashability depends on the mutable flag
             Self::Dataclass(dc) => dc.compute_hash(heap, interns),
-            // Mutable types, exceptions, and iterators cannot be hashed
+            // Mutable types, exceptions, iterators, and modules cannot be hashed
             // (Cell is handled specially in get_or_compute_hash)
-            Self::List(_) | Self::Dict(_) | Self::Set(_) | Self::Cell(_) | Self::Exception(_) | Self::Iterator(_) => {
-                None
-            }
+            Self::List(_)
+            | Self::Dict(_)
+            | Self::Set(_)
+            | Self::Cell(_)
+            | Self::Exception(_)
+            | Self::Iterator(_)
+            | Self::Module(_) => None,
             // LongInt is immutable and hashable
             Self::LongInt(li) => Some(li.hash()),
         }
@@ -227,6 +252,7 @@ impl PyTrait for HeapData {
             Self::Bytes(b) => b.py_type(heap),
             Self::List(l) => l.py_type(heap),
             Self::Tuple(t) => t.py_type(heap),
+            Self::NamedTuple(nt) => nt.py_type(heap),
             Self::Dict(d) => d.py_type(heap),
             Self::Set(s) => s.py_type(heap),
             Self::FrozenSet(fs) => fs.py_type(heap),
@@ -238,6 +264,7 @@ impl PyTrait for HeapData {
             Self::Iterator(_) => Type::Iterator,
             // LongInt is still `int` in Python - it's an implementation detail
             Self::LongInt(_) => Type::Int,
+            Self::Module(_) => Type::Module,
         }
     }
 
@@ -247,6 +274,7 @@ impl PyTrait for HeapData {
             Self::Bytes(b) => b.py_estimate_size(),
             Self::List(l) => l.py_estimate_size(),
             Self::Tuple(t) => t.py_estimate_size(),
+            Self::NamedTuple(nt) => nt.py_estimate_size(),
             Self::Dict(d) => d.py_estimate_size(),
             Self::Set(s) => s.py_estimate_size(),
             Self::FrozenSet(fs) => fs.py_estimate_size(),
@@ -258,6 +286,7 @@ impl PyTrait for HeapData {
             Self::Dataclass(dc) => dc.py_estimate_size(),
             Self::Iterator(_) => std::mem::size_of::<ForIterator>(),
             Self::LongInt(li) => li.estimate_size(),
+            Self::Module(m) => std::mem::size_of::<Module>() + m.attrs().py_estimate_size(),
         }
     }
 
@@ -267,18 +296,20 @@ impl PyTrait for HeapData {
             Self::Bytes(b) => PyTrait::py_len(b, heap, interns),
             Self::List(l) => PyTrait::py_len(l, heap, interns),
             Self::Tuple(t) => PyTrait::py_len(t, heap, interns),
+            Self::NamedTuple(nt) => PyTrait::py_len(nt, heap, interns),
             Self::Dict(d) => PyTrait::py_len(d, heap, interns),
             Self::Set(s) => PyTrait::py_len(s, heap, interns),
             Self::FrozenSet(fs) => PyTrait::py_len(fs, heap, interns),
             Self::Range(r) => Some(r.len()),
-            // Cells, Exceptions, Dataclasses, Iterators, and LongInts don't have length
+            // Cells, Exceptions, Dataclasses, Iterators, LongInts, and Modules don't have length
             Self::Cell(_)
             | Self::Closure(_, _, _)
             | Self::FunctionDefaults(_, _)
             | Self::Exception(_)
             | Self::Dataclass(_)
             | Self::Iterator(_)
-            | Self::LongInt(_) => None,
+            | Self::LongInt(_)
+            | Self::Module(_) => None,
         }
     }
 
@@ -288,6 +319,19 @@ impl PyTrait for HeapData {
             (Self::Bytes(a), Self::Bytes(b)) => a.py_eq(b, heap, interns),
             (Self::List(a), Self::List(b)) => a.py_eq(b, heap, interns),
             (Self::Tuple(a), Self::Tuple(b)) => a.py_eq(b, heap, interns),
+            (Self::NamedTuple(a), Self::NamedTuple(b)) => a.py_eq(b, heap, interns),
+            // NamedTuple can compare with Tuple by elements (matching CPython behavior)
+            (Self::NamedTuple(nt), Self::Tuple(t)) | (Self::Tuple(t), Self::NamedTuple(nt)) => {
+                let nt_items = nt.as_vec();
+                let t_items = t.as_vec();
+                if nt_items.len() != t_items.len() {
+                    return false;
+                }
+                nt_items
+                    .iter()
+                    .zip(t_items.iter())
+                    .all(|(a, b)| a.py_eq(b, heap, interns))
+            }
             (Self::Dict(a), Self::Dict(b)) => a.py_eq(b, heap, interns),
             (Self::Set(a), Self::Set(b)) => a.py_eq(b, heap, interns),
             (Self::FrozenSet(a), Self::FrozenSet(b)) => a.py_eq(b, heap, interns),
@@ -297,10 +341,11 @@ impl PyTrait for HeapData {
             (Self::Dataclass(a), Self::Dataclass(b)) => a.py_eq(b, heap, interns),
             // LongInt equality
             (Self::LongInt(a), Self::LongInt(b)) => a == b,
-            // Cells, Exceptions, and Iterators compare by identity only (handled at Value level via HeapId comparison)
+            // Cells, Exceptions, Iterators, and Modules compare by identity only (handled at Value level via HeapId comparison)
             (Self::Cell(_), Self::Cell(_))
             | (Self::Exception(_), Self::Exception(_))
-            | (Self::Iterator(_), Self::Iterator(_)) => false,
+            | (Self::Iterator(_), Self::Iterator(_))
+            | (Self::Module(_), Self::Module(_)) => false,
             _ => false, // Different types are never equal
         }
     }
@@ -311,6 +356,7 @@ impl PyTrait for HeapData {
             Self::Bytes(b) => b.py_dec_ref_ids(stack),
             Self::List(l) => l.py_dec_ref_ids(stack),
             Self::Tuple(t) => t.py_dec_ref_ids(stack),
+            Self::NamedTuple(nt) => nt.py_dec_ref_ids(stack),
             Self::Dict(d) => d.py_dec_ref_ids(stack),
             Self::Set(s) => s.py_dec_ref_ids(stack),
             Self::FrozenSet(fs) => fs.py_dec_ref_ids(stack),
@@ -331,6 +377,7 @@ impl PyTrait for HeapData {
             Self::Cell(v) => v.py_dec_ref_ids(stack),
             Self::Dataclass(dc) => dc.py_dec_ref_ids(stack),
             Self::Iterator(iter) => iter.py_dec_ref_ids(stack),
+            Self::Module(m) => m.py_dec_ref_ids(stack),
             // Range, Exception, and LongInt have no nested heap references
             Self::Range(_) | Self::Exception(_) | Self::LongInt(_) => {}
         }
@@ -342,6 +389,7 @@ impl PyTrait for HeapData {
             Self::Bytes(b) => b.py_bool(heap, interns),
             Self::List(l) => l.py_bool(heap, interns),
             Self::Tuple(t) => t.py_bool(heap, interns),
+            Self::NamedTuple(nt) => nt.py_bool(heap, interns),
             Self::Dict(d) => d.py_bool(heap, interns),
             Self::Set(s) => s.py_bool(heap, interns),
             Self::FrozenSet(fs) => fs.py_bool(heap, interns),
@@ -352,6 +400,7 @@ impl PyTrait for HeapData {
             Self::Dataclass(dc) => dc.py_bool(heap, interns),
             Self::Iterator(_) => true, // Iterators are always truthy
             Self::LongInt(li) => !li.is_zero(),
+            Self::Module(_) => true, // Modules are always truthy
         }
     }
 
@@ -367,6 +416,7 @@ impl PyTrait for HeapData {
             Self::Bytes(b) => b.py_repr_fmt(f, heap, heap_ids, interns),
             Self::List(l) => l.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Tuple(t) => t.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::NamedTuple(nt) => nt.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Dict(d) => d.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Set(s) => s.py_repr_fmt(f, heap, heap_ids, interns),
             Self::FrozenSet(fs) => fs.py_repr_fmt(f, heap, heap_ids, interns),
@@ -380,6 +430,7 @@ impl PyTrait for HeapData {
             Self::Dataclass(dc) => dc.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Iterator(_) => write!(f, "<iterator>"),
             Self::LongInt(li) => write!(f, "{li}"),
+            Self::Module(m) => write!(f, "<module '{}'>", interns.get_str(m.name())),
         }
     }
 
@@ -389,6 +440,8 @@ impl PyTrait for HeapData {
             Self::Str(s) => s.py_str(heap, interns),
             // LongInt returns its string representation
             Self::LongInt(li) => Cow::Owned(li.to_string()),
+            // Exceptions return just the message (or empty string if no message)
+            Self::Exception(e) => Cow::Owned(e.arg().cloned().unwrap_or_default()),
             // All other types use repr
             _ => self.py_repr(heap, interns),
         }
@@ -512,7 +565,9 @@ impl PyTrait for HeapData {
             Self::Bytes(b) => b.py_getitem(key, heap, interns),
             Self::List(l) => l.py_getitem(key, heap, interns),
             Self::Tuple(t) => t.py_getitem(key, heap, interns),
+            Self::NamedTuple(nt) => nt.py_getitem(key, heap, interns),
             Self::Dict(d) => d.py_getitem(key, heap, interns),
+            Self::Range(r) => r.py_getitem(key, heap, interns),
             _ => Err(ExcType::type_error_not_sub(self.py_type(heap))),
         }
     }
@@ -553,9 +608,11 @@ impl HashState {
             // FrozenSet is immutable and hashable
             // Range is immutable and hashable
             // LongInt is immutable and hashable
+            // NamedTuple is immutable and hashable (like Tuple)
             HeapData::Str(_)
             | HeapData::Bytes(_)
             | HeapData::Tuple(_)
+            | HeapData::NamedTuple(_)
             | HeapData::FrozenSet(_)
             | HeapData::Cell(_)
             | HeapData::Closure(_, _, _)
@@ -570,12 +627,13 @@ impl HashState {
                     Self::Unhashable
                 }
             }
-            // Mutable containers, exceptions, and iterators are unhashable
+            // Mutable containers, exceptions, iterators, and modules are unhashable
             HeapData::List(_)
             | HeapData::Dict(_)
             | HeapData::Set(_)
             | HeapData::Exception(_)
-            | HeapData::Iterator(_) => Self::Unhashable,
+            | HeapData::Iterator(_)
+            | HeapData::Module(_) => Self::Unhashable,
         }
     }
 }
@@ -911,6 +969,17 @@ impl<T: ResourceTracker> Heap<T> {
                     panic!("advance_iterator: expected Tuple on heap");
                 };
                 let item = tuple.as_vec()[index].copy_for_extend();
+                if let Value::Ref(id) = &item {
+                    self.inc_ref(*id);
+                }
+                (item, None)
+            }
+
+            IterState::NamedTuple { namedtuple_id, index } => {
+                let HeapData::NamedTuple(namedtuple) = self.get(namedtuple_id) else {
+                    panic!("advance_iterator: expected NamedTuple on heap");
+                };
+                let item = namedtuple.as_vec()[index].copy_for_extend();
                 if let Value::Ref(id) = &item {
                     self.inc_ref(*id);
                 }
@@ -1445,6 +1514,17 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
                 }
             }
         }
+        HeapData::NamedTuple(nt) => {
+            // Skip iteration if no refs - GC optimization for namedtuples of primitives
+            if !nt.contains_refs() {
+                return;
+            }
+            for value in nt.as_vec() {
+                if let Value::Ref(id) = value {
+                    work_list.push(*id);
+                }
+            }
+        }
         HeapData::Dict(dict) => {
             // Skip iteration if no refs - major GC optimization for dicts of primitives
             if !dict.has_refs() {
@@ -1514,6 +1594,20 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
             // Iterator holds a reference to the iterable being iterated
             if let Value::Ref(id) = iter.value() {
                 work_list.push(*id);
+            }
+        }
+        HeapData::Module(m) => {
+            // Module attrs can contain references to heap values
+            if !m.has_refs() {
+                return;
+            }
+            for (k, v) in m.attrs() {
+                if let Value::Ref(id) = k {
+                    work_list.push(*id);
+                }
+                if let Value::Ref(id) = v {
+                    work_list.push(*id);
+                }
             }
         }
     }

@@ -1,9 +1,9 @@
 # This file contains intentional type errors to test the type checker.
 # Each section demonstrates a different category of type error.
+# ===
 
+import sys
 from typing import assert_type
-
-# === Invalid argument types ===
 
 
 def takes_int(x: int) -> None:
@@ -105,3 +105,5 @@ takes_two(a=1, c='wrong')
 
 not_callable: int = 42
 not_callable()
+
+print(sys.copyright)

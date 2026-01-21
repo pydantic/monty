@@ -52,9 +52,10 @@ mod not_implemented_error {
     }
 
     #[test]
-    fn imports_return_not_implemented_error() {
+    fn unknown_imports_return_module_not_found_error() {
+        // Unknown modules (not sys or typing) return a ModuleNotFoundError
         let result = MontyRun::new("import os".to_owned(), "test.py", vec![], vec![]);
-        assert_eq!(get_exc_type(result), ExcType::NotImplementedError);
+        assert_eq!(get_exc_type(result), ExcType::ModuleNotFoundError);
     }
 
     #[test]
@@ -71,13 +72,24 @@ mod not_implemented_error {
 
     #[test]
     fn error_display_format() {
-        // Verify the Display format matches Python's exception output
+        // Verify the Display format matches Python's exception output with traceback
         let result = MontyRun::new("1 + 2j".to_owned(), "test.py", vec![], vec![]);
         let err = result.expect_err("expected parse error");
         let display = err.to_string();
+        // Should start with traceback header
         assert!(
-            display.starts_with("NotImplementedError:"),
-            "display should start with 'NotImplementedError:', got: {display}"
+            display.starts_with("Traceback (most recent call last):"),
+            "display should start with 'Traceback': got: {display}"
+        );
+        // Should contain the file/line info
+        assert!(
+            display.contains("File \"test.py\", line 1"),
+            "display should contain file location, got: {display}"
+        );
+        // Should end with NotImplementedError message
+        assert!(
+            display.contains("NotImplementedError:"),
+            "display should contain 'NotImplementedError:', got: {display}"
         );
         assert!(
             display.contains("monty syntax parser"),

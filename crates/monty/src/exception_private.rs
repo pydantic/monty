@@ -14,7 +14,7 @@ use crate::{
     intern::{Interns, StringId},
     parse::CodeRange,
     resource::ResourceTracker,
-    types::{PyTrait, Type, str::string_repr},
+    types::{PyTrait, Type, str::string_repr_fmt},
     value::Value,
 };
 
@@ -69,13 +69,23 @@ pub enum ExcType {
     /// Subclass of NameError - for accessing local variable before assignment.
     UnboundLocalError,
 
+    // --- ValueError hierarchy ---
+    ValueError,
+    /// Subclass of ValueError - for encoding/decoding errors.
+    UnicodeDecodeError,
+
+    // --- ImportError hierarchy ---
+    /// Import-related errors (module not found, name not in module).
+    ImportError,
+    /// Subclass of ImportError - for when a module cannot be found.
+    ModuleNotFoundError,
+
     // --- Standalone exception types ---
     AssertionError,
     MemoryError,
     SyntaxError,
     TimeoutError,
     TypeError,
-    ValueError,
 }
 
 impl ExcType {
@@ -108,6 +118,10 @@ impl ExcType {
             Self::AttributeError => matches!(self, Self::FrozenInstanceError),
             // NameError catches UnboundLocalError
             Self::NameError => matches!(self, Self::UnboundLocalError),
+            // ValueError catches UnicodeDecodeError
+            Self::ValueError => matches!(self, Self::UnicodeDecodeError),
+            // ImportError catches ModuleNotFoundError
+            Self::ImportError => matches!(self, Self::ModuleNotFoundError),
             // All other types only match exactly (handled by self == handler_type above)
             _ => false,
         }
@@ -219,6 +233,23 @@ impl ExcType {
             format!("'{type_}' object has no attribute '{attr_name}' and no __dict__ for setting new attributes"),
         )
         .into()
+    }
+
+    /// Creates an AttributeError for a missing module attribute.
+    ///
+    /// Matches CPython's format: `AttributeError: module 'name' has no attribute 'attr'`
+    /// Sets `hide_caret: true` because CPython doesn't show carets for attribute GET errors.
+    #[must_use]
+    pub(crate) fn attribute_error_module(module_name: &str, attr_name: &str) -> RunError {
+        let exc = SimpleException::new_msg(
+            Self::AttributeError,
+            format!("module '{module_name}' has no attribute '{attr_name}'"),
+        );
+        RunError::Exc(ExceptionRaise {
+            exc,
+            frame: None,
+            hide_caret: true, // CPython doesn't show carets for attribute GET errors
+        })
     }
 
     /// Creates a FrozenInstanceError for assigning to a frozen dataclass.
@@ -661,12 +692,20 @@ impl ExcType {
         SimpleException::new_msg(Self::TypeError, format!("{name}() takes no keyword arguments")).into()
     }
 
-    /// Creates an IndexError for list index out of range.
+    /// Creates an IndexError for list index out of range (getitem).
     ///
     /// Matches CPython's format: `IndexError('list index out of range')`
     #[must_use]
     pub(crate) fn list_index_error() -> RunError {
         SimpleException::new_msg(Self::IndexError, "list index out of range").into()
+    }
+
+    /// Creates an IndexError for list assignment index out of range (setitem).
+    ///
+    /// Matches CPython's format: `IndexError('list assignment index out of range')`
+    #[must_use]
+    pub(crate) fn list_assignment_index_error() -> RunError {
+        SimpleException::new_msg(Self::IndexError, "list assignment index out of range").into()
     }
 
     /// Creates an IndexError for tuple index out of range.
@@ -677,7 +716,31 @@ impl ExcType {
         SimpleException::new_msg(Self::IndexError, "tuple index out of range").into()
     }
 
-    /// Creates a TypeError for non-integer sequence indices.
+    /// Creates an IndexError for string index out of range.
+    ///
+    /// Matches CPython's format: `IndexError('string index out of range')`
+    #[must_use]
+    pub(crate) fn str_index_error() -> RunError {
+        SimpleException::new_msg(Self::IndexError, "string index out of range").into()
+    }
+
+    /// Creates an IndexError for bytes index out of range.
+    ///
+    /// Matches CPython's format: `IndexError('index out of range')`
+    #[must_use]
+    pub(crate) fn bytes_index_error() -> RunError {
+        SimpleException::new_msg(Self::IndexError, "index out of range").into()
+    }
+
+    /// Creates an IndexError for range index out of range.
+    ///
+    /// Matches CPython's format: `IndexError('range object index out of range')`
+    #[must_use]
+    pub(crate) fn range_index_error() -> RunError {
+        SimpleException::new_msg(Self::IndexError, "range object index out of range").into()
+    }
+
+    /// Creates a TypeError for non-integer sequence indices (getitem).
     ///
     /// Matches CPython's format: `TypeError('{type}' indices must be integers, not '{index_type}')`
     #[must_use]
@@ -685,6 +748,18 @@ impl ExcType {
         SimpleException::new_msg(
             Self::TypeError,
             format!("{type_str} indices must be integers, not '{index_type}'"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for non-integer list indices (setitem/assignment).
+    ///
+    /// Matches CPython's format: `TypeError('list indices must be integers or slices, not {index_type}')`
+    #[must_use]
+    pub(crate) fn type_error_list_assignment_indices(index_type: Type) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("list indices must be integers or slices, not {index_type}"),
         )
         .into()
     }
@@ -746,6 +821,25 @@ impl ExcType {
     #[must_use]
     pub(crate) fn overflow_repeat_count() -> SimpleException {
         SimpleException::new_msg(Self::OverflowError, "cannot fit 'int' into an index-sized integer")
+    }
+
+    /// Creates an ImportError for when a name cannot be imported from a module.
+    ///
+    /// Matches CPython's format for built-in modules:
+    /// `ImportError: cannot import name 'name' from 'module' (unknown location)`
+    ///
+    /// Sets `hide_caret: true` because CPython doesn't show carets for import errors.
+    #[must_use]
+    pub(crate) fn cannot_import_name(name: &str, module_name: &str) -> RunError {
+        let exc = SimpleException::new_msg(
+            Self::ImportError,
+            format!("cannot import name '{name}' from '{module_name}' (unknown location)"),
+        );
+        RunError::Exc(ExceptionRaise {
+            exc,
+            frame: None,
+            hide_caret: true,
+        })
     }
 
     /// Creates a ValueError for negative shift count in bitwise shift operations.
@@ -876,12 +970,80 @@ impl ExcType {
         SimpleException::new_msg(Self::TypeError, "The fill character must be exactly one character long").into()
     }
 
+    /// Creates a ValueError for list.index() when item is not found.
+    ///
+    /// Matches CPython's format: `ValueError: list.index(x): x not in list`
+    #[must_use]
+    pub(crate) fn value_error_not_in_list() -> RunError {
+        SimpleException::new_msg(Self::ValueError, "list.index(x): x not in list").into()
+    }
+
+    /// Creates a ValueError for tuple.index() when item is not found.
+    ///
+    /// Matches CPython's format: `ValueError: tuple.index(x): x not in tuple`
+    #[must_use]
+    pub(crate) fn value_error_not_in_tuple() -> RunError {
+        SimpleException::new_msg(Self::ValueError, "tuple.index(x): x not in tuple").into()
+    }
+
+    /// Creates a ValueError for list.remove() when item is not found.
+    ///
+    /// Matches CPython's format: `ValueError: list.remove(x): x not in list`
+    #[must_use]
+    pub(crate) fn value_error_remove_not_in_list() -> RunError {
+        SimpleException::new_msg(Self::ValueError, "list.remove(x): x not in list").into()
+    }
+
+    /// Creates an IndexError for popping from an empty list.
+    ///
+    /// Matches CPython's format: `IndexError: pop from empty list`
+    #[must_use]
+    pub(crate) fn index_error_pop_empty_list() -> RunError {
+        SimpleException::new_msg(Self::IndexError, "pop from empty list").into()
+    }
+
+    /// Creates an IndexError for list.pop(index) with invalid index.
+    ///
+    /// Matches CPython's format: `IndexError: pop index out of range`
+    #[must_use]
+    pub(crate) fn index_error_pop_out_of_range() -> RunError {
+        SimpleException::new_msg(Self::IndexError, "pop index out of range").into()
+    }
+
+    /// Creates a KeyError for popping from an empty dict.
+    ///
+    /// Matches CPython's format: `KeyError: 'popitem(): dictionary is empty'`
+    #[must_use]
+    pub(crate) fn key_error_popitem_empty_dict() -> RunError {
+        SimpleException::new_msg(Self::KeyError, "'popitem(): dictionary is empty'").into()
+    }
+
     /// Creates a LookupError for unknown encoding.
     ///
     /// Matches CPython's format: `LookupError: unknown encoding: {encoding}`
     #[must_use]
     pub(crate) fn lookup_error_unknown_encoding(encoding: &str) -> RunError {
         SimpleException::new_msg(Self::LookupError, format!("unknown encoding: {encoding}")).into()
+    }
+
+    /// Creates a UnicodeDecodeError for invalid UTF-8 bytes in decode().
+    ///
+    /// Matches CPython's format: `UnicodeDecodeError: 'utf-8' codec can't decode bytes...`
+    #[must_use]
+    pub(crate) fn unicode_decode_error_invalid_utf8() -> RunError {
+        SimpleException::new_msg(
+            Self::UnicodeDecodeError,
+            "'utf-8' codec can't decode bytes: invalid utf-8 sequence",
+        )
+        .into()
+    }
+
+    /// Creates a ValueError for subsequence not found in bytes/str.
+    ///
+    /// Matches CPython's format: `ValueError: subsection not found`
+    #[must_use]
+    pub(crate) fn value_error_subsequence_not_found() -> RunError {
+        SimpleException::new_msg(Self::ValueError, "subsection not found").into()
     }
 
     /// Creates a LookupError for unknown error handler.
@@ -959,7 +1121,7 @@ impl SimpleException {
         write!(f, "{type_str}(")?;
 
         if let Some(arg) = &self.arg {
-            f.write_str(&string_repr(arg))?;
+            string_repr_fmt(arg, f)?;
         }
 
         f.write_char(')')

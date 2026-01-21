@@ -164,6 +164,32 @@ impl PyTrait for Range {
         Some(self.len())
     }
 
+    fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
+        // Extract integer index, accepting both Int and Bool (True=1, False=0)
+        let index = match key {
+            Value::Int(i) => *i,
+            Value::Bool(b) => i64::from(*b),
+            _ => return Err(ExcType::type_error_indices(Type::Range, key.py_type(heap))),
+        };
+
+        // Get range length for normalization
+        let len = i64::try_from(self.len()).expect("range length exceeds i64::MAX");
+        let normalized = if index < 0 { index + len } else { index };
+
+        // Bounds check
+        if normalized < 0 || normalized >= len {
+            return Err(ExcType::range_index_error());
+        }
+
+        // Calculate: start + normalized * step
+        // Use checked arithmetic to avoid overflow in intermediate calculations
+        let offset = normalized
+            .checked_mul(self.step)
+            .and_then(|v| self.start.checked_add(v))
+            .expect("range element calculation overflowed");
+        Ok(Value::Int(offset))
+    }
+
     fn py_eq(&self, other: &Self, _heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
         // Compare ranges by their actual sequences, not parameters.
         // Two ranges are equal if they produce the same elements.

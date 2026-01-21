@@ -3,6 +3,7 @@
 //! The VM uses a stack-based execution model with an operand stack for computation
 //! and a call stack for function frames. Each frame owns its instruction pointer (IP).
 
+mod attr;
 mod binary;
 mod call;
 mod collections;
@@ -22,6 +23,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId},
     intern::{ExtFunctionId, FunctionId, Interns, StringId},
     io::PrintWriter,
+    modules::BuiltinModule,
     namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
     parse::CodeRange,
     resource::ResourceTracker,
@@ -735,7 +737,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let value = self.pop();
                     let result = obj.py_setitem(index, value, self.heap, self.interns);
                     obj.drop_with_heap(self.heap);
-                    result?;
+                    if let Err(e) = result {
+                        catch_sync!(self, cached_frame, e);
+                    }
                 }
                 Opcode::DeleteSubscr => {
                     // TODO: Implement py_delitem on Value
@@ -749,6 +753,11 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let name_idx = fetch_u16!(cached_frame);
                     let name_id = StringId::from_index(name_idx);
                     try_catch_sync!(self, cached_frame, self.load_attr(name_id));
+                }
+                Opcode::LoadAttrImport => {
+                    let name_idx = fetch_u16!(cached_frame);
+                    let name_id = StringId::from_index(name_idx);
+                    try_catch_sync!(self, cached_frame, self.load_attr_import(name_id));
                 }
                 Opcode::StoreAttr => {
                     let name_idx = fetch_u16!(cached_frame);
@@ -983,7 +992,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let mut cells = Vec::with_capacity(cell_count);
                     for _ in 0..cell_count {
                         // mut needed for dec_ref_forget when ref-count-panic feature is enabled
-                        #[cfg_attr(not(feature = "ref-count-return"), expect(unused_mut))]
+                        #[cfg_attr(not(feature = "ref-count-panic"), expect(unused_mut))]
                         let mut cell_val = self.pop();
                         match &cell_val {
                             Value::Ref(heap_id) => {
@@ -1071,8 +1080,23 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::Nop => {
                     // No operation
                 }
+                // Module Operations
+                Opcode::LoadModule => {
+                    let module_id = fetch_u8!(cached_frame);
+                    try_catch_sync!(self, cached_frame, self.load_module(module_id));
+                }
             }
         }
+    }
+
+    /// Loads a built-in module and pushes it onto the stack.
+    fn load_module(&mut self, module_id: u8) -> RunResult<()> {
+        let module = BuiltinModule::from_repr(module_id).expect("unknown module id");
+
+        // Create the module on the heap using pre-interned strings
+        let heap_id = module.create(self.heap, self.interns)?;
+        self.push(Value::Ref(heap_id));
+        Ok(())
     }
 
     /// Resumes execution after an external call completes.
@@ -1351,21 +1375,19 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     fn load_global(&mut self, slot: u16) -> RunResult<()> {
         let namespace = self.namespaces.get(GLOBAL_NS_IDX);
         // Copy without incrementing refcount first (avoids borrow conflict)
-        let value = namespace.get(NamespaceId::new(slot as usize)).copy_for_extend();
+        let value = namespace
+            .get(NamespaceId::new(slot as usize))
+            .clone_with_heap(self.heap);
 
         // Check for undefined value - raise NameError if so
         if matches!(value, Value::Undefined) {
             // For globals, we'd need a global_names table too, but for now use a placeholder
             let name = self.current_frame().code.local_name(slot);
-            return Err(self.name_error(slot, name));
+            Err(self.name_error(slot, name))
+        } else {
+            self.push(value);
+            Ok(())
         }
-
-        // Now we can safely increment refcount and push
-        if let Value::Ref(id) = &value {
-            self.heap.inc_ref(*id);
-        }
-        self.push(value);
-        Ok(())
     }
 
     /// Pops the top of stack and stores it in a global variable.

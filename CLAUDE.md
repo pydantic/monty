@@ -16,64 +16,7 @@ Project goals:
 
 ## Bytecode VM Architecture
 
-Monty is migrating from a recursive tree-walking interpreter to a stack-based bytecode VM. The full design is documented in `bytecode-plan.md`. This section summarizes the key architecture.
-
-### Why Bytecode?
-
-1. **Simplified pause/resume**: VM state is just IP + stacks (no complex snapshot machinery)
-2. **Better performance**: Eliminates recursion, better cache locality
-3. **Enables future JIT compilation**
-4. **Enables future async support**
-
-### Execution Model
-
-The bytecode VM uses:
-
-- **Operand stack**: Values being computed are pushed/popped from a stack (`Vec<Value>`)
-- **Call frames**: Each function call creates a `CallFrame` with its own instruction pointer (IP)
-- **IP per frame**: The instruction pointer lives in each `CallFrame`, not globally - this avoids sync bugs on call/return
-
-```
-┌─────────────────────────────────────────┐
-│              VM State                    │
-│  ┌─────────────────────────────────────┐│
-│  │  Operand Stack: [val1, val2, ...]   ││
-│  └─────────────────────────────────────┘│
-│  ┌─────────────────────────────────────┐│
-│  │  Call Frames:                        ││
-│  │    Frame 0: { code, ip: 42, ... }   ││
-│  │    Frame 1: { code, ip: 7, ... }    ││
-│  └─────────────────────────────────────┘│
-│  heap, namespaces, interns (existing)   │
-└─────────────────────────────────────────┘
-```
-
-### Code Structure
-
-New bytecode module (`src/bytecode/`):
-
-- `mod.rs` - Module root
-- `op.rs` - Opcode enum definitions (`#[repr(u8)]`, no data variants)
-- `code.rs` - `Code` struct (bytecode, constants, location/exception tables)
-- `compiler.rs` - AST to bytecode compilation
-- `vm.rs` - Execution engine (main dispatch loop)
-- `snapshot.rs` - VM state serialization for pause/resume
-
-### Files Being Replaced
-
-The following tree-walker files will be replaced by the bytecode VM:
-
-- `src/evaluate.rs` - Tree-walking expression evaluator → bytecode compiler + VM
-- `src/run_frame.rs` - Recursive frame execution → `CallFrame` stack in VM
-- `src/snapshot.rs` - `SnapshotTracker`, `ClauseState`, `FunctionFrame` → simplified `VMSnapshot`
-
-### What We Keep
-
-- `Value` enum (16-byte hybrid design)
-- `Heap<T>` with reference counting and free list
-- `Interns` for string/bytes interning
-- `Function` struct (stores metadata, will also store compiled `Code`)
-- `Namespaces` stack (with modifications)
+Monty is implemented as a bytecode VM, same as CPython.
 
 ### Reference Count Safety
 
@@ -107,7 +50,7 @@ make lint-rs
 # lint just python code
 make lint-py
 
-# lint just javacript code
+# lint just javascript code
 make lint-js
 
 # format python and rust code
@@ -234,7 +177,7 @@ Each `assert` should have a descriptive message.
 Only create a separate test file when you MUST use one of these special expectation formats:
 
 - `"""TRACEBACK:..."""` - Test expects an exception with full traceback (PREFERRED for error tests)
-- `# Raise=Exception('message')` - Test expects an exception without traceback verification
+- `# Raise=Exception('message')` - Test expects an exception without traceback verification - NOT RECOMMENDED, use `TRACEBACK` instead
 - `# ref-counts={...}` - Test checks reference counts (special mode)
 - you're writing tests for a different behavior or section of the language
 
@@ -296,16 +239,13 @@ Only use `# Raise=` when you only care about the exception type/message and not 
 
 ### Xfail Directive (Strict)
 
-NEVER MARK TESTS AS XFAIL UNDER ANY CIRCUMSTANCES!!!
+NEVER MARK TESTS AS XFAIL UNDER ANY CIRCUMSTANCES!!! INSTEAD FIX THE BEHAVIOR SO THAT THE TEST PASSES.
 
-Optional, on first line of file - DO NOT use unless absolutely necessary:
-- `# xfail=cpython` - Test is expected to fail on CPython (if it passes, that's an error)
-- `# xfail=monty` - Test is expected to fail on Monty (if it passes, that's an error)
+Never mark tests as:
+- `# xfail=cpython` - Test is required to fail on CPython
+- `# xfail=monty` - Test is required to fail on Monty
 
-Xfail is **strict**: if a test marked xfail passes, the test runner will fail with an error
-telling you to remove xfail since the test is now fixed.
-
-NEVER MARK TESTS AS XFAIL UNDER ANY CIRCUMSTANCES!!!
+NEVER MARK TESTS AS XFAIL UNDER ANY CIRCUMSTANCES!!! INSTEAD FIX THE BEHAVIOR SO THAT THE TEST PASSES.
 
 ### Other Notes
 

@@ -54,7 +54,11 @@ known-first-party = ["monty"]
     "F811", # Redefinition of unused variable
     "F821", # traceback undefined call test intentionally uses undefined name
     "F841", # unused variable - needed for testing exception variable cleanup
+    "F401", # Intentionally imports unknown typing constructs to test silent ignore behavior
+    "F403", # star import test intentionally uses `from sys import *`
+    "E402", # Typing test file has multiple import sections to test different import patterns
 ]
+
 "crates/monty-typeshed/vendor/typeshed/stdlib/**/*.pyi" = [
     "F403", # unable to detect undefined names
     "F821", # Undefined name
@@ -79,6 +83,7 @@ root = "crates/monty/test_cases"
 reportUnusedExpression = false
 reportOperatorIssue = false
 reportGeneralTypeIssues = false
+reportMissingImports = false
 reportUnknownMemberType = false
 reportUnnecessaryComparison = false
 reportUnnecessaryIsInstance = false
@@ -97,12 +102,15 @@ reportPossiblyUnboundVariable = false
 reportUnboundVariable = false
 # attribute error tests intentionally access/assign non-existent attributes
 reportAttributeAccessIssue = false
-# unused variables are fine
+# unused variables and imports are fine in test cases
 reportUnusedVariable = false
+reportUnusedImport = false
 reportAssignmentType = false
 reportFunctionMemberAccess = false
 # ~bool is deprecated in Python 3.16 but valid in 3.14
 reportDeprecated = false
+# star import test intentionally uses `from sys import *`
+reportWildcardImportFromLibrary = false
 
 [[tool.pyright.executionEnvironments]]
 root = "crates/monty-type-checking"
