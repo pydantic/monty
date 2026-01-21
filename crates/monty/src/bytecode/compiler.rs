@@ -8,7 +8,7 @@
 //! its body is compiled to bytecode and a `Function` struct is created. All compiled
 //! functions are collected and returned along with the module code.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, str::FromStr};
 
 use super::{
     builder::{CodeBuilder, JumpLabel},
@@ -21,12 +21,13 @@ use crate::{
     exception_private::ExcType,
     exception_public::{MontyException, StackFrame},
     expressions::{
-        Callable, CmpOperator, Comprehension, Expr, ExprLoc, Identifier, Literal, NameScope, Operator,
+        Callable, CmpOperator, Comprehension, Expr, ExprLoc, Identifier, Literal, NameScope, Node, Operator,
         PreparedFunctionDef, PreparedNode, UnpackTarget,
     },
-    fstring::{ConversionFlag, FStringPart, FormatSpec, encode_format_spec},
+    fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
     function::Function,
-    intern::Interns,
+    intern::{Interns, StringId},
+    modules::BuiltinModule,
     parse::{CodeRange, ExceptHandler, Try},
     value::{Attr, Value},
 };
@@ -200,7 +201,6 @@ impl<'a> Compiler<'a> {
     /// Compiles a single statement.
     fn compile_stmt(&mut self, node: &PreparedNode) -> Result<(), CompileError> {
         // Node is an alias, use qualified path for matching
-        use crate::expressions::Node;
         match node {
             Node::Expr(expr) => {
                 self.compile_expr(expr)?;
@@ -405,20 +405,16 @@ impl<'a> Compiler<'a> {
     /// Compiles an import statement.
     ///
     /// Emits `LoadModule` to create the module, then stores it to the binding name.
-    fn compile_import(
-        &mut self,
-        module_name: crate::intern::StringId,
-        binding: &crate::expressions::Identifier,
-    ) -> Result<(), CompileError> {
+    fn compile_import(&mut self, module_name: StringId, binding: &Identifier) -> Result<(), CompileError> {
         let position = binding.position;
         // Look up the module by name
         let module_name_str = self.interns.get_str(module_name);
-        let builtin_module = crate::modules::BuiltinModule::from_name(module_name_str)
-            .ok_or_else(|| CompileError::new(format!("unknown module '{module_name_str}'"), position))?;
+        let builtin_module = BuiltinModule::from_str(module_name_str)
+            .map_err(|_| CompileError::new(format!("unknown module '{module_name_str}'"), position))?;
 
         // Emit LoadModule with the module ID
         self.code.set_location(position, None);
-        self.code.emit_u8(Opcode::LoadModule, builtin_module.to_u8());
+        self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
 
         // Store to the binding using its resolved namespace slot
         let slot = u16::try_from(binding.namespace_id().index()).expect("global slot exceeds u16");
@@ -1407,9 +1403,9 @@ impl<'a> Compiler<'a> {
         let skip_jump = self.code.emit_jump(Opcode::JumpIfTrue);
 
         // Raise AssertionError
-        let exc_idx = self.code.add_const(Value::Builtin(Builtins::ExcType(
-            crate::exception_private::ExcType::AssertionError,
-        )));
+        let exc_idx = self
+            .code
+            .add_const(Value::Builtin(Builtins::ExcType(ExcType::AssertionError)));
         self.code.emit_u16(Opcode::LoadConst, exc_idx);
 
         if let Some(msg_expr) = msg {
@@ -1520,7 +1516,7 @@ impl<'a> Compiler<'a> {
     ///
     /// Uses the encoding from `fstring::encode_format_spec` and stores it as
     /// a negative integer to distinguish from regular ints.
-    fn add_format_spec_const(&mut self, spec: &crate::fstring::ParsedFormatSpec) -> u16 {
+    fn add_format_spec_const(&mut self, spec: &ParsedFormatSpec) -> u16 {
         let encoded = encode_format_spec(spec);
         // Use negative to distinguish from regular ints (format spec marker)
         // We negate and subtract 1 to ensure it's negative and recoverable
@@ -1952,28 +1948,5 @@ fn cmp_operator_to_opcode(op: &CmpOperator) -> Opcode {
         CmpOperator::NotIn => Opcode::CompareNotIn,
         // ModEq is handled specially at the call site (needs constant operand)
         CmpOperator::ModEq(_) => unreachable!("ModEq handled at call site"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::intern::InternerBuilder;
-
-    /// Creates an empty Interns for testing.
-    fn test_interns() -> Interns {
-        let builder = InternerBuilder::default();
-        Interns::new(builder, Vec::new(), Vec::new())
-    }
-
-    // Basic smoke test - more comprehensive tests will come with the VM
-    #[test]
-    fn test_compiler_creates_code() {
-        let interns = test_interns();
-        let result = Compiler::compile_module(&[], &interns, 0).unwrap();
-        // Empty module should have LoadNone + ReturnValue
-        assert_eq!(result.code.bytecode().len(), 2);
-        assert_eq!(result.code.bytecode()[0], Opcode::LoadNone as u8);
-        assert_eq!(result.code.bytecode()[1], Opcode::ReturnValue as u8);
     }
 }

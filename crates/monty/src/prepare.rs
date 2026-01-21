@@ -9,12 +9,11 @@ use crate::{
         PreparedFunctionDef, PreparedNode, UnpackTarget,
     },
     fstring::{FStringPart, FormatSpec},
-    intern::{InternerBuilder, StaticStrings, StringId},
+    intern::{InternerBuilder, StringId},
     modules::BuiltinModule,
     namespace::NamespaceId,
     parse::{ExceptHandler, ParseError, ParseNode, ParseResult, ParsedSignature, RawFunctionDef, Try},
     signature::Signature,
-    value::Marker,
 };
 
 /// Result of the prepare phase, containing everything needed to compile and execute code.
@@ -477,7 +476,7 @@ impl<'i> Prepare<'i> {
                     // Validate that the module is known
                     // Convert to owned String to avoid borrow conflict with interner
                     let module_name_str = self.interner.get_str(module_name).to_owned();
-                    if !is_known_module(&module_name_str) {
+                    if BuiltinModule::from_str(&module_name_str).is_err() {
                         return Err(ParseError::syntax(
                             format!("import of module '{module_name_str}' not supported"),
                             position,
@@ -500,25 +499,13 @@ impl<'i> Prepare<'i> {
                     position,
                 } => {
                     let module_name_str = self.interner.get_str(module_name);
-                    if module_name_str == "typing" {
-                        // For typing module, handle specially:
-                        // - TYPE_CHECKING becomes an assignment to False
-                        // - Known type hints become assignments to Marker values
-                        // - Unknown names are silently ignored
+                    // Try to resolve as a built-in module
+                    if let Ok(builtin_module) = BuiltinModule::from_str(module_name_str) {
                         for (name, alias) in names {
                             let name_str = self.interner.get_str(name);
                             let binding_name = alias.unwrap_or(name);
 
-                            // Determine the value to assign based on the imported name
-                            let value_expr = if name_str == "TYPE_CHECKING" {
-                                Some(Expr::Literal(Literal::Bool(false)))
-                            } else {
-                                StaticStrings::from_str(name_str)
-                                    .ok()
-                                    .map(|ss| Expr::Literal(Literal::Marker(Marker(ss))))
-                            };
-
-                            if let Some(expr) = value_expr {
+                            if let Some(expr) = builtin_module.import_from(name_str) {
                                 self.names_assigned_in_order
                                     .insert(self.interner.get_str(binding_name).to_string());
                                 let binding = Identifier::new(binding_name, position);
@@ -529,12 +516,6 @@ impl<'i> Prepare<'i> {
                                 });
                             }
                         }
-                    } else if module_name_str == "sys" {
-                        // from sys import ... is not supported yet
-                        return Err(ParseError::syntax(
-                            "from sys import ... not supported (use 'import sys' instead)",
-                            position,
-                        ));
                     } else {
                         return Err(ParseError::syntax(
                             format!("from {module_name_str} import ... not supported"),
@@ -1963,7 +1944,7 @@ fn scan_node_for_imports(node: &ParseNode, interner: &mut InternerBuilder) -> Re
     match node {
         Node::Import { module_name, binding } => {
             let module_name_str = interner.get_str(*module_name);
-            if !is_known_module(module_name_str) {
+            if BuiltinModule::from_str(module_name_str).is_err() {
                 return Err(ParseError::syntax(
                     format!("import of module '{module_name_str}' not supported"),
                     binding.position,
@@ -1974,7 +1955,7 @@ fn scan_node_for_imports(node: &ParseNode, interner: &mut InternerBuilder) -> Re
             module_name, position, ..
         } => {
             let module_name_str = interner.get_str(*module_name);
-            if !is_known_module(module_name_str) {
+            if BuiltinModule::from_str(module_name_str).is_err() {
                 return Err(ParseError::syntax(
                     format!("import from module '{module_name_str}' not supported"),
                     *position,
@@ -2010,11 +1991,4 @@ fn scan_node_for_imports(node: &ParseNode, interner: &mut InternerBuilder) -> Re
         _ => {}
     }
     Ok(())
-}
-
-/// Checks if a module name is a known built-in module.
-///
-/// Returns true for modules that can be imported (e.g., sys, typing).
-fn is_known_module(name: &str) -> bool {
-    BuiltinModule::from_name(name).is_some()
 }

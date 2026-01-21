@@ -22,6 +22,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId},
     intern::{ExtFunctionId, FunctionId, Interns, StringId},
     io::PrintWriter,
+    modules::{BuiltinModule, create_builtin_module},
     namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
     parse::CodeRange,
     resource::ResourceTracker,
@@ -1082,10 +1083,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
 
     /// Loads a built-in module and pushes it onto the stack.
     fn load_module(&mut self, module_id: u8) -> RunResult<()> {
-        use crate::modules::{BuiltinModule, create_builtin_module};
-
-        let module = BuiltinModule::from_u8(module_id)
-            .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, format!("unknown module id: {module_id}")))?;
+        let module = BuiltinModule::from_repr(module_id).expect("unknown module id");
 
         // Create the module on the heap using pre-interned strings
         let heap_id = create_builtin_module(module, self.heap, self.interns)?;
