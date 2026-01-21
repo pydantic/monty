@@ -95,7 +95,7 @@ self.push(result?);                    // Now propagate error
 
 DO NOT run `cargo build` or `cargo run`, it will fail because of issues with Python bindings.
 
-Instead usee the following:
+Instead use the following:
 
 ```bash
 # lint python and rust code
@@ -107,6 +107,9 @@ make lint-rs
 # lint just python code
 make lint-py
 
+# lint just javacript code
+make lint-js
+
 # format python and rust code
 make format
 
@@ -115,6 +118,9 @@ make format-rs
 
 # format just python code
 make format-py
+
+# format just js code
+make format-js
 ```
 
 ## Exception
@@ -394,3 +400,74 @@ ALWAYS update this file when it is out of date.
 NEVER add imports anywhere except at the top of the file, this applies to both python and rust.
 
 NEVER write `unsafe` code, if you think you need to write unsafe code, explicitly ask the user or leave a `todo!()` with a suggestion and explanation.
+
+## JavaScript Package (`monty-js`)
+
+The JavaScript package provides Node.js bindings for the Monty interpreter via napi-rs, located in `crates/monty-js/`.
+
+### Structure
+
+- `crates/monty-js/src/lib.rs` - Rust source for napi-rs bindings
+- `crates/monty-js/index.js` - Auto-generated JS loader that detects platform and loads the appropriate native binding
+- `crates/monty-js/index.d.ts` - TypeScript type declarations (auto-generated)
+- `crates/monty-js/__test__/` - Tests using ava
+
+### Current API
+
+The package currently exposes a single function:
+
+```ts
+function run(code: string): RunResult
+
+interface RunResult {
+  output: string  // Captured print() output
+  result: string  // Debug representation of final value
+}
+```
+
+### Building and Testing
+
+```bash
+# Install dependencies
+make install-js
+
+# Build native binding (debug)
+make build-js
+
+# Build native binding (release)
+make build-js-release
+
+# Run tests
+make test-js
+
+# Format JavaScript code
+make format-js
+
+# Lint JavaScript code
+make lint-js
+```
+
+Or run directly in `crates/monty-js`:
+
+```bash
+npm install
+npm run build        # release build
+npm run build:debug  # debug build
+npm test
+```
+
+### JavaScript Test Guidelines
+
+- Tests use [ava](https://github.com/avajs/ava) and live in `crates/monty-js/__test__/`
+- Tests are written in TypeScript
+- Follow the existing test style in `index.spec.ts`
+
+### Future Work
+
+The JS bindings currently only expose a simple `run()` function. Future work may expose:
+- Input variables
+- Resource limits
+- External functions
+- Snapshot/resume (iterative execution)
+
+These features mirror the Python package API and are implemented in the Rust core.
