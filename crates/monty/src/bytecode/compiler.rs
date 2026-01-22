@@ -775,9 +775,9 @@ impl<'a> Compiler<'a> {
 
             Expr::Await(value) => {
                 // Await expressions: compile the inner expression, then emit GetAwaitable
-                // The actual opcode and VM handling are implemented in Phase 3
+                // GetAwaitable handles ExternalFuture, Coroutine, and GatherFuture
                 self.compile_expr(value)?;
-                todo!("GetAwaitable opcode - implement in Phase 3");
+                self.code.emit(Opcode::GetAwaitable);
             }
 
             Expr::Slice { lower, upper, step } => {

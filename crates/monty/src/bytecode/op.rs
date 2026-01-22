@@ -335,6 +335,18 @@ pub enum Opcode {
     /// Return TOS from function.
     ReturnValue,
 
+    // === Async/Await ===
+    /// Await the TOS value.
+    ///
+    /// Handles `ExternalFuture`, `Coroutine`, and `GatherFuture` awaitables.
+    /// For `ExternalFuture`: if resolved, pushes result; if pending, blocks task.
+    /// For `Coroutine`: validates state is `New`, then starts execution.
+    /// For `GatherFuture`: spawns all coroutines as tasks and blocks until completion.
+    ///
+    /// Raises `TypeError` if TOS is not awaitable.
+    /// Raises `RuntimeError` if coroutine/future has already been awaited.
+    GetAwaitable,
+
     // === Unpacking ===
     /// Unpack TOS into n values. Operand: u8 count.
     UnpackSequence,

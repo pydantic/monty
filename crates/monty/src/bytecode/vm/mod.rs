@@ -17,6 +17,7 @@ use call::CallResult;
 
 use crate::{
     args::ArgValues,
+    asyncio::CoroutineState,
     bytecode::{code::Code, op::Opcode},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId},
@@ -29,6 +30,22 @@ use crate::{
     types::{LongInt, MontyIter, PyTrait, iter::advance_on_heap},
     value::{BitwiseOp, Value},
 };
+
+/// Result of executing GetAwaitable opcode.
+///
+/// Indicates what the VM should do after awaiting a value:
+/// - `ValueReady`: the awaited value resolved immediately, push it
+/// - `FramePushed`: a new frame was pushed for coroutine execution
+enum GetAwaitableResult {
+    /// The awaited value resolved immediately (e.g., resolved ExternalFuture).
+    #[expect(
+        dead_code,
+        reason = "used when ExternalFuture resolution is implemented in Phase 4/5"
+    )]
+    ValueReady(Value),
+    /// A new frame was pushed to execute a coroutine.
+    FramePushed,
+}
 
 /// Tries an operation and handles exceptions, reloading cached frame state.
 ///
@@ -1070,6 +1087,22 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Reload cache from parent frame
                     reload_cache!(self, cached_frame);
                 }
+                // Async/Await
+                Opcode::GetAwaitable => {
+                    let result = self.exec_get_awaitable();
+                    match result {
+                        Ok(GetAwaitableResult::ValueReady(value)) => {
+                            self.push(value);
+                        }
+                        Ok(GetAwaitableResult::FramePushed) => {
+                            // Reload cache after pushing a new frame
+                            reload_cache!(self, cached_frame);
+                        }
+                        Err(e) => {
+                            catch_sync!(self, cached_frame, e);
+                        }
+                    }
+                }
                 // Unpacking - route through exception handling
                 Opcode::UnpackSequence => {
                     let count = fetch_u8!(cached_frame) as usize;
@@ -1098,6 +1131,128 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         // Create the module on the heap using pre-interned strings
         let heap_id = module.create(self.heap, self.interns)?;
         self.push(Value::Ref(heap_id));
+        Ok(())
+    }
+
+    /// Executes the GetAwaitable opcode.
+    ///
+    /// Pops the awaitable from the stack and handles it based on its type:
+    /// - `Coroutine`: validates state is New, then pushes a frame to execute it
+    /// - `ExternalFuture`: not yet implemented (requires scheduler from Phase 4)
+    /// - `GatherFuture`: not yet implemented (requires scheduler from Phase 4)
+    ///
+    /// Returns `GetAwaitableResult` indicating what action the VM should take.
+    fn exec_get_awaitable(&mut self) -> Result<GetAwaitableResult, RunError> {
+        let awaitable = self.pop();
+
+        match awaitable {
+            Value::Ref(heap_id) => {
+                // Check what kind of heap object this is
+                let heap_data = self.heap.get(heap_id);
+                match heap_data {
+                    HeapData::Coroutine(coro) => {
+                        // Check if coroutine can be awaited (must be New)
+                        if coro.state != CoroutineState::New {
+                            awaitable.drop_with_heap(self.heap);
+                            return Err(SimpleException::new_msg(
+                                ExcType::RuntimeError,
+                                "cannot reuse already awaited coroutine",
+                            )
+                            .into());
+                        }
+
+                        // Extract coroutine data before mutating
+                        let func_id = coro.func_id;
+                        let namespace_values: Vec<Value> = coro.namespace.iter().map(Value::copy_for_extend).collect();
+                        let frame_cells: Vec<HeapId> = coro.frame_cells.clone();
+
+                        // Increment refcounts for copied values
+                        for value in &namespace_values {
+                            if let Value::Ref(id) = value {
+                                self.heap.inc_ref(*id);
+                            }
+                        }
+                        for &cell_id in &frame_cells {
+                            self.heap.inc_ref(cell_id);
+                        }
+
+                        // Mark coroutine as Running
+                        if let HeapData::Coroutine(coro_mut) = self.heap.get_mut(heap_id) {
+                            coro_mut.state = CoroutineState::Running;
+                        }
+
+                        // Create namespace and push frame
+                        self.start_coroutine_frame(func_id, namespace_values, frame_cells)?;
+
+                        // Drop the coroutine reference (we've extracted what we need)
+                        awaitable.drop_with_heap(self.heap);
+
+                        Ok(GetAwaitableResult::FramePushed)
+                    }
+                    HeapData::GatherFuture(_) => {
+                        // GatherFuture requires scheduler - not implemented in Phase 3
+                        awaitable.drop_with_heap(self.heap);
+                        Err(SimpleException::new_msg(
+                            ExcType::NotImplementedError,
+                            "awaiting GatherFuture requires scheduler (Phase 4/5)",
+                        )
+                        .into())
+                    }
+                    _ => {
+                        // Not an awaitable type
+                        let type_name = awaitable.py_type(self.heap);
+                        awaitable.drop_with_heap(self.heap);
+                        Err(ExcType::type_error(format!(
+                            "object {type_name} can't be used in 'await' expression"
+                        )))
+                    }
+                }
+            }
+            Value::ExternalFuture(_call_id) => {
+                // ExternalFuture requires scheduler - not implemented in Phase 3
+                Err(SimpleException::new_msg(
+                    ExcType::NotImplementedError,
+                    "awaiting ExternalFuture requires scheduler (Phase 4/5)",
+                )
+                .into())
+            }
+            _ => {
+                // Not an awaitable type
+                let type_name = awaitable.py_type(self.heap);
+                awaitable.drop_with_heap(self.heap);
+                Err(ExcType::type_error(format!(
+                    "object {type_name} can't be used in 'await' expression"
+                )))
+            }
+        }
+    }
+
+    /// Starts execution of a coroutine by pushing a new frame.
+    ///
+    /// Registers the pre-bound namespace with the VM's Namespaces and pushes
+    /// a new frame to execute the coroutine's function body.
+    fn start_coroutine_frame(
+        &mut self,
+        func_id: FunctionId,
+        namespace_values: Vec<Value>,
+        frame_cells: Vec<HeapId>,
+    ) -> Result<(), RunError> {
+        let call_position = self.current_position();
+        let func = self.interns.get_function(func_id);
+
+        // Register the pre-bound namespace
+        let namespace_idx = self.namespaces.register_prebuilt(namespace_values, self.heap)?;
+
+        // Push frame to execute the coroutine
+        self.frames.push(CallFrame::new_function(
+            &func.code,
+            self.stack.len(),
+            namespace_idx,
+            func_id,
+            frame_cells,
+            call_position,
+        ));
+
         Ok(())
     }
 

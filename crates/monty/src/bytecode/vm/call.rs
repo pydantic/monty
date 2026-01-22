@@ -7,6 +7,7 @@
 use super::{CallFrame, VM};
 use crate::{
     args::{ArgValues, KwargsValues},
+    asyncio::Coroutine,
     builtins::{Builtins, BuiltinsFunctions},
     exception_private::{ExcType, RunError},
     heap::{Heap, HeapData, HeapId},
@@ -277,8 +278,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             }
             Value::DefFunction(func_id) => {
                 // Defined function without defaults or captured variables
-                self.call_def_function(func_id, &[], Vec::new(), args)?;
-                Ok(CallResult::FramePushed)
+                self.call_def_function(func_id, &[], Vec::new(), args)
             }
             Value::Ref(heap_id) => {
                 // Could be a closure or function with defaults - check heap
@@ -334,8 +334,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         callable.drop_with_heap(self.heap);
 
         // Call the defined function
-        self.call_def_function(func_id, &cells, defaults, args)?;
-        Ok(CallResult::FramePushed)
+        self.call_def_function(func_id, &cells, defaults, args)
     }
 
     /// Calls a function with unpacked args tuple and optional kwargs dict.
@@ -485,17 +484,124 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     // Frame Setup
     // ========================================================================
 
-    /// Calls a defined function by pushing a new frame.
+    /// Calls a defined function by pushing a new frame or creating a coroutine.
     ///
-    /// Sets up the function's namespace with bound arguments, cell variables,
-    /// and free variables (captured from enclosing scope for closures).
+    /// For sync functions: sets up the function's namespace with bound arguments,
+    /// cell variables, and free variables, then pushes a new frame.
+    ///
+    /// For async functions: binds arguments immediately but returns a Coroutine
+    /// instead of pushing a frame. The coroutine stores the pre-bound namespace
+    /// and will be executed when awaited.
     fn call_def_function(
         &mut self,
         func_id: FunctionId,
         cells: &[HeapId],
         defaults: Vec<Value>,
         args: ArgValues,
-    ) -> Result<(), RunError> {
+    ) -> Result<CallResult, RunError> {
+        // Get function info (interns is a shared reference so no conflict)
+        let func = self.interns.get_function(func_id);
+
+        if func.is_async {
+            // Async function: create a Coroutine instead of pushing a frame
+            self.create_coroutine(func_id, cells, defaults, args)
+        } else {
+            // Sync function: push a new frame
+            self.call_sync_function(func_id, cells, defaults, args)
+        }
+    }
+
+    /// Creates a Coroutine for an async function call.
+    ///
+    /// Binds arguments immediately (errors are raised at call time, not await time)
+    /// but stores the namespace in the Coroutine instead of registering it.
+    /// The coroutine is executed when awaited via GetAwaitable.
+    fn create_coroutine(
+        &mut self,
+        func_id: FunctionId,
+        cells: &[HeapId],
+        defaults: Vec<Value>,
+        args: ArgValues,
+    ) -> Result<CallResult, RunError> {
+        let func = self.interns.get_function(func_id);
+
+        // 1. Create namespace vector (not registered with Namespaces)
+        let mut namespace = Vec::with_capacity(func.namespace_size);
+
+        // 2. Bind arguments to parameters
+        {
+            let bind_result = func
+                .signature
+                .bind(args, &defaults, self.heap, self.interns, func.name, &mut namespace);
+
+            if let Err(e) = bind_result {
+                // Clean up namespace values on error
+                for value in namespace {
+                    value.drop_with_heap(self.heap);
+                }
+                for default in defaults {
+                    default.drop_with_heap(self.heap);
+                }
+                return Err(e);
+            }
+        }
+
+        // Clean up defaults - they were copied into the namespace by bind()
+        for default in defaults {
+            default.drop_with_heap(self.heap);
+        }
+
+        // Track created cell HeapIds for the coroutine
+        let mut frame_cells: Vec<HeapId> = Vec::with_capacity(func.cell_var_count + cells.len());
+
+        // 3. Create cells for variables captured by nested functions
+        {
+            let param_count = func.signature.total_slots();
+            for (i, maybe_param_idx) in func.cell_param_indices.iter().enumerate() {
+                let cell_slot = param_count + i;
+                let cell_value = if let Some(param_idx) = maybe_param_idx {
+                    namespace[*param_idx].clone_with_heap(self.heap)
+                } else {
+                    Value::Undefined
+                };
+                let cell_id = self.heap.allocate(HeapData::Cell(cell_value))?;
+                frame_cells.push(cell_id);
+                namespace.resize_with(cell_slot, || Value::Undefined);
+                namespace.push(Value::Ref(cell_id));
+            }
+
+            // 4. Copy captured cells (free vars) into namespace
+            let free_var_start = param_count + func.cell_var_count;
+            for (i, &cell_id) in cells.iter().enumerate() {
+                self.heap.inc_ref(cell_id);
+                frame_cells.push(cell_id);
+                let slot = free_var_start + i;
+                namespace.resize_with(slot, || Value::Undefined);
+                namespace.push(Value::Ref(cell_id));
+            }
+
+            // 5. Fill remaining slots with Undefined
+            namespace.resize_with(func.namespace_size, || Value::Undefined);
+        }
+
+        // 6. Create Coroutine on heap
+        let coroutine = Coroutine::new(func_id, namespace, frame_cells);
+        let coroutine_id = self.heap.allocate(HeapData::Coroutine(coroutine))?;
+
+        Ok(CallResult::Push(Value::Ref(coroutine_id)))
+    }
+
+    /// Calls a sync function by pushing a new frame.
+    ///
+    /// Sets up the function's namespace with bound arguments, cell variables,
+    /// and free variables (captured from enclosing scope for closures).
+    fn call_sync_function(
+        &mut self,
+        func_id: FunctionId,
+        cells: &[HeapId],
+        defaults: Vec<Value>,
+        args: ArgValues,
+    ) -> Result<CallResult, RunError> {
         // Get call position BEFORE borrowing namespaces mutably
         let call_position = self.current_position();
 
@@ -570,7 +676,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             call_position,
         ));
 
-        Ok(())
+        Ok(CallResult::FramePushed)
     }
 }
 

@@ -186,6 +186,45 @@ impl Namespaces {
         }
     }
 
+    /// Registers a pre-built namespace (e.g., from a coroutine) with memory and recursion tracking.
+    ///
+    /// This is similar to `new_namespace` but takes an already-populated `Vec<Value>` instead
+    /// of creating an empty one. Used when starting execution of a coroutine whose namespace
+    /// was pre-bound at call time.
+    ///
+    /// # Arguments
+    /// * `namespace` - The pre-built namespace values
+    /// * `heap` - The heap, used to access the resource tracker for memory accounting
+    ///
+    /// # Returns
+    /// * `Ok(NamespaceId)` - Index of the registered namespace
+    /// * `Err(ResourceError::Recursion)` - If adding this namespace would exceed recursion limit
+    /// * `Err(ResourceError::Memory)` - If adding this namespace would exceed memory limits
+    pub fn register_prebuilt(
+        &mut self,
+        namespace: Vec<Value>,
+        heap: &mut Heap<impl ResourceTracker>,
+    ) -> Result<NamespaceId, ResourceError> {
+        // Check recursion depth BEFORE memory allocation (fail fast)
+        let current_depth = self.stack.len() - 1;
+        heap.tracker().check_recursion_depth(current_depth)?;
+
+        // Track the memory used by this namespace's slots
+        let size = namespace.len() * std::mem::size_of::<Value>();
+        heap.tracker_mut().on_allocate(|| size)?;
+
+        // Try to reuse an existing slot, or push a new one
+        if let Some(reuse_id) = self.reuse_ids.pop() {
+            // Replace the old namespace with the new one
+            self.stack[reuse_id.index()] = Namespace(namespace);
+            Ok(reuse_id)
+        } else {
+            let idx = NamespaceId::new(self.stack.len());
+            self.stack.push(Namespace(namespace));
+            Ok(idx)
+        }
+    }
+
     /// Voids the most recently added namespace (after function returns),
     /// properly cleaning up any heap-allocated values.
     ///
