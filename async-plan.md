@@ -583,6 +583,141 @@ pub fn gather(args: Vec<Value>, heap: &mut Heap) -> Result<Value, RunError> {
    make test-py
    ```
 
+### Phase 9: Scheduler Serialization
+
+The scheduler state must be serializable for async execution to be paused/resumed across host calls.
+
+**File: `crates/monty/src/bytecode/vm/scheduler.rs`**
+
+Add serde derives to all scheduler types:
+```rust
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Task { ... }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) enum TaskState { ... }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct SerializedTaskFrame { ... }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct PendingCallData { ... }
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Scheduler { ... }
+```
+
+**File: `crates/monty/src/bytecode/vm/mod.rs`**
+
+Update `VMSnapshot` to include scheduler state:
+```rust
+pub struct VMSnapshot {
+    stack: Vec<Value>,
+    frames: Vec<SerializedFrame>,
+    exception_stack: Vec<Value>,
+    instruction_ip: usize,
+    scheduler: Scheduler,  // NEW: include full scheduler state
+}
+```
+
+Update `VM::into_snapshot()` to include the scheduler:
+```rust
+pub fn into_snapshot(self) -> VMSnapshot {
+    VMSnapshot {
+        stack: self.stack,
+        frames: self.frames.into_iter().map(|f| f.serialize()).collect(),
+        exception_stack: self.exception_stack,
+        instruction_ip: self.instruction_ip,
+        scheduler: self.scheduler,  // NEW
+    }
+}
+```
+
+Update `VM::restore()` to restore the scheduler from the snapshot.
+
+### Phase 10: Pending Call Data & Cancelled Task Handling
+
+**Store pending call data when `run_pending()` is called:**
+
+**File: `crates/monty/src/run.rs`**
+
+In `Snapshot::run_pending()`, store the pending call data in the scheduler before pushing the `ExternalFuture`:
+```rust
+pub fn run_pending(mut self, print: &mut impl PrintWriter) -> Result<RunProgress<T>, MontyException> {
+    let call_id = crate::asyncio::CallId::new(self.pending_call_id);
+
+    // Store pending call data in scheduler
+    // Note: Need to capture ext_function_id and args from the FunctionCall that created this snapshot
+    // This requires storing them in Snapshot when it's created from ExternalCall
+
+    // ... rest of implementation
+}
+```
+
+This requires updating `Snapshot` to store the `ext_function_id` and `args` from the `ExternalCall` that created it, so they can be added to `pending_calls` when `run_pending()` is called.
+
+**Ignore results for cancelled/failed tasks:**
+
+**File: `crates/monty/src/bytecode/vm/mod.rs`**
+
+Update `resolve_future` to check if the creator task is cancelled:
+```rust
+pub fn resolve_future(&mut self, call_id: CallId, value: Value) {
+    // Check if the creator task has been cancelled
+    if let Some(creator_task) = self.scheduler.get_pending_call_creator(call_id) {
+        if self.scheduler.is_task_failed(creator_task) {
+            // Task was cancelled - silently ignore the result and drop the value
+            value.drop_with_heap(self.heap);
+            return;
+        }
+    }
+    self.scheduler.resolve(call_id, value);
+}
+```
+
+### Phase 11: Integration Tests
+
+**File: `crates/monty/test_cases/async__all.py`**
+
+Create comprehensive test file with sections:
+
+```python
+# === Basic async/await ===
+# Test simple async function definition and await
+
+# === External futures ===
+# Test awaiting ExternalFuture values
+# (Note: These tests require external function support, may need separate test harness)
+
+# === Coroutine creation ===
+# Test that calling async function returns coroutine without executing
+
+# === Coroutine await ===
+# Test that awaiting coroutine executes the function body
+
+# === Double await error ===
+# Test that re-awaiting a coroutine raises RuntimeError
+
+# === Non-awaitable error ===
+# Test that awaiting non-awaitable raises TypeError
+
+# === asyncio.gather basic ===
+# Test gather with multiple coroutines
+
+# === gather result ordering ===
+# Test that gather returns results in argument order
+```
+
+**Separate traceback test files** (as needed for error cases):
+- `async__double_await_error.py` - Test "cannot reuse already awaited coroutine" error
+- `async__not_awaitable_error.py` - Test "object X can't be used in 'await' expression" error
+
+**Run verification:**
+```bash
+make test-ref-count-panic
+make test-py
+```
+
 ## Out of Scope
 
 The following are explicitly **not** included in this implementation:
