@@ -24,7 +24,7 @@ use crate::{
 ///
 /// When indexing a sequence of length `n`:
 /// - `start` defaults to 0 (or n-1 if step < 0)
-/// - `stop` defaults to n (or -n-1 if step < 0)
+/// - `stop` defaults to n (or -1 sentinel meaning "before index 0" if step < 0)
 /// - `step` defaults to 1
 ///
 /// The `indices(length)` method computes concrete indices from these optional values.

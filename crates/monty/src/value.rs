@@ -20,9 +20,9 @@ use crate::{
     resource::{LARGE_RESULT_THRESHOLD, ResourceTracker},
     types::{
         LongInt, PyTrait, Str, Tuple, Type,
-        bytes::{bytes_repr_fmt, get_byte_at_index},
+        bytes::{bytes_repr_fmt, get_byte_at_index, get_bytes_slice},
         slice,
-        str::{allocate_char, get_char_at_index, string_repr_fmt},
+        str::{allocate_char, get_char_at_index, get_str_slice, string_repr_fmt},
     },
 };
 
@@ -1368,7 +1368,7 @@ impl PyTrait for Value {
                     let (start, stop, step) = slice_obj
                         .indices(char_count)
                         .map_err(|()| ExcType::value_error_slice_step_zero())?;
-                    let result_str = get_intern_str_slice(s, start, stop, step);
+                    let result_str = get_str_slice(s, start, stop, step);
                     let heap_id = heap.allocate(HeapData::Str(Str::from(result_str)))?;
                     return Ok(Self::Ref(heap_id));
                 }
@@ -1393,7 +1393,7 @@ impl PyTrait for Value {
                     let (start, stop, step) = slice_obj
                         .indices(bytes.len())
                         .map_err(|()| ExcType::value_error_slice_step_zero())?;
-                    let result_bytes = get_intern_bytes_slice(bytes, start, stop, step);
+                    let result_bytes = get_bytes_slice(bytes, start, stop, step);
                     let heap_id = heap.allocate(HeapData::Bytes(crate::types::Bytes::new(result_bytes)))?;
                     return Ok(Self::Ref(heap_id));
                 }
@@ -2374,71 +2374,6 @@ fn bigint_pow(base: BigInt, exp: u64) -> BigInt {
         }
         b = &b * &b;
         e >>= 1;
-    }
-
-    result
-}
-
-/// Extracts a slice of an interned string (Unicode-aware).
-///
-/// Similar to `str::get_str_slice` but works with &str instead of String.
-#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_possible_wrap)]
-fn get_intern_str_slice(s: &str, start: usize, stop: usize, step: i64) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let mut result = String::new();
-
-    if step > 0 {
-        // Positive step: iterate forward
-        let step_usize = step as usize;
-        let mut i = start;
-        while i < stop && i < chars.len() {
-            result.push(chars[i]);
-            i += step_usize;
-        }
-    } else {
-        // Negative step: iterate backward
-        // start is the highest index, stop is the sentinel
-        // stop > chars.len() means "go to the beginning"
-        let step_abs = (-step) as usize;
-        let mut i = start as i64;
-        let stop_i64 = if stop > chars.len() { -1 } else { stop as i64 };
-
-        while i > stop_i64 && i >= 0 && (i as usize) < chars.len() {
-            result.push(chars[i as usize]);
-            i -= step_abs as i64;
-        }
-    }
-
-    result
-}
-
-/// Extracts a slice of interned bytes.
-///
-/// Similar to `bytes::get_bytes_slice` but returns a new Vec<u8>.
-#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_possible_wrap)]
-fn get_intern_bytes_slice(bytes: &[u8], start: usize, stop: usize, step: i64) -> Vec<u8> {
-    let mut result = Vec::new();
-
-    if step > 0 {
-        // Positive step: iterate forward
-        let step_usize = step as usize;
-        let mut i = start;
-        while i < stop && i < bytes.len() {
-            result.push(bytes[i]);
-            i += step_usize;
-        }
-    } else {
-        // Negative step: iterate backward
-        // start is the highest index, stop is the sentinel
-        // stop > bytes.len() means "go to the beginning"
-        let step_abs = (-step) as usize;
-        let mut i = start as i64;
-        let stop_i64 = if stop > bytes.len() { -1 } else { stop as i64 };
-
-        while i > stop_i64 && i >= 0 && (i as usize) < bytes.len() {
-            result.push(bytes[i as usize]);
-            i -= step_abs as i64;
-        }
     }
 
     result

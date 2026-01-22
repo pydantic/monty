@@ -115,8 +115,10 @@ pub fn get_byte_at_index(bytes: &[u8], index: i64) -> Option<u8> {
 ///
 /// Handles both positive and negative step values. For negative step,
 /// iterates backward from start down to (but not including) stop.
+/// The `stop` parameter uses a sentinel value of `len + 1` for negative
+/// step to indicate "go to the beginning".
 #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_possible_wrap)]
-fn get_bytes_slice(bytes: &[u8], start: usize, stop: usize, step: i64) -> Vec<u8> {
+pub(crate) fn get_bytes_slice(bytes: &[u8], start: usize, stop: usize, step: i64) -> Vec<u8> {
     let mut result = Vec::new();
 
     if step > 0 {

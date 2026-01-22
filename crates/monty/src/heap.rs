@@ -233,7 +233,16 @@ impl HeapData {
             }
             // Dataclass hashability depends on the mutable flag
             Self::Dataclass(dc) => dc.compute_hash(heap, interns),
-            // Mutable types, exceptions, iterators, slices, and modules cannot be hashed
+            // Slices are immutable and hashable (like in CPython)
+            Self::Slice(slice) => {
+                let mut hasher = DefaultHasher::new();
+                discriminant(self).hash(&mut hasher);
+                slice.start.hash(&mut hasher);
+                slice.stop.hash(&mut hasher);
+                slice.step.hash(&mut hasher);
+                Some(hasher.finish())
+            }
+            // Mutable types, exceptions, iterators, and modules cannot be hashed
             // (Cell is handled specially in get_or_compute_hash)
             Self::List(_)
             | Self::Dict(_)
@@ -241,7 +250,6 @@ impl HeapData {
             | Self::Cell(_)
             | Self::Exception(_)
             | Self::Iterator(_)
-            | Self::Slice(_)
             | Self::Module(_) => None,
             // LongInt is immutable and hashable
             Self::LongInt(li) => Some(li.hash()),
@@ -622,6 +630,7 @@ impl HashState {
             // Cells are hashable by identity (like all Python objects without __hash__ override)
             // FrozenSet is immutable and hashable
             // Range is immutable and hashable
+            // Slice is immutable and hashable (like in CPython)
             // LongInt is immutable and hashable
             // NamedTuple is immutable and hashable (like Tuple)
             HeapData::Str(_)
@@ -633,6 +642,7 @@ impl HashState {
             | HeapData::Closure(_, _, _)
             | HeapData::FunctionDefaults(_, _)
             | HeapData::Range(_)
+            | HeapData::Slice(_)
             | HeapData::LongInt(_) => Self::Unknown,
             // Dataclass hashability depends on the mutable flag
             HeapData::Dataclass(dc) => {
@@ -642,11 +652,10 @@ impl HashState {
                     Self::Unhashable
                 }
             }
-            // Mutable containers, exceptions, iterators, slices, and modules are unhashable
+            // Mutable containers, exceptions, iterators, and modules are unhashable
             HeapData::List(_)
             | HeapData::Dict(_)
             | HeapData::Set(_)
-            | HeapData::Slice(_)
             | HeapData::Exception(_)
             | HeapData::Iterator(_)
             | HeapData::Module(_) => Self::Unhashable,
