@@ -157,14 +157,15 @@ pub fn get_char_at_index(s: &str, index: i64) -> Option<char> {
 /// iterates backward from start down to (but not including) stop.
 /// The `stop` parameter uses a sentinel value of `len + 1` for negative
 /// step to indicate "go to the beginning".
-#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+///
+/// Note: step must be non-zero (callers should validate this via `slice.indices()`).
 pub(crate) fn get_str_slice(s: &str, start: usize, stop: usize, step: i64) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut result = String::new();
 
-    if step > 0 {
+    // try_from succeeds for non-negative step; step==0 rejected upstream by slice.indices()
+    if let Ok(step_usize) = usize::try_from(step) {
         // Positive step: iterate forward
-        let step_usize = step as usize;
         let mut i = start;
         while i < stop && i < chars.len() {
             result.push(chars[i]);
@@ -174,13 +175,22 @@ pub(crate) fn get_str_slice(s: &str, start: usize, stop: usize, step: i64) -> St
         // Negative step: iterate backward
         // start is the highest index, stop is the sentinel
         // stop > chars.len() means "go to the beginning"
-        let step_abs = (-step) as usize;
-        let mut i = start as i64;
-        let stop_i64 = if stop > chars.len() { -1 } else { stop as i64 };
+        let step_abs = usize::try_from(-step).expect("step is negative so -step is positive");
+        let step_abs_i64 = i64::try_from(step_abs).expect("step magnitude fits in i64");
+        let mut i = i64::try_from(start).expect("start index fits in i64");
+        // stop > chars.len() is sentinel meaning "go to beginning", use -1
+        let stop_i64 = if stop > chars.len() {
+            -1
+        } else {
+            i64::try_from(stop).expect("stop bounded by chars.len() fits in i64")
+        };
 
-        while i > stop_i64 && i >= 0 && (i as usize) < chars.len() {
-            result.push(chars[i as usize]);
-            i -= step_abs as i64;
+        while let Ok(i_usize) = usize::try_from(i) {
+            if i_usize >= chars.len() || i <= stop_i64 {
+                break;
+            }
+            result.push(chars[i_usize]);
+            i -= step_abs_i64;
         }
     }
 

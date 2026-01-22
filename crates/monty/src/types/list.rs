@@ -974,7 +974,8 @@ pub(crate) fn repr_sequence_fmt(
 /// iterates backward from start down to (but not including) stop.
 ///
 /// Returns a new Vec of cloned values with proper refcount increments.
-#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+///
+/// Note: step must be non-zero (callers should validate this via `slice.indices()`).
 pub(crate) fn get_slice_items(
     items: &[Value],
     start: usize,
@@ -984,9 +985,9 @@ pub(crate) fn get_slice_items(
 ) -> Vec<Value> {
     let mut result = Vec::new();
 
-    if step > 0 {
+    // try_from succeeds for non-negative step; step==0 rejected upstream by slice.indices()
+    if let Ok(step_usize) = usize::try_from(step) {
         // Positive step: iterate forward
-        let step_usize = step as usize;
         let mut i = start;
         while i < stop && i < items.len() {
             result.push(items[i].clone_with_heap(heap));
@@ -996,13 +997,21 @@ pub(crate) fn get_slice_items(
         // Negative step: iterate backward
         // start is the highest index, stop is the sentinel
         // stop > items.len() means "go to the beginning"
-        let step_abs = (-step) as usize;
-        let mut i = start as i64;
-        let stop_i64 = if stop > items.len() { -1 } else { stop as i64 };
+        let step_abs = usize::try_from(-step).expect("step is negative so -step is positive");
+        let step_abs_i64 = i64::try_from(step_abs).expect("step magnitude fits in i64");
+        let mut i = i64::try_from(start).expect("start index fits in i64");
+        let stop_i64 = if stop > items.len() {
+            -1
+        } else {
+            i64::try_from(stop).expect("stop bounded by items.len() fits in i64")
+        };
 
-        while i > stop_i64 && i >= 0 && (i as usize) < items.len() {
-            result.push(items[i as usize].clone_with_heap(heap));
-            i -= step_abs as i64;
+        while let Ok(i_usize) = usize::try_from(i) {
+            if i_usize >= items.len() || i <= stop_i64 {
+                break;
+            }
+            result.push(items[i_usize].clone_with_heap(heap));
+            i -= step_abs_i64;
         }
     }
 

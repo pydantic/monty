@@ -152,7 +152,6 @@ impl Range {
     ///
     /// Returns a new range object representing the sliced view.
     /// The new range has computed start, stop, and step values.
-    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_possible_wrap)]
     fn getitem_slice(&self, slice: &crate::types::Slice, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
         let range_len = self.len();
         let (start, stop, step) = slice
@@ -165,19 +164,21 @@ impl Range {
         // new_stop needs to be computed based on the number of elements
 
         let new_step = self.step.saturating_mul(step);
-        let new_start = self.start.saturating_add((start as i64).saturating_mul(self.step));
+        let start_i64 = i64::try_from(start).expect("start index fits in i64");
+        let new_start = self.start.saturating_add(start_i64.saturating_mul(self.step));
 
         // Calculate the number of elements in the sliced range
-        let num_elements = if step > 0 {
+        // try_from succeeds for non-negative step; step==0 rejected by slice.indices()
+        let num_elements = if let Ok(step_usize) = usize::try_from(step) {
             // Forward iteration
             if start >= stop {
                 0
             } else {
-                ((stop - start - 1) / (step as usize)) + 1
+                ((stop - start - 1) / step_usize) + 1
             }
         } else {
             // Backward iteration
-            let step_abs = (-step) as usize;
+            let step_abs = usize::try_from(-step).expect("step is negative so -step is positive");
             if stop > range_len {
                 // stop sentinel means "go to the beginning"
                 (start / step_abs) + 1
@@ -189,7 +190,8 @@ impl Range {
         };
 
         // new_stop = new_start + num_elements * new_step
-        let new_stop = new_start.saturating_add((num_elements as i64).saturating_mul(new_step));
+        let num_elements_i64 = i64::try_from(num_elements).expect("num_elements fits in i64");
+        let new_stop = new_start.saturating_add(num_elements_i64.saturating_mul(new_step));
 
         let new_range = Self::new(new_start, new_stop, new_step);
         Ok(Value::Ref(heap.allocate(HeapData::Range(new_range))?))
