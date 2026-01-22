@@ -14,7 +14,6 @@ use crate::{heap::HeapId, intern::FunctionId, value::Value};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CallId(pub u32);
 
-#[expect(dead_code, reason = "used in later phases")]
 impl CallId {
     /// Creates a new CallId from a raw value.
     #[inline]

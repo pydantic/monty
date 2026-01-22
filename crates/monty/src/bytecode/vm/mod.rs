@@ -10,6 +10,7 @@ mod collections;
 mod compare;
 mod exceptions;
 mod format;
+mod scheduler;
 
 use std::cmp::Ordering;
 
