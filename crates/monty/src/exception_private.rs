@@ -680,10 +680,10 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: slice indices must be integers or None or have an __index__ method`
     #[must_use]
-    pub(crate) fn type_error_slice_indices(type_: Type) -> RunError {
+    pub(crate) fn type_error_slice_indices() -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
-            format!("slice indices must be integers or None or have an __index__ method, not '{type_}'"),
+            "slice indices must be integers or None or have an __index__ method",
         )
         .into()
     }

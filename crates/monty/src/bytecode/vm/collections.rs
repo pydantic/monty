@@ -7,7 +7,7 @@ use crate::{
     intern::StringId,
     io::PrintWriter,
     resource::ResourceTracker,
-    types::{Dict, List, PyTrait, Set, Slice, Tuple, Type, str::allocate_char},
+    types::{Dict, List, PyTrait, Set, Slice, Tuple, Type, slice::value_to_option_i64, str::allocate_char},
     value::Value,
 };
 
@@ -66,9 +66,9 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         let start_val = self.pop();
 
         // Convert values to Option<i64>
-        let start = value_to_slice_option(&start_val, self.heap)?;
-        let stop = value_to_slice_option(&stop_val, self.heap)?;
-        let step = value_to_slice_option(&step_val, self.heap)?;
+        let start = value_to_option_i64(&start_val)?;
+        let stop = value_to_option_i64(&stop_val)?;
+        let step = value_to_option_i64(&step_val)?;
 
         // Drop the values after extracting their integer content
         start_val.drop_with_heap(self.heap);
@@ -512,20 +512,4 @@ fn unpack_type_error(type_name: Type) -> RunError {
         format!("cannot unpack non-iterable {type_name} object"),
     )
     .into()
-}
-
-/// Converts a Value to Option<i64> for slice construction.
-///
-/// Returns Ok(None) for Value::None, Ok(Some(i)) for integers/bools,
-/// or Err(TypeError) for other types.
-fn value_to_slice_option<T: ResourceTracker>(
-    value: &Value,
-    heap: &crate::heap::Heap<T>,
-) -> Result<Option<i64>, RunError> {
-    match value {
-        Value::None => Ok(None),
-        Value::Int(i) => Ok(Some(*i)),
-        Value::Bool(b) => Ok(Some(i64::from(*b))),
-        _ => Err(ExcType::type_error_slice_indices(value.py_type(heap))),
-    }
 }

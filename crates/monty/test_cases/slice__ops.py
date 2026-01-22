@@ -107,3 +107,22 @@ assert empty_str[1:4] == '', 'empty string any slice'
 # === Boolean truthiness of slice ===
 assert slice(1, 2), 'slice is truthy'
 assert slice(None), 'slice with None stop is truthy'
+
+# === Slice equality ===
+assert slice(1, 2) == slice(1, 2), 'slice equality same values'
+assert not (slice(1, 2) == slice(1, 3)), 'slice inequality different stop'
+assert slice(None) == slice(None), 'slice equality both None'
+assert slice(1, 2, 3) == slice(1, 2, 3), 'slice equality with step'
+assert not (slice(1, 2, 3) == slice(1, 2, 4)), 'slice inequality different step'
+
+# === Slice with bool indices ===
+assert [0, 1, 2, 3][True:] == [1, 2, 3], 'slice with True start'
+assert [0, 1, 2, 3][:True] == [0], 'slice with True stop'
+assert [0, 1, 2, 3][::True] == [0, 1, 2, 3], 'slice with True step'
+assert [0, 1, 2, 3][False:] == [0, 1, 2, 3], 'slice with False start'
+assert [0, 1, 2, 3][:False] == [], 'slice with False stop'
+
+# === Range slicing edge cases ===
+assert range(0)[1:2] == range(0, 0), 'empty range slicing'
+assert range(5)[::-1] == range(4, -1, -1), 'range reverse slice'
+assert list(range(5)[::-1]) == [4, 3, 2, 1, 0], 'range reverse slice iteration'

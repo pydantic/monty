@@ -54,13 +54,13 @@ impl Slice {
         let slice = match args {
             ArgValues::Empty => return Err(ExcType::type_error_at_least("slice", 1, 0)),
             ArgValues::One(stop_val) => {
-                let stop = value_to_option_i64(&stop_val, heap)?;
+                let stop = value_to_option_i64(&stop_val)?;
                 stop_val.drop_with_heap(heap);
                 Self::new(None, stop, None)
             }
             ArgValues::Two(start_val, stop_val) => {
-                let start = value_to_option_i64(&start_val, heap)?;
-                let stop = value_to_option_i64(&stop_val, heap)?;
+                let start = value_to_option_i64(&start_val)?;
+                let stop = value_to_option_i64(&stop_val)?;
                 start_val.drop_with_heap(heap);
                 stop_val.drop_with_heap(heap);
                 Self::new(start, stop, None)
@@ -71,9 +71,9 @@ impl Slice {
                 let stop_val = iter.next().unwrap();
                 let step_val = iter.next().unwrap();
 
-                let start = value_to_option_i64(&start_val, heap)?;
-                let stop = value_to_option_i64(&stop_val, heap)?;
-                let step = value_to_option_i64(&step_val, heap)?;
+                let start = value_to_option_i64(&start_val)?;
+                let stop = value_to_option_i64(&stop_val)?;
+                let step = value_to_option_i64(&step_val)?;
                 start_val.drop_with_heap(heap);
                 stop_val.drop_with_heap(heap);
                 step_val.drop_with_heap(heap);
@@ -184,12 +184,16 @@ impl Slice {
 }
 
 /// Converts a Value to Option<i64>, treating None as None.
-fn value_to_option_i64(value: &Value, heap: &Heap<impl ResourceTracker>) -> RunResult<Option<i64>> {
+///
+/// Used for slice construction from both `slice()` builtin and `[start:stop:step]` syntax.
+/// Returns Ok(None) for Value::None, Ok(Some(i)) for integers/bools,
+/// or Err(TypeError) for other types.
+pub(crate) fn value_to_option_i64(value: &Value) -> RunResult<Option<i64>> {
     match value {
         Value::None => Ok(None),
         Value::Int(i) => Ok(Some(*i)),
         Value::Bool(b) => Ok(Some(i64::from(*b))),
-        _ => Err(ExcType::type_error_slice_indices(value.py_type(heap))),
+        _ => Err(ExcType::type_error_slice_indices()),
     }
 }
 
