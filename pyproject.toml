@@ -57,6 +57,7 @@ known-first-party = ["monty"]
     "F632", # ignore replace `is` with `==` - we have lots of these tests
     "F701", # break outside loop - needed for testing break error handling
     "F702", # continue not properly in loop - needed for testing continue error handling
+    "F704", # await outside function - needed for testing top-level async/await
     "F811", # Redefinition of unused variable
     "F821", # traceback undefined call test intentionally uses undefined name
     "F841", # unused variable - needed for testing exception variable cleanup
@@ -89,6 +90,8 @@ exclude = [
     "crates/monty/test_cases/loop__continue_in_function_error.py",
     "crates/monty/test_cases/loop__break_in_if_error.py",
     "crates/monty/test_cases/loop__continue_in_if_error.py",
+    # async tests use top-level await which is valid in Monty but not standard Python
+    "crates/monty/test_cases/async__*.py",
 ]
 venv = ".venv"
 

@@ -730,3 +730,7 @@ The following are explicitly **not** included in this implementation:
 3. **`async for` / `async with`** - would require `__aiter__`, `__aenter__`/`__aexit__` protocols
 4. **Coroutine `.send()` / `.throw()`** - simplified single-shot coroutine model
 5. **Task cancellation API** - tasks are only cancelled implicitly when a gather fails
+
+TODO:
+* fix ty, fix ty duplicate notifications for ```error[invalid-syntax]: `await` outside of an asynchronous function```
+* fix test_cases cpython test.

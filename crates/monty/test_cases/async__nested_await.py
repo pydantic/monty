@@ -1,0 +1,15 @@
+# xfail=cpython
+# Nested async function calls
+
+
+async def inner():
+    return 42
+
+
+async def outer():
+    value = await inner()
+    return value + 8
+
+
+result = await outer()
+assert result == 50, 'nested async calls should work'

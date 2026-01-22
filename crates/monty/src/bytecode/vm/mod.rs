@@ -1113,6 +1113,8 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 }
                 // Async/Await
                 Opcode::GetAwaitable => {
+                    // Sync IP before exec (may push new frame for coroutine)
+                    self.current_frame_mut().ip = cached_frame.ip;
                     let result = self.exec_get_awaitable();
                     match result {
                         Ok(GetAwaitableResult::ValueReady(value)) => {
