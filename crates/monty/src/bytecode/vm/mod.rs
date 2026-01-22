@@ -26,7 +26,7 @@ use crate::{
     namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
     parse::CodeRange,
     resource::ResourceTracker,
-    types::{LongInt, MontyIter, PyTrait},
+    types::{LongInt, MontyIter, PyTrait, iter::advance_on_heap},
     value::{BitwiseOp, Value},
 };
 
@@ -829,7 +829,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
 
                     // Use advance_iterator which avoids std::mem::replace overhead
                     // by using a two-phase approach: read state, get value, update index
-                    match self.heap.advance_iterator(heap_id, self.interns) {
+                    match advance_on_heap(self.heap, heap_id, self.interns) {
                         Ok(Some(value)) => self.push(value),
                         Ok(None) => {
                             // Iterator exhausted - pop it and jump to end

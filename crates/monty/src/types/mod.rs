@@ -24,7 +24,7 @@ pub mod r#type;
 pub(crate) use bytes::Bytes;
 pub(crate) use dataclass::Dataclass;
 pub(crate) use dict::Dict;
-pub(crate) use iter::{IterState, MontyIter};
+pub(crate) use iter::MontyIter;
 pub(crate) use list::List;
 pub(crate) use long_int::LongInt;
 pub(crate) use module::Module;
