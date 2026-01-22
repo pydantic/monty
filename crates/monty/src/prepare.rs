@@ -377,6 +377,12 @@ impl<'i> Prepare<'i> {
                         or_else: self.prepare_nodes(or_else)?,
                     });
                 }
+                Node::Break { position } => {
+                    new_nodes.push(Node::Break { position });
+                }
+                Node::Continue { position } => {
+                    new_nodes.push(Node::Continue { position });
+                }
                 Node::If { test, body, or_else } => {
                     let test = self.prepare_expression(test)?;
                     let body = self.prepare_nodes(body)?;
@@ -1767,7 +1773,14 @@ fn collect_scope_info_from_node(
             }
         }
         // These don't create new names
-        Node::Pass | Node::Expr(_) | Node::Return(_) | Node::ReturnNone | Node::Raise(_) | Node::Assert { .. } => {}
+        Node::Pass
+        | Node::Expr(_)
+        | Node::Return(_)
+        | Node::ReturnNone
+        | Node::Raise(_)
+        | Node::Assert { .. }
+        | Node::Break { .. }
+        | Node::Continue { .. } => {}
     }
 }
 
@@ -2148,7 +2161,12 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
         }
         // Imports create bindings but don't reference names
         Node::Import { .. } | Node::ImportFrom { .. } => {}
-        Node::Pass | Node::ReturnNone | Node::Global { .. } | Node::Nonlocal { .. } => {}
+        Node::Pass
+        | Node::ReturnNone
+        | Node::Global { .. }
+        | Node::Nonlocal { .. }
+        | Node::Break { .. }
+        | Node::Continue { .. } => {}
     }
 }
 

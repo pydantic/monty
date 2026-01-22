@@ -55,6 +55,8 @@ known-first-party = ["monty"]
     "E731", # Do not assign a lambda expression, use a def - needed for testing lambda expressions
     "F541", # f-string without any placeholders
     "F632", # ignore replace `is` with `==` - we have lots of these tests
+    "F701", # break outside loop - needed for testing break error handling
+    "F702", # continue not properly in loop - needed for testing continue error handling
     "F811", # Redefinition of unused variable
     "F821", # traceback undefined call test intentionally uses undefined name
     "F841", # unused variable - needed for testing exception variable cleanup
@@ -77,7 +79,13 @@ pythonVersion = "3.14"
 typeCheckingMode = "strict"
 reportUnnecessaryTypeIgnoreComment = true
 include = ["scripts", "crates/monty/test_cases", "crates/monty-python", "crates/monty-type-checking"]
-exclude = ["crates/monty-type-checking/tests/bad_types.py", "crates/monty-type-checking/tests/reveal_types.py"]
+exclude = [
+    "crates/monty-type-checking/tests/bad_types.py",
+    "crates/monty-type-checking/tests/reveal_types.py",
+    # break/continue outside loop tests intentionally test error handling
+    "crates/monty/test_cases/loop__break_outside_error.py",
+    "crates/monty/test_cases/loop__continue_outside_error.py",
+]
 venv = ".venv"
 
 # we include tests cases in type checking then switch off all rules that break

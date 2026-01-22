@@ -84,11 +84,13 @@ pub struct Compiler<'a> {
 
 /// Information about a loop for break/continue handling.
 ///
-/// Note: break/continue are not yet implemented in the parser,
-/// so this is currently unused but included for future use.
+/// Tracks the bytecode locations needed for compiling break and continue statements:
+/// - `start`: where continue should jump to (the ForIter instruction)
+/// - `break_jumps`: pending jumps from break statements that need to be patched
+///   to jump past the loop's else block
 struct LoopInfo {
     /// Bytecode offset of loop start (for continue).
-    _start: usize,
+    start: usize,
     /// Jump labels that need patching to loop end (for break).
     break_jumps: Vec<JumpLabel>,
 }
@@ -323,6 +325,14 @@ impl<'a> Compiler<'a> {
                 position,
             } => {
                 self.compile_import_from(*module_name, names, *position)?;
+            }
+
+            Node::Break { position } => {
+                self.compile_break(*position)?;
+            }
+
+            Node::Continue { position } => {
+                self.compile_continue(*position)?;
             }
 
             // These are handled during the prepare phase and produce no bytecode
@@ -1541,9 +1551,9 @@ impl<'a> Compiler<'a> {
         // Loop start
         let loop_start = self.code.current_offset();
 
-        // Push loop info for break/continue (future use)
+        // Push loop info for break/continue
         self.loop_stack.push(LoopInfo {
-            _start: loop_start,
+            start: loop_start,
             break_jumps: Vec::new(),
         });
 
@@ -1559,19 +1569,58 @@ impl<'a> Compiler<'a> {
         // Jump back to loop start
         self.code.emit_jump_to(Opcode::Jump, loop_start);
 
-        // End of loop
+        // End of loop - ForIter jumps here when iterator is exhausted
         self.code.patch_jump(end_jump);
 
-        // Pop loop info and patch break jumps (future use)
+        // Pop loop info before compiling else block
         let loop_info = self.loop_stack.pop().expect("loop stack underflow");
-        for break_jump in loop_info.break_jumps {
-            self.code.patch_jump(break_jump);
-        }
 
         // Compile else block (runs if loop completed without break)
         if !or_else.is_empty() {
             self.compile_block(or_else)?;
         }
+
+        // Patch break jumps to here - AFTER the else block so break skips else
+        for break_jump in loop_info.break_jumps {
+            self.code.patch_jump(break_jump);
+        }
+
+        Ok(())
+    }
+
+    /// Compiles a break statement.
+    ///
+    /// Break exits the innermost loop and skips its else block. The bytecode:
+    /// 1. Pops the iterator (still on stack during loop body)
+    /// 2. Emits a jump to after the else block (patched when loop compilation completes)
+    fn compile_break(&mut self, position: CodeRange) -> Result<(), CompileError> {
+        let loop_info = self
+            .loop_stack
+            .last_mut()
+            .ok_or_else(|| CompileError::new("'break' outside loop", position))?;
+
+        // Pop the iterator (on stack during loop body)
+        self.code.emit(Opcode::Pop);
+
+        // Emit jump (will be patched to after else block when loop compilation completes)
+        let jump = self.code.emit_jump(Opcode::Jump);
+        loop_info.break_jumps.push(jump);
+
+        Ok(())
+    }
+
+    /// Compiles a continue statement.
+    ///
+    /// Continue jumps back to the loop start (the ForIter instruction) which
+    /// advances the iterator and either enters the next iteration or exits the loop.
+    fn compile_continue(&mut self, position: CodeRange) -> Result<(), CompileError> {
+        let loop_info = self
+            .loop_stack
+            .last()
+            .ok_or_else(|| CompileError::new("'continue' not properly in loop", position))?;
+
+        // Jump back to loop start (ForIter handles next iteration)
+        self.code.emit_jump_to(Opcode::Jump, loop_info.start);
 
         Ok(())
     }

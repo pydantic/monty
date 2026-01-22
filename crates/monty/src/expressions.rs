@@ -408,6 +408,20 @@ pub enum Node<F> {
         body: Vec<Self>,
         or_else: Vec<Self>,
     },
+    /// Break statement - exits the innermost loop.
+    ///
+    /// When executed, control flow jumps past the loop's else block (if any).
+    /// Must be inside a loop, otherwise a `SyntaxError` is raised at compile time.
+    Break {
+        position: CodeRange,
+    },
+    /// Continue statement - jumps to the next iteration of the innermost loop.
+    ///
+    /// When executed, control flow jumps back to the loop's iterator advancement.
+    /// Must be inside a loop, otherwise a `SyntaxError` is raised at compile time.
+    Continue {
+        position: CodeRange,
+    },
     If {
         test: ExprLoc,
         body: Vec<Self>,
