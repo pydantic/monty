@@ -158,8 +158,11 @@ impl MontyRun {
             let mut vm = VM::new(&mut heap, &mut namespaces, &executor.interns, print);
             let result = vm.run_module(&executor.module_code);
 
-            // Handle the result - convert VM to snapshot if needed for external call
-            if let Ok(FrameExit::ExternalCall { .. }) = &result {
+            // Handle the result - convert VM to snapshot if needed
+            if matches!(
+                &result,
+                Ok(FrameExit::ExternalCall { .. } | FrameExit::ResolveFutures(_))
+            ) {
                 // Need to snapshot the VM for resumption
                 (result, Some(vm.into_snapshot()))
             } else {
@@ -180,7 +183,11 @@ impl MontyRun {
                 let obj = MontyObject::new(value, &mut heap, &executor.interns);
                 Ok(RunProgress::Complete(obj))
             }
-            Ok(FrameExit::ExternalCall { ext_function_id, args }) => {
+            Ok(FrameExit::ExternalCall {
+                ext_function_id,
+                args,
+                call_id,
+            }) => {
                 // Get function name and convert args to MontyObjects (includes both positional and kwargs)
                 let function_name = executor.interns.get_external_function_name(ext_function_id);
                 let (args_py, kwargs_py) = args.into_py_objects(&mut heap, &executor.interns);
@@ -189,17 +196,37 @@ impl MontyRun {
                     function_name,
                     args: args_py,
                     kwargs: kwargs_py,
+                    call_id: call_id.raw(),
                     state: Snapshot {
                         executor,
                         vm_state: vm_state.expect("snapshot should exist for ExternalCall"),
                         heap,
                         namespaces,
+                        pending_call_id: call_id.raw(),
                     },
                 })
             }
-            Ok(FrameExit::ResolveFutures(_pending_calls)) => {
-                // TODO: Phase 6 - Add ResolveFutures variant to RunProgress and return proper state
-                todo!("ResolveFutures API not yet implemented (Phase 6)")
+            Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
+                // Convert pending CallIds to PendingCall structs
+                let pending: Vec<PendingCall> = pending_call_ids
+                    .iter()
+                    .map(|cid| PendingCall {
+                        call_id: cid.raw(),
+                        function_name: String::from("<pending>"),
+                        args: vec![],
+                        kwargs: vec![],
+                    })
+                    .collect();
+
+                Ok(RunProgress::ResolveFutures {
+                    pending,
+                    state: FutureSnapshot {
+                        executor,
+                        vm_state: vm_state.expect("snapshot should exist for ResolveFutures"),
+                        heap,
+                        namespaces,
+                    },
+                })
             }
             Err(err) => {
                 // Clean up the global namespace before returning (only needed with ref-count-panic)
@@ -217,17 +244,24 @@ impl MontyRun {
 ///
 /// This enum owns the execution state, ensuring type-safe state transitions.
 /// - `FunctionCall` contains info about an external function call and state to resume
+/// - `ResolveFutures` contains pending futures that need resolution before continuing
 /// - `Complete` contains just the final value (execution is done)
 ///
 /// # Type Parameters
 /// * `T` - Resource tracker implementation (e.g., `NoLimitTracker` or `LimitedTracker`)
 ///
 /// Serialization requires `T: Serialize + Deserialize`.
-#[expect(clippy::large_enum_variant)]
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
 pub enum RunProgress<T: ResourceTracker> {
-    /// Execution paused at an external function call. Call `state.run(return_value)` to resume.
+    /// Execution paused at an external function call.
+    ///
+    /// The host can choose how to handle this:
+    /// - **Sync resolution**: Call `state.run(return_value)` to push the result and continue
+    /// - **Async resolution**: Call `state.run_pending()` to push an `ExternalFuture` and continue
+    ///
+    /// When using async resolution, the code continues and may `await` the future later.
+    /// If the future isn't resolved when awaited, execution yields with `ResolveFutures`.
     FunctionCall {
         /// The name of the function being called.
         function_name: String,
@@ -235,8 +269,20 @@ pub enum RunProgress<T: ResourceTracker> {
         args: Vec<MontyObject>,
         /// The keyword arguments passed to the function (key, value pairs).
         kwargs: Vec<(MontyObject, MontyObject)>,
+        /// Unique identifier for this call (used for async correlation).
+        call_id: u32,
         /// The execution state that can be resumed with a return value.
         state: Snapshot<T>,
+    },
+    /// All async tasks are blocked waiting for external futures to resolve.
+    ///
+    /// The host must resolve some or all of the pending calls before continuing.
+    /// Use `state.resume(results)` to provide results for pending calls.
+    ResolveFutures {
+        /// Pending external calls that need resolution.
+        pending: Vec<PendingCall>,
+        /// The execution state that can be resumed with future results.
+        state: FutureSnapshot<T>,
     },
     /// Execution completed with a final result.
     Complete(MontyObject),
@@ -245,20 +291,27 @@ pub enum RunProgress<T: ResourceTracker> {
 impl<T: ResourceTracker> RunProgress<T> {
     /// Consumes the `RunProgress` and returns external function call info and state.
     ///
-    /// Returns (function_name, positional_args, keyword_args, state).
+    /// Returns (function_name, positional_args, keyword_args, call_id, state).
     #[must_use]
     #[expect(clippy::type_complexity)]
     pub fn into_function_call(
         self,
-    ) -> Option<(String, Vec<MontyObject>, Vec<(MontyObject, MontyObject)>, Snapshot<T>)> {
+    ) -> Option<(
+        String,
+        Vec<MontyObject>,
+        Vec<(MontyObject, MontyObject)>,
+        u32,
+        Snapshot<T>,
+    )> {
         match self {
             Self::FunctionCall {
                 function_name,
                 args,
                 kwargs,
+                call_id,
                 state,
-            } => Some((function_name, args, kwargs, state)),
-            Self::Complete(_) => None,
+            } => Some((function_name, args, kwargs, call_id, state)),
+            Self::Complete(_) | Self::ResolveFutures { .. } => None,
         }
     }
 
@@ -267,7 +320,18 @@ impl<T: ResourceTracker> RunProgress<T> {
     pub fn into_complete(self) -> Option<MontyObject> {
         match self {
             Self::Complete(value) => Some(value),
-            Self::FunctionCall { .. } => None,
+            Self::FunctionCall { .. } | Self::ResolveFutures { .. } => None,
+        }
+    }
+
+    /// Consumes the `RunProgress` and returns pending futures info and state.
+    ///
+    /// Returns (pending_calls, state) if this is a ResolveFutures, None otherwise.
+    #[must_use]
+    pub fn into_resolve_futures(self) -> Option<(Vec<PendingCall>, FutureSnapshot<T>)> {
+        match self {
+            Self::ResolveFutures { pending, state } => Some((pending, state)),
+            Self::FunctionCall { .. } | Self::Complete(_) => None,
         }
     }
 }
@@ -294,9 +358,9 @@ impl<T: ResourceTracker + serde::de::DeserializeOwned> RunProgress<T> {
 
 /// Execution state that can be resumed after an external function call.
 ///
-/// This struct owns all runtime state and provides a `run()` method to continue
-/// execution with the return value from the external function. When `run()` is
-/// called, it consumes self and returns the next `RunProgress`.
+/// This struct owns all runtime state and provides methods to continue execution:
+/// - `run(result)`: Resume with the external function's return value (sync pattern)
+/// - `run_pending()`: Resume with an `ExternalFuture` that can be awaited later (async pattern)
 ///
 /// External function calls occur when calling a function that is not a builtin,
 /// exception, or user-defined function.
@@ -316,6 +380,9 @@ pub struct Snapshot<T: ResourceTracker> {
     heap: Heap<T>,
     /// The namespaces containing all variable bindings.
     namespaces: Namespaces,
+    /// The call_id from the most recent FunctionCall that created this Snapshot.
+    /// Used by `run_pending()` to push the correct `ExternalFuture`.
+    pending_call_id: u32,
 }
 
 /// Return value or exception from an external function.
@@ -336,6 +403,214 @@ impl From<MontyObject> for ExternalResult {
 impl From<MontyException> for ExternalResult {
     fn from(exception: MontyException) -> Self {
         Self::Error(exception)
+    }
+}
+
+/// Information about a pending external function call.
+///
+/// Returned as part of `RunProgress::ResolveFutures` when all tasks are blocked.
+/// The host should execute these calls and provide results via `FutureSnapshot::resume()`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PendingCall {
+    /// Unique identifier for this call (matches `FunctionCall.call_id`).
+    pub call_id: u32,
+    /// The name of the function being called.
+    pub function_name: String,
+    /// The positional arguments passed to the function.
+    pub args: Vec<MontyObject>,
+    /// The keyword arguments passed to the function (key, value pairs).
+    pub kwargs: Vec<(MontyObject, MontyObject)>,
+}
+
+/// Execution state paused while waiting for external future results.
+///
+/// Unlike `Snapshot` (used for sync external calls), `FutureSnapshot` supports
+/// incremental resolution - you can provide partial results and Monty will
+/// continue running until all tasks are blocked again.
+///
+/// # Type Parameters
+/// * `T` - Resource tracker implementation
+///
+/// Serialization requires `T: Serialize + Deserialize`.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
+pub struct FutureSnapshot<T: ResourceTracker> {
+    /// The executor containing compiled code and interns.
+    executor: Executor,
+    /// The VM state containing stack, frames, and exception state.
+    vm_state: VMSnapshot,
+    /// The heap containing all allocated objects.
+    heap: Heap<T>,
+    /// The namespaces containing all variable bindings.
+    namespaces: Namespaces,
+}
+
+impl<T: ResourceTracker> FutureSnapshot<T> {
+    /// Resumes execution with results for some or all pending futures.
+    ///
+    /// **Incremental resolution**: You don't need to provide all results at once.
+    /// If you provide a partial list, Monty will:
+    /// 1. Mark those futures as resolved
+    /// 2. Unblock any tasks waiting on those futures
+    /// 3. Continue running until all tasks are blocked again
+    /// 4. Return `ResolveFutures` with the remaining pending calls
+    ///
+    /// This allows the host to resolve futures as they complete, rather than
+    /// waiting for all of them.
+    ///
+    /// # Arguments
+    /// * `results` - List of (call_id, result) pairs. Can be a subset of pending calls.
+    /// * `print` - Writer for print output
+    ///
+    /// # Returns
+    /// * `RunProgress::ResolveFutures` - More futures need resolution
+    /// * `RunProgress::FunctionCall` - VM hit another external call
+    /// * `RunProgress::Complete` - All tasks completed successfully
+    /// * `Err(MontyException)` - An unhandled exception occurred
+    pub fn resume(
+        mut self,
+        results: Vec<(u32, ExternalResult)>,
+        print: &mut impl PrintWriter,
+    ) -> Result<RunProgress<T>, MontyException> {
+        // Convert all results to Values BEFORE creating VM (to avoid borrow conflicts)
+        let mut converted_results = Vec::with_capacity(results.len());
+        for (call_id, ext_result) in results {
+            let value = match ext_result {
+                ExternalResult::Return(obj) => match obj.to_value(&mut self.heap, &self.executor.interns) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return Err(MontyException::runtime_error(format!(
+                            "invalid return type for call {call_id}: {e}"
+                        )));
+                    }
+                },
+                ExternalResult::Error(_exc) => {
+                    // TODO: Convert exception to RunError and use scheduler.fail_for_call
+                    // For now, we only support successful resolutions
+                    return Err(MontyException::runtime_error(
+                        "exception results not yet supported in FutureSnapshot::resume",
+                    ));
+                }
+            };
+            converted_results.push((call_id, value));
+        }
+
+        // Destructure self to avoid partial move issues
+        let Self {
+            executor,
+            vm_state,
+            mut heap,
+            mut namespaces,
+        } = self;
+
+        // Scope the VM borrow so we can move heap/namespaces after
+        let (result, vm_state) = {
+            // Restore the VM from the snapshot
+            let mut vm = VM::restore(
+                vm_state,
+                &executor.module_code,
+                &mut heap,
+                &mut namespaces,
+                &executor.interns,
+                print,
+            );
+
+            // Resolve the provided futures in the scheduler
+            for (call_id, value) in converted_results {
+                vm.resolve_future(crate::asyncio::CallId::new(call_id), value);
+            }
+
+            // Continue execution
+            let vm_result = vm.run();
+
+            // Handle the result - convert VM to snapshot if needed
+            if matches!(
+                &vm_result,
+                Ok(FrameExit::ExternalCall { .. } | FrameExit::ResolveFutures(_))
+            ) {
+                (vm_result, Some(vm.into_snapshot()))
+            } else {
+                vm.cleanup();
+                (vm_result, None)
+            }
+        };
+
+        // Handle the result using the destructured parts
+        handle_frame_exit_for_future(result, vm_state, executor, heap, namespaces)
+    }
+}
+
+/// Handles a FrameExit result and converts it to RunProgress for FutureSnapshot.
+///
+/// This is a standalone function to avoid partial move issues when destructuring FutureSnapshot.
+#[cfg_attr(not(feature = "ref-count-panic"), expect(unused_mut))]
+fn handle_frame_exit_for_future<T: ResourceTracker>(
+    result: RunResult<FrameExit>,
+    vm_state: Option<VMSnapshot>,
+    executor: Executor,
+    mut heap: Heap<T>,
+    mut namespaces: Namespaces,
+) -> Result<RunProgress<T>, MontyException> {
+    match result {
+        Ok(FrameExit::Return(value)) => {
+            #[cfg(feature = "ref-count-panic")]
+            namespaces.drop_global_with_heap(&mut heap);
+
+            let obj = MontyObject::new(value, &mut heap, &executor.interns);
+            Ok(RunProgress::Complete(obj))
+        }
+        Ok(FrameExit::ExternalCall {
+            ext_function_id,
+            args,
+            call_id,
+        }) => {
+            let function_name = executor.interns.get_external_function_name(ext_function_id);
+            let (args_py, kwargs_py) = args.into_py_objects(&mut heap, &executor.interns);
+
+            Ok(RunProgress::FunctionCall {
+                function_name,
+                args: args_py,
+                kwargs: kwargs_py,
+                call_id: call_id.raw(),
+                state: Snapshot {
+                    executor,
+                    vm_state: vm_state.expect("snapshot should exist for ExternalCall"),
+                    heap,
+                    namespaces,
+                    pending_call_id: call_id.raw(),
+                },
+            })
+        }
+        Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
+            // Convert pending CallIds to PendingCall structs
+            // Note: We don't have the full call data here since it's in the scheduler
+            // For now, return minimal info - full implementation would store call data
+            let pending: Vec<PendingCall> = pending_call_ids
+                .iter()
+                .map(|cid| PendingCall {
+                    call_id: cid.raw(),
+                    function_name: String::from("<pending>"),
+                    args: vec![],
+                    kwargs: vec![],
+                })
+                .collect();
+
+            Ok(RunProgress::ResolveFutures {
+                pending,
+                state: FutureSnapshot {
+                    executor,
+                    vm_state: vm_state.expect("snapshot should exist for ResolveFutures"),
+                    heap,
+                    namespaces,
+                },
+            })
+        }
+        Err(err) => {
+            #[cfg(feature = "ref-count-panic")]
+            namespaces.drop_global_with_heap(&mut heap);
+
+            Err(err.into_python_exception(&executor.interns, &executor.code))
+        }
     }
 }
 
@@ -398,8 +673,11 @@ impl<T: ResourceTracker> Snapshot<T> {
                 ResumeWith::Exception(error) => vm.resume_with_exception(error),
             };
 
-            // Handle the result - convert VM to snapshot if needed for external call
-            if let Ok(FrameExit::ExternalCall { .. }) = &vm_result {
+            // Handle the result - convert VM to snapshot if needed
+            if matches!(
+                &vm_result,
+                Ok(FrameExit::ExternalCall { .. } | FrameExit::ResolveFutures(_))
+            ) {
                 // Need to snapshot the VM for resumption
                 (vm_result, Some(vm.into_snapshot()))
             } else {
@@ -420,7 +698,11 @@ impl<T: ResourceTracker> Snapshot<T> {
                 let obj = MontyObject::new(value, &mut self.heap, &self.executor.interns);
                 Ok(RunProgress::Complete(obj))
             }
-            Ok(FrameExit::ExternalCall { ext_function_id, args }) => {
+            Ok(FrameExit::ExternalCall {
+                ext_function_id,
+                args,
+                call_id,
+            }) => {
                 // Get function name and convert args to MontyObjects (includes both positional and kwargs)
                 let function_name = self.executor.interns.get_external_function_name(ext_function_id);
                 let (args_py, kwargs_py) = args.into_py_objects(&mut self.heap, &self.executor.interns);
@@ -429,17 +711,37 @@ impl<T: ResourceTracker> Snapshot<T> {
                     function_name,
                     args: args_py,
                     kwargs: kwargs_py,
+                    call_id: call_id.raw(),
                     state: Self {
                         executor: self.executor,
                         vm_state: vm_state.expect("snapshot should exist for ExternalCall"),
                         heap: self.heap,
                         namespaces: self.namespaces,
+                        pending_call_id: call_id.raw(),
                     },
                 })
             }
-            Ok(FrameExit::ResolveFutures(_pending_calls)) => {
-                // TODO: Phase 6 - Add ResolveFutures variant to RunProgress and return proper state
-                todo!("ResolveFutures API not yet implemented (Phase 6)")
+            Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
+                // Convert pending CallIds to PendingCall structs
+                let pending: Vec<PendingCall> = pending_call_ids
+                    .iter()
+                    .map(|cid| PendingCall {
+                        call_id: cid.raw(),
+                        function_name: String::from("<pending>"),
+                        args: vec![],
+                        kwargs: vec![],
+                    })
+                    .collect();
+
+                Ok(RunProgress::ResolveFutures {
+                    pending,
+                    state: FutureSnapshot {
+                        executor: self.executor,
+                        vm_state: vm_state.expect("snapshot should exist for ResolveFutures"),
+                        heap: self.heap,
+                        namespaces: self.namespaces,
+                    },
+                })
             }
             Err(err) => {
                 // Clean up the global namespace before returning (only needed with ref-count-panic)
@@ -447,6 +749,120 @@ impl<T: ResourceTracker> Snapshot<T> {
                 self.namespaces.drop_global_with_heap(&mut self.heap);
 
                 // Convert to MontyException
+                Err(err.into_python_exception(&self.executor.interns, &self.executor.code))
+            }
+        }
+    }
+
+    /// Continues execution by pushing an ExternalFuture instead of a concrete value.
+    ///
+    /// This is the async resolution pattern: instead of providing the result immediately,
+    /// the host calls this method to continue execution with a pending future. The code
+    /// can then `await` this future later.
+    ///
+    /// If the code awaits the future before it's resolved, execution will yield with
+    /// `RunProgress::ResolveFutures`. The host can then provide the result via
+    /// `FutureSnapshot::resume()`.
+    ///
+    /// # Arguments
+    /// * `print` - Writer for print output
+    ///
+    /// # Returns
+    /// The next execution progress - may be another `FunctionCall`, `ResolveFutures`, or `Complete`.
+    ///
+    /// # Panics
+    /// Panics if the VM reaches an inconsistent state (indicating a bug in the interpreter).
+    pub fn run_pending(mut self, print: &mut impl PrintWriter) -> Result<RunProgress<T>, MontyException> {
+        // Get the call_id that was stored when this Snapshot was created
+        let call_id = crate::asyncio::CallId::new(self.pending_call_id);
+
+        // Scope the VM borrow so we can move heap/namespaces after
+        let (result, vm_state) = {
+            // Restore the VM from the snapshot
+            let mut vm = VM::restore(
+                self.vm_state,
+                &self.executor.module_code,
+                &mut self.heap,
+                &mut self.namespaces,
+                &self.executor.interns,
+                print,
+            );
+
+            // Push the ExternalFuture value onto the stack
+            // This allows the code to continue and potentially await this future later
+            vm.push(Value::ExternalFuture(call_id));
+
+            // Continue execution
+            let vm_result = vm.run();
+
+            // Handle the result - convert VM to snapshot if needed
+            if matches!(
+                &vm_result,
+                Ok(FrameExit::ExternalCall { .. } | FrameExit::ResolveFutures(_))
+            ) {
+                (vm_result, Some(vm.into_snapshot()))
+            } else {
+                vm.cleanup();
+                (vm_result, None)
+            }
+        };
+
+        // Handle the result
+        match result {
+            Ok(FrameExit::Return(value)) => {
+                #[cfg(feature = "ref-count-panic")]
+                self.namespaces.drop_global_with_heap(&mut self.heap);
+
+                let obj = MontyObject::new(value, &mut self.heap, &self.executor.interns);
+                Ok(RunProgress::Complete(obj))
+            }
+            Ok(FrameExit::ExternalCall {
+                ext_function_id,
+                args,
+                call_id: new_call_id,
+            }) => {
+                let function_name = self.executor.interns.get_external_function_name(ext_function_id);
+                let (args_py, kwargs_py) = args.into_py_objects(&mut self.heap, &self.executor.interns);
+
+                Ok(RunProgress::FunctionCall {
+                    function_name,
+                    args: args_py,
+                    kwargs: kwargs_py,
+                    call_id: new_call_id.raw(),
+                    state: Self {
+                        executor: self.executor,
+                        vm_state: vm_state.expect("snapshot should exist for ExternalCall"),
+                        heap: self.heap,
+                        namespaces: self.namespaces,
+                        pending_call_id: new_call_id.raw(),
+                    },
+                })
+            }
+            Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
+                let pending: Vec<PendingCall> = pending_call_ids
+                    .iter()
+                    .map(|cid| PendingCall {
+                        call_id: cid.raw(),
+                        function_name: String::from("<pending>"),
+                        args: vec![],
+                        kwargs: vec![],
+                    })
+                    .collect();
+
+                Ok(RunProgress::ResolveFutures {
+                    pending,
+                    state: FutureSnapshot {
+                        executor: self.executor,
+                        vm_state: vm_state.expect("snapshot should exist for ResolveFutures"),
+                        heap: self.heap,
+                        namespaces: self.namespaces,
+                    },
+                })
+            }
+            Err(err) => {
+                #[cfg(feature = "ref-count-panic")]
+                self.namespaces.drop_global_with_heap(&mut self.heap);
+
                 Err(err.into_python_exception(&self.executor.interns, &self.executor.code))
             }
         }

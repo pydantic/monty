@@ -304,7 +304,7 @@ fn executor_iter_resource_limit_on_resume() {
 
     // First function call should succeed with generous limit
     let limits = ResourceLimits::new().max_allocations(5);
-    let (name, args, _kwargs, state) = run
+    let (name, args, _kwargs, _call_id, state) = run
         .start(vec![], LimitedTracker::new(limits), &mut StdPrint)
         .unwrap()
         .into_function_call()
@@ -378,7 +378,7 @@ fn executor_iter_resource_limit_multiple_function_calls() {
     // Very tight allocation limit - should still work for simple function calls
     let limits = ResourceLimits::new().max_allocations(100);
 
-    let (name, args, _kwargs, state) = run
+    let (name, args, _kwargs, _call_id, state) = run
         .start(vec![], LimitedTracker::new(limits), &mut StdPrint)
         .unwrap()
         .into_function_call()
@@ -386,7 +386,7 @@ fn executor_iter_resource_limit_multiple_function_calls() {
     assert_eq!(name, "foo");
     assert_eq!(args, vec![MontyObject::Int(1)]);
 
-    let (name, args, _kwargs, state) = state
+    let (name, args, _kwargs, _call_id, state) = state
         .run(MontyObject::None, &mut StdPrint)
         .unwrap()
         .into_function_call()
@@ -394,7 +394,7 @@ fn executor_iter_resource_limit_multiple_function_calls() {
     assert_eq!(name, "bar");
     assert_eq!(args, vec![MontyObject::Int(2)]);
 
-    let (name, args, _kwargs, state) = state
+    let (name, args, _kwargs, _call_id, state) = state
         .run(MontyObject::None, &mut StdPrint)
         .unwrap()
         .into_function_call()

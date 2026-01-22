@@ -385,6 +385,7 @@ impl PyMonty {
                     args,
                     kwargs,
                     state,
+                    ..
                 } => {
                     let registry = external_functions
                         .map(|d| ExternalFunctionRegistry::new(py, d, dataclass_registry))
@@ -399,6 +400,11 @@ impl PyMonty {
                     progress = state
                         .run(return_value, &mut print_output)
                         .map_err(|e| MontyError::new_err(py, e))?;
+                }
+                RunProgress::ResolveFutures { .. } => {
+                    return Err(PyRuntimeError::new_err(
+                        "async futures not yet supported in Python bindings",
+                    ));
                 }
             }
         }
@@ -435,6 +441,7 @@ impl PyMonty {
                     args,
                     kwargs,
                     state,
+                    ..
                 } => {
                     let registry = external_functions
                         .map(|d| ExternalFunctionRegistry::new(py, d, dataclass_registry))
@@ -449,6 +456,11 @@ impl PyMonty {
                     progress = py
                         .detach(|| state.run(return_value, &mut print_output))
                         .map_err(|e| MontyError::new_err(py, e))?;
+                }
+                RunProgress::ResolveFutures { .. } => {
+                    return Err(PyRuntimeError::new_err(
+                        "async futures not yet supported in Python bindings",
+                    ));
                 }
             }
         }
@@ -479,7 +491,13 @@ impl EitherProgress {
                     args,
                     kwargs,
                     state,
+                    ..
                 } => (function_name, args, kwargs, EitherSnapshot::NoLimit(state)),
+                RunProgress::ResolveFutures { .. } => {
+                    return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                        "async futures not yet supported in Python bindings",
+                    ));
+                }
             },
             Self::Limited(p) => match p {
                 RunProgress::Complete(result) => return PyMontyComplete::create(py, &result, dcr),
@@ -488,7 +506,13 @@ impl EitherProgress {
                     args,
                     kwargs,
                     state,
+                    ..
                 } => (function_name, args, kwargs, EitherSnapshot::Limited(state)),
+                RunProgress::ResolveFutures { .. } => {
+                    return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                        "async futures not yet supported in Python bindings",
+                    ));
+                }
             },
         };
 

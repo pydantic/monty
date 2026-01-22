@@ -748,10 +748,14 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                 function_name,
                 args,
                 kwargs: _,
+                call_id: _,
                 state,
             } => {
                 let return_value = dispatch_external_call(&function_name, args);
                 progress = state.run(return_value, &mut StdPrint)?;
+            }
+            RunProgress::ResolveFutures { .. } => {
+                panic!("async futures not supported in test runner");
             }
         }
     }

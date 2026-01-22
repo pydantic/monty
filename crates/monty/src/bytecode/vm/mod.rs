@@ -155,12 +155,15 @@ pub enum FrameExit {
     /// Execution paused for an external function call.
     ///
     /// The caller should execute the external function and call `resume()`
-    /// with the result.
+    /// with the result. The `call_id` allows the host to use async resolution
+    /// by calling `run_pending()` instead of `run(result)`.
     ExternalCall {
         /// ID of the external function to call.
         ext_function_id: ExtFunctionId,
         /// Arguments for the external function (includes both positional and keyword args).
         args: ArgValues,
+        /// Unique ID for this call, used for async correlation.
+        call_id: CallId,
     },
 
     /// All tasks are blocked waiting for external futures to resolve.
@@ -888,9 +891,11 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         Ok(CallResult::Push(result)) => self.push(result),
                         Ok(CallResult::FramePushed) => reload_cache!(self, cached_frame),
                         Ok(CallResult::External(ext_id, args)) => {
+                            let call_id = self.scheduler.allocate_call_id();
                             return Ok(FrameExit::ExternalCall {
                                 ext_function_id: ext_id,
                                 args,
+                                call_id,
                             });
                         }
                         Err(err) => catch_sync!(self, cached_frame, err),
@@ -936,9 +941,11 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         Ok(CallResult::Push(result)) => self.push(result),
                         Ok(CallResult::FramePushed) => reload_cache!(self, cached_frame),
                         Ok(CallResult::External(ext_id, args)) => {
+                            let call_id = self.scheduler.allocate_call_id();
                             return Ok(FrameExit::ExternalCall {
                                 ext_function_id: ext_id,
                                 args,
+                                call_id,
                             });
                         }
                         Err(err) => catch_sync!(self, cached_frame, err),
@@ -988,9 +995,11 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         Ok(CallResult::Push(result)) => self.push(result),
                         Ok(CallResult::FramePushed) => reload_cache!(self, cached_frame),
                         Ok(CallResult::External(ext_id, args)) => {
+                            let call_id = self.scheduler.allocate_call_id();
                             return Ok(FrameExit::ExternalCall {
                                 ext_function_id: ext_id,
                                 args,
+                                call_id,
                             });
                         }
                         Err(err) => catch_sync!(self, cached_frame, err),
@@ -1499,6 +1508,15 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         self.run()
     }
 
+    /// Resolves an external future with a value.
+    ///
+    /// Called by the host when an async external call completes.
+    /// Stores the result in the scheduler, which will unblock any task
+    /// waiting on this CallId.
+    pub fn resolve_future(&mut self, call_id: CallId, value: Value) {
+        self.scheduler.resolve(call_id, value);
+    }
+
     /// Consumes the VM and creates a snapshot for pause/resume.
     ///
     /// **Ownership transfer:** This method takes `self` by value, consuming the VM.
@@ -1580,7 +1598,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
 
     /// Pushes a value onto the operand stack.
     #[inline]
-    pub(super) fn push(&mut self, value: Value) {
+    pub(crate) fn push(&mut self, value: Value) {
         self.stack.push(value);
     }
 
