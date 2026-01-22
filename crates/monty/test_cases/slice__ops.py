@@ -127,3 +127,23 @@ assert [0, 1, 2, 3][:False] == [], 'slice with False stop'
 assert range(0)[1:2] == range(0, 0), 'empty range slicing'
 assert range(5)[::-1] == range(4, -1, -1), 'range reverse slice'
 assert list(range(5)[::-1]) == [4, 3, 2, 1, 0], 'range reverse slice iteration'
+
+# === Negative step with out-of-bounds start ===
+lst5 = [0, 1, 2, 3, 4]
+assert lst5[-10::-1] == [], 'far negative start with negative step should be empty'
+assert lst5[-6::-1] == [], 'just out of bounds negative start'
+assert lst5[-5::-1] == [0], 'exactly at first element'
+assert lst5[-4::-1] == [1, 0], 'second element backwards'
+
+# Range slicing with out-of-bounds negative start
+assert list(range(5)[-10::-1]) == [], 'range far negative start'
+assert list(range(5)[-6::-1]) == [], 'range just out of bounds'
+assert list(range(5)[-5::-1]) == [0], 'range exactly at first'
+
+# String slicing with out-of-bounds negative start
+assert 'hello'[-10::-1] == '', 'string far negative start empty'
+assert 'hello'[-5::-1] == 'h', 'string exactly at first'
+
+# Tuple slicing with out-of-bounds negative start
+assert (0, 1, 2, 3, 4)[-10::-1] == (), 'tuple far negative start empty'
+assert (0, 1, 2, 3, 4)[-5::-1] == (0,), 'tuple exactly at first'

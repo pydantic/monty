@@ -65,17 +65,17 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         let stop_val = self.pop();
         let start_val = self.pop();
 
-        // Convert values to Option<i64>
-        let start = value_to_option_i64(&start_val)?;
-        let stop = value_to_option_i64(&stop_val)?;
-        let step = value_to_option_i64(&step_val)?;
+        // Store results before dropping to avoid refcount leak on error
+        let start = value_to_option_i64(&start_val);
+        let stop = value_to_option_i64(&stop_val);
+        let step = value_to_option_i64(&step_val);
 
         // Drop the values after extracting their integer content
         start_val.drop_with_heap(self.heap);
         stop_val.drop_with_heap(self.heap);
         step_val.drop_with_heap(self.heap);
 
-        let slice = Slice::new(start, stop, step);
+        let slice = Slice::new(start?, stop?, step?);
         let heap_id = self.heap.allocate(HeapData::Slice(slice))?;
         self.push(Value::Ref(heap_id));
         Ok(())

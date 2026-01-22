@@ -54,16 +54,18 @@ impl Slice {
         let slice = match args {
             ArgValues::Empty => return Err(ExcType::type_error_at_least("slice", 1, 0)),
             ArgValues::One(stop_val) => {
-                let stop = value_to_option_i64(&stop_val)?;
+                // Store result before dropping to avoid refcount leak on error
+                let stop = value_to_option_i64(&stop_val);
                 stop_val.drop_with_heap(heap);
-                Self::new(None, stop, None)
+                Self::new(None, stop?, None)
             }
             ArgValues::Two(start_val, stop_val) => {
-                let start = value_to_option_i64(&start_val)?;
-                let stop = value_to_option_i64(&stop_val)?;
+                // Store results before dropping to avoid refcount leak on error
+                let start = value_to_option_i64(&start_val);
+                let stop = value_to_option_i64(&stop_val);
                 start_val.drop_with_heap(heap);
                 stop_val.drop_with_heap(heap);
-                Self::new(start, stop, None)
+                Self::new(start?, stop?, None)
             }
             ArgValues::ArgsKargs { args, kwargs } if kwargs.is_empty() && args.len() == 3 => {
                 let mut iter = args.into_iter();
@@ -71,14 +73,15 @@ impl Slice {
                 let stop_val = iter.next().unwrap();
                 let step_val = iter.next().unwrap();
 
-                let start = value_to_option_i64(&start_val)?;
-                let stop = value_to_option_i64(&stop_val)?;
-                let step = value_to_option_i64(&step_val)?;
+                // Store results before dropping to avoid refcount leak on error
+                let start = value_to_option_i64(&start_val);
+                let stop = value_to_option_i64(&stop_val);
+                let step = value_to_option_i64(&step_val);
                 start_val.drop_with_heap(heap);
                 stop_val.drop_with_heap(heap);
                 step_val.drop_with_heap(heap);
 
-                Self::new(start, stop, step)
+                Self::new(start?, stop?, step?)
             }
             ArgValues::Kwargs(kwargs) => {
                 kwargs.drop_with_heap(heap);
@@ -150,25 +153,18 @@ impl Slice {
                 .map_or(default_start, |s| normalize_index(s, len, -1, len - 1));
             let stop = self.stop.map_or(default_stop, |s| normalize_index(s, len, -1, len - 1));
 
-            // For negative step iteration, we return start > stop conceptually
-            // But we need to be careful about the usize conversion
-            // We store them as i64 and let the caller handle the iteration
-            // Actually, for consistency with how we use them, return start_usize and stop_usize
-            // where iteration goes from start down to (but not including) stop
-
-            // The start can be at most len-1, stop can be at most -1 (meaning nothing included)
+            // The start can be at most len-1
             let start_i64 = start.min(len - 1);
             let stop_i64 = stop; // can be -1 to mean "go all the way to beginning"
 
-            // Convert to a form the caller can use
-            // For iteration, we want: for i in range(start, stop, step)
-            // With negative step, this counts down
-            // We'll return the indices as is and let get_slice_items handle the logic
-            let start_usize = if start_i64 < 0 {
-                0 // No elements to include
-            } else {
-                usize::try_from(start_i64).unwrap_or(0)
-            };
+            // If start normalizes to < 0, it means the starting position is before index 0.
+            // For negative step iteration, this produces an empty slice.
+            // Return (0, 0, step) which makes the iteration condition `0 > 0` false immediately.
+            if start_i64 < 0 {
+                return Ok((0, 0, step));
+            }
+
+            let start_usize = usize::try_from(start_i64).unwrap_or(0);
 
             // For stop, we encode it specially: if stop is -1, it means "stop before index 0"
             // We'll use length + 1 as a sentinel to indicate "stop was None or evaluates to before 0"
