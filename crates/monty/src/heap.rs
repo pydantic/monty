@@ -196,7 +196,6 @@ impl HeapData {
 
     /// Returns true if this heap data is a coroutine.
     #[inline]
-    #[expect(dead_code, reason = "used in later phases")]
     pub fn is_coroutine(&self) -> bool {
         matches!(self, Self::Coroutine(_))
     }

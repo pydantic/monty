@@ -160,7 +160,6 @@ impl GatherFuture {
     ///
     /// # Arguments
     /// * `coroutine_ids` - HeapIds of coroutines to run concurrently
-    #[expect(dead_code, reason = "used in later phases")]
     pub fn new(coroutine_ids: Vec<HeapId>) -> Self {
         let count = coroutine_ids.len();
         Self {

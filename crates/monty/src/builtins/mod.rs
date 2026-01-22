@@ -213,6 +213,12 @@ pub enum BuiltinsFunctions {
     // Vars,
     Zip,
     // __import__ - not planned
+
+    // ==========================
+    // Module-level functions (not global builtins)
+    /// asyncio.gather() - collects coroutines for concurrent execution.
+    #[strum(serialize = "asyncio.gather")]
+    AsyncioGather,
 }
 
 impl BuiltinsFunctions {
@@ -254,6 +260,7 @@ impl BuiltinsFunctions {
             Self::Sum => sum::builtin_sum(heap, args, interns),
             Self::Type => type_::builtin_type(heap, args),
             Self::Zip => zip::builtin_zip(heap, args, interns),
+            Self::AsyncioGather => crate::modules::asyncio::gather(heap, args),
         }
     }
 }

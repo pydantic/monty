@@ -278,6 +278,13 @@ pub enum StaticStrings {
     NoReturn,
 
     // ==========================
+    // asyncio module strings
+    #[strum(serialize = "asyncio")]
+    Asyncio,
+    #[strum(serialize = "gather")]
+    Gather,
+
+    // ==========================
     // Exception attributes
     Args,
 }

@@ -1,7 +1,7 @@
 //! Built-in module implementations.
 //!
-//! This module provides implementations for Python built-in modules like `sys` and `typing`.
-//! These are created on-demand when import statements are executed.
+//! This module provides implementations for Python built-in modules like `sys`, `typing`,
+//! and `asyncio`. These are created on-demand when import statements are executed.
 
 use strum::FromRepr;
 
@@ -11,6 +11,7 @@ use crate::{
     resource::{ResourceError, ResourceTracker},
 };
 
+pub(crate) mod asyncio;
 pub(crate) mod sys;
 pub(crate) mod typing;
 
@@ -22,6 +23,8 @@ pub(crate) enum BuiltinModule {
     Sys,
     /// The `typing` module providing type hints support.
     Typing,
+    /// The `asyncio` module providing async/await support (only `gather()` implemented).
+    Asyncio,
 }
 
 impl BuiltinModule {
@@ -30,6 +33,7 @@ impl BuiltinModule {
         match StaticStrings::from_string_id(string_id)? {
             StaticStrings::Sys => Some(Self::Sys),
             StaticStrings::Typing => Some(Self::Typing),
+            StaticStrings::Asyncio => Some(Self::Asyncio),
             _ => None,
         }
     }
@@ -45,6 +49,7 @@ impl BuiltinModule {
         match self {
             Self::Sys => sys::create_module(heap, interns),
             Self::Typing => typing::create_module(heap, interns),
+            Self::Asyncio => asyncio::create_module(heap, interns),
         }
     }
 }
