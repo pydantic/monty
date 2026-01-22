@@ -15,7 +15,7 @@ mod scheduler;
 use std::cmp::Ordering;
 
 use call::CallResult;
-use scheduler::{Scheduler, SerializedTaskFrame};
+use scheduler::{PendingCallData, Scheduler, SerializedTaskFrame};
 
 use crate::{
     args::ArgValues,
@@ -1521,7 +1521,18 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// Called by the host when an async external call completes.
     /// Stores the result in the scheduler, which will unblock any task
     /// waiting on this CallId.
+    ///
+    /// If the task that created this call has been cancelled or failed,
+    /// the result is silently ignored and the value is dropped.
     pub fn resolve_future(&mut self, call_id: CallId, value: Value) {
+        // Check if the creator task has been cancelled/failed
+        if let Some(creator_task) = self.scheduler.get_pending_call_creator(call_id)
+            && self.scheduler.is_task_failed(creator_task)
+        {
+            // Task was cancelled - silently ignore the result and drop the value
+            value.drop_with_heap(self.heap);
+            return;
+        }
         self.scheduler.resolve(call_id, value);
     }
 
@@ -1543,6 +1554,27 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         } else {
             false
         }
+    }
+
+    /// Adds pending call data for an external function call.
+    ///
+    /// Called by `run_pending()` when the host chooses async resolution.
+    /// This stores the call data in the scheduler so we can:
+    /// 1. Track which task created the call (to ignore results if cancelled)
+    /// 2. Return pending call info when all tasks are blocked
+    ///
+    /// Note: The args are empty because the host already has them from the
+    /// `FunctionCall` return value. We only need to track the creator task.
+    pub fn add_pending_call(&mut self, call_id: CallId, ext_function_id: ExtFunctionId) {
+        let current_task = self.scheduler.current_task_id().unwrap_or(TaskId::new(0));
+        self.scheduler.add_pending_call(
+            call_id,
+            PendingCallData {
+                ext_function_id,
+                args: ArgValues::Empty,
+                creator_task: current_task,
+            },
+        );
     }
 
     /// Consumes the VM and creates a snapshot for pause/resume.

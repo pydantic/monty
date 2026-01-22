@@ -203,6 +203,7 @@ impl MontyRun {
                         heap,
                         namespaces,
                         pending_call_id: call_id.raw(),
+                        pending_ext_function_id: ext_function_id,
                     },
                 })
             }
@@ -383,6 +384,9 @@ pub struct Snapshot<T: ResourceTracker> {
     /// The call_id from the most recent FunctionCall that created this Snapshot.
     /// Used by `run_pending()` to push the correct `ExternalFuture`.
     pending_call_id: u32,
+    /// The external function ID from the most recent FunctionCall.
+    /// Used by `run_pending()` to store pending call data in the scheduler.
+    pending_ext_function_id: ExtFunctionId,
 }
 
 /// Return value or exception from an external function.
@@ -587,6 +591,7 @@ fn handle_frame_exit_for_future<T: ResourceTracker>(
                     heap,
                     namespaces,
                     pending_call_id: call_id.raw(),
+                    pending_ext_function_id: ext_function_id,
                 },
             })
         }
@@ -727,6 +732,7 @@ impl<T: ResourceTracker> Snapshot<T> {
                         heap: self.heap,
                         namespaces: self.namespaces,
                         pending_call_id: call_id.raw(),
+                        pending_ext_function_id: ext_function_id,
                     },
                 })
             }
@@ -782,8 +788,9 @@ impl<T: ResourceTracker> Snapshot<T> {
     /// # Panics
     /// Panics if the VM reaches an inconsistent state (indicating a bug in the interpreter).
     pub fn run_pending(mut self, print: &mut impl PrintWriter) -> Result<RunProgress<T>, MontyException> {
-        // Get the call_id that was stored when this Snapshot was created
+        // Get the call_id and ext_function_id that were stored when this Snapshot was created
         let call_id = crate::asyncio::CallId::new(self.pending_call_id);
+        let ext_function_id = self.pending_ext_function_id;
 
         // Scope the VM borrow so we can move heap/namespaces after
         let (result, vm_state) = {
@@ -796,6 +803,10 @@ impl<T: ResourceTracker> Snapshot<T> {
                 &self.executor.interns,
                 print,
             );
+
+            // Store pending call data in the scheduler so we can track the creator task
+            // and ignore results if the task is cancelled
+            vm.add_pending_call(call_id, ext_function_id);
 
             // Push the ExternalFuture value onto the stack
             // This allows the code to continue and potentially await this future later
@@ -844,6 +855,7 @@ impl<T: ResourceTracker> Snapshot<T> {
                         heap: self.heap,
                         namespaces: self.namespaces,
                         pending_call_id: new_call_id.raw(),
+                        pending_ext_function_id: ext_function_id,
                     },
                 })
             }
