@@ -84,42 +84,71 @@ impl CodeBuilder {
         self.current_focus = focus;
     }
 
-    /// Emits a no-operand instruction.
+    /// Emits a no-operand instruction and updates stack depth tracking.
     pub fn emit(&mut self, op: Opcode) {
         self.record_location();
         self.bytecode.push(op as u8);
+        // Track stack effect for opcodes with known fixed effects
+        if let Some(effect) = op.stack_effect() {
+            self.adjust_stack(effect);
+        }
     }
 
-    /// Emits an instruction with a u8 operand.
+    /// Emits an instruction with a u8 operand and updates stack depth tracking.
     pub fn emit_u8(&mut self, op: Opcode, operand: u8) {
         self.record_location();
         self.bytecode.push(op as u8);
         self.bytecode.push(operand);
+        // Track stack effect - some need operand-based calculation
+        self.track_stack_effect_u8(op, operand);
     }
 
-    /// Emits an instruction with an i8 operand.
+    /// Emits an instruction with an i8 operand and updates stack depth tracking.
     pub fn emit_i8(&mut self, op: Opcode, operand: i8) {
         self.record_location();
         self.bytecode.push(op as u8);
         // Reinterpret i8 as u8 for bytecode encoding
         self.bytecode.push(operand.to_ne_bytes()[0]);
+        // Track stack effect for opcodes with known fixed effects
+        if let Some(effect) = op.stack_effect() {
+            self.adjust_stack(effect);
+        }
     }
 
-    /// Emits an instruction with a u16 operand (little-endian).
+    /// Emits an instruction with a u16 operand (little-endian) and updates stack depth tracking.
     pub fn emit_u16(&mut self, op: Opcode, operand: u16) {
         self.record_location();
         self.bytecode.push(op as u8);
         self.bytecode.extend_from_slice(&operand.to_le_bytes());
+        // Track stack effect - some need operand-based calculation
+        self.track_stack_effect_u16(op, operand);
     }
 
     /// Emits an instruction with a u16 operand followed by a u8 operand.
     ///
     /// Used for MakeFunction: func_id (u16) + defaults_count (u8)
+    /// Used for CallMethod: method_name_id (u16) + arg_count (u8)
     pub fn emit_u16_u8(&mut self, op: Opcode, operand1: u16, operand2: u8) {
         self.record_location();
         self.bytecode.push(op as u8);
         self.bytecode.extend_from_slice(&operand1.to_le_bytes());
         self.bytecode.push(operand2);
+        // Track stack effects based on opcode
+        match op {
+            Opcode::MakeFunction => {
+                // pops defaults_count defaults, pushes function: 1 - defaults_count
+                self.adjust_stack(1 - i16::from(operand2));
+            }
+            Opcode::CallMethod => {
+                // pops obj + args, pushes result: 1 - (1 + arg_count) = -arg_count
+                self.adjust_stack(-i16::from(operand2));
+            }
+            _ => {
+                if let Some(effect) = op.stack_effect() {
+                    self.adjust_stack(effect);
+                }
+            }
+        }
     }
 
     /// Emits an instruction with a u16 operand followed by two u8 operands.
@@ -131,6 +160,14 @@ impl CodeBuilder {
         self.bytecode.extend_from_slice(&operand1.to_le_bytes());
         self.bytecode.push(operand2);
         self.bytecode.push(operand3);
+        // MakeClosure: pops defaults_count defaults, pushes closure
+        // Cell values are captured from locals, not popped from stack
+        // Stack effect: 1 - defaults_count
+        if op == Opcode::MakeClosure {
+            self.adjust_stack(1 - i16::from(operand2));
+        } else if let Some(effect) = op.stack_effect() {
+            self.adjust_stack(effect);
+        }
     }
 
     /// Emits `CallBuiltinFunction` instruction.
@@ -144,6 +181,9 @@ impl CodeBuilder {
         self.bytecode.push(Opcode::CallBuiltinFunction as u8);
         self.bytecode.push(builtin_id);
         self.bytecode.push(arg_count);
+        // CallBuiltinFunction: pops args, pushes result. No callable on stack.
+        // Stack effect: 1 - arg_count
+        self.adjust_stack(1 - i16::from(arg_count));
     }
 
     /// Emits `CallBuiltinType` instruction.
@@ -157,6 +197,9 @@ impl CodeBuilder {
         self.bytecode.push(Opcode::CallBuiltinType as u8);
         self.bytecode.push(type_id);
         self.bytecode.push(arg_count);
+        // CallBuiltinType: pops args, pushes result. No callable on stack.
+        // Stack effect: 1 - arg_count
+        self.adjust_stack(1 - i16::from(arg_count));
     }
 
     /// Emits CallFunctionKw with inline keyword names.
@@ -174,6 +217,11 @@ impl CodeBuilder {
         for &name_id in kwname_ids {
             self.bytecode.extend_from_slice(&name_id.to_le_bytes());
         }
+        // CallFunctionKw: pops callable + pos_args + kw_args, pushes result
+        // Stack effect: 1 - (1 + pos_count + kw_count) = -pos_count - kw_count
+        let kw_count = i16::try_from(kwname_ids.len()).expect("keyword count exceeds i16");
+        let total_args = i16::from(pos_count) + kw_count;
+        self.adjust_stack(-total_args);
     }
 
     /// Emits CallMethodKw with inline keyword names.
@@ -192,6 +240,11 @@ impl CodeBuilder {
         for &name_id in kwname_ids {
             self.bytecode.extend_from_slice(&name_id.to_le_bytes());
         }
+        // CallMethodKw: pops obj + pos_args + kw_args, pushes result
+        // Stack effect: 1 - (1 + pos_count + kw_count) = -pos_count - kw_count
+        let kw_count = i16::try_from(kwname_ids.len()).expect("keyword count exceeds i16");
+        let total_args = i16::from(pos_count) + kw_count;
+        self.adjust_stack(-total_args);
     }
 
     /// Emits a forward jump instruction, returning a label to patch later.
@@ -205,6 +258,19 @@ impl CodeBuilder {
         self.bytecode.push(op as u8);
         // Placeholder for i16 offset (will be patched)
         self.bytecode.extend_from_slice(&0i16.to_le_bytes());
+        // Track stack effect
+        match op {
+            // ForIter: when successful (not jumping), pushes next value (+1)
+            // When exhausted (jumping), pops iterator (-1), but that's after loop
+            Opcode::ForIter => self.adjust_stack(1),
+            // JumpIfTrueOrPop/JumpIfFalseOrPop: pops when not jumping (fallthrough)
+            Opcode::JumpIfTrueOrPop | Opcode::JumpIfFalseOrPop => self.adjust_stack(-1),
+            _ => {
+                if let Some(effect) = op.stack_effect() {
+                    self.adjust_stack(effect);
+                }
+            }
+        }
         label
     }
 
@@ -247,6 +313,10 @@ impl CodeBuilder {
             i16::try_from(raw_offset).expect("jump offset exceeds i16 range (-32768..32767); function too large");
         self.bytecode.push(op as u8);
         self.bytecode.extend_from_slice(&offset.to_le_bytes());
+        // Track stack effect (jump instructions pop condition)
+        if let Some(effect) = op.stack_effect() {
+            self.adjust_stack(effect);
+        }
     }
 
     /// Returns the current bytecode offset.
@@ -370,6 +440,78 @@ impl CodeBuilder {
                 .push(LocationEntry::new(offset, range, self.current_focus));
         }
     }
+
+    /// Sets the current stack depth to an absolute value.
+    ///
+    /// Used when compiling code paths that branch and reconverge with different
+    /// stack states (e.g., break/continue through finally blocks).
+    /// Updates `max_stack_depth` if the new depth exceeds it.
+    pub fn set_stack_depth(&mut self, depth: u16) {
+        self.current_stack_depth = depth;
+        self.max_stack_depth = self.max_stack_depth.max(depth);
+    }
+
+    /// Adjusts the stack depth by the given delta.
+    ///
+    /// Positive values indicate pushes, negative values indicate pops.
+    /// Updates `max_stack_depth` if the new depth exceeds it.
+    fn adjust_stack(&mut self, delta: i16) {
+        let new_depth = i32::from(self.current_stack_depth) + i32::from(delta);
+        // Stack depth shouldn't go negative (indicates compiler bug)
+        debug_assert!(new_depth >= 0, "Stack depth went negative: {new_depth}");
+        // Safe cast: new_depth is non-negative and stack won't exceed u16::MAX in practice
+        self.current_stack_depth = u16::try_from(new_depth.max(0)).unwrap_or(u16::MAX);
+        self.max_stack_depth = self.max_stack_depth.max(self.current_stack_depth);
+    }
+
+    /// Tracks stack effect for opcodes with u8 operand.
+    ///
+    /// For opcodes with variable effects (like `CallFunction`, `BuildList`),
+    /// calculates the effect based on the operand.
+    fn track_stack_effect_u8(&mut self, op: Opcode, operand: u8) {
+        let effect: i16 = match op {
+            // CallFunction pops (callable + args), pushes result: -(1 + arg_count) + 1 = -arg_count
+            Opcode::CallFunction => -i16::from(operand),
+            // UnpackSequence pops 1, pushes n: n - 1
+            Opcode::UnpackSequence => i16::from(operand) - 1,
+            // ListAppend/SetAdd pop value: -1 (depth operand doesn't affect stack count)
+            Opcode::ListAppend | Opcode::SetAdd => -1,
+            // DictSetItem pops key and value: -2
+            Opcode::DictSetItem => -2,
+            // Default: use fixed effect if available
+            _ => op.stack_effect().unwrap_or(0),
+        };
+        self.adjust_stack(effect);
+    }
+
+    /// Tracks stack effect for opcodes with u16 operand.
+    ///
+    /// For opcodes with variable effects (like `BuildList`, `BuildTuple`),
+    /// calculates the effect based on the operand.
+    fn track_stack_effect_u16(&mut self, op: Opcode, operand: u16) {
+        // Safe cast: operand won't exceed i16::MAX in practice (would be a huge list)
+        let operand_i16 = operand.cast_signed();
+        let effect: i16 = match op {
+            // BuildList/BuildTuple/BuildSet: pop n, push 1: -(n - 1) = 1 - n
+            Opcode::BuildList | Opcode::BuildTuple | Opcode::BuildSet => 1 - operand_i16,
+            // BuildDict: pop 2n (key-value pairs), push 1: 1 - 2n
+            Opcode::BuildDict => 1 - 2 * operand_i16,
+            // BuildFString: pop n parts, push 1: 1 - n
+            Opcode::BuildFString => 1 - operand_i16,
+            // Default: use fixed effect if available
+            _ => op.stack_effect().unwrap_or(0),
+        };
+        self.adjust_stack(effect);
+    }
+
+    /// Manually adjust stack depth for complex scenarios.
+    ///
+    /// Use this when the compiler knows the exact stack effect that can't
+    /// be determined from the opcode alone (e.g., exception handlers pushing
+    /// an exception value).
+    pub fn adjust_stack_depth(&mut self, delta: i16) {
+        self.adjust_stack(delta);
+    }
 }
 
 /// Label for a forward jump that needs patching.
@@ -415,13 +557,14 @@ mod tests {
     fn test_forward_jump() {
         let mut builder = CodeBuilder::new();
         let jump = builder.emit_jump(Opcode::Jump);
-        builder.emit(Opcode::LoadNone); // 1 byte
-        builder.emit(Opcode::Pop); // 1 byte
+        builder.emit(Opcode::LoadNone); // 1 byte, skipped by jump
+        builder.emit(Opcode::LoadNone); // 1 byte, skipped by jump
         builder.patch_jump(jump);
+        builder.emit(Opcode::LoadNone); // Return value
         builder.emit(Opcode::ReturnValue);
 
         let code = builder.build(0);
-        // Jump at offset 0, target at offset 5 (after LoadNone + Pop)
+        // Jump at offset 0, target at offset 5 (after 2x LoadNone)
         // Offset = 5 - 0 - 3 = 2
         assert_eq!(
             code.bytecode(),
@@ -430,7 +573,8 @@ mod tests {
                 2,
                 0, // i16 little-endian = 2
                 Opcode::LoadNone as u8,
-                Opcode::Pop as u8,
+                Opcode::LoadNone as u8,
+                Opcode::LoadNone as u8,
                 Opcode::ReturnValue as u8,
             ]
         );

@@ -361,6 +361,123 @@ impl TryFrom<u8> for Opcode {
     }
 }
 
+impl Opcode {
+    /// Returns the stack effect of this opcode (positive = push, negative = pop).
+    ///
+    /// Some opcodes have variable effects (e.g., `BuildList` depends on its operand).
+    /// For those, this returns `None` and the caller must compute the effect.
+    ///
+    /// For opcodes that have known, fixed stack effects, returns `Some(i16)`.
+    #[must_use]
+    pub const fn stack_effect(self) -> Option<i16> {
+        use Opcode::{
+            BinaryAdd, BinaryAnd, BinaryDiv, BinaryFloorDiv, BinaryLShift, BinaryMatMul, BinaryMod, BinaryMul,
+            BinaryOr, BinaryPow, BinaryRShift, BinarySub, BinarySubscr, BinaryXor, BuildDict, BuildFString, BuildList,
+            BuildSet, BuildSlice, BuildTuple, CallBuiltinFunction, CallBuiltinType, CallFunction, CallFunctionExtended,
+            CallFunctionKw, CallMethod, CallMethodKw, CheckExcMatch, ClearException, CompareEq, CompareGe, CompareGt,
+            CompareIn, CompareIs, CompareIsNot, CompareLe, CompareLt, CompareModEq, CompareNe, CompareNotIn,
+            DeleteAttr, DeleteLocal, DeleteSubscr, DictMerge, DictSetItem, Dup, ForIter, FormatValue, GetIter,
+            InplaceAdd, InplaceAnd, InplaceDiv, InplaceFloorDiv, InplaceLShift, InplaceMod, InplaceMul, InplaceOr,
+            InplacePow, InplaceRShift, InplaceSub, InplaceXor, Jump, JumpIfFalse, JumpIfFalseOrPop, JumpIfTrue,
+            JumpIfTrueOrPop, ListAppend, ListExtend, ListToTuple, LoadAttr, LoadAttrImport, LoadCell, LoadConst,
+            LoadFalse, LoadGlobal, LoadLocal, LoadLocal0, LoadLocal1, LoadLocal2, LoadLocal3, LoadLocalW, LoadModule,
+            LoadNone, LoadSmallInt, LoadTrue, MakeClosure, MakeFunction, Nop, Pop, Raise, RaiseFrom, Reraise,
+            ReturnValue, Rot2, Rot3, SetAdd, StoreAttr, StoreCell, StoreGlobal, StoreLocal, StoreLocalW, StoreSubscr,
+            UnaryInvert, UnaryNeg, UnaryNot, UnaryPos, UnpackEx, UnpackSequence,
+        };
+        Some(match self {
+            // Stack operations
+            Pop => -1,
+            Dup => 1,
+            Rot2 | Rot3 => 0, // reorder, no net change
+
+            // Constants & Literals (all push 1)
+            LoadConst | LoadNone | LoadTrue | LoadFalse | LoadSmallInt => 1,
+
+            // Variables - loads push, stores pop
+            LoadLocal0 | LoadLocal1 | LoadLocal2 | LoadLocal3 => 1,
+            LoadLocal | LoadLocalW | LoadGlobal | LoadCell => 1,
+            StoreLocal | StoreLocalW | StoreGlobal | StoreCell => -1,
+            DeleteLocal => 0, // doesn't affect stack
+
+            // Binary operations: pop 2, push 1 = -1
+            BinaryAdd | BinarySub | BinaryMul | BinaryDiv | BinaryFloorDiv | BinaryMod | BinaryPow | BinaryAnd
+            | BinaryOr | BinaryXor | BinaryLShift | BinaryRShift | BinaryMatMul => -1,
+
+            // Comparisons: pop 2, push 1 = -1
+            CompareEq | CompareNe | CompareLt | CompareLe | CompareGt | CompareGe | CompareIs | CompareIsNot
+            | CompareIn | CompareNotIn | CompareModEq => -1,
+
+            // Unary operations: pop 1, push 1 = 0
+            UnaryNot | UnaryNeg | UnaryPos | UnaryInvert => 0,
+
+            // In-place operations: pop 1 (rhs), leave target on stack = -1
+            InplaceAdd | InplaceSub | InplaceMul | InplaceDiv | InplaceFloorDiv | InplaceMod | InplacePow
+            | InplaceAnd | InplaceOr | InplaceXor | InplaceLShift | InplaceRShift => -1,
+
+            // Collection building - depends on operand, return None
+            BuildList | BuildTuple | BuildDict | BuildSet | BuildFString => return None,
+            // FormatValue: pops 1 value (+ optional fmt_spec), pushes 1. Variable.
+            FormatValue => return None,
+            // BuildSlice: pop 3, push 1 = -2
+            BuildSlice => -2,
+            // ListExtend: pop 2 (iterable + list), push 1 (list) = -1
+            ListExtend => -1,
+            // ListToTuple: pop 1, push 1 = 0
+            ListToTuple => 0,
+            // DictMerge: pop 2, push 1 = -1
+            DictMerge => -1,
+
+            // Comprehension building - pops value, no push (stores in collection below)
+            ListAppend | SetAdd => -1,
+            DictSetItem => -2, // pops key and value
+
+            // Subscript & Attribute
+            BinarySubscr => -1,             // pop 2, push 1
+            StoreSubscr => -3,              // pop 3, push 0
+            DeleteSubscr => -2,             // pop 2, push 0
+            LoadAttr | LoadAttrImport => 0, // pop 1, push 1
+            StoreAttr => -2,                // pop 2, push 0
+            DeleteAttr => -1,               // pop 1, push 0
+
+            // Function calls - depend on arg count
+            CallFunction | CallBuiltinFunction | CallBuiltinType | CallFunctionKw | CallMethod | CallMethodKw
+            | CallFunctionExtended => return None,
+
+            // Control flow - no stack effect (jumps don't push/pop)
+            Jump => 0,
+            JumpIfTrue | JumpIfFalse => -1,                    // always pop condition
+            JumpIfTrueOrPop | JumpIfFalseOrPop => return None, // variable (0 or -1)
+
+            // Iteration
+            GetIter => 0,           // pop iterable, push iterator
+            ForIter => return None, // pushes value or jumps (variable)
+
+            // Function definition - push 1 (the function/closure)
+            MakeFunction | MakeClosure => 1,
+
+            // Exception handling
+            Raise => -1,         // pop exception
+            RaiseFrom => -2,     // pop exception, pop cause
+            Reraise => 0,        // no stack change (reads from exception_stack)
+            ClearException => 0, // clears exception_stack, no operand stack change
+            CheckExcMatch => 0,  // pop exc_type, push bool (net 0, but exc stays)
+
+            // Return
+            ReturnValue => -1,
+
+            // Unpacking - depends on operand
+            UnpackSequence | UnpackEx => return None,
+
+            // Special
+            Nop => 0,
+
+            // Module
+            LoadModule => 1, // push module
+        })
+    }
+}
+
 /// Error returned when attempting to convert an invalid byte to an Opcode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidOpcodeError(pub u8);
