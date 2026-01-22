@@ -1710,24 +1710,24 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles break statements after a finally block has run.
+    /// Compiles break or continue after a finally block has run.
     ///
-    /// Called from compile_try after the finally block code. Each break may target
-    /// a different loop, so we need to check if there's another finally to go through
-    /// or if we can jump directly to the loop's break target.
+    /// Called from `compile_try` after the finally block code. Each control flow
+    /// statement may target a different loop, so we check if there's another finally
+    /// to go through or if we can jump directly to the loop's target.
     ///
-    /// Note: All breaks in the list jumped to the same finally block, so they all
+    /// Note: All items in the list jumped to the same finally block, so they all
     /// have the same starting point. After finally runs, we need to route each
     /// to its target loop, potentially through more finally blocks.
-    fn compile_break_after_finally(&mut self, breaks: &[BreakContinueThruFinally]) {
-        // All breaks went through the same finally, now we need to dispatch to
-        // potentially different loops. For simplicity, we assume all breaks in
-        // a single finally target the same loop (the innermost one at break time).
-        // This is always true since break only targets the innermost loop.
-        let Some(break_info) = breaks.first() else {
+    fn compile_control_flow_after_finally(&mut self, items: &[BreakContinueThruFinally], is_break: bool) {
+        // All items went through the same finally, now we need to dispatch to
+        // potentially different loops. For simplicity, we assume all items in
+        // a single finally target the same loop (the innermost one at the time).
+        // This is always true since break/continue only targets the innermost loop.
+        let Some(first) = items.first() else {
             return;
         };
-        let target_loop_depth = break_info.target_loop_depth;
+        let target_loop_depth = first.target_loop_depth;
 
         // Check if there's another finally between us and the target loop
         if let Some(finally_target) = self.finally_targets.last_mut()
@@ -1735,43 +1735,28 @@ impl<'a> Compiler<'a> {
         {
             // Need to go through another finally
             let jump = self.code.emit_jump(Opcode::Jump);
-            finally_target.break_jumps.push(BreakContinueThruFinally {
+            let jump_info = BreakContinueThruFinally {
                 jump,
                 target_loop_depth,
-            });
+            };
+            if is_break {
+                finally_target.break_jumps.push(jump_info);
+            } else {
+                // else continue
+                finally_target.continue_jumps.push(jump_info);
+            }
             return;
         }
 
-        // No more finally blocks, jump directly to loop's break target
-        let jump = self.code.emit_jump(Opcode::Jump);
-        self.loop_stack[target_loop_depth].break_jumps.push(jump);
-    }
-
-    /// Compiles continue statements after a finally block has run.
-    ///
-    /// Similar to compile_break_after_finally but for continue statements.
-    fn compile_continue_after_finally(&mut self, continues: &[BreakContinueThruFinally]) {
-        let Some(continue_info) = continues.first() else {
-            return;
-        };
-        let target_loop_depth = continue_info.target_loop_depth;
-
-        // Check if there's another finally between us and the target loop
-        if let Some(finally_target) = self.finally_targets.last_mut()
-            && target_loop_depth < finally_target.loop_depth_at_entry
-        {
-            // Need to go through another finally
+        // No more finally blocks, jump directly to the loop target
+        if is_break {
             let jump = self.code.emit_jump(Opcode::Jump);
-            finally_target.continue_jumps.push(BreakContinueThruFinally {
-                jump,
-                target_loop_depth,
-            });
-            return;
+            self.loop_stack[target_loop_depth].break_jumps.push(jump);
+        } else {
+            // else continue
+            let loop_start = self.loop_stack[target_loop_depth].start;
+            self.code.emit_jump_to(Opcode::Jump, loop_start);
         }
-
-        // No more finally blocks, jump directly to loop start
-        let loop_start = self.loop_stack[target_loop_depth].start;
-        self.code.emit_jump_to(Opcode::Jump, loop_start);
     }
 
     // ========================================================================
@@ -2113,6 +2098,12 @@ impl<'a> Compiler<'a> {
     ///
     /// Returns inside try/except/else jump to a "finally with return" path that
     /// runs the finally code then returns the value.
+    ///
+    /// **Note:** The finally block code is emitted multiple times (once for each
+    /// control flow path: normal, exception, return, break, continue). This is the
+    /// same approach CPython uses - each path has different stack state at entry
+    /// (e.g., return has a value on stack, break has popped the iterator), so we
+    /// can't easily share a single copy. The duplication is intentional.
     fn compile_try(&mut self, try_block: &Try<PreparedNode>) -> Result<(), CompileError> {
         let has_finally = !try_block.finally.is_empty();
         let has_handlers = !try_block.handlers.is_empty();
@@ -2220,7 +2211,7 @@ impl<'a> Compiler<'a> {
                 self.code.set_stack_depth(stack_depth.saturating_sub(1));
                 self.compile_block(&try_block.finally)?;
                 // After finally, compile the break again (handles nested finally or direct jump)
-                self.compile_break_after_finally(&finally_target.break_jumps);
+                self.compile_control_flow_after_finally(&finally_target.break_jumps, true);
             }
 
             // === Finally with continue path ===
@@ -2232,7 +2223,7 @@ impl<'a> Compiler<'a> {
                 self.code.set_stack_depth(stack_depth);
                 self.compile_block(&try_block.finally)?;
                 // After finally, compile the continue again (handles nested finally or direct jump)
-                self.compile_continue_after_finally(&finally_target.continue_jumps);
+                self.compile_control_flow_after_finally(&finally_target.continue_jumps, false);
             }
 
             return_start
