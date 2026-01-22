@@ -108,13 +108,7 @@ fn extract_print_kwargs(
                 );
             }
             _ => {
-                error = Some(
-                    SimpleException::new_msg(
-                        ExcType::TypeError,
-                        format!("print() got an unexpected keyword argument '{key_str}'"),
-                    )
-                    .into(),
-                );
+                error = Some(ExcType::type_error_unexpected_keyword("print", key_str));
             }
         }
         key.drop_with_heap(heap);
