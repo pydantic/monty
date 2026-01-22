@@ -14,7 +14,7 @@
 //!
 //! For the VM's `ForIter` opcode, `advance_on_heap()` uses two strategies:
 //!
-//! **Fast path** for simple iterators (Range, InternBytes):
+//! **Fast path** for simple iterators (Range, InternBytes, ASCII IterStr):
 //! - Single `get_mut()` call to compute value and advance index
 //! - No additional heap access needed during iteration
 //!
@@ -34,7 +34,7 @@ use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
-    intern::{BytesId, Interns},
+    intern::{BytesId, Interns, StringId},
     resource::ResourceTracker,
     types::{PyTrait, Range, str::allocate_char},
     value::Value,
@@ -94,7 +94,7 @@ impl MontyIter {
     /// For ranges, the data is copied so the heap reference is dropped immediately.
     pub fn new(mut value: Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
         if let Some(iter_value) = IterValue::new(&value, heap, interns) {
-            // For Range, we copy start/step/len into ForIterValue::Range, so we don't need
+            // For Range, we copy next/step/len into ForIterValue::Range, so we don't need
             // to keep the heap object alive during iteration. Drop it immediately to avoid
             // GC issues (the Range isn't in any namespace slot, so GC wouldn't see it).
             // Same for IterStr which copies the string content.
@@ -143,13 +143,13 @@ impl MontyIter {
     /// Returns the current iterator state without mutation.
     ///
     /// This is used by the multi-phase approach in `advance_on_heap()` for complex
-    /// iterator types (IterStr, HeapRef). Simple types (Range, InternBytes) are
-    /// handled by the fast path and should not call this method.
+    /// iterator types (IterStr, HeapRef). Simple types (Range, InternBytes, ASCII
+    /// IterStr) are handled by the fast path and should not call this method.
     ///
     /// Returns `None` if the iterator is exhausted.
     fn iter_state(&self) -> Option<IterState> {
         match &self.iter_value {
-            // Range and InternBytes are handled by try_advance_simple() fast path
+            // Range, InternBytes, and ASCII IterStr are handled by try_advance_simple() fast path
             IterValue::Range { .. } | IterValue::InternBytes { .. } => {
                 unreachable!("Range and InternBytes use fast path, not iter_state")
             }
@@ -157,6 +157,7 @@ impl MontyIter {
                 string,
                 byte_offset,
                 len,
+                ..
             } => {
                 if self.index >= *len {
                     None
@@ -213,33 +214,52 @@ impl MontyIter {
 
     /// Attempts to advance simple iterator types that don't need additional heap access.
     ///
-    /// Returns `Some(result)` if handled (Range, InternBytes), `None` if caller should
-    /// use the multi-phase approach (IterStr, HeapRef).
+    /// Returns `Some(result)` if handled (Range, InternBytes, ASCII IterStr),
+    /// `None` if caller should use the multi-phase approach (non-ASCII IterStr, HeapRef).
     ///
     /// This optimization avoids two heap lookups for iterator types that can compute
     /// their next value without accessing other heap objects.
     #[inline]
     fn try_advance_simple(&mut self, interns: &Interns) -> Option<RunResult<Option<Value>>> {
-        match &self.iter_value {
-            IterValue::Range { start, step, len } => {
+        match &mut self.iter_value {
+            IterValue::Range { next, step, len } => {
                 if self.index >= *len {
-                    return Some(Ok(None));
+                    Some(Ok(None))
+                } else {
+                    let value = *next;
+                    *next += *step;
+                    self.index += 1;
+                    Some(Ok(Some(Value::Int(value))))
                 }
-                let idx = i64::try_from(self.index).expect("iterator index exceeds i64::MAX");
-                let value = *start + idx * *step;
-                self.index += 1;
-                Some(Ok(Some(Value::Int(value))))
+            }
+            IterValue::IterStr {
+                string,
+                byte_offset,
+                len,
+                is_ascii,
+            } => {
+                if !*is_ascii {
+                    None
+                } else if self.index >= *len {
+                    Some(Ok(None))
+                } else {
+                    let byte = string.as_bytes()[*byte_offset];
+                    *byte_offset += 1;
+                    self.index += 1;
+                    Some(Ok(Some(Value::InternString(StringId::from_ascii(byte)))))
+                }
             }
             IterValue::InternBytes { bytes_id, len } => {
                 if self.index >= *len {
-                    return Some(Ok(None));
+                    Some(Ok(None))
+                } else {
+                    let i = self.index;
+                    self.index += 1;
+                    let bytes = interns.get_bytes(*bytes_id);
+                    Some(Ok(Some(Value::Int(i64::from(bytes[i])))))
                 }
-                let i = self.index;
-                self.index += 1;
-                let bytes = interns.get_bytes(*bytes_id);
-                Some(Ok(Some(Value::Int(i64::from(bytes[i])))))
             }
-            IterValue::IterStr { .. } | IterValue::HeapRef { .. } => None,
+            IterValue::HeapRef { .. } => None,
         }
     }
 
@@ -250,12 +270,12 @@ impl MontyIter {
     /// a dict/set changes size during iteration (RuntimeError).
     pub fn for_next(&mut self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Option<Value>> {
         match &mut self.iter_value {
-            IterValue::Range { start, step, len } => {
+            IterValue::Range { next, step, len } => {
                 if self.index >= *len {
                     return Ok(None);
                 }
-                let idx = i64::try_from(self.index).expect("iterator index exceeds i64::MAX");
-                let value = *start + idx * *step;
+                let value = *next;
+                *next += *step;
                 self.index += 1;
                 Ok(Some(Value::Int(value)))
             }
@@ -263,18 +283,25 @@ impl MontyIter {
                 string,
                 byte_offset,
                 len,
+                is_ascii,
             } => {
                 if self.index >= *len {
-                    return Ok(None);
+                    Ok(None)
+                } else if *is_ascii {
+                    let byte = string.as_bytes()[*byte_offset];
+                    *byte_offset += 1;
+                    self.index += 1;
+                    Ok(Some(Value::InternString(StringId::from_ascii(byte))))
+                } else {
+                    // Get next char at current byte offset
+                    let c = string[*byte_offset..]
+                        .chars()
+                        .next()
+                        .expect("index < len implies char exists");
+                    *byte_offset += c.len_utf8();
+                    self.index += 1;
+                    Ok(Some(allocate_char(c, heap)?))
                 }
-                // Get next char at current byte offset
-                let c = string[*byte_offset..]
-                    .chars()
-                    .next()
-                    .expect("index < len implies char exists");
-                *byte_offset += c.len_utf8();
-                self.index += 1;
-                Ok(Some(allocate_char(c, heap)?))
             }
             IterValue::InternBytes { bytes_id, len } => {
                 if self.index >= *len {
@@ -347,7 +374,7 @@ impl MontyIter {
 
 /// Advances an iterator stored on the heap and returns the next value.
 ///
-/// Uses a fast path for simple iterators (Range, InternBytes) that don't need
+/// Uses a fast path for simple iterators (Range, InternBytes, ASCII IterStr) that don't need
 /// additional heap access - these are handled with a single mutable borrow.
 ///
 /// For complex iterators (IterStr, HeapRef), uses a multi-phase approach:
@@ -538,7 +565,7 @@ pub fn iterator_next(
 ///
 /// This enum captures state for complex iterator types (IterStr, HeapRef) that
 /// require the multi-phase approach in `advance_on_heap()`. Simple types (Range,
-/// InternBytes) are handled by the fast path and don't use this enum.
+/// InternBytes, ASCII IterStr) are handled by the fast path and don't use this enum.
 ///
 /// The multi-phase approach avoids borrow conflicts:
 /// 1. Read `Option<IterState>` from iterator (immutable borrow ends, `None` means exhausted)
@@ -576,7 +603,14 @@ fn clone_and_inc_ref(value: Value, heap: &mut Heap<impl ResourceTracker>) -> Val
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 enum IterValue {
     /// Iterating over a Range, yields `Value::Int`.
-    Range { start: i64, step: i64, len: usize },
+    Range {
+        /// Next value to yield.
+        next: i64,
+        /// Step between values.
+        step: i64,
+        /// Total number of elements.
+        len: usize,
+    },
     /// Iterating over a string (heap or interned), yields single-char Str values.
     ///
     /// Stores a copy of the string content plus a byte offset for O(1) UTF-8 character access.
@@ -590,6 +624,8 @@ enum IterValue {
         byte_offset: usize,
         /// Total number of characters in the string.
         len: usize,
+        /// Whether the string is ASCII (enables fast-path iteration).
+        is_ascii: bool,
     },
     /// Iterating over interned bytes, yields `Value::Int` for each byte.
     InternBytes { bytes_id: BytesId, len: usize },
@@ -619,7 +655,7 @@ impl IterValue {
     /// Creates a Range iterator value.
     fn from_range(range: &Range) -> Self {
         Self::Range {
-            start: range.start,
+            next: range.start,
             step: range.step,
             len: range.len(),
         }
@@ -629,10 +665,13 @@ impl IterValue {
     ///
     /// Copies the string content and counts characters for the length field.
     fn from_str(s: &str) -> Self {
+        let is_ascii = s.is_ascii();
+        let len = if is_ascii { s.len() } else { s.chars().count() };
         Self::IterStr {
             string: s.to_owned(),
             byte_offset: 0,
-            len: s.chars().count(),
+            len,
+            is_ascii,
         }
     }
 
