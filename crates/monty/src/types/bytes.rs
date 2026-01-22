@@ -69,11 +69,10 @@ use std::fmt::Write;
 
 use ahash::AHashSet;
 
-use super::{PyTrait, Type, str::Str};
+use super::{MontyIter, PyTrait, Type, str::Str};
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult, SimpleException},
-    for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
     resource::ResourceTracker,
@@ -2407,7 +2406,7 @@ fn bytes_join(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
-    let Ok(mut iter) = ForIterator::new(iterable, heap, interns) else {
+    let Ok(mut iter) = MontyIter::new(iterable, heap, interns) else {
         return Err(ExcType::type_error_join_not_iterable());
     };
 

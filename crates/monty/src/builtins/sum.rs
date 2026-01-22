@@ -3,11 +3,10 @@
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult, SimpleException},
-    for_iterator::ForIterator,
     heap::Heap,
     intern::Interns,
     resource::ResourceTracker,
-    types::{PyTrait, Type},
+    types::{MontyIter, PyTrait, Type},
     value::Value,
 };
 
@@ -39,7 +38,7 @@ pub fn builtin_sum(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
     };
 
     // Create iterator from the iterable
-    let mut iter = ForIterator::new(iterable, heap, interns)?;
+    let mut iter = MontyIter::new(iterable, heap, interns)?;
 
     // Sum all items
     while let Some(item) = iter.for_next(heap, interns)? {

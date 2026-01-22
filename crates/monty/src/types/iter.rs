@@ -1,13 +1,13 @@
-//! Iterator support for Python for loops and constructors.
+//! Iterator support for Python for loops and the `iter()` type constructor.
 //!
-//! This module provides the `ForIterator` struct which encapsulates iteration state
+//! This module provides the `MontyIter` struct which encapsulates iteration state
 //! for different iterable types. It uses index-based iteration internally to avoid
 //! borrow conflicts when accessing the heap during iteration.
 //!
 //! The design stores iteration state (indices) rather than Rust iterators, allowing
 //! `for_next()` to take `&mut Heap` for cloning values and allocating strings.
 //!
-//! For constructors like `list()` and `tuple()`, use `ForIterator::new()` followed
+//! For constructors like `list()` and `tuple()`, use `MontyIter::new()` followed
 //! by `collect()` to materialize all items into a Vec.
 //!
 //! ## Efficient Iteration with `IterState`
@@ -18,8 +18,13 @@
 //!
 //! This allows `Heap::advance_iterator()` to coordinate access without extracting
 //! the iterator from the heap (avoiding `std::mem::replace` overhead).
+//!
+//! ## Builtin Support
+//!
+//! The `iterator_next()` helper implements the `next()` builtin.
 
 use crate::{
+    args::ArgValues,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{BytesId, Interns},
@@ -28,50 +33,6 @@ use crate::{
     value::Value,
 };
 
-/// Snapshot of iterator state needed to produce the next value.
-///
-/// This enum captures all data needed to get the next item from an iterator
-/// WITHOUT holding a borrow on the iterator. This enables a two-phase approach:
-/// 1. Read `IterState` from iterator (immutable borrow ends)
-/// 2. Use the state to get the value (may access other heap objects)
-/// 3. Call `advance()` to update the iterator index
-///
-/// For types that yield values directly (Range, IterStr), the value is included.
-/// For types that need heap access (List, Tuple, etc.), indices are provided.
-#[derive(Debug, Clone, Copy)]
-pub enum IterState {
-    /// Iterator is exhausted, no more values.
-    Exhausted,
-    /// Range iterator yields this integer value.
-    Range(i64),
-    /// List iterator needs to read item at this index from the list.
-    List { list_id: HeapId, index: usize },
-    /// Tuple iterator needs to read item at this index.
-    Tuple { tuple_id: HeapId, index: usize },
-    /// NamedTuple iterator needs to read item at this index.
-    NamedTuple { namedtuple_id: HeapId, index: usize },
-    /// Dict iterator needs to read key at this index; check len for mutation.
-    DictKeys {
-        dict_id: HeapId,
-        index: usize,
-        expected_len: usize,
-    },
-    /// String iterator yields this character; char_len is UTF-8 byte length for advance().
-    IterStr { char: char, char_len: usize },
-    /// Heap bytes iterator needs to read byte at this index.
-    HeapBytes { bytes_id: HeapId, index: usize },
-    /// Interned bytes iterator needs to read byte at this index.
-    InternBytes { bytes_id: BytesId, index: usize },
-    /// Set iterator needs to read value at this index; check len for mutation.
-    Set {
-        set_id: HeapId,
-        index: usize,
-        expected_len: usize,
-    },
-    /// FrozenSet iterator needs to read value at this index.
-    FrozenSet { frozenset_id: HeapId, index: usize },
-}
-
 /// Iterator state for Python for loops.
 ///
 /// Contains the current iteration index and the type-specific iteration data.
@@ -79,7 +40,7 @@ pub enum IterState {
 ///
 /// For strings, stores the string content with a byte offset for O(1) UTF-8 iteration.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct ForIterator {
+pub struct MontyIter {
     /// Current iteration index, shared across all iterator types.
     index: usize,
     /// Type-specific iteration data.
@@ -88,20 +49,40 @@ pub struct ForIterator {
     value: Value,
 }
 
-impl Clone for ForIterator {
-    fn clone(&self) -> Self {
-        Self {
-            index: self.index,
-            iter_value: self.iter_value.clone(),
-            value: self.value.clone_immediate(),
-        }
-    }
-}
-
-impl ForIterator {
-    /// Creates a new ForIterator from a Value.
+impl MontyIter {
+    /// Creates an iterator from the `iter()` constructor call.
     ///
-    /// Returns `None` if the value is not iterable.
+    /// - `iter(iterable)` - Returns an iterator for the iterable. If the argument is
+    ///   already an iterator, returns the same object.
+    /// - `iter(callable, sentinel)` - Not yet supported.
+    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+        let (iterable, sentinel) = args.get_one_two_args("iter", heap)?;
+
+        if let Some(s) = sentinel {
+            // Two-argument form: iter(callable, sentinel)
+            // This is the sentinel iteration protocol, not yet supported
+            iterable.drop_with_heap(heap);
+            s.drop_with_heap(heap);
+            return Err(ExcType::type_error("iter(callable, sentinel) is not yet supported"));
+        }
+
+        // Check if already an iterator - return self
+        if let Value::Ref(id) = &iterable
+            && matches!(heap.get(*id), HeapData::Iter(_))
+        {
+            // Already an iterator - return it (refcount already correct from caller)
+            return Ok(iterable);
+        }
+
+        // Create new iterator
+        let iter = Self::new(iterable, heap, interns)?;
+        let id = heap.allocate(HeapData::Iter(iter))?;
+        Ok(Value::Ref(id))
+    }
+
+    /// Creates a new MontyIter from a Value.
+    ///
+    /// Returns an error if the value is not iterable.
     /// For strings, copies the string content for byte-offset based iteration.
     /// For ranges, the data is copied so the heap reference is dropped immediately.
     pub fn new(mut value: Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
@@ -126,6 +107,7 @@ impl ForIterator {
         }
     }
 
+    /// Drops the iterator and its held value properly.
     pub fn drop_with_heap(self, heap: &mut Heap<impl ResourceTracker>) {
         self.value.drop_with_heap(heap);
     }
@@ -489,6 +471,108 @@ impl ForIterator {
     }
 }
 
+/// Gets the next item from an iterator.
+///
+/// If the iterator is exhausted:
+/// - If `default` is `Some`, returns the default value
+/// - If `default` is `None`, raises `StopIteration`
+///
+/// This implements Python's `next()` builtin semantics.
+///
+/// # Arguments
+/// * `iter_value` - Must be an iterator (heap-allocated MontyIter)
+/// * `default` - Optional default value to return when exhausted
+/// * `heap` - The heap for memory operations
+/// * `interns` - String interning table
+///
+/// # Errors
+/// Returns `StopIteration` if exhausted with no default, or propagates errors from iteration.
+pub fn iterator_next(
+    iter_value: &Value,
+    default: Option<Value>,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    let Value::Ref(iter_id) = iter_value else {
+        // Not a heap value - can't be an iterator
+        if let Some(d) = default {
+            d.drop_with_heap(heap);
+        }
+        return Err(ExcType::type_error_not_iterable(iter_value.py_type(heap)));
+    };
+
+    // Check that it's actually an iterator
+    if !matches!(heap.get(*iter_id), HeapData::Iter(_)) {
+        if let Some(d) = default {
+            d.drop_with_heap(heap);
+        }
+        let data_type = heap.get(*iter_id).py_type(heap);
+        return Err(ExcType::type_error(format!("'{data_type}' object is not an iterator")));
+    }
+
+    // Get next item using the heap's advance_iterator method
+    match heap.advance_iterator(*iter_id, interns)? {
+        Some(item) => {
+            // Drop default if provided since we don't need it
+            if let Some(d) = default {
+                d.drop_with_heap(heap);
+            }
+            Ok(item)
+        }
+        None => {
+            // Iterator exhausted
+            match default {
+                Some(d) => Ok(d),
+                None => Err(ExcType::stop_iteration()),
+            }
+        }
+    }
+}
+
+/// Snapshot of iterator state needed to produce the next value.
+///
+/// This enum captures all data needed to get the next item from an iterator
+/// WITHOUT holding a borrow on the iterator. This enables a two-phase approach:
+/// 1. Read `IterState` from iterator (immutable borrow ends)
+/// 2. Use the state to get the value (may access other heap objects)
+/// 3. Call `advance()` to update the iterator index
+///
+/// For types that yield values directly (Range, IterStr), the value is included.
+/// For types that need heap access (List, Tuple, etc.), indices are provided.
+#[derive(Debug, Clone, Copy)]
+pub enum IterState {
+    /// Iterator is exhausted, no more values.
+    Exhausted,
+    /// Range iterator yields this integer value.
+    Range(i64),
+    /// List iterator needs to read item at this index from the list.
+    List { list_id: HeapId, index: usize },
+    /// Tuple iterator needs to read item at this index.
+    Tuple { tuple_id: HeapId, index: usize },
+    /// NamedTuple iterator needs to read item at this index.
+    NamedTuple { namedtuple_id: HeapId, index: usize },
+    /// Dict iterator needs to read key at this index; check len for mutation.
+    DictKeys {
+        dict_id: HeapId,
+        index: usize,
+        expected_len: usize,
+    },
+    /// String iterator yields this character; char_len is UTF-8 byte length for advance().
+    IterStr { char: char, char_len: usize },
+    /// Heap bytes iterator needs to read byte at this index.
+    HeapBytes { bytes_id: HeapId, index: usize },
+    /// Interned bytes iterator needs to read byte at this index.
+    InternBytes { bytes_id: BytesId, index: usize },
+    /// Set iterator needs to read value at this index; check len for mutation.
+    Set {
+        set_id: HeapId,
+        index: usize,
+        expected_len: usize,
+    },
+    /// FrozenSet iterator needs to read value at this index.
+    FrozenSet { frozenset_id: HeapId, index: usize },
+}
+
 /// Increments the reference count for a value copied via `copy_for_extend()`.
 ///
 /// This is the second half of the two-phase clone pattern: first copy the value
@@ -504,7 +588,7 @@ fn clone_and_inc_ref(value: Value, heap: &mut Heap<impl ResourceTracker>) -> Val
 /// Type-specific iteration data for different Python iterable types.
 ///
 /// Each variant stores the data needed to iterate over a specific type,
-/// excluding the index which is stored in the parent `ForIterator` struct.
+/// excluding the index which is stored in the parent `MontyIter` struct.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 enum ForIterValue {
     /// Iterating over a Range, yields `Value::Int`.
@@ -620,7 +704,7 @@ impl ForIterValue {
             | HeapData::Cell(_)
             | HeapData::Exception(_)
             | HeapData::Dataclass(_)
-            | HeapData::Iterator(_)
+            | HeapData::Iter(_)
             | HeapData::LongInt(_)
             | HeapData::Slice(_)
             | HeapData::Module(_) => None,

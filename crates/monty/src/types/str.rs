@@ -7,11 +7,10 @@ use std::{borrow::Cow, fmt};
 
 use ahash::AHashSet;
 
-use super::{Bytes, PyTrait};
+use super::{Bytes, MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},
-    for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker},
@@ -498,8 +497,8 @@ fn str_join(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
-    // Create ForIterator from the iterable, with join-specific error message
-    let Ok(mut iter) = ForIterator::new(iterable, heap, interns) else {
+    // Create MontyIter from the iterable, with join-specific error message
+    let Ok(mut iter) = MontyIter::new(iterable, heap, interns) else {
         return Err(ExcType::type_error_join_not_iterable());
     };
 

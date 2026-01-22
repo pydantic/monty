@@ -14,13 +14,12 @@ use std::fmt::Write;
 use ahash::AHashSet;
 
 use super::{
-    PyTrait,
+    MontyIter, PyTrait,
     list::{get_slice_items, repr_sequence_fmt},
 };
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},
-    for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     resource::ResourceTracker,
@@ -94,7 +93,7 @@ impl Tuple {
                 Ok(Value::Ref(heap_id))
             }
             Some(v) => {
-                let mut iter = ForIterator::new(v, heap, interns)?;
+                let mut iter = MontyIter::new(v, heap, interns)?;
                 let items = iter.collect(heap, interns)?;
                 iter.drop_with_heap(heap);
                 let heap_id = heap.allocate(HeapData::Tuple(Self::new(items)))?;

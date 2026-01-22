@@ -19,7 +19,6 @@ use crate::{
     args::ArgValues,
     bytecode::{code::Code, op::Opcode},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
     intern::{ExtFunctionId, FunctionId, Interns, StringId},
     io::PrintWriter,
@@ -27,7 +26,7 @@ use crate::{
     namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
     parse::CodeRange,
     resource::ResourceTracker,
-    types::{LongInt, PyTrait},
+    types::{LongInt, MontyIter, PyTrait},
     value::{BitwiseOp, Value},
 };
 
@@ -812,9 +811,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 // Iteration - route through exception handling
                 Opcode::GetIter => {
                     let value = self.pop();
-                    // Create a ForIterator from the value and store on heap
-                    match ForIterator::new(value, self.heap, self.interns) {
-                        Ok(iter) => match self.heap.allocate(HeapData::Iterator(iter)) {
+                    // Create a MontyIter from the value and store on heap
+                    match MontyIter::new(value, self.heap, self.interns) {
+                        Ok(iter) => match self.heap.allocate(HeapData::Iter(iter)) {
                             Ok(heap_id) => self.push(Value::Ref(heap_id)),
                             Err(e) => catch_sync!(self, cached_frame, e.into()),
                         },

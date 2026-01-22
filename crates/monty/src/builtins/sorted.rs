@@ -5,11 +5,10 @@ use std::cmp::Ordering;
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult, SimpleException},
-    for_iterator::ForIterator,
     heap::{Heap, HeapData},
     intern::Interns,
     resource::ResourceTracker,
-    types::{List, PyTrait},
+    types::{List, MontyIter, PyTrait},
     value::Value,
 };
 
@@ -47,7 +46,7 @@ pub fn builtin_sorted(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, in
     }
 
     let iterable = positional.next().unwrap();
-    let mut iter = ForIterator::new(iterable, heap, interns)?;
+    let mut iter = MontyIter::new(iterable, heap, interns)?;
     let mut items = iter.collect(heap, interns)?;
     iter.drop_with_heap(heap);
 

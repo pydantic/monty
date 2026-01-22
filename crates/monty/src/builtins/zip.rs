@@ -3,11 +3,10 @@
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult, SimpleException},
-    for_iterator::ForIterator,
     heap::{Heap, HeapData},
     intern::Interns,
     resource::ResourceTracker,
-    types::{List, Tuple},
+    types::{List, MontyIter, Tuple},
     value::Value,
 };
 
@@ -40,9 +39,9 @@ pub fn builtin_zip(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
     }
 
     // Create iterators for each iterable
-    let mut iterators: Vec<ForIterator> = Vec::with_capacity(positional.len());
+    let mut iterators: Vec<MontyIter> = Vec::with_capacity(positional.len());
     for iterable in positional {
-        match ForIterator::new(iterable, heap, interns) {
+        match MontyIter::new(iterable, heap, interns) {
             Ok(iter) => iterators.push(iter),
             Err(e) => {
                 // Clean up already-created iterators

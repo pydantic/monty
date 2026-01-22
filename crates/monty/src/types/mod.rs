@@ -8,6 +8,7 @@
 pub mod bytes;
 pub mod dataclass;
 pub mod dict;
+pub mod iter;
 pub mod list;
 pub mod long_int;
 pub mod module;
@@ -23,6 +24,7 @@ pub mod r#type;
 pub(crate) use bytes::Bytes;
 pub(crate) use dataclass::Dataclass;
 pub(crate) use dict::Dict;
+pub(crate) use iter::{IterState, MontyIter};
 pub(crate) use list::List;
 pub(crate) use long_int::LongInt;
 pub(crate) use module::Module;

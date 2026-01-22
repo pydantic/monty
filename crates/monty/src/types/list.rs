@@ -2,12 +2,11 @@ use std::{cmp::Ordering, fmt::Write};
 
 use ahash::AHashSet;
 
-use super::PyTrait;
+use super::{MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
     builtins::Builtins,
     exception_private::{ExcType, RunError, RunResult},
-    for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     io::PrintWriter,
@@ -162,7 +161,7 @@ impl List {
                 Ok(Value::Ref(heap_id))
             }
             Some(v) => {
-                let mut iter = ForIterator::new(v, heap, interns)?;
+                let mut iter = MontyIter::new(v, heap, interns)?;
                 let items = iter.collect(heap, interns)?;
                 iter.drop_with_heap(heap);
                 let heap_id = heap.allocate(HeapData::List(Self::new(items)))?;
@@ -580,7 +579,7 @@ fn list_extend(
     let iterable = args.get_one_arg("list.extend", heap)?;
 
     // Create iterator for the iterable
-    let mut iter = ForIterator::new(iterable, heap, interns)?;
+    let mut iter = MontyIter::new(iterable, heap, interns)?;
 
     // Collect all items from the iterator
     let items = iter.collect(heap, interns)?;

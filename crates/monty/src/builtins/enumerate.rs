@@ -3,11 +3,10 @@
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult, SimpleException},
-    for_iterator::ForIterator,
     heap::{Heap, HeapData},
     intern::Interns,
     resource::ResourceTracker,
-    types::{List, PyTrait, Tuple},
+    types::{List, MontyIter, PyTrait, Tuple},
     value::Value,
 };
 
@@ -45,7 +44,7 @@ pub fn builtin_enumerate(
         s.drop_with_heap(heap);
     }
 
-    let mut iter = ForIterator::new(iterable, heap, interns)?;
+    let mut iter = MontyIter::new(iterable, heap, interns)?;
     let mut result: Vec<Value> = Vec::new();
 
     while let Some(item) = iter.for_next(heap, interns)? {

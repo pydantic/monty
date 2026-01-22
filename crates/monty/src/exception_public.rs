@@ -64,7 +64,7 @@ impl fmt::Display for MontyException {
         if let Some(msg) = &self.message {
             write!(f, "{}: {}", self.exc_type, msg)
         } else {
-            write!(f, "{}:", self.exc_type)
+            write!(f, "{}", self.exc_type)
         }
     }
 }

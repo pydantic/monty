@@ -3,11 +3,10 @@
 use crate::{
     args::ArgValues,
     exception_private::RunResult,
-    for_iterator::ForIterator,
     heap::{Heap, HeapData},
     intern::Interns,
     resource::ResourceTracker,
-    types::List,
+    types::{List, MontyIter},
     value::Value,
 };
 
@@ -19,7 +18,7 @@ pub fn builtin_reversed(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, 
     let value = args.get_one_arg("reversed", heap)?;
 
     // Collect all items
-    let mut iter = ForIterator::new(value, heap, interns)?;
+    let mut iter = MontyIter::new(value, heap, interns)?;
     let mut items = iter.collect(heap, interns)?;
     iter.drop_with_heap(heap);
 

@@ -3,11 +3,10 @@ use std::fmt::Write;
 use ahash::AHashSet;
 use hashbrown::HashTable;
 
-use super::PyTrait;
+use super::{MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},
-    for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     resource::ResourceTracker,
@@ -249,7 +248,7 @@ impl SetStorage {
 
     /// Returns the value at the given index, if valid.
     ///
-    /// Used by ForIterator for index-based iteration.
+    /// Used by MontyIter for index-based iteration.
     pub(crate) fn value_at(&self, index: usize) -> Option<&Value> {
         self.entries.get(index).map(|e| &e.value)
     }
@@ -555,15 +554,11 @@ impl Set {
         Ok(Value::Ref(heap_id))
     }
 
-    /// Creates a set from a ForIterator, adding elements one by one.
+    /// Creates a set from a MontyIter, adding elements one by one.
     ///
     /// Unlike list/tuple which can just collect into a Vec, sets need to add
     /// each element individually to handle duplicates and compute hashes.
-    fn from_iterator(
-        mut iter: ForIterator,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<Self> {
+    fn from_iterator(mut iter: MontyIter, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
         let mut set = Self::with_capacity(iter.size_hint(heap));
         while let Some(item) = iter.for_next(heap, interns)? {
             set.add(item, heap, interns)?;
@@ -575,9 +570,9 @@ impl Set {
     /// Creates a set from an iterable value.
     ///
     /// This is a convenience method used by helper methods that need to convert
-    /// arbitrary iterables to sets. It uses `ForIterator` internally.
+    /// arbitrary iterables to sets. It uses `MontyIter` internally.
     fn from_iterable(iterable: Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
-        let iter = ForIterator::new(iterable, heap, interns)?;
+        let iter = MontyIter::new(iterable, heap, interns)?;
         let set = Self::from_iterator(iter, heap, interns)?;
         Ok(set)
     }

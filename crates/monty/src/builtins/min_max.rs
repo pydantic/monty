@@ -5,11 +5,10 @@ use std::cmp::Ordering;
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult, SimpleException},
-    for_iterator::ForIterator,
     heap::Heap,
     intern::Interns,
     resource::ResourceTracker,
-    types::PyTrait,
+    types::{MontyIter, PyTrait},
     value::Value,
 };
 
@@ -70,7 +69,7 @@ fn builtin_min_max(
         1 => {
             // Single argument: iterate over it
             let iterable = positional.next().unwrap();
-            let mut iter = ForIterator::new(iterable, heap, interns)?;
+            let mut iter = MontyIter::new(iterable, heap, interns)?;
 
             let Some(mut result) = iter.for_next(heap, interns)? else {
                 iter.drop_with_heap(heap);

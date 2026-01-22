@@ -12,12 +12,11 @@ use num_integer::Integer;
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult, SimpleException},
-    for_iterator::{ForIterator, IterState},
     intern::{FunctionId, Interns},
     resource::{ResourceError, ResourceTracker},
     types::{
-        Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, NamedTuple, PyTrait, Range, Set, Slice, Str, Tuple,
-        Type, str::allocate_char,
+        Bytes, Dataclass, Dict, FrozenSet, IterState, List, LongInt, Module, MontyIter, NamedTuple, PyTrait, Range,
+        Set, Slice, Str, Tuple, Type, str::allocate_char,
     },
     value::{Attr, Value},
 };
@@ -92,11 +91,11 @@ pub(crate) enum HeapData {
     /// Contains a class name, a Dict of field name -> value mappings, and a set
     /// of method names that trigger external function calls when invoked.
     Dataclass(Dataclass),
-    /// An iterator for for-loop iteration.
+    /// An iterator for for-loop iteration and the `iter()` type constructor.
     ///
-    /// Created by the `GetIter` opcode, advanced by `ForIter`. Stores iteration
-    /// state for lists, tuples, strings, ranges, dicts, and sets.
-    Iterator(ForIterator),
+    /// Created by the `GetIter` opcode or `iter()` builtin, advanced by `ForIter`.
+    /// Stores iteration state for lists, tuples, strings, ranges, dicts, and sets.
+    Iter(MontyIter),
     /// An arbitrary precision integer (LongInt).
     ///
     /// Stored on the heap to keep `Value` enum at 16 bytes. Python has one `int` type,
@@ -134,7 +133,7 @@ impl HeapData {
                 | Self::FunctionDefaults(_, _)
                 | Self::Cell(_)
                 | Self::Dataclass(_)
-                | Self::Iterator(_)
+                | Self::Iter(_)
                 | Self::Module(_)
         )
     }
@@ -162,7 +161,7 @@ impl HeapData {
             Self::FunctionDefaults(_, defaults) => defaults.iter().any(|v| matches!(v, Value::Ref(_))),
             Self::Cell(value) => matches!(value, Value::Ref(_)),
             Self::Dataclass(dc) => dc.has_refs(),
-            Self::Iterator(iter) => iter.has_refs(),
+            Self::Iter(iter) => iter.has_refs(),
             Self::Module(m) => m.has_refs(),
             // Leaf types cannot have refs
             Self::Str(_) | Self::Bytes(_) | Self::Range(_) | Self::Slice(_) | Self::Exception(_) | Self::LongInt(_) => {
@@ -249,7 +248,7 @@ impl HeapData {
             | Self::Set(_)
             | Self::Cell(_)
             | Self::Exception(_)
-            | Self::Iterator(_)
+            | Self::Iter(_)
             | Self::Module(_) => None,
             // LongInt is immutable and hashable
             Self::LongInt(li) => Some(li.hash()),
@@ -278,7 +277,7 @@ impl PyTrait for HeapData {
             Self::Slice(_) => Type::Slice,
             Self::Exception(e) => e.py_type(),
             Self::Dataclass(dc) => dc.py_type(heap),
-            Self::Iterator(_) => Type::Iterator,
+            Self::Iter(_) => Type::Iterator,
             // LongInt is still `int` in Python - it's an implementation detail
             Self::LongInt(_) => Type::Int,
             Self::Module(_) => Type::Module,
@@ -302,7 +301,7 @@ impl PyTrait for HeapData {
             Self::Slice(s) => s.py_estimate_size(),
             Self::Exception(e) => std::mem::size_of::<SimpleException>() + e.arg().map_or(0, String::len),
             Self::Dataclass(dc) => dc.py_estimate_size(),
-            Self::Iterator(_) => std::mem::size_of::<ForIterator>(),
+            Self::Iter(_) => std::mem::size_of::<MontyIter>(),
             Self::LongInt(li) => li.estimate_size(),
             Self::Module(m) => std::mem::size_of::<Module>() + m.attrs().py_estimate_size(),
         }
@@ -326,7 +325,7 @@ impl PyTrait for HeapData {
             | Self::Slice(_)
             | Self::Exception(_)
             | Self::Dataclass(_)
-            | Self::Iterator(_)
+            | Self::Iter(_)
             | Self::LongInt(_)
             | Self::Module(_) => None,
         }
@@ -365,7 +364,7 @@ impl PyTrait for HeapData {
             // Cells, Exceptions, Iterators, and Modules compare by identity only (handled at Value level via HeapId comparison)
             (Self::Cell(_), Self::Cell(_))
             | (Self::Exception(_), Self::Exception(_))
-            | (Self::Iterator(_), Self::Iterator(_))
+            | (Self::Iter(_), Self::Iter(_))
             | (Self::Module(_), Self::Module(_)) => false,
             _ => false, // Different types are never equal
         }
@@ -397,7 +396,7 @@ impl PyTrait for HeapData {
             }
             Self::Cell(v) => v.py_dec_ref_ids(stack),
             Self::Dataclass(dc) => dc.py_dec_ref_ids(stack),
-            Self::Iterator(iter) => iter.py_dec_ref_ids(stack),
+            Self::Iter(iter) => iter.py_dec_ref_ids(stack),
             Self::Module(m) => m.py_dec_ref_ids(stack),
             // Range, Slice, Exception, and LongInt have no nested heap references
             Self::Range(_) | Self::Slice(_) | Self::Exception(_) | Self::LongInt(_) => {}
@@ -420,7 +419,7 @@ impl PyTrait for HeapData {
             Self::Slice(s) => s.py_bool(heap, interns),
             Self::Exception(_) => true, // Exceptions are always truthy
             Self::Dataclass(dc) => dc.py_bool(heap, interns),
-            Self::Iterator(_) => true, // Iterators are always truthy
+            Self::Iter(_) => true, // Iterators are always truthy
             Self::LongInt(li) => !li.is_zero(),
             Self::Module(_) => true, // Modules are always truthy
         }
@@ -451,7 +450,7 @@ impl PyTrait for HeapData {
             Self::Slice(s) => s.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Exception(e) => e.py_repr_fmt(f),
             Self::Dataclass(dc) => dc.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::Iterator(_) => write!(f, "<iterator>"),
+            Self::Iter(_) => write!(f, "<iterator>"),
             Self::LongInt(li) => write!(f, "{li}"),
             Self::Module(m) => write!(f, "<module '{}'>", interns.get_str(m.name())),
         }
@@ -657,7 +656,7 @@ impl HashState {
             | HeapData::Dict(_)
             | HeapData::Set(_)
             | HeapData::Exception(_)
-            | HeapData::Iterator(_)
+            | HeapData::Iter(_)
             | HeapData::Module(_) => Self::Unhashable,
         }
     }
@@ -962,7 +961,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// Returns `Err` for dict/set size changes or allocation failures.
     pub fn advance_iterator(&mut self, iter_id: HeapId, interns: &Interns) -> RunResult<Option<Value>> {
         // Phase 1: Get iterator state (immutable borrow ends after this block)
-        let HeapData::Iterator(iter) = self.get(iter_id) else {
+        let HeapData::Iter(iter) = self.get(iter_id) else {
             panic!("advance_iterator: expected Iterator on heap");
         };
         let state = iter.iter_state();
@@ -1088,7 +1087,7 @@ impl<T: ResourceTracker> Heap<T> {
         };
 
         // Phase 3: Advance the iterator
-        let HeapData::Iterator(iter) = self.get_mut(iter_id) else {
+        let HeapData::Iter(iter) = self.get_mut(iter_id) else {
             panic!("advance_iterator: expected Iterator on heap");
         };
         iter.advance(string_char_len);
@@ -1620,7 +1619,7 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
                 }
             }
         }
-        HeapData::Iterator(iter) => {
+        HeapData::Iter(iter) => {
             // Iterator holds a reference to the iterable being iterated
             if let Value::Ref(id) = iter.value() {
                 work_list.push(*id);

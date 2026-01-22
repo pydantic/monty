@@ -83,6 +83,7 @@ pub enum ExcType {
     // --- Standalone exception types ---
     AssertionError,
     MemoryError,
+    StopIteration,
     SyntaxError,
     TimeoutError,
     TypeError,
@@ -988,6 +989,14 @@ impl ExcType {
     #[must_use]
     pub(crate) fn type_error_fillchar_must_be_single_char() -> RunError {
         SimpleException::new_msg(Self::TypeError, "The fill character must be exactly one character long").into()
+    }
+
+    /// Creates a StopIteration exception for when an iterator is exhausted.
+    ///
+    /// Matches CPython's format: `StopIteration`
+    #[must_use]
+    pub(crate) fn stop_iteration() -> RunError {
+        SimpleException::new_none(Self::StopIteration).into()
     }
 
     /// Creates a ValueError for list.index() when item is not found.

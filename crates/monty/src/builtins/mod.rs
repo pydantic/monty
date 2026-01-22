@@ -16,6 +16,7 @@ mod id;
 mod isinstance;
 mod len;
 mod min_max; // min and max share implementation
+mod next;
 mod oct;
 mod ord;
 mod pow;
@@ -179,7 +180,7 @@ pub enum BuiltinsFunctions {
     // int - handled by Type enum
     Isinstance,
     // Issubclass,
-    // Iter,
+    // Iter - handled by Type enum
     Len,
     // list - handled by Type enum
     // Locals,
@@ -187,7 +188,7 @@ pub enum BuiltinsFunctions {
     Max,
     // memoryview - handled by Type enum
     Min,
-    // Next,
+    Next,
     // object - handled by Type enum
     Oct,
     // Open,
@@ -241,6 +242,7 @@ impl BuiltinsFunctions {
             Self::Len => len::builtin_len(heap, args, interns),
             Self::Max => min_max::builtin_max(heap, args, interns),
             Self::Min => min_max::builtin_min(heap, args, interns),
+            Self::Next => next::builtin_next(heap, args, interns),
             Self::Oct => oct::builtin_oct(heap, args),
             Self::Ord => ord::builtin_ord(heap, args, interns),
             Self::Pow => pow::builtin_pow(heap, args),

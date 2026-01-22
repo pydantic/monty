@@ -3,11 +3,10 @@ use std::fmt::Write;
 use ahash::AHashSet;
 use hashbrown::{HashTable, hash_table::Entry};
 
-use super::{List, PyTrait, Tuple};
+use super::{List, MontyIter, PyTrait, Tuple};
 use crate::{
     args::{ArgValues, KwargsValues},
     exception_private::{ExcType, RunResult},
-    for_iterator::ForIterator,
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     resource::ResourceTracker,
@@ -817,7 +816,7 @@ fn dict_update(
 
     // Try as an iterable of pairs
     // Drop kwargs before propagating error to avoid refcount leak
-    let mut iter = match ForIterator::new(other_value, heap, interns) {
+    let mut iter = match MontyIter::new(other_value, heap, interns) {
         Ok(i) => i,
         Err(e) => {
             kwargs.drop_with_heap(heap);
@@ -839,7 +838,7 @@ fn dict_update(
 
         // Each item should be a pair (iterable of 2 elements)
         // Drop iter and kwargs before propagating error to avoid refcount leak
-        let mut pair_iter = match ForIterator::new(item, heap, interns) {
+        let mut pair_iter = match MontyIter::new(item, heap, interns) {
             Ok(pi) => pi,
             Err(e) => {
                 iter.drop_with_heap(heap);
@@ -1082,7 +1081,7 @@ pub fn dict_fromkeys(args: ArgValues, heap: &mut Heap<impl ResourceTracker>, int
 
     // Iterate over the iterable to get keys
     // Drop default before propagating error to avoid refcount leak
-    let iter_result = ForIterator::new(iterable, heap, interns);
+    let iter_result = MontyIter::new(iterable, heap, interns);
     let mut iter = match iter_result {
         Ok(i) => i,
         Err(e) => {

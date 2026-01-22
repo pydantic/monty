@@ -8,7 +8,7 @@ use crate::{
     heap::{Heap, HeapData},
     intern::Interns,
     resource::ResourceTracker,
-    types::{Bytes, Dict, FrozenSet, List, PyTrait, Range, Set, Slice, Str, Tuple, str::StringRepr},
+    types::{Bytes, Dict, FrozenSet, List, MontyIter, PyTrait, Range, Set, Slice, Str, Tuple, str::StringRepr},
     value::Value,
 };
 
@@ -45,6 +45,7 @@ pub enum Type {
     Function,
     BuiltinFunction,
     Cell,
+    #[strum(serialize = "iter")]
     Iterator,
     Module,
     /// Marker types like stdout/stderr - displays as "TextIOWrapper"
@@ -123,6 +124,7 @@ impl Type {
             Self::FrozenSet => Some(9),
             Self::Range => Some(10),
             Self::Slice => Some(11),
+            Self::Iterator => Some(12),
             _ => None,
         }
     }
@@ -145,6 +147,7 @@ impl Type {
             9 => Some(Self::FrozenSet),
             10 => Some(Self::Range),
             11 => Some(Self::Slice),
+            12 => Some(Self::Iterator),
             _ => None,
         }
     }
@@ -170,6 +173,7 @@ impl Type {
             Self::Bytes => Bytes::init(heap, args, interns),
             Self::Range => Range::init(heap, args),
             Self::Slice => Slice::init(heap, args),
+            Self::Iterator => MontyIter::init(heap, args, interns),
 
             // Primitive types - inline implementation
             Self::Int => {

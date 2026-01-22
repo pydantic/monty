@@ -395,6 +395,7 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
         ExcType::MemoryError => exceptions::PyMemoryError::new_err(msg),
         ExcType::NameError => exceptions::PyNameError::new_err(msg),
         ExcType::UnboundLocalError => exceptions::PyUnboundLocalError::new_err(msg),
+        ExcType::StopIteration => exceptions::PyStopIteration::new_err(msg),
         ExcType::SyntaxError => exceptions::PySyntaxError::new_err(msg),
         ExcType::TimeoutError => exceptions::PyTimeoutError::new_err(msg),
         ExcType::TypeError => exceptions::PyTypeError::new_err(msg),

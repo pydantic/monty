@@ -5,7 +5,6 @@ mod bytecode;
 mod exception_private;
 mod exception_public;
 mod expressions;
-mod for_iterator;
 mod fstring;
 mod function;
 mod heap;

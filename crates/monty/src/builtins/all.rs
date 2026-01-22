@@ -1,8 +1,13 @@
 //! Implementation of the all() builtin function.
 
 use crate::{
-    args::ArgValues, exception_private::RunResult, for_iterator::ForIterator, heap::Heap, intern::Interns,
-    resource::ResourceTracker, types::PyTrait, value::Value,
+    args::ArgValues,
+    exception_private::RunResult,
+    heap::Heap,
+    intern::Interns,
+    resource::ResourceTracker,
+    types::{MontyIter, PyTrait},
+    value::Value,
 };
 
 /// Implementation of the all() builtin function.
@@ -11,7 +16,7 @@ use crate::{
 /// Short-circuits on the first falsy value.
 pub fn builtin_all(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
     let iterable = args.get_one_arg("all", heap)?;
-    let mut iter = ForIterator::new(iterable, heap, interns)?;
+    let mut iter = MontyIter::new(iterable, heap, interns)?;
 
     while let Some(item) = iter.for_next(heap, interns)? {
         let is_truthy = item.py_bool(heap, interns);
