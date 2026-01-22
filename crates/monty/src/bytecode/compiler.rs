@@ -421,6 +421,7 @@ impl<'a> Compiler<'a> {
             func_def.cell_var_count,
             func_def.cell_param_indices.clone(),
             func_def.default_exprs.len(),
+            func_def.is_async,
             body_code,
         );
         functions.push(function);
@@ -500,6 +501,7 @@ impl<'a> Compiler<'a> {
             func_def.cell_var_count,
             func_def.cell_param_indices.clone(),
             func_def.default_exprs.len(),
+            func_def.is_async,
             body_code,
         );
         functions.push(function);
@@ -769,6 +771,13 @@ impl<'a> Compiler<'a> {
             Expr::LambdaRaw { .. } => {
                 // LambdaRaw should be converted to Lambda during prepare phase
                 unreachable!("Expr::LambdaRaw should not exist after prepare phase")
+            }
+
+            Expr::Await(value) => {
+                // Await expressions: compile the inner expression, then emit GetAwaitable
+                // The actual opcode and VM handling are implemented in Phase 3
+                self.compile_expr(value)?;
+                todo!("GetAwaitable opcode - implement in Phase 3");
             }
 
             Expr::Slice { lower, upper, step } => {

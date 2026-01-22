@@ -181,6 +181,12 @@ pub enum Expr {
     UnaryPlus(Box<ExprLoc>),
     /// Unary bitwise NOT expression - inverts all bits of an integer.
     UnaryInvert(Box<ExprLoc>),
+    /// Await expression - suspends execution until the awaited value resolves.
+    ///
+    /// Can await `ExternalFuture`, `Coroutine`, or `GatherFuture` values.
+    /// Raises `TypeError` for non-awaitable values.
+    /// Unlike standard Python, `await` is allowed at module level (like Jupyter notebooks).
+    Await(Box<ExprLoc>),
     /// F-string expression containing literal and interpolated parts.
     ///
     /// At evaluation time, each part is processed in sequence:
@@ -533,6 +539,11 @@ pub struct PreparedFunctionDef {
     /// Each group contains only the parameters that have defaults, in declaration order.
     /// The counts in `signature` indicate how many defaults exist for each group.
     pub default_exprs: Vec<ExprLoc>,
+    /// Whether this is an async function (`async def`).
+    ///
+    /// When true, calling this function creates a `Coroutine` object instead of
+    /// immediately pushing a frame.
+    pub is_async: bool,
 }
 
 /// Type alias for prepared AST nodes (output of prepare phase).

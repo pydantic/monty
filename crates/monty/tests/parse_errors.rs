@@ -27,12 +27,6 @@ mod not_implemented_error {
     }
 
     #[test]
-    fn async_functions_return_not_implemented_error() {
-        let result = MontyRun::new("async def foo(): pass".to_owned(), "test.py", vec![], vec![]);
-        assert_eq!(get_exc_type(result), ExcType::NotImplementedError);
-    }
-
-    #[test]
     fn yield_expressions_return_not_implemented_error() {
         // Yield expressions are not supported and fail at parse time
         let result = MontyRun::new("def foo():\n    yield 1".to_owned(), "test.py", vec![], vec![]);

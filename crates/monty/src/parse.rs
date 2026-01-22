@@ -78,6 +78,8 @@ pub struct RawFunctionDef {
     pub signature: ParsedSignature,
     /// The unprepared function body (names not yet resolved).
     pub body: Vec<ParseNode>,
+    /// Whether this is an async function (`async def`).
+    pub is_async: bool,
 }
 
 /// Type alias for parsed AST nodes (output of the parser).
@@ -206,13 +208,6 @@ impl<'a> Parser<'a> {
     fn parse_statement(&mut self, statement: Stmt) -> Result<ParseNode, ParseError> {
         match statement {
             Stmt::FunctionDef(function) => {
-                if function.is_async {
-                    return Err(ParseError::not_implemented(
-                        "async function definitions",
-                        self.convert_range(function.range),
-                    ));
-                }
-
                 let params = &function.parameters;
 
                 // Parse positional-only parameters (before /)
@@ -241,8 +236,14 @@ impl<'a> Parser<'a> {
                 let name = self.identifier(&function.name.id, function.name.range);
                 // Parse function body recursively
                 let body = self.parse_statements(function.body)?;
+                let is_async = function.is_async;
 
-                Ok(Node::FunctionDef(RawFunctionDef { name, signature, body }))
+                Ok(Node::FunctionDef(RawFunctionDef {
+                    name,
+                    signature,
+                    body,
+                    is_async,
+                }))
             }
             Stmt::ClassDef(c) => Err(ParseError::not_implemented(
                 "class definitions",
@@ -723,10 +724,10 @@ impl<'a> Parser<'a> {
                     Expr::ListComp { elt, generators },
                 ))
             }
-            AstExpr::Await(a) => Err(ParseError::not_implemented(
-                "await expressions",
-                self.convert_range(a.range),
-            )),
+            AstExpr::Await(a) => {
+                let value = self.parse_expression(*a.value)?;
+                Ok(ExprLoc::new(self.convert_range(a.range), Expr::Await(Box::new(value))))
+            }
             AstExpr::Yield(y) => Err(ParseError::not_implemented(
                 "yield expressions",
                 self.convert_range(y.range),
