@@ -15,8 +15,8 @@ use crate::{
     intern::{FunctionId, Interns},
     resource::{ResourceError, ResourceTracker},
     types::{
-        Bytes, Dataclass, Dict, FrozenSet, IterState, List, LongInt, Module, MontyIter, NamedTuple, PyTrait, Range,
-        Set, Slice, Str, Tuple, Type, str::allocate_char,
+        Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, PyTrait, Range, Set, Slice,
+        Str, Tuple, Type,
     },
     value::{Attr, Value},
 };
