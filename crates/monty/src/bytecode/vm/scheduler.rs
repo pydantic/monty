@@ -53,7 +53,6 @@ pub(crate) enum TaskState {
 /// When switching away from a non-main task, its context is saved here.
 /// When switching to it, the context is loaded into the VM.
 #[derive(Debug)]
-#[expect(dead_code, reason = "fields used in Phase 5 when scheduler is integrated")]
 pub(crate) struct Task {
     /// Unique identifier for this task.
     pub id: TaskId,
@@ -79,7 +78,6 @@ pub(crate) struct Task {
 /// Similar to `SerializedFrame` but used within the scheduler for task context.
 /// Cannot store `&Code` references - uses `FunctionId` to look up code on resume.
 #[derive(Debug, Clone)]
-#[expect(dead_code, reason = "fields used in Phase 5 when scheduler is integrated")]
 pub(crate) struct SerializedTaskFrame {
     /// Which function's code this frame executes (None = module-level).
     pub function_id: Option<crate::intern::FunctionId>,

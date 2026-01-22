@@ -197,6 +197,10 @@ impl MontyRun {
                     },
                 })
             }
+            Ok(FrameExit::ResolveFutures(_pending_calls)) => {
+                // TODO: Phase 6 - Add ResolveFutures variant to RunProgress and return proper state
+                todo!("ResolveFutures API not yet implemented (Phase 6)")
+            }
             Err(err) => {
                 // Clean up the global namespace before returning (only needed with ref-count-panic)
                 #[cfg(feature = "ref-count-panic")]
@@ -433,6 +437,10 @@ impl<T: ResourceTracker> Snapshot<T> {
                     },
                 })
             }
+            Ok(FrameExit::ResolveFutures(_pending_calls)) => {
+                // TODO: Phase 6 - Add ResolveFutures variant to RunProgress and return proper state
+                todo!("ResolveFutures API not yet implemented (Phase 6)")
+            }
             Err(err) => {
                 // Clean up the global namespace before returning (only needed with ref-count-panic)
                 #[cfg(feature = "ref-count-panic")]
@@ -664,6 +672,9 @@ fn frame_exit_to_object(
         FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, heap, interns)),
         FrameExit::ExternalCall { .. } => {
             Err(ExcType::not_implemented("external function calls not supported by standard execution.").into())
+        }
+        FrameExit::ResolveFutures(_) => {
+            Err(ExcType::not_implemented("async futures not supported by standard execution.").into())
         }
     }
 }

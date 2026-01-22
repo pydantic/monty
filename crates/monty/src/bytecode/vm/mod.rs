@@ -15,10 +15,11 @@ mod scheduler;
 use std::cmp::Ordering;
 
 use call::CallResult;
+use scheduler::{Scheduler, SerializedTaskFrame};
 
 use crate::{
     args::ArgValues,
-    asyncio::CoroutineState,
+    asyncio::{CallId, CoroutineState, TaskId},
     bytecode::{code::Code, op::Opcode},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId},
@@ -28,7 +29,7 @@ use crate::{
     namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
     parse::CodeRange,
     resource::ResourceTracker,
-    types::{LongInt, MontyIter, PyTrait, iter::advance_on_heap},
+    types::{List, LongInt, MontyIter, PyTrait, iter::advance_on_heap},
     value::{BitwiseOp, Value},
 };
 
@@ -37,15 +38,14 @@ use crate::{
 /// Indicates what the VM should do after awaiting a value:
 /// - `ValueReady`: the awaited value resolved immediately, push it
 /// - `FramePushed`: a new frame was pushed for coroutine execution
+/// - `Yield`: all tasks blocked, yield to caller with pending futures
 enum GetAwaitableResult {
     /// The awaited value resolved immediately (e.g., resolved ExternalFuture).
-    #[expect(
-        dead_code,
-        reason = "used when ExternalFuture resolution is implemented in Phase 4/5"
-    )]
     ValueReady(Value),
     /// A new frame was pushed to execute a coroutine.
     FramePushed,
+    /// All tasks are blocked - yield to caller with pending futures.
+    Yield(Vec<CallId>),
 }
 
 /// Tries an operation and handles exceptions, reloading cached frame state.
@@ -162,6 +162,13 @@ pub enum FrameExit {
         /// Arguments for the external function (includes both positional and keyword args).
         args: ArgValues,
     },
+
+    /// All tasks are blocked waiting for external futures to resolve.
+    ///
+    /// The caller must resolve the pending CallIds before calling `resume()`.
+    /// This happens when await is called on an ExternalFuture that hasn't
+    /// been resolved yet, and there are no other ready tasks to switch to.
+    ResolveFutures(Vec<CallId>),
 }
 
 /// A single function activation record.
@@ -362,6 +369,12 @@ pub struct VM<'a, T: ResourceTracker, P: PrintWriter> {
     /// Updated at the start of each instruction before operands are fetched.
     /// This allows us to find the correct exception handler when an error occurs.
     instruction_ip: usize,
+
+    /// Scheduler for async task management.
+    ///
+    /// Manages concurrent tasks, external call tracking, and task switching.
+    /// Always present (created at VM initialization) even for sync code.
+    scheduler: Scheduler,
 }
 
 impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
@@ -381,6 +394,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             print_writer,
             exception_stack: Vec::new(),
             instruction_ip: 0,
+            scheduler: Scheduler::new(),
         }
     }
 
@@ -1099,6 +1113,10 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                             // Reload cache after pushing a new frame
                             reload_cache!(self, cached_frame);
                         }
+                        Ok(GetAwaitableResult::Yield(pending_calls)) => {
+                            // All tasks are blocked - return control to host
+                            return Ok(FrameExit::ResolveFutures(pending_calls));
+                        }
                         Err(e) => {
                             catch_sync!(self, cached_frame, e);
                         }
@@ -1190,14 +1208,53 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
 
                         Ok(GetAwaitableResult::FramePushed)
                     }
-                    HeapData::GatherFuture(_) => {
-                        // GatherFuture requires scheduler - not implemented in Phase 3
-                        awaitable.drop_with_heap(self.heap);
-                        Err(SimpleException::new_msg(
-                            ExcType::NotImplementedError,
-                            "awaiting GatherFuture requires scheduler (Phase 4/5)",
-                        )
-                        .into())
+                    HeapData::GatherFuture(gather) => {
+                        // Check if already being waited on (double-await)
+                        if gather.waiter.is_some() {
+                            awaitable.drop_with_heap(self.heap);
+                            return Err(SimpleException::new_msg(
+                                ExcType::RuntimeError,
+                                "cannot reuse already awaited gather",
+                            )
+                            .into());
+                        }
+
+                        // If no coroutines to gather, return empty list immediately
+                        if gather.task_count() == 0 {
+                            awaitable.drop_with_heap(self.heap);
+                            let list_id = self.heap.allocate(HeapData::List(List::new(vec![])))?;
+                            return Ok(GetAwaitableResult::ValueReady(Value::Ref(list_id)));
+                        }
+
+                        // Spawn tasks for each coroutine
+                        let coroutine_ids: Vec<HeapId> = gather.coroutine_ids.clone();
+
+                        // Set waiter before spawning
+                        let current_task = self.scheduler.current_task_id();
+                        if let HeapData::GatherFuture(gather_mut) = self.heap.get_mut(heap_id) {
+                            gather_mut.waiter = current_task;
+                        }
+
+                        // Spawn all coroutines as tasks
+                        let mut task_ids = Vec::with_capacity(coroutine_ids.len());
+                        for coro_id in &coroutine_ids {
+                            let task_id = self.scheduler.spawn(*coro_id);
+                            task_ids.push(task_id);
+                        }
+
+                        // Store task IDs in the gather
+                        if let HeapData::GatherFuture(gather_mut) = self.heap.get_mut(heap_id) {
+                            gather_mut.task_ids = task_ids;
+                        }
+
+                        // Block current task on this gather
+                        self.scheduler.block_current_on_gather(heap_id);
+
+                        // Don't drop the gather reference - we need it for result collection
+                        // The gather owns the coroutine references
+
+                        // Switch to next ready task (spawned tasks) or yield
+                        self.switch_or_yield()
                     }
                     _ => {
                         // Not an awaitable type
@@ -1209,13 +1266,27 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     }
                 }
             }
-            Value::ExternalFuture(_call_id) => {
-                // ExternalFuture requires scheduler - not implemented in Phase 3
-                Err(SimpleException::new_msg(
-                    ExcType::NotImplementedError,
-                    "awaiting ExternalFuture requires scheduler (Phase 4/5)",
-                )
-                .into())
+            Value::ExternalFuture(call_id) => {
+                // Check if already consumed (double-await error)
+                if self.scheduler.is_consumed(call_id) {
+                    return Err(
+                        SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited future").into(),
+                    );
+                }
+
+                // Mark as consumed
+                self.scheduler.mark_consumed(call_id);
+
+                // Check if the future is already resolved
+                if let Some(value) = self.scheduler.take_resolved(call_id) {
+                    Ok(GetAwaitableResult::ValueReady(value))
+                } else {
+                    // Block current task on this call
+                    self.scheduler.block_current_on_call(call_id);
+
+                    // Switch to next ready task or yield to host
+                    self.switch_or_yield()
+                }
             }
             _ => {
                 // Not an awaitable type
@@ -1253,6 +1324,155 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             frame_cells,
             call_position,
         ));
+
+        Ok(())
+    }
+
+    /// Attempts to switch to the next ready task or yields if all tasks are blocked.
+    ///
+    /// This method is called when the current task blocks (e.g., awaiting an unresolved
+    /// future or gather). It performs task context switching:
+    /// 1. Saves current VM context to the current task in the scheduler
+    /// 2. Gets the next ready task from the scheduler
+    /// 3. Loads that task's context into the VM (or initializes a new task from its coroutine)
+    ///
+    /// Returns `Yield(pending_calls)` if no ready tasks (all blocked), or continues
+    /// the run loop if a task was switched to.
+    fn switch_or_yield(&mut self) -> Result<GetAwaitableResult, RunError> {
+        // Save current task context to scheduler
+        if let Some(current_task_id) = self.scheduler.current_task_id() {
+            self.save_task_context(current_task_id);
+        }
+
+        // Get next ready task
+        if let Some(next_task_id) = self.scheduler.next_ready_task() {
+            self.scheduler.set_current_task(Some(next_task_id));
+
+            // Load or initialize the next task's context
+            self.load_or_init_task(next_task_id)?;
+
+            // Continue execution - return FramePushed to reload cache and continue run loop
+            Ok(GetAwaitableResult::FramePushed)
+        } else {
+            // No ready tasks - yield control to host
+            let pending = self.scheduler.pending_call_ids();
+            Ok(GetAwaitableResult::Yield(pending))
+        }
+    }
+
+    /// Saves the current VM context into the given task in the scheduler.
+    ///
+    /// Serializes frames, moves stack/exception_stack, and stores instruction_ip.
+    fn save_task_context(&mut self, task_id: TaskId) {
+        let task = self.scheduler.get_task_mut(task_id);
+
+        // Serialize frames
+        task.frames = self
+            .frames
+            .drain(..)
+            .map(|f| SerializedTaskFrame {
+                function_id: f.function_id,
+                ip: f.ip,
+                stack_base: f.stack_base,
+                namespace_idx: f.namespace_idx,
+                cells: f.cells,
+                call_position: f.call_position,
+            })
+            .collect();
+
+        // Move stack and exception stack
+        task.stack = std::mem::take(&mut self.stack);
+        task.exception_stack = std::mem::take(&mut self.exception_stack);
+        task.instruction_ip = self.instruction_ip;
+    }
+
+    /// Loads an existing task's context or initializes a new task from its coroutine.
+    ///
+    /// If the task has stored frames, restores them into the VM.
+    /// If the task has a coroutine_id but no frames, starts the coroutine.
+    fn load_or_init_task(&mut self, task_id: TaskId) -> Result<(), RunError> {
+        let task = self.scheduler.get_task_mut(task_id);
+
+        if !task.frames.is_empty() {
+            // Task has existing context - restore it
+            let frames: Vec<SerializedTaskFrame> = std::mem::take(&mut task.frames);
+            self.stack = std::mem::take(&mut task.stack);
+            self.exception_stack = std::mem::take(&mut task.exception_stack);
+            self.instruction_ip = task.instruction_ip;
+
+            // Reconstruct CallFrames from serialized form
+            self.frames = frames
+                .into_iter()
+                .map(|sf| {
+                    let code = match sf.function_id {
+                        Some(func_id) => &self.interns.get_function(func_id).code,
+                        None => {
+                            // This should only happen for module-level code
+                            // For spawned tasks, we always have a function
+                            panic!("spawned task frame has no function_id")
+                        }
+                    };
+                    CallFrame {
+                        code,
+                        ip: sf.ip,
+                        stack_base: sf.stack_base,
+                        namespace_idx: sf.namespace_idx,
+                        function_id: sf.function_id,
+                        cells: sf.cells,
+                        call_position: sf.call_position,
+                    }
+                })
+                .collect();
+        } else if let Some(coroutine_id) = task.coroutine_id {
+            // New task - start from coroutine
+            self.init_task_from_coroutine(coroutine_id)?;
+        } else {
+            // This shouldn't happen - task with no frames and no coroutine
+            panic!("task has no frames and no coroutine_id");
+        }
+
+        Ok(())
+    }
+
+    /// Initializes the VM state to run a coroutine for a spawned task.
+    ///
+    /// Similar to exec_get_awaitable's coroutine handling, but for task initialization.
+    fn init_task_from_coroutine(&mut self, coroutine_id: HeapId) -> Result<(), RunError> {
+        // Get coroutine data
+        let heap_data = self.heap.get(coroutine_id);
+        let HeapData::Coroutine(coro) = heap_data else {
+            panic!("task coroutine_id doesn't point to a Coroutine")
+        };
+
+        // Check state
+        if coro.state != CoroutineState::New {
+            return Err(
+                SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited coroutine").into(),
+            );
+        }
+
+        // Extract coroutine data
+        let func_id = coro.func_id;
+        let namespace_values: Vec<Value> = coro.namespace.iter().map(Value::copy_for_extend).collect();
+        let frame_cells: Vec<HeapId> = coro.frame_cells.clone();
+
+        // Increment refcounts for copied values
+        for value in &namespace_values {
+            if let Value::Ref(id) = value {
+                self.heap.inc_ref(*id);
+            }
+        }
+        for &cell_id in &frame_cells {
+            self.heap.inc_ref(cell_id);
+        }
+
+        // Mark coroutine as Running
+        if let HeapData::Coroutine(coro_mut) = self.heap.get_mut(coroutine_id) {
+            coro_mut.state = CoroutineState::Running;
+        }
+
+        // Create namespace and push frame
+        self.start_coroutine_frame(func_id, namespace_values, frame_cells)?;
 
         Ok(())
     }
@@ -1349,6 +1569,8 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             print_writer,
             exception_stack: snapshot.exception_stack,
             instruction_ip: snapshot.instruction_ip,
+            // TODO: Include scheduler state in VMSnapshot for full async support
+            scheduler: Scheduler::new(),
         }
     }
 
