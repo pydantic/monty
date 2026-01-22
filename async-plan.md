@@ -12,7 +12,7 @@ Add async/await support to Monty where the host acts as the event loop. External
 2. **Unified execution model** - No separate "async mode" vs "sync mode". External calls always return to host with `FunctionCall`. Host chooses how to handle:
    - **Sync pattern**: Call `snapshot.run(result)` with the actual value (current behavior)
    - **Async pattern**: Call `snapshot.run_pending()` to push an `ExternalFuture`, resolve later
-3. **Scheduler created lazily** - Scheduler is initialized on first `await` expression, not on async function calls
+3. **Scheduler created eagerly** - Scheduler is always present (created at VM initialization) to maintain separation of concerns. All async state (call_id counter, pending calls, resolved futures) lives in the Scheduler.
 4. **All tasks blocked** - Yield to host only when every task is waiting on external call
 5. **Cancel all on exception** - Exception propagates, cancels sibling tasks in a gather
 6. **Simplified coroutines** - Async functions must be awaited, no `.send()`/`.throw()`
@@ -36,7 +36,7 @@ Every external function call returns to the host immediately with a `call_id` fo
 1. ext_func(args)    -> Returns FunctionCall{name, args, call_id, state} to host
 2. Host defers       -> Calls state.run_pending() to resume immediately
 3. Code continues    -> Receives ExternalFuture(call_id), may hit more ext calls (goto 1)
-4. await future      -> If not resolved, task blocks (scheduler created on first await)
+4. await future      -> If not resolved, task blocks
 5. All tasks blocked -> Returns ResolveFutures{pending: [...], state: FutureSnapshot}
 6. Host provides     -> Calls state.resume([(id, result), ...])
                         (can be partial - not all pending calls required)
@@ -99,6 +99,7 @@ Add comprehensive docstrings for all new structs/enums/functions per repo guidel
 
 **File: `crates/monty/src/value.rs`**
 - Add `ExternalFuture(CallId)` variant to `Value` enum
+- Note: Awaiting an already-awaited `ExternalFuture` raises `RuntimeError: cannot reuse already awaited coroutine` (same as coroutines). Track "awaited" state in scheduler's resolved map.
 
 **File: `crates/monty/src/heap.rs`**
 - Add `Coroutine(Coroutine)` variant to `HeapData` enum
@@ -180,31 +181,32 @@ pub struct Task {
     pub state: TaskState,
 }
 
-/// Scheduler for managing concurrent async tasks.
+/// Scheduler for managing concurrent async tasks and external call tracking.
 ///
-/// Created lazily on first `await` expression. When `None`, no async tasks
-/// exist yet. External function calls work the same regardless of scheduler
-/// presence - the host decides whether to use sync or async resolution.
+/// Always present (created at VM initialization) to maintain separation of concerns.
+/// All async-related state lives here: call IDs, pending calls, resolved futures, tasks.
 pub struct Scheduler {
+    /// All tasks (main task at index 0, spawned tasks follow).
     tasks: Vec<Task>,
     ready_queue: VecDeque<TaskId>,
+    /// Currently executing task (None only during task switching).
     current_task: Option<TaskId>,
     next_task_id: u32,
+    /// Counter for external call IDs (always incremented, even for sync resolution).
     next_call_id: u32,
-    /// Maps CallId -> pending call data (name + args) for unresolved calls
+    /// Maps CallId -> pending call data (name + args) for unresolved calls.
+    /// Populated when host calls `run_pending()`.
     pending_calls: HashMap<CallId, PendingCallData>,
-    /// Maps CallId -> resolved Value
+    /// Maps CallId -> resolved Value. Entry removed when awaited.
     resolved: HashMap<CallId, Value>,
+    /// CallIds that have been awaited (to detect double-await).
+    consumed: HashSet<CallId>,
 }
 
 impl Scheduler {
-    /// Create scheduler, moving current VM state into the "main" task.
-    pub fn new_with_main_task(
-        frames: Vec<CallFrame>,
-        stack: Vec<Value>,
-        exception_stack: Vec<Value>,
-        instruction_ip: usize,
-    ) -> Self;
+    /// Create a new scheduler with an empty main task (task 0).
+    /// The main task's frames/stack are the VM's frames/stack (not copied into Task).
+    pub fn new() -> Self;
 
     /// Spawn a new task from a coroutine HeapId. Returns the TaskId.
     /// Must set coroutine state to Running, store coroutine_id on the task,
@@ -268,15 +270,16 @@ ExternalCall {
 
 Add to VM:
 ```rust
-/// Optional scheduler for async execution (None until first `await`).
-scheduler: Option<Box<Scheduler>>,
+/// Scheduler for async execution and external call tracking.
+/// Always present - created at VM initialization.
+scheduler: Scheduler,
 ```
-`ensure_scheduler()` should move the current VM context (stack/frames/exception stack/IP)
-into the scheduler's "main task" the first time an async operation is hit.
+The scheduler is created in `VM::new()`. The "main task" (task 0) uses the VM's stack/frames
+directly rather than copying them into the Task struct - only spawned tasks store their own context.
 
 Add an optional `coroutine_id: Option<HeapId>` to `CallFrame` so that when a coroutine
 frame returns, the coroutine can be marked `Completed` (and re-await can error).
-Update `VMSnapshot` and VM snapshot/restore to include scheduler/task state when present
+Update `VMSnapshot` and VM snapshot/restore to include scheduler state
 so async execution can be paused/resumed across host calls.
 Include a serializable `SchedulerSnapshot` (tasks, ready queue, current task id,
 next ids, pending calls, resolved futures, and task-local IP).
@@ -285,14 +288,19 @@ next ids, pending calls, resolved futures, and task-local IP).
 ```rust
 Opcode::GetAwaitable => {
     let awaitable = self.pop();
-    self.ensure_scheduler(); // lazy init on first await
 
     match awaitable {
         Value::ExternalFuture(call_id) => {
-            if let Some(result) = self.scheduler().take_resolved(call_id) {
+            // Check for double-await (same error as coroutines)
+            if self.scheduler.is_consumed(call_id) {
+                return Err(RuntimeError("cannot reuse already awaited coroutine"));
+            }
+            self.scheduler.mark_consumed(call_id);
+
+            if let Some(result) = self.scheduler.take_resolved(call_id) {
                 self.push(result);
             } else {
-                self.scheduler().block_current_on_call(call_id);
+                self.scheduler.block_current_on_call(call_id);
                 return self.switch_or_yield(); // swaps task context or yields ResolveFutures
             }
         }
@@ -307,7 +315,7 @@ Opcode::GetAwaitable => {
             }
             HeapData::GatherFuture(gather) => {
                 self.spawn_gather_tasks(id, gather)?;
-                self.scheduler().block_current_on_gather(id);
+                self.scheduler.block_current_on_gather(id);
                 return self.switch_or_yield();
             }
             _ => return Err(TypeError("object is not awaitable")),
@@ -320,8 +328,9 @@ Opcode::GetAwaitable => {
 `FrameExit::ResolveFutures` if no tasks are ready.
 
 Use exception helpers to match CPython messages for:
-- non-awaitable objects (`object <type> can't be used in 'await' expression`)
-- re-awaiting a completed coroutine (`cannot reuse already awaited coroutine`)
+- non-awaitable objects: `TypeError: object <type> can't be used in 'await' expression`
+- re-awaiting a completed coroutine: `RuntimeError: cannot reuse already awaited coroutine`
+- re-awaiting an ExternalFuture: same `RuntimeError` message (treat like coroutines)
 On coroutine frame return, mark the coroutine `Completed` using the frame's `coroutine_id`.
 
 **External function calls:**
@@ -335,8 +344,8 @@ When the host uses async resolution:
 3. When all tasks are blocked, `ResolveFutures` is returned with pending call data
 4. Host resolves via `FutureSnapshot::resume()` with results
 
-The `call_id` counter is always incremented (even for sync resolution) to keep IDs unique.
-Pending call data is only stored in the scheduler when `run_pending()` is called and a scheduler exists.
+The `call_id` counter (in Scheduler) is always incremented, even for sync resolution, to keep IDs unique.
+Pending call data is stored in the scheduler when `run_pending()` is called.
 
 ### Phase 6: API Changes
 
@@ -363,9 +372,9 @@ FunctionCall {
     state: Snapshot<T>,
 },
 ```
-The `call_id` is always allocated from a monotonically increasing counter (independent of scheduler).
+The `call_id` is allocated from the scheduler's monotonically increasing counter.
 This allows the host to use either sync resolution (`run(result)`) or async resolution (`run_pending()`)
-for any external call, regardless of whether async code is being executed.
+for any external call.
 Update `RunProgress::function_call()` helper to return `call_id` as well.
 
 Extend `Snapshot` to support pending futures:
@@ -453,9 +462,13 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
 
 ### Phase 7: asyncio.gather()
 
+**Scope**: The `asyncio` module provides **only** `gather()`. Other asyncio functions are explicitly
+out of scope: `create_task()`, `sleep()`, `wait()`, `wait_for()`, `shield()`, `timeout()`, etc.
+These would require additional VM/scheduler features not covered in this plan.
+
 **File: `crates/monty/src/modules/mod.rs`**
 - Add `BuiltinModule::Asyncio` variant
-- Register `asyncio` module with `gather` function
+- Register `asyncio` module with only `gather` function
 
 **File: `crates/monty/src/asyncio.rs`** (add gather function to existing file)
 
@@ -569,3 +582,16 @@ pub fn gather(args: Vec<Value>, heap: &mut Heap) -> Result<Value, RunError> {
    make test-ref-count-panic
    make test-py
    ```
+
+## Out of Scope
+
+The following are explicitly **not** included in this implementation:
+
+1. **Async generators** - `yield` inside `async def` is a syntax error
+2. **asyncio functions** - Only `gather()` is implemented. Not included:
+   - `asyncio.create_task()` - would need explicit task creation without await
+   - `asyncio.sleep()` - would need timer integration with host
+   - `asyncio.wait()`, `asyncio.wait_for()`, `asyncio.shield()`, `asyncio.timeout()`
+3. **`async for` / `async with`** - would require `__aiter__`, `__aenter__`/`__aexit__` protocols
+4. **Coroutine `.send()` / `.throw()`** - simplified single-shot coroutine model
+5. **Task cancellation API** - tasks are only cancelled implicitly when a gather fails
