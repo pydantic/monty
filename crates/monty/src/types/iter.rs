@@ -12,9 +12,16 @@
 //!
 //! ## Efficient Iteration with `IterState`
 //!
-//! For the VM's `ForIter` opcode, we use a two-phase approach to avoid borrow conflicts:
+//! For the VM's `ForIter` opcode, `advance_on_heap()` uses two strategies:
+//!
+//! **Fast path** for simple iterators (Range, InternBytes):
+//! - Single `get_mut()` call to compute value and advance index
+//! - No additional heap access needed during iteration
+//!
+//! **Multi-phase approach** for complex iterators (IterStr, HeapRef):
 //! 1. `iter_state()` - reads current state without mutation, returns `Option<IterState>`
-//! 2. `advance()` - updates the index after the caller has done its work
+//! 2. Get the value (may access other heap objects like strings or containers)
+//! 3. `advance()` - updates the index after the caller has done its work
 //!
 //! This allows `advance_on_heap()` to coordinate access without extracting
 //! the iterator from the heap (avoiding `std::mem::replace` overhead).
@@ -135,21 +142,16 @@ impl MontyIter {
 
     /// Returns the current iterator state without mutation.
     ///
-    /// This is phase 1 of the two-phase iteration approach used by `advance_on_heap()`.
-    /// The returned `IterState` captures all data needed to produce the next value.
-    /// After using the state, call `advance()` to update the iterator.
+    /// This is used by the multi-phase approach in `advance_on_heap()` for complex
+    /// iterator types (IterStr, HeapRef). Simple types (Range, InternBytes) are
+    /// handled by the fast path and should not call this method.
     ///
     /// Returns `None` if the iterator is exhausted.
     fn iter_state(&self) -> Option<IterState> {
         match &self.iter_value {
-            IterValue::Range { start, step, len } => {
-                if self.index >= *len {
-                    None
-                } else {
-                    let idx = i64::try_from(self.index).expect("iterator index exceeds i64::MAX");
-                    let value = *start + idx * *step;
-                    Some(IterState::Range(value))
-                }
+            // Range and InternBytes are handled by try_advance_simple() fast path
+            IterValue::Range { .. } | IterValue::InternBytes { .. } => {
+                unreachable!("Range and InternBytes use fast path, not iter_state")
             }
             IterValue::IterStr {
                 string,
@@ -167,16 +169,6 @@ impl MontyIter {
                     Some(IterState::IterStr {
                         char: c,
                         char_len: c.len_utf8(),
-                    })
-                }
-            }
-            IterValue::InternBytes { bytes_id, len } => {
-                if self.index >= *len {
-                    None
-                } else {
-                    Some(IterState::InternBytes {
-                        bytes_id: *bytes_id,
-                        index: self.index,
                     })
                 }
             }
@@ -216,6 +208,38 @@ impl MontyIter {
             && let IterValue::IterStr { byte_offset, .. } = &mut self.iter_value
         {
             *byte_offset += char_len;
+        }
+    }
+
+    /// Attempts to advance simple iterator types that don't need additional heap access.
+    ///
+    /// Returns `Some(result)` if handled (Range, InternBytes), `None` if caller should
+    /// use the multi-phase approach (IterStr, HeapRef).
+    ///
+    /// This optimization avoids two heap lookups for iterator types that can compute
+    /// their next value without accessing other heap objects.
+    #[inline]
+    fn try_advance_simple(&mut self, interns: &Interns) -> Option<RunResult<Option<Value>>> {
+        match &self.iter_value {
+            IterValue::Range { start, step, len } => {
+                if self.index >= *len {
+                    return Some(Ok(None));
+                }
+                let idx = i64::try_from(self.index).expect("iterator index exceeds i64::MAX");
+                let value = *start + idx * *step;
+                self.index += 1;
+                Some(Ok(Some(Value::Int(value))))
+            }
+            IterValue::InternBytes { bytes_id, len } => {
+                if self.index >= *len {
+                    return Some(Ok(None));
+                }
+                let i = self.index;
+                self.index += 1;
+                let bytes = interns.get_bytes(*bytes_id);
+                Some(Ok(Some(Value::Int(i64::from(bytes[i])))))
+            }
+            IterValue::IterStr { .. } | IterValue::HeapRef { .. } => None,
         }
     }
 
@@ -323,7 +347,10 @@ impl MontyIter {
 
 /// Advances an iterator stored on the heap and returns the next value.
 ///
-/// This method uses a two-phase approach to avoid borrow conflicts:
+/// Uses a fast path for simple iterators (Range, InternBytes) that don't need
+/// additional heap access - these are handled with a single mutable borrow.
+///
+/// For complex iterators (IterStr, HeapRef), uses a multi-phase approach:
 /// 1. Read iterator state (immutable borrow ends)
 /// 2. Based on state, get the value (may access other heap objects)
 /// 3. Update iterator index (mutable borrow)
@@ -338,6 +365,19 @@ pub(crate) fn advance_on_heap(
     iter_id: HeapId,
     interns: &Interns,
 ) -> RunResult<Option<Value>> {
+    // Fast path: Range and InternBytes don't need additional heap access,
+    // so we can handle them with a single mutable borrow.
+    {
+        let HeapData::Iter(iter) = heap.get_mut(iter_id) else {
+            panic!("advance_on_heap: expected Iterator on heap");
+        };
+        if let Some(result) = iter.try_advance_simple(interns) {
+            return result;
+        }
+    }
+    // Mutable borrow ends here, allowing the multi-phase approach below
+
+    // Multi-phase approach for IterStr and HeapRef (need heap access during value retrieval)
     // Phase 1: Get iterator state (immutable borrow ends after this block)
     let HeapData::Iter(iter) = heap.get(iter_id) else {
         panic!("advance_on_heap: expected Iterator on heap");
@@ -348,18 +388,10 @@ pub(crate) fn advance_on_heap(
 
     // Phase 2: Based on state, get the value and determine char_len for strings
     let (value, string_char_len) = match state {
-        IterState::Range(value) => (Value::Int(value), None),
-
         IterState::IterStr { char, char_len } => {
             let value = allocate_char(char, heap)?;
             (value, Some(char_len))
         }
-
-        IterState::InternBytes { bytes_id, index } => {
-            let bytes = interns.get_bytes(bytes_id);
-            (Value::Int(i64::from(bytes[index])), None)
-        }
-
         IterState::HeapIndex {
             heap_id,
             index,
@@ -504,22 +536,18 @@ pub fn iterator_next(
 
 /// Snapshot of iterator state needed to produce the next value.
 ///
-/// This enum captures all data needed to get the next item from an iterator
-/// WITHOUT holding a borrow on the iterator. This enables a two-phase approach:
+/// This enum captures state for complex iterator types (IterStr, HeapRef) that
+/// require the multi-phase approach in `advance_on_heap()`. Simple types (Range,
+/// InternBytes) are handled by the fast path and don't use this enum.
+///
+/// The multi-phase approach avoids borrow conflicts:
 /// 1. Read `Option<IterState>` from iterator (immutable borrow ends, `None` means exhausted)
 /// 2. Use the state to get the value (may access other heap objects)
 /// 3. Call `advance()` to update the iterator index
-///
-/// For types that yield values directly (Range, IterStr), the value is included.
-/// For types that need heap access, `HeapIndex` provides the heap_id and index.
 #[derive(Debug, Clone, Copy)]
 enum IterState {
-    /// Range iterator yields this integer value directly.
-    Range(i64),
     /// String iterator yields this character; char_len is UTF-8 byte length for advance().
     IterStr { char: char, char_len: usize },
-    /// Interned bytes iterator needs to read byte at this index.
-    InternBytes { bytes_id: BytesId, index: usize },
     /// Heap-based iterator (List, Tuple, NamedTuple, Dict, Bytes, Set, FrozenSet).
     /// The expected_len is Some for types that check for mutation (Dict, Set).
     HeapIndex {
