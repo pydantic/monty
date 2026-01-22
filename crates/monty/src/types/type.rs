@@ -47,6 +47,8 @@ pub enum Type {
     Cell,
     #[strum(serialize = "iter")]
     Iterator,
+    /// Coroutine type for async functions and external futures.
+    Coroutine,
     Module,
     /// Marker types like stdout/stderr - displays as "TextIOWrapper"
     #[strum(serialize = "TextIOWrapper")]
@@ -81,6 +83,7 @@ impl fmt::Display for Type {
             Self::BuiltinFunction => f.write_str("builtin_function_or_method"),
             Self::Cell => f.write_str("cell"),
             Self::Iterator => f.write_str("iterator"),
+            Self::Coroutine => f.write_str("coroutine"),
             Self::Module => f.write_str("module"),
             Self::TextIOWrapper => f.write_str("_io.TextIOWrapper"),
             Self::SpecialForm => f.write_str("typing._SpecialForm"),

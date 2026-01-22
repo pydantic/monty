@@ -413,6 +413,16 @@ impl MontyObject {
                         let _ = slice.py_repr_fmt(&mut s, heap, visited, interns);
                         Self::Repr(s)
                     }
+                    HeapData::Coroutine(coro) => {
+                        // Coroutines are represented as a repr string
+                        let func = interns.get_function(coro.func_id);
+                        let name = interns.get_str(func.name.name_id);
+                        Self::Repr(format!("<coroutine object {name}>"))
+                    }
+                    HeapData::GatherFuture(gather) => {
+                        // GatherFutures are represented as a repr string
+                        Self::Repr(format!("<gather({})>", gather.task_count()))
+                    }
                 };
 
                 // Remove from visited set after processing

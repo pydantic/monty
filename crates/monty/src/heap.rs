@@ -11,6 +11,7 @@ use num_integer::Integer;
 
 use crate::{
     args::ArgValues,
+    asyncio::{Coroutine, GatherFuture},
     exception_private::{ExcType, RunResult, SimpleException},
     intern::{FunctionId, Interns},
     resource::{ResourceError, ResourceTracker},
@@ -108,6 +109,15 @@ pub(crate) enum HeapData {
     /// Modules have a name and a dictionary of attributes. They are created by
     /// import statements and can have refs to other heap values in their attributes.
     Module(Module),
+    /// A coroutine object from an async function call.
+    ///
+    /// Contains pre-bound arguments and captured cells, ready to be awaited.
+    /// When awaited, a new frame is pushed using the stored namespace.
+    Coroutine(Coroutine),
+    /// A gather() result tracking multiple coroutines/tasks.
+    ///
+    /// Created by asyncio.gather() and spawns tasks when awaited.
+    GatherFuture(GatherFuture),
 }
 
 impl HeapData {
@@ -135,6 +145,8 @@ impl HeapData {
                 | Self::Dataclass(_)
                 | Self::Iter(_)
                 | Self::Module(_)
+                | Self::Coroutine(_)
+                | Self::GatherFuture(_)
         )
     }
 
@@ -163,11 +175,30 @@ impl HeapData {
             Self::Dataclass(dc) => dc.has_refs(),
             Self::Iter(iter) => iter.has_refs(),
             Self::Module(m) => m.has_refs(),
+            // Coroutines always have refs (namespace values, frame_cells)
+            Self::Coroutine(coro) => {
+                !coro.frame_cells.is_empty() || coro.namespace.iter().any(|v| matches!(v, Value::Ref(_)))
+            }
+            // GatherFutures always have refs (coroutine_ids, results)
+            Self::GatherFuture(gather) => {
+                !gather.coroutine_ids.is_empty()
+                    || gather
+                        .results
+                        .iter()
+                        .any(|r| r.as_ref().is_some_and(|v| matches!(v, Value::Ref(_))))
+            }
             // Leaf types cannot have refs
             Self::Str(_) | Self::Bytes(_) | Self::Range(_) | Self::Slice(_) | Self::Exception(_) | Self::LongInt(_) => {
                 false
             }
         }
+    }
+
+    /// Returns true if this heap data is a coroutine.
+    #[inline]
+    #[expect(dead_code, reason = "used in later phases")]
+    pub fn is_coroutine(&self) -> bool {
+        matches!(self, Self::Coroutine(_))
     }
 
     /// Computes hash for immutable heap types that can be used as dict keys.
@@ -241,7 +272,7 @@ impl HeapData {
                 slice.step.hash(&mut hasher);
                 Some(hasher.finish())
             }
-            // Mutable types, exceptions, iterators, and modules cannot be hashed
+            // Mutable types, exceptions, iterators, modules, and async types cannot be hashed
             // (Cell is handled specially in get_or_compute_hash)
             Self::List(_)
             | Self::Dict(_)
@@ -249,7 +280,9 @@ impl HeapData {
             | Self::Cell(_)
             | Self::Exception(_)
             | Self::Iter(_)
-            | Self::Module(_) => None,
+            | Self::Module(_)
+            | Self::Coroutine(_)
+            | Self::GatherFuture(_) => None,
             // LongInt is immutable and hashable
             Self::LongInt(li) => Some(li.hash()),
         }
@@ -281,6 +314,7 @@ impl PyTrait for HeapData {
             // LongInt is still `int` in Python - it's an implementation detail
             Self::LongInt(_) => Type::Int,
             Self::Module(_) => Type::Module,
+            Self::Coroutine(_) | Self::GatherFuture(_) => Type::Coroutine,
         }
     }
 
@@ -304,6 +338,16 @@ impl PyTrait for HeapData {
             Self::Iter(_) => std::mem::size_of::<MontyIter>(),
             Self::LongInt(li) => li.estimate_size(),
             Self::Module(m) => std::mem::size_of::<Module>() + m.attrs().py_estimate_size(),
+            Self::Coroutine(coro) => {
+                std::mem::size_of::<Coroutine>()
+                    + coro.namespace.len() * std::mem::size_of::<Value>()
+                    + coro.frame_cells.len() * std::mem::size_of::<HeapId>()
+            }
+            Self::GatherFuture(gather) => {
+                std::mem::size_of::<GatherFuture>()
+                    + gather.coroutine_ids.len() * std::mem::size_of::<HeapId>()
+                    + gather.results.len() * std::mem::size_of::<Option<Value>>()
+            }
         }
     }
 
@@ -318,7 +362,7 @@ impl PyTrait for HeapData {
             Self::Set(s) => PyTrait::py_len(s, heap, interns),
             Self::FrozenSet(fs) => PyTrait::py_len(fs, heap, interns),
             Self::Range(r) => Some(r.len()),
-            // Cells, Slices, Exceptions, Dataclasses, Iterators, LongInts, and Modules don't have length
+            // Cells, Slices, Exceptions, Dataclasses, Iterators, LongInts, Modules, and async types don't have length
             Self::Cell(_)
             | Self::Closure(_, _, _)
             | Self::FunctionDefaults(_, _)
@@ -327,7 +371,9 @@ impl PyTrait for HeapData {
             | Self::Dataclass(_)
             | Self::Iter(_)
             | Self::LongInt(_)
-            | Self::Module(_) => None,
+            | Self::Module(_)
+            | Self::Coroutine(_)
+            | Self::GatherFuture(_) => None,
         }
     }
 
@@ -361,11 +407,13 @@ impl PyTrait for HeapData {
             (Self::LongInt(a), Self::LongInt(b)) => a == b,
             // Slice equality
             (Self::Slice(a), Self::Slice(b)) => a.py_eq(b, heap, interns),
-            // Cells, Exceptions, Iterators, and Modules compare by identity only (handled at Value level via HeapId comparison)
+            // Cells, Exceptions, Iterators, Modules, and async types compare by identity only (handled at Value level via HeapId comparison)
             (Self::Cell(_), Self::Cell(_))
             | (Self::Exception(_), Self::Exception(_))
             | (Self::Iter(_), Self::Iter(_))
-            | (Self::Module(_), Self::Module(_)) => false,
+            | (Self::Module(_), Self::Module(_))
+            | (Self::Coroutine(_), Self::Coroutine(_))
+            | (Self::GatherFuture(_), Self::GatherFuture(_)) => false,
             _ => false, // Different types are never equal
         }
     }
@@ -398,6 +446,22 @@ impl PyTrait for HeapData {
             Self::Dataclass(dc) => dc.py_dec_ref_ids(stack),
             Self::Iter(iter) => iter.py_dec_ref_ids(stack),
             Self::Module(m) => m.py_dec_ref_ids(stack),
+            Self::Coroutine(coro) => {
+                // Decrement ref count for frame cells
+                stack.extend(coro.frame_cells.iter().copied());
+                // Decrement ref count for namespace values that are heap references
+                for value in &mut coro.namespace {
+                    value.py_dec_ref_ids(stack);
+                }
+            }
+            Self::GatherFuture(gather) => {
+                // Decrement ref count for coroutine HeapIds
+                stack.extend(gather.coroutine_ids.iter().copied());
+                // Decrement ref count for result values that are heap references
+                for result in gather.results.iter_mut().flatten() {
+                    result.py_dec_ref_ids(stack);
+                }
+            }
             // Range, Slice, Exception, and LongInt have no nested heap references
             Self::Range(_) | Self::Slice(_) | Self::Exception(_) | Self::LongInt(_) => {}
         }
@@ -421,7 +485,9 @@ impl PyTrait for HeapData {
             Self::Dataclass(dc) => dc.py_bool(heap, interns),
             Self::Iter(_) => true, // Iterators are always truthy
             Self::LongInt(li) => !li.is_zero(),
-            Self::Module(_) => true, // Modules are always truthy
+            Self::Module(_) => true,       // Modules are always truthy
+            Self::Coroutine(_) => true,    // Coroutines are always truthy
+            Self::GatherFuture(_) => true, // GatherFutures are always truthy
         }
     }
 
@@ -453,6 +519,12 @@ impl PyTrait for HeapData {
             Self::Iter(_) => write!(f, "<iterator>"),
             Self::LongInt(li) => write!(f, "{li}"),
             Self::Module(m) => write!(f, "<module '{}'>", interns.get_str(m.name())),
+            Self::Coroutine(coro) => {
+                let func = interns.get_function(coro.func_id);
+                let name = interns.get_str(func.name.name_id);
+                write!(f, "<coroutine object {name}>")
+            }
+            Self::GatherFuture(gather) => write!(f, "<gather({})>", gather.task_count()),
         }
     }
 
@@ -651,13 +723,15 @@ impl HashState {
                     Self::Unhashable
                 }
             }
-            // Mutable containers, exceptions, iterators, and modules are unhashable
+            // Mutable containers, exceptions, iterators, modules, and async types are unhashable
             HeapData::List(_)
             | HeapData::Dict(_)
             | HeapData::Set(_)
             | HeapData::Exception(_)
             | HeapData::Iter(_)
-            | HeapData::Module(_) => Self::Unhashable,
+            | HeapData::Module(_)
+            | HeapData::Coroutine(_)
+            | HeapData::GatherFuture(_) => Self::Unhashable,
         }
     }
 }
@@ -1487,6 +1561,30 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
                     work_list.push(*id);
                 }
                 if let Value::Ref(id) = v {
+                    work_list.push(*id);
+                }
+            }
+        }
+        HeapData::Coroutine(coro) => {
+            // Add captured cells to work list
+            for cell_id in &coro.frame_cells {
+                work_list.push(*cell_id);
+            }
+            // Add namespace values that are heap references
+            for value in &coro.namespace {
+                if let Value::Ref(id) = value {
+                    work_list.push(*id);
+                }
+            }
+        }
+        HeapData::GatherFuture(gather) => {
+            // Add coroutine HeapIds to work list
+            for coro_id in &gather.coroutine_ids {
+                work_list.push(*coro_id);
+            }
+            // Add result values that are heap references
+            for result in gather.results.iter().flatten() {
+                if let Value::Ref(id) = result {
                     work_list.push(*id);
                 }
             }

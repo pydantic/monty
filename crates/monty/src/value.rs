@@ -13,6 +13,7 @@ use num_integer::Integer;
 use num_traits::{ToPrimitive, Zero};
 
 use crate::{
+    asyncio::CallId,
     builtins::Builtins,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId},
@@ -61,6 +62,15 @@ pub(crate) enum Value {
     /// A marker value representing special objects like sys.stdout/stderr.
     /// These exist but have minimal functionality in the sandboxed environment.
     Marker(Marker),
+    /// A pending external function call result.
+    ///
+    /// Created when the host calls `run_pending()` instead of `run(result)` for an
+    /// external function call. The CallId correlates with the call that created it.
+    /// When awaited, blocks the task until the host provides a result via `resume()`.
+    ///
+    /// ExternalFutures follow single-shot semantics like coroutines - awaiting an
+    /// already-awaited ExternalFuture raises RuntimeError.
+    ExternalFuture(CallId),
 
     // Heap-allocated values (stored in arena)
     Ref(HeapId),
@@ -105,6 +115,7 @@ impl PyTrait for Value {
             Self::Builtin(c) => c.py_type(),
             Self::DefFunction(_) | Self::ExtFunction(_) => Type::Function,
             Self::Marker(m) => m.py_type(),
+            Self::ExternalFuture(_) => Type::Coroutine,
             Self::Ref(id) => heap.get(*id).py_type(heap),
             #[cfg(feature = "ref-count-panic")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
@@ -287,6 +298,7 @@ impl PyTrait for Value {
             Self::Builtin(_) => true,                            // Builtins are always truthy
             Self::DefFunction(_) | Self::ExtFunction(_) => true, // Functions are always truthy
             Self::Marker(_) => true,                             // Markers are always truthy
+            Self::ExternalFuture(_) => true,                     // ExternalFutures are always truthy
             Self::InternString(string_id) => !interns.get_str(*string_id).is_empty(),
             Self::InternBytes(bytes_id) => !interns.get_bytes(*bytes_id).is_empty(),
             Self::Ref(id) => heap.get(*id).py_bool(heap, interns),
@@ -325,6 +337,7 @@ impl PyTrait for Value {
             Self::InternString(string_id) => string_repr_fmt(interns.get_str(*string_id), f),
             Self::InternBytes(bytes_id) => bytes_repr_fmt(interns.get_bytes(*bytes_id), f),
             Self::Marker(m) => m.py_repr_fmt(f),
+            Self::ExternalFuture(call_id) => write!(f, "<coroutine external_future({})>", call_id.raw()),
             Self::Ref(id) => {
                 if heap_ids.contains(id) {
                     // Cycle detected - write type-specific placeholder following Python semantics
@@ -1471,6 +1484,8 @@ impl Value {
             Self::ExtFunction(f_id) => ext_function_value_id(*f_id),
             // Markers get deterministic IDs based on discriminant
             Self::Marker(m) => marker_value_id(*m),
+            // ExternalFutures get IDs based on their call_id
+            Self::ExternalFuture(call_id) => external_future_value_id(*call_id),
             #[cfg(feature = "ref-count-panic")]
             Self::Dereferenced => panic!("Cannot get id of Dereferenced object"),
         }
@@ -1549,6 +1564,8 @@ impl Value {
             Self::ExtFunction(f_id) => f_id.hash(&mut hasher),
             // Markers are hashable based on their discriminant (already included above)
             Self::Marker(m) => m.hash(&mut hasher),
+            // ExternalFutures are hashable based on their call ID
+            Self::ExternalFuture(call_id) => call_id.raw().hash(&mut hasher),
             Self::InternString(_) | Self::InternBytes(_) | Self::Ref(_) => unreachable!("covered above"),
             #[cfg(feature = "ref-count-panic")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
@@ -1951,6 +1968,7 @@ impl Value {
             Self::InternString(s) => Self::InternString(*s),
             Self::InternBytes(b) => Self::InternBytes(*b),
             Self::Marker(m) => Self::Marker(*m),
+            Self::ExternalFuture(call_id) => Self::ExternalFuture(*call_id),
             Self::Ref(id) => Self::Ref(*id), // Caller must increment refcount!
             #[cfg(feature = "ref-count-panic")]
             Self::Dereferenced => panic!("Cannot copy Dereferenced object"),
@@ -2151,6 +2169,8 @@ const FUNCTION_ID_TAG: usize = 1usize << (usize::BITS - 8);
 const EXTFUNCTION_ID_TAG: usize = 1usize << (usize::BITS - 9);
 /// High-bit tag for Marker value-based IDs (stdout, stderr, etc.).
 const MARKER_ID_TAG: usize = 1usize << (usize::BITS - 10);
+/// High-bit tag for ExternalFuture value-based IDs.
+const EXTERNAL_FUTURE_ID_TAG: usize = 1usize << (usize::BITS - 11);
 
 /// Masks for value-based ID tags (keep bits below the tag bit).
 const INT_ID_MASK: usize = INT_ID_TAG - 1;
@@ -2159,6 +2179,7 @@ const BUILTIN_ID_MASK: usize = BUILTIN_ID_TAG - 1;
 const FUNCTION_ID_MASK: usize = FUNCTION_ID_TAG - 1;
 const EXTFUNCTION_ID_MASK: usize = EXTFUNCTION_ID_TAG - 1;
 const MARKER_ID_MASK: usize = MARKER_ID_TAG - 1;
+const EXTERNAL_FUTURE_ID_MASK: usize = EXTERNAL_FUTURE_ID_TAG - 1;
 
 /// Enumerates singleton literal slots so we can issue stable `id()` values without heap allocation.
 #[repr(usize)]
@@ -2242,6 +2263,12 @@ fn ext_function_value_id(f_id: ExtFunctionId) -> usize {
 #[inline]
 fn marker_value_id(m: Marker) -> usize {
     MARKER_ID_TAG | ((m.0 as usize) & MARKER_ID_MASK)
+}
+
+/// Computes a deterministic ID for an external future based on its call ID.
+#[inline]
+fn external_future_value_id(call_id: CallId) -> usize {
+    EXTERNAL_FUTURE_ID_TAG | ((call_id.raw() as usize) & EXTERNAL_FUTURE_ID_MASK)
 }
 
 /// Converts an i64 repeat count to usize, handling negative values and overflow.
