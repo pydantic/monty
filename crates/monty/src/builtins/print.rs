@@ -111,7 +111,7 @@ fn extract_print_kwargs(
                 error = Some(
                     SimpleException::new_msg(
                         ExcType::TypeError,
-                        format!("'{key_str}' is an invalid keyword argument for print()"),
+                        format!("print() got an unexpected keyword argument '{key_str}'"),
                     )
                     .into(),
                 );
