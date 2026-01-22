@@ -9,8 +9,10 @@ Add async/await support to Monty where the host acts as the event loop. External
 ## Key Design Decisions
 
 1. **Host is event loop** - Monty yields pending calls, host executes and resumes
-2. **ExternalFuture model (async mode)** - External calls return futures, results provided later
-3. **Sync mode unchanged** - When scheduler is `None`, external calls behave as today (host returns actual value)
+2. **Unified execution model** - No separate "async mode" vs "sync mode". External calls always return to host with `FunctionCall`. Host chooses how to handle:
+   - **Sync pattern**: Call `snapshot.run(result)` with the actual value (current behavior)
+   - **Async pattern**: Call `snapshot.run_pending()` to push an `ExternalFuture`, resolve later
+3. **Scheduler created lazily** - Scheduler is initialized on first `await` expression, not on async function calls
 4. **All tasks blocked** - Yield to host only when every task is waiting on external call
 5. **Cancel all on exception** - Exception propagates, cancels sibling tasks in a gather
 6. **Simplified coroutines** - Async functions must be awaited, no `.send()`/`.throw()`
@@ -20,13 +22,21 @@ Add async/await support to Monty where the host acts as the event loop. External
 
 ## Execution Flow
 
-Every external function call returns to the host immediately (same as sync mode), but with a `call_id` for tracking:
+Every external function call returns to the host immediately with a `call_id` for tracking. The host decides how to resume:
 
+**Sync resolution** (current behavior):
 ```
 1. ext_func(args)    -> Returns FunctionCall{name, args, call_id, state} to host
-2. Host schedules    -> Calls state.run_pending() to resume immediately
+2. Host executes     -> Calls state.run(result) with the actual value
+3. Code continues    -> Result pushed to stack, execution continues
+```
+
+**Async resolution** (new capability):
+```
+1. ext_func(args)    -> Returns FunctionCall{name, args, call_id, state} to host
+2. Host defers       -> Calls state.run_pending() to resume immediately
 3. Code continues    -> Receives ExternalFuture(call_id), may hit more ext calls (goto 1)
-4. await future      -> If not resolved, task blocks
+4. await future      -> If not resolved, task blocks (scheduler created on first await)
 5. All tasks blocked -> Returns ResolveFutures{pending: [...], state: FutureSnapshot}
 6. Host provides     -> Calls state.resume([(id, result), ...])
                         (can be partial - not all pending calls required)
@@ -35,9 +45,10 @@ Every external function call returns to the host immediately (same as sync mode)
 ```
 
 **Key Points**:
-- External calls ALWAYS return to host with `FunctionCall` (consistent with sync mode)
+- External calls ALWAYS return to host with `FunctionCall` - host chooses sync or async resolution
 - `FunctionCall` now includes `call_id` so host can correlate calls with futures
-- `Snapshot::run_pending()` resumes by pushing `ExternalFuture(call_id)` (call_id stored in Snapshot)
+- `Snapshot::run(result)` pushes the result directly (sync pattern)
+- `Snapshot::run_pending()` pushes `ExternalFuture(call_id)` (async pattern)
 - `FutureSnapshot::resume()` accepts partial results for incremental resolution and may still yield `FunctionCall`
 - Results for failed/cancelled tasks are silently ignored
 
@@ -171,8 +182,9 @@ pub struct Task {
 
 /// Scheduler for managing concurrent async tasks.
 ///
-/// Created lazily on first async operation (await or async function call).
-/// When None, VM operates in sync mode (current behavior).
+/// Created lazily on first `await` expression. When `None`, no async tasks
+/// exist yet. External function calls work the same regardless of scheduler
+/// presence - the host decides whether to use sync or async resolution.
 pub struct Scheduler {
     tasks: Vec<Task>,
     ready_queue: VecDeque<TaskId>,
@@ -256,7 +268,7 @@ ExternalCall {
 
 Add to VM:
 ```rust
-/// Optional scheduler for async execution (None for sync mode).
+/// Optional scheduler for async execution (None until first `await`).
 scheduler: Option<Box<Scheduler>>,
 ```
 `ensure_scheduler()` should move the current VM context (stack/frames/exception stack/IP)
@@ -312,13 +324,19 @@ Use exception helpers to match CPython messages for:
 - re-awaiting a completed coroutine (`cannot reuse already awaited coroutine`)
 On coroutine frame return, mark the coroutine `Completed` using the frame's `coroutine_id`.
 
-**External function call in async context:**
-- When calling external function inside async def:
-  1. Allocate `CallId` from scheduler
-  2. Store pending call data (call_id, ext function name, args/kwargs) in scheduler
-     - Clone args/kwargs with proper refcount increments so the pending copy stays valid
-  3. Return `FrameExit::ExternalCall` with call_id (so host can dispatch)
-  4. Host resumes with `run_pending()` to push `ExternalFuture(call_id)` and continue
+**External function calls:**
+External calls always return `FrameExit::ExternalCall` to the host with a `call_id`. The host then chooses:
+- **Sync resolution**: Call `snapshot.run(result)` to push the result and continue (current behavior)
+- **Async resolution**: Call `snapshot.run_pending()` to push `ExternalFuture(call_id)` and continue
+
+When the host uses async resolution:
+1. `run_pending()` pushes `ExternalFuture(call_id)` onto the stack
+2. If the code `await`s this future before it's resolved, the task blocks
+3. When all tasks are blocked, `ResolveFutures` is returned with pending call data
+4. Host resolves via `FutureSnapshot::resume()` with results
+
+The `call_id` counter is always incremented (even for sync resolution) to keep IDs unique.
+Pending call data is only stored in the scheduler when `run_pending()` is called and a scheduler exists.
 
 ### Phase 6: API Changes
 
@@ -345,8 +363,9 @@ FunctionCall {
     state: Snapshot<T>,
 },
 ```
-In sync mode (`scheduler == None`), set `call_id` to 0 (or a monotonically increasing counter)
-and ignore `run_pending`; async mode allocates real call IDs from the scheduler.
+The `call_id` is always allocated from a monotonically increasing counter (independent of scheduler).
+This allows the host to use either sync resolution (`run(result)`) or async resolution (`run_pending()`)
+for any external call, regardless of whether async code is being executed.
 Update `RunProgress::function_call()` helper to return `call_id` as well.
 
 Extend `Snapshot` to support pending futures:
@@ -550,8 +569,3 @@ pub fn gather(args: Vec<Value>, heap: &mut Heap) -> Result<Value, RunError> {
    make test-ref-count-panic
    make test-py
    ```
-
-## Open Questions / Clarifications
-
-1. **External calls inside async tasks**: Once the scheduler exists, should *all* external calls return `ExternalFuture` (requiring `await`), or do we need a way to mark some external functions as synchronous even in async mode?
-2. **asyncio.gather inputs**: Should `gather()` accept only coroutines (current plan) or any awaitable, including `ExternalFuture`?
