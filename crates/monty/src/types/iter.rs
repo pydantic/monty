@@ -151,41 +151,6 @@ impl MontyIter {
                     Some(IterState::Range(value))
                 }
             }
-            IterValue::List { heap_id } => {
-                // Note: List length is checked later in advance_on_heap()
-                // because lists can be mutated during iteration.
-                // We return HeapIndex with expected_len=None to indicate no size check.
-                Some(IterState::HeapIndex {
-                    heap_id: *heap_id,
-                    index: self.index,
-                    expected_len: None,
-                })
-            }
-            IterValue::Tuple { heap_id, len }
-            | IterValue::NamedTuple { heap_id, len }
-            | IterValue::HeapBytes { heap_id, len }
-            | IterValue::FrozenSet { heap_id, len } => {
-                if self.index >= *len {
-                    None
-                } else {
-                    Some(IterState::HeapIndex {
-                        heap_id: *heap_id,
-                        index: self.index,
-                        expected_len: None,
-                    })
-                }
-            }
-            IterValue::DictKeys { heap_id, len } | IterValue::Set { heap_id, len } => {
-                if self.index >= *len {
-                    None
-                } else {
-                    Some(IterState::HeapIndex {
-                        heap_id: *heap_id,
-                        index: self.index,
-                        expected_len: Some(*len),
-                    })
-                }
-            }
             IterValue::IterStr {
                 string,
                 byte_offset,
@@ -215,6 +180,24 @@ impl MontyIter {
                     })
                 }
             }
+            IterValue::HeapRef {
+                heap_id,
+                len,
+                checks_mutation,
+            } => {
+                // For types with captured len, check exhaustion here.
+                // For List (len=None), exhaustion is checked in advance_on_heap().
+                if let Some(l) = len
+                    && self.index >= *l
+                {
+                    return None;
+                }
+                Some(IterState::HeapIndex {
+                    heap_id: *heap_id,
+                    index: self.index,
+                    expected_len: if *checks_mutation { *len } else { None },
+                })
+            }
         }
     }
 
@@ -241,8 +224,6 @@ impl MontyIter {
     /// Returns `Ok(None)` when the iterator is exhausted.
     /// Returns `Err` if allocation fails (for string character iteration) or if
     /// a dict/set changes size during iteration (RuntimeError).
-    ///
-    /// Use `decr()` to revert one step back (e.g., when snapshotting mid-iteration).
     pub fn for_next(&mut self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Option<Value>> {
         match &mut self.iter_value {
             IterValue::Range { start, step, len } => {
@@ -254,68 +235,6 @@ impl MontyIter {
                 self.index += 1;
                 Ok(Some(Value::Int(value)))
             }
-            IterValue::List { heap_id } => {
-                // Check current list length on each iteration (not captured snapshot)
-                // to match CPython behavior where list mutation during iteration is allowed
-                let i = self.index;
-                let item = {
-                    let HeapData::List(list) = heap.get(*heap_id) else {
-                        unreachable!("ForIterValue::List should only hold list heap IDs")
-                    };
-                    if i >= list.len() {
-                        return Ok(None);
-                    }
-                    list.as_vec()[i].copy_for_extend()
-                };
-                self.index += 1;
-                Ok(Some(clone_and_inc_ref(item, heap)))
-            }
-            IterValue::Tuple { heap_id, len } => {
-                if self.index >= *len {
-                    return Ok(None);
-                }
-                let i = self.index;
-                self.index += 1;
-                let item = {
-                    let HeapData::Tuple(tuple) = heap.get(*heap_id) else {
-                        unreachable!("ForIterValue::Tuple should only hold tuple heap IDs")
-                    };
-                    tuple.as_vec()[i].copy_for_extend()
-                };
-                Ok(Some(clone_and_inc_ref(item, heap)))
-            }
-            IterValue::NamedTuple { heap_id, len } => {
-                if self.index >= *len {
-                    return Ok(None);
-                }
-                let i = self.index;
-                self.index += 1;
-                let item = {
-                    let HeapData::NamedTuple(namedtuple) = heap.get(*heap_id) else {
-                        unreachable!("ForIterValue::NamedTuple should only hold namedtuple heap IDs")
-                    };
-                    namedtuple.as_vec()[i].copy_for_extend()
-                };
-                Ok(Some(clone_and_inc_ref(item, heap)))
-            }
-            IterValue::DictKeys { heap_id, len } => {
-                if self.index >= *len {
-                    return Ok(None);
-                }
-                let i = self.index;
-                self.index += 1;
-                let key = {
-                    let HeapData::Dict(dict) = heap.get(*heap_id) else {
-                        unreachable!("ForIterValue::DictKeys should only hold dict heap IDs")
-                    };
-                    // Check for dict mutation - if size changed, raise RuntimeError
-                    if dict.len() != *len {
-                        return Err(ExcType::runtime_error_dict_changed_size());
-                    }
-                    dict.key_at(i).expect("index should be valid").copy_for_extend()
-                };
-                Ok(Some(clone_and_inc_ref(key, heap)))
-            }
             IterValue::IterStr {
                 string,
                 byte_offset,
@@ -324,7 +243,7 @@ impl MontyIter {
                 if self.index >= *len {
                     return Ok(None);
                 }
-                // Get next char at current byte offset using char_indices pattern
+                // Get next char at current byte offset
                 let c = string[*byte_offset..]
                     .chars()
                     .next()
@@ -332,17 +251,6 @@ impl MontyIter {
                 *byte_offset += c.len_utf8();
                 self.index += 1;
                 Ok(Some(allocate_char(c, heap)?))
-            }
-            IterValue::HeapBytes { heap_id, len } => {
-                if self.index >= *len {
-                    return Ok(None);
-                }
-                let i = self.index;
-                self.index += 1;
-                let HeapData::Bytes(bytes) = heap.get(*heap_id) else {
-                    unreachable!("ForIterValue::HeapBytes should only hold bytes heap IDs")
-                };
-                Ok(Some(Value::Int(i64::from(bytes.as_slice()[i]))))
             }
             IterValue::InternBytes { bytes_id, len } => {
                 if self.index >= *len {
@@ -353,43 +261,25 @@ impl MontyIter {
                 let bytes = interns.get_bytes(*bytes_id);
                 Ok(Some(Value::Int(i64::from(bytes[i]))))
             }
-            IterValue::Set { heap_id, len } => {
-                if self.index >= *len {
+            IterValue::HeapRef {
+                heap_id,
+                len,
+                checks_mutation,
+            } => {
+                // Check exhaustion for types with captured len
+                if let Some(l) = len
+                    && self.index >= *l
+                {
                     return Ok(None);
                 }
                 let i = self.index;
-                self.index += 1;
-                let item = {
-                    let HeapData::Set(set) = heap.get(*heap_id) else {
-                        unreachable!("ForIterValue::Set should only hold set heap IDs")
-                    };
-                    // Check for set mutation - if size changed, raise RuntimeError
-                    if set.len() != *len {
-                        return Err(ExcType::runtime_error_set_changed_size());
-                    }
-                    set.storage()
-                        .value_at(i)
-                        .expect("index should be valid")
-                        .copy_for_extend()
-                };
-                Ok(Some(clone_and_inc_ref(item, heap)))
-            }
-            IterValue::FrozenSet { heap_id, len } => {
-                if self.index >= *len {
+                let expected_len = if *checks_mutation { *len } else { None };
+                let item = get_heap_item(heap, *heap_id, i, expected_len)?;
+                // Check for list exhaustion (list can shrink during iteration)
+                let Some(item) = item else {
                     return Ok(None);
-                }
-                let i = self.index;
-                self.index += 1;
-                let item = {
-                    let HeapData::FrozenSet(frozenset) = heap.get(*heap_id) else {
-                        unreachable!("ForIterValue::FrozenSet should only hold frozenset heap IDs")
-                    };
-                    frozenset
-                        .storage()
-                        .value_at(i)
-                        .expect("index should be valid")
-                        .copy_for_extend()
                 };
+                self.index += 1;
                 Ok(Some(clone_and_inc_ref(item, heap)))
             }
         }
@@ -402,20 +292,15 @@ impl MontyIter {
     /// For Dict and Set, returns the captured length minus index (used for size-change detection).
     pub fn size_hint(&self, heap: &Heap<impl ResourceTracker>) -> usize {
         let len = match &self.iter_value {
-            IterValue::Range { len, .. }
-            | IterValue::Tuple { len, .. }
-            | IterValue::NamedTuple { len, .. }
-            | IterValue::IterStr { len, .. }
-            | IterValue::HeapBytes { len, .. }
-            | IterValue::InternBytes { len, .. }
-            | IterValue::DictKeys { len, .. }
-            | IterValue::Set { len, .. }
-            | IterValue::FrozenSet { len, .. } => *len,
-            IterValue::List { heap_id } => {
-                let HeapData::List(list) = heap.get(*heap_id) else {
-                    unreachable!("ForIterValue::List should only hold list heap IDs")
-                };
-                list.len()
+            IterValue::Range { len, .. } | IterValue::IterStr { len, .. } | IterValue::InternBytes { len, .. } => *len,
+            IterValue::HeapRef { heap_id, len, .. } => {
+                // For List (len=None), check current length dynamically
+                len.unwrap_or_else(|| {
+                    let HeapData::List(list) = heap.get(*heap_id) else {
+                        panic!("HeapRef with len=None should only be List")
+                    };
+                    list.len()
+                })
             }
         };
         len.saturating_sub(self.index)
@@ -664,19 +549,6 @@ fn clone_and_inc_ref(value: Value, heap: &mut Heap<impl ResourceTracker>) -> Val
 enum IterValue {
     /// Iterating over a Range, yields `Value::Int`.
     Range { start: i64, step: i64, len: usize },
-    /// Iterating over a heap-allocated List, yields cloned items.
-    /// Unlike dict, list mutation during iteration is allowed in Python - the iterator
-    /// checks the current list length on each iteration (not a captured snapshot).
-    List { heap_id: HeapId },
-    /// Iterating over a heap-allocated Tuple, yields cloned items.
-    /// Tuples are immutable so we capture the length at construction.
-    Tuple { heap_id: HeapId, len: usize },
-    /// Iterating over a heap-allocated NamedTuple, yields cloned items.
-    /// NamedTuples are immutable so we capture the length at construction.
-    NamedTuple { heap_id: HeapId, len: usize },
-    /// Iterating over a heap-allocated Dict, yields cloned keys.
-    /// Checks `len` against current dict size to detect mutation (raises RuntimeError).
-    DictKeys { heap_id: HeapId, len: usize },
     /// Iterating over a string (heap or interned), yields single-char Str values.
     ///
     /// Stores a copy of the string content plus a byte offset for O(1) UTF-8 character access.
@@ -691,16 +563,19 @@ enum IterValue {
         /// Total number of characters in the string.
         len: usize,
     },
-    /// Iterating over a heap-allocated Bytes, yields `Value::Int` for each byte.
-    HeapBytes { heap_id: HeapId, len: usize },
     /// Iterating over interned bytes, yields `Value::Int` for each byte.
     InternBytes { bytes_id: BytesId, len: usize },
-    /// Iterating over a heap-allocated Set, yields cloned values.
-    /// Checks `len` against current set size to detect mutation (raises RuntimeError).
-    Set { heap_id: HeapId, len: usize },
-    /// Iterating over a heap-allocated FrozenSet, yields cloned values.
-    /// FrozenSets are immutable so we capture the length at construction.
-    FrozenSet { heap_id: HeapId, len: usize },
+    /// Iterating over a heap-allocated container (List, Tuple, NamedTuple, Dict, Bytes, Set, FrozenSet).
+    ///
+    /// - `len`: `None` for List (checked dynamically since lists can mutate during iteration),
+    ///   `Some(n)` for other types (captured at construction for exhaustion checking).
+    /// - `checks_mutation`: `true` for Dict/Set (raises RuntimeError if size changes),
+    ///   `false` for other types.
+    HeapRef {
+        heap_id: HeapId,
+        len: Option<usize>,
+        checks_mutation: bool,
+    },
 }
 
 impl IterValue {
@@ -745,31 +620,50 @@ impl IterValue {
     /// Creates an iterator value from heap data.
     fn from_heap_data(heap_id: HeapId, heap: &Heap<impl ResourceTracker>) -> Option<Self> {
         match heap.get(heap_id) {
-            HeapData::List(_) => Some(Self::List { heap_id }),
-            HeapData::Tuple(tuple) => Some(Self::Tuple {
+            // List: no captured len (checked dynamically), no mutation check
+            HeapData::List(_) => Some(Self::HeapRef {
                 heap_id,
-                len: tuple.as_vec().len(),
+                len: None,
+                checks_mutation: false,
             }),
-            HeapData::NamedTuple(namedtuple) => Some(Self::NamedTuple {
+            // Tuple/NamedTuple/Bytes/FrozenSet: captured len, no mutation check
+            HeapData::Tuple(tuple) => Some(Self::HeapRef {
                 heap_id,
-                len: namedtuple.len(),
+                len: Some(tuple.as_vec().len()),
+                checks_mutation: false,
             }),
-            HeapData::Dict(dict) => Some(Self::DictKeys {
+            HeapData::NamedTuple(namedtuple) => Some(Self::HeapRef {
                 heap_id,
-                len: dict.len(),
+                len: Some(namedtuple.len()),
+                checks_mutation: false,
             }),
+            HeapData::Bytes(b) => Some(Self::HeapRef {
+                heap_id,
+                len: Some(b.len()),
+                checks_mutation: false,
+            }),
+            HeapData::FrozenSet(frozenset) => Some(Self::HeapRef {
+                heap_id,
+                len: Some(frozenset.len()),
+                checks_mutation: false,
+            }),
+            // Dict/Set: captured len, WITH mutation check
+            HeapData::Dict(dict) => Some(Self::HeapRef {
+                heap_id,
+                len: Some(dict.len()),
+                checks_mutation: true,
+            }),
+            HeapData::Set(set) => Some(Self::HeapRef {
+                heap_id,
+                len: Some(set.len()),
+                checks_mutation: true,
+            }),
+            // String: copy content for iteration
             HeapData::Str(s) => Some(Self::from_str(s.as_str())),
-            HeapData::Bytes(b) => Some(Self::HeapBytes { heap_id, len: b.len() }),
-            HeapData::Set(set) => Some(Self::Set {
-                heap_id,
-                len: set.len(),
-            }),
-            HeapData::FrozenSet(frozenset) => Some(Self::FrozenSet {
-                heap_id,
-                len: frozenset.len(),
-            }),
+            // Range: copy values for iteration
             HeapData::Range(range) => Some(Self::from_range(range)),
-            // Closures, FunctionDefaults, Cells, Exceptions, Dataclasses, Iterators, LongInts, Slices, and Modules are not iterable
+            // Closures, FunctionDefaults, Cells, Exceptions, Dataclasses, Iterators, LongInts, Slices, and Modules are
+            // not iterable
             HeapData::Closure(_, _, _)
             | HeapData::FunctionDefaults(_, _)
             | HeapData::Cell(_)
