@@ -12,6 +12,7 @@ Add async/await support to Monty where the host acts as the event loop. External
 4. **Cancel all on exception** - Exception propagates, cancels sibling tasks
 5. **Simplified coroutines** - Async functions must be awaited, no `.send()`/`.throw()`
 6. **Sequential integer call IDs** - Simple incrementing counter
+3. **Ignore other crates for now**: Ignore `crates/monty-python/` and `/crates/monty-type-checking` for now, we'll fix that later
 
 ## Execution Flow
 
@@ -39,21 +40,14 @@ Every external function call returns to the host immediately (same as sync mode)
 
 ### Phase 1: Core Types
 
-**File: `crates/monty/src/value.rs`**
-- Add `ExternalFuture(CallId)` variant to `Value` enum
+**File: `crates/monty/src/asyncio.rs` (new)**
 
-**File: `crates/monty/src/types/call_id.rs` (new)**
+All async-related types in one file:
 ```rust
 /// Unique identifier for external function calls (sequential integer).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CallId(pub u32);
-```
 
-**File: `crates/monty/src/heap.rs`**
-- Add `Coroutine` variant to `HeapData` enum for async function objects
-
-**File: `crates/monty/src/types/coroutine.rs` (new)**
-```rust
 /// A coroutine object (unevaluated async function call).
 pub struct Coroutine {
     pub func_id: FunctionId,
@@ -61,7 +55,24 @@ pub struct Coroutine {
     pub defaults: Vec<Value>,    // Evaluated defaults
     pub args: ArgValues,         // Call arguments
 }
+
+/// A gather() result tracking multiple coroutines/tasks.
+pub struct GatherFuture {
+    /// Coroutine HeapIds to spawn (set at creation).
+    pub coroutine_ids: Vec<HeapId>,
+    /// TaskIds of spawned tasks (set when awaited).
+    pub task_ids: Vec<TaskId>,
+    /// Results from each task, in order (filled as tasks complete).
+    pub results: Vec<Option<Value>>,
+}
 ```
+
+**File: `crates/monty/src/value.rs`**
+- Add `ExternalFuture(CallId)` variant to `Value` enum
+
+**File: `crates/monty/src/heap.rs`**
+- Add `Coroutine(Coroutine)` variant to `HeapData` enum
+- Add `GatherFuture(GatherFuture)` variant to `HeapData` enum
 
 ### Phase 2: Function Metadata
 
@@ -341,13 +352,19 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
 - Add `BuiltinModule::Asyncio` variant
 - Register `asyncio` module with `gather` function
 
-**File: `crates/monty/src/modules/asyncio.rs` (new)**
+**File: `crates/monty/src/asyncio.rs`** (add gather function to existing file)
 
 ```rust
 /// asyncio.gather(*awaitables) implementation.
 ///
 /// Does NOT spawn tasks immediately - just collects the coroutines.
 /// Tasks are spawned when the GatherFuture is awaited (in GetAwaitable).
+///
+/// When awaited:
+/// 1. Each coroutine_id is spawned as a Task
+/// 2. task_ids is populated with the spawned TaskIds
+/// 3. Current task blocks until all spawned tasks complete
+/// 4. Results are collected in order and returned as a list
 pub fn gather(args: Vec<Value>, heap: &mut Heap) -> Result<Value, RunError> {
     // Validate all args are coroutines
     let mut coroutine_ids = Vec::with_capacity(args.len());
@@ -368,32 +385,6 @@ pub fn gather(args: Vec<Value>, heap: &mut Heap) -> Result<Value, RunError> {
     };
     let id = heap.allocate(HeapData::GatherFuture(gather))?;
     Ok(Value::Ref(id))
-}
-```
-
-**File: `crates/monty/src/heap.rs`**
-
-Add `GatherFuture` to `HeapData`:
-```rust
-/// A gather() result tracking multiple coroutines/tasks.
-///
-/// Created by asyncio.gather(). When awaited:
-/// 1. Each coroutine_id is spawned as a Task
-/// 2. task_ids is populated with the spawned TaskIds
-/// 3. Current task blocks until all spawned tasks complete
-/// 4. Results are collected in order and returned as a list
-GatherFuture(GatherFuture),
-```
-
-**File: `crates/monty/src/types/gather.rs` (new)**
-```rust
-pub struct GatherFuture {
-    /// Coroutine HeapIds to spawn (set at creation).
-    pub coroutine_ids: Vec<HeapId>,
-    /// TaskIds of spawned tasks (set when awaited).
-    pub task_ids: Vec<TaskId>,
-    /// Results from each task, in order (filled as tasks complete).
-    pub results: Vec<Option<Value>>,
 }
 ```
 
@@ -440,17 +431,14 @@ pub struct GatherFuture {
 | `crates/monty/src/bytecode/compiler.rs` | Compile async def, await, MakeCoroutine |
 | `crates/monty/src/bytecode/vm/mod.rs` | Add scheduler field, GetAwaitable/MakeCoroutine handling |
 | `crates/monty/src/run.rs` | Add `call_id` to FunctionCall, add `ResolveFutures`, `FutureSnapshot`, `PendingCall` |
-| `crates/monty/src/modules/mod.rs` | Add `BuiltinModule::Asyncio` |
+| `crates/monty/src/modules/mod.rs` | Add `BuiltinModule::Asyncio`, register `gather` |
 
 ## New Files
 
 | File | Purpose |
 |------|---------|
-| `crates/monty/src/types/call_id.rs` | `CallId(u32)` type |
-| `crates/monty/src/types/coroutine.rs` | `Coroutine` struct |
-| `crates/monty/src/types/gather.rs` | `GatherFuture` struct |
+| `crates/monty/src/asyncio.rs` | `CallId`, `Coroutine`, `GatherFuture` types + `gather()` function |
 | `crates/monty/src/bytecode/vm/scheduler.rs` | `Scheduler`, `Task`, `TaskId`, `TaskState` |
-| `crates/monty/src/modules/asyncio.rs` | `gather()` function |
 
 ## Verification
 
@@ -461,9 +449,7 @@ pub struct GatherFuture {
    - `async__gather.py` - asyncio.gather() usage
    - `async__exception.py` - Exception handling and cancellation
 
-3. **Python binding tests**: Update `crates/monty-python/tests/` for new API
-
-4. **Run test suite**:
+3. **Run test suite**:
    ```bash
    make test-ref-count-panic
    make test-py
