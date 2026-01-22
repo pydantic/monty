@@ -7,7 +7,7 @@ use crate::{
     intern::StringId,
     io::PrintWriter,
     resource::ResourceTracker,
-    types::{Dict, List, PyTrait, Set, Tuple, Type, str::allocate_char},
+    types::{Dict, List, PyTrait, Set, Slice, Tuple, Type, str::allocate_char},
     value::Value,
 };
 
@@ -52,6 +52,31 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             set.add(item, self.heap, self.interns)?;
         }
         let heap_id = self.heap.allocate(HeapData::Set(set))?;
+        self.push(Value::Ref(heap_id));
+        Ok(())
+    }
+
+    /// Builds a slice object from the top 3 stack values.
+    ///
+    /// Stack: [start, stop, step] -> [slice]
+    /// Each value can be None (for default) or an integer.
+    pub(super) fn build_slice(&mut self) -> Result<(), RunError> {
+        let step_val = self.pop();
+        let stop_val = self.pop();
+        let start_val = self.pop();
+
+        // Convert values to Option<i64>
+        let start = value_to_slice_option(&start_val, self.heap)?;
+        let stop = value_to_slice_option(&stop_val, self.heap)?;
+        let step = value_to_slice_option(&step_val, self.heap)?;
+
+        // Drop the values after extracting their integer content
+        start_val.drop_with_heap(self.heap);
+        stop_val.drop_with_heap(self.heap);
+        step_val.drop_with_heap(self.heap);
+
+        let slice = Slice::new(start, stop, step);
+        let heap_id = self.heap.allocate(HeapData::Slice(slice))?;
         self.push(Value::Ref(heap_id));
         Ok(())
     }
@@ -487,4 +512,20 @@ fn unpack_type_error(type_name: Type) -> RunError {
         format!("cannot unpack non-iterable {type_name} object"),
     )
     .into()
+}
+
+/// Converts a Value to Option<i64> for slice construction.
+///
+/// Returns Ok(None) for Value::None, Ok(Some(i)) for integers/bools,
+/// or Err(TypeError) for other types.
+fn value_to_slice_option<T: ResourceTracker>(
+    value: &Value,
+    heap: &crate::heap::Heap<T>,
+) -> Result<Option<i64>, RunError> {
+    match value {
+        Value::None => Ok(None),
+        Value::Int(i) => Ok(Some(*i)),
+        Value::Bool(b) => Ok(Some(i64::from(*b))),
+        _ => Err(ExcType::type_error_slice_indices(value.py_type(heap))),
+    }
 }

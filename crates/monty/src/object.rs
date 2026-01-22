@@ -407,6 +407,12 @@ impl MontyObject {
                         // Modules are represented as a repr string
                         Self::Repr(format!("<module '{}'>", interns.get_str(m.name())))
                     }
+                    HeapData::Slice(slice) => {
+                        // Represent Slice as a repr string since MontyObject doesn't have a Slice variant
+                        let mut s = String::new();
+                        let _ = slice.py_repr_fmt(&mut s, heap, visited, interns);
+                        Self::Repr(s)
+                    }
                 };
 
                 // Remove from visited set after processing

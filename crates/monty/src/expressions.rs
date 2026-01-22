@@ -159,6 +159,15 @@ pub enum Expr {
         object: Box<ExprLoc>,
         index: Box<ExprLoc>,
     },
+    /// Slice literal expression from `x[start:stop:step]` syntax.
+    ///
+    /// Each component is optional (None means use the default for that position).
+    /// This expression creates a `slice` object when evaluated.
+    Slice {
+        lower: Option<Box<ExprLoc>>,
+        upper: Option<Box<ExprLoc>>,
+        step: Option<Box<ExprLoc>>,
+    },
     Dict(Vec<(ExprLoc, ExprLoc)>),
     /// Set literal expression: `{1, 2, 3}`.
     ///

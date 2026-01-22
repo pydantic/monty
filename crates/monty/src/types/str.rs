@@ -59,6 +59,20 @@ impl Str {
             }
         }
     }
+
+    /// Handles slice-based indexing for strings.
+    ///
+    /// Returns a new string containing the selected characters (Unicode-aware).
+    fn getitem_slice(&self, slice: &crate::types::Slice, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+        let char_count = self.0.chars().count();
+        let (start, stop, step) = slice
+            .indices(char_count)
+            .map_err(|()| ExcType::value_error_slice_step_zero())?;
+
+        let result_str = get_str_slice(&self.0, start, stop, step);
+        let heap_id = heap.allocate(HeapData::Str(Self::from(result_str)))?;
+        Ok(Value::Ref(heap_id))
+    }
 }
 
 impl From<String> for Str {
@@ -137,6 +151,40 @@ pub fn get_char_at_index(s: &str, index: i64) -> Option<char> {
     s.chars().nth(idx)
 }
 
+/// Extracts a slice of a string (Unicode-aware).
+///
+/// Handles both positive and negative step values. For negative step,
+/// iterates backward from start down to (but not including) stop.
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+fn get_str_slice(s: &str, start: usize, stop: usize, step: i64) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut result = String::new();
+
+    if step > 0 {
+        // Positive step: iterate forward
+        let step_usize = step as usize;
+        let mut i = start;
+        while i < stop && i < chars.len() {
+            result.push(chars[i]);
+            i += step_usize;
+        }
+    } else {
+        // Negative step: iterate backward
+        // start is the highest index, stop is the sentinel
+        // stop > chars.len() means "go to the beginning"
+        let step_abs = (-step) as usize;
+        let mut i = start as i64;
+        let stop_i64 = if stop > chars.len() { -1 } else { stop as i64 };
+
+        while i > stop_i64 && i >= 0 && (i as usize) < chars.len() {
+            result.push(chars[i as usize]);
+            i -= step_abs as i64;
+        }
+    }
+
+    result
+}
+
 impl std::ops::Deref for Str {
     type Target = String;
 
@@ -160,6 +208,15 @@ impl PyTrait for Str {
     }
 
     fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
+        // Check for slice first (Value::Ref pointing to HeapData::Slice)
+        if let Value::Ref(id) = key
+            && let HeapData::Slice(slice) = heap.get(*id)
+        {
+            // Clone the slice to release the borrow on heap before calling getitem_slice
+            let slice = slice.clone();
+            return self.getitem_slice(&slice, heap);
+        }
+
         // Extract integer index, accepting both Int and Bool (True=1, False=0)
         let index = match key {
             Value::Int(i) => *i,

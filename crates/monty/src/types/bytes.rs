@@ -111,6 +111,39 @@ pub fn get_byte_at_index(bytes: &[u8], index: i64) -> Option<u8> {
     Some(bytes[idx])
 }
 
+/// Extracts a slice of a byte array.
+///
+/// Handles both positive and negative step values. For negative step,
+/// iterates backward from start down to (but not including) stop.
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+fn get_bytes_slice(bytes: &[u8], start: usize, stop: usize, step: i64) -> Vec<u8> {
+    let mut result = Vec::new();
+
+    if step > 0 {
+        // Positive step: iterate forward
+        let step_usize = step as usize;
+        let mut i = start;
+        while i < stop && i < bytes.len() {
+            result.push(bytes[i]);
+            i += step_usize;
+        }
+    } else {
+        // Negative step: iterate backward
+        // start is the highest index, stop is the sentinel
+        // stop > bytes.len() means "go to the beginning"
+        let step_abs = (-step) as usize;
+        let mut i = start as i64;
+        let stop_i64 = if stop > bytes.len() { -1 } else { stop as i64 };
+
+        while i > stop_i64 && i >= 0 && (i as usize) < bytes.len() {
+            result.push(bytes[i as usize]);
+            i -= step_abs as i64;
+        }
+    }
+
+    result
+}
+
 /// Python bytes value stored on the heap.
 ///
 /// Wraps a `Vec<u8>` and provides Python-compatible operations.
@@ -231,6 +264,19 @@ impl PyTrait for Bytes {
     }
 
     fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
+        // Check for slice first (Value::Ref pointing to HeapData::Slice)
+        if let Value::Ref(id) = key
+            && let HeapData::Slice(slice) = heap.get(*id)
+        {
+            let (start, stop, step) = slice
+                .indices(self.0.len())
+                .map_err(|()| ExcType::value_error_slice_step_zero())?;
+
+            let sliced_bytes = get_bytes_slice(&self.0, start, stop, step);
+            let heap_id = heap.allocate(HeapData::Bytes(Self::new(sliced_bytes)))?;
+            return Ok(Value::Ref(heap_id));
+        }
+
         // Extract integer index, accepting both Int and Bool (True=1, False=0)
         let index = match key {
             Value::Int(i) => *i,

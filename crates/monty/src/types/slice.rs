@@ -1,0 +1,262 @@
+//! Python slice type implementation.
+//!
+//! Provides a slice object representing start:stop:step indices for sequence slicing.
+//! Each field is optional (None in Python), where None means "use the default for that field".
+
+use std::fmt::Write;
+
+use ahash::AHashSet;
+
+use crate::{
+    args::ArgValues,
+    exception_private::{ExcType, RunResult},
+    heap::{Heap, HeapData, HeapId},
+    intern::Interns,
+    resource::ResourceTracker,
+    types::{PyTrait, Type},
+    value::Value,
+};
+
+/// Python slice object representing start:stop:step indices.
+///
+/// Each field is `Option<i64>` where `None` corresponds to Python's `None`,
+/// meaning "use the default value for this field based on context".
+///
+/// When indexing a sequence of length `n`:
+/// - `start` defaults to 0 (or n-1 if step < 0)
+/// - `stop` defaults to n (or -n-1 if step < 0)
+/// - `step` defaults to 1
+///
+/// The `indices(length)` method computes concrete indices from these optional values.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Slice {
+    pub start: Option<i64>,
+    pub stop: Option<i64>,
+    pub step: Option<i64>,
+}
+
+impl Slice {
+    /// Creates a new slice with the given start, stop, and step values.
+    #[must_use]
+    pub fn new(start: Option<i64>, stop: Option<i64>, step: Option<i64>) -> Self {
+        Self { start, stop, step }
+    }
+
+    /// Creates a slice from the `slice()` constructor call.
+    ///
+    /// Supports:
+    /// - `slice(stop)` - slice with only stop (start=None, step=None)
+    /// - `slice(start, stop)` - slice with start and stop (step=None)
+    /// - `slice(start, stop, step)` - slice with all three components
+    ///
+    /// Each argument can be None to indicate "use default".
+    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let slice = match args {
+            ArgValues::Empty => return Err(ExcType::type_error_at_least("slice", 1, 0)),
+            ArgValues::One(stop_val) => {
+                let stop = value_to_option_i64(&stop_val, heap)?;
+                stop_val.drop_with_heap(heap);
+                Self::new(None, stop, None)
+            }
+            ArgValues::Two(start_val, stop_val) => {
+                let start = value_to_option_i64(&start_val, heap)?;
+                let stop = value_to_option_i64(&stop_val, heap)?;
+                start_val.drop_with_heap(heap);
+                stop_val.drop_with_heap(heap);
+                Self::new(start, stop, None)
+            }
+            ArgValues::ArgsKargs { args, kwargs } if kwargs.is_empty() && args.len() == 3 => {
+                let mut iter = args.into_iter();
+                let start_val = iter.next().unwrap();
+                let stop_val = iter.next().unwrap();
+                let step_val = iter.next().unwrap();
+
+                let start = value_to_option_i64(&start_val, heap)?;
+                let stop = value_to_option_i64(&stop_val, heap)?;
+                let step = value_to_option_i64(&step_val, heap)?;
+                start_val.drop_with_heap(heap);
+                stop_val.drop_with_heap(heap);
+                step_val.drop_with_heap(heap);
+
+                Self::new(start, stop, step)
+            }
+            ArgValues::Kwargs(kwargs) => {
+                kwargs.drop_with_heap(heap);
+                return Err(ExcType::type_error_no_kwargs("slice"));
+            }
+            ArgValues::ArgsKargs { args, kwargs } => {
+                let arg_count = args.len();
+                for v in args {
+                    v.drop_with_heap(heap);
+                }
+                if !kwargs.is_empty() {
+                    kwargs.drop_with_heap(heap);
+                    return Err(ExcType::type_error_no_kwargs("slice"));
+                }
+                return Err(ExcType::type_error_at_most("slice", 3, arg_count));
+            }
+        };
+
+        Ok(Value::Ref(heap.allocate(HeapData::Slice(slice))?))
+    }
+
+    /// Computes concrete indices for a sequence of the given length.
+    ///
+    /// This implements Python's `slice.indices(length)` semantics:
+    /// - Handles negative indices (wrapping from the end)
+    /// - Clamps indices to valid range [0, length]
+    /// - Returns the step direction correctly for negative steps
+    ///
+    /// Returns `(start, stop, step)` as concrete values ready for iteration.
+    /// Returns `Err(())` if step is 0 (invalid).
+    ///
+    /// # Algorithm
+    /// For positive step:
+    /// - start defaults to 0, stop defaults to length
+    /// - Both are clamped to [0, length]
+    ///
+    /// For negative step:
+    /// - start defaults to length-1, stop defaults to -1 (before beginning)
+    /// - start is clamped to [-1, length-1], stop to [-1, length-1]
+    pub fn indices(&self, length: usize) -> Result<(usize, usize, i64), ()> {
+        let step = self.step.unwrap_or(1);
+        if step == 0 {
+            return Err(());
+        }
+
+        let len = i64::try_from(length).unwrap_or(i64::MAX);
+
+        if step > 0 {
+            // Positive step: iterate forward
+            let default_start = 0;
+            let default_stop = len;
+
+            let start = self.start.map_or(default_start, |s| normalize_index(s, len, 0, len));
+            let stop = self.stop.map_or(default_stop, |s| normalize_index(s, len, 0, len));
+
+            // Convert to usize, clamping to valid range
+            let start_usize = usize::try_from(start.max(0)).unwrap_or(0);
+            let stop_usize = usize::try_from(stop.max(0)).unwrap_or(0).min(length);
+
+            Ok((start_usize, stop_usize, step))
+        } else {
+            // Negative step: iterate backward
+            // For negative step, we need different handling
+            let default_start = len - 1;
+            let default_stop = -1; // Before the beginning
+
+            let start = self
+                .start
+                .map_or(default_start, |s| normalize_index(s, len, -1, len - 1));
+            let stop = self.stop.map_or(default_stop, |s| normalize_index(s, len, -1, len - 1));
+
+            // For negative step iteration, we return start > stop conceptually
+            // But we need to be careful about the usize conversion
+            // We store them as i64 and let the caller handle the iteration
+            // Actually, for consistency with how we use them, return start_usize and stop_usize
+            // where iteration goes from start down to (but not including) stop
+
+            // The start can be at most len-1, stop can be at most -1 (meaning nothing included)
+            let start_i64 = start.min(len - 1);
+            let stop_i64 = stop; // can be -1 to mean "go all the way to beginning"
+
+            // Convert to a form the caller can use
+            // For iteration, we want: for i in range(start, stop, step)
+            // With negative step, this counts down
+            // We'll return the indices as is and let get_slice_items handle the logic
+            let start_usize = if start_i64 < 0 {
+                0 // No elements to include
+            } else {
+                usize::try_from(start_i64).unwrap_or(0)
+            };
+
+            // For stop, we encode it specially: if stop is -1, it means "stop before index 0"
+            // We'll use length + 1 as a sentinel to indicate "stop was None or evaluates to before 0"
+            let stop_usize = if stop_i64 < 0 {
+                length + 1 // sentinel value meaning "go all the way to the beginning"
+            } else {
+                usize::try_from(stop_i64).unwrap_or(0)
+            };
+
+            Ok((start_usize, stop_usize, step))
+        }
+    }
+}
+
+/// Converts a Value to Option<i64>, treating None as None.
+fn value_to_option_i64(value: &Value, heap: &Heap<impl ResourceTracker>) -> RunResult<Option<i64>> {
+    match value {
+        Value::None => Ok(None),
+        Value::Int(i) => Ok(Some(*i)),
+        Value::Bool(b) => Ok(Some(i64::from(*b))),
+        _ => Err(ExcType::type_error_slice_indices(value.py_type(heap))),
+    }
+}
+
+/// Normalizes a slice index for a sequence of the given length.
+///
+/// Handles negative indices (counting from end) and clamps to [lower, upper].
+fn normalize_index(index: i64, length: i64, lower: i64, upper: i64) -> i64 {
+    let normalized = if index < 0 { index + length } else { index };
+    normalized.clamp(lower, upper)
+}
+
+impl PyTrait for Slice {
+    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+        Type::Slice
+    }
+
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
+        // Slices don't have a length in Python
+        None
+    }
+
+    fn py_eq(&self, other: &Self, _heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
+        self.start == other.start && self.stop == other.stop && self.step == other.step
+    }
+
+    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
+        // Slices are always truthy in Python
+        true
+    }
+
+    fn py_repr_fmt(
+        &self,
+        f: &mut impl Write,
+        _heap: &Heap<impl ResourceTracker>,
+        _heap_ids: &mut AHashSet<HeapId>,
+        _interns: &Interns,
+    ) -> std::fmt::Result {
+        f.write_str("slice(")?;
+        format_option_i64(f, self.start)?;
+        f.write_str(", ")?;
+        format_option_i64(f, self.stop)?;
+        f.write_str(", ")?;
+        format_option_i64(f, self.step)?;
+        f.write_char(')')
+    }
+
+    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
+        // Slice doesn't contain heap references, nothing to do
+    }
+}
+
+/// Converts an Option<i64> to a Value (None or Int).
+pub(crate) fn option_i64_to_value(opt: Option<i64>) -> Value {
+    match opt {
+        Some(i) => Value::Int(i),
+        None => Value::None,
+    }
+}
+
+/// Formats an Option<i64> for repr output (None or the integer).
+fn format_option_i64(f: &mut impl Write, value: Option<i64>) -> std::fmt::Result {
+    match value {
+        Some(i) => write!(f, "{i}"),
+        None => f.write_str("None"),
+    }
+}

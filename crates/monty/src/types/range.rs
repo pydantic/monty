@@ -147,6 +147,53 @@ impl Range {
 
         Ok(Value::Ref(heap.allocate(HeapData::Range(range))?))
     }
+
+    /// Handles slice-based indexing for ranges.
+    ///
+    /// Returns a new range object representing the sliced view.
+    /// The new range has computed start, stop, and step values.
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+    fn getitem_slice(&self, slice: &crate::types::Slice, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+        let range_len = self.len();
+        let (start, stop, step) = slice
+            .indices(range_len)
+            .map_err(|()| ExcType::value_error_slice_step_zero())?;
+
+        // Calculate the new range parameters
+        // new_start = self.start + start * self.step
+        // new_step = self.step * slice_step
+        // new_stop needs to be computed based on the number of elements
+
+        let new_step = self.step.saturating_mul(step);
+        let new_start = self.start.saturating_add((start as i64).saturating_mul(self.step));
+
+        // Calculate the number of elements in the sliced range
+        let num_elements = if step > 0 {
+            // Forward iteration
+            if start >= stop {
+                0
+            } else {
+                ((stop - start - 1) / (step as usize)) + 1
+            }
+        } else {
+            // Backward iteration
+            let step_abs = (-step) as usize;
+            if stop > range_len {
+                // stop sentinel means "go to the beginning"
+                (start / step_abs) + 1
+            } else if start <= stop {
+                0
+            } else {
+                ((start - stop - 1) / step_abs) + 1
+            }
+        };
+
+        // new_stop = new_start + num_elements * new_step
+        let new_stop = new_start.saturating_add((num_elements as i64).saturating_mul(new_step));
+
+        let new_range = Self::new(new_start, new_stop, new_step);
+        Ok(Value::Ref(heap.allocate(HeapData::Range(new_range))?))
+    }
 }
 
 impl Default for Range {
@@ -165,6 +212,15 @@ impl PyTrait for Range {
     }
 
     fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
+        // Check for slice first (Value::Ref pointing to HeapData::Slice)
+        if let Value::Ref(id) = key
+            && let HeapData::Slice(slice) = heap.get(*id)
+        {
+            // Clone the slice to release the borrow on heap before calling getitem_slice
+            let slice = slice.clone();
+            return self.getitem_slice(&slice, heap);
+        }
+
         // Extract integer index, accepting both Int and Bool (True=1, False=0)
         let index = match key {
             Value::Int(i) => *i,

@@ -722,6 +722,26 @@ impl<'a> Compiler<'a> {
                 // LambdaRaw should be converted to Lambda during prepare phase
                 unreachable!("Expr::LambdaRaw should not exist after prepare phase")
             }
+
+            Expr::Slice { lower, upper, step } => {
+                // Compile slice components: start, stop, step (push None for missing)
+                if let Some(lower) = lower {
+                    self.compile_expr(lower)?;
+                } else {
+                    self.code.emit(Opcode::LoadNone);
+                }
+                if let Some(upper) = upper {
+                    self.compile_expr(upper)?;
+                } else {
+                    self.code.emit(Opcode::LoadNone);
+                }
+                if let Some(step) = step {
+                    self.compile_expr(step)?;
+                } else {
+                    self.code.emit(Opcode::LoadNone);
+                }
+                self.code.emit(Opcode::BuildSlice);
+            }
         }
         Ok(())
     }

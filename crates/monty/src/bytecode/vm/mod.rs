@@ -695,6 +695,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let count = fetch_u16!(cached_frame) as usize;
                     try_catch_sync!(self, cached_frame, self.build_fstring(count));
                 }
+                Opcode::BuildSlice => {
+                    try_catch_sync!(self, cached_frame, self.build_slice());
+                }
                 Opcode::ListExtend => {
                     try_catch_sync!(self, cached_frame, self.list_extend());
                 }

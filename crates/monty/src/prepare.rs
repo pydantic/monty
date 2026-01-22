@@ -674,6 +674,11 @@ impl<'i> Prepare<'i> {
                 // Lambda should only be created during prepare, never during parsing
                 unreachable!("Expr::Lambda should not exist before prepare phase")
             }
+            Expr::Slice { lower, upper, step } => Expr::Slice {
+                lower: lower.map(|e| self.prepare_expression(*e)).transpose()?.map(Box::new),
+                upper: upper.map(|e| self.prepare_expression(*e)).transpose()?.map(Box::new),
+                step: step.map(|e| self.prepare_expression(*e)).transpose()?.map(Box::new),
+            },
         };
 
         // Optimization: Transform `(x % n) == value` with any constant right-hand side into a
@@ -2001,7 +2006,7 @@ fn collect_cell_vars_from_expr(
             }
         }
         // Leaf expressions
-        Expr::Literal(_) | Expr::Builtin(_) | Expr::Name(_) | Expr::Lambda { .. } => {}
+        Expr::Literal(_) | Expr::Builtin(_) | Expr::Name(_) | Expr::Lambda { .. } | Expr::Slice { .. } => {}
     }
 }
 
@@ -2255,6 +2260,17 @@ fn collect_referenced_names_from_expr(
         Expr::Lambda { .. } => {
             // Lambda should only exist after preparation; this function operates on raw expressions
             unreachable!("Expr::Lambda should not exist during scope analysis")
+        }
+        Expr::Slice { lower, upper, step } => {
+            if let Some(expr) = lower {
+                collect_referenced_names_from_expr(expr, referenced, interner);
+            }
+            if let Some(expr) = upper {
+                collect_referenced_names_from_expr(expr, referenced, interner);
+            }
+            if let Some(expr) = step {
+                collect_referenced_names_from_expr(expr, referenced, interner);
+            }
         }
     }
 }

@@ -8,7 +8,7 @@ use crate::{
     heap::{Heap, HeapData},
     intern::Interns,
     resource::ResourceTracker,
-    types::{Bytes, Dict, FrozenSet, List, PyTrait, Range, Set, Str, Tuple, str::StringRepr},
+    types::{Bytes, Dict, FrozenSet, List, PyTrait, Range, Set, Slice, Str, Tuple, str::StringRepr},
     value::Value,
 };
 
@@ -30,6 +30,7 @@ pub enum Type {
     Int,
     Float,
     Range,
+    Slice,
     Str,
     Bytes,
     List,
@@ -64,6 +65,7 @@ impl fmt::Display for Type {
             Self::Int => f.write_str("int"),
             Self::Float => f.write_str("float"),
             Self::Range => f.write_str("range"),
+            Self::Slice => f.write_str("slice"),
             Self::Str => f.write_str("str"),
             Self::Bytes => f.write_str("bytes"),
             Self::List => f.write_str("list"),
@@ -120,6 +122,7 @@ impl Type {
             Self::Set => Some(8),
             Self::FrozenSet => Some(9),
             Self::Range => Some(10),
+            Self::Slice => Some(11),
             _ => None,
         }
     }
@@ -141,6 +144,7 @@ impl Type {
             8 => Some(Self::Set),
             9 => Some(Self::FrozenSet),
             10 => Some(Self::Range),
+            11 => Some(Self::Slice),
             _ => None,
         }
     }
@@ -165,6 +169,7 @@ impl Type {
             Self::Str => Str::init(heap, args, interns),
             Self::Bytes => Bytes::init(heap, args, interns),
             Self::Range => Range::init(heap, args),
+            Self::Slice => Slice::init(heap, args),
 
             // Primitive types - inline implementation
             Self::Int => {

@@ -183,6 +183,12 @@ pub enum Opcode {
     FormatValue,
     /// Pop n parts, concatenate for f-string. Operand: u16 count.
     BuildFString,
+    /// Build a slice object from stack values. No operand.
+    ///
+    /// Pops 3 values from stack: step, stop, start (TOS order).
+    /// Each value can be None (for default) or an integer.
+    /// Creates a `HeapData::Slice` and pushes a `Value::Ref` to it.
+    BuildSlice,
     /// Pop iterable, pop list, extend list with iterable items.
     ///
     /// Used for `*args` unpacking: builds a list of positional args,

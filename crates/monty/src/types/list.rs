@@ -170,6 +170,19 @@ impl List {
             }
         }
     }
+
+    /// Handles slice-based indexing for lists.
+    ///
+    /// Returns a new list containing the selected elements.
+    fn getitem_slice(&self, slice: &crate::types::Slice, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+        let (start, stop, step) = slice
+            .indices(self.items.len())
+            .map_err(|()| ExcType::value_error_slice_step_zero())?;
+
+        let items = get_slice_items(&self.items, start, stop, step, heap);
+        let heap_id = heap.allocate(HeapData::List(Self::new(items)))?;
+        Ok(Value::Ref(heap_id))
+    }
 }
 
 impl From<List> for Vec<Value> {
@@ -192,6 +205,15 @@ impl PyTrait for List {
     }
 
     fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
+        // Check for slice first (Value::Ref pointing to HeapData::Slice)
+        if let Value::Ref(id) = key
+            && let HeapData::Slice(slice) = heap.get(*id)
+        {
+            // Clone the slice to release the borrow on heap before calling getitem_slice
+            let slice = slice.clone();
+            return self.getitem_slice(&slice, heap);
+        }
+
         // Extract integer index, accepting both Int and Bool (True=1, False=0)
         let index = match key {
             Value::Int(i) => *i,
@@ -944,4 +966,45 @@ pub(crate) fn repr_sequence_fmt(
         }
     }
     f.write_char(end)
+}
+
+/// Helper to extract items from a slice for list/tuple slicing.
+///
+/// Handles both positive and negative step values. For negative step,
+/// iterates backward from start down to (but not including) stop.
+///
+/// Returns a new Vec of cloned values with proper refcount increments.
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+pub(crate) fn get_slice_items(
+    items: &[Value],
+    start: usize,
+    stop: usize,
+    step: i64,
+    heap: &mut Heap<impl ResourceTracker>,
+) -> Vec<Value> {
+    let mut result = Vec::new();
+
+    if step > 0 {
+        // Positive step: iterate forward
+        let step_usize = step as usize;
+        let mut i = start;
+        while i < stop && i < items.len() {
+            result.push(items[i].clone_with_heap(heap));
+            i += step_usize;
+        }
+    } else {
+        // Negative step: iterate backward
+        // start is the highest index, stop is the sentinel
+        // stop > items.len() means "go to the beginning"
+        let step_abs = (-step) as usize;
+        let mut i = start as i64;
+        let stop_i64 = if stop > items.len() { -1 } else { stop as i64 };
+
+        while i > stop_i64 && i >= 0 && (i as usize) < items.len() {
+            result.push(items[i as usize].clone_with_heap(heap));
+            i -= step_abs as i64;
+        }
+    }
+
+    result
 }

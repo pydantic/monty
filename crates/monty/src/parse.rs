@@ -909,7 +909,25 @@ impl<'a> Parser<'a> {
 
                 Ok(ExprLoc::new(self.convert_range(range), Expr::Tuple(items)))
             }
-            AstExpr::Slice(s) => Err(ParseError::not_implemented("slice syntax", self.convert_range(s.range))),
+            AstExpr::Slice(ast::ExprSlice {
+                lower,
+                upper,
+                step,
+                range,
+                ..
+            }) => {
+                let lower = lower.map(|e| self.parse_expression(*e)).transpose()?;
+                let upper = upper.map(|e| self.parse_expression(*e)).transpose()?;
+                let step = step.map(|e| self.parse_expression(*e)).transpose()?;
+                Ok(ExprLoc::new(
+                    self.convert_range(range),
+                    Expr::Slice {
+                        lower: lower.map(Box::new),
+                        upper: upper.map(Box::new),
+                        step: step.map(Box::new),
+                    },
+                ))
+            }
             AstExpr::IpyEscapeCommand(i) => Err(ParseError::not_implemented(
                 "IPython escape commands",
                 self.convert_range(i.range),

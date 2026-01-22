@@ -668,6 +668,26 @@ impl ExcType {
         SimpleException::new_msg(Self::ValueError, "range() arg 3 must not be zero").into()
     }
 
+    /// Creates a ValueError for slice step being zero.
+    ///
+    /// Matches CPython's format: `ValueError: slice step cannot be zero`
+    #[must_use]
+    pub(crate) fn value_error_slice_step_zero() -> RunError {
+        SimpleException::new_msg(Self::ValueError, "slice step cannot be zero").into()
+    }
+
+    /// Creates a TypeError for slice indices that are not integers or None.
+    ///
+    /// Matches CPython's format: `TypeError: slice indices must be integers or None or have an __index__ method`
+    #[must_use]
+    pub(crate) fn type_error_slice_indices(type_: Type) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("slice indices must be integers or None or have an __index__ method, not '{type_}'"),
+        )
+        .into()
+    }
+
     /// Creates a RuntimeError for dict mutation during iteration.
     ///
     /// Matches CPython's format: `RuntimeError: dictionary changed size during iteration`

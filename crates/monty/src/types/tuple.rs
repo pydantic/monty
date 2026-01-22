@@ -13,7 +13,10 @@ use std::fmt::Write;
 
 use ahash::AHashSet;
 
-use super::{PyTrait, list::repr_sequence_fmt};
+use super::{
+    PyTrait,
+    list::{get_slice_items, repr_sequence_fmt},
+};
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},
@@ -127,6 +130,19 @@ impl PyTrait for Tuple {
     }
 
     fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
+        // Check for slice first (Value::Ref pointing to HeapData::Slice)
+        if let Value::Ref(id) = key
+            && let HeapData::Slice(slice) = heap.get(*id)
+        {
+            let (start, stop, step) = slice
+                .indices(self.items.len())
+                .map_err(|()| ExcType::value_error_slice_step_zero())?;
+
+            let items = get_slice_items(&self.items, start, stop, step, heap);
+            let heap_id = heap.allocate(HeapData::Tuple(Self::new(items)))?;
+            return Ok(Value::Ref(heap_id));
+        }
+
         // Extract integer index, accepting both Int and Bool (True=1, False=0)
         let index = match key {
             Value::Int(i) => *i,
