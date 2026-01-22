@@ -408,6 +408,15 @@ pub enum Node<F> {
         body: Vec<Self>,
         or_else: Vec<Self>,
     },
+    /// While loop statement: `while test: body [else: orelse]`
+    ///
+    /// Executes body repeatedly while test is truthy. If the loop exits normally
+    /// (not via break), the else block runs.
+    While {
+        test: ExprLoc,
+        body: Vec<Self>,
+        or_else: Vec<Self>,
+    },
     /// Break statement - exits the innermost loop.
     ///
     /// When executed, control flow jumps past the loop's else block (if any).

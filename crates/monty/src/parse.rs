@@ -291,7 +291,11 @@ impl<'a> Parser<'a> {
                     or_else: self.parse_statements(orelse)?,
                 })
             }
-            Stmt::While(w) => Err(ParseError::not_implemented("while loops", self.convert_range(w.range))),
+            Stmt::While(ast::StmtWhile { test, body, orelse, .. }) => Ok(Node::While {
+                test: self.parse_expression(*test)?,
+                body: self.parse_statements(body)?,
+                or_else: self.parse_statements(orelse)?,
+            }),
             Stmt::If(ast::StmtIf {
                 test,
                 body,

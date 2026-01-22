@@ -383,6 +383,13 @@ impl<'i> Prepare<'i> {
                 Node::Continue { position } => {
                     new_nodes.push(Node::Continue { position });
                 }
+                Node::While { test, body, or_else } => {
+                    new_nodes.push(Node::While {
+                        test: self.prepare_expression(test)?,
+                        body: self.prepare_nodes(body)?,
+                        or_else: self.prepare_nodes(or_else)?,
+                    });
+                }
                 Node::If { test, body, or_else } => {
                     let test = self.prepare_expression(test)?;
                     let body = self.prepare_nodes(body)?;
@@ -1722,6 +1729,16 @@ fn collect_scope_info_from_node(
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
             }
         }
+        Node::While { body, or_else, .. } => {
+            // While loop doesn't create assignments (unlike for loop target)
+            // Just recurse into body and else blocks
+            for n in body {
+                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
+            }
+            for n in or_else {
+                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
+            }
+        }
         Node::If { body, or_else, .. } => {
             // Recurse into branches
             for n in body {
@@ -1834,6 +1851,14 @@ fn collect_cell_vars_from_node(
         }
         // Recurse into control flow structures
         Node::For { body, or_else, .. } => {
+            for n in body {
+                collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
+            }
+            for n in or_else {
+                collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
+            }
+        }
+        Node::While { body, or_else, .. } => {
             for n in body {
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }
@@ -2115,6 +2140,15 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
             iter, body, or_else, ..
         } => {
             collect_referenced_names_from_expr(iter, referenced, interner);
+            for n in body {
+                collect_referenced_names_from_node(n, referenced, interner);
+            }
+            for n in or_else {
+                collect_referenced_names_from_node(n, referenced, interner);
+            }
+        }
+        Node::While { test, body, or_else } => {
+            collect_referenced_names_from_expr(test, referenced, interner);
             for n in body {
                 collect_referenced_names_from_node(n, referenced, interner);
             }

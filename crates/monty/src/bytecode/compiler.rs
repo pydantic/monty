@@ -92,14 +92,20 @@ pub struct Compiler<'a> {
 /// Information about a loop for break/continue handling.
 ///
 /// Tracks the bytecode locations needed for compiling break and continue statements:
-/// - `start`: where continue should jump to (the ForIter instruction)
+/// - `start`: where continue should jump to (the ForIter instruction for `for` loops,
+///   or condition evaluation for `while` loops)
 /// - `break_jumps`: pending jumps from break statements that need to be patched
 ///   to jump past the loop's else block
+/// - `has_iterator_on_stack`: whether this loop has an iterator on the stack that
+///   needs to be popped on break (true for `for` loops, false for `while` loops)
 struct LoopInfo {
     /// Bytecode offset of loop start (for continue).
     start: usize,
     /// Jump labels that need patching to loop end (for break).
     break_jumps: Vec<JumpLabel>,
+    /// Whether this loop has an iterator on the stack.
+    /// True for `for` loops, false for `while` loops.
+    has_iterator_on_stack: bool,
 }
 
 /// A break or continue that needs to go through a finally block.
@@ -320,6 +326,10 @@ impl<'a> Compiler<'a> {
                 or_else,
             } => {
                 self.compile_for(target, iter, body, or_else)?;
+            }
+
+            Node::While { test, body, or_else } => {
+                self.compile_while(test, body, or_else)?;
             }
 
             Node::Assert { test, msg } => {
@@ -1583,6 +1593,7 @@ impl<'a> Compiler<'a> {
         self.loop_stack.push(LoopInfo {
             start: loop_start,
             break_jumps: Vec::new(),
+            has_iterator_on_stack: true,
         });
 
         // ForIter: advance iterator or jump to end
@@ -1616,6 +1627,59 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// Compiles a while loop.
+    ///
+    /// The bytecode structure:
+    /// ```text
+    /// loop_start:
+    ///   [evaluate condition]
+    ///   JumpIfFalse -> end_jump
+    ///   [body]
+    ///   Jump -> loop_start
+    /// end_jump:
+    ///   [else block]
+    /// [break patches here]
+    /// ```
+    ///
+    /// Key differences from `for` loops:
+    /// - No `GetIter` (no iterator)
+    /// - No `ForIter` (use `JumpIfFalse` instead)
+    /// - `continue` jumps to condition evaluation
+    /// - `break` doesn't need to pop iterator (nothing extra on stack)
+    fn compile_while(
+        &mut self,
+        test: &ExprLoc,
+        body: &[PreparedNode],
+        or_else: &[PreparedNode],
+    ) -> Result<(), CompileError> {
+        let loop_start = self.code.current_offset();
+
+        self.loop_stack.push(LoopInfo {
+            start: loop_start,
+            break_jumps: Vec::new(),
+            has_iterator_on_stack: false,
+        });
+
+        self.compile_expr(test)?;
+        let end_jump = self.code.emit_jump(Opcode::JumpIfFalse);
+
+        self.compile_block(body)?;
+        self.code.emit_jump_to(Opcode::Jump, loop_start);
+
+        self.code.patch_jump(end_jump);
+        let loop_info = self.loop_stack.pop().expect("loop stack underflow");
+
+        if !or_else.is_empty() {
+            self.compile_block(or_else)?;
+        }
+
+        for break_jump in loop_info.break_jumps {
+            self.code.patch_jump(break_jump);
+        }
+
+        Ok(())
+    }
+
     /// Compiles a break statement.
     ///
     /// Break exits the innermost loop and skips its else block. If inside a
@@ -1623,12 +1687,12 @@ impl<'a> Compiler<'a> {
     ///
     /// The bytecode without finally:
     /// 1. Clean up exception state if inside except handler
-    /// 2. Pop the iterator (still on stack during loop body)
+    /// 2. Pop the iterator if in a `for` loop (still on stack during loop body)
     /// 3. Jump to after the else block
     ///
     /// With finally:
     /// 1. Clean up exception state if inside except handler
-    /// 2. Pop the iterator
+    /// 2. Pop the iterator if in a `for` loop
     /// 3. Jump to "finally with break" path (patched when try compilation completes)
     /// 4. That path runs finally, then jumps to after the else block
     fn compile_break(&mut self, position: CodeRange) -> Result<(), CompileError> {
@@ -1646,8 +1710,11 @@ impl<'a> Compiler<'a> {
             self.code.emit(Opcode::Pop); // Pop the exception value
         }
 
-        // Pop the iterator (on stack during loop body)
-        self.code.emit(Opcode::Pop);
+        // Pop the iterator only for `for` loops (has iterator on stack)
+        // `while` loops don't have an iterator to pop
+        if self.loop_stack[target_loop_depth].has_iterator_on_stack {
+            self.code.emit(Opcode::Pop);
+        }
 
         // Check if we need to go through any finally blocks
         // We need to run finally if break crosses the try boundary, i.e., if
