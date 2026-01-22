@@ -82,10 +82,11 @@ assert lst[sl] == [1, 2, 3], 'slice object for list'
 assert s[sl] == 'ell', 'slice object for string'
 assert t[sl] == (1, 2, 3), 'slice object for tuple'
 
-# === slice repr ===
+# === slice repr and str ===
 assert repr(slice(3)) == 'slice(None, 3, None)', 'slice repr stop only'
 assert repr(slice(1, 4)) == 'slice(1, 4, None)', 'slice repr start stop'
 assert repr(slice(1, 10, 2)) == 'slice(1, 10, 2)', 'slice repr full'
+assert str(slice(1, 4)) == 'slice(1, 4, None)', 'slice str same as repr'
 
 # === Edge case: negative step with None bounds ===
 assert lst[::-2] == [5, 3, 1], 'list negative step no bounds'
