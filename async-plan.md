@@ -24,7 +24,7 @@ Every external function call returns to the host immediately (same as sync mode)
 
 ```
 1. ext_func(args)    -> Returns FunctionCall{name, args, call_id, state} to host
-2. Host schedules    -> Calls state.run_pending(call_id) to resume immediately
+2. Host schedules    -> Calls state.run_pending() to resume immediately
 3. Code continues    -> Receives ExternalFuture(call_id), may hit more ext calls (goto 1)
 4. await future      -> If not resolved, task blocks
 5. All tasks blocked -> Returns ResolveFutures{pending: [...], state: FutureSnapshot}
@@ -37,7 +37,7 @@ Every external function call returns to the host immediately (same as sync mode)
 **Key Points**:
 - External calls ALWAYS return to host with `FunctionCall` (consistent with sync mode)
 - `FunctionCall` now includes `call_id` so host can correlate calls with futures
-- `Snapshot::run_pending(call_id)` resumes by pushing `ExternalFuture(call_id)`
+- `Snapshot::run_pending()` resumes by pushing `ExternalFuture(call_id)` (call_id stored in Snapshot)
 - `FutureSnapshot::resume()` accepts partial results for incremental resolution and may still yield `FunctionCall`
 - Results for failed/cancelled tasks are silently ignored
 
@@ -161,6 +161,8 @@ pub struct Task {
     pub frames: Vec<CallFrame>,
     pub stack: Vec<Value>,
     pub exception_stack: Vec<Value>,
+    /// VM-level instruction_ip (for exception table lookup).
+    /// Separate from CallFrame.ip which tracks position within each frame.
     pub instruction_ip: usize,
     /// Coroutine being executed by this task (if any).
     pub coroutine_id: Option<HeapId>,
@@ -200,10 +202,10 @@ impl Scheduler {
     /// Allocate a new CallId for an external function call.
     pub fn allocate_call_id(&mut self) -> CallId;
 
-    /// Mark the current task as blocked on a CallId.
+    /// Mark the current task as BlockedOnCall(call_id).
     pub fn block_current_on_call(&mut self, call_id: CallId);
 
-    /// Mark the current task as blocked on a GatherFuture HeapId.
+    /// Mark the current task as BlockedOnGather(gather_id).
     pub fn block_current_on_gather(&mut self, gather_id: HeapId);
 
     /// Resolve a CallId with a value. Unblocks any task waiting on it.
@@ -228,6 +230,8 @@ impl Scheduler {
 pub struct PendingCallData {
     pub ext_function_id: ExtFunctionId,
     pub args: ArgValues,
+    /// Task that created this call (for ignoring results if task is cancelled).
+    pub creator_task: TaskId,
 }
 ```
 Implementation note: task switching should swap the current VM stack/frames/exception stack/IP
@@ -314,7 +318,7 @@ On coroutine frame return, mark the coroutine `Completed` using the frame's `cor
   2. Store pending call data (call_id, ext function name, args/kwargs) in scheduler
      - Clone args/kwargs with proper refcount increments so the pending copy stays valid
   3. Return `FrameExit::ExternalCall` with call_id (so host can dispatch)
-  4. Host resumes with `run_pending(call_id)` to push `ExternalFuture(call_id)` and continue
+  4. Host resumes with `run_pending()` to push `ExternalFuture(call_id)` and continue
 
 ### Phase 6: API Changes
 
@@ -345,19 +349,19 @@ In sync mode (`scheduler == None`), set `call_id` to 0 (or a monotonically incre
 and ignore `run_pending`; async mode allocates real call IDs from the scheduler.
 Update `RunProgress::function_call()` helper to return `call_id` as well.
 
-Extend `ExternalResult` and `Snapshot` to support pending futures:
+Extend `Snapshot` to support pending futures:
 ```rust
-pub enum ExternalResult {
-    Return(MontyObject),
-    Error(MontyException),
-    /// Resume by pushing ExternalFuture(call_id) instead of a concrete value.
-    Pending(u32),
+pub struct Snapshot<T: ResourceTracker> {
+    // ... existing fields ...
+    /// The call_id from the most recent FunctionCall (stored internally).
+    pending_call_id: Option<u32>,
 }
-`Pending` bypasses MontyObject conversion and directly creates `Value::ExternalFuture`.
 
 impl<T: ResourceTracker> Snapshot<T> {
-    /// Convenience wrapper for resuming with a pending future.
-    pub fn run_pending(self, call_id: u32, print: &mut impl PrintWriter) -> Result<RunProgress<T>, MontyException>;
+    /// Resume by pushing ExternalFuture(call_id) instead of a concrete value.
+    /// Uses the call_id stored from the FunctionCall that created this Snapshot.
+    /// Host doesn't need to track or pass the call_id.
+    pub fn run_pending(self, print: &mut impl PrintWriter) -> Result<RunProgress<T>, MontyException>;
 }
 ```
 
@@ -524,7 +528,7 @@ pub fn gather(args: Vec<Value>, heap: &mut Heap) -> Result<Value, RunError> {
 | `crates/monty/src/bytecode/compiler.rs` | Compile async def + await |
 | `crates/monty/src/bytecode/vm/call.rs` | Create `Coroutine` for async functions at call time |
 | `crates/monty/src/bytecode/vm/mod.rs` | Scheduler integration, GetAwaitable handling, `call_id` on ExternalCall |
-| `crates/monty/src/run.rs` | Add `call_id` to FunctionCall, add `ResolveFutures`, `FutureSnapshot`, `PendingCall`, `ExternalResult::Pending` |
+| `crates/monty/src/run.rs` | Add `call_id` to FunctionCall, add `ResolveFutures`, `FutureSnapshot`, `PendingCall`, `Snapshot::run_pending()` |
 | `crates/monty/src/object.rs` | Represent `ExternalFuture`/`Coroutine`/`GatherFuture` in outputs (repr fallback) |
 | `crates/monty/src/modules/mod.rs` | Add `BuiltinModule::Asyncio`, register `gather` |
 
