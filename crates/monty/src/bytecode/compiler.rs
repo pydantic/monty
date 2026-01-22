@@ -1638,8 +1638,10 @@ impl<'a> Compiler<'a> {
 
         let target_loop_depth = self.loop_stack.len() - 1;
 
-        // If inside an except handler, clean up exception state first
-        if self.except_handler_depth > 0 {
+        // If inside except handlers, clean up ALL exception states
+        // Each nested except handler has pushed an exception onto the stack,
+        // so we need to clear/pop each one when breaking out
+        for _ in 0..self.except_handler_depth {
             self.code.emit(Opcode::ClearException);
             self.code.emit(Opcode::Pop); // Pop the exception value
         }
@@ -1660,12 +1662,25 @@ impl<'a> Compiler<'a> {
                 jump,
                 target_loop_depth,
             });
+            // Set stack depth for unreachable cleanup code (see comment below)
+            if self.except_handler_depth > 0 {
+                self.code
+                    .set_stack_depth(u16::try_from(self.except_handler_depth).unwrap_or(u16::MAX));
+            }
             return Ok(());
         }
 
         // No finally to go through, jump directly to loop end
         let jump = self.code.emit_jump(Opcode::Jump);
         self.loop_stack[target_loop_depth].break_jumps.push(jump);
+
+        // The code following this break is unreachable at runtime, but the compiler
+        // will still emit cleanup code for each enclosing except handler (ClearException + Pop).
+        // Set stack depth so those unreachable pops don't cause negative stack tracking.
+        if self.except_handler_depth > 0 {
+            self.code
+                .set_stack_depth(u16::try_from(self.except_handler_depth).unwrap_or(u16::MAX));
+        }
 
         Ok(())
     }
@@ -1682,8 +1697,10 @@ impl<'a> Compiler<'a> {
 
         let target_loop_depth = self.loop_stack.len() - 1;
 
-        // If inside an except handler, clean up exception state first
-        if self.except_handler_depth > 0 {
+        // If inside except handlers, clean up ALL exception states
+        // Each nested except handler has pushed an exception onto the stack,
+        // so we need to clear/pop each one when continuing
+        for _ in 0..self.except_handler_depth {
             self.code.emit(Opcode::ClearException);
             self.code.emit(Opcode::Pop); // Pop the exception value
         }
@@ -1700,12 +1717,25 @@ impl<'a> Compiler<'a> {
                 jump,
                 target_loop_depth,
             });
+            // Set stack depth for unreachable cleanup code (see comment below)
+            if self.except_handler_depth > 0 {
+                self.code
+                    .set_stack_depth(u16::try_from(self.except_handler_depth).unwrap_or(u16::MAX));
+            }
             return Ok(());
         }
 
         // No finally to go through, jump directly to loop start
         let loop_start = self.loop_stack[target_loop_depth].start;
         self.code.emit_jump_to(Opcode::Jump, loop_start);
+
+        // The code following this continue is unreachable at runtime, but the compiler
+        // will still emit cleanup code for each enclosing except handler (ClearException + Pop).
+        // Set stack depth so those unreachable pops don't cause negative stack tracking.
+        if self.except_handler_depth > 0 {
+            self.code
+                .set_stack_depth(u16::try_from(self.except_handler_depth).unwrap_or(u16::MAX));
+        }
 
         Ok(())
     }
