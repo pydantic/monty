@@ -329,6 +329,12 @@ pub struct VMSnapshot {
 
     /// IP of the instruction that caused the pause (for exception handling).
     instruction_ip: usize,
+
+    /// Scheduler state for async execution.
+    ///
+    /// Contains all task state, pending calls, and resolved futures.
+    /// This enables async execution to be paused and resumed across host calls.
+    scheduler: Scheduler,
 }
 
 // ============================================================================
@@ -1555,6 +1561,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             frames: self.frames.into_iter().map(|f| f.serialize()).collect(),
             exception_stack: self.exception_stack,
             instruction_ip: self.instruction_ip,
+            scheduler: self.scheduler,
         }
     }
 
@@ -1609,8 +1616,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             print_writer,
             exception_stack: snapshot.exception_stack,
             instruction_ip: snapshot.instruction_ip,
-            // TODO: Include scheduler state in VMSnapshot for full async support
-            scheduler: Scheduler::new(),
+            scheduler: snapshot.scheduler,
         }
     }
 

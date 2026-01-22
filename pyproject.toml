@@ -90,8 +90,6 @@ exclude = [
     "crates/monty/test_cases/loop__continue_in_function_error.py",
     "crates/monty/test_cases/loop__break_in_if_error.py",
     "crates/monty/test_cases/loop__continue_in_if_error.py",
-    # async tests use top-level await which is valid in Monty but not standard Python
-    "crates/monty/test_cases/async__*.py",
 ]
 venv = ".venv"
 

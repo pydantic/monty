@@ -27,8 +27,7 @@ use crate::{
 ///
 /// Tracks whether a task is ready to run, blocked waiting for something,
 /// or has completed (successfully or with an error).
-#[derive(Debug)]
-#[expect(dead_code, reason = "variants used in Phase 5 when scheduler is integrated")]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum TaskState {
     /// Task is ready to execute (in the ready queue).
     Ready,
@@ -52,7 +51,7 @@ pub(crate) enum TaskState {
 ///
 /// When switching away from a non-main task, its context is saved here.
 /// When switching to it, the context is loaded into the VM.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Task {
     /// Unique identifier for this task.
     pub id: TaskId,
@@ -80,7 +79,7 @@ pub(crate) struct Task {
 ///
 /// Similar to `SerializedFrame` but used within the scheduler for task context.
 /// Cannot store `&Code` references - uses `FunctionId` to look up code on resume.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SerializedTaskFrame {
     /// Which function's code this frame executes (None = module-level).
     pub function_id: Option<crate::intern::FunctionId>,
@@ -134,8 +133,7 @@ impl Task {
 ///
 /// Stores the data needed to retry or resume an external function call,
 /// along with tracking information for the task that created it.
-#[derive(Debug)]
-#[expect(dead_code, reason = "fields used in Phase 5 when scheduler is integrated")]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PendingCallData {
     /// The external function being called.
     pub ext_function_id: ExtFunctionId,
@@ -158,7 +156,7 @@ pub(crate) struct PendingCallData {
 /// Task 0 is the "main task" which executes using the VM's stack/frames directly.
 /// It's always created at scheduler initialization but doesn't store its own context
 /// (the VM holds it). Spawned tasks (1+) store their context in the Task struct.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Scheduler {
     /// All tasks (main task at index 0, spawned tasks follow).
     tasks: Vec<Task>,
