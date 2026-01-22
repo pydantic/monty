@@ -2285,9 +2285,15 @@ impl CompileError {
     /// Converts this compile error into a Python exception.
     ///
     /// Uses the stored exception type (SyntaxError or ModuleNotFoundError).
-    /// Module errors have `hide_caret: true` since CPython doesn't show carets for these.
+    /// - SyntaxError: hides the `, in <module>` part (CPython's format)
+    /// - ModuleNotFoundError: hides caret markers (CPython doesn't show them)
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
-        let mut frame = StackFrame::from_position(self.position, filename, source);
+        let mut frame = if self.exc_type == ExcType::SyntaxError {
+            // SyntaxError uses different format: no `, in <module>`
+            StackFrame::from_position_syntax_error(self.position, filename, source)
+        } else {
+            StackFrame::from_position(self.position, filename, source)
+        };
         // CPython doesn't show carets for module not found errors
         if self.exc_type == ExcType::ModuleNotFoundError {
             frame.hide_caret = true;

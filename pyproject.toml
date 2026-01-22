@@ -85,6 +85,10 @@ exclude = [
     # break/continue outside loop tests intentionally test error handling
     "crates/monty/test_cases/loop__break_outside_error.py",
     "crates/monty/test_cases/loop__continue_outside_error.py",
+    "crates/monty/test_cases/loop__break_in_function_error.py",
+    "crates/monty/test_cases/loop__continue_in_function_error.py",
+    "crates/monty/test_cases/loop__break_in_if_error.py",
+    "crates/monty/test_cases/loop__continue_in_if_error.py",
 ]
 venv = ".venv"
 

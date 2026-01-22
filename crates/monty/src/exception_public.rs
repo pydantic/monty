@@ -193,15 +193,27 @@ pub struct StackFrame {
     /// - `raise` statements (CPython doesn't show carets for raise)
     /// - `AttributeError` on attribute access (CPython doesn't show carets for these)
     pub hide_caret: bool,
+    /// Whether to hide the `, in <name>` part of the frame line.
+    ///
+    /// Set to `true` for `SyntaxError` where CPython doesn't show the frame name.
+    /// CPython's SyntaxError format: `  File "...", line N`
+    /// vs runtime error format: `  File "...", line N, in <module>`
+    pub hide_frame_name: bool,
 }
 
 impl fmt::Display for StackFrame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, r#"  File "{}", line {}, in "#, self.filename, self.start.line)?;
-        if let Some(frame_name) = &self.frame_name {
-            f.write_str(frame_name)?;
+        // SyntaxError format: `  File "...", line N`
+        // Runtime error format: `  File "...", line N, in <module>`
+        if self.hide_frame_name {
+            write!(f, r#"  File "{}", line {}"#, self.filename, self.start.line)?;
         } else {
-            f.write_str("<module>")?;
+            write!(f, r#"  File "{}", line {}, in "#, self.filename, self.start.line)?;
+            if let Some(frame_name) = &self.frame_name {
+                f.write_str(frame_name)?;
+            } else {
+                f.write_str("<module>")?;
+            }
         }
 
         if let Some(line) = &self.preview_line {
@@ -243,6 +255,26 @@ impl StackFrame {
                 .and_then(|ln| source.lines().nth(ln as usize))
                 .map(str::to_string),
             hide_caret: f.hide_caret,
+            hide_frame_name: false,
+        }
+    }
+
+    /// Creates a `StackFrame` from a `CodeRange` for SyntaxError.
+    ///
+    /// Sets `hide_frame_name: true` because CPython's SyntaxError format doesn't
+    /// show the `, in <module>` part.
+    pub(crate) fn from_position_syntax_error(position: CodeRange, filename: &str, source: &str) -> Self {
+        Self {
+            filename: filename.to_string(),
+            start: position.start(),
+            end: position.end(),
+            frame_name: None,
+            preview_line: position
+                .preview_line_number()
+                .and_then(|ln| source.lines().nth(ln as usize))
+                .map(str::to_string),
+            hide_caret: false,
+            hide_frame_name: true,
         }
     }
 
@@ -257,6 +289,7 @@ impl StackFrame {
                 .and_then(|ln| source.lines().nth(ln as usize))
                 .map(str::to_string),
             hide_caret: false,
+            hide_frame_name: false,
         }
     }
 
@@ -274,6 +307,7 @@ impl StackFrame {
                 .and_then(|ln| source.lines().nth(ln as usize))
                 .map(str::to_string),
             hide_caret: true,
+            hide_frame_name: false,
         }
     }
 }

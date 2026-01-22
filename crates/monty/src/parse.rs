@@ -1393,7 +1393,7 @@ impl ParseError {
             Self::Syntax { msg, position } => MontyException::new_full(
                 ExcType::SyntaxError,
                 Some(msg.into_owned()),
-                vec![StackFrame::from_position(position, filename, source)],
+                vec![StackFrame::from_position_syntax_error(position, filename, source)],
             ),
             Self::NotImplemented { msg, position } => MontyException::new_full(
                 ExcType::NotImplementedError,
