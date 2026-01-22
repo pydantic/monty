@@ -13,10 +13,10 @@
 //! ## Efficient Iteration with `IterState`
 //!
 //! For the VM's `ForIter` opcode, we use a two-phase approach to avoid borrow conflicts:
-//! 1. `iter_state()` - reads current state without mutation, returns `IterState`
+//! 1. `iter_state()` - reads current state without mutation, returns `Option<IterState>`
 //! 2. `advance()` - updates the index after the caller has done its work
 //!
-//! This allows `MontyIter::advance_on_heap()` to coordinate access without extracting
+//! This allows `advance_on_heap()` to coordinate access without extracting
 //! the iterator from the heap (avoiding `std::mem::replace` overhead).
 //!
 //! ## Builtin Support
@@ -139,55 +139,51 @@ impl MontyIter {
     /// The returned `IterState` captures all data needed to produce the next value.
     /// After using the state, call `advance()` to update the iterator.
     ///
-    /// Returns `IterState::Exhausted` if the iterator has no more values.
-    pub fn iter_state(&self) -> IterState {
+    /// Returns `None` if the iterator is exhausted.
+    fn iter_state(&self) -> Option<IterState> {
         match &self.iter_value {
             IterValue::Range { start, step, len } => {
                 if self.index >= *len {
-                    IterState::Exhausted
+                    None
                 } else {
                     let idx = i64::try_from(self.index).expect("iterator index exceeds i64::MAX");
                     let value = *start + idx * *step;
-                    IterState::Range(value)
+                    Some(IterState::Range(value))
                 }
             }
             IterValue::List { heap_id } => {
                 // Note: List length is checked later in advance_on_heap()
-                // because lists can be mutated during iteration
-                IterState::List {
-                    list_id: *heap_id,
+                // because lists can be mutated during iteration.
+                // We return HeapIndex with expected_len=None to indicate no size check.
+                Some(IterState::HeapIndex {
+                    heap_id: *heap_id,
                     index: self.index,
+                    expected_len: None,
+                })
+            }
+            IterValue::Tuple { heap_id, len }
+            | IterValue::NamedTuple { heap_id, len }
+            | IterValue::HeapBytes { heap_id, len }
+            | IterValue::FrozenSet { heap_id, len } => {
+                if self.index >= *len {
+                    None
+                } else {
+                    Some(IterState::HeapIndex {
+                        heap_id: *heap_id,
+                        index: self.index,
+                        expected_len: None,
+                    })
                 }
             }
-            IterValue::Tuple { heap_id, len } => {
+            IterValue::DictKeys { heap_id, len } | IterValue::Set { heap_id, len } => {
                 if self.index >= *len {
-                    IterState::Exhausted
+                    None
                 } else {
-                    IterState::Tuple {
-                        tuple_id: *heap_id,
+                    Some(IterState::HeapIndex {
+                        heap_id: *heap_id,
                         index: self.index,
-                    }
-                }
-            }
-            IterValue::NamedTuple { heap_id, len } => {
-                if self.index >= *len {
-                    IterState::Exhausted
-                } else {
-                    IterState::NamedTuple {
-                        namedtuple_id: *heap_id,
-                        index: self.index,
-                    }
-                }
-            }
-            IterValue::DictKeys { heap_id, len } => {
-                if self.index >= *len {
-                    IterState::Exhausted
-                } else {
-                    IterState::DictKeys {
-                        dict_id: *heap_id,
-                        index: self.index,
-                        expected_len: *len,
-                    }
+                        expected_len: Some(*len),
+                    })
                 }
             }
             IterValue::IterStr {
@@ -196,58 +192,27 @@ impl MontyIter {
                 len,
             } => {
                 if self.index >= *len {
-                    IterState::Exhausted
+                    None
                 } else {
                     // Get the next character at current byte offset
                     let c = string[*byte_offset..]
                         .chars()
                         .next()
                         .expect("index < len implies char exists");
-                    IterState::IterStr {
+                    Some(IterState::IterStr {
                         char: c,
                         char_len: c.len_utf8(),
-                    }
-                }
-            }
-            IterValue::HeapBytes { heap_id, len } => {
-                if self.index >= *len {
-                    IterState::Exhausted
-                } else {
-                    IterState::HeapBytes {
-                        bytes_id: *heap_id,
-                        index: self.index,
-                    }
+                    })
                 }
             }
             IterValue::InternBytes { bytes_id, len } => {
                 if self.index >= *len {
-                    IterState::Exhausted
+                    None
                 } else {
-                    IterState::InternBytes {
+                    Some(IterState::InternBytes {
                         bytes_id: *bytes_id,
                         index: self.index,
-                    }
-                }
-            }
-            IterValue::Set { heap_id, len } => {
-                if self.index >= *len {
-                    IterState::Exhausted
-                } else {
-                    IterState::Set {
-                        set_id: *heap_id,
-                        index: self.index,
-                        expected_len: *len,
-                    }
-                }
-            }
-            IterValue::FrozenSet { heap_id, len } => {
-                if self.index >= *len {
-                    IterState::Exhausted
-                } else {
-                    IterState::FrozenSet {
-                        frozenset_id: *heap_id,
-                        index: self.index,
-                    }
+                    })
                 }
             }
         }
@@ -492,82 +457,17 @@ pub(crate) fn advance_on_heap(
     let HeapData::Iter(iter) = heap.get(iter_id) else {
         panic!("advance_on_heap: expected Iterator on heap");
     };
-    let state = iter.iter_state();
+    let Some(state) = iter.iter_state() else {
+        return Ok(None); // Iterator exhausted
+    };
 
     // Phase 2: Based on state, get the value and determine char_len for strings
     let (value, string_char_len) = match state {
-        IterState::Exhausted => return Ok(None),
         IterState::Range(value) => (Value::Int(value), None),
-        IterState::List { list_id, index } => {
-            // Get item from list (immutable borrow)
-            let HeapData::List(list) = heap.get(list_id) else {
-                panic!("advance_on_heap: expected List on heap");
-            };
-            // Check if list shrunk during iteration
-            if index >= list.len() {
-                return Ok(None);
-            }
-            let item = list.as_vec()[index].copy_for_extend();
-
-            // Inc refcount after borrow ends
-            if let Value::Ref(id) = &item {
-                heap.inc_ref(*id);
-            }
-            (item, None)
-        }
-
-        IterState::Tuple { tuple_id, index } => {
-            let HeapData::Tuple(tuple) = heap.get(tuple_id) else {
-                panic!("advance_on_heap: expected Tuple on heap");
-            };
-            let item = tuple.as_vec()[index].copy_for_extend();
-            if let Value::Ref(id) = &item {
-                heap.inc_ref(*id);
-            }
-            (item, None)
-        }
-
-        IterState::NamedTuple { namedtuple_id, index } => {
-            let HeapData::NamedTuple(namedtuple) = heap.get(namedtuple_id) else {
-                panic!("advance_on_heap: expected NamedTuple on heap");
-            };
-            let item = namedtuple.as_vec()[index].copy_for_extend();
-            if let Value::Ref(id) = &item {
-                heap.inc_ref(*id);
-            }
-            (item, None)
-        }
-
-        IterState::DictKeys {
-            dict_id,
-            index,
-            expected_len,
-        } => {
-            let HeapData::Dict(dict) = heap.get(dict_id) else {
-                panic!("advance_on_heap: expected Dict on heap");
-            };
-            // Check for dict mutation
-            if dict.len() != expected_len {
-                return Err(ExcType::runtime_error_dict_changed_size());
-            }
-            let key = dict.key_at(index).expect("index should be valid").copy_for_extend();
-            if let Value::Ref(id) = &key {
-                heap.inc_ref(*id);
-            }
-            (key, None)
-        }
 
         IterState::IterStr { char, char_len } => {
             let value = allocate_char(char, heap)?;
             (value, Some(char_len))
-        }
-
-        IterState::HeapBytes { bytes_id, index } => {
-            let HeapData::Bytes(bytes) = heap.get(bytes_id) else {
-                panic!("advance_on_heap: expected Bytes on heap");
-            };
-            let byte_val = i64::from(bytes.as_slice()[index]);
-            (Value::Int(byte_val), None)
         }
 
         IterState::InternBytes { bytes_id, index } => {
@@ -575,38 +475,17 @@ pub(crate) fn advance_on_heap(
             (Value::Int(i64::from(bytes[index])), None)
         }
 
-        IterState::Set {
-            set_id,
+        IterState::HeapIndex {
+            heap_id,
             index,
             expected_len,
         } => {
-            let HeapData::Set(set) = heap.get(set_id) else {
-                panic!("advance_on_heap: expected Set on heap");
+            let item = get_heap_item(heap, heap_id, index, expected_len)?;
+            // Check for list exhaustion (list can shrink during iteration)
+            let Some(item) = item else {
+                return Ok(None);
             };
-            // Check for set mutation
-            if set.len() != expected_len {
-                return Err(ExcType::runtime_error_set_changed_size());
-            }
-            let item = set
-                .storage()
-                .value_at(index)
-                .expect("index should be valid")
-                .copy_for_extend();
-            if let Value::Ref(id) = &item {
-                heap.inc_ref(*id);
-            }
-            (item, None)
-        }
-
-        IterState::FrozenSet { frozenset_id, index } => {
-            let HeapData::FrozenSet(frozenset) = heap.get(frozenset_id) else {
-                panic!("advance_on_heap: expected FrozenSet on heap");
-            };
-            let item = frozenset
-                .storage()
-                .value_at(index)
-                .expect("index should be valid")
-                .copy_for_extend();
+            // Inc refcount after borrow ends
             if let Value::Ref(id) = &item {
                 heap.inc_ref(*id);
             }
@@ -621,6 +500,63 @@ pub(crate) fn advance_on_heap(
     iter.advance(string_char_len);
 
     Ok(Some(value))
+}
+
+/// Gets an item from a heap-allocated container at the given index.
+///
+/// Returns `Ok(None)` if the index is out of bounds (for lists that shrunk during iteration).
+/// Returns `Err` if a dict/set changed size during iteration (RuntimeError).
+fn get_heap_item(
+    heap: &Heap<impl ResourceTracker>,
+    heap_id: HeapId,
+    index: usize,
+    expected_len: Option<usize>,
+) -> RunResult<Option<Value>> {
+    match heap.get(heap_id) {
+        HeapData::List(list) => {
+            // Check if list shrunk during iteration
+            if index >= list.len() {
+                return Ok(None);
+            }
+            Ok(Some(list.as_vec()[index].copy_for_extend()))
+        }
+        HeapData::Tuple(tuple) => Ok(Some(tuple.as_vec()[index].copy_for_extend())),
+        HeapData::NamedTuple(namedtuple) => Ok(Some(namedtuple.as_vec()[index].copy_for_extend())),
+        HeapData::Dict(dict) => {
+            // Check for dict mutation
+            if let Some(expected) = expected_len
+                && dict.len() != expected
+            {
+                return Err(ExcType::runtime_error_dict_changed_size());
+            }
+            Ok(Some(
+                dict.key_at(index).expect("index should be valid").copy_for_extend(),
+            ))
+        }
+        HeapData::Bytes(bytes) => Ok(Some(Value::Int(i64::from(bytes.as_slice()[index])))),
+        HeapData::Set(set) => {
+            // Check for set mutation
+            if let Some(expected) = expected_len
+                && set.len() != expected
+            {
+                return Err(ExcType::runtime_error_set_changed_size());
+            }
+            Ok(Some(
+                set.storage()
+                    .value_at(index)
+                    .expect("index should be valid")
+                    .copy_for_extend(),
+            ))
+        }
+        HeapData::FrozenSet(frozenset) => Ok(Some(
+            frozenset
+                .storage()
+                .value_at(index)
+                .expect("index should be valid")
+                .copy_for_extend(),
+        )),
+        _ => panic!("get_heap_item: unexpected heap data type"),
+    }
 }
 
 /// Gets the next item from an iterator.
@@ -685,44 +621,27 @@ pub fn iterator_next(
 ///
 /// This enum captures all data needed to get the next item from an iterator
 /// WITHOUT holding a borrow on the iterator. This enables a two-phase approach:
-/// 1. Read `IterState` from iterator (immutable borrow ends)
+/// 1. Read `Option<IterState>` from iterator (immutable borrow ends, `None` means exhausted)
 /// 2. Use the state to get the value (may access other heap objects)
 /// 3. Call `advance()` to update the iterator index
 ///
 /// For types that yield values directly (Range, IterStr), the value is included.
-/// For types that need heap access (List, Tuple, etc.), indices are provided.
+/// For types that need heap access, `HeapIndex` provides the heap_id and index.
 #[derive(Debug, Clone, Copy)]
-pub enum IterState {
-    /// Iterator is exhausted, no more values.
-    Exhausted,
-    /// Range iterator yields this integer value.
+enum IterState {
+    /// Range iterator yields this integer value directly.
     Range(i64),
-    /// List iterator needs to read item at this index from the list.
-    List { list_id: HeapId, index: usize },
-    /// Tuple iterator needs to read item at this index.
-    Tuple { tuple_id: HeapId, index: usize },
-    /// NamedTuple iterator needs to read item at this index.
-    NamedTuple { namedtuple_id: HeapId, index: usize },
-    /// Dict iterator needs to read key at this index; check len for mutation.
-    DictKeys {
-        dict_id: HeapId,
-        index: usize,
-        expected_len: usize,
-    },
     /// String iterator yields this character; char_len is UTF-8 byte length for advance().
     IterStr { char: char, char_len: usize },
-    /// Heap bytes iterator needs to read byte at this index.
-    HeapBytes { bytes_id: HeapId, index: usize },
     /// Interned bytes iterator needs to read byte at this index.
     InternBytes { bytes_id: BytesId, index: usize },
-    /// Set iterator needs to read value at this index; check len for mutation.
-    Set {
-        set_id: HeapId,
+    /// Heap-based iterator (List, Tuple, NamedTuple, Dict, Bytes, Set, FrozenSet).
+    /// The expected_len is Some for types that check for mutation (Dict, Set).
+    HeapIndex {
+        heap_id: HeapId,
         index: usize,
-        expected_len: usize,
+        expected_len: Option<usize>,
     },
-    /// FrozenSet iterator needs to read value at this index.
-    FrozenSet { frozenset_id: HeapId, index: usize },
 }
 
 /// Increments the reference count for a value copied via `copy_for_extend()`.
