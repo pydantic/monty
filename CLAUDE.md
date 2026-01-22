@@ -38,33 +38,50 @@ self.push(result?);                    // Now propagate error
 
 DO NOT run `cargo build` or `cargo run`, it will fail because of issues with Python bindings.
 
-Instead use the following:
+Instead use the following `make` commands:
 
 ```bash
-# lint python and rust code
-make lint
-
-# lint just rust code
-make lint-rs
-
-# lint just python code
-make lint-py
-
-# lint just javascript code
-make lint-js
-
-# format python and rust code
-make format
-
-# format just rust code
-make format-rs
-
-# format just python code
-make format-py
-
-# format just js code
-make format-js
+make install-py           Install python dependencies
+make install-js           Install JS package dependencies
+make install              Install the package, dependencies, and pre-commit for local development
+make dev-py               Install the python package for development
+make dev-js               Build the JS package (debug)
+make lint-js              Lint JS code with oxlint
+make test-js              Build and test the JS package
+make dev-py-release       Install the python package for development with a release build
+make dev-js-release       Build the JS package (release)
+make dev-py-pgo           Install the python package for development with profile-guided optimization
+make format-rs            Format Rust code with fmt
+make format-py            Format Python code - WARNING be careful about this command as it may modify code and break tests silently!
+make format-js            Format JS code with prettier
+make format               Format Rust code, this does not format Python code as we have to be careful with that
+make lint-rs              Lint Rust code with clippy and import checks
+make clippy-fix           Fix Rust code with clippy
+make lint-py              Lint Python code with ruff
+make lint                 Lint the code with ruff and clippy
+make format-lint-rs       Format and lint Rust code with fmt and clippy
+make format-lint-py       Format and lint Python code with ruff
+make test-no-features     Run rust tests without any features enabled
+make test-ref-count-panic Run rust tests with ref-count-panic enabled
+make test-ref-count-return Run rust tests with ref-count-return enabled
+make test-cases           Run tests cases only
+make test-type-checking   Run rust tests on monty_type_checking
+make pytest               Run Python tests with pytest
+make test-py              Build the python package (debug profile) and run tests
+make test-docs            Test docs examples only
+make test                 Run rust tests
+make testcov              Run Rust tests with coverage, print table, and generate HTML report
+make complete-tests       Fill in incomplete test expectations using CPython
+make update-typeshed      Update vendored typeshed from upstream
+make bench                Run benchmarks
+make dev-bench            Run benchmarks to test with dev profile
+make profile              Profile the code with pprof and generate flamegraphs
+make type-sizes           Write type sizes for the crate to ./type-sizes.txt (requires nightly and top-type-sizes)
+make main                 run linting and the most important tests
+make help                 Show this help (usage: make help)
 ```
+
+Use the /python-playground skill to check cpython and monty behavior.
 
 ## Exception
 
@@ -115,7 +132,7 @@ NOTE: COMMENTS AND DOCSTRINGS ARE EXTREMELY IMPORTANT TO THE LONG TERM HEALTH OF
 
 Do **NOT** write tests within modules unless explicitly prompted to do so.
 
-Tests should live in the `tests/` directory.
+Tests should live in the relevant `tests/` directory.
 
 Commands:
 
@@ -126,15 +143,17 @@ cargo build
 # Run tests (this is the best way to run all tests as it enables the ref-count-panic feature)
 make test-ref-count-panic
 
+# Run crates/monty/test_cases tests only
+make test-cases
+
 # Run a specific test
 cargo test -p monty --test datatest_runner --features ref-count-panic str__ops
-
-# Run test_cases tests only
-make test-cases
 
 # Run the interpreter on a Python file
 cargo run -- <file.py>
 ```
+
+See more test commands above.
 
 ### Experimentation and Playground
 

@@ -283,7 +283,7 @@ fn parse_f64_from_str(value: &str) -> RunResult<f64> {
 fn value_error_could_not_convert_string_to_float(value: &str) -> RunError {
     SimpleException::new_msg(
         ExcType::ValueError,
-        format!("could not convert string to float: '{value}'"),
+        format!("could not convert string to float: {}", StringRepr(value)),
     )
     .into()
 }

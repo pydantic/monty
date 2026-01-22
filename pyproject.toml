@@ -22,10 +22,13 @@ include = [
     "crates/**/*.py",
     "crates/**/*.pyi",
 ]
-# Exclude files with intentional syntax errors (used for testing parse error handling)
+# Exclude files with intentional syntax errors or special formatting requirements
 extend-exclude = [
     "crates/monty/test_cases/nonlocal__error_module_level.py",
     "crates/monty/test_cases/traceback__nonlocal_module_scope.py",
+    # These files test specific quote styles in error messages and must not be reformatted
+    "crates/monty/test_cases/type__float_repr_newline.py",
+    "crates/monty/test_cases/type__float_repr_both_quotes.py",
 ]
 
 [tool.ruff.lint]
