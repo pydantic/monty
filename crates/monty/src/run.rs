@@ -472,27 +472,31 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
         results: Vec<(u32, ExternalResult)>,
         print: &mut impl PrintWriter,
     ) -> Result<RunProgress<T>, MontyException> {
-        // Convert all results to Values BEFORE creating VM (to avoid borrow conflicts)
-        let mut converted_results = Vec::with_capacity(results.len());
+        use crate::exception_private::RunError;
+
+        // Separate results into successes and failures
+        // Convert all successful results to Values BEFORE creating VM (to avoid borrow conflicts)
+        let mut successful_results = Vec::with_capacity(results.len());
+        let mut failed_results = Vec::new();
+
         for (call_id, ext_result) in results {
-            let value = match ext_result {
+            match ext_result {
                 ExternalResult::Return(obj) => match obj.to_value(&mut self.heap, &self.executor.interns) {
-                    Ok(v) => v,
+                    Ok(v) => {
+                        successful_results.push((call_id, v));
+                    }
                     Err(e) => {
                         return Err(MontyException::runtime_error(format!(
                             "invalid return type for call {call_id}: {e}"
                         )));
                     }
                 },
-                ExternalResult::Error(_exc) => {
-                    // TODO: Convert exception to RunError and use scheduler.fail_for_call
-                    // For now, we only support successful resolutions
-                    return Err(MontyException::runtime_error(
-                        "exception results not yet supported in FutureSnapshot::resume",
-                    ));
+                ExternalResult::Error(exc) => {
+                    // Convert MontyException to RunError for the scheduler
+                    let run_error: RunError = exc.into();
+                    failed_results.push((call_id, run_error));
                 }
-            };
-            converted_results.push((call_id, value));
+            }
         }
 
         // Destructure self to avoid partial move issues
@@ -515,9 +519,14 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
                 print,
             );
 
-            // Resolve the provided futures in the scheduler
-            for (call_id, value) in converted_results {
+            // Resolve successful futures in the scheduler
+            for (call_id, value) in successful_results {
                 vm.resolve_future(crate::asyncio::CallId::new(call_id), value);
+            }
+
+            // Fail futures that returned errors
+            for (call_id, error) in failed_results {
+                vm.fail_future(crate::asyncio::CallId::new(call_id), error);
             }
 
             // Continue execution

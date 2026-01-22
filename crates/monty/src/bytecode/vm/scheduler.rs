@@ -69,6 +69,9 @@ pub(crate) struct Task {
     /// Coroutine being executed by this task (if any).
     /// Used to mark the coroutine as Completed when the task finishes.
     pub coroutine_id: Option<HeapId>,
+    /// GatherFuture this task belongs to (if spawned by gather).
+    /// Used to cancel sibling tasks when this task fails.
+    pub gather_id: Option<HeapId>,
     /// Current execution state.
     pub state: TaskState,
 }
@@ -100,7 +103,8 @@ impl Task {
     /// # Arguments
     /// * `id` - Unique task identifier
     /// * `coroutine_id` - Optional HeapId of the coroutine being executed
-    pub fn new(id: TaskId, coroutine_id: Option<HeapId>) -> Self {
+    /// * `gather_id` - Optional HeapId of the GatherFuture this task belongs to
+    pub fn new(id: TaskId, coroutine_id: Option<HeapId>, gather_id: Option<HeapId>) -> Self {
         Self {
             id,
             frames: Vec::new(),
@@ -108,6 +112,7 @@ impl Task {
             exception_stack: Vec::new(),
             instruction_ip: 0,
             coroutine_id,
+            gather_id,
             state: TaskState::Ready,
         }
     }
@@ -181,7 +186,7 @@ impl Scheduler {
     ///
     /// The main task uses the VM's stack/frames directly and is always present.
     pub fn new() -> Self {
-        let main_task = Task::new(TaskId::new(0), None);
+        let main_task = Task::new(TaskId::new(0), None, None);
         Self {
             tasks: vec![main_task],
             ready_queue: VecDeque::from([TaskId::new(0)]),
@@ -324,14 +329,15 @@ impl Scheduler {
     ///
     /// # Arguments
     /// * `coroutine_id` - HeapId of the coroutine to execute
+    /// * `gather_id` - Optional HeapId of the GatherFuture this task belongs to
     ///
     /// # Returns
     /// The TaskId of the newly created task.
-    pub fn spawn(&mut self, coroutine_id: HeapId) -> TaskId {
+    pub fn spawn(&mut self, coroutine_id: HeapId, gather_id: Option<HeapId>) -> TaskId {
         let task_id = TaskId::new(self.next_task_id);
         self.next_task_id += 1;
 
-        let task = Task::new(task_id, Some(coroutine_id));
+        let task = Task::new(task_id, Some(coroutine_id), gather_id);
         self.tasks.push(task);
         self.ready_queue.push_back(task_id);
 
@@ -369,11 +375,114 @@ impl Scheduler {
 
     /// Marks a task as failed with an error.
     ///
-    /// If the task is part of a gather, cancels sibling tasks.
-    pub fn fail_task(&mut self, task_id: TaskId, error: RunError) {
+    /// If the task is part of a gather, collects sibling task IDs for cancellation.
+    /// The caller should then call `cancel_task` for each sibling.
+    ///
+    /// # Returns
+    /// A tuple of:
+    /// - The gather_id if this task belongs to a gather
+    /// - Task IDs of sibling tasks that should be cancelled
+    pub fn fail_task(&mut self, task_id: TaskId, error: RunError) -> (Option<HeapId>, Vec<TaskId>) {
         let task = self.get_task_mut(task_id);
+        let gather_id = task.gather_id;
         task.state = TaskState::Failed(error);
-        // Note: gather cancellation logic will be implemented when gather is fully integrated
+
+        // Collect sibling task IDs for cancellation
+        let mut siblings = Vec::new();
+        if let Some(gid) = gather_id {
+            for task in &self.tasks {
+                if task.gather_id == Some(gid) && task.id != task_id && !task.is_finished() {
+                    siblings.push(task.id);
+                }
+            }
+        }
+
+        (gather_id, siblings)
+    }
+
+    /// Cancels a task, cleaning up its resources.
+    ///
+    /// This marks the task as Failed with a cancellation error and cleans up:
+    /// - Stack values
+    /// - Exception stack values
+    ///
+    /// The caller is responsible for cleaning up the task's coroutine on the heap.
+    ///
+    /// # Arguments
+    /// * `task_id` - ID of the task to cancel
+    /// * `heap` - Heap for dropping values
+    pub fn cancel_task(
+        &mut self,
+        task_id: TaskId,
+        heap: &mut crate::heap::Heap<impl crate::resource::ResourceTracker>,
+    ) {
+        // Only cancel if not already finished (check before mutating)
+        if self.get_task(task_id).is_finished() {
+            return;
+        }
+
+        // Remove from ready queue if present (do this before getting mutable task reference)
+        self.ready_queue.retain(|&id| id != task_id);
+
+        // Now get mutable reference to the task for cleanup
+        let task = self.get_task_mut(task_id);
+
+        // Clean up stack values
+        for value in std::mem::take(&mut task.stack) {
+            value.drop_with_heap(heap);
+        }
+
+        // Clean up exception stack values
+        for value in std::mem::take(&mut task.exception_stack) {
+            value.drop_with_heap(heap);
+        }
+
+        // Mark as failed with a cancellation error
+        task.state = TaskState::Failed(
+            crate::exception_private::SimpleException::new_msg(
+                crate::exception_private::ExcType::RuntimeError,
+                "task was cancelled",
+            )
+            .into(),
+        );
+    }
+
+    /// Fails the task blocked on a specific CallId with an error.
+    ///
+    /// Used when an external function returns an error via `FutureSnapshot::resume`.
+    /// Finds the task blocked on this CallId and fails it with the given error.
+    ///
+    /// # Returns
+    /// A tuple of (task_id, gather_id, sibling_task_ids) if a task was found,
+    /// or None if no task was blocked on this CallId.
+    pub fn fail_for_call(&mut self, call_id: CallId, error: RunError) -> Option<(TaskId, Option<HeapId>, Vec<TaskId>)> {
+        // Find the task blocked on this call
+        let task_id = self.tasks.iter().find_map(|task| {
+            if let TaskState::BlockedOnCall(blocked_call_id) = task.state
+                && blocked_call_id == call_id
+            {
+                return Some(task.id);
+            }
+            None
+        })?;
+
+        // Fail the task and get sibling info
+        let (gather_id, siblings) = self.fail_task(task_id, error);
+        Some((task_id, gather_id, siblings))
+    }
+
+    /// Returns the task that created a specific pending call.
+    ///
+    /// Used to check if a pending call's creator task has been cancelled.
+    #[inline]
+    pub fn get_pending_call_creator(&self, call_id: CallId) -> Option<TaskId> {
+        self.pending_calls.get(&call_id).map(|data| data.creator_task)
+    }
+
+    /// Returns true if a task has been cancelled or failed.
+    #[inline]
+    pub fn is_task_failed(&self, task_id: TaskId) -> bool {
+        matches!(self.tasks.get(task_id.raw() as usize), Some(task) if matches!(task.state, TaskState::Failed(_)))
     }
 
     /// Cleans up resources when dropping the scheduler.

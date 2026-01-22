@@ -1244,10 +1244,10 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                             gather_mut.waiter = current_task;
                         }
 
-                        // Spawn all coroutines as tasks
+                        // Spawn all coroutines as tasks (track gather_id for cancellation)
                         let mut task_ids = Vec::with_capacity(coroutine_ids.len());
                         for coro_id in &coroutine_ids {
-                            let task_id = self.scheduler.spawn(*coro_id);
+                            let task_id = self.scheduler.spawn(*coro_id, Some(heap_id));
                             task_ids.push(task_id);
                         }
 
@@ -1515,6 +1515,26 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// waiting on this CallId.
     pub fn resolve_future(&mut self, call_id: CallId, value: Value) {
         self.scheduler.resolve(call_id, value);
+    }
+
+    /// Fails an external future with an error.
+    ///
+    /// Called by the host when an async external call fails with an exception.
+    /// Finds the task blocked on this CallId and fails it with the error.
+    /// If the task is part of a gather, cancels sibling tasks.
+    ///
+    /// # Returns
+    /// `true` if a task was found and failed, `false` if no task was blocked on this CallId.
+    pub fn fail_future(&mut self, call_id: CallId, error: RunError) -> bool {
+        if let Some((_, _, siblings)) = self.scheduler.fail_for_call(call_id, error) {
+            // Cancel sibling tasks if this task was part of a gather
+            for sibling_id in siblings {
+                self.scheduler.cancel_task(sibling_id, self.heap);
+            }
+            true
+        } else {
+            false
+        }
     }
 
     /// Consumes the VM and creates a snapshot for pause/resume.

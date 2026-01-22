@@ -4,7 +4,12 @@
 //! and task identifiers. The host acts as the event loop - external function
 //! calls return `ExternalFuture` objects that can be awaited.
 
-use crate::{heap::HeapId, intern::FunctionId, value::Value};
+use crate::{
+    heap::{Heap, HeapId},
+    intern::FunctionId,
+    resource::ResourceTracker,
+    value::Value,
+};
 
 /// Unique identifier for external function calls.
 ///
@@ -124,6 +129,24 @@ impl Coroutine {
     pub fn can_await(&self) -> bool {
         self.state == CoroutineState::New
     }
+
+    /// Cleans up coroutine resources by dropping all contained values.
+    ///
+    /// This should be called when the coroutine is cancelled or cleaned up
+    /// without completing execution. It drops:
+    /// - All values in the namespace (parameters, captured variables, locals)
+    /// - Decrements references for captured cells
+    pub fn cleanup(&mut self, heap: &mut Heap<impl ResourceTracker>) {
+        // Drop all namespace values
+        for value in std::mem::take(&mut self.namespace) {
+            value.drop_with_heap(heap);
+        }
+
+        // Decrement refs for captured cells
+        for cell_id in std::mem::take(&mut self.frame_cells) {
+            heap.dec_ref(cell_id);
+        }
+    }
 }
 
 /// A gather() result tracking multiple coroutines/tasks.
@@ -181,5 +204,27 @@ impl GatherFuture {
     #[inline]
     pub fn task_count(&self) -> usize {
         self.coroutine_ids.len()
+    }
+
+    /// Cleans up gather resources by dropping all contained values.
+    ///
+    /// This should be called when the gather is cancelled or cleaned up.
+    /// It drops:
+    /// - Decrements references for coroutine HeapIds
+    /// - Drops any collected results
+    ///
+    /// Note: This does NOT cancel the spawned tasks - that should be done
+    /// separately by the scheduler before calling this method.
+    #[expect(dead_code, reason = "used in later phases for gather cancellation")]
+    pub fn cleanup(&mut self, heap: &mut Heap<impl ResourceTracker>) {
+        // Decrement refs for coroutine HeapIds
+        for coroutine_id in std::mem::take(&mut self.coroutine_ids) {
+            heap.dec_ref(coroutine_id);
+        }
+
+        // Drop any collected results
+        for value in std::mem::take(&mut self.results).into_iter().flatten() {
+            value.drop_with_heap(heap);
+        }
     }
 }
