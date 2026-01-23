@@ -122,6 +122,35 @@ pub fn monty_to_serde(obj: &MontyObject) -> Value {
     }
 }
 
+/// Converts Monty's `MontyObject` to a JavaScript value, using native JS types where possible.
+///
+/// Returns an `Object` which can represent any JS value. For most types this will serialize
+/// through serde_json, but for `Set` we create a native JS Set object.
+pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<Unknown<'e>> {
+    #[expect(clippy::single_match_else, reason = "Future special cases may be added")]
+    match obj {
+        MontyObject::Set(items) => {
+            // Create a native JS Set
+            let global = env.get_global()?;
+            let set_constructor: Function<()> = global.get_named_property("Set")?;
+            let set: Object<'e> = set_constructor.new_instance(())?.coerce_to_object()?;
+
+            // Get the 'add' method and call it for each item
+            let add_method: Function = set.get_named_property("add")?;
+            for item in items {
+                let js_item = monty_to_js(item, env)?;
+                add_method.apply(set, js_item.into_unknown(env)?)?;
+            }
+            Ok(set.to_unknown())
+        }
+        // For all other types, convert through serde_json
+        _ => {
+            let serde_value = monty_to_serde(obj);
+            Ok(env.to_js_value(&serde_value)?.to_unknown())
+        }
+    }
+}
+
 /// Converts a serde_json::Value from JavaScript to Monty's `MontyObject`.
 pub fn serde_to_monty(value: &Value) -> Result<MontyObject> {
     match value {

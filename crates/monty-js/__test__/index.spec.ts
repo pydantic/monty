@@ -275,9 +275,7 @@ test('tuple result', (t) => {
 test('set result', (t) => {
   const m = new Monty('{1, 2, 3}')
   const result = m.run()
-  t.is(result._type, 'Set')
-  // Sets may not preserve order
-  t.is(result._value.length, 3)
+  t.deepEqual(result, new Set([1, 2, 3]))
 })
 
 test('nested data structures', (t) => {
