@@ -4,9 +4,17 @@
  * This module provides proper Error subclasses for exception handling.
  */
 
-import type { MontyOptions, RunOptions, ResourceLimits, Frame, ExceptionInfo, RuntimeErrorInfo } from './index'
+import type {
+  MontyOptions,
+  RunOptions,
+  ResourceLimits,
+  Frame,
+  ExceptionInfo,
+  RuntimeErrorInfo,
+  JsMontyObject,
+} from './index'
 
-export type { MontyOptions, RunOptions, ResourceLimits, Frame, ExceptionInfo, RuntimeErrorInfo }
+export type { MontyOptions, RunOptions, ResourceLimits, Frame, ExceptionInfo, RuntimeErrorInfo, JsMontyObject }
 
 /**
  * Base class for all Monty interpreter errors.
@@ -112,7 +120,7 @@ export declare class Monty {
    * @returns The result of the last expression
    * @throws {MontyRuntimeError} If the code raises an exception
    */
-  run(options?: RunOptions): unknown
+  run(options?: RunOptions): JsMontyObject
 
   /**
    * Serializes the Monty instance to a binary format.

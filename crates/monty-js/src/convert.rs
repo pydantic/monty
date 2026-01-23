@@ -6,7 +6,7 @@
 //!
 //! We use serde_json::Value as an intermediate format since napi-rs can serialize/deserialize it.
 
-use monty::{ExcType, MontyObject};
+use monty::{DictPairs, ExcType, MontyObject};
 use napi::bindgen_prelude::*;
 use serde_json::{json, Map, Value};
 
@@ -122,33 +122,104 @@ pub fn monty_to_serde(obj: &MontyObject) -> Value {
     }
 }
 
+pub struct JsMontyObject<'env>(Unknown<'env>);
+
+impl ToNapiValue for JsMontyObject<'_> {
+    unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        Unknown::to_napi_value(env, val.0)
+    }
+}
+
 /// Converts Monty's `MontyObject` to a JavaScript value, using native JS types where possible.
 ///
-/// Returns an `Object` which can represent any JS value. For most types this will serialize
-/// through serde_json, but for `Set` we create a native JS Set object.
-pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<Unknown<'e>> {
-    #[expect(clippy::single_match_else, reason = "Future special cases may be added")]
-    match obj {
-        MontyObject::Set(items) => {
-            // Create a native JS Set
-            let global = env.get_global()?;
-            let set_constructor: Function<()> = global.get_named_property("Set")?;
-            let set: Object<'e> = set_constructor.new_instance(())?.coerce_to_object()?;
-
-            // Get the 'add' method and call it for each item
-            let add_method: Function = set.get_named_property("add")?;
-            for item in items {
-                let js_item = monty_to_js(item, env)?;
-                add_method.apply(set, js_item.into_unknown(env)?)?;
-            }
-            Ok(set.to_unknown())
+/// This function handles types that need native JS representation:
+/// - `Set` and `FrozenSet` → native JS `Set`
+/// - `Bytes` → `Uint8Array`
+/// - All other types go through serde_json for conversion
+pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<JsMontyObject<'e>> {
+    let unknown = match obj {
+        MontyObject::Set(items) | MontyObject::FrozenSet(items) => {
+            // Create a native JS Set for both Set and FrozenSet
+            // (JavaScript doesn't have a native frozen set, so we use Set for both)
+            create_js_set(items, env)?
+        }
+        MontyObject::Bytes(bytes) => {
+            // Create a native Uint8Array
+            create_js_uint8array(bytes, env)?
+        }
+        MontyObject::List(items) => {
+            // Create a native JS Array with recursively converted items
+            create_js_array(items, env)?.into_unknown(env)?
+        }
+        MontyObject::Dict(pairs) => {
+            // Create a native JS Object with recursively converted values
+            create_js_object(pairs, env)?
+        }
+        MontyObject::Tuple(items) => {
+            // Create a tuple representation: an array with __tuple__ marker
+            create_js_tuple(items, env)?
         }
         // For all other types, convert through serde_json
         _ => {
             let serde_value = monty_to_serde(obj);
-            Ok(env.to_js_value(&serde_value)?.to_unknown())
+            env.to_js_value(&serde_value)?.into_unknown(env)?
         }
+    };
+    Ok(JsMontyObject(unknown))
+}
+
+/// Creates a native JS `Set` from Monty set items.
+fn create_js_set<'e>(items: &[MontyObject], env: &'e Env) -> Result<Unknown<'e>> {
+    let global = env.get_global()?;
+    let set_constructor: Function<()> = global.get_named_property("Set")?;
+    let set: Object<'e> = set_constructor.new_instance(())?.coerce_to_object()?;
+
+    let add_method: Function = set.get_named_property("add")?;
+    for item in items {
+        let js_item = monty_to_js(item, env)?;
+        add_method.apply(set, js_item.0)?;
     }
+    set.into_unknown(env)
+}
+
+/// Creates a native `Uint8Array` from Monty bytes.
+fn create_js_uint8array<'e>(bytes: &[u8], env: &'e Env) -> Result<Unknown<'e>> {
+    let buffer = BufferSlice::from_data(env, bytes.to_vec())?;
+    buffer.into_unknown(env)
+}
+
+/// Creates a native JS `Array` from Monty list items, recursively converting each element.
+fn create_js_array<'e>(items: &[MontyObject], env: &'e Env) -> Result<Array<'e>> {
+    let mut arr = env.create_array(items.len().try_into().expect("array size overflows u32"))?;
+    for (i, item) in items.iter().enumerate() {
+        let js_item = monty_to_js(item, env)?;
+        arr.set(i.try_into().expect("overflow on array bound"), js_item)?;
+    }
+    Ok(arr)
+}
+
+/// Creates a native JS `Object` from Monty dict pairs, recursively converting values.
+fn create_js_object<'e>(pairs: &DictPairs, env: &'e Env) -> Result<Unknown<'e>> {
+    let mut obj = Object::new(env)?;
+    for (k, v) in pairs {
+        let key = match k {
+            MontyObject::String(s) => s.clone(),
+            _ => format!("{k:?}"),
+        };
+        let js_value = monty_to_js(v, env)?;
+        obj.set_named_property(&key, js_value)?;
+    }
+    obj.into_unknown(env)
+}
+
+/// Creates a tuple representation as a JS array with a `__tuple__` marker property.
+///
+/// This allows distinguishing tuples from lists in JavaScript while still allowing
+/// array-like access to tuple elements.
+fn create_js_tuple<'e>(items: &[MontyObject], env: &'e Env) -> Result<Unknown<'e>> {
+    let mut arr = create_js_array(items, env)?;
+    arr.set_named_property("__tuple__", true)?;
+    arr.into_unknown(env)
 }
 
 /// Converts a serde_json::Value from JavaScript to Monty's `MontyObject`.

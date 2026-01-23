@@ -12,7 +12,7 @@ use napi_derive::napi;
 use serde_json::Value;
 
 use crate::{
-    convert::{monty_to_js, serde_to_monty},
+    convert::{monty_to_js, serde_to_monty, JsMontyObject},
     exceptions::{monty_exception_to_error, typing_failure_to_error},
     limits::JsResourceLimits,
 };
@@ -112,7 +112,7 @@ impl Monty {
     /// @param options - Execution options (inputs, limits)
     /// @returns The result of the last expression in the code as JSON
     #[napi]
-    pub fn run<'env>(&self, env: &'env Env, options: Option<RunOptions>) -> Result<Unknown<'env>> {
+    pub fn run<'env>(&self, env: &'env Env, options: Option<RunOptions>) -> Result<JsMontyObject<'env>> {
         let options = options.unwrap_or(RunOptions {
             inputs: None,
             limits: None,

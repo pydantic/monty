@@ -25,7 +25,8 @@
       "x86_64-unknown-linux-gnu",
       "aarch64-apple-darwin",
       "wasm32-wasip1-threads"
-    ]
+    ],
+    "dtsHeaderFile": "./index-header.d.ts"
   },
   "engines": {
     "node": ">= 6.14.2 < 7 || >= 8.11.2 < 9 || >= 9.11.0 < 10 || >= 10.0.0"

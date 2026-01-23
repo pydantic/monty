@@ -267,9 +267,10 @@ test('key error', (t) => {
 test('tuple result', (t) => {
   const m = new Monty('(1, 2, 3)')
   const result = m.run()
-  // Tuples are returned as objects with _type: "Tuple"
-  t.is(result._type, 'Tuple')
-  t.deepEqual(result._value, [1, 2, 3])
+  // Tuples are returned as arrays with a __tuple__ marker property
+  t.true(Array.isArray(result))
+  t.deepEqual([...result], [1, 2, 3])
+  t.is(result.__tuple__, true)
 })
 
 test('set result', (t) => {
@@ -287,7 +288,44 @@ test('nested data structures', (t) => {
 test('bytes result', (t) => {
   const m = new Monty('b"hello"')
   const result = m.run()
-  t.is(result._type, 'Bytes')
+  // Bytes are returned as Buffer (Node.js native)
+  t.true(Buffer.isBuffer(result))
   // ASCII values for "hello"
-  t.deepEqual(result._value, [104, 101, 108, 108, 111])
+  t.deepEqual([...result], [104, 101, 108, 108, 111])
+})
+
+test('frozenset result', (t) => {
+  const m = new Monty('frozenset([1, 2, 3])')
+  const result = m.run()
+  // FrozenSet is returned as a native JS Set (no frozen equivalent in JS)
+  t.true(result instanceof Set)
+  t.deepEqual(result, new Set([1, 2, 3]))
+})
+
+test('nested set in list', (t) => {
+  const m = new Monty('[{1, 2}, {3, 4}]')
+  const result = m.run()
+  t.true(Array.isArray(result))
+  t.is(result.length, 2)
+  t.true(result[0] instanceof Set)
+  t.true(result[1] instanceof Set)
+  t.deepEqual(result[0], new Set([1, 2]))
+  t.deepEqual(result[1], new Set([3, 4]))
+})
+
+test('nested bytes in dict', (t) => {
+  const m = new Monty('{"data": b"abc"}')
+  const result = m.run()
+  t.true(Buffer.isBuffer(result.data))
+  t.deepEqual([...result.data], [97, 98, 99])
+})
+
+test('tuple containing set', (t) => {
+  const m = new Monty('({1, 2}, "hello")')
+  const result = m.run()
+  t.true(Array.isArray(result))
+  t.is(result.__tuple__, true)
+  t.true(result[0] instanceof Set)
+  t.deepEqual(result[0], new Set([1, 2]))
+  t.is(result[1], 'hello')
 })
