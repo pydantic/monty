@@ -15,7 +15,7 @@ mod scheduler;
 use std::cmp::Ordering;
 
 use call::CallResult;
-use scheduler::{PendingCallData, Scheduler, SerializedTaskFrame};
+use scheduler::{PendingCallData, Scheduler, SerializedTaskFrame, TaskState};
 
 use crate::{
     args::ArgValues,
@@ -225,7 +225,7 @@ impl<'code> CallFrame<'code> {
         namespace_idx: NamespaceId,
         function_id: FunctionId,
         cells: Vec<HeapId>,
-        call_position: CodeRange,
+        call_position: Option<CodeRange>,
     ) -> Self {
         Self {
             code,
@@ -234,7 +234,7 @@ impl<'code> CallFrame<'code> {
             namespace_idx,
             function_id: Some(function_id),
             cells,
-            call_position: Some(call_position),
+            call_position,
         }
     }
 }
@@ -384,6 +384,12 @@ pub struct VM<'a, T: ResourceTracker, P: PrintWriter> {
     /// Manages concurrent tasks, external call tracking, and task switching.
     /// Always present (created at VM initialization) even for sync code.
     scheduler: Scheduler,
+
+    /// Module-level code (for restoring main task frames).
+    ///
+    /// Stored here because the main task's frames have `function_id: None` and
+    /// need a reference to the module code when being restored after task switching.
+    module_code: Option<&'a Code>,
 }
 
 impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
@@ -404,11 +410,14 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             exception_stack: Vec::new(),
             instruction_ip: 0,
             scheduler: Scheduler::new(),
+            module_code: None,
         }
     }
 
     /// Pushes an initial frame for module-level code and runs the VM.
     pub fn run_module(&mut self, code: &'a Code) -> Result<FrameExit, RunError> {
+        // Store module code for restoring main task frames during task switching
+        self.module_code = Some(code);
         self.frames.push(CallFrame::new_module(code, GLOBAL_NS_IDX));
         self.run()
     }
@@ -1108,8 +1117,33 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::ReturnValue => {
                     let value = self.pop();
                     if self.frames.len() == 1 {
-                        // Module-level return - we're done
-                        return Ok(FrameExit::Return(value));
+                        // Last frame - check if this is main task or spawned task
+                        let is_main_task = self.scheduler.current_task_id().is_none_or(TaskId::is_main);
+
+                        if is_main_task {
+                            // Module-level return - we're done
+                            return Ok(FrameExit::Return(value));
+                        }
+
+                        // Spawned task completed - handle task completion
+                        let result = self.handle_task_completion(value);
+                        match result {
+                            Ok(GetAwaitableResult::ValueReady(v)) => {
+                                self.push(v);
+                            }
+                            Ok(GetAwaitableResult::FramePushed) => {
+                                // Switched to another task - reload cache
+                                reload_cache!(self, cached_frame);
+                            }
+                            Ok(GetAwaitableResult::Yield(pending)) => {
+                                // All tasks blocked - return to host
+                                return Ok(FrameExit::ResolveFutures(pending));
+                            }
+                            Err(e) => {
+                                catch_sync!(self, cached_frame, e);
+                            }
+                        }
+                        continue;
                     }
                     // Pop current frame and push return value
                     self.pop_frame();
@@ -1339,7 +1373,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             namespace_idx,
             func_id,
             frame_cells,
-            call_position,
+            Some(call_position),
         ));
 
         Ok(())
@@ -1372,6 +1406,138 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             Ok(GetAwaitableResult::FramePushed)
         } else {
             // No ready tasks - yield control to host
+            let pending = self.scheduler.pending_call_ids();
+            Ok(GetAwaitableResult::Yield(pending))
+        }
+    }
+
+    /// Handles completion of a spawned task.
+    ///
+    /// Called when a spawned task's coroutine returns. This:
+    /// 1. Marks the task as completed in the scheduler
+    /// 2. If the task belongs to a gather, stores the result and checks if gather is complete
+    /// 3. If gather is complete, unblocks the waiter and provides the collected results
+    /// 4. Otherwise, switches to the next ready task
+    fn handle_task_completion(&mut self, result: Value) -> Result<GetAwaitableResult, RunError> {
+        let task_id = self
+            .scheduler
+            .current_task_id()
+            .expect("handle_task_completion called without current task");
+
+        // Get task's gather_id and coroutine_id before marking complete
+        let task = self.scheduler.get_task(task_id);
+        let gather_id = task.gather_id;
+        let coroutine_id = task.coroutine_id;
+
+        // Mark coroutine as completed
+        if let Some(coro_id) = coroutine_id
+            && let HeapData::Coroutine(coro) = self.heap.get_mut(coro_id)
+        {
+            coro.state = CoroutineState::Completed;
+        }
+
+        // Mark task as completed and store result
+        self.scheduler.complete_task(task_id, result.copy_for_extend());
+        if let Value::Ref(id) = &result {
+            self.heap.inc_ref(*id);
+        }
+
+        // If task belongs to a gather, check if gather is complete
+        if let Some(gid) = gather_id {
+            // Extract gather data before doing any heap mutations
+            let (task_ids, waiter) = if let HeapData::GatherFuture(gather) = self.heap.get(gid) {
+                (gather.task_ids.clone(), gather.waiter)
+            } else {
+                (vec![], None)
+            };
+
+            if !task_ids.is_empty() {
+                // Check if all tasks are complete
+                let all_complete = task_ids.iter().all(|tid| {
+                    matches!(
+                        self.scheduler.get_task(*tid).state,
+                        TaskState::Completed(_) | TaskState::Failed(_)
+                    )
+                });
+
+                if all_complete {
+                    // First check if any task failed
+                    let failed_task = task_ids
+                        .iter()
+                        .find(|tid| matches!(self.scheduler.get_task(**tid).state, TaskState::Failed(_)));
+
+                    if let Some(&failed_tid) = failed_task {
+                        // Get the error from the failed task
+                        let task = self.scheduler.get_task_mut(failed_tid);
+                        if let TaskState::Failed(err) = std::mem::replace(&mut task.state, TaskState::Ready) {
+                            result.drop_with_heap(self.heap);
+                            return Err(err);
+                        }
+                    }
+
+                    // Collect results in order (no failures) and increment refcounts
+                    let mut results = Vec::with_capacity(task_ids.len());
+                    let mut ref_ids_to_inc = Vec::new();
+                    for tid in &task_ids {
+                        let task_state = &self.scheduler.get_task(*tid).state;
+                        match task_state {
+                            TaskState::Completed(v) => {
+                                results.push(v.copy_for_extend());
+                                if let Value::Ref(id) = v {
+                                    ref_ids_to_inc.push(*id);
+                                }
+                            }
+                            _ => unreachable!("task not complete but all_complete is true and no failures"),
+                        }
+                    }
+
+                    // Now increment refcounts (after scheduler borrow ends)
+                    for id in ref_ids_to_inc {
+                        self.heap.inc_ref(id);
+                    }
+
+                    // Create result list
+                    let list_id = self.heap.allocate(HeapData::List(List::new(results)))?;
+
+                    // Clean up gather - drop the original result since we copied it
+                    result.drop_with_heap(self.heap);
+
+                    // Unblock waiter and switch to it
+                    if let Some(waiter_id) = waiter {
+                        self.scheduler.make_ready(waiter_id);
+                        // Clear current task's state since it's done
+                        self.frames.clear();
+                        self.stack.clear();
+                        // Switch to waiter
+                        self.scheduler.set_current_task(Some(waiter_id));
+                        self.load_or_init_task(waiter_id)?;
+                        // Push the result onto the waiter's stack
+                        self.push(Value::Ref(list_id));
+                        return Ok(GetAwaitableResult::FramePushed);
+                    }
+
+                    // No waiter (shouldn't happen but handle gracefully)
+                    return Ok(GetAwaitableResult::ValueReady(Value::Ref(list_id)));
+                }
+            }
+        }
+
+        // Drop the result (it's stored in the task state now)
+        result.drop_with_heap(self.heap);
+
+        // Gather not complete or no gather - switch to next task
+        // Clear current task's state since it's done
+        self.frames.clear();
+        self.stack.clear();
+        self.scheduler.set_current_task(None);
+
+        // Get next ready task
+        if let Some(next_task_id) = self.scheduler.next_ready_task() {
+            self.scheduler.set_current_task(Some(next_task_id));
+            self.load_or_init_task(next_task_id)?;
+            Ok(GetAwaitableResult::FramePushed)
+        } else {
+            // No ready tasks - yield to host
             let pending = self.scheduler.pending_call_ids();
             Ok(GetAwaitableResult::Yield(pending))
         }
@@ -1424,9 +1590,8 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let code = match sf.function_id {
                         Some(func_id) => &self.interns.get_function(func_id).code,
                         None => {
-                            // This should only happen for module-level code
-                            // For spawned tasks, we always have a function
-                            panic!("spawned task frame has no function_id")
+                            // This happens for the main task's module-level code
+                            self.module_code.expect("module_code not set for main task frame")
                         }
                     };
                     CallFrame {
@@ -1488,8 +1653,19 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             coro_mut.state = CoroutineState::Running;
         }
 
-        // Create namespace and push frame
-        self.start_coroutine_frame(func_id, namespace_values, frame_cells)?;
+        // Create namespace and push frame directly (can't use start_coroutine_frame
+        // because that needs a current frame for call_position, but spawned tasks
+        // don't have a parent frame - the coroutine is the root)
+        let func = self.interns.get_function(func_id);
+        let namespace_idx = self.namespaces.register_prebuilt(namespace_values, self.heap)?;
+        self.frames.push(CallFrame::new_function(
+            &func.code,
+            self.stack.len(),
+            namespace_idx,
+            func_id,
+            frame_cells,
+            None, // No call position - this is the root frame for a spawned task
+        ));
 
         Ok(())
     }
@@ -1649,6 +1825,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             exception_stack: snapshot.exception_stack,
             instruction_ip: snapshot.instruction_ip,
             scheduler: snapshot.scheduler,
+            module_code: Some(module_code),
         }
     }
 

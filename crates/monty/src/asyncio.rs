@@ -40,7 +40,6 @@ impl CallId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct TaskId(pub u32);
 
-#[expect(dead_code, reason = "used in later phases")]
 impl TaskId {
     /// Creates a new TaskId from a raw value.
     #[inline]

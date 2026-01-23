@@ -230,6 +230,53 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                     return result.map(|()| Value::None);
                 }
 
+                // Check for module attribute call - modules don't have methods, they have
+                // callable attributes. We need to look up the attribute and call it.
+                if matches!(self.heap.get(heap_id), HeapData::Module(_)) {
+                    // Look up the attribute in the module using with_entry_mut to avoid borrow conflicts
+                    let attr_value = Value::InternString(name_id);
+                    let lookup_result = self
+                        .heap
+                        .with_entry_mut(heap_id, |heap, data| -> Result<Value, StringId> {
+                            if let HeapData::Module(module) = data {
+                                if let Some(func) = module.get_attr(&attr_value, heap, self.interns) {
+                                    // Increment refcount since get_attr returns copy_for_extend
+                                    if let Value::Ref(ref_id) = &func {
+                                        heap.inc_ref(*ref_id);
+                                    }
+                                    Ok(func)
+                                } else {
+                                    Err(module.name())
+                                }
+                            } else {
+                                unreachable!("type changed during borrow")
+                            }
+                        });
+
+                    obj.drop_with_heap(self.heap);
+
+                    match lookup_result {
+                        Ok(func) => {
+                            // Call the attribute as a function
+                            return match self.call_function(func, args)? {
+                                CallResult::Push(v) => Ok(v),
+                                // Module functions shouldn't push frames or make external calls
+                                CallResult::FramePushed | CallResult::External(_, _) => {
+                                    Err(RunError::internal("module attribute call returned unexpected result"))
+                                }
+                            };
+                        }
+                        Err(module_name_id) => {
+                            let module_name = self.interns.get_str(module_name_id);
+                            args.drop_with_heap(self.heap);
+                            return Err(ExcType::attribute_error_module(
+                                module_name,
+                                self.interns.get_str(name_id),
+                            ));
+                        }
+                    }
+                }
+
                 // Call the method on the heap object
                 let result = self.heap.call_attr(heap_id, &attr, args, self.interns);
                 // Drop the object reference after the call
@@ -673,7 +720,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             namespace_idx,
             func_id,
             frame_cells,
-            call_position,
+            Some(call_position),
         ));
 
         Ok(CallResult::FramePushed)

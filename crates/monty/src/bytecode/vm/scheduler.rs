@@ -180,14 +180,18 @@ pub(crate) struct Scheduler {
 
 #[expect(dead_code, reason = "methods used in Phase 5 when scheduler is integrated")]
 impl Scheduler {
-    /// Creates a new scheduler with the main task (task 0) in Ready state.
+    /// Creates a new scheduler with the main task (task 0) as current.
     ///
     /// The main task uses the VM's stack/frames directly and is always present.
+    /// It starts as the current task (not in the ready queue) since it runs
+    /// immediately without needing to be scheduled.
     pub fn new() -> Self {
-        let main_task = Task::new(TaskId::new(0), None, None);
+        let mut main_task = Task::new(TaskId::new(0), None, None);
+        // Main task starts Running, not Ready (it's the current task, not waiting)
+        main_task.state = TaskState::Ready; // Will be set properly when it blocks
         Self {
             tasks: vec![main_task],
-            ready_queue: VecDeque::from([TaskId::new(0)]),
+            ready_queue: VecDeque::new(), // Main task is current, not in ready queue
             current_task: Some(TaskId::new(0)),
             next_task_id: 1,
             next_call_id: 0,
