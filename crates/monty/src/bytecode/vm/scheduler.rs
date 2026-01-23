@@ -18,7 +18,7 @@ use crate::{
     exception_private::RunError,
     heap::HeapId,
     intern::ExtFunctionId,
-    namespace::NamespaceId,
+    namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
     parse::CodeRange,
     value::Value,
 };
@@ -199,6 +199,12 @@ impl Scheduler {
     #[inline]
     pub fn current_task_id(&self) -> Option<TaskId> {
         self.current_task
+    }
+
+    /// Returns the total number of tasks (including main task).
+    #[inline]
+    pub fn task_count(&self) -> usize {
+        self.tasks.len()
     }
 
     /// Returns a reference to a task by ID.
@@ -385,24 +391,79 @@ impl Scheduler {
     /// This marks the task as Failed with a cancellation error and cleans up:
     /// - Stack values
     /// - Exception stack values
+    /// - Frame cell references
+    /// - Frame namespaces
+    /// - Nested gathers (if the task was blocked on one)
+    /// - Completed task results (if task finished before cancellation)
     ///
     /// The caller is responsible for cleaning up the task's coroutine on the heap.
     ///
     /// # Arguments
     /// * `task_id` - ID of the task to cancel
     /// * `heap` - Heap for dropping values
+    /// * `namespaces` - VM namespaces for cleaning up frame namespaces
     pub fn cancel_task(
         &mut self,
         task_id: TaskId,
         heap: &mut crate::heap::Heap<impl crate::resource::ResourceTracker>,
+        namespaces: &mut Namespaces,
     ) {
-        // Only cancel if not already finished (check before mutating)
+        // If task already finished, clean up its result value and return
         if self.get_task(task_id).is_finished() {
+            let task = self.get_task_mut(task_id);
+            if let TaskState::Completed(value) = std::mem::replace(&mut task.state, TaskState::Ready) {
+                value.drop_with_heap(heap);
+            }
+            // Note: Failed tasks don't have values to clean up (RunError doesn't contain Values)
             return;
         }
 
         // Remove from ready queue if present (do this before getting mutable task reference)
         self.ready_queue.retain(|&id| id != task_id);
+
+        // Check if task is blocked on a gather and get the gather info before mutating task
+        let inner_gather_info = {
+            let task = self.get_task(task_id);
+            if let TaskState::BlockedOnGather(gather_id) = task.state {
+                // Get inner gather's task IDs from heap
+                if let crate::heap::HeapData::GatherFuture(gather) = heap.get(gather_id) {
+                    Some((gather_id, gather.task_ids.clone()))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        // Recursively cancel inner gather's tasks first
+        if let Some((inner_gather_id, inner_task_ids)) = inner_gather_info {
+            for inner_task_id in inner_task_ids {
+                self.cancel_task(inner_task_id, heap, namespaces);
+            }
+
+            // Cleanup the inner GatherFuture - extract data first to avoid borrow conflict
+            let (coroutine_ids, results) =
+                if let crate::heap::HeapData::GatherFuture(gather) = heap.get_mut(inner_gather_id) {
+                    (
+                        std::mem::take(&mut gather.coroutine_ids),
+                        std::mem::take(&mut gather.results),
+                    )
+                } else {
+                    (vec![], vec![])
+                };
+
+            // Now cleanup the extracted data with mutable heap access
+            for coroutine_id in coroutine_ids {
+                heap.dec_ref(coroutine_id);
+            }
+            for value in results.into_iter().flatten() {
+                value.drop_with_heap(heap);
+            }
+
+            // Dec_ref the gather itself
+            heap.dec_ref(inner_gather_id);
+        }
 
         // Now get mutable reference to the task for cleanup
         let task = self.get_task_mut(task_id);
@@ -415,6 +476,17 @@ impl Scheduler {
         // Clean up exception stack values
         for value in std::mem::take(&mut task.exception_stack) {
             value.drop_with_heap(heap);
+        }
+
+        // Clean up frame cell references and namespaces
+        for frame in std::mem::take(&mut task.frames) {
+            for cell_id in frame.cells {
+                heap.dec_ref(cell_id);
+            }
+            // Clean up the namespace (but not the global namespace)
+            if frame.namespace_idx != GLOBAL_NS_IDX {
+                namespaces.drop_with_heap(frame.namespace_idx, heap);
+            }
         }
 
         // Mark as failed with a cancellation error
@@ -467,8 +539,7 @@ impl Scheduler {
 
     /// Cleans up resources when dropping the scheduler.
     ///
-    /// Drops any pending call arguments and resolved values.
-    #[expect(dead_code, reason = "used when ref-count-panic is enabled")]
+    /// Drops any pending call arguments, resolved values, and task state.
     pub fn cleanup(&mut self, heap: &mut crate::heap::Heap<impl crate::resource::ResourceTracker>) {
         // Drop pending call arguments
         for (_, data) in std::mem::take(&mut self.pending_calls) {

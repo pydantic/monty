@@ -30,7 +30,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Returns `GetAwaitableResult` indicating what action the VM should take.
     pub(super) fn exec_get_awaitable(&mut self) -> Result<GetAwaitableResult, RunError> {
-        let awaitable = self.pop();
+        #[cfg_attr(not(feature = "ref-count-panic"), expect(unused_mut))]
+        let mut awaitable = self.pop();
 
         match awaitable {
             Value::Ref(heap_id) => {
@@ -118,8 +119,11 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                         // Block current task on this gather
                         self.scheduler.block_current_on_gather(heap_id);
 
-                        // Don't drop the gather reference - we need it for result collection
-                        // The gather owns the coroutine references
+                        // Consume the awaitable without decrementing refcount - the GatherFuture
+                        // must stay alive for result collection. It will be dec_ref'd when
+                        // the gather completes (in handle_task_completion).
+                        #[cfg(feature = "ref-count-panic")]
+                        awaitable.dec_ref_forget();
 
                         // Switch to next ready task (spawned tasks) or yield
                         self.switch_or_yield()
@@ -293,7 +297,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
                             // Switch to waiter so error is raised in its context
                             if let Some(waiter_id) = waiter {
-                                self.frames.clear();
+                                self.cleanup_current_frames();
                                 self.stack.clear();
                                 self.scheduler.set_current_task(Some(waiter_id));
                                 self.load_or_init_task(waiter_id)?;
@@ -339,7 +343,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                     if let Some(waiter_id) = waiter {
                         self.scheduler.make_ready(waiter_id);
                         // Clear current task's state since it's done
-                        self.frames.clear();
+                        self.cleanup_current_frames();
                         self.stack.clear();
                         // Switch to waiter
                         self.scheduler.set_current_task(Some(waiter_id));
@@ -360,7 +364,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
         // Gather not complete or no gather - switch to next task
         // Clear current task's state since it's done
-        self.frames.clear();
+        self.cleanup_current_frames();
         self.stack.clear();
         self.scheduler.set_current_task(None);
 
@@ -421,7 +425,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
             // Cancel sibling tasks
             for sibling_id in siblings {
-                self.scheduler.cancel_task(sibling_id, self.heap);
+                self.scheduler.cancel_task(sibling_id, self.heap, self.namespaces);
             }
 
             // Clean up the gather
@@ -429,7 +433,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
             // Switch to waiter and propagate the error
             if let Some(waiter_id) = waiter {
-                self.frames.clear();
+                // Properly clean up current task's frames (namespaces and cells)
+                self.cleanup_current_frames();
                 self.stack.clear();
                 self.scheduler.set_current_task(Some(waiter_id));
                 self.load_or_init_task(waiter_id)?;
@@ -445,7 +450,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         }
 
         // No gather or no waiter - switch to next task
-        self.frames.clear();
+        self.cleanup_current_frames();
         self.stack.clear();
         self.scheduler.set_current_task(None);
 
@@ -617,7 +622,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         if let Some((_, _, siblings)) = self.scheduler.fail_for_call(call_id, error) {
             // Cancel sibling tasks if this task was part of a gather
             for sibling_id in siblings {
-                self.scheduler.cancel_task(sibling_id, self.heap);
+                self.scheduler.cancel_task(sibling_id, self.heap, self.namespaces);
             }
             true
         } else {

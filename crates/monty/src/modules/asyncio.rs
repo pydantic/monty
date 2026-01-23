@@ -75,11 +75,14 @@ pub(crate) fn gather(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
 
     // Validate all positional args are coroutines and collect their HeapIds
     let mut coroutine_ids = Vec::new();
-    for arg in pos_args {
+    #[cfg_attr(not(feature = "ref-count-panic"), expect(unused_mut))]
+    for mut arg in pos_args {
         match &arg {
             Value::Ref(id) if heap.get(*id).is_coroutine() => {
                 coroutine_ids.push(*id);
-                // Don't drop - the GatherFuture will own these references
+                // Transfer ownership to GatherFuture - mark Value as consumed without dec_ref
+                #[cfg(feature = "ref-count-panic")]
+                arg.dec_ref_forget();
             }
             _ => {
                 // Not a coroutine - clean up and error

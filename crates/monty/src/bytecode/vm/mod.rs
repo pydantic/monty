@@ -426,7 +426,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// Cleans up VM state before the VM is dropped.
     ///
     /// This method must be called before the VM goes out of scope to ensure
-    /// proper reference counting cleanup for any exception values.
+    /// proper reference counting cleanup for any exception values and scheduler state.
     pub fn cleanup(&mut self) {
         // Drop all exceptions in the exception stack
         for exc in self.exception_stack.drain(..) {
@@ -435,6 +435,35 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         // Stack should be empty, but clean up just in case
         for value in self.stack.drain(..) {
             value.drop_with_heap(self.heap);
+        }
+        // Clean up current frames (main module frame after return, or any remaining frames)
+        self.cleanup_current_frames();
+        // Clean up task frame namespaces (scheduler doesn't have access to namespaces)
+        self.cleanup_all_task_frames();
+        // Clean up scheduler state (task stacks, pending calls, resolved values)
+        self.scheduler.cleanup(self.heap);
+    }
+
+    /// Cleans up frames stored in all scheduler tasks.
+    ///
+    /// Task frames reference namespaces and cells that need to be cleaned up
+    /// before the VM is dropped. This is separate from `scheduler.cleanup()`
+    /// because the scheduler doesn't have access to the VM's namespaces.
+    fn cleanup_all_task_frames(&mut self) {
+        // Clean up each task's saved frames
+        for task_idx in 0..self.scheduler.task_count() {
+            let task_id = TaskId::new(u32::try_from(task_idx).expect("task_idx exceeds u32"));
+            let task = self.scheduler.get_task_mut(task_id);
+            for frame in std::mem::take(&mut task.frames) {
+                // Clean up cell references
+                for cell_id in frame.cells {
+                    self.heap.dec_ref(cell_id);
+                }
+                // Clean up the namespace (but not the global namespace)
+                if frame.namespace_idx != GLOBAL_NS_IDX {
+                    self.namespaces.drop_with_heap(frame.namespace_idx, self.heap);
+                }
+            }
         }
     }
 
@@ -1366,6 +1395,23 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         // Clean up the namespace (but not the global namespace)
         if frame.namespace_idx != GLOBAL_NS_IDX {
             self.namespaces.drop_with_heap(frame.namespace_idx, self.heap);
+        }
+    }
+
+    /// Cleans up all frames for the current task before switching tasks.
+    ///
+    /// Used when a task completes or fails and we need to switch to another task.
+    /// Properly cleans up each frame's namespace and cell references.
+    pub(super) fn cleanup_current_frames(&mut self) {
+        for frame in self.frames.drain(..) {
+            // Clean up cell references
+            for cell_id in frame.cells {
+                self.heap.dec_ref(cell_id);
+            }
+            // Clean up the namespace (but not the global namespace)
+            if frame.namespace_idx != GLOBAL_NS_IDX {
+                self.namespaces.drop_with_heap(frame.namespace_idx, self.heap);
+            }
         }
     }
 
