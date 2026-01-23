@@ -6,9 +6,12 @@
 use strum::FromRepr;
 
 use crate::{
+    args::ArgValues,
+    exception_private::RunResult,
     heap::{Heap, HeapId},
     intern::{Interns, StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker},
+    value::Value,
 };
 
 pub(crate) mod asyncio;
@@ -50,6 +53,28 @@ impl BuiltinModule {
             Self::Sys => sys::create_module(heap, interns),
             Self::Typing => typing::create_module(heap, interns),
             Self::Asyncio => asyncio::create_module(heap, interns),
+        }
+    }
+}
+
+/// Functions that live inside modules (not global builtins).
+///
+/// Unlike `BuiltinsFunctions` which are globally available (`print`, `len`),
+/// these functions require importing a module to access (`asyncio.gather`).
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr, strum::Display, serde::Serialize, serde::Deserialize)]
+#[strum(serialize_all = "lowercase")]
+pub(crate) enum ModuleFunctions {
+    /// `asyncio.gather(*coros)` - gather multiple coroutines into a single awaitable.
+    #[strum(serialize = "gather")]
+    AsyncioGather,
+}
+
+impl ModuleFunctions {
+    /// Calls this module function with the given arguments.
+    pub fn call(self, heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        match self {
+            Self::AsyncioGather => asyncio::gather(heap, args),
         }
     }
 }

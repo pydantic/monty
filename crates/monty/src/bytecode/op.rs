@@ -269,14 +269,18 @@ pub enum Opcode {
     /// After the two count bytes, there are kw_count little-endian u16 values,
     /// each being a StringId index for the corresponding keyword argument name.
     CallFunctionKw,
-    /// Call method. Operands: u16 name_id, u8 arg_count.
-    CallMethod,
-    /// Call method with keyword args. Operands: u16 name_id, u8 pos_count, u8 kw_count, then kw_count u16 name indices.
+    /// Call attribute on object. Operands: u16 name_id, u8 arg_count.
+    ///
+    /// This is used for both method calls (`obj.method(args)`) and module
+    /// attribute calls (`module.func(args)`). The attribute is looked up
+    /// on the object and called with the given arguments.
+    CallAttr,
+    /// Call attribute with keyword args. Operands: u16 name_id, u8 pos_count, u8 kw_count, then kw_count u16 name indices.
     ///
     /// Stack: [obj, pos_args..., kw_values...]
     /// After the operands, there are kw_count little-endian u16 values,
     /// each being a StringId index for the corresponding keyword argument name.
-    CallMethodKw,
+    CallAttrKw,
     /// Call a defined function with *args tuple and **kwargs dict. Operand: u8 flags.
     ///
     /// Flags:
@@ -385,8 +389,8 @@ impl Opcode {
         use Opcode::{
             BinaryAdd, BinaryAnd, BinaryDiv, BinaryFloorDiv, BinaryLShift, BinaryMatMul, BinaryMod, BinaryMul,
             BinaryOr, BinaryPow, BinaryRShift, BinarySub, BinarySubscr, BinaryXor, BuildDict, BuildFString, BuildList,
-            BuildSet, BuildSlice, BuildTuple, CallBuiltinFunction, CallBuiltinType, CallFunction, CallFunctionExtended,
-            CallFunctionKw, CallMethod, CallMethodKw, CheckExcMatch, ClearException, CompareEq, CompareGe, CompareGt,
+            BuildSet, BuildSlice, BuildTuple, CallAttr, CallAttrKw, CallBuiltinFunction, CallBuiltinType, CallFunction,
+            CallFunctionExtended, CallFunctionKw, CheckExcMatch, ClearException, CompareEq, CompareGe, CompareGt,
             CompareIn, CompareIs, CompareIsNot, CompareLe, CompareLt, CompareModEq, CompareNe, CompareNotIn,
             DeleteAttr, DeleteLocal, DeleteSubscr, DictMerge, DictSetItem, Dup, ForIter, FormatValue, GetAwaitable,
             GetIter, InplaceAdd, InplaceAnd, InplaceDiv, InplaceFloorDiv, InplaceLShift, InplaceMod, InplaceMul,
@@ -453,7 +457,7 @@ impl Opcode {
             DeleteAttr => -1,               // pop 1, push 0
 
             // Function calls - depend on arg count
-            CallFunction | CallBuiltinFunction | CallBuiltinType | CallFunctionKw | CallMethod | CallMethodKw
+            CallFunction | CallBuiltinFunction | CallBuiltinType | CallFunctionKw | CallAttr | CallAttrKw
             | CallFunctionExtended => return None,
 
             // Control flow - no stack effect (jumps don't push/pop)

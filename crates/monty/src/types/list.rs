@@ -730,7 +730,7 @@ fn normalize_list_index(index: i64, len: usize) -> usize {
 
 /// Performs an in-place sort on a list with optional key function and reverse flag.
 ///
-/// This is called from the VM's `call_method` when `list.sort()` is invoked.
+/// This is called from the VM's `call_attr` when `list.sort()` is invoked.
 /// The function lives here (rather than in VM) to keep list-related logic together,
 /// with the VM only passing through its resources.
 ///

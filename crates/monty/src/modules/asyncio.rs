@@ -9,10 +9,10 @@
 use crate::{
     args::ArgValues,
     asyncio::GatherFuture,
-    builtins::{Builtins, BuiltinsFunctions},
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
+    modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
     types::Module,
     value::Value,
@@ -34,7 +34,7 @@ pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -
     // asyncio.gather - the only function we implement
     module.set_attr(
         StaticStrings::Gather,
-        Value::Builtin(Builtins::Function(BuiltinsFunctions::AsyncioGather)),
+        Value::ModuleFunction(ModuleFunctions::AsyncioGather),
         heap,
         interns,
     );

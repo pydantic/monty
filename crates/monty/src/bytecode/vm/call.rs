@@ -122,21 +122,21 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         self.call_function(callable, args)
     }
 
-    /// Executes `CallMethod` opcode.
+    /// Executes `CallAttr` opcode.
     ///
-    /// Pops the object and arguments from the stack, calls the method,
+    /// Pops the object and arguments from the stack, calls the attribute,
     /// and returns the result value.
-    pub(super) fn exec_call_method(&mut self, name_id: StringId, arg_count: usize) -> Result<Value, RunError> {
+    pub(super) fn exec_call_attr(&mut self, name_id: StringId, arg_count: usize) -> Result<Value, RunError> {
         let args = self.pop_n_args(arg_count);
         let obj = self.pop();
-        self.call_method(obj, name_id, args)
+        self.call_attr(obj, name_id, args)
     }
 
-    /// Executes `CallMethodKw` opcode.
+    /// Executes `CallAttrKw` opcode.
     ///
     /// Pops the object, positional args, and keyword args from the stack,
-    /// builds the appropriate `ArgValues`, and calls the method.
-    pub(super) fn exec_call_method_kw(
+    /// builds the appropriate `ArgValues`, and calls the attribute.
+    pub(super) fn exec_call_attr_kw(
         &mut self,
         name_id: StringId,
         pos_count: usize,
@@ -168,7 +168,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             }
         };
 
-        self.call_method(obj, name_id, args)
+        self.call_attr(obj, name_id, args)
     }
 
     /// Executes `CallFunctionExtended` opcode.
@@ -209,7 +209,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         }
     }
 
-    /// Calls a method on an object.
+    /// Calls an attribute on an object.
     ///
     /// For heap-allocated objects (`Value::Ref`), dispatches to the type's
     /// `py_call_attr` implementation via `heap.call_attr()`.
@@ -218,7 +218,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Special handling: `list.sort(key=...)` is intercepted here to allow calling
     /// builtin key functions with VM access.
-    fn call_method(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<Value, RunError> {
+    fn call_attr(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<Value, RunError> {
         let attr = Attr::Interned(name_id);
 
         match obj {
@@ -229,57 +229,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                     obj.drop_with_heap(self.heap);
                     return result.map(|()| Value::None);
                 }
-
-                // Check for module attribute call - modules don't have methods, they have
-                // callable attributes. We need to look up the attribute and call it.
-                if matches!(self.heap.get(heap_id), HeapData::Module(_)) {
-                    // Look up the attribute in the module using with_entry_mut to avoid borrow conflicts
-                    let attr_value = Value::InternString(name_id);
-                    let lookup_result = self
-                        .heap
-                        .with_entry_mut(heap_id, |heap, data| -> Result<Value, StringId> {
-                            if let HeapData::Module(module) = data {
-                                if let Some(func) = module.get_attr(&attr_value, heap, self.interns) {
-                                    // Increment refcount since get_attr returns copy_for_extend
-                                    if let Value::Ref(ref_id) = &func {
-                                        heap.inc_ref(*ref_id);
-                                    }
-                                    Ok(func)
-                                } else {
-                                    Err(module.name())
-                                }
-                            } else {
-                                unreachable!("type changed during borrow")
-                            }
-                        });
-
-                    obj.drop_with_heap(self.heap);
-
-                    match lookup_result {
-                        Ok(func) => {
-                            // Call the attribute as a function
-                            return match self.call_function(func, args)? {
-                                CallResult::Push(v) => Ok(v),
-                                // Module functions shouldn't push frames or make external calls
-                                CallResult::FramePushed | CallResult::External(_, _) => {
-                                    Err(RunError::internal("module attribute call returned unexpected result"))
-                                }
-                            };
-                        }
-                        Err(module_name_id) => {
-                            let module_name = self.interns.get_str(module_name_id);
-                            args.drop_with_heap(self.heap);
-                            return Err(ExcType::attribute_error_module(
-                                module_name,
-                                self.interns.get_str(name_id),
-                            ));
-                        }
-                    }
-                }
-
-                // Call the method on the heap object
+                // Call the method on the heap object (handles modules via HeapData::py_call_attr)
                 let result = self.heap.call_attr(heap_id, &attr, args, self.interns);
-                // Drop the object reference after the call
                 obj.drop_with_heap(self.heap);
                 result
             }
@@ -310,6 +261,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Dispatches based on the callable type:
     /// - `Value::Builtin`: calls builtin directly, returns `Push`
+    /// - `Value::ModuleFunction`: calls module function directly, returns `Push`
     /// - `Value::ExtFunction`: returns `External` for caller to execute
     /// - `Value::DefFunction`: pushes a new frame, returns `FramePushed`
     /// - `Value::Ref`: checks for closure/function on heap
@@ -317,6 +269,10 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         match callable {
             Value::Builtin(builtin) => {
                 let result = builtin.call(self.heap, args, self.interns, self.print_writer)?;
+                Ok(CallResult::Push(result))
+            }
+            Value::ModuleFunction(mf) => {
+                let result = mf.call(self.heap, args)?;
                 Ok(CallResult::Push(result))
             }
             Value::ExtFunction(ext_id) => {

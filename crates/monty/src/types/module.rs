@@ -1,11 +1,13 @@
 //! Python module type for representing imported modules.
 
 use crate::{
+    args::ArgValues,
+    exception_private::{ExcType, RunResult},
     heap::{Heap, HeapId},
     intern::{Interns, StringId},
     resource::ResourceTracker,
     types::{Dict, PyTrait},
-    value::Value,
+    value::{Attr, Value},
 };
 
 /// A Python module with a name and attribute dictionary.
@@ -93,5 +95,43 @@ impl Module {
     /// Collects child HeapIds for reference counting.
     pub fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.attrs.py_dec_ref_ids(stack);
+    }
+
+    /// Calls an attribute as a function on this module.
+    ///
+    /// Modules don't have methods - they have callable attributes. This looks up
+    /// the attribute and calls it if it's a `ModuleFunction`.
+    pub fn py_call_attr(
+        &self,
+        heap: &mut Heap<impl ResourceTracker>,
+        attr: &Attr,
+        args: ArgValues,
+        interns: &Interns,
+    ) -> RunResult<Value> {
+        let attr_key = match attr {
+            Attr::Interned(id) => Value::InternString(*id),
+            Attr::Other(s) => {
+                // Module attributes are always interned, so owned strings won't match
+                args.drop_with_heap(heap);
+                return Err(ExcType::attribute_error_module(interns.get_str(self.name), s));
+            }
+        };
+
+        match self.get_attr(&attr_key, heap, interns) {
+            Some(Value::ModuleFunction(mf)) => mf.call(heap, args),
+            Some(func) => {
+                // Found attribute but it's not callable
+                func.drop_with_heap(heap);
+                args.drop_with_heap(heap);
+                Err(ExcType::type_error("module attribute is not callable"))
+            }
+            None => {
+                args.drop_with_heap(heap);
+                Err(ExcType::attribute_error_module(
+                    interns.get_str(self.name),
+                    attr.as_str(interns),
+                ))
+            }
+        }
     }
 }

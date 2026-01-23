@@ -34,7 +34,7 @@ use crate::{
 
 /// Maximum number of arguments allowed in a function call.
 ///
-/// This limit comes from the bytecode format: `CallFunction` and `CallMethod`
+/// This limit comes from the bytecode format: `CallFunction` and `CallAttr`
 /// use a u8 operand for the argument count, so max 255. Python itself has no
 /// such limit but we need one for our bytecode encoding.
 const MAX_CALL_ARGS: usize = 255;
@@ -734,7 +734,7 @@ impl<'a> Compiler<'a> {
                 // Compile the object (will be on the stack)
                 self.compile_expr(object)?;
 
-                // Compile the method call arguments and emit CallMethod
+                // Compile the attribute call arguments and emit CallAttr
                 self.compile_method_call(attr, args, expr_loc.position)?;
             }
 
@@ -1458,20 +1458,20 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles a method call on an object.
+    /// Compiles an attribute call on an object.
     ///
     /// The object should already be on the stack. This compiles the arguments
-    /// and emits a CallMethod opcode with the method name and arg count.
+    /// and emits a CallAttr opcode with the attribute name and arg count.
     fn compile_method_call(&mut self, attr: &Attr, args: &ArgExprs, call_pos: CodeRange) -> Result<(), CompileError> {
         // Get the interned attribute name
-        let name_id = attr.string_id().expect("CallMethod requires interned attr name");
+        let name_id = attr.string_id().expect("CallAttr requires interned attr name");
 
         // Compile arguments based on the argument type
         match args {
             ArgExprs::Empty => {
                 self.code.set_location(call_pos, None);
                 self.code.emit_u16_u8(
-                    Opcode::CallMethod,
+                    Opcode::CallAttr,
                     u16::try_from(name_id.index()).expect("name index exceeds u16"),
                     0,
                 );
@@ -1480,7 +1480,7 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(arg)?;
                 self.code.set_location(call_pos, None);
                 self.code.emit_u16_u8(
-                    Opcode::CallMethod,
+                    Opcode::CallAttr,
                     u16::try_from(name_id.index()).expect("name index exceeds u16"),
                     1,
                 );
@@ -1490,7 +1490,7 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(arg2)?;
                 self.code.set_location(call_pos, None);
                 self.code.emit_u16_u8(
-                    Opcode::CallMethod,
+                    Opcode::CallAttr,
                     u16::try_from(name_id.index()).expect("name index exceeds u16"),
                     2,
                 );
@@ -1509,7 +1509,7 @@ impl<'a> Compiler<'a> {
                 let arg_count = u8::try_from(args.len()).expect("argument count exceeds u8");
                 self.code.set_location(call_pos, None);
                 self.code.emit_u16_u8(
-                    Opcode::CallMethod,
+                    Opcode::CallAttr,
                     u16::try_from(name_id.index()).expect("name index exceeds u16"),
                     arg_count,
                 );
@@ -1529,7 +1529,7 @@ impl<'a> Compiler<'a> {
                     kwname_ids.push(u16::try_from(kwarg.key.name_id.index()).expect("name index exceeds u16"));
                 }
                 self.code.set_location(call_pos, None);
-                self.code.emit_call_method_kw(
+                self.code.emit_call_attr_kw(
                     u16::try_from(name_id.index()).expect("name index exceeds u16"),
                     0, // no positional args
                     &kwname_ids,
@@ -1549,7 +1549,7 @@ impl<'a> Compiler<'a> {
                     ));
                 }
 
-                // No unpacking - use CallMethodKw for efficiency
+                // No unpacking - use CallAttrKw for efficiency
                 let pos_count = args.as_ref().map_or(0, Vec::len);
                 let kw_count = kwargs.as_ref().map_or(0, Vec::len);
 
@@ -1583,7 +1583,7 @@ impl<'a> Compiler<'a> {
                 }
 
                 self.code.set_location(call_pos, None);
-                self.code.emit_call_method_kw(
+                self.code.emit_call_attr_kw(
                     u16::try_from(name_id.index()).expect("name index exceeds u16"),
                     u8::try_from(pos_count).expect("positional arg count exceeds u8"),
                     &kwname_ids,

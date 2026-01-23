@@ -996,21 +996,21 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         Err(err) => catch_sync!(self, cached_frame, err),
                     }
                 }
-                Opcode::CallMethod => {
-                    // CallMethod: u16 name_id, u8 arg_count
+                Opcode::CallAttr => {
+                    // CallAttr: u16 name_id, u8 arg_count
                     // Stack: [obj, arg1, arg2, ..., argN] -> [result]
                     let name_idx = fetch_u16!(cached_frame);
                     let arg_count = fetch_u8!(cached_frame) as usize;
                     let name_id = StringId::from_index(name_idx);
 
-                    match self.exec_call_method(name_id, arg_count) {
+                    match self.exec_call_attr(name_id, arg_count) {
                         Ok(result) => self.push(result),
                         // IP sync deferred to error path (no frame push possible)
                         Err(err) => catch_sync!(self, cached_frame, err),
                     }
                 }
-                Opcode::CallMethodKw => {
-                    // CallMethodKw: u16 name_id, u8 pos_count, u8 kw_count, then kw_count u16 name indices
+                Opcode::CallAttrKw => {
+                    // CallAttrKw: u16 name_id, u8 pos_count, u8 kw_count, then kw_count u16 name indices
                     // Stack: [obj, pos_args..., kw_values...] -> [result]
                     let name_idx = fetch_u16!(cached_frame);
                     let pos_count = fetch_u8!(cached_frame) as usize;
@@ -1023,7 +1023,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         kwname_ids.push(StringId::from_index(fetch_u16!(cached_frame)));
                     }
 
-                    match self.exec_call_method_kw(name_id, pos_count, kwname_ids) {
+                    match self.exec_call_attr_kw(name_id, pos_count, kwname_ids) {
                         Ok(result) => self.push(result),
                         // IP sync deferred to error path (no frame push possible)
                         Err(err) => catch_sync!(self, cached_frame, err),

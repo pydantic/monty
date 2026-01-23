@@ -18,6 +18,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId},
     intern::{BytesId, ExtFunctionId, FunctionId, Interns, StaticStrings, StringId},
+    modules::ModuleFunctions,
     resource::{LARGE_RESULT_THRESHOLD, ResourceTracker},
     types::{
         LongInt, PyTrait, Str, Tuple, Type,
@@ -55,6 +56,9 @@ pub(crate) enum Value {
     InternBytes(BytesId),
     /// A builtin function or exception type
     Builtin(Builtins),
+    /// A function from a module (not a global builtin).
+    /// Module functions require importing a module to access (e.g., `asyncio.gather`).
+    ModuleFunction(ModuleFunctions),
     /// A function defined in the module (not a closure, doesn't capture any variables)
     DefFunction(FunctionId),
     /// Reference to an external function defined on the host
@@ -113,6 +117,7 @@ impl PyTrait for Value {
             Self::InternString(_) => Type::Str,
             Self::InternBytes(_) => Type::Bytes,
             Self::Builtin(c) => c.py_type(),
+            Self::ModuleFunction(_) => Type::BuiltinFunction,
             Self::DefFunction(_) | Self::ExtFunction(_) => Type::Function,
             Self::Marker(m) => m.py_type(),
             Self::ExternalFuture(_) => Type::Coroutine,
@@ -222,6 +227,8 @@ impl PyTrait for Value {
 
             // Builtins equality - just check the enums are equal
             (Self::Builtin(b1), Self::Builtin(b2)) => b1 == b2,
+            // Module functions equality
+            (Self::ModuleFunction(mf1), Self::ModuleFunction(mf2)) => mf1 == mf2,
             (Self::DefFunction(f1), Self::DefFunction(f2)) => f1 == f2,
             // Markers compare equal if they're the same variant
             (Self::Marker(m1), Self::Marker(m2)) => m1 == m2,
@@ -295,10 +302,10 @@ impl PyTrait for Value {
             Self::Bool(b) => *b,
             Self::Int(v) => *v != 0,
             Self::Float(f) => *f != 0.0,
-            Self::Builtin(_) => true,                            // Builtins are always truthy
+            Self::Builtin(_) | Self::ModuleFunction(_) => true, // Builtins are always truthy
             Self::DefFunction(_) | Self::ExtFunction(_) => true, // Functions are always truthy
-            Self::Marker(_) => true,                             // Markers are always truthy
-            Self::ExternalFuture(_) => true,                     // ExternalFutures are always truthy
+            Self::Marker(_) => true,                            // Markers are always truthy
+            Self::ExternalFuture(_) => true,                    // ExternalFutures are always truthy
             Self::InternString(string_id) => !interns.get_str(*string_id).is_empty(),
             Self::InternBytes(bytes_id) => !interns.get_bytes(*bytes_id).is_empty(),
             Self::Ref(id) => heap.get(*id).py_bool(heap, interns),
@@ -330,6 +337,7 @@ impl PyTrait for Value {
                 }
             }
             Self::Builtin(b) => b.py_repr_fmt(f),
+            Self::ModuleFunction(mf) => write!(f, "<built-in function {mf}>"),
             Self::DefFunction(f_id) => interns.get_function(*f_id).py_repr_fmt(f, interns, 0),
             Self::ExtFunction(f_id) => {
                 write!(f, "<function '{}' external>", interns.get_external_function_name(*f_id))
@@ -1480,6 +1488,7 @@ impl Value {
             Self::Int(v) => int_value_id(*v),
             Self::Float(v) => float_value_id(*v),
             Self::Builtin(c) => builtin_value_id(*c),
+            Self::ModuleFunction(mf) => module_function_value_id(*mf),
             Self::DefFunction(f_id) => function_value_id(*f_id),
             Self::ExtFunction(f_id) => ext_function_value_id(*f_id),
             // Markers get deterministic IDs based on discriminant
@@ -1559,6 +1568,7 @@ impl Value {
             // Hash the bit representation of float for consistency
             Self::Float(f) => f.to_bits().hash(&mut hasher),
             Self::Builtin(b) => b.hash(&mut hasher),
+            Self::ModuleFunction(mf) => (*mf as u8).hash(&mut hasher),
             // Hash functions based on function ID
             Self::DefFunction(f_id) => f_id.hash(&mut hasher),
             Self::ExtFunction(f_id) => f_id.hash(&mut hasher),
@@ -1963,6 +1973,7 @@ impl Value {
             Self::Int(v) => Self::Int(*v),
             Self::Float(v) => Self::Float(*v),
             Self::Builtin(b) => Self::Builtin(*b),
+            Self::ModuleFunction(mf) => Self::ModuleFunction(*mf),
             Self::DefFunction(f) => Self::DefFunction(*f),
             Self::ExtFunction(f) => Self::ExtFunction(*f),
             Self::InternString(s) => Self::InternString(*s),
@@ -2171,6 +2182,8 @@ const EXTFUNCTION_ID_TAG: usize = 1usize << (usize::BITS - 9);
 const MARKER_ID_TAG: usize = 1usize << (usize::BITS - 10);
 /// High-bit tag for ExternalFuture value-based IDs.
 const EXTERNAL_FUTURE_ID_TAG: usize = 1usize << (usize::BITS - 11);
+/// High-bit tag for ModuleFunction value-based IDs.
+const MODULE_FUNCTION_ID_TAG: usize = 1usize << (usize::BITS - 12);
 
 /// Masks for value-based ID tags (keep bits below the tag bit).
 const INT_ID_MASK: usize = INT_ID_TAG - 1;
@@ -2180,6 +2193,7 @@ const FUNCTION_ID_MASK: usize = FUNCTION_ID_TAG - 1;
 const EXTFUNCTION_ID_MASK: usize = EXTFUNCTION_ID_TAG - 1;
 const MARKER_ID_MASK: usize = MARKER_ID_TAG - 1;
 const EXTERNAL_FUTURE_ID_MASK: usize = EXTERNAL_FUTURE_ID_TAG - 1;
+const MODULE_FUNCTION_ID_MASK: usize = MODULE_FUNCTION_ID_TAG - 1;
 
 /// Enumerates singleton literal slots so we can issue stable `id()` values without heap allocation.
 #[repr(usize)]
@@ -2269,6 +2283,12 @@ fn marker_value_id(m: Marker) -> usize {
 #[inline]
 fn external_future_value_id(call_id: CallId) -> usize {
     EXTERNAL_FUTURE_ID_TAG | ((call_id.raw() as usize) & EXTERNAL_FUTURE_ID_MASK)
+}
+
+/// Computes a deterministic ID for a module function based on its discriminant.
+#[inline]
+fn module_function_value_id(mf: ModuleFunctions) -> usize {
+    MODULE_FUNCTION_ID_TAG | ((mf as u8 as usize) & MODULE_FUNCTION_ID_MASK)
 }
 
 /// Converts an i64 repeat count to usize, handling negative values and overflow.

@@ -127,7 +127,7 @@ impl CodeBuilder {
     /// Emits an instruction with a u16 operand followed by a u8 operand.
     ///
     /// Used for MakeFunction: func_id (u16) + defaults_count (u8)
-    /// Used for CallMethod: method_name_id (u16) + arg_count (u8)
+    /// Used for CallAttr: attr_name_id (u16) + arg_count (u8)
     pub fn emit_u16_u8(&mut self, op: Opcode, operand1: u16, operand2: u8) {
         self.record_location();
         self.bytecode.push(op as u8);
@@ -139,7 +139,7 @@ impl CodeBuilder {
                 // pops defaults_count defaults, pushes function: 1 - defaults_count
                 self.adjust_stack(1 - i16::from(operand2));
             }
-            Opcode::CallMethod => {
+            Opcode::CallAttr => {
                 // pops obj + args, pushes result: 1 - (1 + arg_count) = -arg_count
                 self.adjust_stack(-i16::from(operand2));
             }
@@ -224,23 +224,23 @@ impl CodeBuilder {
         self.adjust_stack(-total_args);
     }
 
-    /// Emits CallMethodKw with inline keyword names.
+    /// Emits CallAttrKw with inline keyword names.
     ///
-    /// Operands: method_name_id (u16) + pos_count (u8) + kw_count (u8) + kw_count * name_id (u16 each)
+    /// Operands: attr_name_id (u16) + pos_count (u8) + kw_count (u8) + kw_count * name_id (u16 each)
     ///
     /// The kwname_ids slice contains StringId indices for each keyword argument
     /// name, in order matching how the values were pushed to the stack.
-    pub fn emit_call_method_kw(&mut self, method_name_id: u16, pos_count: u8, kwname_ids: &[u16]) {
+    pub fn emit_call_attr_kw(&mut self, attr_name_id: u16, pos_count: u8, kwname_ids: &[u16]) {
         self.record_location();
-        self.bytecode.push(Opcode::CallMethodKw as u8);
-        self.bytecode.extend_from_slice(&method_name_id.to_le_bytes());
+        self.bytecode.push(Opcode::CallAttrKw as u8);
+        self.bytecode.extend_from_slice(&attr_name_id.to_le_bytes());
         self.bytecode.push(pos_count);
         self.bytecode
             .push(u8::try_from(kwname_ids.len()).expect("keyword count exceeds u8"));
         for &name_id in kwname_ids {
             self.bytecode.extend_from_slice(&name_id.to_le_bytes());
         }
-        // CallMethodKw: pops obj + pos_args + kw_args, pushes result
+        // CallAttrKw: pops obj + pos_args + kw_args, pushes result
         // Stack effect: 1 - (1 + pos_count + kw_count) = -pos_count - kw_count
         let kw_count = i16::try_from(kwname_ids.len()).expect("keyword count exceeds i16");
         let total_args = i16::from(pos_count) + kw_count;
