@@ -70,6 +70,9 @@ known-first-party = ["monty"]
     "F403", # unable to detect undefined names
     "F821", # Undefined name
 ]
+"crates/monty-type-checking/tests/good_types.py" = [
+    "F704", # await outside function - needed for testing top-level async/await
+]
 
 [tool.ruff.format]
 docstring-code-format = true

@@ -2,7 +2,7 @@
 """Update vendored typeshed files from the upstream repository.
 
 This script:
-1. Clones the typeshed repository to a temporary directory
+1. Clones the typeshed repository to crates/monty-typeshed/typeshed-repo (or updates if it exists)
 2. Records the HEAD commit hash
 3. Filters builtins.pyi to keep only supported classes and functions
 4. Writes the filtered file to the vendor directory
@@ -14,7 +14,6 @@ Usage:
 import ast
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 # Whitelisted builtin functions (from crates/monty/src/builtins/)
@@ -115,37 +114,46 @@ SCRIPT_DIR = Path(__file__).parent
 VENDOR_DIR = SCRIPT_DIR / 'vendor' / 'typeshed'
 STDLIB_DIR = VENDOR_DIR / 'stdlib'
 CUSTOM_DIR = SCRIPT_DIR / 'custom'
+TYPESHED_REPO_DIR = SCRIPT_DIR / 'typeshed-repo'
 
-TYPESHED_REPO = 'git@github.com:python/typeshed.git'
+TYPESHED_REPO_URL = 'git@github.com:python/typeshed.git'
 
 
-def clone_typeshed(temp_dir: Path) -> tuple[Path, str]:
-    """Clone typeshed repository and return the path and HEAD commit hash.
+def clone_or_update_typeshed() -> tuple[Path, str]:
+    """Clone or update the typeshed repository and return the path and HEAD commit hash.
 
-    Args:
-        temp_dir: Temporary directory to clone into.
+    If the repository already exists at TYPESHED_REPO_DIR, performs a git pull.
+    Otherwise, clones the repository to that location.
 
     Returns:
         Tuple of (repo_path, commit_hash).
     """
-    repo_path = temp_dir / 'typeshed'
-
-    subprocess.run(
-        ['git', 'clone', '--depth=1', TYPESHED_REPO, str(repo_path)],
-        check=True,
-        capture_output=True,
-    )
+    if TYPESHED_REPO_DIR.exists():
+        print(f'Updating existing typeshed repo at {TYPESHED_REPO_DIR}...')
+        subprocess.run(
+            ['git', 'pull'],
+            cwd=TYPESHED_REPO_DIR,
+            check=True,
+            capture_output=True,
+        )
+    else:
+        print(f'Cloning typeshed to {TYPESHED_REPO_DIR}...')
+        subprocess.run(
+            ['git', 'clone', '--depth=1', TYPESHED_REPO_URL, str(TYPESHED_REPO_DIR)],
+            check=True,
+            capture_output=True,
+        )
 
     result = subprocess.run(
         ['git', 'rev-parse', 'HEAD'],
-        cwd=repo_path,
+        cwd=TYPESHED_REPO_DIR,
         check=True,
         capture_output=True,
         text=True,
     )
     commit = result.stdout.strip()
 
-    return repo_path, commit
+    return TYPESHED_REPO_DIR, commit
 
 
 def filter_statements(nodes: list[ast.stmt]) -> list[ast.stmt]:
@@ -265,36 +273,32 @@ def main() -> int:
         print(f'Removing existing {VENDOR_DIR}...')
         shutil.rmtree(VENDOR_DIR)
 
-    print(f'Cloning {TYPESHED_REPO}...')
+    # Clone or update typeshed
+    repo_path, commit = clone_or_update_typeshed()
+    print(f'At commit {commit}')
 
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
+    # Read source file
+    builtins_path = repo_path / 'stdlib' / 'builtins.pyi'
+    source = builtins_path.read_text()
+    print(f'Read {len(source)} bytes from builtins.pyi')
 
-        # Clone and get commit
-        repo_path, commit = clone_typeshed(temp_path)
-        print(f'Cloned at commit {commit}')
+    # Filter
+    filtered = filter_builtins(source)
+    print(f'Filtered to {len(filtered)} bytes')
 
-        # Read source file
-        builtins_path = repo_path / 'stdlib' / 'builtins.pyi'
-        source = builtins_path.read_text()
-        print(f'Read {len(source)} bytes from builtins.pyi')
+    # Copy VERSIONS file
+    src_stdlib = repo_path / 'stdlib'
 
-        # Filter
-        filtered = filter_builtins(source)
-        print(f'Filtered to {len(filtered)} bytes')
-
-        # Copy VERSIONS file
-        src_stdlib = repo_path / 'stdlib'
-
-        # Write output files
-        STDLIB_DIR.mkdir(parents=True, exist_ok=True)
-        (STDLIB_DIR / 'builtins.pyi').write_text(filtered)
-        (STDLIB_DIR / 'VERSIONS').write_text("""\
+    # Write output files
+    STDLIB_DIR.mkdir(parents=True, exist_ok=True)
+    (STDLIB_DIR / 'builtins.pyi').write_text(filtered)
+    (STDLIB_DIR / 'VERSIONS').write_text("""\
 # absolutely minimal VERSIONS file exposing only the modules required
 # all these modules are required to get type checking working with ty
 
 _collections_abc: 3.3-
 _typeshed: 3.0-  # not present at runtime, only for type checking
+asyncio: 3.4-
 builtins: 3.0-
 collections: 3.0-
 sys: 3.0-
@@ -303,8 +307,8 @@ typing_extensions: 3.7-
 types: 3.0-
 """)
 
-        # Copy dependency modules
-        copy_dependencies(src_stdlib, STDLIB_DIR)
+    # Copy dependency modules
+    copy_dependencies(src_stdlib, STDLIB_DIR)
 
     # copy pyi files from CUSTOM_DIR into STDLIB_DIR
     for file in CUSTOM_DIR.glob('*.pyi'):

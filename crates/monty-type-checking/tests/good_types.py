@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from typing import assert_type
 
@@ -374,3 +375,18 @@ print(sys.version)
 print(sys.version_info)
 print(None, file=sys.stdout)
 print(None, file=sys.stderr)
+
+# === async ===
+
+
+async def foo(a: int):
+    return a * 2
+
+
+async def bar():
+    await foo(1)
+    await foo(2)
+    await foo(3)
+
+
+await asyncio.gather(bar())  # pyright: ignore

@@ -14,7 +14,7 @@
 //! ```
 
 use ::monty::{ExcType, MontyException, StackFrame};
-use monty_type_checking::TypeCheckingFailure;
+use monty_type_checking::TypeCheckingDiagnostics;
 use pyo3::{
     PyClassInitializer, PyTypeCheck,
     exceptions::{self},
@@ -158,13 +158,13 @@ impl MontySyntaxError {
 /// can be re-rendered with different format/color settings via `display()`.
 #[pyclass(extends=MontyError, module="monty", unsendable)]
 pub struct MontyTypingError {
-    failure: TypeCheckingFailure,
+    failure: TypeCheckingDiagnostics,
 }
 
 impl MontyTypingError {
     /// Creates a `MontyTypingError` from a `TypeCheckingFailure`.
     #[must_use]
-    pub fn new_err(py: Python<'_>, failure: TypeCheckingFailure) -> PyErr {
+    pub fn new_err(py: Python<'_>, failure: TypeCheckingDiagnostics) -> PyErr {
         // we need a MontyException to create the base, but it shouldn't be visible anywhere
         let base = MontyError::new(MontyException::new(ExcType::TypeError, None));
         let init = PyClassInitializer::from(base).add_subclass(Self { failure });

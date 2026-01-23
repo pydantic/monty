@@ -3,6 +3,7 @@
 
 _collections_abc: 3.3-
 _typeshed: 3.0-  # not present at runtime, only for type checking
+asyncio: 3.4-
 builtins: 3.0-
 collections: 3.0-
 sys: 3.0-

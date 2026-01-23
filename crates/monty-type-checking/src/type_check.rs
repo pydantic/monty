@@ -2,7 +2,7 @@ use std::fmt::{self, Display};
 
 use ruff_db::{
     Db as SourceDb,
-    diagnostic::{Diagnostic, DiagnosticFormat, DisplayDiagnosticConfig, DisplayDiagnostics},
+    diagnostic::{Diagnostic, DiagnosticFormat, DiagnosticId, DisplayDiagnosticConfig, DisplayDiagnostics},
     files::system_path_to_file,
     system::DbWithWritableSystem as _,
 };
@@ -23,7 +23,7 @@ use crate::db::MemoryDb;
 /// * `Ok(Some(TypeCheckingFailure))` - If there are typing errors.
 /// * `Ok(None)` - If there are no typing errors.
 /// * `Err(String)` - If there was an unexpected/internal error during type checking.
-pub fn type_check(python_source: &str, python_file_path: &str) -> Result<Option<TypeCheckingFailure>, String> {
+pub fn type_check(python_source: &str, python_file_path: &str) -> Result<Option<TypeCheckingDiagnostics>, String> {
     let mut db = MemoryDb::new();
 
     // The API is confusing here - we have to load the "program" here like this, otherwise we get unwrap
@@ -44,12 +44,13 @@ pub fn type_check(python_source: &str, python_file_path: &str) -> Result<Option<
 
     db.write_file(python_file_path, python_source).map_err(to_string)?;
     let file = system_path_to_file(&db, python_file_path).map_err(to_string)?;
-    let diagnostics = check_types(&db, file);
+    let mut diagnostics = check_types(&db, file);
+    diagnostics.retain(filter_diagnostics);
 
     if diagnostics.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(TypeCheckingFailure::new(diagnostics, db)))
+        Ok(Some(TypeCheckingDiagnostics::new(diagnostics, db)))
     }
 }
 
@@ -58,8 +59,8 @@ fn to_string(err: impl Display) -> String {
 }
 
 /// Represents diagnostic details when type checking fails.
-#[derive(Debug, Clone)]
-pub struct TypeCheckingFailure {
+#[derive(Clone)]
+pub struct TypeCheckingDiagnostics {
     /// The actual diagnostic message
     diagnostics: Vec<Diagnostic>,
     /// db used to display diagnostics
@@ -70,13 +71,24 @@ pub struct TypeCheckingFailure {
     color: bool,
 }
 
-impl fmt::Display for TypeCheckingFailure {
+impl fmt::Debug for TypeCheckingDiagnostics {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let config = self.config();
+        write!(
+            f,
+            "TypeCheckingDiagnostics:\n{}",
+            DisplayDiagnostics::new(&self.db, &config, &self.diagnostics)
+        )
+    }
+}
+
+impl fmt::Display for TypeCheckingDiagnostics {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         DisplayDiagnostics::new(&self.db, &self.config(), &self.diagnostics).fmt(f)
     }
 }
 
-impl TypeCheckingFailure {
+impl TypeCheckingDiagnostics {
     fn new(mut diagnostics: Vec<Diagnostic>, db: MemoryDb) -> Self {
         // Sort diagnostics by line number
         diagnostics.sort_by(|a, b| a.rendering_sort_key(&db).cmp(&b.rendering_sort_key(&db)));
@@ -124,4 +136,15 @@ impl TypeCheckingFailure {
     pub fn color(self, color: bool) -> Self {
         Self { color, ..self }
     }
+}
+
+/// Filter out diagnostics we want to ignore.
+///
+/// Should only be necessary until <https://github.com/astral-sh/ty/issues/2599> is fixed.
+fn filter_diagnostics(d: &Diagnostic) -> bool {
+    !(matches!(d.id(), DiagnosticId::InvalidSyntax)
+        && matches!(
+            d.primary_message(),
+            "`await` statement outside of a function" | "`await` outside of an asynchronous function"
+        ))
 }
