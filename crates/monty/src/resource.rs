@@ -217,6 +217,9 @@ pub struct ResourceLimits {
     pub max_recursion_depth: Option<usize>,
 }
 
+/// Recommended maximum recursion depth if not otherwise specified.
+pub const DEFAULT_MAX_RECURSION_DEPTH: usize = 1000;
+
 impl ResourceLimits {
     /// Creates a new ResourceLimits with all limits disabled, except max recursion which is set to 1000.
     #[must_use]

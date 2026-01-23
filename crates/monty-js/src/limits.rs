@@ -5,11 +5,8 @@
 
 use std::time::Duration;
 
-use monty::ResourceLimits;
+use monty::{ResourceLimits, DEFAULT_MAX_RECURSION_DEPTH};
 use napi_derive::napi;
-
-/// Default maximum recursion depth if not specified.
-const DEFAULT_MAX_RECURSION_DEPTH: usize = 1000;
 
 /// Resource limits configuration from JavaScript.
 ///
