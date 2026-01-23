@@ -269,10 +269,11 @@ NEVER MARK TESTS AS XFAIL UNDER ANY CIRCUMSTANCES!!! INSTEAD FIX THE BEHAVIOR SO
 ### Other Notes
 
 - Prefer single quotes for strings in Python tests
-- do NOT add `# noqa` comments to test code, instead add the failing code to `pyproject.toml`
+- Do NOT add `# noqa` or  `# pyright: ignore` comments to test code, instead add the failing code to `pyproject.toml`
+- The ONLY exception is `await` expressions outside of async functions, where you should add `# pyright: ignore`
 - Run `make lint-py` after adding tests
 - Use `make complete-tests` to fill in blank expectations
-- Tests run via `datatest-stable` harness in `tests/datatest_runner.rs`
+- Tests run via `datatest-stable` harness in `tests/datatest_runner.rs`, use `make test-cases` to run them
 
 ## Python Package (`monty-python`)
 

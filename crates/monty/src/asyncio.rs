@@ -17,7 +17,7 @@ use crate::{
 /// external function calls with their results when the host resolves them.
 /// The counter always increments, even for sync resolution, to keep IDs unique.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub(crate) struct CallId(pub u32);
+pub(crate) struct CallId(u32);
 
 impl CallId {
     /// Creates a new CallId from a raw value.
@@ -38,7 +38,7 @@ impl CallId {
 /// Sequential integers allocated by the scheduler. Task 0 is always the main task
 /// which uses the VM's stack/frames directly. Spawned tasks (1+) store their own context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub(crate) struct TaskId(pub u32);
+pub(crate) struct TaskId(u32);
 
 impl TaskId {
     /// Creates a new TaskId from a raw value.
@@ -105,8 +105,6 @@ pub(crate) struct Coroutine {
     /// Current execution state.
     pub state: CoroutineState,
 }
-
-#[expect(dead_code, reason = "used in later phases")]
 impl Coroutine {
     /// Creates a new coroutine for an async function call.
     ///
@@ -123,18 +121,13 @@ impl Coroutine {
         }
     }
 
-    /// Returns true if this coroutine can be awaited (state is New).
-    #[inline]
-    pub fn can_await(&self) -> bool {
-        self.state == CoroutineState::New
-    }
-
     /// Cleans up coroutine resources by dropping all contained values.
     ///
     /// This should be called when the coroutine is cancelled or cleaned up
     /// without completing execution. It drops:
     /// - All values in the namespace (parameters, captured variables, locals)
     /// - Decrements references for captured cells
+    #[expect(dead_code, reason = "used in later phases")]
     pub fn cleanup(&mut self, heap: &mut Heap<impl ResourceTracker>) {
         // Drop all namespace values
         for value in std::mem::take(&mut self.namespace) {
@@ -190,13 +183,6 @@ impl GatherFuture {
             results: (0..count).map(|_| None).collect(),
             waiter: None,
         }
-    }
-
-    /// Returns true if all tasks have completed.
-    #[inline]
-    #[expect(dead_code, reason = "used in later phases")]
-    pub fn is_complete(&self) -> bool {
-        self.results.iter().all(Option::is_some)
     }
 
     /// Returns the number of tasks.

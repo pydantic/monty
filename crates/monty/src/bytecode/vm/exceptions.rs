@@ -176,6 +176,21 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             if self.frames.len() <= 1 {
                 // No more frames - exception is unhandled
                 exc_value.drop_with_heap(self.heap);
+
+                // For spawned tasks, fail the task instead of propagating
+                if self.is_spawned_task() {
+                    match self.handle_task_failure(error) {
+                        Ok(()) => {
+                            // Switched to next task - continue execution
+                            return None;
+                        }
+                        Err(waiter_error) => {
+                            // Switched to waiter - handle error in waiter's context
+                            return self.handle_exception(waiter_error);
+                        }
+                    }
+                }
+
                 return Some(error);
             }
 

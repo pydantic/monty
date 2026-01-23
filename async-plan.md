@@ -732,5 +732,7 @@ The following are explicitly **not** included in this implementation:
 5. **Task cancellation API** - tasks are only cancelled implicitly when a gather fails
 
 TODO:
+* fix test_cases cpython test
+* replace mess in `call_method`
 * fix ty, fix ty duplicate notifications for ```error[invalid-syntax]: `await` outside of an asynchronous function```
-* fix test_cases cpython test.
+* add `asyncio` to typeshed

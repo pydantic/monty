@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use ruff_db::{
     Db as SourceDb,
@@ -26,6 +26,18 @@ pub(crate) struct MemoryDb {
     vendored: VendoredFileSystem,
     rule_selection: Arc<RuleSelection>,
     analysis_settings: Arc<AnalysisSettings>,
+}
+
+impl fmt::Debug for MemoryDb {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TypeCheckingFailure")
+            .field("files", &self.files)
+            .field("system", &self.system)
+            .field("vendored", &self.vendored)
+            .field("rule_selection", &self.rule_selection)
+            .field("analysis_settings", &self.analysis_settings)
+            .finish_non_exhaustive()
+    }
 }
 
 impl MemoryDb {

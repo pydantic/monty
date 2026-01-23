@@ -95,7 +95,6 @@ pub(crate) struct SerializedTaskFrame {
     pub call_position: Option<CodeRange>,
 }
 
-#[expect(dead_code, reason = "methods used in Phase 5 when scheduler is integrated")]
 impl Task {
     /// Creates a new task in the Ready state.
     ///
@@ -114,12 +113,6 @@ impl Task {
             gather_id,
             state: TaskState::Ready,
         }
-    }
-
-    /// Returns true if this task is ready to execute.
-    #[inline]
-    pub fn is_ready(&self) -> bool {
-        matches!(self.state, TaskState::Ready)
     }
 
     /// Returns true if this task has completed (successfully or with failure).
@@ -178,7 +171,6 @@ pub(crate) struct Scheduler {
     consumed: HashSet<CallId>,
 }
 
-#[expect(dead_code, reason = "methods used in Phase 5 when scheduler is integrated")]
 impl Scheduler {
     /// Creates a new scheduler with the main task (task 0) as current.
     ///
@@ -308,20 +300,6 @@ impl Scheduler {
     /// Returns all pending (unresolved) CallIds.
     pub fn pending_call_ids(&self) -> Vec<CallId> {
         self.pending_calls.keys().copied().collect()
-    }
-
-    /// Returns true if all tasks are blocked or completed.
-    ///
-    /// This indicates that control should return to the host to resolve
-    /// pending external calls.
-    pub fn all_tasks_blocked(&self) -> bool {
-        self.ready_queue.is_empty()
-    }
-
-    /// Returns the number of active (non-completed) tasks.
-    #[expect(dead_code, reason = "useful for debugging and future phases")]
-    pub fn active_task_count(&self) -> usize {
-        self.tasks.iter().filter(|t| !t.is_finished()).count()
     }
 
     /// Spawns a new task from a coroutine.

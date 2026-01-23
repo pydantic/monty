@@ -58,7 +58,7 @@ fn to_string(err: impl Display) -> String {
 }
 
 /// Represents diagnostic details when type checking fails.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct TypeCheckingFailure {
     /// The actual diagnostic message
     diagnostics: Vec<Diagnostic>,
@@ -68,18 +68,6 @@ pub struct TypeCheckingFailure {
     format: DiagnosticFormat,
     /// Whether to highlight the output with ansi colors
     color: bool,
-}
-
-impl fmt::Debug for TypeCheckingFailure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let config = self.config();
-        let d = DisplayDiagnostics::new(&self.db, &config, &self.diagnostics);
-        f.debug_struct("TypeCheckingFailure")
-            .field("format", &self.format)
-            .field("color", &self.color)
-            .field("diagnostics", &d.to_string())
-            .finish()
-    }
 }
 
 impl fmt::Display for TypeCheckingFailure {
