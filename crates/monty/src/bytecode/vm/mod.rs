@@ -331,11 +331,15 @@ pub struct VMSnapshot {
     /// IP of the instruction that caused the pause (for exception handling).
     instruction_ip: usize,
 
-    /// Scheduler state for async execution.
+    /// Counter for external call IDs when scheduler is not initialized.
+    next_call_id: u32,
+
+    /// Scheduler state for async execution (optional).
     ///
     /// Contains all task state, pending calls, and resolved futures.
     /// This enables async execution to be paused and resumed across host calls.
-    scheduler: Scheduler,
+    /// None if no async operations have been performed yet.
+    scheduler: Option<Scheduler>,
 }
 
 // ============================================================================
@@ -380,11 +384,17 @@ pub struct VM<'a, T: ResourceTracker, P: PrintWriter> {
     /// This allows us to find the correct exception handler when an error occurs.
     instruction_ip: usize,
 
-    /// Scheduler for async task management.
+    /// Counter for external call IDs when scheduler is not initialized.
+    ///
+    /// Used by `allocate_call_id()` when no scheduler exists (sync code paths).
+    /// When a scheduler is created, this counter is transferred to it.
+    next_call_id: u32,
+
+    /// Scheduler for async task management (lazy - only created when needed).
     ///
     /// Manages concurrent tasks, external call tracking, and task switching.
-    /// Always present (created at VM initialization) even for sync code.
-    scheduler: Scheduler,
+    /// Created lazily on first async operation to avoid allocations for sync code.
+    scheduler: Option<Scheduler>,
 
     /// Module-level code (for restoring main task frames).
     ///
@@ -410,7 +420,8 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             print_writer,
             exception_stack: Vec::new(),
             instruction_ip: 0,
-            scheduler: Scheduler::new(),
+            next_call_id: 0,
+            scheduler: None, // Lazy - no allocation for sync code
             module_code: None,
         }
     }
@@ -441,7 +452,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         // Clean up task frame namespaces (scheduler doesn't have access to namespaces)
         self.cleanup_all_task_frames();
         // Clean up scheduler state (task stacks, pending calls, resolved values)
-        self.scheduler.cleanup(self.heap);
+        if let Some(scheduler) = &mut self.scheduler {
+            scheduler.cleanup(self.heap);
+        }
     }
 
     /// Cleans up frames stored in all scheduler tasks.
@@ -450,10 +463,13 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// before the VM is dropped. This is separate from `scheduler.cleanup()`
     /// because the scheduler doesn't have access to the VM's namespaces.
     fn cleanup_all_task_frames(&mut self) {
+        let Some(scheduler) = &mut self.scheduler else {
+            return;
+        };
         // Clean up each task's saved frames
-        for task_idx in 0..self.scheduler.task_count() {
+        for task_idx in 0..scheduler.task_count() {
             let task_id = TaskId::new(u32::try_from(task_idx).expect("task_idx exceeds u32"));
-            let task = self.scheduler.get_task_mut(task_id);
+            let task = scheduler.get_task_mut(task_id);
             for frame in std::mem::take(&mut task.frames) {
                 // Clean up cell references
                 for cell_id in frame.cells {
@@ -465,6 +481,58 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 }
             }
         }
+    }
+
+    /// Gets or creates the scheduler for async operations.
+    ///
+    /// The scheduler is created lazily on first use to avoid allocations for
+    /// synchronous code paths. If a scheduler already exists, returns it.
+    /// If one doesn't exist, creates a new one, transferring the `next_call_id`
+    /// counter so that call IDs remain unique.
+    pub(super) fn scheduler_mut(&mut self) -> &mut Scheduler {
+        if self.scheduler.is_none() {
+            let mut scheduler = Scheduler::new();
+            // Transfer the call ID counter to maintain uniqueness
+            scheduler.set_next_call_id(self.next_call_id);
+            self.scheduler = Some(scheduler);
+        }
+        self.scheduler.as_mut().expect("scheduler was just created")
+    }
+
+    /// Returns a reference to the scheduler (read-only access).
+    ///
+    /// # Panics
+    /// Panics if the scheduler hasn't been created yet. Only use this in code
+    /// paths where async operations have already been initiated.
+    #[inline]
+    pub(super) fn scheduler(&self) -> &Scheduler {
+        self.scheduler.as_ref().expect("scheduler must exist in async context")
+    }
+
+    /// Allocates a new `CallId` for an external function call.
+    ///
+    /// Works with or without a scheduler. If a scheduler exists, delegates to it.
+    /// Otherwise, uses the VM's `next_call_id` counter directly, avoiding
+    /// scheduler creation overhead for synchronous external calls.
+    fn allocate_call_id(&mut self) -> CallId {
+        if let Some(scheduler) = &mut self.scheduler {
+            scheduler.allocate_call_id()
+        } else {
+            let id = CallId::new(self.next_call_id);
+            self.next_call_id += 1;
+            id
+        }
+    }
+
+    /// Returns true if we're on the main task (or no async at all).
+    ///
+    /// This is used to determine whether a `ReturnValue` at the last frame means
+    /// module-level completion (return to host) or spawned task completion
+    /// (handle task completion and switch).
+    fn is_main_task(&self) -> bool {
+        self.scheduler
+            .as_ref()
+            .is_none_or(|s| s.current_task_id().is_none_or(TaskId::is_main))
     }
 
     /// Main execution loop.
@@ -936,7 +1004,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         Ok(CallResult::Push(result)) => self.push(result),
                         Ok(CallResult::FramePushed) => reload_cache!(self, cached_frame),
                         Ok(CallResult::External(ext_id, args)) => {
-                            let call_id = self.scheduler.allocate_call_id();
+                            let call_id = self.allocate_call_id();
                             return Ok(FrameExit::ExternalCall {
                                 ext_function_id: ext_id,
                                 args,
@@ -986,7 +1054,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         Ok(CallResult::Push(result)) => self.push(result),
                         Ok(CallResult::FramePushed) => reload_cache!(self, cached_frame),
                         Ok(CallResult::External(ext_id, args)) => {
-                            let call_id = self.scheduler.allocate_call_id();
+                            let call_id = self.allocate_call_id();
                             return Ok(FrameExit::ExternalCall {
                                 ext_function_id: ext_id,
                                 args,
@@ -1040,7 +1108,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         Ok(CallResult::Push(result)) => self.push(result),
                         Ok(CallResult::FramePushed) => reload_cache!(self, cached_frame),
                         Ok(CallResult::External(ext_id, args)) => {
-                            let call_id = self.scheduler.allocate_call_id();
+                            let call_id = self.allocate_call_id();
                             return Ok(FrameExit::ExternalCall {
                                 ext_function_id: ext_id,
                                 args,
@@ -1148,7 +1216,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let value = self.pop();
                     if self.frames.len() == 1 {
                         // Last frame - check if this is main task or spawned task
-                        let is_main_task = self.scheduler.current_task_id().is_none_or(TaskId::is_main);
+                        let is_main_task = self.is_main_task();
 
                         if is_main_task {
                             // Module-level return - we're done
@@ -1272,6 +1340,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             frames: self.frames.into_iter().map(|f| f.serialize()).collect(),
             exception_stack: self.exception_stack,
             instruction_ip: self.instruction_ip,
+            next_call_id: self.next_call_id,
             scheduler: self.scheduler,
         }
     }
@@ -1327,6 +1396,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             print_writer,
             exception_stack: snapshot.exception_stack,
             instruction_ip: snapshot.instruction_ip,
+            next_call_id: snapshot.next_call_id,
             scheduler: snapshot.scheduler,
             module_code: Some(module_code),
         }

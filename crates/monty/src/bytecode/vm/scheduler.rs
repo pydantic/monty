@@ -234,6 +234,14 @@ impl Scheduler {
         id
     }
 
+    /// Sets the next call ID counter.
+    ///
+    /// Used when lazily creating the scheduler to inherit the call ID counter
+    /// from the VM, ensuring call IDs remain unique across the transition.
+    pub fn set_next_call_id(&mut self, id: u32) {
+        self.next_call_id = id;
+    }
+
     /// Stores pending call data for an external function call.
     ///
     /// Called when the host uses async resolution (`run_pending()`).
