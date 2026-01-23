@@ -1,4 +1,4 @@
-# xfail=cpython
+# run-async
 # Async function capturing variables from enclosing scope
 
 

@@ -1,4 +1,4 @@
-# xfail=cpython
+# run-async
 # Async functions returning different types
 
 

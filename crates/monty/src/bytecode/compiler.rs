@@ -777,6 +777,8 @@ impl<'a> Compiler<'a> {
                 // Await expressions: compile the inner expression, then emit GetAwaitable
                 // GetAwaitable handles ExternalFuture, Coroutine, and GatherFuture
                 self.compile_expr(value)?;
+                // Restore the full expression's position for traceback caret range
+                self.code.set_location(expr_loc.position, None);
                 self.code.emit(Opcode::GetAwaitable);
             }
 

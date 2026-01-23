@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 def log(msg):
     print(msg)
     return 1

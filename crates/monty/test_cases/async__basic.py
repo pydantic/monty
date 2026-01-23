@@ -1,4 +1,4 @@
-# xfail=cpython
+# run-async
 # Basic async function that returns a value
 
 

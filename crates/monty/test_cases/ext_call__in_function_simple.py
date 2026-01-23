@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 def foo():
     return add_ints(1, 2)
 

@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # External calls in f-strings
 
 s = f'result is {add_ints(10, 20)}'

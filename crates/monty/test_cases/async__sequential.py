@@ -1,4 +1,4 @@
-# xfail=cpython
+# run-async
 # Multiple sequential awaits
 
 

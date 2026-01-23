@@ -28,7 +28,7 @@ const TEST_RECURSION_LIMIT: usize = 50;
 
 /// Test configuration parsed from directive comments.
 ///
-/// Parsed from an optional first-line comment like `# xfail=monty,cpython` or `# mode: iter`.
+/// Parsed from an optional first-line comment like `# xfail=monty,cpython` or `# call-external`.
 /// If not present, defaults to running on both interpreters in standard mode.
 ///
 /// ## Xfail Semantics (Strict)
@@ -36,6 +36,7 @@ const TEST_RECURSION_LIMIT: usize = 50;
 /// - `xfail=cpython` - Test is expected to fail on CPython; if it passes, that's an error
 /// - `xfail=monty,cpython` - Expected to fail on both interpreters
 #[derive(Debug, Clone, Default)]
+#[expect(clippy::struct_excessive_bools)]
 struct TestConfig {
     /// When true, test is expected to fail on Monty (strict xfail).
     xfail_monty: bool,
@@ -43,6 +44,9 @@ struct TestConfig {
     xfail_cpython: bool,
     /// When true, use MontyRun with external function support instead of MontyRun.
     iter_mode: bool,
+    /// When true, wrap code in async context for CPython execution.
+    /// Used for tests with top-level await which Monty supports but CPython doesn't.
+    async_mode: bool,
 }
 
 /// Represents the expected outcome of a test fixture
@@ -79,7 +83,7 @@ impl Expectation {
 
 /// Parse a Python fixture file into code, expected outcome, and test configuration.
 ///
-/// The file may optionally start with a `# xfail=monty,cpython` comment to specify
+/// The file may optionally contain a `# xfail=monty,cpython` comment to specify
 /// which interpreters the test is expected to fail on. If not present, defaults to
 /// running on both and expecting success.
 ///
@@ -106,45 +110,30 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
 
     assert!(!lines.is_empty(), "Empty fixture file");
 
-    // Check for directives at the start of the file
-    // Supports: # xfail=monty,cpython and # mode: iter (can be combined on same line)
-    // Note: Directive lines are kept in the code (they're Python comments) to preserve line numbers
-    let (config, code_start_idx) = if let Some(first_line) = lines.first() {
-        let mut config = TestConfig::default();
+    // comment lines with leading # and spaces stripped
+    let comment_lines = lines
+        .iter()
+        .filter(|line| line.starts_with('#'))
+        .map(|line| line.trim_start_matches('#').trim())
+        .collect::<Vec<_>>();
 
-        // Check for mode: iter directive
-        if first_line.contains("mode: iter") {
-            config.iter_mode = true;
-        }
-
-        // Check for xfail= directive
-        if let Some(xfail_idx) = first_line.find("xfail=") {
-            let xfail_str = &first_line[xfail_idx + 6..];
-            // Parse until whitespace or end of line
-            let xfail_end = xfail_str.find(|c: char| c.is_whitespace()).unwrap_or(xfail_str.len());
-            let xfail_str = &xfail_str[..xfail_end];
-            config.xfail_monty = xfail_str.contains("monty");
-            if xfail_str.contains("cpython") {
-                config.xfail_cpython = true;
-            }
-        }
-
-        (config, 0)
-    } else {
-        (TestConfig::default(), 0)
+    let mut config = TestConfig {
+        iter_mode: comment_lines.iter().any(|line| line.starts_with("call-external")),
+        async_mode: comment_lines.iter().any(|line| line.starts_with("run-async")),
+        ..Default::default()
     };
-
-    // Check if first code line has an expectation (this is an error)
-    if let Some(first_code_line) = lines.get(code_start_idx) {
-        assert!(
-            !(first_code_line.starts_with("# Return") || first_code_line.starts_with("# Raise")),
-            "Expectation comment must be on the LAST line, not the first line"
-        );
+    // Check for "xfail=" directive
+    if let Some(&xfail_line) = comment_lines.iter().find(|line| line.starts_with("xfail=")) {
+        // Parse until whitespace or end of line
+        let xfail_end = xfail_line.find(|c: char| c.is_whitespace()).unwrap_or(xfail_line.len());
+        let xfail_str = &xfail_line[..xfail_end];
+        config.xfail_monty = xfail_str.contains("monty");
+        config.xfail_cpython = xfail_str.contains("cpython");
     }
 
     // Check for TRACEBACK expectation (triple-quoted string at end of file)
     // Format: """TRACEBACK:\n...\n"""
-    if let Some((code, traceback)) = parse_traceback_expectation(content, code_start_idx) {
+    if let Some((code, traceback)) = parse_traceback_expectation(content) {
         return (code, Expectation::Traceback(traceback), config);
     }
 
@@ -156,31 +145,19 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
     let (expectation, code_lines) = if let Some(expected) = last_line.strip_prefix("# ref-counts=") {
         (
             Expectation::RefCounts(parse_ref_counts(expected)),
-            &lines[code_start_idx..lines.len() - 1],
+            &lines[..lines.len() - 1],
         )
     } else if let Some(expected) = last_line.strip_prefix("# Return.str=") {
-        (
-            Expectation::ReturnStr(expected.to_string()),
-            &lines[code_start_idx..lines.len() - 1],
-        )
+        (Expectation::ReturnStr(expected.to_string()), &lines[..lines.len() - 1])
     } else if let Some(expected) = last_line.strip_prefix("# Return.type=") {
-        (
-            Expectation::ReturnType(expected.to_string()),
-            &lines[code_start_idx..lines.len() - 1],
-        )
+        (Expectation::ReturnType(expected.to_string()), &lines[..lines.len() - 1])
     } else if let Some(expected) = last_line.strip_prefix("# Return=") {
-        (
-            Expectation::Return(expected.to_string()),
-            &lines[code_start_idx..lines.len() - 1],
-        )
+        (Expectation::Return(expected.to_string()), &lines[..lines.len() - 1])
     } else if let Some(expected) = last_line.strip_prefix("# Raise=") {
-        (
-            Expectation::Raise(expected.to_string()),
-            &lines[code_start_idx..lines.len() - 1],
-        )
+        (Expectation::Raise(expected.to_string()), &lines[..lines.len() - 1])
     } else {
         // No expectation comment - just run and check it doesn't raise
-        (Expectation::NoException, &lines[code_start_idx..])
+        (Expectation::NoException, &lines[..])
     };
 
     // Code is everything except the directive comment (and expectation comment if present)
@@ -196,7 +173,7 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
 ///
 /// The traceback string should contain the full expected output including the
 /// "Traceback (most recent call last):" header and the exception line.
-fn parse_traceback_expectation(content: &str, code_start_idx: usize) -> Option<(String, String)> {
+fn parse_traceback_expectation(content: &str) -> Option<(String, String)> {
     // Format: """\nTRACEBACK:\n...\n"""
     const MARKER: &str = "\"\"\"\nTRACEBACK:\n";
 
@@ -206,7 +183,7 @@ fn parse_traceback_expectation(content: &str, code_start_idx: usize) -> Option<(
     // Extract the code before the marker
     let code_part = &content[..marker_pos];
     let lines: Vec<&str> = code_part.lines().collect();
-    let code = lines[code_start_idx..].join("\n").trim_end().to_string();
+    let code = lines.join("\n").trim_end().to_string();
 
     // Extract the traceback content between the markers
     let after_marker = &content[marker_pos + MARKER.len()..];
@@ -247,7 +224,7 @@ fn parse_ref_counts(s: &str) -> AHashMap<String, usize> {
 
 /// External function names available in iter mode tests.
 ///
-/// These functions are provided by the test runner when a test uses `# mode: iter`.
+/// These functions are provided by the test runner when a test uses `# call-external`.
 const ITER_EXT_FUNCTIONS: &[&str] = &[
     "add_ints",           // (a, b) -> a + b (integers)
     "concat_strings",     // (a, b) -> a + b (strings)
@@ -585,7 +562,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<()
 
 /// Try to run a test using MontyRun with external function support.
 ///
-/// This function handles tests marked with `# mode: iter` directive by using the
+/// This function handles tests marked with `# call-external` directive by using the
 /// iterative executor API and providing implementations for predefined external functions.
 fn try_run_iter_test(path: &Path, code: &str, expectation: &Expectation) -> Result<(), TestFailure> {
     let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
@@ -796,6 +773,72 @@ fn split_code_for_module(code: &str, need_return_value: bool) -> (String, Option
     }
 }
 
+/// Wraps code in an async context for CPython execution.
+///
+/// Monty supports top-level `await`, but CPython does not. This function transforms code
+/// like:
+///
+/// ```python
+/// async def foo():
+///     return 1
+/// result = await foo()
+/// ```
+///
+/// Into:
+///
+/// ```python
+/// import asyncio
+/// async def __test_main():
+///     async def foo():
+///         return 1
+///     result = await foo()
+///     return result  # if need_return_value
+/// __test_result__ = asyncio.run(__test_main())
+/// ```
+fn wrap_code_for_async(code: &str, need_return_value: bool) -> (String, Option<String>) {
+    let lines: Vec<&str> = code.lines().collect();
+
+    // Find the last non-empty, non-comment line
+    let last_idx = lines
+        .iter()
+        .rposition(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty() && !trimmed.starts_with('#')
+        })
+        .expect("Empty code");
+
+    // Indent all code by 4 spaces for the function body
+    let indented: String = lines
+        .iter()
+        .map(|line| {
+            if line.is_empty() {
+                String::new()
+            } else {
+                format!("    {line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let return_stmt = if need_return_value {
+        // The last non-empty, non-comment line is the expression to return
+        let last_line = lines[last_idx].trim();
+        format!("\n    return {last_line}")
+    } else {
+        String::new()
+    };
+
+    let wrapped = format!(
+        "import asyncio\nasync def __test_main():\n{indented}{return_stmt}\n__test_result__ = asyncio.run(__test_main())"
+    );
+
+    if need_return_value {
+        (wrapped, Some("__test_result__".to_string()))
+    } else {
+        (wrapped, None)
+    }
+}
+
 /// Run the traceback script to get CPython's traceback output for a test file.
 ///
 /// This imports scripts/run_traceback.py via pyo3 and calls `run_file_and_get_traceback()`
@@ -804,7 +847,9 @@ fn split_code_for_module(code: &str, need_return_value: bool) -> (String, Option
 ///
 /// When `iter_mode` is true, external function implementations are injected into the
 /// file's globals before execution.
-fn run_traceback_script(path: &Path, iter_mode: bool) -> String {
+///
+/// When `async_mode` is true, code is wrapped in an async context before execution.
+fn run_traceback_script(path: &Path, iter_mode: bool, async_mode: bool) -> String {
     Python::attach(|py| {
         let run_traceback = import_run_traceback(py);
 
@@ -812,11 +857,11 @@ fn run_traceback_script(path: &Path, iter_mode: bool) -> String {
         let abs_path = path.canonicalize().expect("Failed to get absolute path");
         let path_str = abs_path.to_str().expect("Invalid UTF-8 in path");
 
-        // Call run_file_and_get_traceback with the recursion limit and iter_mode flag
+        // Call run_file_and_get_traceback with the recursion limit, iter_mode, and async_mode flags
         let result = run_traceback
             .call_method1(
                 "run_file_and_get_traceback",
-                (path_str, TEST_RECURSION_LIMIT, iter_mode),
+                (path_str, TEST_RECURSION_LIMIT, iter_mode, async_mode),
             )
             .expect("Failed to call run_file_and_get_traceback");
 
@@ -881,6 +926,7 @@ fn try_run_cpython_test(
     code: &str,
     expectation: &Expectation,
     iter_mode: bool,
+    async_mode: bool,
 ) -> Result<(), TestFailure> {
     // Skip RefCounts tests - only relevant for Monty
     if matches!(expectation, Expectation::RefCounts(_)) {
@@ -891,7 +937,7 @@ fn try_run_cpython_test(
 
     // Traceback tests use the external script for reliable caret line support
     if let Expectation::Traceback(expected) = expectation {
-        let result = run_traceback_script(path, iter_mode);
+        let result = run_traceback_script(path, iter_mode, async_mode);
         if result != *expected {
             return Err(TestFailure {
                 test_name,
@@ -907,7 +953,13 @@ fn try_run_cpython_test(
         expectation,
         Expectation::Return(_) | Expectation::ReturnStr(_) | Expectation::ReturnType(_)
     );
-    let (statements, maybe_expr) = split_code_for_module(code, need_return_value);
+
+    // Use async wrapper for tests with top-level await
+    let (statements, maybe_expr) = if async_mode {
+        wrap_code_for_async(code, need_return_value)
+    } else {
+        split_code_for_module(code, need_return_value)
+    };
 
     let result: CpythonResult = Python::attach(|py| {
         // Execute statements at module level
@@ -1170,7 +1222,7 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
     let (code, expectation, config) = parse_fixture(&content);
     let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
 
-    let result = try_run_cpython_test(path, &code, &expectation, config.iter_mode);
+    let result = try_run_cpython_test(path, &code, &expectation, config.iter_mode, config.async_mode);
 
     if config.xfail_cpython {
         // Strict xfail: test must fail; if it passed, xfail should be removed

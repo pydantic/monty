@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # External calls in unary expressions
 
 # Negation of external call result

@@ -256,7 +256,11 @@ Key points:
 
 Only use `# Raise=` when you only care about the exception type/message and not the traceback.
 
-### Xfail Directive (Strict)
+### Python fixture markers
+
+You may mark python files with:
+* `# call-external` to support calling external functions
+* `# run-async` to support running async code
 
 NEVER MARK TESTS AS XFAIL UNDER ANY CIRCUMSTANCES!!! INSTEAD FIX THE BEHAVIOR SO THAT THE TEST PASSES.
 
@@ -265,6 +269,8 @@ Never mark tests as:
 - `# xfail=monty` - Test is required to fail on Monty
 
 NEVER MARK TESTS AS XFAIL UNDER ANY CIRCUMSTANCES!!! INSTEAD FIX THE BEHAVIOR SO THAT THE TEST PASSES.
+
+All these markers must be at the start of comment lines to be recognized.
 
 ### Other Notes
 

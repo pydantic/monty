@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # === External calls in if/else expressions ===
 
 # Ternary expression with ext call in condition

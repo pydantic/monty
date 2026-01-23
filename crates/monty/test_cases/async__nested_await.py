@@ -1,4 +1,4 @@
-# xfail=cpython
+# run-async
 # Nested async function calls
 
 

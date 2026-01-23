@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # === External function exceptions ===
 # Tests for exceptions raised by external functions
 
