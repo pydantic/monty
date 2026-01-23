@@ -212,13 +212,15 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// Returns `Yield(pending_calls)` if no ready tasks (all blocked), or continues
     /// the run loop if a task was switched to.
     fn switch_or_yield(&mut self) -> Result<GetAwaitableResult, RunError> {
-        // Save current task context to scheduler
-        if let Some(current_task_id) = self.scheduler().current_task_id() {
-            self.save_task_context(current_task_id);
-        }
-
         // Get next ready task
         if let Some(next_task_id) = self.scheduler_mut().next_ready_task() {
+            // Save current task context ONLY when switching to another task.
+            // This is critical: if we're about to yield (no ready tasks), the main task's
+            // frames must stay in the VM so they're included in the snapshot.
+            if let Some(current_task_id) = self.scheduler().current_task_id() {
+                self.save_task_context(current_task_id);
+            }
+
             self.scheduler_mut().set_current_task(Some(next_task_id));
 
             // Load or initialize the next task's context
@@ -227,7 +229,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             // Continue execution - return FramePushed to reload cache and continue run loop
             Ok(GetAwaitableResult::FramePushed)
         } else {
-            // No ready tasks - yield control to host
+            // No ready tasks - yield control to host.
+            // Don't save the main task's context - frames stay in VM for the snapshot.
             let pending = self.scheduler().pending_call_ids();
             Ok(GetAwaitableResult::Yield(pending))
         }
@@ -679,5 +682,41 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 creator_task: current_task,
             },
         );
+    }
+
+    /// Prepares the main task to continue after futures are resolved.
+    ///
+    /// When the main task was blocked on an external future and that future is now
+    /// resolved, this method takes the resolved value from the scheduler and pushes
+    /// it onto the VM's stack so execution can continue.
+    ///
+    /// This is called by `FutureSnapshot::resume()` after resolving futures but before
+    /// calling `vm.run()`. For non-main tasks, the value is handled during task switching
+    /// in `load_or_init_task`.
+    ///
+    /// # Returns
+    /// `true` if a value was pushed, `false` if the main task wasn't ready to continue.
+    pub fn prepare_main_task_after_resolve(&mut self) -> bool {
+        let Some(scheduler) = &mut self.scheduler else {
+            return false;
+        };
+
+        // Check if main task (Task 0) is the current task
+        let main_task_id = TaskId::new(0);
+        if scheduler.current_task_id() != Some(main_task_id) {
+            return false;
+        }
+
+        // Take the resolved value for the main task (if it was unblocked)
+        if let Some(value) = scheduler.take_resolved_for_task(main_task_id) {
+            // Remove main task from ready_queue since we're handling it directly.
+            // resolve() added it to ready_queue, but since main task uses VM's frames
+            // directly (not saved/restored), we handle it here instead of via task switching.
+            scheduler.remove_from_ready_queue(main_task_id);
+            self.push(value);
+            true
+        } else {
+            false
+        }
     }
 }

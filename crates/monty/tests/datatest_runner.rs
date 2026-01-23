@@ -235,6 +235,7 @@ const ITER_EXT_FUNCTIONS: &[&str] = &[
     "make_mutable_point", // () -> Dataclass Point(x=1, y=2) (mutable)
     "make_user",          // (name) -> Dataclass User(name=name, active=True) (immutable)
     "make_empty",         // () -> Dataclass Empty() (immutable, no fields)
+    "async_call",         // (x) -> async: returns x (coroutine that returns its argument)
 ];
 
 /// Python implementations of external functions for running iter mode tests in CPython.
@@ -246,34 +247,48 @@ const ITER_EXT_FUNCTIONS: &[&str] = &[
 /// `scripts/run_traceback.py` to ensure consistency.
 const ITER_EXT_FUNCTIONS_PYTHON: &str = include_str!("../../../scripts/iter_test_methods.py");
 
+/// Result from dispatching an external function call.
+///
+/// Distinguishes between synchronous calls (return immediately) and
+/// asynchronous calls (return a future that needs later resolution).
+enum DispatchResult {
+    /// Synchronous result - pass directly to `state.run()`.
+    Sync(ExternalResult),
+    /// Asynchronous call - use `state.run_pending()` and resolve later.
+    /// Contains the value to resolve the future with.
+    Async(MontyObject),
+}
+
 /// Dispatches an external function call to the appropriate test implementation.
 ///
-/// Returns `ExternalResult::Return` for successful calls, or `ExternalResult::Error`
-/// for calls that should raise an exception.
+/// Returns `DispatchResult::Sync` for synchronous calls or `DispatchResult::Async`
+/// for coroutine calls that should use `run_pending()`.
 ///
 /// # Panics
 /// Panics if the function name is unknown or arguments are invalid types.
-fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> ExternalResult {
+fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult {
     match name {
         "add_ints" => {
             assert!(args.len() == 2, "add_ints requires 2 arguments");
             let a = i64::try_from(&args[0]).expect("add_ints: first arg must be int");
             let b = i64::try_from(&args[1]).expect("add_ints: second arg must be int");
-            MontyObject::Int(a + b).into()
+            DispatchResult::Sync(MontyObject::Int(a + b).into())
         }
         "concat_strings" => {
             assert!(args.len() == 2, "concat_strings requires 2 arguments");
             let a = String::try_from(&args[0]).expect("concat_strings: first arg must be str");
             let b = String::try_from(&args[1]).expect("concat_strings: second arg must be str");
-            MontyObject::String(a + &b).into()
+            DispatchResult::Sync(MontyObject::String(a + &b).into())
         }
         "return_value" => {
             assert!(args.len() == 1, "return_value requires 1 argument");
-            args.into_iter().next().unwrap().into()
+            DispatchResult::Sync(args.into_iter().next().unwrap().into())
         }
         "get_list" => {
             assert!(args.is_empty(), "get_list requires no arguments");
-            MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2), MontyObject::Int(3)]).into()
+            DispatchResult::Sync(
+                MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2), MontyObject::Int(3)]).into(),
+            )
         }
         "raise_error" => {
             // raise_error(exc_type: str, message: str) -> raises exception
@@ -287,72 +302,86 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> ExternalResult 
                 "RuntimeError" => ExcType::RuntimeError,
                 _ => panic!("raise_error: unsupported exception type: {exc_type_str}"),
             };
-            MontyException::new(exc_type, Some(message)).into()
+            DispatchResult::Sync(MontyException::new(exc_type, Some(message)).into())
         }
         "make_point" => {
             assert!(args.is_empty(), "make_point requires no arguments");
             // Return an immutable Point(x=1, y=2) dataclass
-            MontyObject::Dataclass {
-                name: "Point".to_string(),
-                type_id: 0, // Test fixture has no real Python type
-                field_names: vec!["x".to_string(), "y".to_string()],
-                attrs: vec![
-                    (MontyObject::String("x".to_string()), MontyObject::Int(1)),
-                    (MontyObject::String("y".to_string()), MontyObject::Int(2)),
-                ]
+            DispatchResult::Sync(
+                MontyObject::Dataclass {
+                    name: "Point".to_string(),
+                    type_id: 0, // Test fixture has no real Python type
+                    field_names: vec!["x".to_string(), "y".to_string()],
+                    attrs: vec![
+                        (MontyObject::String("x".to_string()), MontyObject::Int(1)),
+                        (MontyObject::String("y".to_string()), MontyObject::Int(2)),
+                    ]
+                    .into(),
+                    methods: vec![],
+                    frozen: true,
+                }
                 .into(),
-                methods: vec![],
-                frozen: true,
-            }
-            .into()
+            )
         }
         "make_mutable_point" => {
             assert!(args.is_empty(), "make_mutable_point requires no arguments");
             // Return a mutable Point(x=1, y=2) dataclass
-            MontyObject::Dataclass {
-                name: "MutablePoint".to_string(),
-                type_id: 0, // Test fixture has no real Python type
-                field_names: vec!["x".to_string(), "y".to_string()],
-                attrs: vec![
-                    (MontyObject::String("x".to_string()), MontyObject::Int(1)),
-                    (MontyObject::String("y".to_string()), MontyObject::Int(2)),
-                ]
+            DispatchResult::Sync(
+                MontyObject::Dataclass {
+                    name: "MutablePoint".to_string(),
+                    type_id: 0, // Test fixture has no real Python type
+                    field_names: vec!["x".to_string(), "y".to_string()],
+                    attrs: vec![
+                        (MontyObject::String("x".to_string()), MontyObject::Int(1)),
+                        (MontyObject::String("y".to_string()), MontyObject::Int(2)),
+                    ]
+                    .into(),
+                    methods: vec![],
+                    frozen: false,
+                }
                 .into(),
-                methods: vec![],
-                frozen: false,
-            }
-            .into()
+            )
         }
         "make_user" => {
             assert!(args.len() == 1, "make_user requires 1 argument");
             let name = String::try_from(&args[0]).expect("make_user: first arg must be str");
             // Return an immutable User(name=name, active=True) dataclass
-            MontyObject::Dataclass {
-                name: "User".to_string(),
-                type_id: 0, // Test fixture has no real Python type
-                field_names: vec!["name".to_string(), "active".to_string()],
-                attrs: vec![
-                    (MontyObject::String("name".to_string()), MontyObject::String(name)),
-                    (MontyObject::String("active".to_string()), MontyObject::Bool(true)),
-                ]
+            DispatchResult::Sync(
+                MontyObject::Dataclass {
+                    name: "User".to_string(),
+                    type_id: 0, // Test fixture has no real Python type
+                    field_names: vec!["name".to_string(), "active".to_string()],
+                    attrs: vec![
+                        (MontyObject::String("name".to_string()), MontyObject::String(name)),
+                        (MontyObject::String("active".to_string()), MontyObject::Bool(true)),
+                    ]
+                    .into(),
+                    methods: vec![],
+                    frozen: true,
+                }
                 .into(),
-                methods: vec![],
-                frozen: true,
-            }
-            .into()
+            )
         }
         "make_empty" => {
             assert!(args.is_empty(), "make_empty requires no arguments");
             // Return an immutable empty dataclass with no fields
-            MontyObject::Dataclass {
-                name: "Empty".to_string(),
-                type_id: 0, // Test fixture has no real Python type
-                field_names: vec![],
-                attrs: vec![].into(),
-                methods: vec![],
-                frozen: true,
-            }
-            .into()
+            DispatchResult::Sync(
+                MontyObject::Dataclass {
+                    name: "Empty".to_string(),
+                    type_id: 0, // Test fixture has no real Python type
+                    field_names: vec![],
+                    attrs: vec![].into(),
+                    methods: vec![],
+                    frozen: true,
+                }
+                .into(),
+            )
+        }
+        "async_call" => {
+            // async_call(x) -> coroutine that returns x
+            // This is an async function - use run_pending() and resolve later
+            assert!(args.len() == 1, "async_call requires 1 argument");
+            DispatchResult::Async(args.into_iter().next().unwrap())
         }
         _ => panic!("Unknown external function: {name}"),
     }
@@ -706,9 +735,16 @@ fn try_run_iter_test(path: &Path, code: &str, expectation: &Expectation) -> Resu
 /// When `ref-count-panic` feature is NOT enabled, this function also tests
 /// serialization round-trips by dumping and loading the execution state at
 /// each external function call boundary.
+///
+/// Supports both synchronous and asynchronous external functions:
+/// - Sync functions: result is passed immediately via `state.run()`
+/// - Async functions: `state.run_pending()` creates a future, resolved via `ResolveFutures`
 fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
     let limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
     let mut progress = exec.start(vec![], LimitedTracker::new(limits), &mut StdPrint)?;
+
+    // Track pending async calls: (call_id, result_value)
+    let mut pending_results: Vec<(u32, MontyObject)> = Vec::new();
 
     loop {
         // Test serialization round-trip at each step (skip when ref-count-panic is enabled
@@ -725,14 +761,41 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                 function_name,
                 args,
                 kwargs: _,
-                call_id: _,
+                call_id,
                 state,
             } => {
-                let return_value = dispatch_external_call(&function_name, args);
-                progress = state.run(return_value, &mut StdPrint)?;
+                let dispatch_result = dispatch_external_call(&function_name, args);
+                match dispatch_result {
+                    DispatchResult::Sync(return_value) => {
+                        progress = state.run(return_value, &mut StdPrint)?;
+                    }
+                    DispatchResult::Async(result_value) => {
+                        // Store the result for later resolution
+                        pending_results.push((call_id, result_value));
+                        // Continue execution with a pending future
+                        progress = state.run_pending(&mut StdPrint)?;
+                    }
+                }
             }
-            RunProgress::ResolveFutures { .. } => {
-                panic!("async futures not supported in test runner");
+            RunProgress::ResolveFutures { pending, state } => {
+                // Resolve all pending futures that we have results for
+                let results: Vec<(u32, ExternalResult)> = pending
+                    .iter()
+                    .filter_map(|p| {
+                        pending_results.iter().position(|(id, _)| *id == p.call_id).map(|idx| {
+                            let (call_id, value) = pending_results.remove(idx);
+                            (call_id, ExternalResult::Return(value))
+                        })
+                    })
+                    .collect();
+
+                assert!(
+                    !results.is_empty(),
+                    "ResolveFutures: no results available for pending calls: {:?}",
+                    pending.iter().map(|p| p.call_id).collect::<Vec<_>>()
+                );
+
+                progress = state.resume(results, &mut StdPrint)?;
             }
         }
     }

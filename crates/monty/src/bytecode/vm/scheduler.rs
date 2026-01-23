@@ -73,6 +73,9 @@ pub(crate) struct Task {
     pub gather_id: Option<HeapId>,
     /// Current execution state.
     pub state: TaskState,
+    /// CallId that unblocked this task (set when task transitions from Blocked to Ready).
+    /// Used to retrieve the resolved value when the task resumes.
+    pub unblocked_by: Option<CallId>,
 }
 
 /// Serialized call frame for task storage.
@@ -112,6 +115,7 @@ impl Task {
             coroutine_id,
             gather_id,
             state: TaskState::Ready,
+            unblocked_by: None,
         }
     }
 
@@ -277,6 +281,7 @@ impl Scheduler {
                 && blocked_call_id == call_id
             {
                 task.state = TaskState::Ready;
+                task.unblocked_by = Some(call_id);
                 self.ready_queue.push_back(task.id);
                 break;
             }
@@ -289,6 +294,20 @@ impl Scheduler {
     /// Returns `None` if the call hasn't been resolved yet.
     pub fn take_resolved(&mut self, call_id: CallId) -> Option<Value> {
         self.resolved.remove(&call_id)
+    }
+
+    /// Takes the resolved value for a task that was unblocked.
+    ///
+    /// If the task has an `unblocked_by` CallId set, takes the resolved value
+    /// for that call and clears the `unblocked_by` field.
+    /// Returns `None` if the task wasn't unblocked by a resolved call.
+    pub fn take_resolved_for_task(&mut self, task_id: TaskId) -> Option<Value> {
+        let task = &mut self.tasks[task_id.raw() as usize];
+        if let Some(call_id) = task.unblocked_by.take() {
+            self.resolved.remove(&call_id)
+        } else {
+            None
+        }
     }
 
     /// Marks the current task as blocked on an external call.
@@ -314,6 +333,14 @@ impl Scheduler {
     /// Returns all pending (unresolved) CallIds.
     pub fn pending_call_ids(&self) -> Vec<CallId> {
         self.pending_calls.keys().copied().collect()
+    }
+
+    /// Removes a task from the ready queue.
+    ///
+    /// Used when handling the main task directly (via `prepare_main_task_after_resolve`)
+    /// instead of through the normal task switching mechanism.
+    pub fn remove_from_ready_queue(&mut self, task_id: TaskId) {
+        self.ready_queue.retain(|&id| id != task_id);
     }
 
     /// Spawns a new task from a coroutine.

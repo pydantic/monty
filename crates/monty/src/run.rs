@@ -533,6 +533,9 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
                 vm.fail_future(crate::asyncio::CallId::new(call_id), error);
             }
 
+            // Push resolved value for main task if it was blocked
+            vm.prepare_main_task_after_resolve();
+
             // Continue execution
             let vm_result = vm.run();
 

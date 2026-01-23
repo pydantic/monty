@@ -77,6 +77,15 @@ def make_empty() -> Empty:
     return Empty()
 
 
+async def async_call(x: object) -> object:
+    """Async function that returns its argument.
+
+    This is a coroutine - it returns a future that resolves to the given value.
+    Used for testing async external function calls.
+    """
+    return x
+
+
 # All external functions available to iter mode tests
 ITER_MODE_GLOBALS: dict[str, object] = {
     'add_ints': add_ints,
@@ -88,4 +97,5 @@ ITER_MODE_GLOBALS: dict[str, object] = {
     'make_mutable_point': make_mutable_point,
     'make_user': make_user,
     'make_empty': make_empty,
+    'async_call': async_call,
 }
