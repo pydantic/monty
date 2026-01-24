@@ -46,7 +46,7 @@ pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -
 ///
 /// Collects coroutines for concurrent execution. Does NOT spawn tasks immediately -
 /// just validates and stores the coroutine references. Tasks are spawned when the
-/// returned `GatherFuture` is awaited (in the `GetAwaitable` opcode handler).
+/// returned `GatherFuture` is awaited (in the `Await` opcode handler).
 ///
 /// # Behavior when awaited
 ///

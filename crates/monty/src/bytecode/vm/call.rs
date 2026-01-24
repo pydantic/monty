@@ -518,7 +518,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Binds arguments immediately (errors are raised at call time, not await time)
     /// but stores the namespace in the Coroutine instead of registering it.
-    /// The coroutine is executed when awaited via GetAwaitable.
+    /// The coroutine is executed when awaited via Await.
     fn create_coroutine(
         &mut self,
         func_id: FunctionId,

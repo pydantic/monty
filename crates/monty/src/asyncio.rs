@@ -120,7 +120,7 @@ impl Coroutine {
 /// A gather() result tracking multiple coroutines/tasks.
 ///
 /// Created by `asyncio.gather(*awaitables)`. Does NOT spawn tasks immediately -
-/// tasks are spawned when the GatherFuture is awaited in GetAwaitable.
+/// tasks are spawned when the GatherFuture is awaited in Await.
 ///
 /// # Lifecycle
 ///

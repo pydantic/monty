@@ -774,12 +774,12 @@ impl<'a> Compiler<'a> {
             }
 
             Expr::Await(value) => {
-                // Await expressions: compile the inner expression, then emit GetAwaitable
-                // GetAwaitable handles ExternalFuture, Coroutine, and GatherFuture
+                // Await expressions: compile the inner expression, then emit Await
+                // Await handles ExternalFuture, Coroutine, and GatherFuture
                 self.compile_expr(value)?;
                 // Restore the full expression's position for traceback caret range
                 self.code.set_location(expr_loc.position, None);
-                self.code.emit(Opcode::GetAwaitable);
+                self.code.emit(Opcode::Await);
             }
 
             Expr::Slice { lower, upper, step } => {

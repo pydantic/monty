@@ -34,13 +34,13 @@ use crate::{
     value::{BitwiseOp, Value},
 };
 
-/// Result of executing GetAwaitable opcode.
+/// Result of executing Await opcode.
 ///
 /// Indicates what the VM should do after awaiting a value:
 /// - `ValueReady`: the awaited value resolved immediately, push it
 /// - `FramePushed`: a new frame was pushed for coroutine execution
 /// - `Yield`: all tasks blocked, yield to caller with pending futures
-enum GetAwaitableResult {
+enum AwaitResult {
     /// The awaited value resolved immediately (e.g., resolved ExternalFuture).
     ValueReady(Value),
     /// A new frame was pushed to execute a coroutine.
@@ -1200,14 +1200,14 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         // Spawned task completed - handle task completion
                         let result = self.handle_task_completion(value);
                         match result {
-                            Ok(GetAwaitableResult::ValueReady(v)) => {
+                            Ok(AwaitResult::ValueReady(v)) => {
                                 self.push(v);
                             }
-                            Ok(GetAwaitableResult::FramePushed) => {
+                            Ok(AwaitResult::FramePushed) => {
                                 // Switched to another task - reload cache
                                 reload_cache!(self, cached_frame);
                             }
-                            Ok(GetAwaitableResult::Yield(pending)) => {
+                            Ok(AwaitResult::Yield(pending)) => {
                                 // All tasks blocked - return to host
                                 return Ok(FrameExit::ResolveFutures(pending));
                             }
@@ -1224,19 +1224,19 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     reload_cache!(self, cached_frame);
                 }
                 // Async/Await
-                Opcode::GetAwaitable => {
+                Opcode::Await => {
                     // Sync IP before exec (may push new frame for coroutine)
                     self.current_frame_mut().ip = cached_frame.ip;
                     let result = self.exec_get_awaitable();
                     match result {
-                        Ok(GetAwaitableResult::ValueReady(value)) => {
+                        Ok(AwaitResult::ValueReady(value)) => {
                             self.push(value);
                         }
-                        Ok(GetAwaitableResult::FramePushed) => {
+                        Ok(AwaitResult::FramePushed) => {
                             // Reload cache after pushing a new frame
                             reload_cache!(self, cached_frame);
                         }
-                        Ok(GetAwaitableResult::Yield(pending_calls)) => {
+                        Ok(AwaitResult::Yield(pending_calls)) => {
                             // All tasks are blocked - return control to host
                             return Ok(FrameExit::ResolveFutures(pending_calls));
                         }

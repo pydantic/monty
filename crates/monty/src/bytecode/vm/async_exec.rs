@@ -6,7 +6,7 @@
 //! - Task completion and failure handling
 //! - External future resolution
 
-use super::{CallFrame, GetAwaitableResult, VM};
+use super::{AwaitResult, CallFrame, VM};
 use crate::{
     args::ArgValues,
     asyncio::{CallId, CoroutineState, TaskId},
@@ -59,15 +59,15 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         self.scheduler.as_ref().expect("scheduler must exist in async context")
     }
 
-    /// Executes the GetAwaitable opcode.
+    /// Executes the Await opcode.
     ///
     /// Pops the awaitable from the stack and handles it based on its type:
     /// - `Coroutine`: validates state is New, then pushes a frame to execute it
     /// - `ExternalFuture`: not yet implemented (requires scheduler from Phase 4)
     /// - `GatherFuture`: not yet implemented (requires scheduler from Phase 4)
     ///
-    /// Returns `GetAwaitableResult` indicating what action the VM should take.
-    pub(super) fn exec_get_awaitable(&mut self) -> Result<GetAwaitableResult, RunError> {
+    /// Returns `AwaitResult` indicating what action the VM should take.
+    pub(super) fn exec_get_awaitable(&mut self) -> Result<AwaitResult, RunError> {
         #[cfg_attr(not(feature = "ref-count-panic"), expect(unused_mut))]
         let mut awaitable = self.pop();
 
@@ -113,7 +113,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                         // Drop the coroutine reference (we've extracted what we need)
                         awaitable.drop_with_heap(self.heap);
 
-                        Ok(GetAwaitableResult::FramePushed)
+                        Ok(AwaitResult::FramePushed)
                     }
                     HeapData::GatherFuture(gather) => {
                         // Check if already being waited on (double-await)
@@ -130,7 +130,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                         if gather.task_count() == 0 {
                             awaitable.drop_with_heap(self.heap);
                             let list_id = self.heap.allocate(HeapData::List(List::new(vec![])))?;
-                            return Ok(GetAwaitableResult::ValueReady(Value::Ref(list_id)));
+                            return Ok(AwaitResult::ValueReady(Value::Ref(list_id)));
                         }
 
                         // Spawn tasks for each coroutine
@@ -192,7 +192,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
                 // Check if the future is already resolved
                 if let Some(value) = scheduler.take_resolved(call_id) {
-                    Ok(GetAwaitableResult::ValueReady(value))
+                    Ok(AwaitResult::ValueReady(value))
                 } else {
                     // Block current task on this call
                     self.scheduler_mut().block_current_on_call(call_id);
@@ -251,7 +251,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Returns `Yield(pending_calls)` if no ready tasks (all blocked), or continues
     /// the run loop if a task was switched to.
-    fn switch_or_yield(&mut self) -> Result<GetAwaitableResult, RunError> {
+    fn switch_or_yield(&mut self) -> Result<AwaitResult, RunError> {
         // Get next ready task (scheduler must exist - we're in async context)
         let scheduler = self.scheduler_mut();
         if let Some(next_task_id) = scheduler.next_ready_task() {
@@ -268,12 +268,12 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             self.load_or_init_task(next_task_id)?;
 
             // Continue execution - return FramePushed to reload cache and continue run loop
-            Ok(GetAwaitableResult::FramePushed)
+            Ok(AwaitResult::FramePushed)
         } else {
             // No ready tasks - yield control to host.
             // Don't save the main task's context - frames stay in VM for the snapshot.
             let pending = self.scheduler().pending_call_ids();
-            Ok(GetAwaitableResult::Yield(pending))
+            Ok(AwaitResult::Yield(pending))
         }
     }
 
@@ -284,7 +284,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// 2. If the task belongs to a gather, stores the result and checks if gather is complete
     /// 3. If gather is complete, unblocks the waiter and provides the collected results
     /// 4. Otherwise, switches to the next ready task
-    pub(super) fn handle_task_completion(&mut self, result: Value) -> Result<GetAwaitableResult, RunError> {
+    pub(super) fn handle_task_completion(&mut self, result: Value) -> Result<AwaitResult, RunError> {
         // Get task info (scheduler must exist - we're in async context)
         let scheduler = self.scheduler_mut();
         let task_id = scheduler
@@ -398,11 +398,11 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                         self.load_or_init_task(waiter_id)?;
                         // Push the result onto the waiter's stack
                         self.push(Value::Ref(list_id));
-                        return Ok(GetAwaitableResult::FramePushed);
+                        return Ok(AwaitResult::FramePushed);
                     }
 
                     // No waiter (shouldn't happen but handle gracefully)
-                    return Ok(GetAwaitableResult::ValueReady(Value::Ref(list_id)));
+                    return Ok(AwaitResult::ValueReady(Value::Ref(list_id)));
                 }
             }
         }
@@ -421,11 +421,11 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         if let Some(next_task_id) = scheduler.next_ready_task() {
             self.scheduler_mut().set_current_task(Some(next_task_id));
             self.load_or_init_task(next_task_id)?;
-            Ok(GetAwaitableResult::FramePushed)
+            Ok(AwaitResult::FramePushed)
         } else {
             // No ready tasks - yield to host
             let pending = self.scheduler().pending_call_ids();
-            Ok(GetAwaitableResult::Yield(pending))
+            Ok(AwaitResult::Yield(pending))
         }
     }
 
