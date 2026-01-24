@@ -10,7 +10,7 @@ use super::{CallFrame, GetAwaitableResult, VM};
 use crate::{
     args::ArgValues,
     asyncio::{CallId, CoroutineState, TaskId},
-    bytecode::vm::scheduler::{PendingCallData, SerializedTaskFrame, TaskState},
+    bytecode::vm::scheduler::{PendingCallData, Scheduler, SerializedTaskFrame, TaskState},
     exception_private::{ExcType, RunError, SimpleException},
     heap::{HeapData, HeapId},
     intern::{ExtFunctionId, FunctionId},
@@ -21,6 +21,32 @@ use crate::{
 };
 
 impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
+    /// Gets or creates the scheduler for async operations.
+    ///
+    /// The scheduler is created lazily on first use to avoid allocations for
+    /// synchronous code paths. If a scheduler already exists, returns it.
+    /// If one doesn't exist, creates a new one, transferring the `next_call_id`
+    /// counter so that call IDs remain unique.
+    pub(super) fn get_or_create_scheduler(&mut self) -> &mut Scheduler {
+        if self.scheduler.is_none() {
+            let mut scheduler = Scheduler::new();
+            // Transfer the call ID counter to maintain uniqueness
+            scheduler.set_next_call_id(self.next_call_id);
+            self.scheduler = Some(scheduler);
+        }
+        self.scheduler.as_mut().expect("scheduler was just created")
+    }
+
+    /// Returns a reference to the scheduler (read-only access).
+    ///
+    /// # Panics
+    /// Panics if the scheduler hasn't been created yet. Only use this in code
+    /// paths where async operations have already been initiated.
+    #[inline]
+    pub(super) fn scheduler(&self) -> &Scheduler {
+        self.scheduler.as_ref().expect("scheduler must exist in async context")
+    }
+
     /// Executes the GetAwaitable opcode.
     ///
     /// Pops the awaitable from the stack and handles it based on its type:
@@ -99,7 +125,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                         let coroutine_ids: Vec<HeapId> = gather.coroutine_ids.clone();
 
                         // Set waiter before spawning (creates scheduler if needed)
-                        let current_task = self.scheduler_mut().current_task_id();
+                        let current_task = self.get_or_create_scheduler().current_task_id();
                         if let HeapData::GatherFuture(gather_mut) = self.heap.get_mut(heap_id) {
                             gather_mut.waiter = current_task;
                         }
@@ -107,7 +133,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                         // Spawn all coroutines as tasks (track gather_id for cancellation)
                         let mut task_ids = Vec::with_capacity(coroutine_ids.len());
                         for coro_id in &coroutine_ids {
-                            let task_id = self.scheduler_mut().spawn(*coro_id, Some(heap_id));
+                            let task_id = self.get_or_create_scheduler().spawn(*coro_id, Some(heap_id));
                             task_ids.push(task_id);
                         }
 
@@ -117,7 +143,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                         }
 
                         // Block current task on this gather
-                        self.scheduler_mut().block_current_on_gather(heap_id);
+                        self.get_or_create_scheduler().block_current_on_gather(heap_id);
 
                         // Consume the awaitable without decrementing refcount - the GatherFuture
                         // must stay alive for result collection. It will be dec_ref'd when
@@ -148,14 +174,14 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 }
 
                 // Mark as consumed (creates scheduler if needed)
-                self.scheduler_mut().mark_consumed(call_id);
+                self.get_or_create_scheduler().mark_consumed(call_id);
 
                 // Check if the future is already resolved
-                if let Some(value) = self.scheduler_mut().take_resolved(call_id) {
+                if let Some(value) = self.get_or_create_scheduler().take_resolved(call_id) {
                     Ok(GetAwaitableResult::ValueReady(value))
                 } else {
                     // Block current task on this call
-                    self.scheduler_mut().block_current_on_call(call_id);
+                    self.get_or_create_scheduler().block_current_on_call(call_id);
 
                     // Switch to next ready task or yield to host
                     self.switch_or_yield()
@@ -213,7 +239,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// the run loop if a task was switched to.
     fn switch_or_yield(&mut self) -> Result<GetAwaitableResult, RunError> {
         // Get next ready task
-        if let Some(next_task_id) = self.scheduler_mut().next_ready_task() {
+        if let Some(next_task_id) = self.get_or_create_scheduler().next_ready_task() {
             // Save current task context ONLY when switching to another task.
             // This is critical: if we're about to yield (no ready tasks), the main task's
             // frames must stay in the VM so they're included in the snapshot.
@@ -221,7 +247,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 self.save_task_context(current_task_id);
             }
 
-            self.scheduler_mut().set_current_task(Some(next_task_id));
+            self.get_or_create_scheduler().set_current_task(Some(next_task_id));
 
             // Load or initialize the next task's context
             self.load_or_init_task(next_task_id)?;
@@ -262,7 +288,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         }
 
         // Mark task as completed and store result
-        self.scheduler_mut().complete_task(task_id, result.copy_for_extend());
+        self.get_or_create_scheduler()
+            .complete_task(task_id, result.copy_for_extend());
         if let Value::Ref(id) = &result {
             self.heap.inc_ref(*id);
         }
@@ -293,7 +320,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
                     if let Some(&failed_tid) = failed_task {
                         // Get the error from the failed task
-                        let task = self.scheduler_mut().get_task_mut(failed_tid);
+                        let task = self.get_or_create_scheduler().get_task_mut(failed_tid);
                         if let TaskState::Failed(err) = std::mem::replace(&mut task.state, TaskState::Ready) {
                             // Clean up resources before propagating error
                             result.drop_with_heap(self.heap);
@@ -303,7 +330,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                             if let Some(waiter_id) = waiter {
                                 self.cleanup_current_frames();
                                 self.stack.clear();
-                                self.scheduler_mut().set_current_task(Some(waiter_id));
+                                self.get_or_create_scheduler().set_current_task(Some(waiter_id));
                                 self.load_or_init_task(waiter_id)?;
                             }
 
@@ -345,12 +372,12 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
                     // Unblock waiter and switch to it
                     if let Some(waiter_id) = waiter {
-                        self.scheduler_mut().make_ready(waiter_id);
+                        self.get_or_create_scheduler().make_ready(waiter_id);
                         // Clear current task's state since it's done
                         self.cleanup_current_frames();
                         self.stack.clear();
                         // Switch to waiter
-                        self.scheduler_mut().set_current_task(Some(waiter_id));
+                        self.get_or_create_scheduler().set_current_task(Some(waiter_id));
                         self.load_or_init_task(waiter_id)?;
                         // Push the result onto the waiter's stack
                         self.push(Value::Ref(list_id));
@@ -370,11 +397,11 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         // Clear current task's state since it's done
         self.cleanup_current_frames();
         self.stack.clear();
-        self.scheduler_mut().set_current_task(None);
+        self.get_or_create_scheduler().set_current_task(None);
 
         // Get next ready task
-        if let Some(next_task_id) = self.scheduler_mut().next_ready_task() {
-            self.scheduler_mut().set_current_task(Some(next_task_id));
+        if let Some(next_task_id) = self.get_or_create_scheduler().next_ready_task() {
+            self.get_or_create_scheduler().set_current_task(Some(next_task_id));
             self.load_or_init_task(next_task_id)?;
             Ok(GetAwaitableResult::FramePushed)
         } else {
@@ -428,7 +455,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             };
 
             // Mark task as failed (need to do this before getting siblings)
-            let (_, siblings) = self.scheduler_mut().fail_task(task_id, error);
+            let (_, siblings) = self.get_or_create_scheduler().fail_task(task_id, error);
 
             // Cancel sibling tasks
             // Use direct field access to avoid borrow conflicts with heap/namespaces
@@ -448,26 +475,26 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 // Properly clean up current task's frames (namespaces and cells)
                 self.cleanup_current_frames();
                 self.stack.clear();
-                self.scheduler_mut().set_current_task(Some(waiter_id));
+                self.get_or_create_scheduler().set_current_task(Some(waiter_id));
                 self.load_or_init_task(waiter_id)?;
                 // Get error back from task state to return
-                let task = self.scheduler_mut().get_task_mut(task_id);
+                let task = self.get_or_create_scheduler().get_task_mut(task_id);
                 if let TaskState::Failed(err) = std::mem::replace(&mut task.state, TaskState::Ready) {
                     return Err(err);
                 }
             }
         } else {
             // No gather - just mark task as failed
-            self.scheduler_mut().fail_task(task_id, error);
+            self.get_or_create_scheduler().fail_task(task_id, error);
         }
 
         // No gather or no waiter - switch to next task
         self.cleanup_current_frames();
         self.stack.clear();
-        self.scheduler_mut().set_current_task(None);
+        self.get_or_create_scheduler().set_current_task(None);
 
-        if let Some(next_task_id) = self.scheduler_mut().next_ready_task() {
-            self.scheduler_mut().set_current_task(Some(next_task_id));
+        if let Some(next_task_id) = self.get_or_create_scheduler().next_ready_task() {
+            self.get_or_create_scheduler().set_current_task(Some(next_task_id));
             self.load_or_init_task(next_task_id)?;
         }
         // If no ready tasks, frames will be empty and run loop will yield
@@ -497,7 +524,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         let instruction_ip = self.instruction_ip;
 
         // Now assign to task
-        let task = self.scheduler_mut().get_task_mut(task_id);
+        let task = self.get_or_create_scheduler().get_task_mut(task_id);
         task.frames = frames;
         task.stack = stack;
         task.exception_stack = exception_stack;
@@ -511,7 +538,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     fn load_or_init_task(&mut self, task_id: TaskId) -> Result<(), RunError> {
         // Extract data from task before assigning to self to avoid borrow conflicts
         let (frames, stack, exception_stack, instruction_ip, coroutine_id) = {
-            let task = self.scheduler_mut().get_task_mut(task_id);
+            let task = self.get_or_create_scheduler().get_task_mut(task_id);
             (
                 std::mem::take(&mut task.frames),
                 std::mem::take(&mut task.stack),
@@ -631,7 +658,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             value.drop_with_heap(self.heap);
             return;
         }
-        self.scheduler_mut().resolve(call_id, value);
+        self.get_or_create_scheduler().resolve(call_id, value);
     }
 
     /// Fails an external future with an error.
@@ -643,7 +670,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// # Returns
     /// `true` if a task was found and failed, `false` if no task was blocked on this CallId.
     pub fn fail_future(&mut self, call_id: CallId, error: RunError) -> bool {
-        if let Some((_, _, siblings)) = self.scheduler_mut().fail_for_call(call_id, error) {
+        if let Some((_, _, siblings)) = self.get_or_create_scheduler().fail_for_call(call_id, error) {
             // Cancel sibling tasks if this task was part of a gather
             // Use direct field access to avoid borrow conflicts with heap/namespaces
             for sibling_id in siblings {
@@ -674,7 +701,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             .as_ref()
             .and_then(super::scheduler::Scheduler::current_task_id)
             .unwrap_or(TaskId::new(0));
-        self.scheduler_mut().add_pending_call(
+        self.get_or_create_scheduler().add_pending_call(
             call_id,
             PendingCallData {
                 ext_function_id,

@@ -483,32 +483,6 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         }
     }
 
-    /// Gets or creates the scheduler for async operations.
-    ///
-    /// The scheduler is created lazily on first use to avoid allocations for
-    /// synchronous code paths. If a scheduler already exists, returns it.
-    /// If one doesn't exist, creates a new one, transferring the `next_call_id`
-    /// counter so that call IDs remain unique.
-    pub(super) fn scheduler_mut(&mut self) -> &mut Scheduler {
-        if self.scheduler.is_none() {
-            let mut scheduler = Scheduler::new();
-            // Transfer the call ID counter to maintain uniqueness
-            scheduler.set_next_call_id(self.next_call_id);
-            self.scheduler = Some(scheduler);
-        }
-        self.scheduler.as_mut().expect("scheduler was just created")
-    }
-
-    /// Returns a reference to the scheduler (read-only access).
-    ///
-    /// # Panics
-    /// Panics if the scheduler hasn't been created yet. Only use this in code
-    /// paths where async operations have already been initiated.
-    #[inline]
-    pub(super) fn scheduler(&self) -> &Scheduler {
-        self.scheduler.as_ref().expect("scheduler must exist in async context")
-    }
-
     /// Allocates a new `CallId` for an external function call.
     ///
     /// Works with or without a scheduler. If a scheduler exists, delegates to it.

@@ -10,7 +10,9 @@
 //! - Spawned tasks (1+) store their own execution context in the Task struct
 //! - When switching tasks, the scheduler swaps contexts with the VM
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
+
+use ahash::{AHashMap, AHashSet};
 
 use crate::{
     args::ArgValues,
@@ -167,12 +169,12 @@ pub(crate) struct Scheduler {
     next_call_id: u32,
     /// Maps CallId -> pending call data for unresolved external calls.
     /// Populated when host calls `run_pending()`.
-    pending_calls: HashMap<CallId, PendingCallData>,
+    pending_calls: AHashMap<CallId, PendingCallData>,
     /// Maps CallId -> resolved Value for futures that have been resolved.
     /// Entry is removed when the value is consumed by awaiting.
-    resolved: HashMap<CallId, Value>,
+    resolved: AHashMap<CallId, Value>,
     /// CallIds that have been awaited (to detect double-await).
-    consumed: HashSet<CallId>,
+    consumed: AHashSet<CallId>,
 }
 
 impl Scheduler {
@@ -191,9 +193,9 @@ impl Scheduler {
             current_task: Some(TaskId::new(0)),
             next_task_id: 1,
             next_call_id: 0,
-            pending_calls: HashMap::new(),
-            resolved: HashMap::new(),
-            consumed: HashSet::new(),
+            pending_calls: AHashMap::new(),
+            resolved: AHashMap::new(),
+            consumed: AHashSet::new(),
         }
     }
 
