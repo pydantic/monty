@@ -536,6 +536,13 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
             // Push resolved value for main task if it was blocked
             vm.prepare_main_task_after_resolve();
 
+            // Load a ready task if frames are empty (e.g., gather completed while
+            // tasks were running and we yielded with no frames)
+            if let Err(e) = vm.load_ready_task_if_needed() {
+                vm.cleanup();
+                return Err(e.into_python_exception(&executor.interns, &executor.code));
+            }
+
             // Continue execution
             let vm_result = vm.run();
 

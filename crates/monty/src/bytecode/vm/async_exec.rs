@@ -817,17 +817,17 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                             self.heap.dec_ref(gather_id);
 
                             // Push result onto waiter's stack and mark as ready
-                            // For the main task, the stack is in VM.stack; for other tasks,
-                            // the stack is saved in task.stack
-                            if waiter_id.is_main() {
-                                // Main task's stack stays in VM, and we handle it directly
-                                // (no task switching needed), so just push result
+                            // Check if the waiter's context is saved in the task or in the VM
+                            let waiter_context_in_vm = waiter_id.is_main() && !self.frames.is_empty();
+
+                            if waiter_context_in_vm {
+                                // Main task's frames are in VM (external-only gather, no task switching)
                                 self.stack.push(Value::Ref(list_id));
                                 // Mark main task as ready but don't add to ready_queue
-                                // (it will continue execution directly after resolve_future)
                                 self.scheduler_mut().get_task_mut(waiter_id).state = TaskState::Ready;
                             } else {
-                                // Spawned task's stack is saved in the task
+                                // Waiter's context is saved in the task (either spawned task,
+                                // or main task that was saved when switching to spawned tasks)
                                 let scheduler = self.scheduler_mut();
                                 scheduler.get_task_mut(waiter_id).stack.push(Value::Ref(list_id));
                                 scheduler.make_ready(waiter_id);
@@ -900,28 +900,58 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// in `load_or_init_task`.
     ///
     /// # Returns
-    /// `true` if a value was pushed, `false` if the main task wasn't ready to continue.
+    /// `true` if a value was pushed, `false` if no task was ready to continue.
     pub fn prepare_main_task_after_resolve(&mut self) -> bool {
         let Some(scheduler) = &mut self.scheduler else {
             return false;
         };
 
-        // Check if main task (Task 0) is the current task
-        let main_task_id = TaskId::new(0);
-        if scheduler.current_task_id() != Some(main_task_id) {
+        // Check if there's a current task (main or spawned)
+        let Some(current_task_id) = scheduler.current_task_id() else {
             return false;
-        }
+        };
 
-        // Take the resolved value for the main task (if it was unblocked)
-        if let Some(value) = scheduler.take_resolved_for_task(main_task_id) {
-            // Remove main task from ready_queue since we're handling it directly.
-            // resolve() added it to ready_queue, but since main task uses VM's frames
-            // directly (not saved/restored), we handle it here instead of via task switching.
-            scheduler.remove_from_ready_queue(main_task_id);
+        // Take the resolved value for the current task (if it was unblocked)
+        if let Some(value) = scheduler.take_resolved_for_task(current_task_id) {
+            // Remove task from ready_queue since we're handling it directly.
+            // resolve() added it to ready_queue, but since frames are already
+            // in the VM (not saved/restored), we handle it here instead of via task switching.
+            scheduler.remove_from_ready_queue(current_task_id);
             self.push(value);
             true
         } else {
             false
+        }
+    }
+
+    /// Loads a ready task if the VM has no frames.
+    ///
+    /// This is called by `FutureSnapshot::resume()` after resolving futures but before
+    /// calling `vm.run()`. When all external futures for a gather are resolved while
+    /// tasks were running (mixed coroutines + external futures), the task context
+    /// may need to be loaded from the scheduler.
+    ///
+    /// # Returns
+    /// - `Ok(true)` if a task was loaded and execution can continue
+    /// - `Ok(false)` if frames already exist (nothing to do)
+    /// - `Err(error)` if loading the task failed
+    pub fn load_ready_task_if_needed(&mut self) -> Result<bool, RunError> {
+        // If we have frames, nothing to do
+        if !self.frames.is_empty() {
+            return Ok(false);
+        }
+
+        // Check if there's a ready task to load
+        let Some(scheduler) = &mut self.scheduler else {
+            return Ok(false);
+        };
+
+        if let Some(next_task_id) = scheduler.next_ready_task() {
+            scheduler.set_current_task(Some(next_task_id));
+            self.load_or_init_task(next_task_id)?;
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 }
