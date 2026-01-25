@@ -3,7 +3,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
     ExcType, MontyException,
-    asyncio::CallId,
     bytecode::{Code, Compiler, FrameExit, VM, VMSnapshot},
     exception_private::{RunError, RunResult},
     heap::Heap,
@@ -336,131 +335,6 @@ impl From<MontyException> for ExternalResult {
     }
 }
 
-/// Execution state paused while waiting for external future results.
-///
-/// Unlike `Snapshot` (used for sync external calls), `FutureSnapshot` supports
-/// incremental resolution - you can provide partial results and Monty will
-/// continue running until all tasks are blocked again.
-///
-/// # Type Parameters
-/// * `T` - Resource tracker implementation
-///
-/// Serialization requires `T: Serialize + Deserialize`.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
-pub struct FutureSnapshot<T: ResourceTracker> {
-    /// The executor containing compiled code and interns.
-    executor: Executor,
-    /// The VM state containing stack, frames, and exception state.
-    vm_state: VMSnapshot,
-    /// The heap containing all allocated objects.
-    heap: Heap<T>,
-    /// The namespaces containing all variable bindings.
-    namespaces: Namespaces,
-}
-
-impl<T: ResourceTracker> FutureSnapshot<T> {
-    /// Resumes execution with results for some or all pending futures.
-    ///
-    /// **Incremental resolution**: You don't need to provide all results at once.
-    /// If you provide a partial list, Monty will:
-    /// 1. Mark those futures as resolved
-    /// 2. Unblock any tasks waiting on those futures
-    /// 3. Continue running until all tasks are blocked again
-    /// 4. Return `ResolveFutures` with the remaining pending calls
-    ///
-    /// This allows the host to resolve futures as they complete, rather than
-    /// waiting for all of them.
-    ///
-    /// # Arguments
-    /// * `results` - List of (call_id, result) pairs. Can be a subset of pending calls.
-    /// * `print` - Writer for print output
-    ///
-    /// # Returns
-    /// * `RunProgress::ResolveFutures` - More futures need resolution
-    /// * `RunProgress::FunctionCall` - VM hit another external call
-    /// * `RunProgress::Complete` - All tasks completed successfully
-    /// * `Err(MontyException)` - An unhandled exception occurred
-    pub fn resume(
-        mut self,
-        results: Vec<(u32, ExternalResult)>,
-        print: &mut impl PrintWriter,
-    ) -> Result<RunProgress<T>, MontyException> {
-        use crate::exception_private::RunError;
-
-        // Separate results into successes and failures
-        // Convert all successful results to Values BEFORE creating VM (to avoid borrow conflicts)
-        let mut successful_results = Vec::with_capacity(results.len());
-        let mut failed_results = Vec::new();
-
-        for (call_id, ext_result) in results {
-            match ext_result {
-                ExternalResult::Return(obj) => match obj.to_value(&mut self.heap, &self.executor.interns) {
-                    Ok(v) => {
-                        successful_results.push((call_id, v));
-                    }
-                    Err(e) => {
-                        return Err(MontyException::runtime_error(format!(
-                            "invalid return type for call {call_id}: {e}"
-                        )));
-                    }
-                },
-                ExternalResult::Error(exc) => {
-                    // Convert MontyException to RunError for the scheduler
-                    let run_error: RunError = exc.into();
-                    failed_results.push((call_id, run_error));
-                }
-            }
-        }
-
-        // Destructure self to avoid partial move issues
-        let Self {
-            executor,
-            vm_state,
-            mut heap,
-            mut namespaces,
-        } = self;
-
-        // Restore the VM from the snapshot
-        let mut vm = VM::restore(
-            vm_state,
-            &executor.module_code,
-            &mut heap,
-            &mut namespaces,
-            &executor.interns,
-            print,
-        );
-
-        // Resolve successful futures in the scheduler
-        for (call_id, value) in successful_results {
-            vm.resolve_future(CallId::new(call_id), value);
-        }
-
-        // Fail futures that returned errors
-        for (call_id, error) in failed_results {
-            vm.fail_future(CallId::new(call_id), error);
-        }
-
-        // Push resolved value for main task if it was blocked
-        vm.prepare_main_task_after_resolve();
-
-        // Load a ready task if frames are empty (e.g., gather completed while
-        // tasks were running and we yielded with no frames)
-        if let Err(e) = vm.load_ready_task_if_needed() {
-            vm.cleanup();
-            return Err(e.into_python_exception(&executor.interns, &executor.code));
-        }
-
-        // Continue execution
-        let result = vm.run();
-
-        let vm_state = vm.snapshot(&result);
-
-        // Handle the result using the destructured parts
-        handle_vm_result(result, vm_state, executor, heap, namespaces)
-    }
-}
-
 /// Helper enum for resuming execution with either a return value or an exception.
 ///
 /// Used by `Snapshot::run` to decide whether to call `VM::resume` (for normal returns)
@@ -572,6 +446,107 @@ impl<T: ResourceTracker> Snapshot<T> {
 
         // Handle the result using the destructured parts
         handle_vm_result(vm_result, vm_state, self.executor, self.heap, self.namespaces)
+    }
+}
+
+/// Execution state paused while waiting for external future results.
+///
+/// Unlike `Snapshot` (used for sync external calls), `FutureSnapshot` supports
+/// incremental resolution - you can provide partial results and Monty will
+/// continue running until all tasks are blocked again.
+///
+/// # Type Parameters
+/// * `T` - Resource tracker implementation
+///
+/// Serialization requires `T: Serialize + Deserialize`.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
+pub struct FutureSnapshot<T: ResourceTracker> {
+    /// The executor containing compiled code and interns.
+    executor: Executor,
+    /// The VM state containing stack, frames, and exception state.
+    vm_state: VMSnapshot,
+    /// The heap containing all allocated objects.
+    heap: Heap<T>,
+    /// The namespaces containing all variable bindings.
+    namespaces: Namespaces,
+}
+
+impl<T: ResourceTracker> FutureSnapshot<T> {
+    /// Resumes execution with results for some or all pending futures.
+    ///
+    /// **Incremental resolution**: You don't need to provide all results at once.
+    /// If you provide a partial list, Monty will:
+    /// 1. Mark those futures as resolved
+    /// 2. Unblock any tasks waiting on those futures
+    /// 3. Continue running until all tasks are blocked again
+    /// 4. Return `ResolveFutures` with the remaining pending calls
+    ///
+    /// This allows the host to resolve futures as they complete, rather than
+    /// waiting for all of them.
+    ///
+    /// # Arguments
+    /// * `results` - List of (call_id, result) pairs. Can be a subset of pending calls.
+    /// * `print` - Writer for print output
+    ///
+    /// # Returns
+    /// * `RunProgress::ResolveFutures` - More futures need resolution
+    /// * `RunProgress::FunctionCall` - VM hit another external call
+    /// * `RunProgress::Complete` - All tasks completed successfully
+    /// * `Err(MontyException)` - An unhandled exception occurred
+    pub fn resume(
+        self,
+        results: Vec<(u32, ExternalResult)>,
+        print: &mut impl PrintWriter,
+    ) -> Result<RunProgress<T>, MontyException> {
+        use crate::exception_private::RunError;
+
+        // Destructure self to avoid partial move issues
+        let Self {
+            executor,
+            vm_state,
+            mut heap,
+            mut namespaces,
+        } = self;
+
+        // Restore the VM from the snapshot
+        let mut vm = VM::restore(
+            vm_state,
+            &executor.module_code,
+            &mut heap,
+            &mut namespaces,
+            &executor.interns,
+            print,
+        );
+
+        for (call_id, ext_result) in results {
+            match ext_result {
+                // Resolve successful futures in the scheduler
+                ExternalResult::Return(obj) => vm.resolve_future(call_id, obj).map_err(|e| {
+                    MontyException::runtime_error(format!("Invalid return type for call {call_id}: {e}"))
+                })?,
+                // Fail futures that returned errors
+                ExternalResult::Error(exc) => vm.fail_future(call_id, RunError::from(exc)),
+            }
+        }
+
+        // Push resolved value for main task if it was blocked
+        vm.prepare_main_task_after_resolve();
+
+        // Load a ready task if frames are empty (e.g., gather completed while
+        // tasks were running and we yielded with no frames)
+        if let Err(e) = vm.load_ready_task_if_needed() {
+            vm.cleanup();
+            return Err(e.into_python_exception(&executor.interns, &executor.code));
+        }
+
+        // Continue execution
+        let result = vm.run();
+
+        let vm_state = vm.snapshot(&result);
+
+        // Handle the result using the destructured parts
+        handle_vm_result(result, vm_state, executor, heap, namespaces)
     }
 }
 

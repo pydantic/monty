@@ -8,6 +8,7 @@
 
 use super::{AwaitResult, CallFrame, VM};
 use crate::{
+    InvalidInputError, MontyObject,
     args::ArgValues,
     asyncio::{CallId, CoroutineState, GatherItem, TaskId},
     bytecode::vm::scheduler::{PendingCallData, Scheduler, SerializedTaskFrame, TaskState},
@@ -775,17 +776,18 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// If the task that created this call has been cancelled or failed,
     /// the result is silently ignored and the value is dropped.
-    pub fn resolve_future(&mut self, call_id: CallId, value: Value) {
+    pub fn resolve_future(&mut self, call_id: u32, obj: MontyObject) -> Result<(), InvalidInputError> {
+        let call_id = CallId::new(call_id);
         // Check if the creator task has been cancelled/failed
         // (scheduler must exist if we're resolving futures)
         let scheduler = self.scheduler_mut();
         if let Some(creator_task) = scheduler.get_pending_call_creator(call_id)
             && scheduler.is_task_failed(creator_task)
         {
-            // Task was cancelled - silently ignore the result and drop the value
-            value.drop_with_heap(self.heap);
-            return;
+            // Task was cancelled - silently ignore the result
+            return Ok(());
         }
+        let value = obj.to_value(self.heap, self.interns)?;
 
         // Check if a gather is waiting on this CallId
         if let Some((gather_id, result_idx)) = self.scheduler_mut().take_gather_waiter(call_id) {
@@ -869,6 +871,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             // Normal resolution for single awaiter
             self.scheduler_mut().resolve(call_id, value);
         }
+        Ok(())
     }
 
     /// Fails an external future with an error.
@@ -876,10 +879,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// Called by the host when an async external call fails with an exception.
     /// Finds the task blocked on this CallId and fails it with the error.
     /// If the task is part of a gather, cancels sibling tasks.
-    ///
-    /// # Returns
-    /// `true` if a task was found and failed, `false` if no task was blocked on this CallId.
-    pub fn fail_future(&mut self, call_id: CallId, error: RunError) -> bool {
+    pub fn fail_future(&mut self, call_id: u32, error: RunError) {
+        let call_id = CallId::new(call_id);
         if let Some((_, _, siblings)) = self.get_or_create_scheduler().fail_for_call(call_id, error) {
             // Cancel sibling tasks if this task was part of a gather
             // Use direct field access to avoid borrow conflicts with heap/namespaces
@@ -890,9 +891,6 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                     self.namespaces,
                 );
             }
-            true
-        } else {
-            false
         }
     }
 
