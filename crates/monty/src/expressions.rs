@@ -248,6 +248,18 @@ pub enum Expr {
         /// The body is wrapped as `[Node::Return(body_expr)]` during preparation.
         func_def: Box<PreparedFunctionDef>,
     },
+    /// Named expression (walrus operator): `(target := value)`
+    ///
+    /// Evaluates `value`, assigns it to `target`, and returns the value as the
+    /// expression result. The target is treated as an assignment for scope analysis,
+    /// so it creates a local binding in the enclosing scope.
+    ///
+    /// Per PEP 572, in comprehensions the target binds in the enclosing scope,
+    /// not the comprehension's implicit scope.
+    Named {
+        target: Identifier,
+        value: Box<ExprLoc>,
+    },
 }
 
 /// Target for tuple unpacking - can be a single name or nested tuple.

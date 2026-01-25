@@ -790,6 +790,15 @@ impl<'a> Compiler<'a> {
                 }
                 self.code.emit(Opcode::BuildSlice);
             }
+
+            Expr::Named { target, value } => {
+                // Compile the value expression (leaves result on stack)
+                self.compile_expr(value)?;
+                // Duplicate so value remains after store
+                self.code.emit(Opcode::Dup);
+                // Store to target (pops one copy)
+                self.compile_store(target);
+            }
         }
         Ok(())
     }

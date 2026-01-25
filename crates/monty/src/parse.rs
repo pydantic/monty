@@ -542,10 +542,19 @@ impl<'a> Parser<'a> {
                 }
                 Ok(result)
             }
-            AstExpr::Named(n) => Err(ParseError::not_implemented(
-                "named expressions (walrus operator :=)",
-                self.convert_range(n.range),
-            )),
+            AstExpr::Named(ast::ExprNamed {
+                target, value, range, ..
+            }) => {
+                let target_ident = self.parse_identifier(*target)?;
+                let value_expr = self.parse_expression(*value)?;
+                Ok(ExprLoc::new(
+                    self.convert_range(range),
+                    Expr::Named {
+                        target: target_ident,
+                        value: Box::new(value_expr),
+                    },
+                ))
+            }
             AstExpr::BinOp(ast::ExprBinOp {
                 left, op, right, range, ..
             }) => {

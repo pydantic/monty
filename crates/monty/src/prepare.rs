@@ -692,6 +692,17 @@ impl<'i> Prepare<'i> {
                 upper: upper.map(|e| self.prepare_expression(*e)).transpose()?.map(Box::new),
                 step: step.map(|e| self.prepare_expression(*e)).transpose()?.map(Box::new),
             },
+            Expr::Named { target, value } => {
+                let value = Box::new(self.prepare_expression(*value)?);
+                // Register the target as assigned in this scope
+                self.names_assigned_in_order
+                    .insert(self.interner.get_str(target.name_id).to_string());
+                let (resolved_target, _) = self.get_id(target);
+                Expr::Named {
+                    target: resolved_target,
+                    value,
+                }
+            }
         };
 
         // Optimization: Transform `(x % n) == value` with any constant right-hand side into a
@@ -745,6 +756,32 @@ impl<'i> Prepare<'i> {
         elt: Option<ExprLoc>,
         key_value: Option<(ExprLoc, ExprLoc)>,
     ) -> Result<(Vec<Comprehension>, Option<ExprLoc>, Option<(ExprLoc, ExprLoc)>), ParseError> {
+        // Per PEP 572, walrus operators inside comprehensions bind in the ENCLOSING scope.
+        // Pre-register walrus targets before saving scope state, so they persist after restore.
+        let mut walrus_targets: AHashSet<String> = AHashSet::new();
+        if let Some(ref e) = elt {
+            collect_assigned_names_from_expr(e, &mut walrus_targets, self.interner);
+        }
+        if let Some((ref k, ref v)) = key_value {
+            collect_assigned_names_from_expr(k, &mut walrus_targets, self.interner);
+            collect_assigned_names_from_expr(v, &mut walrus_targets, self.interner);
+        }
+        for generator in &generators {
+            // Note: we don't scan iter expressions here because walrus in iterable is not allowed
+            for cond in &generator.ifs {
+                collect_assigned_names_from_expr(cond, &mut walrus_targets, self.interner);
+            }
+        }
+        // Pre-allocate slots for walrus targets in the enclosing scope
+        for name in &walrus_targets {
+            if !self.name_map.contains_key(name) {
+                let slot = NamespaceId::new(self.namespace_size);
+                self.namespace_size += 1;
+                self.name_map.insert(name.clone(), slot);
+                self.names_assigned_in_order.insert(name.clone());
+            }
+        }
+
         // Save current scope state for isolation
         let saved_name_map = self.name_map.clone();
         let saved_assigned_names = self.names_assigned_in_order.clone();
@@ -1698,29 +1735,46 @@ fn collect_scope_info_from_node(
                 nonlocal_names.insert(interner.get_str(*string_id).to_string());
             }
         }
-        Node::Assign { target, .. } => {
+        Node::Assign { target, object } => {
             assigned_names.insert(interner.get_str(target.name_id).to_string());
+            // Scan value expression for walrus operators
+            collect_assigned_names_from_expr(object, assigned_names, interner);
         }
-        Node::UnpackAssign { targets, .. } => {
+        Node::UnpackAssign { targets, object, .. } => {
             // Recursively collect all names from nested unpack targets
             for target in targets {
                 collect_names_from_unpack_target(target, assigned_names, interner);
             }
+            // Scan value expression for walrus operators
+            collect_assigned_names_from_expr(object, assigned_names, interner);
         }
-        Node::OpAssign { target, .. } => {
+        Node::OpAssign { target, object, .. } => {
             assigned_names.insert(interner.get_str(target.name_id).to_string());
+            // Scan value expression for walrus operators
+            collect_assigned_names_from_expr(object, assigned_names, interner);
         }
-        Node::SubscriptAssign { .. } => {
+        Node::SubscriptAssign { index, value, .. } => {
             // Subscript assignment doesn't create a new name, it modifies existing container
+            // But scan expressions for walrus operators
+            collect_assigned_names_from_expr(index, assigned_names, interner);
+            collect_assigned_names_from_expr(value, assigned_names, interner);
         }
-        Node::AttrAssign { .. } => {
+        Node::AttrAssign { object, value, .. } => {
             // Attribute assignment doesn't create a new name, it modifies existing object
+            // But scan expressions for walrus operators
+            collect_assigned_names_from_expr(object, assigned_names, interner);
+            collect_assigned_names_from_expr(value, assigned_names, interner);
         }
         Node::For {
-            target, body, or_else, ..
+            target,
+            iter,
+            body,
+            or_else,
         } => {
             // For loop target is assigned - collect all names from the target
             collect_names_from_unpack_target(target, assigned_names, interner);
+            // Scan iter expression for walrus operators
+            collect_assigned_names_from_expr(iter, assigned_names, interner);
             // Recurse into body and else
             for n in body {
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
@@ -1729,9 +1783,10 @@ fn collect_scope_info_from_node(
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
             }
         }
-        Node::While { body, or_else, .. } => {
-            // While loop doesn't create assignments (unlike for loop target)
-            // Just recurse into body and else blocks
+        Node::While { test, body, or_else } => {
+            // Scan test expression for walrus operators
+            collect_assigned_names_from_expr(test, assigned_names, interner);
+            // Recurse into body and else blocks
             for n in body {
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
             }
@@ -1739,7 +1794,9 @@ fn collect_scope_info_from_node(
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
             }
         }
-        Node::If { body, or_else, .. } => {
+        Node::If { test, body, or_else } => {
+            // Scan test expression for walrus operators
+            collect_assigned_names_from_expr(test, assigned_names, interner);
             // Recurse into branches
             for n in body {
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
@@ -1789,15 +1846,170 @@ fn collect_scope_info_from_node(
                 assigned_names.insert(interner.get_str(binding.name_id).to_string());
             }
         }
+        // Statements with expressions that may contain walrus operators
+        Node::Expr(expr) | Node::Return(expr) => {
+            collect_assigned_names_from_expr(expr, assigned_names, interner);
+        }
+        Node::Raise(Some(expr)) => {
+            collect_assigned_names_from_expr(expr, assigned_names, interner);
+        }
+        Node::Assert { test, msg } => {
+            collect_assigned_names_from_expr(test, assigned_names, interner);
+            if let Some(m) = msg {
+                collect_assigned_names_from_expr(m, assigned_names, interner);
+            }
+        }
         // These don't create new names
-        Node::Pass
-        | Node::Expr(_)
-        | Node::Return(_)
-        | Node::ReturnNone
-        | Node::Raise(_)
-        | Node::Assert { .. }
-        | Node::Break { .. }
-        | Node::Continue { .. } => {}
+        Node::Pass | Node::ReturnNone | Node::Raise(None) | Node::Break { .. } | Node::Continue { .. } => {}
+    }
+}
+
+/// Collects names assigned by walrus operators (`:=`) within an expression.
+///
+/// Per PEP 572, walrus operator targets are assignments in the enclosing scope.
+/// This function recursively scans expressions to find all `Named` expression targets.
+/// It does NOT recurse into lambda bodies as those have their own scope.
+fn collect_assigned_names_from_expr(expr: &ExprLoc, assigned_names: &mut AHashSet<String>, interner: &InternerBuilder) {
+    match &expr.expr {
+        Expr::Named { target, value } => {
+            // The target of a walrus operator is assigned in this scope
+            assigned_names.insert(interner.get_str(target.name_id).to_string());
+            // Also scan the value expression
+            collect_assigned_names_from_expr(value, assigned_names, interner);
+        }
+        // Recurse into sub-expressions
+        Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
+            for item in items {
+                collect_assigned_names_from_expr(item, assigned_names, interner);
+            }
+        }
+        Expr::Dict(pairs) => {
+            for (key, value) in pairs {
+                collect_assigned_names_from_expr(key, assigned_names, interner);
+                collect_assigned_names_from_expr(value, assigned_names, interner);
+            }
+        }
+        Expr::Op { left, right, .. } | Expr::CmpOp { left, right, .. } => {
+            collect_assigned_names_from_expr(left, assigned_names, interner);
+            collect_assigned_names_from_expr(right, assigned_names, interner);
+        }
+        Expr::Not(operand) | Expr::UnaryMinus(operand) | Expr::UnaryPlus(operand) | Expr::UnaryInvert(operand) => {
+            collect_assigned_names_from_expr(operand, assigned_names, interner);
+        }
+        Expr::Subscript { object, index } => {
+            collect_assigned_names_from_expr(object, assigned_names, interner);
+            collect_assigned_names_from_expr(index, assigned_names, interner);
+        }
+        Expr::Call { args, .. } => {
+            collect_assigned_names_from_args(args, assigned_names, interner);
+        }
+        Expr::AttrCall { object, args, .. } => {
+            collect_assigned_names_from_expr(object, assigned_names, interner);
+            collect_assigned_names_from_args(args, assigned_names, interner);
+        }
+        Expr::IndirectCall { callable, args } => {
+            collect_assigned_names_from_expr(callable, assigned_names, interner);
+            collect_assigned_names_from_args(args, assigned_names, interner);
+        }
+        Expr::AttrGet { object, .. } => {
+            collect_assigned_names_from_expr(object, assigned_names, interner);
+        }
+        Expr::IfElse { test, body, orelse } => {
+            collect_assigned_names_from_expr(test, assigned_names, interner);
+            collect_assigned_names_from_expr(body, assigned_names, interner);
+            collect_assigned_names_from_expr(orelse, assigned_names, interner);
+        }
+        // Per PEP 572, walrus in comprehensions assigns to the ENCLOSING scope
+        Expr::ListComp { elt, generators } | Expr::SetComp { elt, generators } => {
+            collect_assigned_names_from_expr(elt, assigned_names, interner);
+            for generator in generators {
+                collect_assigned_names_from_expr(&generator.iter, assigned_names, interner);
+                for cond in &generator.ifs {
+                    collect_assigned_names_from_expr(cond, assigned_names, interner);
+                }
+            }
+        }
+        Expr::DictComp { key, value, generators } => {
+            collect_assigned_names_from_expr(key, assigned_names, interner);
+            collect_assigned_names_from_expr(value, assigned_names, interner);
+            for generator in generators {
+                collect_assigned_names_from_expr(&generator.iter, assigned_names, interner);
+                for cond in &generator.ifs {
+                    collect_assigned_names_from_expr(cond, assigned_names, interner);
+                }
+            }
+        }
+        Expr::FString(parts) => {
+            for part in parts {
+                if let FStringPart::Interpolation { expr, .. } = part {
+                    collect_assigned_names_from_expr(expr, assigned_names, interner);
+                }
+            }
+        }
+        Expr::Slice { lower, upper, step } => {
+            if let Some(e) = lower {
+                collect_assigned_names_from_expr(e, assigned_names, interner);
+            }
+            if let Some(e) = upper {
+                collect_assigned_names_from_expr(e, assigned_names, interner);
+            }
+            if let Some(e) = step {
+                collect_assigned_names_from_expr(e, assigned_names, interner);
+            }
+        }
+        // Lambda bodies have their own scope - walrus inside them doesn't affect us
+        Expr::LambdaRaw { .. } | Expr::Lambda { .. } => {}
+        // Leaf expressions don't contain walrus operators
+        Expr::Literal(_) | Expr::Builtin(_) | Expr::Name(_) => {}
+    }
+}
+
+/// Helper to collect assigned names from argument expressions.
+fn collect_assigned_names_from_args(
+    args: &ArgExprs,
+    assigned_names: &mut AHashSet<String>,
+    interner: &InternerBuilder,
+) {
+    match args {
+        ArgExprs::Empty => {}
+        ArgExprs::One(arg) => collect_assigned_names_from_expr(arg, assigned_names, interner),
+        ArgExprs::Two(arg1, arg2) => {
+            collect_assigned_names_from_expr(arg1, assigned_names, interner);
+            collect_assigned_names_from_expr(arg2, assigned_names, interner);
+        }
+        ArgExprs::Args(args) => {
+            for arg in args {
+                collect_assigned_names_from_expr(arg, assigned_names, interner);
+            }
+        }
+        ArgExprs::Kwargs(kwargs) => {
+            for kwarg in kwargs {
+                collect_assigned_names_from_expr(&kwarg.value, assigned_names, interner);
+            }
+        }
+        ArgExprs::ArgsKargs {
+            args,
+            kwargs,
+            var_args,
+            var_kwargs,
+        } => {
+            if let Some(args) = args {
+                for arg in args {
+                    collect_assigned_names_from_expr(arg, assigned_names, interner);
+                }
+            }
+            if let Some(kwargs) = kwargs {
+                for kwarg in kwargs {
+                    collect_assigned_names_from_expr(&kwarg.value, assigned_names, interner);
+                }
+            }
+            if let Some(var_args) = var_args {
+                collect_assigned_names_from_expr(var_args, assigned_names, interner);
+            }
+            if let Some(var_kwargs) = var_kwargs {
+                collect_assigned_names_from_expr(var_kwargs, assigned_names, interner);
+            }
+        }
     }
 }
 
@@ -2042,6 +2254,10 @@ fn collect_cell_vars_from_expr(
                     collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
                 }
             }
+        }
+        Expr::Named { value, .. } => {
+            // Only scan the value expression for cell vars
+            collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
         }
         // Leaf expressions
         Expr::Literal(_) | Expr::Builtin(_) | Expr::Name(_) | Expr::Lambda { .. } | Expr::Slice { .. } => {}
@@ -2312,6 +2528,10 @@ fn collect_referenced_names_from_expr(
         Expr::Lambda { .. } => {
             // Lambda should only exist after preparation; this function operates on raw expressions
             unreachable!("Expr::Lambda should not exist during scope analysis")
+        }
+        Expr::Named { value, .. } => {
+            // Only the value is referenced; target is being assigned, not read
+            collect_referenced_names_from_expr(value, referenced, interner);
         }
         Expr::Slice { lower, upper, step } => {
             if let Some(expr) = lower {
