@@ -3,6 +3,8 @@
 //! This module provides implementations for Python built-in modules like `sys`, `typing`,
 //! and `asyncio`. These are created on-demand when import statements are executed.
 
+use std::fmt::{self, Write};
+
 use strum::FromRepr;
 
 use crate::{
@@ -57,24 +59,27 @@ impl BuiltinModule {
     }
 }
 
-/// Functions that live inside modules (not global builtins).
-///
-/// Unlike `BuiltinsFunctions` which are globally available (`print`, `len`),
-/// these functions require importing a module to access (`asyncio.gather`).
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr, strum::Display, serde::Serialize, serde::Deserialize)]
-#[strum(serialize_all = "lowercase")]
+/// All stdlib module function (but not builtins).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ModuleFunctions {
-    /// `asyncio.gather(*coros)` - gather multiple coroutines into a single awaitable.
-    #[strum(serialize = "gather")]
-    AsyncioGather,
+    Asyncio(asyncio::AsyncioFunctions),
+}
+
+impl fmt::Display for ModuleFunctions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<function ")?;
+        match self {
+            Self::Asyncio(func) => write!(f, "asyncio.{func}")?,
+        }
+        f.write_char('>')
+    }
 }
 
 impl ModuleFunctions {
     /// Calls this module function with the given arguments.
     pub fn call(self, heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
         match self {
-            Self::AsyncioGather => asyncio::gather(heap, args),
+            Self::Asyncio(functions) => asyncio::call(heap, functions, args),
         }
     }
 }

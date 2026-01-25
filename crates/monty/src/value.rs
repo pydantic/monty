@@ -337,7 +337,7 @@ impl PyTrait for Value {
                 }
             }
             Self::Builtin(b) => b.py_repr_fmt(f),
-            Self::ModuleFunction(mf) => write!(f, "<built-in function {mf}>"),
+            Self::ModuleFunction(mf) => write!(f, "{mf}"),
             Self::DefFunction(f_id) => interns.get_function(*f_id).py_repr_fmt(f, interns, 0),
             Self::ExtFunction(f_id) => {
                 write!(f, "<function '{}' external>", interns.get_external_function_name(*f_id))
@@ -1568,7 +1568,7 @@ impl Value {
             // Hash the bit representation of float for consistency
             Self::Float(f) => f.to_bits().hash(&mut hasher),
             Self::Builtin(b) => b.hash(&mut hasher),
-            Self::ModuleFunction(mf) => (*mf as u8).hash(&mut hasher),
+            Self::ModuleFunction(mf) => mf.hash(&mut hasher),
             // Hash functions based on function ID
             Self::DefFunction(f_id) => f_id.hash(&mut hasher),
             Self::ExtFunction(f_id) => f_id.hash(&mut hasher),
@@ -2248,16 +2248,11 @@ fn float_value_id(value: f64) -> usize {
 #[inline]
 fn builtin_value_id(b: Builtins) -> usize {
     let mut hasher = DefaultHasher::new();
-    discriminant(&b).hash(&mut hasher);
-    match &b {
-        Builtins::Function(f) => discriminant(f).hash(&mut hasher),
-        Builtins::ExcType(exc) => discriminant(exc).hash(&mut hasher),
-        Builtins::Type(t) => discriminant(t).hash(&mut hasher),
-    }
+    b.hash(&mut hasher);
     let hash_u64 = hasher.finish();
-    // Mask to usize range before conversion to handle 32-bit platforms
-    let masked = hash_u64 & (usize::MAX as u64);
-    let hash_usize = usize::try_from(masked).expect("masked value fits in usize");
+    // wrapping here is fine
+    #[expect(clippy::cast_possible_truncation)]
+    let hash_usize = hash_u64 as usize;
     BUILTIN_ID_TAG | (hash_usize & BUILTIN_ID_MASK)
 }
 
@@ -2288,7 +2283,13 @@ fn external_future_value_id(call_id: CallId) -> usize {
 /// Computes a deterministic ID for a module function based on its discriminant.
 #[inline]
 fn module_function_value_id(mf: ModuleFunctions) -> usize {
-    MODULE_FUNCTION_ID_TAG | ((mf as u8 as usize) & MODULE_FUNCTION_ID_MASK)
+    let mut hasher = DefaultHasher::new();
+    mf.hash(&mut hasher);
+    let hash_u64 = hasher.finish();
+    // wrapping here is fine
+    #[expect(clippy::cast_possible_truncation)]
+    let hash_usize = hash_u64 as usize;
+    MODULE_FUNCTION_ID_TAG | (hash_usize & MODULE_FUNCTION_ID_MASK)
 }
 
 /// Converts an i64 repeat count to usize, handling negative values and overflow.

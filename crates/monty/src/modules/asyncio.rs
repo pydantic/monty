@@ -18,6 +18,14 @@ use crate::{
     value::Value,
 };
 
+/// Async Functions.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
+pub(crate) enum AsyncioFunctions {
+    #[strum(serialize = "gather(*coros_or_futures)")]
+    Gather,
+}
+
 /// Creates the `asyncio` module and allocates it on the heap.
 ///
 /// The module contains only the `gather` function. Other asyncio functions
@@ -34,12 +42,21 @@ pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -
     // asyncio.gather - the only function we implement
     module.set_attr(
         StaticStrings::Gather,
-        Value::ModuleFunction(ModuleFunctions::AsyncioGather),
+        Value::ModuleFunction(ModuleFunctions::Asyncio(AsyncioFunctions::Gather)),
         heap,
         interns,
     );
 
     heap.allocate(HeapData::Module(module))
+}
+pub(super) fn call(
+    heap: &mut Heap<impl ResourceTracker>,
+    functions: AsyncioFunctions,
+    args: ArgValues,
+) -> RunResult<Value> {
+    match functions {
+        AsyncioFunctions::Gather => gather(heap, args),
+    }
 }
 
 /// Implementation of `asyncio.gather(*awaitables)`.
