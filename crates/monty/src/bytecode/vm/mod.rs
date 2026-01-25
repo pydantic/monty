@@ -426,6 +426,92 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         }
     }
 
+    /// Reconstructs a VM from a snapshot.
+    ///
+    /// The heap and namespaces must already be deserialized. `FunctionId` values
+    /// in frames are used to look up pre-compiled `Code` objects from the `Interns`.
+    /// The `module_code` is used for frames with `function_id = None`.
+    ///
+    /// # Arguments
+    /// * `snapshot` - The VM snapshot to restore
+    /// * `module_code` - Compiled module code (for frames with function_id = None)
+    /// * `heap` - The deserialized heap
+    /// * `namespaces` - The deserialized namespaces
+    /// * `interns` - Interns for looking up function code
+    /// * `print_writer` - Writer for print output
+    pub fn restore(
+        snapshot: VMSnapshot,
+        module_code: &'a Code,
+        heap: &'a mut Heap<T>,
+        namespaces: &'a mut Namespaces,
+        interns: &'a Interns,
+        print_writer: &'a mut P,
+    ) -> Self {
+        // Reconstruct call frames from serialized form
+        let frames = snapshot
+            .frames
+            .into_iter()
+            .map(|sf| {
+                let code = match sf.function_id {
+                    Some(func_id) => &interns.get_function(func_id).code,
+                    None => module_code,
+                };
+                CallFrame {
+                    code,
+                    ip: sf.ip,
+                    stack_base: sf.stack_base,
+                    namespace_idx: sf.namespace_idx,
+                    function_id: sf.function_id,
+                    cells: sf.cells,
+                    call_position: sf.call_position,
+                }
+            })
+            .collect();
+
+        Self {
+            stack: snapshot.stack,
+            frames,
+            heap,
+            namespaces,
+            interns,
+            print_writer,
+            exception_stack: snapshot.exception_stack,
+            instruction_ip: snapshot.instruction_ip,
+            next_call_id: snapshot.next_call_id,
+            scheduler: snapshot.scheduler,
+            module_code: Some(module_code),
+        }
+    }
+
+    /// Consumes the VM and creates a snapshot for pause/resume if needed.
+    ///
+    /// **Ownership transfer:** This method takes `self` by value, consuming the VM.
+    /// The snapshot owns all Values (refcounts already correct from the live VM).
+    /// The heap and namespaces must be serialized alongside this snapshot.
+    ///
+    /// This is NOT a clone - it's a transfer. After calling this, the original VM
+    /// is gone and only the snapshot (+ serialized heap/namespaces) represents the state.
+    pub fn snapshot(mut self, result: &RunResult<FrameExit>) -> Option<VMSnapshot> {
+        if matches!(
+            result,
+            Ok(FrameExit::ExternalCall { .. } | FrameExit::ResolveFutures(_))
+        ) {
+            Some(VMSnapshot {
+                // Move values directly - no clone, no refcount increment needed
+                // (the VM owned them, now the snapshot owns them)
+                stack: self.stack,
+                frames: self.frames.into_iter().map(|f| f.serialize()).collect(),
+                exception_stack: self.exception_stack,
+                instruction_ip: self.instruction_ip,
+                next_call_id: self.next_call_id,
+                scheduler: self.scheduler,
+            })
+        } else {
+            self.cleanup();
+            None
+        }
+    }
+
     /// Pushes an initial frame for module-level code and runs the VM.
     pub fn run_module(&mut self, code: &'a Code) -> Result<FrameExit, RunError> {
         // Store module code for restoring main task frames during task switching
@@ -1296,84 +1382,6 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         }
         // Exception was caught, continue execution
         self.run()
-    }
-
-    /// Consumes the VM and creates a snapshot for pause/resume.
-    ///
-    /// **Ownership transfer:** This method takes `self` by value, consuming the VM.
-    /// The snapshot owns all Values (refcounts already correct from the live VM).
-    /// The heap and namespaces must be serialized alongside this snapshot.
-    ///
-    /// This is NOT a clone - it's a transfer. After calling this, the original VM
-    /// is gone and only the snapshot (+ serialized heap/namespaces) represents the state.
-    pub fn into_snapshot(self) -> VMSnapshot {
-        VMSnapshot {
-            // Move values directly - no clone, no refcount increment needed
-            // (the VM owned them, now the snapshot owns them)
-            stack: self.stack,
-            frames: self.frames.into_iter().map(|f| f.serialize()).collect(),
-            exception_stack: self.exception_stack,
-            instruction_ip: self.instruction_ip,
-            next_call_id: self.next_call_id,
-            scheduler: self.scheduler,
-        }
-    }
-
-    /// Reconstructs a VM from a snapshot.
-    ///
-    /// The heap and namespaces must already be deserialized. `FunctionId` values
-    /// in frames are used to look up pre-compiled `Code` objects from the `Interns`.
-    /// The `module_code` is used for frames with `function_id = None`.
-    ///
-    /// # Arguments
-    /// * `snapshot` - The VM snapshot to restore
-    /// * `module_code` - Compiled module code (for frames with function_id = None)
-    /// * `heap` - The deserialized heap
-    /// * `namespaces` - The deserialized namespaces
-    /// * `interns` - Interns for looking up function code
-    /// * `print_writer` - Writer for print output
-    pub fn restore(
-        snapshot: VMSnapshot,
-        module_code: &'a Code,
-        heap: &'a mut Heap<T>,
-        namespaces: &'a mut Namespaces,
-        interns: &'a Interns,
-        print_writer: &'a mut P,
-    ) -> Self {
-        // Reconstruct call frames from serialized form
-        let frames = snapshot
-            .frames
-            .into_iter()
-            .map(|sf| {
-                let code = match sf.function_id {
-                    Some(func_id) => &interns.get_function(func_id).code,
-                    None => module_code,
-                };
-                CallFrame {
-                    code,
-                    ip: sf.ip,
-                    stack_base: sf.stack_base,
-                    namespace_idx: sf.namespace_idx,
-                    function_id: sf.function_id,
-                    cells: sf.cells,
-                    call_position: sf.call_position,
-                }
-            })
-            .collect();
-
-        Self {
-            stack: snapshot.stack,
-            frames,
-            heap,
-            namespaces,
-            interns,
-            print_writer,
-            exception_stack: snapshot.exception_stack,
-            instruction_ip: snapshot.instruction_ip,
-            next_call_id: snapshot.next_call_id,
-            scheduler: snapshot.scheduler,
-            module_code: Some(module_code),
-        }
     }
 
     // ========================================================================

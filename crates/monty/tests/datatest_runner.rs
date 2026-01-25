@@ -782,7 +782,7 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                 let results: Vec<(u32, ExternalResult)> = pending
                     .iter()
                     .filter_map(|p| {
-                        pending_results.iter().position(|(id, _)| *id == p.call_id).map(|idx| {
+                        pending_results.iter().position(|(id, _)| id == p).map(|idx| {
                             let (call_id, value) = pending_results.remove(idx);
                             (call_id, ExternalResult::Return(value))
                         })
@@ -792,7 +792,7 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                 assert!(
                     !results.is_empty(),
                     "ResolveFutures: no results available for pending calls: {:?}",
-                    pending.iter().map(|p| p.call_id).collect::<Vec<_>>()
+                    pending.iter().collect::<Vec<_>>()
                 );
 
                 progress = state.resume(results, &mut StdPrint)?;
