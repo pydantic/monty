@@ -30,5 +30,5 @@ pub use crate::{
     io::{CollectStringPrint, NoPrint, PrintWriter, StdPrint},
     object::{DictPairs, InvalidInputError, MontyObject},
     resource::{LimitedTracker, NoLimitTracker, ResourceError, ResourceLimits, ResourceTracker},
-    run::{ExternalResult, FutureSnapshot, MontyRun, RunProgress, Snapshot},
+    run::{ExternalResult, FutureSnapshot, MontyFuture, MontyRun, RunProgress, Snapshot},
 };

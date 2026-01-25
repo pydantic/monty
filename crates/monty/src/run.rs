@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::{
     ExcType, MontyException,
     bytecode::{Code, Compiler, FrameExit, VM, VMSnapshot},
-    exception_private::{RunError, RunResult},
+    exception_private::RunResult,
     heap::Heap,
     intern::{ExtFunctionId, Interns},
     io::{PrintWriter, StdPrint},
@@ -204,12 +204,9 @@ pub enum RunProgress<T: ResourceTracker> {
     ///
     /// The host must resolve some or all of the pending calls before continuing.
     /// Use `state.resume(results)` to provide results for pending calls.
-    ResolveFutures {
-        /// Pending external calls that need resolution.
-        pending: Vec<u32>,
-        /// The execution state that can be resumed with future results.
-        state: FutureSnapshot<T>,
-    },
+    ///
+    /// access the pending call ids with `.pending_call_ids()`
+    ResolveFutures(FutureSnapshot<T>),
     /// Execution completed with a final result.
     Complete(MontyObject),
 }
@@ -254,9 +251,9 @@ impl<T: ResourceTracker> RunProgress<T> {
     ///
     /// Returns (pending_calls, state) if this is a ResolveFutures, None otherwise.
     #[must_use]
-    pub fn into_resolve_futures(self) -> Option<(Vec<u32>, FutureSnapshot<T>)> {
+    pub fn into_resolve_futures(self) -> Option<FutureSnapshot<T>> {
         match self {
-            Self::ResolveFutures { pending, state } => Some((pending, state)),
+            Self::ResolveFutures(state) => Some(state),
             Self::FunctionCall { .. } | Self::Complete(_) => None,
         }
     }
@@ -314,6 +311,9 @@ pub struct Snapshot<T: ResourceTracker> {
     pending_ext_function_id: ExtFunctionId,
 }
 
+#[derive(Debug)]
+pub struct MontyFuture;
+
 /// Return value or exception from an external function.
 #[derive(Debug)]
 pub enum ExternalResult {
@@ -321,6 +321,8 @@ pub enum ExternalResult {
     Return(MontyObject),
     /// Continues execution with the exception raised by the external function.
     Error(MontyException),
+    /// Pending future - when the external function is a coroutine.
+    Future,
 }
 
 impl From<MontyObject> for ExternalResult {
@@ -335,15 +337,10 @@ impl From<MontyException> for ExternalResult {
     }
 }
 
-/// Helper enum for resuming execution with either a return value or an exception.
-///
-/// Used by `Snapshot::run` to decide whether to call `VM::resume` (for normal returns)
-/// or `VM::resume_with_exception` (for external function errors).
-enum ResumeWith {
-    /// External function returned a value normally.
-    Value(Value),
-    /// External function raised an exception.
-    Exception(RunError),
+impl From<MontyFuture> for ExternalResult {
+    fn from(_: MontyFuture) -> Self {
+        Self::Future
+    }
 }
 
 impl<T: ResourceTracker> Snapshot<T> {
@@ -365,17 +362,6 @@ impl<T: ResourceTracker> Snapshot<T> {
     ) -> Result<RunProgress<T>, MontyException> {
         let ext_result = result.into();
 
-        // Convert return value or exception before creating VM (to avoid borrow conflicts)
-        let resume_with = match ext_result {
-            ExternalResult::Return(obj) => match obj.to_value(&mut self.heap, &self.executor.interns) {
-                Ok(value) => ResumeWith::Value(value),
-                Err(e) => {
-                    return Err(MontyException::runtime_error(format!("invalid return type: {e}")));
-                }
-            },
-            ExternalResult::Error(exc) => ResumeWith::Exception(exc.into()),
-        };
-
         // Restore the VM from the snapshot
         let mut vm = VM::restore(
             self.vm_state,
@@ -386,10 +372,26 @@ impl<T: ResourceTracker> Snapshot<T> {
             print,
         );
 
-        // Resume execution with the result or exception
-        let vm_result = match resume_with {
-            ResumeWith::Value(value) => vm.resume(value),
-            ResumeWith::Exception(error) => vm.resume_with_exception(error),
+        // Convert return value or exception before creating VM (to avoid borrow conflicts)
+        let vm_result = match ext_result {
+            ExternalResult::Return(obj) => vm.resume(obj),
+            ExternalResult::Error(exc) => vm.resume_with_exception(exc.into()),
+            ExternalResult::Future => {
+                // Get the call_id and ext_function_id that were stored when this Snapshot was created
+                let call_id = crate::asyncio::CallId::new(self.pending_call_id);
+                let ext_function_id = self.pending_ext_function_id;
+
+                // Store pending call data in the scheduler so we can track the creator task
+                // and ignore results if the task is cancelled
+                vm.add_pending_call(call_id, ext_function_id);
+
+                // Push the ExternalFuture value onto the stack
+                // This allows the code to continue and potentially await this future later
+                vm.push(Value::ExternalFuture(call_id));
+
+                // Continue execution
+                vm.run()
+            }
         };
 
         let vm_state = vm.check_snapshot(&vm_result);
@@ -416,36 +418,8 @@ impl<T: ResourceTracker> Snapshot<T> {
     ///
     /// # Panics
     /// Panics if the VM reaches an inconsistent state (indicating a bug in the interpreter).
-    pub fn run_pending(mut self, print: &mut impl PrintWriter) -> Result<RunProgress<T>, MontyException> {
-        // Get the call_id and ext_function_id that were stored when this Snapshot was created
-        let call_id = crate::asyncio::CallId::new(self.pending_call_id);
-        let ext_function_id = self.pending_ext_function_id;
-
-        // Restore the VM from the snapshot
-        let mut vm = VM::restore(
-            self.vm_state,
-            &self.executor.module_code,
-            &mut self.heap,
-            &mut self.namespaces,
-            &self.executor.interns,
-            print,
-        );
-
-        // Store pending call data in the scheduler so we can track the creator task
-        // and ignore results if the task is cancelled
-        vm.add_pending_call(call_id, ext_function_id);
-
-        // Push the ExternalFuture value onto the stack
-        // This allows the code to continue and potentially await this future later
-        vm.push(Value::ExternalFuture(call_id));
-
-        // Continue execution
-        let vm_result = vm.run();
-
-        let vm_state = vm.check_snapshot(&vm_result);
-
-        // Handle the result using the destructured parts
-        handle_vm_result(vm_result, vm_state, self.executor, self.heap, self.namespaces)
+    pub fn run_pending(self, print: &mut impl PrintWriter) -> Result<RunProgress<T>, MontyException> {
+        self.run(MontyFuture, print)
     }
 }
 
@@ -476,6 +450,10 @@ pub struct FutureSnapshot<T: ResourceTracker> {
 }
 
 impl<T: ResourceTracker> FutureSnapshot<T> {
+    pub fn pending_call_ids(&self) -> &[u32] {
+        &self.pending_call_ids
+    }
+
     /// Resumes execution with results for some or all pending futures.
     ///
     /// **Incremental resolution**: You don't need to provide all results at once.
@@ -553,6 +531,7 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
                 })?,
                 // Fail futures that returned errors
                 ExternalResult::Error(exc) => vm.fail_future(call_id, RunError::from(exc)),
+                ExternalResult::Future => todo!("Implement handling for ExternalResult::Future"),
             }
         }
 
@@ -589,17 +568,14 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
             let pending_call_ids = vm.get_pending_call_ids();
             if !pending_call_ids.is_empty() {
                 let vm_state = vm.snapshot();
-                let pending: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
-                return Ok(RunProgress::ResolveFutures {
-                    pending: pending.clone(),
-                    state: Self {
-                        executor,
-                        vm_state,
-                        heap,
-                        namespaces,
-                        pending_call_ids: pending,
-                    },
-                });
+                let pending_call_ids: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
+                return Ok(RunProgress::ResolveFutures(Self {
+                    executor,
+                    vm_state,
+                    heap,
+                    namespaces,
+                    pending_call_ids,
+                }));
             }
         }
 
@@ -656,17 +632,14 @@ fn handle_vm_result<T: ResourceTracker>(
             })
         }
         Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
-            let pending: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
-            Ok(RunProgress::ResolveFutures {
-                pending: pending.clone(),
-                state: FutureSnapshot {
-                    executor,
-                    vm_state: vm_state.expect("snapshot should exist for ResolveFutures"),
-                    heap,
-                    namespaces,
-                    pending_call_ids: pending,
-                },
-            })
+            let pending_call_ids: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
+            Ok(RunProgress::ResolveFutures(FutureSnapshot {
+                executor,
+                vm_state: vm_state.expect("snapshot should exist for ResolveFutures"),
+                heap,
+                namespaces,
+                pending_call_ids,
+            }))
         }
         Err(err) => {
             #[cfg(feature = "ref-count-panic")]

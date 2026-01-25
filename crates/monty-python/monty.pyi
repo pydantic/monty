@@ -1,3 +1,4 @@
+from types import EllipsisType
 from typing import Any, Callable, Literal, final, overload
 
 from typing_extensions import Self, TypedDict
@@ -6,6 +7,7 @@ __all__ = [
     'Monty',
     'MontyComplete',
     'MontySnapshot',
+    'MontyFutureSnapshot',
     'ResourceLimits',
     'MontyError',
     'MontySyntaxError',
@@ -103,7 +105,7 @@ class Monty:
         inputs: dict[str, Any] | None = None,
         limits: ResourceLimits | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-    ) -> MontySnapshot | MontyComplete:
+    ) -> MontySnapshot | MontyFutureSnapshot | MontyComplete:
         """
         Start the code execution and return a progress object, or completion.
 
@@ -118,6 +120,7 @@ class Monty:
 
         Returns:
             MontySnapshot if an external function call is pending,
+            MontyFutureSnapshot if futures need to be resolved,
             MontyComplete if execution finished without external calls.
 
         Raises:
@@ -201,8 +204,12 @@ class MontySnapshot:
     def kwargs(self) -> dict[str, Any]:
         """The keyword arguments passed to the external function."""
 
+    @property
+    def call_id(self) -> int:
+        """The unique identifier for this external function call."""
+
     @overload
-    def resume(self, *, return_value: Any) -> MontySnapshot | MontyComplete:
+    def resume(self, *, return_value: Any) -> MontySnapshot | MontyFutureSnapshot | MontyComplete:
         """Resume execution with a return value from the external function.
 
         `resume` may only be called once on each MontySnapshot instance.
@@ -212,9 +219,11 @@ class MontySnapshot:
         Arguments:
             return_value: The value to return from the external function call.
             exception: An exception to raise in the Monty interpreter.
+            future: A future to await in the Monty interpreter.
 
         Returns:
             MontySnapshot if another external function call is pending,
+            MontyFutureSnapshot if futures need to be resolved,
             MontyComplete if execution finished.
 
         Raises:
@@ -224,8 +233,17 @@ class MontySnapshot:
         """
 
     @overload
-    def resume(self, *, exception: BaseException) -> MontySnapshot | MontyComplete:
+    def resume(self, *, exception: BaseException) -> MontySnapshot | MontyFutureSnapshot | MontyComplete:
         """Resume execution by raising the exception in the Monty interpreter.
+
+        See docstring for the first overload for more information.
+        """
+
+    @overload
+    def resume(self, *, future: EllipsisType) -> MontySnapshot | MontyFutureSnapshot | MontyComplete:
+        """Resume execution by returning a pending future.
+
+        No result is provided, we simply resume execution stating that a future is pending.
 
         See docstring for the first overload for more information.
         """
@@ -269,6 +287,105 @@ class MontySnapshot:
 
         Returns:
             A new MontySnapshot instance.
+
+        Raises:
+            ValueError: If deserialization fails.
+        """
+
+    def __repr__(self) -> str: ...
+
+class _ExternalReturnValue(TypedDict):
+    return_value: Any
+
+class _ExternalException(TypedDict):
+    exception: Exception
+
+class _ExternalFuture(TypedDict):
+    future: EllipsisType
+
+_ExternalResult = _ExternalReturnValue | _ExternalException | _ExternalFuture
+
+@final
+class MontyFutureSnapshot:
+    """
+    Represents a paused execution waiting for multiple futures to be resolved.
+
+    Contains information about the pending futures and allows resuming execution
+    with the results.
+    """
+
+    @property
+    def script_name(self) -> str:
+        """The name of the script being executed."""
+
+    @property
+    def pending_call_ids(self) -> list[int] | None:
+        """The call IDs of the pending futures, or None if already resumed."""
+
+    def resume(
+        self,
+        results: dict[int, _ExternalResult],
+    ) -> MontySnapshot | MontyFutureSnapshot | MontyComplete:
+        """Resume execution with results for one or more futures.
+
+        `resume` may only be called once on each MontyFutureSnapshot instance.
+
+        The GIL is released allowing parallel execution if `print_callback` is `None`.
+
+        Arguments:
+            results: Dict mapping call_id to result dict. Each result dict must have
+                either 'return_value' or 'exception' key (not both).
+
+        Returns:
+            MontySnapshot if an external function call is pending,
+            MontyFutureSnapshot if more futures need to be resolved,
+            MontyComplete if execution finished.
+
+        Raises:
+            TypeError: If result dict has invalid keys.
+            RuntimeError: If execution has already completed.
+            MontyRuntimeError: If the code raises an exception during execution
+        """
+
+    def dump(self) -> bytes:
+        """
+        Serialize the MontyFutureSnapshot instance to a binary format.
+
+        The serialized data can be stored and later restored with `MontyFutureSnapshot.load()`.
+        This allows suspending execution and resuming later, potentially in a different process.
+
+        Note: The `print_callback` is not serialized and must be re-provided via
+        `set_print_callback()` after loading if print output is needed.
+
+        Returns:
+            Bytes containing the serialized MontyFutureSnapshot instance.
+
+        Raises:
+            ValueError: If serialization fails.
+            RuntimeError: If the progress has already been resumed.
+        """
+
+    @staticmethod
+    def load(
+        data: bytes,
+        *,
+        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        dataclass_registry: list[type] | None = None,
+    ) -> 'MontyFutureSnapshot':
+        """
+        Deserialize a MontyFutureSnapshot instance from binary format.
+
+        Note: The `print_callback` is not preserved during serialization and must be
+        re-provided as a keyword argument if print output is needed.
+
+        Arguments:
+            data: The serialized MontyFutureSnapshot data from `dump()`
+            print_callback: Optional callback for print output
+            dataclass_registry: Optional list of dataclass types to register for proper
+                isinstance() support on output, see `register_dataclass()` above.
+
+        Returns:
+            A new MontyFutureSnapshot instance.
 
         Raises:
             ValueError: If deserialization fails.

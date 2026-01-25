@@ -11,8 +11,8 @@ use std::{
 
 use ahash::AHashMap;
 use monty::{
-    ExcType, ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRun, ResourceLimits, RunProgress,
-    StdPrint,
+    ExcType, ExternalResult, LimitedTracker, MontyException, MontyFuture, MontyObject, MontyRun, ResourceLimits,
+    RunProgress, StdPrint,
 };
 use pyo3::{prelude::*, types::PyDict};
 
@@ -773,13 +773,14 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                         // Store the result for later resolution
                         pending_results.push((call_id, result_value));
                         // Continue execution with a pending future
-                        progress = state.run_pending(&mut StdPrint)?;
+                        progress = state.run(MontyFuture, &mut StdPrint)?;
                     }
                 }
             }
-            RunProgress::ResolveFutures { pending, state } => {
+            RunProgress::ResolveFutures(state) => {
                 // Resolve all pending futures that we have results for
-                let results: Vec<(u32, ExternalResult)> = pending
+                let results: Vec<(u32, ExternalResult)> = state
+                    .pending_call_ids()
                     .iter()
                     .filter_map(|p| {
                         pending_results.iter().position(|(id, _)| id == p).map(|idx| {
@@ -792,7 +793,7 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                 assert!(
                     !results.is_empty(),
                     "ResolveFutures: no results available for pending calls: {:?}",
-                    pending.iter().collect::<Vec<_>>()
+                    state.pending_call_ids().iter().collect::<Vec<_>>()
                 );
 
                 progress = state.resume(results, &mut StdPrint)?;

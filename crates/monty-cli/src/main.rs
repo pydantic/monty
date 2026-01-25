@@ -92,8 +92,9 @@ fn main() -> ExitCode {
                         }
                     }
                 }
-                RunProgress::ResolveFutures { pending, .. } => {
+                RunProgress::ResolveFutures(state) => {
                     let elapsed = start.elapsed();
+                    let pending = state.pending_call_ids();
                     eprintln!("{elapsed:?}, async futures not supported in CLI: {pending:?}");
                     return ExitCode::FAILURE;
                 }

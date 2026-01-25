@@ -13,7 +13,7 @@ mod monty_cls;
 
 // Use `::monty` to refer to the external crate (not the pymodule)
 pub use exceptions::{MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, PyFrame};
-pub use monty_cls::{PyMonty, PyMontyComplete, PyMontySnapshot};
+pub use monty_cls::{PyMonty, PyMontyComplete, PyMontyFutureSnapshot, PyMontySnapshot};
 use pyo3::prelude::*;
 
 /// Monty - A sandboxed Python interpreter written in Rust.
@@ -35,6 +35,8 @@ mod monty {
     use super::PyMonty as Monty;
     #[pymodule_export]
     use super::PyMontyComplete as MontyComplete;
+    #[pymodule_export]
+    use super::PyMontyFutureSnapshot as MontyFutureSnapshot;
     #[pymodule_export]
     use super::PyMontySnapshot as MontySnapshot;
     use crate::limits::create_resource_limits_class;

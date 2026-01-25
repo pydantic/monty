@@ -93,9 +93,10 @@ def test_start_chain_of_external_calls():
     m = monty.Monty('c() + c() + c()', external_functions=['c'])
 
     call_count = 0
-    progress: monty.MontySnapshot | monty.MontyComplete = m.start()
+    progress: monty.MontySnapshot | monty.MontyFutureSnapshot | monty.MontyComplete = m.start()
 
-    while isinstance(progress, monty.MontySnapshot):
+    while isinstance(progress, monty.MontySnapshot | monty.MontyFutureSnapshot):
+        assert isinstance(progress, monty.MontySnapshot), 'Expected MontySnapshot'
         assert progress.function_name == snapshot('c')
         call_count += 1
         progress = progress.resume(return_value=call_count)
@@ -311,3 +312,46 @@ except ValueError:
     result = progress.resume(exception=ValueError('propagates to outer'))
     assert isinstance(result, monty.MontyComplete)
     assert result.output == snapshot((True, True))
+
+
+def test_async():
+    code = 'await foobar(1, 2)'
+    m = monty.Monty(code, external_functions=['foobar'])
+    progress = m.start()
+    assert isinstance(progress, monty.MontySnapshot)
+    assert progress.function_name == 'foobar'
+    assert progress.args == (1, 2)
+    call_id = progress.call_id
+    progress = progress.resume(future=...)
+    assert isinstance(progress, monty.MontyFutureSnapshot)
+    assert progress.pending_call_ids == [call_id]
+    progress = progress.resume({call_id: {'return_value': 3}})
+    assert isinstance(progress, monty.MontyComplete)
+    assert progress.output == snapshot(3)
+
+
+def test_asyncio_gather():
+    code = """
+import asyncio
+
+await asyncio.gather(foo(1), bar(2))
+"""
+    m = monty.Monty(code, external_functions=['foo', 'bar'])
+    progress = m.start()
+    assert isinstance(progress, monty.MontySnapshot)
+    assert progress.function_name == 'foo'
+    assert progress.args == (1,)
+    foo_call_ids = progress.call_id
+
+    progress = progress.resume(future=...)
+    assert isinstance(progress, monty.MontySnapshot)
+    assert progress.function_name == 'bar'
+    assert progress.args == (2,)
+    bar_call_ids = progress.call_id
+    progress = progress.resume(future=...)
+
+    assert isinstance(progress, monty.MontyFutureSnapshot)
+    assert progress.pending_call_ids == [foo_call_ids, bar_call_ids]
+    progress = progress.resume({foo_call_ids: {'return_value': 3}, bar_call_ids: {'return_value': 4}})
+    assert isinstance(progress, monty.MontyComplete)
+    assert progress.output == snapshot([3, 4])

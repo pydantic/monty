@@ -54,7 +54,7 @@ await main()
 /// are the call_ids from all the FunctionCalls we processed with run_pending().
 fn drive_to_resolve_futures<T: monty::ResourceTracker>(
     mut progress: RunProgress<T>,
-) -> (Vec<u32>, monty::FutureSnapshot<T>, Vec<u32>) {
+) -> (monty::FutureSnapshot<T>, Vec<u32>) {
     let mut collected_call_ids = Vec::new();
 
     loop {
@@ -63,8 +63,8 @@ fn drive_to_resolve_futures<T: monty::ResourceTracker>(
                 collected_call_ids.push(call_id);
                 progress = state.run_pending(&mut StdPrint).unwrap();
             }
-            RunProgress::ResolveFutures { pending, state } => {
-                return (pending, state, collected_call_ids);
+            RunProgress::ResolveFutures(state) => {
+                return (state, collected_call_ids);
             }
             RunProgress::Complete(_) => {
                 panic!("unexpected Complete before ResolveFutures");
@@ -80,10 +80,10 @@ fn resume_with_all_call_ids() {
     let runner = create_gather_two_runner();
     let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
 
-    let (pending, state, call_ids) = drive_to_resolve_futures(progress);
+    let (state, call_ids) = drive_to_resolve_futures(progress);
 
     // Should have two pending calls
-    assert_eq!(pending.len(), 2, "should have 2 pending calls");
+    assert_eq!(state.pending_call_ids().len(), 2, "should have 2 pending calls");
     assert_eq!(call_ids.len(), 2, "should have collected 2 call_ids");
 
     // Resolve both at once: foo() returns 10, bar() returns 32
@@ -106,9 +106,9 @@ fn resume_with_partial_call_ids() {
     let runner = create_gather_two_runner();
     let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
 
-    let (pending, state, call_ids) = drive_to_resolve_futures(progress);
+    let (state, call_ids) = drive_to_resolve_futures(progress);
 
-    assert_eq!(pending.len(), 2, "should have 2 pending calls");
+    assert_eq!(state.pending_call_ids().len(), 2, "should have 2 pending calls");
 
     // Resolve only the first one
     let results = vec![(call_ids[0], ExternalResult::Return(MontyObject::Int(10)))];
@@ -116,10 +116,18 @@ fn resume_with_partial_call_ids() {
     let progress = state.resume(results, &mut StdPrint).unwrap();
 
     // Should return ResolveFutures with the remaining call
-    let (remaining_pending, state) = progress.into_resolve_futures().expect("should need more futures");
+    let state = progress.into_resolve_futures().expect("should need more futures");
 
-    assert_eq!(remaining_pending.len(), 1, "should have 1 remaining pending call");
-    assert_eq!(remaining_pending[0], call_ids[1], "remaining should be the second call");
+    assert_eq!(
+        state.pending_call_ids().len(),
+        1,
+        "should have 1 remaining pending call"
+    );
+    assert_eq!(
+        state.pending_call_ids()[0],
+        call_ids[1],
+        "remaining should be the second call"
+    );
 
     // Now resolve the second one
     let results = vec![(call_ids[1], ExternalResult::Return(MontyObject::Int(32)))];
@@ -138,9 +146,9 @@ fn resume_with_unknown_call_id_errors() {
     let runner = create_gather_two_runner();
     let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
 
-    let (pending, state, _call_ids) = drive_to_resolve_futures(progress);
+    let (state, _call_ids) = drive_to_resolve_futures(progress);
 
-    assert_eq!(pending.len(), 2, "should have 2 pending calls");
+    assert_eq!(state.pending_call_ids().len(), 2, "should have 2 pending calls");
 
     // Try to resolve with an unknown call_id (9999)
     let results = vec![(9999, ExternalResult::Return(MontyObject::Int(10)))];
@@ -163,9 +171,9 @@ fn resume_with_empty_results() {
     let runner = create_gather_two_runner();
     let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
 
-    let (pending, state, call_ids) = drive_to_resolve_futures(progress);
+    let (state, call_ids) = drive_to_resolve_futures(progress);
 
-    assert_eq!(pending.len(), 2, "should have 2 pending calls");
+    assert_eq!(state.pending_call_ids().len(), 2, "should have 2 pending calls");
 
     // Resume with empty results - should return same pending list
     let results: Vec<(u32, ExternalResult)> = vec![];
@@ -173,12 +181,15 @@ fn resume_with_empty_results() {
     let progress = state.resume(results, &mut StdPrint).unwrap();
 
     // Should return ResolveFutures with the same pending calls
-    let (remaining_pending, state) = progress.into_resolve_futures().expect("should still need futures");
+    let state = progress.into_resolve_futures().expect("should still need futures");
 
-    assert_eq!(remaining_pending.len(), 2, "should still have 2 pending calls");
-    assert!(remaining_pending.contains(&call_ids[0]), "should contain first call_id");
+    assert_eq!(state.pending_call_ids().len(), 2, "should still have 2 pending calls");
     assert!(
-        remaining_pending.contains(&call_ids[1]),
+        state.pending_call_ids().contains(&call_ids[0]),
+        "should contain first call_id"
+    );
+    assert!(
+        state.pending_call_ids().contains(&call_ids[1]),
         "should contain second call_id"
     );
 
@@ -200,9 +211,9 @@ fn resume_with_mixed_success_and_failure() {
     let runner = create_gather_two_runner();
     let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
 
-    let (pending, state, call_ids) = drive_to_resolve_futures(progress);
+    let (state, call_ids) = drive_to_resolve_futures(progress);
 
-    assert_eq!(pending.len(), 2, "should have 2 pending calls");
+    assert_eq!(state.pending_call_ids().len(), 2, "should have 2 pending calls");
 
     // First succeeds, second fails with an exception
     let results = vec![
@@ -232,9 +243,9 @@ fn resume_order_independence() {
     let runner = create_gather_two_runner();
     let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
 
-    let (pending, state, call_ids) = drive_to_resolve_futures(progress);
+    let (state, call_ids) = drive_to_resolve_futures(progress);
 
-    assert_eq!(pending.len(), 2, "should have 2 pending calls");
+    assert_eq!(state.pending_call_ids().len(), 2, "should have 2 pending calls");
 
     // Resolve in REVERSE order - second call first, first call second
     let results = vec![
@@ -257,24 +268,24 @@ fn resume_multiple_rounds() {
     let runner = create_gather_three_runner();
     let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
 
-    let (pending, state, call_ids) = drive_to_resolve_futures(progress);
+    let (state, call_ids) = drive_to_resolve_futures(progress);
 
-    assert_eq!(pending.len(), 3, "should have 3 pending calls");
+    assert_eq!(state.pending_call_ids().len(), 3, "should have 3 pending calls");
     assert_eq!(call_ids.len(), 3, "should have collected 3 call_ids");
 
     // Round 1: resolve first call only
     let results = vec![(call_ids[0], ExternalResult::Return(MontyObject::Int(100)))];
     let progress = state.resume(results, &mut StdPrint).unwrap();
 
-    let (remaining, state) = progress.into_resolve_futures().expect("should need more futures");
-    assert_eq!(remaining.len(), 2, "should have 2 remaining");
+    let state = progress.into_resolve_futures().expect("should need more futures");
+    assert_eq!(state.pending_call_ids().len(), 2, "should have 2 remaining");
 
     // Round 2: resolve second call only
     let results = vec![(call_ids[1], ExternalResult::Return(MontyObject::Int(200)))];
     let progress = state.resume(results, &mut StdPrint).unwrap();
 
-    let (remaining, state) = progress.into_resolve_futures().expect("should need more futures");
-    assert_eq!(remaining.len(), 1, "should have 1 remaining");
+    let state = progress.into_resolve_futures().expect("should need more futures");
+    assert_eq!(state.pending_call_ids().len(), 1, "should have 1 remaining");
 
     // Round 3: resolve third call
     let results = vec![(call_ids[2], ExternalResult::Return(MontyObject::Int(300)))];
@@ -292,9 +303,9 @@ fn resume_with_duplicate_call_id() {
     let runner = create_gather_two_runner();
     let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
 
-    let (pending, state, call_ids) = drive_to_resolve_futures(progress);
+    let (state, call_ids) = drive_to_resolve_futures(progress);
 
-    assert_eq!(pending.len(), 2, "should have 2 pending calls");
+    assert_eq!(state.pending_call_ids().len(), 2, "should have 2 pending calls");
 
     // Provide the same call_id twice with different values.
     // The first resolution wins because after resolving, the call_id is removed

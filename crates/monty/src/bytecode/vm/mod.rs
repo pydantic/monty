@@ -19,6 +19,7 @@ use call::CallResult;
 use scheduler::Scheduler;
 
 use crate::{
+    MontyObject,
     args::ArgValues,
     asyncio::{CallId, TaskId},
     bytecode::{code::Code, op::Opcode},
@@ -1369,8 +1370,11 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// Resumes execution after an external call completes.
     ///
     /// Pushes the return value onto the stack and continues execution.
-    pub fn resume(&mut self, result: Value) -> Result<FrameExit, RunError> {
-        self.push(result);
+    pub fn resume(&mut self, obj: MontyObject) -> Result<FrameExit, RunError> {
+        let value = obj
+            .to_value(self.heap, self.interns)
+            .map_err(|e| SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {e}"))))?;
+        self.push(value);
         self.run()
     }
 
