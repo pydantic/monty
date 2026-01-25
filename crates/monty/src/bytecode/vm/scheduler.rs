@@ -268,6 +268,14 @@ impl Scheduler {
         self.pending_calls.insert(call_id, data);
     }
 
+    /// Removes a call_id from the pending_calls map.
+    ///
+    /// Called when resolving a gather's external future - the call is no longer
+    /// pending once the result has been stored in the gather's results.
+    pub fn remove_pending_call(&mut self, call_id: CallId) {
+        self.pending_calls.remove(&call_id);
+    }
+
     /// Returns true if a CallId has already been awaited (consumed).
     #[inline]
     pub fn is_consumed(&self, call_id: CallId) -> bool {

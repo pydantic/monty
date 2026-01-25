@@ -791,6 +791,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
         // Check if a gather is waiting on this CallId
         if let Some((gather_id, result_idx)) = self.scheduler_mut().take_gather_waiter(call_id) {
+            // Remove from scheduler's pending_calls so it doesn't appear in get_pending_call_ids()
+            self.scheduler_mut().remove_pending_call(call_id);
             // Clone the value first (before getting mutable borrow of heap)
             let cloned_value = value.clone_with_heap(self.heap);
             // Store result in gather and check completion
@@ -881,9 +883,38 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// If the task is part of a gather, cancels sibling tasks.
     pub fn fail_future(&mut self, call_id: u32, error: RunError) {
         let call_id = CallId::new(call_id);
-        if let Some((_, _, siblings)) = self.get_or_create_scheduler().fail_for_call(call_id, error) {
+
+        // Remove from scheduler's pending_calls
+        self.get_or_create_scheduler().remove_pending_call(call_id);
+
+        // Check if a gather is waiting on this CallId
+        if let Some((gather_id, _result_idx)) = self.scheduler_mut().take_gather_waiter(call_id) {
+            // Get the gather's waiter task and sibling tasks
+            let (waiter, task_ids) = if let HeapData::GatherFuture(gather) = self.heap.get(gather_id) {
+                (gather.waiter, gather.task_ids.clone())
+            } else {
+                (None, vec![])
+            };
+
+            // Cancel all sibling tasks in the gather
+            for sibling_id in task_ids {
+                self.scheduler.as_mut().expect("scheduler must exist").cancel_task(
+                    sibling_id,
+                    self.heap,
+                    self.namespaces,
+                );
+            }
+
+            // Fail the waiter task (the task that awaited the gather)
+            if let Some(waiter_id) = waiter {
+                // Mark the waiter task as failed
+                self.scheduler_mut().fail_task(waiter_id, error);
+                // Release the GatherFuture
+                self.heap.dec_ref(gather_id);
+            }
+        } else if let Some((_, _, siblings)) = self.scheduler_mut().fail_for_call(call_id, error) {
+            // Original path: task is directly BlockedOnCall (non-gather case)
             // Cancel sibling tasks if this task was part of a gather
-            // Use direct field access to avoid borrow conflicts with heap/namespaces
             for sibling_id in siblings {
                 self.scheduler.as_mut().expect("scheduler must exist").cancel_task(
                     sibling_id,
@@ -979,6 +1010,31 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             Ok(true)
         } else {
             Ok(false)
+        }
+    }
+
+    /// Gets the pending call IDs from the scheduler.
+    ///
+    /// Returns an empty vec if no scheduler exists.
+    pub fn get_pending_call_ids(&self) -> Vec<CallId> {
+        self.scheduler
+            .as_ref()
+            .map_or_else(Vec::new, Scheduler::pending_call_ids)
+    }
+
+    /// Takes the error from a failed task if the main task (or current task) has failed.
+    ///
+    /// Returns `Some(error)` if the current task is in `TaskState::Failed`, `None` otherwise.
+    /// Used by `FutureSnapshot::resume` to propagate errors after resolving futures.
+    pub fn take_failed_task_error(&mut self) -> Option<RunError> {
+        let scheduler = self.scheduler.as_mut()?;
+        let current_task_id = scheduler.current_task_id()?;
+        let task = scheduler.get_task_mut(current_task_id);
+
+        if let TaskState::Failed(error) = std::mem::replace(&mut task.state, TaskState::Ready) {
+            Some(error)
+        } else {
+            None
         }
     }
 }

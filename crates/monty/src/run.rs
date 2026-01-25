@@ -159,7 +159,7 @@ impl MontyRun {
         // Start execution
         let vm_result = vm.run_module(&executor.module_code);
 
-        let vm_state = vm.snapshot(&vm_result);
+        let vm_state = vm.check_snapshot(&vm_result);
 
         // Handle the result using the destructured parts
         handle_vm_result(vm_result, vm_state, executor, heap, namespaces)
@@ -392,7 +392,7 @@ impl<T: ResourceTracker> Snapshot<T> {
             ResumeWith::Exception(error) => vm.resume_with_exception(error),
         };
 
-        let vm_state = vm.snapshot(&vm_result);
+        let vm_state = vm.check_snapshot(&vm_result);
 
         // Handle the result using the destructured parts
         handle_vm_result(vm_result, vm_state, self.executor, self.heap, self.namespaces)
@@ -442,7 +442,7 @@ impl<T: ResourceTracker> Snapshot<T> {
         // Continue execution
         let vm_result = vm.run();
 
-        let vm_state = vm.snapshot(&vm_result);
+        let vm_state = vm.check_snapshot(&vm_result);
 
         // Handle the result using the destructured parts
         handle_vm_result(vm_result, vm_state, self.executor, self.heap, self.namespaces)
@@ -470,6 +470,9 @@ pub struct FutureSnapshot<T: ResourceTracker> {
     heap: Heap<T>,
     /// The namespaces containing all variable bindings.
     namespaces: Namespaces,
+    /// The pending call_ids that this snapshot is waiting on.
+    /// Used to validate that resume() only receives known call_ids.
+    pending_call_ids: Vec<u32>,
 }
 
 impl<T: ResourceTracker> FutureSnapshot<T> {
@@ -494,6 +497,12 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
     /// * `RunProgress::FunctionCall` - VM hit another external call
     /// * `RunProgress::Complete` - All tasks completed successfully
     /// * `Err(MontyException)` - An unhandled exception occurred
+    ///
+    /// # Errors
+    /// Returns `Err(MontyException)` if any call_id in `results` is not in the pending set.
+    ///
+    /// # Panics
+    /// Panics if the VM state cannot be snapshotted (internal error).
     pub fn resume(
         self,
         results: Vec<(u32, ExternalResult)>,
@@ -507,9 +516,16 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
             vm_state,
             mut heap,
             mut namespaces,
+            pending_call_ids,
         } = self;
 
-        // Restore the VM from the snapshot
+        // Validate that all provided call_ids are in the pending set before restoring VM
+        let invalid_call_id = results
+            .iter()
+            .find(|(call_id, _)| !pending_call_ids.contains(call_id))
+            .map(|(call_id, _)| *call_id);
+
+        // Restore the VM from the snapshot (must happen before any error return to clean up properly)
         let mut vm = VM::restore(
             vm_state,
             &executor.module_code,
@@ -518,6 +534,16 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
             &executor.interns,
             print,
         );
+
+        // Now check for invalid call_ids after VM is restored
+        if let Some(call_id) = invalid_call_id {
+            vm.cleanup();
+            #[cfg(feature = "ref-count-panic")]
+            namespaces.drop_global_with_heap(&mut heap);
+            return Err(MontyException::runtime_error(format!(
+                "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
+            )));
+        }
 
         for (call_id, ext_result) in results {
             match ext_result {
@@ -530,20 +556,57 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
             }
         }
 
-        // Push resolved value for main task if it was blocked
-        vm.prepare_main_task_after_resolve();
+        // Check if the current task has failed (e.g., external future failed for a gather).
+        // If so, propagate the error immediately without continuing execution.
+        if let Some(error) = vm.take_failed_task_error() {
+            vm.cleanup();
+            #[cfg(feature = "ref-count-panic")]
+            namespaces.drop_global_with_heap(&mut heap);
+            return Err(error.into_python_exception(&executor.interns, &executor.code));
+        }
+
+        // Push resolved value for main task if it was blocked.
+        // Returns true if the main task was unblocked and a value was pushed.
+        let main_task_ready = vm.prepare_main_task_after_resolve();
 
         // Load a ready task if frames are empty (e.g., gather completed while
         // tasks were running and we yielded with no frames)
-        if let Err(e) = vm.load_ready_task_if_needed() {
-            vm.cleanup();
-            return Err(e.into_python_exception(&executor.interns, &executor.code));
+        let loaded_task = match vm.load_ready_task_if_needed() {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                vm.cleanup();
+                #[cfg(feature = "ref-count-panic")]
+                namespaces.drop_global_with_heap(&mut heap);
+                return Err(e.into_python_exception(&executor.interns, &executor.code));
+            }
+        };
+
+        // Check if we can continue execution.
+        // If the main task wasn't unblocked, no task was loaded, and there are still frames
+        // (meaning the main task is still blocked waiting for futures), we need to return
+        // ResolveFutures without calling vm.run().
+        if !main_task_ready && !loaded_task {
+            let pending_call_ids = vm.get_pending_call_ids();
+            if !pending_call_ids.is_empty() {
+                let vm_state = vm.snapshot();
+                let pending: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
+                return Ok(RunProgress::ResolveFutures {
+                    pending: pending.clone(),
+                    state: Self {
+                        executor,
+                        vm_state,
+                        heap,
+                        namespaces,
+                        pending_call_ids: pending,
+                    },
+                });
+            }
         }
 
         // Continue execution
         let result = vm.run();
 
-        let vm_state = vm.snapshot(&result);
+        let vm_state = vm.check_snapshot(&result);
 
         // Handle the result using the destructured parts
         handle_vm_result(result, vm_state, executor, heap, namespaces)
@@ -592,15 +655,19 @@ fn handle_vm_result<T: ResourceTracker>(
                 },
             })
         }
-        Ok(FrameExit::ResolveFutures(pending_call_ids)) => Ok(RunProgress::ResolveFutures {
-            pending: pending_call_ids.iter().map(|id| id.raw()).collect(),
-            state: FutureSnapshot {
-                executor,
-                vm_state: vm_state.expect("snapshot should exist for ResolveFutures"),
-                heap,
-                namespaces,
-            },
-        }),
+        Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
+            let pending: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
+            Ok(RunProgress::ResolveFutures {
+                pending: pending.clone(),
+                state: FutureSnapshot {
+                    executor,
+                    vm_state: vm_state.expect("snapshot should exist for ResolveFutures"),
+                    heap,
+                    namespaces,
+                    pending_call_ids: pending,
+                },
+            })
+        }
         Err(err) => {
             #[cfg(feature = "ref-count-panic")]
             namespaces.drop_global_with_heap(&mut heap);
