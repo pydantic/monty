@@ -18,3 +18,13 @@ assert lst == [1, 2, 3], 'async_call should work with lists'
 a = await async_call(10)  # pyright: ignore
 b = await async_call(20)  # pyright: ignore
 assert a + b == 30, 'multiple async calls should work'
+
+# === Gather multiple external async calls ===
+import asyncio
+
+results = await asyncio.gather(async_call(1), async_call(2), async_call(3))  # pyright: ignore
+assert results == [1, 2, 3], 'gather should collect external async results in order'
+
+# === Gather with mixed external calls ===
+results = await asyncio.gather(async_call('a'), async_call('b'))  # pyright: ignore
+assert results == ['a', 'b'], 'gather should work with string returns'

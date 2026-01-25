@@ -421,7 +421,7 @@ impl MontyObject {
                     }
                     HeapData::GatherFuture(gather) => {
                         // GatherFutures are represented as a repr string
-                        Self::Repr(format!("<gather({})>", gather.task_count()))
+                        Self::Repr(format!("<gather({})>", gather.item_count()))
                     }
                 };
 

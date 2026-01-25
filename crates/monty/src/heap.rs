@@ -11,7 +11,7 @@ use num_integer::Integer;
 
 use crate::{
     args::ArgValues,
-    asyncio::{Coroutine, GatherFuture},
+    asyncio::{Coroutine, GatherFuture, GatherItem},
     exception_private::{ExcType, RunResult, SimpleException},
     intern::{FunctionId, Interns},
     resource::{ResourceError, ResourceTracker},
@@ -179,9 +179,12 @@ impl HeapData {
             Self::Coroutine(coro) => {
                 !coro.frame_cells.is_empty() || coro.namespace.iter().any(|v| matches!(v, Value::Ref(_)))
             }
-            // GatherFutures always have refs (coroutine_ids, results)
+            // GatherFutures have refs from coroutine items and results
             Self::GatherFuture(gather) => {
-                !gather.coroutine_ids.is_empty()
+                gather
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, crate::asyncio::GatherItem::Coroutine(_)))
                     || gather
                         .results
                         .iter()
@@ -344,8 +347,9 @@ impl PyTrait for HeapData {
             }
             Self::GatherFuture(gather) => {
                 std::mem::size_of::<GatherFuture>()
-                    + gather.coroutine_ids.len() * std::mem::size_of::<HeapId>()
+                    + gather.items.len() * std::mem::size_of::<crate::asyncio::GatherItem>()
                     + gather.results.len() * std::mem::size_of::<Option<Value>>()
+                    + gather.pending_calls.len() * std::mem::size_of::<crate::asyncio::CallId>()
             }
         }
     }
@@ -455,7 +459,11 @@ impl PyTrait for HeapData {
             }
             Self::GatherFuture(gather) => {
                 // Decrement ref count for coroutine HeapIds
-                stack.extend(gather.coroutine_ids.iter().copied());
+                for item in &gather.items {
+                    if let GatherItem::Coroutine(id) = item {
+                        stack.push(*id);
+                    }
+                }
                 // Decrement ref count for result values that are heap references
                 for result in gather.results.iter_mut().flatten() {
                     result.py_dec_ref_ids(stack);
@@ -523,7 +531,7 @@ impl PyTrait for HeapData {
                 let name = interns.get_str(func.name.name_id);
                 write!(f, "<coroutine object {name}>")
             }
-            Self::GatherFuture(gather) => write!(f, "<gather({})>", gather.task_count()),
+            Self::GatherFuture(gather) => write!(f, "<gather({})>", gather.item_count()),
         }
     }
 
@@ -1579,8 +1587,10 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
         }
         HeapData::GatherFuture(gather) => {
             // Add coroutine HeapIds to work list
-            for coro_id in &gather.coroutine_ids {
-                work_list.push(*coro_id);
+            for item in &gather.items {
+                if let GatherItem::Coroutine(coro_id) = item {
+                    work_list.push(*coro_id);
+                }
             }
             // Add result values that are heap references
             for result in gather.results.iter().flatten() {

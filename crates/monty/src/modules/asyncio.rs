@@ -8,7 +8,7 @@
 
 use crate::{
     args::ArgValues,
-    asyncio::GatherFuture,
+    asyncio::{GatherFuture, GatherItem},
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
@@ -60,23 +60,24 @@ pub(super) fn call(
 
 /// Implementation of `asyncio.gather(*awaitables)`.
 ///
-/// Collects coroutines for concurrent execution. Does NOT spawn tasks immediately -
-/// just validates and stores the coroutine references. Tasks are spawned when the
-/// returned `GatherFuture` is awaited (in the `Await` opcode handler).
+/// Collects coroutines and external futures for concurrent execution. Does NOT
+/// spawn tasks immediately - just validates and stores the references. Tasks are
+/// spawned when the returned `GatherFuture` is awaited (in the `Await` opcode handler).
 ///
 /// # Behavior when awaited
 ///
 /// 1. Each coroutine is spawned as a separate Task
-/// 2. The current task blocks until all spawned tasks complete
-/// 3. Results are collected in order and returned as a list
-/// 4. On any task failure, sibling tasks are cancelled and the exception propagates
+/// 2. External futures are tracked for resolution by the host
+/// 3. The current task blocks until all items complete
+/// 4. Results are collected in order and returned as a list
+/// 5. On any task failure, sibling tasks are cancelled and the exception propagates
 ///
 /// # Arguments
 /// * `heap` - The heap for allocating the GatherFuture
-/// * `args` - Variadic coroutine arguments
+/// * `args` - Variadic awaitable arguments (coroutines or external futures)
 ///
 /// # Errors
-/// Returns `TypeError` if any argument is not a coroutine.
+/// Returns `TypeError` if any argument is not awaitable.
 pub(crate) fn gather(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (pos_args, kwargs) = args.into_parts();
 
@@ -89,22 +90,29 @@ pub(crate) fn gather(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
         return Err(ExcType::type_error("gather() takes no keyword arguments"));
     }
 
-    // Validate all positional args are coroutines and collect their HeapIds
-    let mut coroutine_ids = Vec::new();
+    // Validate all positional args are awaitable and collect them
+    let mut items = Vec::new();
+    let mut coroutine_ids_to_cleanup: Vec<HeapId> = Vec::new();
+
     #[cfg_attr(not(feature = "ref-count-panic"), expect(unused_mut))]
     for mut arg in pos_args {
         match &arg {
             Value::Ref(id) if heap.get(*id).is_coroutine() => {
-                coroutine_ids.push(*id);
+                coroutine_ids_to_cleanup.push(*id);
+                items.push(GatherItem::Coroutine(*id));
                 // Transfer ownership to GatherFuture - mark Value as consumed without dec_ref
                 #[cfg(feature = "ref-count-panic")]
                 arg.dec_ref_forget();
             }
+            Value::ExternalFuture(call_id) => {
+                items.push(GatherItem::ExternalFuture(*call_id));
+                // ExternalFuture is Copy, no refcount to manage
+            }
             _ => {
-                // Not a coroutine - clean up and error
+                // Not awaitable - clean up and error
                 arg.drop_with_heap(heap);
                 // Drop already-collected coroutine refs
-                for cid in coroutine_ids {
+                for cid in coroutine_ids_to_cleanup {
                     heap.dec_ref(cid);
                 }
                 return Err(ExcType::type_error(
@@ -115,7 +123,7 @@ pub(crate) fn gather(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
     }
 
     // Create GatherFuture on heap
-    let gather_future = GatherFuture::new(coroutine_ids);
+    let gather_future = GatherFuture::new(items);
     let id = heap.allocate(HeapData::GatherFuture(gather_future))?;
     Ok(Value::Ref(id))
 }

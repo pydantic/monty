@@ -117,17 +117,26 @@ impl Coroutine {
     }
 }
 
-/// A gather() result tracking multiple coroutines/tasks.
+/// An item that can be gathered - either a coroutine or an external future.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) enum GatherItem {
+    /// A coroutine to spawn as a task.
+    Coroutine(HeapId),
+    /// An external future to wait for resolution.
+    ExternalFuture(CallId),
+}
+
+/// A gather() result tracking multiple coroutines/tasks and external futures.
 ///
 /// Created by `asyncio.gather(*awaitables)`. Does NOT spawn tasks immediately -
 /// tasks are spawned when the GatherFuture is awaited in Await.
 ///
 /// # Lifecycle
 ///
-/// 1. **Creation**: `gather(coro1, coro2, ...)` stores coroutine HeapIds
+/// 1. **Creation**: `gather(coro1, coro2, ...)` stores coroutine HeapIds and external CallIds
 /// 2. **Await**: `await gather_future` spawns tasks and blocks the current task
-/// 3. **Completion**: As tasks complete, results are stored in order
-/// 4. **Return**: When all tasks complete, returns list of results
+/// 3. **Completion**: As tasks/futures complete, results are stored in order
+/// 4. **Return**: When all items complete, returns list of results
 ///
 /// # Error Handling
 ///
@@ -135,35 +144,40 @@ impl Coroutine {
 /// to the task that awaited the gather.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct GatherFuture {
-    /// Coroutine HeapIds to spawn (set at creation).
-    pub coroutine_ids: Vec<HeapId>,
-    /// TaskIds of spawned tasks (set when awaited).
-    /// Indices align with coroutine_ids/results.
+    /// Items to gather (coroutines or external futures).
+    pub items: Vec<GatherItem>,
+    /// TaskIds of spawned tasks (only for coroutine items, set when awaited).
+    /// Length matches the number of Coroutine items.
     pub task_ids: Vec<TaskId>,
-    /// Results from each task, in order (filled as tasks complete).
+    /// Results from each item, in order (filled as items complete).
+    /// Indices align with `items`.
     pub results: Vec<Option<Value>>,
     /// Task waiting on this gather (set when awaited).
     pub waiter: Option<TaskId>,
+    /// CallIds of external futures we're waiting on.
+    /// Used to check if all external futures have resolved.
+    pub pending_calls: Vec<CallId>,
 }
 
 impl GatherFuture {
-    /// Creates a new GatherFuture with the given coroutines.
+    /// Creates a new GatherFuture with the given items.
     ///
     /// # Arguments
-    /// * `coroutine_ids` - HeapIds of coroutines to run concurrently
-    pub fn new(coroutine_ids: Vec<HeapId>) -> Self {
-        let count = coroutine_ids.len();
+    /// * `items` - Coroutines or external futures to run concurrently
+    pub fn new(items: Vec<GatherItem>) -> Self {
+        let count = items.len();
         Self {
-            coroutine_ids,
-            task_ids: Vec::with_capacity(count),
+            items,
+            task_ids: Vec::new(),
             results: (0..count).map(|_| None).collect(),
             waiter: None,
+            pending_calls: Vec::new(),
         }
     }
 
-    /// Returns the number of tasks.
+    /// Returns the number of items to gather.
     #[inline]
-    pub fn task_count(&self) -> usize {
-        self.coroutine_ids.len()
+    pub fn item_count(&self) -> usize {
+        self.items.len()
     }
 }

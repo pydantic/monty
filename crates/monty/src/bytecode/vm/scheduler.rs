@@ -73,6 +73,9 @@ pub(crate) struct Task {
     /// GatherFuture this task belongs to (if spawned by gather).
     /// Used to cancel sibling tasks when this task fails.
     pub gather_id: Option<HeapId>,
+    /// Index in the gather's results where this task's result should be stored.
+    /// Only set for tasks spawned by gather.
+    pub gather_result_idx: Option<usize>,
     /// Current execution state.
     pub state: TaskState,
     /// CallId that unblocked this task (set when task transitions from Blocked to Ready).
@@ -107,7 +110,12 @@ impl Task {
     /// * `id` - Unique task identifier
     /// * `coroutine_id` - Optional HeapId of the coroutine being executed
     /// * `gather_id` - Optional HeapId of the GatherFuture this task belongs to
-    pub fn new(id: TaskId, coroutine_id: Option<HeapId>, gather_id: Option<HeapId>) -> Self {
+    pub fn new(
+        id: TaskId,
+        coroutine_id: Option<HeapId>,
+        gather_id: Option<HeapId>,
+        gather_result_idx: Option<usize>,
+    ) -> Self {
         Self {
             id,
             frames: Vec::new(),
@@ -116,6 +124,7 @@ impl Task {
             instruction_ip: 0,
             coroutine_id,
             gather_id,
+            gather_result_idx,
             state: TaskState::Ready,
             unblocked_by: None,
         }
@@ -175,6 +184,9 @@ pub(crate) struct Scheduler {
     resolved: AHashMap<CallId, Value>,
     /// CallIds that have been awaited (to detect double-await).
     consumed: AHashSet<CallId>,
+    /// Maps CallId -> (gather_heap_id, result_index) for gathers waiting on external futures.
+    /// When a CallId is resolved, the result is stored in the gather's results at the given index.
+    gather_waiters: AHashMap<CallId, (HeapId, usize)>,
 }
 
 impl Scheduler {
@@ -184,7 +196,7 @@ impl Scheduler {
     /// It starts as the current task (not in the ready queue) since it runs
     /// immediately without needing to be scheduled.
     pub fn new() -> Self {
-        let mut main_task = Task::new(TaskId::new(0), None, None);
+        let mut main_task = Task::new(TaskId::new(0), None, None, None);
         // Main task starts Running, not Ready (it's the current task, not waiting)
         main_task.state = TaskState::Ready; // Will be set properly when it blocks
         Self {
@@ -196,6 +208,7 @@ impl Scheduler {
             pending_calls: AHashMap::new(),
             resolved: AHashMap::new(),
             consumed: AHashSet::new(),
+            gather_waiters: AHashMap::new(),
         }
     }
 
@@ -264,6 +277,22 @@ impl Scheduler {
     /// Marks a CallId as consumed (awaited).
     pub fn mark_consumed(&mut self, call_id: CallId) {
         self.consumed.insert(call_id);
+    }
+
+    /// Registers a gather as waiting on an external future.
+    ///
+    /// When the CallId is resolved, the result will be stored in the gather's results
+    /// at the specified index.
+    pub fn register_gather_for_call(&mut self, call_id: CallId, gather_id: HeapId, result_index: usize) {
+        self.gather_waiters.insert(call_id, (gather_id, result_index));
+    }
+
+    /// Returns gather info if a gather is waiting on this CallId.
+    ///
+    /// Returns (gather_heap_id, result_index) if found, None otherwise.
+    /// Removes the entry from gather_waiters.
+    pub fn take_gather_waiter(&mut self, call_id: CallId) -> Option<(HeapId, usize)> {
+        self.gather_waiters.remove(&call_id)
     }
 
     /// Resolves a CallId with a value.
@@ -353,14 +382,20 @@ impl Scheduler {
     /// # Arguments
     /// * `coroutine_id` - HeapId of the coroutine to execute
     /// * `gather_id` - Optional HeapId of the GatherFuture this task belongs to
+    /// * `gather_result_idx` - Optional index in the gather's results for this task
     ///
     /// # Returns
     /// The TaskId of the newly created task.
-    pub fn spawn(&mut self, coroutine_id: HeapId, gather_id: Option<HeapId>) -> TaskId {
+    pub fn spawn(
+        &mut self,
+        coroutine_id: HeapId,
+        gather_id: Option<HeapId>,
+        gather_result_idx: Option<usize>,
+    ) -> TaskId {
         let task_id = TaskId::new(self.next_task_id);
         self.next_task_id += 1;
 
-        let task = Task::new(task_id, Some(coroutine_id), gather_id);
+        let task = Task::new(task_id, Some(coroutine_id), gather_id, gather_result_idx);
         self.tasks.push(task);
         self.ready_queue.push_back(task_id);
 
@@ -480,19 +515,17 @@ impl Scheduler {
             }
 
             // Cleanup the inner GatherFuture - extract data first to avoid borrow conflict
-            let (coroutine_ids, results) =
-                if let crate::heap::HeapData::GatherFuture(gather) = heap.get_mut(inner_gather_id) {
-                    (
-                        std::mem::take(&mut gather.coroutine_ids),
-                        std::mem::take(&mut gather.results),
-                    )
-                } else {
-                    (vec![], vec![])
-                };
+            let (items, results) = if let crate::heap::HeapData::GatherFuture(gather) = heap.get_mut(inner_gather_id) {
+                (std::mem::take(&mut gather.items), std::mem::take(&mut gather.results))
+            } else {
+                (vec![], vec![])
+            };
 
             // Now cleanup the extracted data with mutable heap access
-            for coroutine_id in coroutine_ids {
-                heap.dec_ref(coroutine_id);
+            for item in items {
+                if let crate::asyncio::GatherItem::Coroutine(coro_id) = item {
+                    heap.dec_ref(coro_id);
+                }
             }
             for value in results.into_iter().flatten() {
                 value.drop_with_heap(heap);
