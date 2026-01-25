@@ -171,9 +171,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                         // Not an awaitable type
                         let type_name = awaitable.py_type(self.heap);
                         awaitable.drop_with_heap(self.heap);
-                        Err(ExcType::type_error(format!(
-                            "object {type_name} can't be used in 'await' expression"
-                        )))
+                        Err(ExcType::object_not_awaitable(type_name))
                     }
                 }
             }
@@ -205,9 +203,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 // Not an awaitable type
                 let type_name = awaitable.py_type(self.heap);
                 awaitable.drop_with_heap(self.heap);
-                Err(ExcType::type_error(format!(
-                    "object {type_name} can't be used in 'await' expression"
-                )))
+                Err(ExcType::object_not_awaitable(type_name))
             }
         }
     }
@@ -390,6 +386,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                     if let Some(waiter_id) = waiter {
                         let scheduler = self.scheduler_mut();
                         scheduler.make_ready(waiter_id);
+                        // Remove from ready queue since we're switching directly to it
+                        scheduler.remove_from_ready_queue(waiter_id);
                         // Clear current task's state since it's done
                         self.cleanup_current_frames();
                         self.stack.clear();

@@ -67,19 +67,22 @@ pub(crate) enum ModuleFunctions {
 
 impl fmt::Display for ModuleFunctions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<function ")?;
         match self {
-            Self::Asyncio(func) => write!(f, "asyncio.{func}")?,
+            Self::Asyncio(func) => write!(f, "{func}"),
         }
-        f.write_char('>')
     }
 }
 
 impl ModuleFunctions {
-    /// Calls this module function with the given arguments.
+    /// Calls the module function with the given arguments.
     pub fn call(self, heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
         match self {
             Self::Asyncio(functions) => asyncio::call(heap, functions, args),
         }
+    }
+
+    /// Writes the Python repr() string for this function to a formatter.
+    pub fn py_repr_fmt<W: Write>(self, f: &mut W, py_id: usize) -> std::fmt::Result {
+        write!(f, "<function {self} at 0x{py_id:x}>")
     }
 }

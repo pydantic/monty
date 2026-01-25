@@ -19,10 +19,9 @@ use crate::{
 };
 
 /// Async Functions.
-#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
+#[strum(serialize_all = "lowercase")]
 pub(crate) enum AsyncioFunctions {
-    #[strum(serialize = "gather(*coros_or_futures)")]
     Gather,
 }
 
@@ -109,7 +108,7 @@ pub(crate) fn gather(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> 
                     heap.dec_ref(cid);
                 }
                 return Err(ExcType::type_error(
-                    "gather() argument must be a coroutine or awaitable",
+                    "An asyncio.Future, a coroutine or an awaitable is required",
                 ));
             }
         }

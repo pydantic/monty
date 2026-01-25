@@ -191,6 +191,8 @@ assert x == expected, 'test description'
 
 Each `assert` should have a descriptive message.
 
+Do NOT Write tests like `assert 'thing' in msg` it's lazy and inexact unless explicitly told to do so, instead write tests like `assert msg == 'expected message'` to ensure clarity and accuracy and most importantly, to identify differences between Monty and CPython.
+
 ### When to Create Separate Test Files
 
 Only create a separate test file when you MUST use one of these special expectation formats:

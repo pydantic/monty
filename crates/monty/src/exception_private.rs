@@ -271,6 +271,14 @@ impl ExcType {
         SimpleException::new_msg(Self::TypeError, format!("'{type_}' object is not subscriptable")).into()
     }
 
+    /// Creates a TypeError for awaiting a non-awaitable object.
+    ///
+    /// Matches CPython's format: `TypeError: '{type}' object can't be awaited`
+    #[must_use]
+    pub(crate) fn object_not_awaitable(type_: Type) -> RunError {
+        SimpleException::new_msg(Self::TypeError, format!("'{type_}' object can't be awaited")).into()
+    }
+
     /// Creates a TypeError for item assignment on types that don't support it.
     ///
     /// Matches CPython's format: `TypeError: '{type}' object does not support item assignment`

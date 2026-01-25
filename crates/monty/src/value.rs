@@ -337,8 +337,8 @@ impl PyTrait for Value {
                 }
             }
             Self::Builtin(b) => b.py_repr_fmt(f),
-            Self::ModuleFunction(mf) => write!(f, "{mf}"),
-            Self::DefFunction(f_id) => interns.get_function(*f_id).py_repr_fmt(f, interns, 0),
+            Self::ModuleFunction(mf) => mf.py_repr_fmt(f, self.id()),
+            Self::DefFunction(f_id) => interns.get_function(*f_id).py_repr_fmt(f, interns, self.id()),
             Self::ExtFunction(f_id) => {
                 write!(f, "<function '{}' external>", interns.get_external_function_name(*f_id))
             }

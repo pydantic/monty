@@ -108,18 +108,12 @@ impl Function {
     }
 
     /// Writes the Python repr() string for this function to a formatter.
-    pub fn py_repr_fmt<W: Write>(
-        &self,
-        f: &mut W,
-        interns: &Interns,
-        // TODO use actual heap_id
-        heap_id: usize,
-    ) -> std::fmt::Result {
+    pub fn py_repr_fmt<W: Write>(&self, f: &mut W, interns: &Interns, py_id: usize) -> std::fmt::Result {
         write!(
             f,
             "<function '{}' at 0x{:x}>",
             interns.get_str(self.name.name_id),
-            heap_id
+            py_id
         )
     }
 }
