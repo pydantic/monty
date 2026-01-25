@@ -1902,7 +1902,11 @@ fn collect_assigned_names_from_expr(expr: &ExprLoc, assigned_names: &mut AHashSe
             collect_assigned_names_from_expr(left, assigned_names, interner);
             collect_assigned_names_from_expr(right, assigned_names, interner);
         }
-        Expr::Not(operand) | Expr::UnaryMinus(operand) | Expr::UnaryPlus(operand) | Expr::UnaryInvert(operand) => {
+        Expr::Not(operand)
+        | Expr::UnaryMinus(operand)
+        | Expr::UnaryPlus(operand)
+        | Expr::UnaryInvert(operand)
+        | Expr::Await(operand) => {
             collect_assigned_names_from_expr(operand, assigned_names, interner);
         }
         Expr::Subscript { object, index } => {
