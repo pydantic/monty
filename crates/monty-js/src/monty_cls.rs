@@ -533,8 +533,7 @@ impl MontySnapshot {
                 ExternalResult::Return(monty_value)
             }
             (None, Some(exc)) => {
-                let exc_type = string_to_exc_type(&exc.r#type);
-                let monty_exc = MontyException::new(exc_type, Some(exc.message));
+                let monty_exc = MontyException::new(string_to_exc_type(&exc.r#type)?, Some(exc.message));
                 ExternalResult::Error(monty_exc)
             }
             (Some(_), Some(_)) => {
@@ -700,35 +699,10 @@ impl FromSnapshot<LimitedTracker> for EitherSnapshot {
 }
 
 /// Converts a string exception type to `ExcType`.
-fn string_to_exc_type(type_name: &str) -> ExcType {
-    match type_name {
-        "Exception" => ExcType::Exception,
-        "BaseException" => ExcType::BaseException,
-        "SystemExit" => ExcType::SystemExit,
-        "KeyboardInterrupt" => ExcType::KeyboardInterrupt,
-        "ArithmeticError" => ExcType::ArithmeticError,
-        "OverflowError" => ExcType::OverflowError,
-        "ZeroDivisionError" => ExcType::ZeroDivisionError,
-        "LookupError" => ExcType::LookupError,
-        "IndexError" => ExcType::IndexError,
-        "KeyError" => ExcType::KeyError,
-        "RuntimeError" => ExcType::RuntimeError,
-        "NotImplementedError" => ExcType::NotImplementedError,
-        "RecursionError" => ExcType::RecursionError,
-        "AssertionError" => ExcType::AssertionError,
-        "AttributeError" => ExcType::AttributeError,
-        "MemoryError" => ExcType::MemoryError,
-        "NameError" => ExcType::NameError,
-        "UnboundLocalError" => ExcType::UnboundLocalError,
-        "SyntaxError" => ExcType::SyntaxError,
-        "TimeoutError" => ExcType::TimeoutError,
-        "TypeError" => ExcType::TypeError,
-        "ValueError" => ExcType::ValueError,
-        "ImportError" => ExcType::ImportError,
-        "ModuleNotFoundError" => ExcType::ModuleNotFoundError,
-        "UnicodeDecodeError" => ExcType::UnicodeDecodeError,
-        _ => ExcType::Exception, // Default to generic Exception
-    }
+fn string_to_exc_type(type_name: &str) -> Result<ExcType> {
+    type_name
+        .parse()
+        .map_err(|_| Error::from_reason(format!("Invalid exception type: '{type_name}'")))
 }
 
 // =============================================================================
@@ -871,10 +845,7 @@ fn extract_js_exception(env: &Env, exception_raw: sys::napi_value) -> MontyExcep
     // Try to get the 'message' property
     let message: std::result::Result<String, _> = exception_obj.get_named_property("message");
 
-    let exc_type = name
-        .as_ref()
-        .map(|n| string_to_exc_type(n))
-        .unwrap_or(ExcType::RuntimeError);
+    let exc_type = string_to_exc_type(name).unwrap_or(ExcType::RuntimeError);
     let msg = message.ok();
 
     MontyException::new(exc_type, msg)
