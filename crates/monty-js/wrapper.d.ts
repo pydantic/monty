@@ -74,7 +74,7 @@ export declare class MontySyntaxError extends MontyError {
  * Provides access to the traceback frames where the error occurred.
  */
 export declare class MontyRuntimeError extends MontyError {
-  constructor(typeName: string, message: string, tracebackString: string, frames: Frame[])
+  private constructor(typeName: string, message: string, tracebackString: string, frames: Frame[])
 
   /**
    * Returns the Monty traceback as an array of Frame objects.

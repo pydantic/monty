@@ -9,6 +9,8 @@ import {
   type ResourceLimits,
   type ResumeOptions,
 } from '../wrapper'
+
+import { isRuntimeError } from './exceptions.spec'
 import { Buffer } from 'node:buffer'
 
 // =============================================================================
@@ -230,46 +232,60 @@ test('Monty.dump() produces same result on multiple calls', (t) => {
 // Error handling tests
 // =============================================================================
 
-test('runtime error includes traceback', (t) => {
-  const code = `
-def foo():
-    raise ValueError("test error")
-
-def bar():
-    foo()
-
-bar()
-`
-  const m = new Monty(code)
-  const error = t.throws(() => m.run())
-  t.true(error?.message.includes('ValueError: test error'))
-  t.true(error?.message.includes('Traceback'))
-  t.true(error?.message.includes('foo'))
-  t.true(error?.message.includes('bar'))
-})
-
 test('zero division error', (t) => {
   const m = new Monty('1 / 0')
-  const error = t.throws(() => m.run())
-  t.true(error?.message.includes('ZeroDivisionError'))
+  const error = t.throws(() => m.run(), isRuntimeError)
+  t.is(error.message, 'ZeroDivisionError: division by zero')
+  t.is(
+    error.display('traceback'),
+    `Traceback (most recent call last):
+  File "main.py", line 1, in <module>
+    1 / 0
+    ~~~~~
+ZeroDivisionError: division by zero`,
+  )
 })
 
 test('name error', (t) => {
   const m = new Monty('undefined_variable')
-  const error = t.throws(() => m.run())
-  t.true(error?.message.includes('NameError'))
+  const error = t.throws(() => m.run(), isRuntimeError)
+  t.is(error.message, "NameError: name 'undefined_variable' is not defined")
+  t.is(
+    error.display('traceback'),
+    `Traceback (most recent call last):
+  File "main.py", line 1, in <module>
+    undefined_variable
+    ~~~~~~~~~~~~~~~~~~
+NameError: name 'undefined_variable' is not defined`,
+  )
 })
 
 test('index error', (t) => {
   const m = new Monty('[1, 2, 3][10]')
-  const error = t.throws(() => m.run())
-  t.true(error?.message.includes('IndexError'))
+  const error = t.throws(() => m.run(), isRuntimeError)
+  t.is(error.message, 'IndexError: list index out of range')
+  t.is(
+    error.display('traceback'),
+    `Traceback (most recent call last):
+  File "main.py", line 1, in <module>
+    [1, 2, 3][10]
+    ~~~~~~~~~~~~~
+IndexError: list index out of range`,
+  )
 })
 
 test('key error', (t) => {
   const m = new Monty('{"a": 1}["b"]')
-  const error = t.throws(() => m.run())
-  t.true(error?.message.includes('KeyError'))
+  const error = t.throws(() => m.run(), isRuntimeError)
+  t.is(error.message, 'KeyError: b')
+  t.is(
+    error.display('traceback'),
+    `Traceback (most recent call last):
+  File "main.py", line 1, in <module>
+    {"a": 1}["b"]
+    ~~~~~~~~~~~~~
+KeyError: b`,
+  )
 })
 
 // =============================================================================

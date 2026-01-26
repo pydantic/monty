@@ -1,6 +1,8 @@
 import test from 'ava'
 
-import { Monty, MontyError, MontySyntaxError, MontyRuntimeError, MontyTypingError, type Frame } from '../wrapper'
+import type { ErrorConstructor } from 'ava'
+
+import { Monty, MontyError, MontySyntaxError, MontyRuntimeError, MontyTypingError } from '../wrapper'
 
 // =============================================================================
 // MontyError tests
@@ -76,48 +78,32 @@ test('MontySyntaxError can be caught with instanceof', (t) => {
 // MontyRuntimeError tests
 // =============================================================================
 
-test('MontyRuntimeError extends MontyError and Error', (t) => {
-  const frames: Frame[] = []
-  const err = new MontyRuntimeError('ValueError', 'bad value', 'Traceback...', frames)
-  t.true(err instanceof Error)
-  t.true(err instanceof MontyError)
-  t.true(err instanceof MontyRuntimeError)
-  t.is(err.name, 'MontyRuntimeError')
-})
-
-test('MontyRuntimeError constructor and properties', (t) => {
-  const frames: Frame[] = [
-    {
-      filename: 'test.py',
-      line: 1,
-      column: 1,
-      endLine: 1,
-      endColumn: 10,
-      functionName: 'test_func',
-      sourceLine: 'x = 1 / 0',
-    },
-  ]
-  const err = new MontyRuntimeError('ZeroDivisionError', 'division by zero', 'Full Traceback', frames)
-
-  t.deepEqual(err.exception, { typeName: 'ZeroDivisionError', message: 'division by zero' })
-  t.is(err.message, 'Full Traceback')
-  t.deepEqual(err.traceback(), frames)
-})
+// Helper for asserting MontyRuntimeError, private constructor requires the awkward cast via any
+// but it works fine at runtime
+export const isRuntimeError = { instanceOf: MontyRuntimeError as any as ErrorConstructor<MontyRuntimeError> }
 
 test('MontyRuntimeError display()', (t) => {
-  const err = new MontyRuntimeError('ValueError', 'bad value', 'Full Traceback Here', [])
-  t.is(err.display(), 'Full Traceback Here')
-  t.is(err.display('traceback'), 'Full Traceback Here')
-  t.is(err.display('type-msg'), 'ValueError: bad value')
-  t.is(err.display('msg'), 'bad value')
-})
-
-test('MontyRuntimeError is thrown on runtime error', (t) => {
   const m = new Monty('1 / 0')
-  const error = t.throws(() => m.run(), { instanceOf: MontyRuntimeError })
+  const error = t.throws(() => m.run(), isRuntimeError)
   t.true(error instanceof MontyError)
   t.true(error instanceof Error)
-  t.true(error.message.includes('ZeroDivisionError'))
+
+  t.is(error.message, 'ZeroDivisionError: division by zero')
+
+  const traceback = error.display('traceback')
+
+  t.is(error.display(), traceback)
+  t.is(
+    traceback,
+    `Traceback (most recent call last):
+  File "main.py", line 1, in <module>
+    1 / 0
+    ~~~~~
+ZeroDivisionError: division by zero`,
+  )
+
+  t.is(error.display('type-msg'), 'ZeroDivisionError: division by zero')
+  t.is(error.display('msg'), 'division by zero')
 })
 
 test('MontyRuntimeError can be caught with instanceof', (t) => {
@@ -132,22 +118,51 @@ test('MontyRuntimeError can be caught with instanceof', (t) => {
   }
 })
 
-test('MontyRuntimeError traceback contains frames', (t) => {
+test('ValueError message is preserved', (t) => {
+  const m = new Monty('raise ValueError("custom message")')
+  const error = t.throws<MontyRuntimeError>(() => m.run(), isRuntimeError)
+  t.is(error.message, 'ValueError: custom message')
+})
+
+test('TypeError message is preserved', (t) => {
+  const m = new Monty("'hello' + 123")
+  const error = t.throws(() => m.run(), isRuntimeError)
+  t.is(error.message, 'TypeError: can only concatenate str (not "int") to str')
+})
+
+test('KeyError shows the key', (t) => {
+  const m = new Monty('{"a": 1}["missing"]')
+  const error = t.throws(() => m.run(), isRuntimeError)
+  t.is(error.message, 'KeyError: missing')
+})
+
+test('IndexError shows index out of range', (t) => {
+  const m = new Monty('[1, 2, 3][100]')
+  const error = t.throws(() => m.run(), isRuntimeError)
+  t.is(error.message, 'IndexError: list index out of range')
+})
+
+test('NameError shows undefined variable', (t) => {
+  const m = new Monty('undefined_var')
+  const error = t.throws(() => m.run(), isRuntimeError)
+  t.is(error.message, "NameError: name 'undefined_var' is not defined")
+})
+
+test('AssertionError from assert statement', (t) => {
+  const m = new Monty('assert False, "assertion failed"')
+  const error = t.throws(() => m.run(), isRuntimeError)
+  t.is(error.message, 'AssertionError: assertion failed')
+})
+
+test('RecursionError on deep recursion', (t) => {
   const code = `
-def foo():
-    raise ValueError("test error")
-
-def bar():
-    foo()
-
-bar()
+def recurse(n):
+    return recurse(n + 1)
+recurse(0)
 `
   const m = new Monty(code)
-  const error = t.throws(() => m.run(), { instanceOf: MontyRuntimeError })
-  // The error message contains the traceback with function names
-  t.true(error.message.includes('foo'))
-  t.true(error.message.includes('bar'))
-  t.true(error.message.includes('ValueError: test error'))
+  const error = t.throws(() => m.run({ limits: { maxRecursionDepth: 10 } }), isRuntimeError)
+  t.is(error.message, 'RecursionError: maximum recursion depth exceeded')
 })
 
 // =============================================================================
@@ -242,101 +257,12 @@ test('can distinguish error types with instanceof', (t) => {
 })
 
 // =============================================================================
-// Error message content tests
-// =============================================================================
-
-test('ValueError message is preserved', (t) => {
-  const m = new Monty('raise ValueError("custom message")')
-  const error = t.throws(() => m.run(), { instanceOf: MontyRuntimeError })
-  t.true(error.message.includes('ValueError: custom message'))
-})
-
-test('TypeError message is preserved', (t) => {
-  const m = new Monty("'hello' + 123")
-  const error = t.throws(() => m.run(), { instanceOf: MontyRuntimeError })
-  t.true(error.message.includes('TypeError'))
-})
-
-test('KeyError shows the key', (t) => {
-  const m = new Monty('{"a": 1}["missing"]')
-  const error = t.throws(() => m.run(), { instanceOf: MontyRuntimeError })
-  t.true(error.message.includes('KeyError'))
-  t.true(error.message.includes('missing'))
-})
-
-test('IndexError shows index out of range', (t) => {
-  const m = new Monty('[1, 2, 3][100]')
-  const error = t.throws(() => m.run(), { instanceOf: MontyRuntimeError })
-  t.true(error.message.includes('IndexError'))
-})
-
-test('NameError shows undefined variable', (t) => {
-  const m = new Monty('undefined_var')
-  const error = t.throws(() => m.run(), { instanceOf: MontyRuntimeError })
-  t.true(error.message.includes('NameError'))
-  t.true(error.message.includes('undefined_var'))
-})
-
-test('AssertionError from assert statement', (t) => {
-  const m = new Monty('assert False, "assertion failed"')
-  const error = t.throws(() => m.run(), { instanceOf: MontyRuntimeError })
-  t.true(error.message.includes('AssertionError'))
-  t.true(error.message.includes('assertion failed'))
-})
-
-test('RecursionError on deep recursion', (t) => {
-  const code = `
-def recurse(n):
-    return recurse(n + 1)
-recurse(0)
-`
-  const m = new Monty(code)
-  const error = t.throws(() => m.run({ limits: { maxRecursionDepth: 10 } }), { instanceOf: MontyRuntimeError })
-  t.true(error.message.includes('RecursionError'))
-})
-
-// =============================================================================
-// Traceback format tests
-// =============================================================================
-
-test('Traceback includes line numbers', (t) => {
-  const code = `x = 1
-y = 2
-z = x / 0
-`
-  const m = new Monty(code, { scriptName: 'test.py' })
-  const error = t.throws(() => m.run(), { instanceOf: MontyRuntimeError })
-  t.true(error.message.includes('line 3'))
-  t.true(error.message.includes('test.py'))
-})
-
-test('Traceback includes function names in call stack', (t) => {
-  const code = `
-def level3():
-    raise RuntimeError("deep error")
-
-def level2():
-    level3()
-
-def level1():
-    level2()
-
-level1()
-`
-  const m = new Monty(code)
-  const error = t.throws(() => m.run(), { instanceOf: MontyRuntimeError })
-  t.true(error.message.includes('level1'))
-  t.true(error.message.includes('level2'))
-  t.true(error.message.includes('level3'))
-})
-
-// =============================================================================
 // Exception info accessors
 // =============================================================================
 
 test('exception getter returns correct info for runtime error', (t) => {
   const m = new Monty('raise ValueError("test")')
-  const error = t.throws(() => m.run(), { instanceOf: MontyRuntimeError })
+  const error = t.throws(() => m.run(), isRuntimeError)
   t.is(error.exception.typeName, 'ValueError')
   t.is(error.exception.message, 'test')
 })

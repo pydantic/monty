@@ -45,66 +45,6 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde::{Deserialize, Serialize};
 
-use crate::convert::exc_type_to_js_name;
-
-/// Information about the inner Python exception.
-///
-/// This provides structured access to the exception type and message
-/// for programmatic error handling.
-#[napi(object)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExceptionInfo {
-    /// The exception type name (e.g., "ValueError", "TypeError").
-    pub type_name: String,
-    /// The exception message.
-    pub message: String,
-}
-
-/// A single frame in a Monty traceback.
-///
-/// Contains all the information needed to display a traceback line:
-/// the file location, function name, and optional source code preview.
-#[napi(object)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Frame {
-    /// The filename where the code is located.
-    pub filename: String,
-    /// Line number (1-based).
-    pub line: u32,
-    /// Column number (1-based).
-    pub column: u32,
-    /// End line number (1-based).
-    pub end_line: u32,
-    /// End column number (1-based).
-    pub end_column: u32,
-    /// The name of the function, or null for module-level code.
-    pub function_name: Option<String>,
-    /// The source code line for preview in the traceback.
-    pub source_line: Option<String>,
-}
-
-impl Frame {
-    /// Creates a `Frame` from Monty's `StackFrame`.
-    #[must_use]
-    pub fn from_stack_frame(frame: &StackFrame) -> Self {
-        Self {
-            filename: frame.filename.clone(),
-            line: u32::from(frame.start.line),
-            column: u32::from(frame.start.column),
-            end_line: u32::from(frame.end.line),
-            end_column: u32::from(frame.end.column),
-            function_name: frame.frame_name.clone(),
-            source_line: frame.preview_line.clone(),
-        }
-    }
-
-    /// Returns the Frame as a plain object (for compatibility with the interface).
-    #[must_use]
-    pub fn to_object(&self) -> Self {
-        self.clone()
-    }
-}
-
 // =============================================================================
 // MontyError - Base class for all Monty exceptions
 // =============================================================================
@@ -175,7 +115,7 @@ impl MontyError {
     #[must_use]
     pub fn from_exception(exc: &MontyException) -> Self {
         Self {
-            type_name: exc_type_to_js_name(exc.exc_type()).to_string(),
+            type_name: exc.exc_type().to_string(),
             message: exc.message().unwrap_or_default().to_string(),
         }
     }
@@ -373,7 +313,7 @@ impl MontyRuntimeError {
     #[must_use]
     pub fn from_exception(exc: &MontyException) -> Self {
         Self {
-            type_name: exc_type_to_js_name(exc.exc_type()).to_string(),
+            type_name: exc.exc_type().to_string(),
             message: exc.message().unwrap_or_default().to_string(),
             traceback_string: exc.to_string(),
             frames: exc.traceback().iter().map(Frame::from_stack_frame).collect(),
@@ -496,6 +436,64 @@ pub fn typing_failure_to_error(failure: TypeCheckingFailure) -> Error {
     MontyTypingError::from_failure(failure).into_error()
 }
 
+/// Information about the inner Python exception.
+///
+/// This provides structured access to the exception type and message
+/// for programmatic error handling.
+#[napi(object)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExceptionInfo {
+    /// The exception type name (e.g., "ValueError", "TypeError").
+    pub type_name: String,
+    /// The exception message.
+    pub message: String,
+}
+
+/// A single frame in a Monty traceback.
+///
+/// Contains all the information needed to display a traceback line:
+/// the file location, function name, and optional source code preview.
+#[napi(object)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Frame {
+    /// The filename where the code is located.
+    pub filename: String,
+    /// Line number (1-based).
+    pub line: u32,
+    /// Column number (1-based).
+    pub column: u32,
+    /// End line number (1-based).
+    pub end_line: u32,
+    /// End column number (1-based).
+    pub end_column: u32,
+    /// The name of the function, or null for module-level code.
+    pub function_name: Option<String>,
+    /// The source code line for preview in the traceback.
+    pub source_line: Option<String>,
+}
+
+impl Frame {
+    /// Creates a `Frame` from Monty's `StackFrame`.
+    #[must_use]
+    pub fn from_stack_frame(frame: &StackFrame) -> Self {
+        Self {
+            filename: frame.filename.clone(),
+            line: u32::from(frame.start.line),
+            column: u32::from(frame.start.column),
+            end_line: u32::from(frame.end.line),
+            end_column: u32::from(frame.end.column),
+            function_name: frame.frame_name.clone(),
+            source_line: frame.preview_line.clone(),
+        }
+    }
+
+    /// Returns the Frame as a plain object (for compatibility with the interface).
+    #[must_use]
+    pub fn to_object(&self) -> Self {
+        self.clone()
+    }
+}
+
 // =============================================================================
 // Runtime error info (for backward compatibility)
 // =============================================================================
@@ -520,7 +518,7 @@ pub struct RuntimeErrorInfo {
 pub fn create_runtime_error_info(exc: &MontyException) -> RuntimeErrorInfo {
     RuntimeErrorInfo {
         exception: ExceptionInfo {
-            type_name: exc_type_to_js_name(exc.exc_type()).to_string(),
+            type_name: exc.exc_type().to_string(),
             message: exc.message().unwrap_or_default().to_string(),
         },
         traceback: exc.to_string(),

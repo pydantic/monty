@@ -637,36 +637,3 @@ fn get_string_property(obj: &Object, name: &str) -> Result<Option<String>> {
         Ok(None)
     }
 }
-
-/// Converts a Monty exception type to a JavaScript error class name.
-///
-/// Used when throwing JS errors from Monty exceptions.
-pub fn exc_type_to_js_name(exc_type: ExcType) -> &'static str {
-    match exc_type {
-        ExcType::Exception | ExcType::BaseException => "Error",
-        ExcType::SystemExit => "SystemExitError",
-        ExcType::KeyboardInterrupt => "KeyboardInterruptError",
-        ExcType::ArithmeticError => "ArithmeticError",
-        ExcType::OverflowError => "OverflowError",
-        ExcType::ZeroDivisionError => "ZeroDivisionError",
-        ExcType::LookupError => "LookupError",
-        ExcType::IndexError => "IndexError",
-        ExcType::KeyError => "KeyError",
-        ExcType::RuntimeError => "RuntimeError",
-        ExcType::NotImplementedError => "NotImplementedError",
-        ExcType::RecursionError => "RecursionError",
-        ExcType::AssertionError => "AssertionError",
-        ExcType::AttributeError => "AttributeError",
-        ExcType::FrozenInstanceError => "FrozenInstanceError",
-        ExcType::MemoryError => "MemoryError",
-        ExcType::NameError => "NameError",
-        ExcType::UnboundLocalError => "UnboundLocalError",
-        ExcType::SyntaxError => "SyntaxError",
-        ExcType::TimeoutError => "TimeoutError",
-        ExcType::TypeError => "TypeError",
-        ExcType::ValueError => "ValueError",
-        ExcType::ImportError => "ImportError",
-        ExcType::ModuleNotFoundError => "ModuleNotFoundError",
-        ExcType::UnicodeDecodeError => "UnicodeDecodeError",
-    }
-}

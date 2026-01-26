@@ -96,8 +96,6 @@ class MontyRuntimeError extends MontyError {
     this.name = 'MontyRuntimeError'
     this._tracebackString = tracebackString
     this._frames = frames
-    // Override the message to include the full traceback
-    this.message = tracebackString
     if (Error.captureStackTrace) {
       Error.captureStackTrace(this, MontyRuntimeError)
     }
