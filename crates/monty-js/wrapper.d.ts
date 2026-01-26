@@ -12,9 +12,25 @@ import type {
   ExceptionInfo,
   RuntimeErrorInfo,
   JsMontyObject,
+  StartOptions,
+  ResumeOptions,
+  ExceptionInput,
+  SnapshotLoadOptions,
 } from './index'
 
-export type { MontyOptions, RunOptions, ResourceLimits, Frame, ExceptionInfo, RuntimeErrorInfo, JsMontyObject }
+export type {
+  MontyOptions,
+  RunOptions,
+  ResourceLimits,
+  Frame,
+  ExceptionInfo,
+  RuntimeErrorInfo,
+  JsMontyObject,
+  StartOptions,
+  ResumeOptions,
+  ExceptionInput,
+  SnapshotLoadOptions,
+}
 
 /**
  * Base class for all Monty interpreter errors.
@@ -123,6 +139,18 @@ export declare class Monty {
   run(options?: RunOptions): JsMontyObject
 
   /**
+   * Starts execution and returns either a snapshot (paused at external call) or completion.
+   *
+   * This method enables iterative execution where code pauses at external function
+   * calls, allowing the host to provide return values or exceptions before resuming.
+   *
+   * @param options - Execution options (inputs, limits)
+   * @returns MontySnapshot if an external function call is pending, MontyComplete if done
+   * @throws {MontyRuntimeError} If the code raises an exception
+   */
+  start(options?: StartOptions): MontySnapshot | MontyComplete
+
+  /**
    * Serializes the Monty instance to a binary format.
    */
   dump(): Buffer
@@ -142,5 +170,66 @@ export declare class Monty {
   get externalFunctions(): string[]
 
   /** Returns a string representation of the Monty instance. */
+  repr(): string
+}
+
+/**
+ * Represents paused execution waiting for an external function call return value.
+ *
+ * Contains information about the pending external function call and allows
+ * resuming execution with the return value or an exception.
+ */
+export declare class MontySnapshot {
+  /** Returns the name of the script being executed. */
+  get scriptName(): string
+
+  /** Returns the name of the external function being called. */
+  get functionName(): string
+
+  /** Returns the positional arguments passed to the external function. */
+  get args(): JsMontyObject[]
+
+  /** Returns the keyword arguments passed to the external function as an object. */
+  get kwargs(): Record<string, JsMontyObject>
+
+  /**
+   * Resumes execution with either a return value or an exception.
+   *
+   * Exactly one of `returnValue` or `exception` must be provided.
+   *
+   * @param options - Object with either `returnValue` or `exception`
+   * @returns MontySnapshot if another external call is pending, MontyComplete if done
+   * @throws {MontyRuntimeError} If the code raises an exception
+   */
+  resume(options: ResumeOptions): MontySnapshot | MontyComplete
+
+  /**
+   * Serializes the MontySnapshot to a binary format.
+   *
+   * The serialized data can be stored and later restored with `MontySnapshot.load()`.
+   * This allows suspending execution and resuming later, potentially in a different process.
+   */
+  dump(): Buffer
+
+  /**
+   * Deserializes a MontySnapshot from binary format.
+   *
+   * @param data - The serialized snapshot data from `dump()`
+   * @param options - Optional load options (reserved for future use)
+   */
+  static load(data: Buffer, options?: SnapshotLoadOptions): MontySnapshot
+
+  /** Returns a string representation of the MontySnapshot. */
+  repr(): string
+}
+
+/**
+ * Represents completed execution with a final output value.
+ */
+export declare class MontyComplete {
+  /** Returns the final output value from the executed code. */
+  get output(): JsMontyObject
+
+  /** Returns a string representation of the MontyComplete. */
   repr(): string
 }

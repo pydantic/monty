@@ -169,7 +169,7 @@ class MontyTypingError extends MontyError {
 }
 
 // Re-export the native Monty class and other exports
-const { Monty: NativeMonty } = native
+const { Monty: NativeMonty, MontySnapshot: NativeMontySnapshot, MontyComplete: NativeMontyComplete } = native
 
 /**
  * Helper to parse error messages and create appropriate error instances.
@@ -284,6 +284,22 @@ class Monty {
   }
 
   /**
+   * Starts execution and returns either a snapshot (paused at external call) or completion.
+   *
+   * @param {import('./index').StartOptions} [options] - Execution options
+   * @returns {MontySnapshot | MontyComplete}
+   * @throws {MontyRuntimeError} If the code raises an exception
+   */
+  start(options) {
+    try {
+      const result = this._native.start(options)
+      return wrapProgress(result)
+    } catch (error) {
+      throw wrapNativeError(error)
+    }
+  }
+
+  /**
    * Serializes the Monty instance to a binary format.
    * @returns {Buffer}
    */
@@ -323,9 +339,124 @@ class Monty {
   }
 }
 
+/**
+ * Helper to wrap native progress objects in their JS equivalents.
+ * @param {NativeMontySnapshot | NativeMontyComplete} nativeProgress
+ * @returns {MontySnapshot | MontyComplete}
+ */
+function wrapProgress(nativeProgress) {
+  if (nativeProgress instanceof NativeMontySnapshot) {
+    return new MontySnapshot(nativeProgress)
+  } else if (nativeProgress instanceof NativeMontyComplete) {
+    return new MontyComplete(nativeProgress)
+  }
+  // Fallback - shouldn't happen, but handle gracefully
+  return nativeProgress
+}
+
+/**
+ * Represents paused execution waiting for an external function call return value.
+ *
+ * Contains information about the pending external function call and allows
+ * resuming execution with the return value or an exception.
+ */
+class MontySnapshot {
+  /**
+   * @param {NativeMontySnapshot} nativeSnapshot - The native MontySnapshot instance
+   */
+  constructor(nativeSnapshot) {
+    this._native = nativeSnapshot
+  }
+
+  /** @returns {string} */
+  get scriptName() {
+    return this._native.scriptName
+  }
+
+  /** @returns {string} */
+  get functionName() {
+    return this._native.functionName
+  }
+
+  /** @returns {any[]} */
+  get args() {
+    return this._native.args
+  }
+
+  /** @returns {Record<string, any>} */
+  get kwargs() {
+    return this._native.kwargs
+  }
+
+  /**
+   * Resumes execution with either a return value or an exception.
+   *
+   * @param {import('./index').ResumeOptions} options - Object with either `returnValue` or `exception`
+   * @returns {MontySnapshot | MontyComplete}
+   * @throws {MontyRuntimeError} If the code raises an exception
+   */
+  resume(options) {
+    try {
+      const result = this._native.resume(options)
+      return wrapProgress(result)
+    } catch (error) {
+      throw wrapNativeError(error)
+    }
+  }
+
+  /**
+   * Serializes the MontySnapshot to a binary format.
+   * @returns {Buffer}
+   */
+  dump() {
+    return this._native.dump()
+  }
+
+  /**
+   * Deserializes a MontySnapshot from binary format.
+   * @param {Buffer} data
+   * @param {import('./index').SnapshotLoadOptions} [options]
+   * @returns {MontySnapshot}
+   */
+  static load(data, options) {
+    const nativeSnapshot = NativeMontySnapshot.load(data, options)
+    return new MontySnapshot(nativeSnapshot)
+  }
+
+  /** @returns {string} */
+  repr() {
+    return this._native.repr()
+  }
+}
+
+/**
+ * Represents completed execution with a final output value.
+ */
+class MontyComplete {
+  /**
+   * @param {NativeMontyComplete} nativeComplete - The native MontyComplete instance
+   */
+  constructor(nativeComplete) {
+    this._native = nativeComplete
+  }
+
+  /** @returns {any} */
+  get output() {
+    return this._native.output
+  }
+
+  /** @returns {string} */
+  repr() {
+    return this._native.repr()
+  }
+}
+
 module.exports = {
   // Main class
   Monty,
+  // Iterative execution classes
+  MontySnapshot,
+  MontyComplete,
   // Error classes
   MontyError,
   MontySyntaxError,

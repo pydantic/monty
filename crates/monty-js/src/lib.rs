@@ -19,6 +19,13 @@
 //! // With inputs
 //! const m2 = new Monty('x + y', { inputs: ['x', 'y'] });
 //! const result2 = m2.run({ inputs: { x: 10, y: 20 } }); // returns 30
+//!
+//! // Iterative execution with external functions
+//! const m3 = new Monty('external_func()', { externalFunctions: ['external_func'] });
+//! let progress = m3.start();
+//! if (progress instanceof MontySnapshot) {
+//!     progress = progress.resume({ returnValue: 42 });
+//! }
 //! ```
 
 mod convert;
@@ -30,4 +37,7 @@ pub use exceptions::{
     ExceptionInfo, Frame, MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, RuntimeErrorInfo,
 };
 pub use limits::JsResourceLimits;
-pub use monty_cls::{Monty, MontyOptions, RunOptions};
+pub use monty_cls::{
+    ExceptionInput, Monty, MontyComplete, MontyOptions, MontySnapshot, ResumeOptions, RunOptions, SnapshotLoadOptions,
+    StartOptions,
+};
