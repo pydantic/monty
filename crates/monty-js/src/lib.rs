@@ -24,10 +24,10 @@
 mod convert;
 mod exceptions;
 mod limits;
-mod monty;
+mod monty_cls;
 
 pub use exceptions::{
     ExceptionInfo, Frame, MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, RuntimeErrorInfo,
 };
 pub use limits::JsResourceLimits;
-pub use monty::{Monty, MontyOptions, RunOptions};
+pub use monty_cls::{Monty, MontyOptions, RunOptions};
