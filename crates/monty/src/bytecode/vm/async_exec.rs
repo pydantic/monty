@@ -176,14 +176,15 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             return Ok(AwaitResult::ValueReady(Value::Ref(list_id)));
         }
 
-        // Clone items to process (to avoid borrow issues)
-        let items: Vec<GatherItem> = gather.items.clone();
-
-        // Set waiter before spawning (creates scheduler if needed)
+        // Set waiter and take items to process - avoids clone since gather await is single-shot
+        // (we already checked waiter.is_none() above, so items are only processed once)
         let current_task = self.get_or_create_scheduler().current_task_id();
-        if let HeapData::GatherFuture(gather_mut) = self.heap.get_mut(heap_id) {
+        let items: Vec<GatherItem> = if let HeapData::GatherFuture(gather_mut) = self.heap.get_mut(heap_id) {
             gather_mut.waiter = current_task;
-        }
+            std::mem::take(&mut gather_mut.items)
+        } else {
+            vec![]
+        };
 
         // Process each item
         let mut task_ids = Vec::new();
@@ -233,27 +234,16 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
         if all_complete {
             // All external futures were already resolved - return results immediately
-            // First collect values with copy_for_extend (no refcount change)
-            let (results, ref_ids_to_inc): (Vec<Value>, Vec<HeapId>) =
-                if let HeapData::GatherFuture(gather) = self.heap.get(heap_id) {
-                    let mut results = Vec::with_capacity(gather.results.len());
-                    let mut ref_ids = Vec::new();
-                    for r in &gather.results {
-                        let v = r.as_ref().expect("all results should be filled");
-                        results.push(v.copy_for_extend());
-                        if let Value::Ref(id) = v {
-                            ref_ids.push(*id);
-                        }
-                    }
-                    (results, ref_ids)
-                } else {
-                    (vec![], vec![])
-                };
-
-            // Increment refcounts after borrow ends
-            for id in ref_ids_to_inc {
-                self.heap.inc_ref(id);
-            }
+            // Steal results using mem::take - avoids refcount dance since we're dropping
+            // the GatherFuture anyway via awaitable.drop_with_heap below
+            let results: Vec<Value> = if let HeapData::GatherFuture(gather) = self.heap.get_mut(heap_id) {
+                std::mem::take(&mut gather.results)
+                    .into_iter()
+                    .map(|r| r.expect("all results should be filled"))
+                    .collect()
+            } else {
+                vec![]
+            };
 
             awaitable.drop_with_heap(self.heap);
             let list_id = self.heap.allocate(HeapData::List(List::new(results)))?;
@@ -408,18 +398,18 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 }
             }
 
-            // Extract gather metadata before doing any heap mutations
-            let (task_ids, waiter, pending_calls_empty, result_count) =
-                if let HeapData::GatherFuture(gather) = self.heap.get(gid) {
-                    (
-                        gather.task_ids.clone(),
-                        gather.waiter,
-                        gather.pending_calls.is_empty(),
-                        gather.results.len(),
-                    )
-                } else {
-                    (vec![], None, true, 0)
-                };
+            // Extract gather metadata - use get_mut and take task_ids to avoid allocation
+            // We take task_ids because if gather is complete, we'll be destroying it anyway
+            let (task_ids, waiter, pending_calls_empty) = if let HeapData::GatherFuture(gather) = self.heap.get_mut(gid)
+            {
+                (
+                    std::mem::take(&mut gather.task_ids),
+                    gather.waiter,
+                    gather.pending_calls.is_empty(),
+                )
+            } else {
+                (vec![], None, true)
+            };
 
             // Check if all tasks are complete AND all external futures are resolved
             let all_tasks_complete = task_ids.iter().all(|tid| {
@@ -457,30 +447,17 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                     }
                 }
 
-                // Collect results from gather.results in order
-                // First pass: copy values and collect ref IDs (while borrowing heap immutably)
-                let (results, ref_ids_to_inc): (Vec<Value>, Vec<HeapId>) =
-                    if let HeapData::GatherFuture(gather) = self.heap.get(gid) {
-                        let mut results = Vec::with_capacity(result_count);
-                        let mut ref_ids = Vec::new();
-                        for r in &gather.results {
-                            let v = r
-                                .as_ref()
-                                .expect("all results should be filled when gather is complete");
-                            results.push(v.copy_for_extend());
-                            if let Value::Ref(id) = v {
-                                ref_ids.push(*id);
-                            }
-                        }
-                        (results, ref_ids)
-                    } else {
-                        (vec![], vec![])
-                    };
-
-                // Now increment refcounts (after borrow ends)
-                for id in ref_ids_to_inc {
-                    self.heap.inc_ref(id);
-                }
+                // Steal results from gather using mem::take - avoids refcount dance
+                // (copy + inc_ref + dec_ref on gather drop). Since gather is being
+                // destroyed, we can take ownership of the values directly.
+                let results: Vec<Value> = if let HeapData::GatherFuture(gather) = self.heap.get_mut(gid) {
+                    std::mem::take(&mut gather.results)
+                        .into_iter()
+                        .map(|r| r.expect("all results should be filled when gather is complete"))
+                        .collect()
+                } else {
+                    vec![]
+                };
 
                 // Create result list
                 let list_id = self.heap.allocate(HeapData::List(List::new(results)))?;
@@ -573,15 +550,9 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
         // If part of a gather, propagate error to waiter
         if let Some(gid) = gather_id {
-            // Get waiter and siblings from GatherFuture (O(1) via task_ids field)
-            let (waiter, siblings) = if let HeapData::GatherFuture(gather) = self.heap.get(gid) {
-                let sibs: Vec<TaskId> = gather
-                    .task_ids
-                    .iter()
-                    .copied()
-                    .filter(|&tid| tid != task_id && !self.scheduler().get_task(tid).is_finished())
-                    .collect();
-                (gather.waiter, sibs)
+            // Get waiter and take task_ids from GatherFuture - gather is being destroyed anyway
+            let (waiter, task_ids) = if let HeapData::GatherFuture(gather) = self.heap.get_mut(gid) {
+                (gather.waiter, std::mem::take(&mut gather.task_ids))
             } else {
                 (None, vec![])
             };
@@ -589,14 +560,15 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             // Mark task as failed
             self.scheduler_mut().fail_task(task_id, error);
 
-            // Cancel sibling tasks
-            // Use direct field access to avoid borrow conflicts with heap/namespaces
-            for sibling_id in siblings {
-                self.scheduler.as_mut().expect("scheduler must exist").cancel_task(
-                    sibling_id,
-                    self.heap,
-                    self.namespaces,
-                );
+            // Cancel sibling tasks (filter out self and already-finished tasks inline)
+            for sibling_id in task_ids {
+                if sibling_id != task_id && !self.scheduler().get_task(sibling_id).is_finished() {
+                    self.scheduler.as_mut().expect("scheduler must exist").cancel_task(
+                        sibling_id,
+                        self.heap,
+                        self.namespaces,
+                    );
+                }
             }
 
             // Clean up the gather
@@ -800,20 +772,21 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         if let Some((gather_id, result_idx)) = self.scheduler_mut().take_gather_waiter(call_id) {
             // Remove from scheduler's pending_calls so it doesn't appear in get_pending_call_ids()
             self.scheduler_mut().remove_pending_call(call_id);
-            // Clone the value first (before getting mutable borrow of heap)
-            let cloned_value = value.clone_with_heap(self.heap);
-            // Store result in gather and check completion
+            // Store result directly in gather (move, not clone) and check completion
             let (pending_empty, task_ids, waiter) = if let HeapData::GatherFuture(gather) = self.heap.get_mut(gather_id)
             {
-                gather.results[result_idx] = Some(cloned_value);
+                gather.results[result_idx] = Some(value); // Move value directly, no clone needed
                 // Remove from pending_calls
                 gather.pending_calls.retain(|&cid| cid != call_id);
-                (gather.pending_calls.is_empty(), gather.task_ids.clone(), gather.waiter)
+                // Take task_ids to avoid clone - we're checking completion so gather may be destroyed
+                (
+                    gather.pending_calls.is_empty(),
+                    std::mem::take(&mut gather.task_ids),
+                    gather.waiter,
+                )
             } else {
                 (true, vec![], None)
             };
-            // Drop our copy of the value since we cloned it
-            value.drop_with_heap(self.heap);
 
             // Check if gather is now complete (all external futures resolved and all tasks complete)
             if pending_empty {
@@ -827,33 +800,21 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 if all_tasks_complete {
                     // Gather is complete - build result and push to waiter's stack
                     if let Some(waiter_id) = waiter {
-                        // Collect results from gather.results in order
-                        let (results, ref_ids_to_inc): (Vec<Value>, Vec<HeapId>) =
-                            if let HeapData::GatherFuture(gather) = self.heap.get(gather_id) {
-                                let mut results = Vec::with_capacity(gather.results.len());
-                                let mut ref_ids = Vec::new();
-                                for r in &gather.results {
-                                    let v = r
-                                        .as_ref()
-                                        .expect("all results should be filled when gather is complete");
-                                    results.push(v.copy_for_extend());
-                                    if let Value::Ref(id) = v {
-                                        ref_ids.push(*id);
-                                    }
-                                }
-                                (results, ref_ids)
-                            } else {
-                                (vec![], vec![])
-                            };
-
-                        // Increment refcounts after borrow ends
-                        for id in ref_ids_to_inc {
-                            self.heap.inc_ref(id);
-                        }
+                        // Steal results from gather using mem::take - avoids refcount dance
+                        // (copy + inc_ref + dec_ref on gather drop). Since gather is being
+                        // destroyed, we can take ownership of the values directly.
+                        let results: Vec<Value> = if let HeapData::GatherFuture(gather) = self.heap.get_mut(gather_id) {
+                            std::mem::take(&mut gather.results)
+                                .into_iter()
+                                .map(|r| r.expect("all results should be filled when gather is complete"))
+                                .collect()
+                        } else {
+                            vec![]
+                        };
 
                         // Create result list - if this fails, we can't do much, just skip
                         if let Ok(list_id) = self.heap.allocate(HeapData::List(List::new(results))) {
-                            // Release the GatherFuture
+                            // Release the GatherFuture (results already taken, so no double-drop)
                             self.heap.dec_ref(gather_id);
 
                             // Push result onto waiter's stack and mark as ready
@@ -896,12 +857,28 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             // Remove from pending_calls so it doesn't appear in get_pending_call_ids()
             // (fail_for_call handles this for the non-gather case)
             self.scheduler_mut().remove_pending_call(call_id);
-            // Get the gather's waiter task and sibling tasks
-            let (waiter, task_ids) = if let HeapData::GatherFuture(gather) = self.heap.get(gather_id) {
-                (gather.waiter, gather.task_ids.clone())
-            } else {
-                (None, vec![])
-            };
+
+            // Get the gather's waiter, task_ids, and OTHER pending calls
+            // We need to remove all pending calls for this gather from gather_waiters
+            // before we dec_ref the gather, otherwise subsequent errors for the same
+            // gather would try to access a freed heap object.
+            // Use get_mut and take to avoid allocations - gather is being destroyed anyway.
+            let (waiter, task_ids, other_pending_calls) =
+                if let HeapData::GatherFuture(gather) = self.heap.get_mut(gather_id) {
+                    let mut other_calls = std::mem::take(&mut gather.pending_calls);
+                    other_calls.retain(|&cid| cid != call_id);
+                    (gather.waiter, std::mem::take(&mut gather.task_ids), other_calls)
+                } else {
+                    (None, vec![], vec![])
+                };
+
+            // Remove all other pending calls for this gather from gather_waiters and pending_calls
+            // This prevents subsequent errors from trying to access the freed gather
+            let scheduler = self.scheduler_mut();
+            for other_call_id in other_pending_calls {
+                scheduler.take_gather_waiter(other_call_id);
+                scheduler.remove_pending_call(other_call_id);
+            }
 
             // Cancel all sibling tasks in the gather
             for sibling_id in task_ids {
@@ -921,25 +898,22 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             }
         } else if let Some((task_id, Some(gid))) = self.scheduler_mut().fail_for_call(call_id, error) {
             // Original path: task is directly BlockedOnCall and part of a gather
-            // Get siblings from GatherFuture.task_ids
-            let siblings: Vec<TaskId> = if let HeapData::GatherFuture(gather) = self.heap.get(gid) {
-                gather
-                    .task_ids
-                    .iter()
-                    .copied()
-                    .filter(|&tid| tid != task_id && !self.scheduler().get_task(tid).is_finished())
-                    .collect()
+            // Take task_ids from GatherFuture - gather is being destroyed anyway
+            let task_ids: Vec<TaskId> = if let HeapData::GatherFuture(gather) = self.heap.get_mut(gid) {
+                std::mem::take(&mut gather.task_ids)
             } else {
                 vec![]
             };
 
-            // Cancel sibling tasks
-            for sibling_id in siblings {
-                self.scheduler.as_mut().expect("scheduler must exist").cancel_task(
-                    sibling_id,
-                    self.heap,
-                    self.namespaces,
-                );
+            // Cancel sibling tasks (filter out self and already-finished tasks)
+            for sibling_id in task_ids {
+                if sibling_id != task_id && !self.scheduler().get_task(sibling_id).is_finished() {
+                    self.scheduler.as_mut().expect("scheduler must exist").cancel_task(
+                        sibling_id,
+                        self.heap,
+                        self.namespaces,
+                    );
+                }
             }
         }
     }
