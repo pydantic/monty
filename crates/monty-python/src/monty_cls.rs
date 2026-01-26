@@ -907,13 +907,13 @@ impl PyMontyFutureSnapshot {
     /// Returns the pending call IDs associated with the MontyFutureSnapshot instance.
     ///
     /// # Returns
-    /// An optional slice of pending call IDs.
+    /// A slice of pending call IDs.
     #[getter]
-    fn pending_call_ids(&self) -> Option<&[u32]> {
+    fn pending_call_ids(&self) -> PyResult<&[u32]> {
         match &self.snapshot {
-            EitherFutureSnapshot::NoLimit(snapshot) => Some(snapshot.pending_call_ids()),
-            EitherFutureSnapshot::Limited(snapshot) => Some(snapshot.pending_call_ids()),
-            EitherFutureSnapshot::Done => None,
+            EitherFutureSnapshot::NoLimit(snapshot) => Ok(snapshot.pending_call_ids()),
+            EitherFutureSnapshot::Limited(snapshot) => Ok(snapshot.pending_call_ids()),
+            EitherFutureSnapshot::Done => Err(PyRuntimeError::new_err("MontyFutureSnapshot already resumed")),
         }
     }
 
@@ -997,7 +997,7 @@ impl PyMontyFutureSnapshot {
     }
 
     fn __repr__(&self) -> String {
-        let pending_call_ids = if let Some(ids) = self.pending_call_ids() {
+        let pending_call_ids = if let Ok(ids) = self.pending_call_ids() {
             let ids = ids.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
             Cow::Owned(format!("[{ids}]"))
         } else {

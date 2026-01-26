@@ -12,6 +12,8 @@ readme = "README.md"
 requires-python = ">=3.10"
 
 [tool.maturin]
+python-source = "python"
+module-name = "monty._monty"
 features = ["pyo3/extension-module"]
 
 [dependency-groups]

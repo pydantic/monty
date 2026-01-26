@@ -1,20 +1,23 @@
 from types import EllipsisType
 from typing import Any, Callable, Literal, final, overload
 
-from typing_extensions import Self, TypedDict
+from typing_extensions import Self
+
+from . import ExternalResult, ResourceLimits
 
 __all__ = [
     'Monty',
     'MontyComplete',
     'MontySnapshot',
     'MontyFutureSnapshot',
-    'ResourceLimits',
     'MontyError',
     'MontySyntaxError',
     'MontyRuntimeError',
     'MontyTypingError',
     'Frame',
+    '__version__',
 ]
+__version__: str
 
 @final
 class Monty:
@@ -294,17 +297,6 @@ class MontySnapshot:
 
     def __repr__(self) -> str: ...
 
-class _ExternalReturnValue(TypedDict):
-    return_value: Any
-
-class _ExternalException(TypedDict):
-    exception: Exception
-
-class _ExternalFuture(TypedDict):
-    future: EllipsisType
-
-_ExternalResult = _ExternalReturnValue | _ExternalException | _ExternalFuture
-
 @final
 class MontyFutureSnapshot:
     """
@@ -319,12 +311,15 @@ class MontyFutureSnapshot:
         """The name of the script being executed."""
 
     @property
-    def pending_call_ids(self) -> list[int] | None:
-        """The call IDs of the pending futures, or None if already resumed."""
+    def pending_call_ids(self) -> list[int]:
+        """The call IDs of the pending futures.
+
+        Raises an error if the snapshot has already been resumed.
+        """
 
     def resume(
         self,
-        results: dict[int, _ExternalResult],
+        results: dict[int, ExternalResult],
     ) -> MontySnapshot | MontyFutureSnapshot | MontyComplete:
         """Resume execution with results for one or more futures.
 
@@ -402,28 +397,6 @@ class MontyComplete:
         """The final output value from the executed code."""
 
     def __repr__(self) -> str: ...
-
-class ResourceLimits(TypedDict, total=False):
-    """
-    Configuration for resource limits during code execution.
-
-    All limits are optional. Omit a key to disable that limit.
-    """
-
-    max_allocations: int
-    """Maximum number of heap allocations allowed."""
-
-    max_duration_secs: float
-    """Maximum execution time in seconds."""
-
-    max_memory: int
-    """Maximum heap memory in bytes."""
-
-    gc_interval: int
-    """Run garbage collection every N allocations."""
-
-    max_recursion_depth: int
-    """Maximum function call stack depth (default: 1000)."""
 
 class MontyError(Exception):
     """Base exception for all Monty interpreter errors.

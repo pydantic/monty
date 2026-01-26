@@ -13,7 +13,7 @@ homepage = { workspace = true }
 repository = { workspace = true }
 
 [lib]
-name = "monty"
+name = "_monty"
 crate-type = ["cdylib"]
 
 [dependencies]

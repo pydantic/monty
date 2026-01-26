@@ -13,34 +13,6 @@ use crate::exceptions::exc_py_to_monty;
 /// Default maximum recursion depth if not specified.
 const DEFAULT_MAX_RECURSION_DEPTH: usize = 1000;
 
-/// Creates the `ResourceLimits` TypedDict class.
-///
-/// This is called during module initialization to create and register the TypedDict.
-pub fn create_resource_limits_class(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
-    let locals = PyDict::new(py);
-    py.run(
-        c"
-from typing import TypedDict
-
-class ResourceLimits(TypedDict, total=False):
-    \"\"\"
-    Configuration for resource limits during code execution.
-
-    All limits are optional. Omit a key to disable that limit.
-    \"\"\"
-    max_allocations: int
-    max_duration_secs: float
-    max_memory: int
-    gc_interval: int
-    max_recursion_depth: int
-",
-        None,
-        Some(&locals),
-    )?;
-
-    Ok(locals.get_item("ResourceLimits")?.unwrap())
-}
-
 /// Extracts resource limits from a Python dict.
 ///
 /// The dict should have the following optional keys:
