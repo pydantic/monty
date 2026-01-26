@@ -6,7 +6,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable
     from types import EllipsisType
 
-from ._pydantic_monty import (
+from ._monty import (
     Frame,
     Monty,
     MontyComplete,

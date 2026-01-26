@@ -82,7 +82,7 @@ m = pydantic_monty.Monty(code, inputs=['url'], external_functions=['fetch'])
 result = m.start(inputs={'url': 'https://example.com'})
 
 print(type(result))
-#> <class 'pydantic_monty.MontySnapshot'>
+#> <class 'pydantic_monty._monty.MontySnapshot'>
 print(result.function_name)  # fetch
 #> fetch
 print(result.args)
@@ -92,7 +92,7 @@ print(result.args)
 result = result.resume(return_value='hello world')
 
 print(type(result))
-#> <class 'pydantic_monty.MontyComplete'>
+#> <class 'pydantic_monty._monty.MontyComplete'>
 print(result.output)
 #> 11
 ```

@@ -94,7 +94,7 @@ lint-py: dev-py ## Lint Python code with ruff
 	uv run ruff check
 	uv run basedpyright
 	# mypy-stubtest requires a build of the python package, hence dev-py
-	uv run -m mypy.stubtest pydantic_monty._pydantic_monty --ignore-disjoint-bases
+	uv run -m mypy.stubtest pydantic_monty._monty --ignore-disjoint-bases
 
 .PHONY: lint
 lint: lint-rs lint-py ## Lint the code with ruff and clippy

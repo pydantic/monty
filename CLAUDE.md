@@ -290,7 +290,7 @@ The Python package provides Python bindings for the Monty interpreter, located i
 ### Structure
 
 - `crates/monty-python/src/` - Rust source for PyO3 bindings
-- `crates/monty-python/python/pydantic_monty/_pydantic_monty.pyi` - Type stubs for the Python module
+- `crates/monty-python/python/pydantic_monty/_monty.pyi` - Type stubs for the Python module
 - `crates/monty-python/tests/` - Python tests using pytest
 
 ### Building and Testing

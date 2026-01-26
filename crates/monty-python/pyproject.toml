@@ -13,7 +13,7 @@ requires-python = ">=3.10"
 
 [tool.maturin]
 python-source = "python"
-module-name = "pydantic_monty._pydantic_monty"
+module-name = "pydantic_monty._monty"
 features = ["pyo3/extension-module"]
 
 [dependency-groups]
