@@ -449,6 +449,109 @@ class MontyComplete {
   }
 }
 
+/**
+ * Runs a Monty script with async external function support.
+ *
+ * This function handles both synchronous and asynchronous external functions.
+ * When an external function returns a Promise, it will be awaited before
+ * resuming execution.
+ *
+ * @param {Monty} montyRunner - The Monty runner instance to execute
+ * @param {Object} [options] - Execution options
+ * @param {Record<string, any>} [options.inputs] - Input values for the script
+ * @param {Record<string, Function>} [options.externalFunctions] - External function implementations (sync or async)
+ * @param {import('./index').JsResourceLimits} [options.limits] - Resource limits
+ * @returns {Promise<any>} The output of the Monty script
+ * @throws {MontyRuntimeError} If the code raises an exception
+ * @throws {MontySyntaxError} If the code has syntax errors
+ *
+ * @example
+ * const m = new Monty('result = await fetch_data(url)', {
+ *   inputs: ['url'],
+ *   externalFunctions: ['fetch_data']
+ * });
+ *
+ * const result = await runMontyAsync(m, {
+ *   inputs: { url: 'https://example.com' },
+ *   externalFunctions: {
+ *     fetch_data: async (url) => {
+ *       const response = await fetch(url);
+ *       return response.text();
+ *     }
+ *   }
+ * });
+ */
+async function runMontyAsync(montyRunner, options = {}) {
+  const { inputs, externalFunctions = {}, limits } = options
+
+  let progress
+  try {
+    progress = montyRunner.start({ inputs, limits })
+  } catch (error) {
+    throw wrapNativeError(error)
+  }
+
+  while (true) {
+    if (progress instanceof MontyComplete) {
+      return progress.output
+    }
+
+    if (progress instanceof MontySnapshot) {
+      const funcName = progress.functionName
+      const extFunction = externalFunctions[funcName]
+
+      if (!extFunction) {
+        // Function not found - resume with a KeyError exception
+        try {
+          progress = progress.resume({
+            exception: {
+              type: 'KeyError',
+              message: `"External function '${funcName}' not found"`,
+            },
+          })
+        } catch (error) {
+          throw wrapNativeError(error)
+        }
+        continue
+      }
+
+      try {
+        // Call the external function
+        let result = extFunction(...progress.args, progress.kwargs)
+
+        // If the result is a Promise, await it
+        if (result && typeof result.then === 'function') {
+          result = await result
+        }
+
+        // Resume with the return value
+        try {
+          progress = progress.resume({ returnValue: result })
+        } catch (error) {
+          throw wrapNativeError(error)
+        }
+      } catch (error) {
+        // External function threw an exception - convert to Monty exception
+        const excType = error.name || 'RuntimeError'
+        const excMessage = error.message || String(error)
+        try {
+          progress = progress.resume({
+            exception: {
+              type: excType,
+              message: excMessage,
+            },
+          })
+        } catch (resumeError) {
+          throw wrapNativeError(resumeError)
+        }
+      }
+    } else {
+      // Unexpected progress type
+      throw new Error(`Unexpected progress type: ${progress}`)
+    }
+  }
+}
+
 module.exports = {
   // Main class
   Monty,
@@ -460,6 +563,8 @@ module.exports = {
   MontySyntaxError,
   MontyRuntimeError,
   MontyTypingError,
+  // Async execution helper
+  runMontyAsync,
   // Re-export types/interfaces (these are just for documentation, not actual values)
 }
 

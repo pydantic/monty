@@ -40,7 +40,7 @@
 use std::fmt;
 
 use monty::{ExcType, MontyException, StackFrame};
-use monty_type_checking::TypeCheckingFailure;
+use monty_type_checking::TypeCheckingDiagnostics;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde::{Deserialize, Serialize};
@@ -338,7 +338,7 @@ impl MontyRuntimeError {
 #[napi]
 pub struct MontyTypingError {
     /// The type checking failure containing diagnostic information.
-    failure: TypeCheckingFailure,
+    failure: TypeCheckingDiagnostics,
     /// Cached string representation.
     cached_string: String,
 }
@@ -401,9 +401,9 @@ impl MontyTypingError {
 }
 
 impl MontyTypingError {
-    /// Creates a MontyTypingError from a TypeCheckingFailure.
+    /// Creates a MontyTypingError from a TypeCheckingDiagnostics.
     #[must_use]
-    pub fn from_failure(failure: TypeCheckingFailure) -> Self {
+    pub fn from_failure(failure: TypeCheckingDiagnostics) -> Self {
         let cached_string = failure.to_string();
         Self { failure, cached_string }
     }
@@ -431,8 +431,8 @@ pub fn monty_exception_to_error(exc: &MontyException) -> Error {
     }
 }
 
-/// Converts a `TypeCheckingFailure` to an napi `Error`.
-pub fn typing_failure_to_error(failure: TypeCheckingFailure) -> Error {
+/// Converts a `TypeCheckingDiagnostics` to an napi `Error`.
+pub fn typing_failure_to_error(failure: TypeCheckingDiagnostics) -> Error {
     MontyTypingError::from_failure(failure).into_error()
 }
 

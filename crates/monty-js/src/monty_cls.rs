@@ -228,6 +228,7 @@ impl Monty {
                             args,
                             kwargs,
                             state,
+                            ..
                         } => {
                             let return_value = call_external_function(
                                 env,
@@ -240,6 +241,11 @@ impl Monty {
                             progress = state
                                 .run(return_value, &mut print_output)
                                 .map_err(|e| monty_exception_to_error(&e))?;
+                        }
+                        RunProgress::ResolveFutures(_) => {
+                            return Err(Error::from_reason(
+                                "Async futures are not supported in synchronous run(). Use start() for async execution.",
+                            ));
                         }
                     }
                 }
@@ -656,6 +662,9 @@ impl MontyComplete {
 // =============================================================================
 
 /// Converts a `RunProgress` to either a `MontySnapshot` or `MontyComplete`.
+///
+/// # Panics
+/// Panics if the progress is `ResolveFutures` - async futures are not yet supported in the JS bindings.
 fn progress_to_result<T>(progress: RunProgress<T>, script_name: String) -> Either<MontySnapshot, MontyComplete>
 where
     T: ResourceTracker + serde::Serialize + serde::de::DeserializeOwned,
@@ -668,6 +677,7 @@ where
             args,
             kwargs,
             state,
+            ..
         } => {
             // Store args/kwargs as MontyObject directly for serialization
             Either::A(MontySnapshot {
@@ -677,6 +687,9 @@ where
                 args,
                 kwargs,
             })
+        }
+        RunProgress::ResolveFutures(_) => {
+            panic!("Async futures (ResolveFutures) are not yet supported in the JS bindings")
         }
     }
 }
@@ -845,7 +858,10 @@ fn extract_js_exception(env: &Env, exception_raw: sys::napi_value) -> MontyExcep
     // Try to get the 'message' property
     let message: std::result::Result<String, _> = exception_obj.get_named_property("message");
 
-    let exc_type = string_to_exc_type(name).unwrap_or(ExcType::RuntimeError);
+    let exc_type = name
+        .ok()
+        .and_then(|n| string_to_exc_type(&n).ok())
+        .unwrap_or(ExcType::RuntimeError);
     let msg = message.ok();
 
     MontyException::new(exc_type, msg)
