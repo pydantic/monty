@@ -176,12 +176,13 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             return Ok(AwaitResult::ValueReady(Value::Ref(list_id)));
         }
 
-        // Set waiter and take items to process - avoids clone since gather await is single-shot
-        // (we already checked waiter.is_none() above, so items are only processed once)
+        // Set waiter and clone items to process
+        // Note: We clone instead of mem::take because GatherItem::Coroutine holds HeapIds
+        // that need to stay in gather.items for proper ref counting when the gather is dropped.
         let current_task = self.get_or_create_scheduler().current_task_id();
         let items: Vec<GatherItem> = if let HeapData::GatherFuture(gather_mut) = self.heap.get_mut(heap_id) {
             gather_mut.waiter = current_task;
-            std::mem::take(&mut gather_mut.items)
+            gather_mut.items.clone()
         } else {
             vec![]
         };
