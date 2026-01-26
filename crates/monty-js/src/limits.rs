@@ -12,7 +12,7 @@ use napi_derive::napi;
 ///
 /// All limits are optional. Omit a key to disable that limit.
 #[napi(object, js_name = "ResourceLimits")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct JsResourceLimits {
     /// Maximum number of heap allocations allowed.
     pub max_allocations: Option<u32>,

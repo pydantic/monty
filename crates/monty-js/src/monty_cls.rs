@@ -52,10 +52,9 @@ use monty::{
 use monty_type_checking::type_check;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use serde_json::Value;
 
 use crate::{
-    convert::{monty_to_js, monty_to_serde, serde_to_monty, JsMontyObject},
+    convert::{js_to_monty, monty_to_js, JsMontyObject},
     exceptions::{monty_exception_to_error, typing_failure_to_error},
     limits::JsResourceLimits,
 };
@@ -98,19 +97,19 @@ pub struct MontyOptions {
 
 /// Options for running code.
 #[napi(object)]
-pub struct RunOptions {
-    /// Dict of input variable values as a JSON object.
-    /// Keys are input names, values are the input values.
-    pub inputs: Option<Value>,
+#[derive(Clone, Copy)]
+pub struct RunOptions<'env> {
+    pub inputs: Option<Object<'env>>,
     /// Resource limits configuration.
     pub limits: Option<JsResourceLimits>,
 }
 
 /// Options for starting execution.
 #[napi(object)]
-pub struct StartOptions {
-    /// Dict of input variable values as a JSON object.
-    pub inputs: Option<Value>,
+#[derive(Clone, Copy)]
+pub struct StartOptions<'env> {
+    /// Dict of input variable values.
+    pub inputs: Option<Object<'env>>,
     /// Resource limits configuration.
     pub limits: Option<JsResourceLimits>,
 }
@@ -166,21 +165,16 @@ impl Monty {
     /// Executes the code and returns the result.
     ///
     /// @param options - Execution options (inputs, limits)
-    /// @returns The result of the last expression in the code as JSON
+    /// @returns The result of the last expression in the code
     #[napi]
-    pub fn run<'env>(&self, env: &'env Env, options: Option<RunOptions>) -> Result<JsMontyObject<'env>> {
-        let options = options.unwrap_or(RunOptions {
-            inputs: None,
-            limits: None,
-        });
-
+    pub fn run<'env>(&self, env: &'env Env, options: Option<RunOptions<'env>>) -> Result<JsMontyObject<'env>> {
         // Extract input values
-        let input_values = self.extract_input_values(options.inputs.as_ref())?;
+        let input_values = self.extract_input_values(options.and_then(|opts| opts.inputs), *env)?;
 
         // Run with appropriate tracker
         let mut print_output = CollectStringPrint::default();
 
-        let result = if let Some(limits) = options.limits {
+        let result = if let Some(limits) = options.as_ref().and_then(|opts| opts.limits) {
             let tracker = LimitedTracker::new(limits.into());
             self.runner.run(input_values, tracker, &mut print_output)
         } else {
@@ -201,21 +195,20 @@ impl Monty {
     /// @param options - Execution options (inputs, limits)
     /// @returns MontySnapshot if an external function call is pending, MontyComplete if done
     #[napi]
-    pub fn start(&self, options: Option<StartOptions>) -> Result<Either<MontySnapshot, MontyComplete>> {
-        let options = options.unwrap_or(StartOptions {
-            inputs: None,
-            limits: None,
-        });
-
+    pub fn start<'env>(
+        &self,
+        env: &'env Env,
+        options: Option<StartOptions<'env>>,
+    ) -> Result<Either<MontySnapshot, MontyComplete>> {
         // Extract input values
-        let input_values = self.extract_input_values(options.inputs.as_ref())?;
+        let input_values = self.extract_input_values(options.and_then(|opts| opts.inputs), *env)?;
 
         // Clone the runner since start() consumes it - allows reuse of the parsed code
         let runner = self.runner.clone();
         let mut print_output = CollectStringPrint::default();
 
         // Start execution with appropriate tracker
-        if let Some(limits) = options.limits {
+        if let Some(limits) = options.and_then(|opts| opts.limits) {
             let tracker = LimitedTracker::new(limits.into());
             let progress = runner
                 .start(input_values, tracker, &mut print_output)
@@ -304,8 +297,8 @@ impl Monty {
         s
     }
 
-    /// Extracts input values from the JSON Value in the order they were declared.
-    fn extract_input_values(&self, inputs: Option<&Value>) -> Result<Vec<MontyObject>> {
+    /// Extracts input values from the JS Object in the order they were declared.
+    fn extract_input_values(&self, inputs: Option<Object<'_>>, env: Env) -> Result<Vec<MontyObject>> {
         if self.input_names.is_empty() {
             if inputs.is_some() {
                 return Err(Error::from_reason(
@@ -322,18 +315,15 @@ impl Monty {
             )));
         };
 
-        let inputs_obj = inputs
-            .as_object()
-            .ok_or_else(|| Error::from_reason("inputs must be an object"))?;
-
         // Extract values in declaration order
         self.input_names
             .iter()
             .map(|name| {
-                let value = inputs_obj
-                    .get(name)
-                    .ok_or_else(|| Error::from_reason(format!("Missing required input: '{name}'")))?;
-                serde_to_monty(value)
+                if !inputs.has_named_property(name)? {
+                    return Err(Error::from_reason(format!("Missing required input: '{name}'")));
+                }
+                let value: Unknown = inputs.get_named_property(name)?;
+                js_to_monty(value, env)
             })
             .collect()
     }
@@ -398,9 +388,9 @@ pub struct MontySnapshot {
 
 /// Options for resuming execution.
 #[napi(object)]
-pub struct ResumeOptions {
+pub struct ResumeOptions<'env> {
     /// The value to return from the external function call.
-    pub return_value: Option<Value>,
+    pub return_value: Option<Unknown<'env>>,
     /// An exception to raise in the interpreter.
     /// Format: { type: string, message: string }
     pub exception: Option<ExceptionInput>,
@@ -464,11 +454,15 @@ impl MontySnapshot {
     /// @param options - Object with either `returnValue` or `exception`
     /// @returns MontySnapshot if another external call is pending, MontyComplete if done
     #[napi]
-    pub fn resume(&mut self, options: ResumeOptions) -> Result<Either<Self, MontyComplete>> {
+    pub fn resume<'env>(
+        &mut self,
+        env: &'env Env,
+        options: ResumeOptions<'env>,
+    ) -> Result<Either<Self, MontyComplete>> {
         // Validate that exactly one of returnValue or exception is provided
         let external_result = match (options.return_value, options.exception) {
             (Some(value), None) => {
-                let monty_value = serde_to_monty(&value)?;
+                let monty_value = js_to_monty(value, *env)?;
                 ExternalResult::Return(monty_value)
             }
             (None, Some(exc)) => {
@@ -567,10 +561,12 @@ impl MontySnapshot {
 // =============================================================================
 
 /// Represents completed execution with a final output value.
+///
+/// The output value is stored as a `MontyObject` internally and converted to JS on access.
 #[napi]
 pub struct MontyComplete {
-    /// The final output value from the executed code (stored as JSON for lifetime management).
-    output_value: Value,
+    /// The final output value from the executed code.
+    output_value: MontyObject,
 }
 
 #[napi]
@@ -578,8 +574,7 @@ impl MontyComplete {
     /// Returns the final output value from the executed code.
     #[napi(getter)]
     pub fn output<'env>(&self, env: &'env Env) -> Result<JsMontyObject<'env>> {
-        let monty_obj = serde_to_monty(&self.output_value)?;
-        monty_to_js(&monty_obj, env)
+        monty_to_js(&self.output_value, env)
     }
 
     /// Returns a string representation of the MontyComplete.
@@ -601,10 +596,7 @@ where
     EitherSnapshot: FromSnapshot<T>,
 {
     match progress {
-        RunProgress::Complete(result) => {
-            let output_value = monty_to_serde(&result);
-            Either::B(MontyComplete { output_value })
-        }
+        RunProgress::Complete(result) => Either::B(MontyComplete { output_value: result }),
         RunProgress::FunctionCall {
             function_name,
             args,

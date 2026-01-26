@@ -11,11 +11,10 @@ crate-type = ["cdylib"]
 [dependencies]
 monty = { path = "../monty" }
 monty_type_checking = { path = "../monty-type-checking" }
-napi = { version = "3.0.0", default-features = false, features = ["napi4", "serde-json", "compat-mode"] }
+napi = { version = "3.0.0", default-features = false, features = ["napi6", "compat-mode"] }
 napi-derive = "3.0.0"
 num-bigint = { workspace = true }
 serde = { workspace = true }
-serde_json = "1"
 postcard = { workspace = true }
 
 [build-dependencies]

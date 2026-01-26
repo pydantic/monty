@@ -75,7 +75,11 @@ test('Monty.run() with list result', (t) => {
 test('Monty.run() with dict result', (t) => {
   const m = new Monty('{"a": 1, "b": 2}')
   const result = m.run()
-  t.deepEqual(result, { a: 1, b: 2 })
+  // Dicts are returned as native JS Map (preserves key types and insertion order)
+  t.true(result instanceof Map)
+  t.is(result.get('a'), 1)
+  t.is(result.get('b'), 2)
+  t.is(result.size, 2)
 })
 
 test('Monty.run() with None result', (t) => {
@@ -290,7 +294,12 @@ test('set result', (t) => {
 test('nested data structures', (t) => {
   const m = new Monty('{"list": [1, 2], "nested": {"a": 1}}')
   const result = m.run()
-  t.deepEqual(result, { list: [1, 2], nested: { a: 1 } })
+  // Dicts are returned as native JS Map
+  t.true(result instanceof Map)
+  t.deepEqual(result.get('list'), [1, 2])
+  const nested = result.get('nested')
+  t.true(nested instanceof Map)
+  t.is(nested.get('a'), 1)
 })
 
 test('bytes result', (t) => {
@@ -324,8 +333,11 @@ test('nested set in list', (t) => {
 test('nested bytes in dict', (t) => {
   const m = new Monty('{"data": b"abc"}')
   const result = m.run()
-  t.true(Buffer.isBuffer(result.data))
-  t.deepEqual([...result.data], [97, 98, 99])
+  // Dicts are returned as native JS Map
+  t.true(result instanceof Map)
+  const data = result.get('data')
+  t.true(Buffer.isBuffer(data))
+  t.deepEqual([...data], [97, 98, 99])
 })
 
 test('tuple containing set', (t) => {
@@ -419,7 +431,13 @@ test('resume() with complex return value', (t) => {
   const complexValue = { a: [1, 2, 3], b: { nested: true } }
   const result = snapshot.resume({ returnValue: complexValue })
   t.true(result instanceof MontyComplete)
-  t.deepEqual((result as MontyComplete).output, complexValue)
+  // JS objects become Maps in Python (and come back as Maps)
+  const output = (result as MontyComplete).output as Map<string, unknown>
+  t.true(output instanceof Map)
+  t.deepEqual(output.get('a'), [1, 2, 3])
+  const nestedMap = output.get('b') as Map<string, unknown>
+  t.true(nestedMap instanceof Map)
+  t.is(nestedMap.get('nested'), true)
 })
 
 test('multiple external function calls in sequence', (t) => {
