@@ -17,6 +17,7 @@ features = ["pyo3/extension-module"]
 [dependency-groups]
 dev = [
     "black>=25.12.0",
+    "dirty-equals>=0.11",
     "inline-snapshot>=0.31.1",
     "pytest>=9.0.2",
     "pytest-examples>=0.0.14",

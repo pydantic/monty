@@ -1,6 +1,7 @@
 from typing import Any
 
 import pytest
+from dirty_equals import IsList
 from inline_snapshot import snapshot
 
 import monty
@@ -319,12 +320,12 @@ def test_async():
     m = monty.Monty(code, external_functions=['foobar'])
     progress = m.start()
     assert isinstance(progress, monty.MontySnapshot)
-    assert progress.function_name == 'foobar'
-    assert progress.args == (1, 2)
+    assert progress.function_name == snapshot('foobar')
+    assert progress.args == snapshot((1, 2))
     call_id = progress.call_id
     progress = progress.resume(future=...)
     assert isinstance(progress, monty.MontyFutureSnapshot)
-    assert progress.pending_call_ids == [call_id]
+    assert progress.pending_call_ids == snapshot([call_id])
     progress = progress.resume({call_id: {'return_value': 3}})
     assert isinstance(progress, monty.MontyComplete)
     assert progress.output == snapshot(3)
@@ -339,19 +340,36 @@ await asyncio.gather(foo(1), bar(2))
     m = monty.Monty(code, external_functions=['foo', 'bar'])
     progress = m.start()
     assert isinstance(progress, monty.MontySnapshot)
-    assert progress.function_name == 'foo'
-    assert progress.args == (1,)
+    assert progress.function_name == snapshot('foo')
+    assert progress.args == snapshot((1,))
     foo_call_ids = progress.call_id
 
     progress = progress.resume(future=...)
     assert isinstance(progress, monty.MontySnapshot)
-    assert progress.function_name == 'bar'
-    assert progress.args == (2,)
+    assert progress.function_name == snapshot('bar')
+    assert progress.args == snapshot((2,))
     bar_call_ids = progress.call_id
     progress = progress.resume(future=...)
 
     assert isinstance(progress, monty.MontyFutureSnapshot)
-    assert progress.pending_call_ids == [foo_call_ids, bar_call_ids]
+    dump_progress = progress.dump()
+
+    assert progress.pending_call_ids == IsList(foo_call_ids, bar_call_ids, check_order=False)
     progress = progress.resume({foo_call_ids: {'return_value': 3}, bar_call_ids: {'return_value': 4}})
     assert isinstance(progress, monty.MontyComplete)
     assert progress.output == snapshot([3, 4])
+
+    progress2 = monty.MontyFutureSnapshot.load(dump_progress)
+    assert progress2.pending_call_ids == IsList(foo_call_ids, bar_call_ids, check_order=False)
+    progress = progress2.resume({bar_call_ids: {'return_value': 14}, foo_call_ids: {'return_value': 13}})
+    assert isinstance(progress, monty.MontyComplete)
+    assert progress.output == snapshot([13, 14])
+
+    progress3 = monty.MontyFutureSnapshot.load(dump_progress)
+    progress = progress3.resume({bar_call_ids: {'return_value': 14}, foo_call_ids: {'future': ...}})
+    assert isinstance(progress, monty.MontyFutureSnapshot)
+
+    assert progress.pending_call_ids == [foo_call_ids]
+    progress = progress.resume({foo_call_ids: {'return_value': 144}})
+    assert isinstance(progress, monty.MontyComplete)
+    assert progress.output == snapshot([144, 14])

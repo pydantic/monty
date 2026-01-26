@@ -531,7 +531,8 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
                 })?,
                 // Fail futures that returned errors
                 ExternalResult::Error(exc) => vm.fail_future(call_id, RunError::from(exc)),
-                ExternalResult::Future => todo!("Implement handling for ExternalResult::Future"),
+                // do nothing, same as not returning this id
+                ExternalResult::Future => {}
             }
         }
 
