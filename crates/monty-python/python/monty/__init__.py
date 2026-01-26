@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Awaitable
-from functools import partial
-from types import EllipsisType
-from typing import Any, Callable, Literal, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Literal, TypedDict, TypeVar
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
+    from types import EllipsisType
 
 from ._monty import (
     Frame,
@@ -30,105 +30,105 @@ __all__ = (
     'MontyTypingError',
     'Frame',
     '__version__',
-    'AsyncMonty',
+    'run_monty_async',
     'ResourceLimits',
     'ExternalResult',
 )
 T = TypeVar('T')
 
 
-class AsyncMonty:
-    _runner: Monty
-    _tasks: dict[int, asyncio.Task[tuple[int, ExternalResult]]]
+async def run_monty_async(
+    monty_runner: Monty,
+    *,
+    inputs: dict[str, Any] | None = None,
+    external_functions: dict[str, Callable[..., Any]] | None = None,
+    limits: ResourceLimits | None = None,
+    print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+) -> Any:
+    """Run a Monty script with async external functions.
 
-    def __init__(self, monty_runner: Monty):
-        self._runner = monty_runner
-        self._tasks = {}
+    Args:
+        monty_runner: The Monty runner to use.
+        external_functions: A dictionary of external functions to use, can be sync or async.
+        inputs: A dictionary of inputs to use.
+        limits: The resource limits to use.
+        print_callback: A callback to use for printing.
 
-    async def run(
-        self,
-        *,
-        external_functions: dict[str, Callable[..., Any]] | None = None,
-        inputs: dict[str, Any] | None = None,
-        limits: ResourceLimits | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-    ) -> Any:
-        import inspect
-        from concurrent.futures import ThreadPoolExecutor
+    Returns:
+        The output of the Monty script.
+    """
+    import asyncio
+    import inspect
+    from concurrent.futures import ThreadPoolExecutor
+    from functools import partial
 
-        external_functions = external_functions or {}
+    loop = asyncio.get_running_loop()
+    external_functions = external_functions or {}
+    tasks: dict[int, asyncio.Task[tuple[int, ExternalResult]]] = {}
 
-        loop = asyncio.get_running_loop()
+    with ThreadPoolExecutor() as pool:
 
-        with ThreadPoolExecutor() as pool:
+        async def run_in_pool(func: Callable[[], T]) -> T:
+            return await loop.run_in_executor(pool, func)
 
-            async def run_in_pool(func: Callable[[], T]) -> T:
-                return await loop.run_in_executor(pool, func)
+        progress = await run_in_pool(
+            partial(monty_runner.start, inputs=inputs, limits=limits, print_callback=print_callback)
+        )
 
-            progress = await run_in_pool(
-                partial(self._runner.start, inputs=inputs, limits=limits, print_callback=print_callback)
-            )
-            try:
-                while True:
-                    if isinstance(progress, MontyComplete):
-                        return progress.output
-                    elif isinstance(progress, MontySnapshot):
-                        if ext_function := external_functions.get(progress.function_name):
-                            try:
-                                result = ext_function(*progress.args, **progress.kwargs)
-                            except Exception as exc:
-                                progress = await run_in_pool(partial(progress.resume, exception=exc))
-                            else:
-                                if inspect.iscoroutine(result):
-                                    self._add_task(progress.call_id, result)
-                                    progress = await run_in_pool(partial(progress.resume, future=...))
-                                else:
-                                    progress = await run_in_pool(partial(progress.resume, return_value=result))
+        try:
+            while True:
+                if isinstance(progress, MontyComplete):
+                    return progress.output
+                elif isinstance(progress, MontySnapshot):
+                    if ext_function := external_functions.get(progress.function_name):
+                        try:
+                            result = ext_function(*progress.args, **progress.kwargs)
+                        except Exception as exc:
+                            progress = await run_in_pool(partial(progress.resume, exception=exc))
                         else:
-                            e = KeyError(f'Function {progress.function_name} not found')
-                            progress = await run_in_pool(partial(progress.resume, exception=e))
+                            if inspect.iscoroutine(result):
+                                call_id = progress.call_id
+                                tasks[call_id] = asyncio.create_task(_run_external_function(call_id, result))
+                                progress = await run_in_pool(partial(progress.resume, future=...))
+                            else:
+                                progress = await run_in_pool(partial(progress.resume, return_value=result))
                     else:
-                        assert isinstance(progress, MontyFutureSnapshot)
-                        results = await self._get_results(progress.pending_call_ids)
-                        progress = await run_in_pool(partial(progress.resume, results))
+                        e = KeyError(f'Function {progress.function_name} not found')
+                        progress = await run_in_pool(partial(progress.resume, exception=e))
+                else:
+                    assert isinstance(progress, MontyFutureSnapshot)
 
-            finally:
-                await self._finish()
+                    current_tasks: list[asyncio.Task[tuple[int, ExternalResult]]] = []
+                    for call_id in progress.pending_call_ids:
+                        if task := tasks.get(call_id):
+                            current_tasks.append(task)
 
-    def _add_task(self, call_id: int, coro: Awaitable[Any]):
-        self._tasks[call_id] = asyncio.create_task(self._run_external_function(call_id, coro))
+                    done, _ = await asyncio.wait(current_tasks, return_when=asyncio.FIRST_COMPLETED)
 
-    async def _get_results(self, call_ids: list[int]) -> dict[int, ExternalResult]:
-        tasks: list[asyncio.Task[tuple[int, ExternalResult]]] = []
-        for call_id in call_ids:
-            if task := self._tasks.get(call_id):
-                tasks.append(task)
+                    results: dict[int, ExternalResult] = {}
+                    for task in done:
+                        call_id, result = task.result()
+                        results[call_id] = result
+                        tasks.pop(call_id)
 
-        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                    progress = await run_in_pool(partial(progress.resume, results))
 
-        results: dict[int, ExternalResult] = {}
-        for task in done:
-            call_id, result = await task
-            results[call_id] = result
-            self._tasks.pop(call_id)
+        finally:
+            for task in tasks.values():
+                task.cancel()
+            try:
+                await asyncio.gather(*tasks.values())
+            except asyncio.CancelledError:
+                pass
 
-        return results
 
-    async def _run_external_function(self, call_id: int, coro: Awaitable[Any]) -> tuple[int, ExternalResult]:
-        try:
-            result = await coro
-        except Exception as e:
-            return call_id, ExternalException(exception=e)
-        else:
-            return call_id, ExternalReturnValue(return_value=result)
-
-    async def _finish(self) -> None:
-        for task in self._tasks.values():
-            task.cancel()
-        try:
-            await asyncio.gather(*self._tasks.values())
-        except asyncio.CancelledError:
-            pass
+async def _run_external_function(call_id: int, coro: Awaitable[Any]) -> tuple[int, ExternalResult]:
+    try:
+        result = await coro
+    except Exception as e:
+        return call_id, ExternalException(exception=e)
+    else:
+        return call_id, ExternalReturnValue(return_value=result)
 
 
 class ResourceLimits(TypedDict, total=False):
