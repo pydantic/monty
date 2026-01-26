@@ -97,11 +97,14 @@ pub struct MontyOptions {
 
 /// Options for running code.
 #[napi(object)]
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct RunOptions<'env> {
     pub inputs: Option<Object<'env>>,
     /// Resource limits configuration.
     pub limits: Option<JsResourceLimits>,
+    /// Dict of external function callbacks.
+    /// Keys are function names, values are callable functions.
+    pub external_functions: Option<Object<'env>>,
 }
 
 /// Options for starting execution.
@@ -164,14 +167,26 @@ impl Monty {
 
     /// Executes the code and returns the result.
     ///
-    /// @param options - Execution options (inputs, limits)
+    /// @param options - Execution options (inputs, limits, externalFunctions)
     /// @returns The result of the last expression in the code
     #[napi]
     pub fn run<'env>(&self, env: &'env Env, options: Option<RunOptions<'env>>) -> Result<JsMontyObject<'env>> {
         // Extract input values
-        let input_values = self.extract_input_values(options.and_then(|opts| opts.inputs), *env)?;
+        let input_values = self.extract_input_values(options.as_ref().and_then(|opts| opts.inputs), *env)?;
 
-        // Run with appropriate tracker
+        let external_functions = options.as_ref().and_then(|opts| opts.external_functions);
+
+        // If we have external functions declared, use the start/resume loop
+        if !self.external_function_names.is_empty() {
+            return self.run_with_external_functions(
+                env,
+                input_values,
+                options.as_ref().and_then(|opts| opts.limits),
+                external_functions,
+            );
+        }
+
+        // No external functions - simple run
         let mut print_output = CollectStringPrint::default();
 
         let result = if let Some(limits) = options.as_ref().and_then(|opts| opts.limits) {
@@ -184,6 +199,58 @@ impl Monty {
         match result {
             Ok(value) => monty_to_js(&value, env),
             Err(exc) => Err(monty_exception_to_error(&exc)),
+        }
+    }
+
+    /// Internal helper to run code with external function callbacks.
+    fn run_with_external_functions<'env>(
+        &self,
+        env: &'env Env,
+        input_values: Vec<MontyObject>,
+        limits: Option<JsResourceLimits>,
+        external_functions: Option<Object<'env>>,
+    ) -> Result<JsMontyObject<'env>> {
+        let mut print_output = CollectStringPrint::default();
+        let runner = self.runner.clone();
+
+        // Helper macro to handle the execution loop for both tracker types
+        macro_rules! run_loop {
+            ($tracker:expr) => {{
+                let mut progress = runner
+                    .start(input_values, $tracker, &mut print_output)
+                    .map_err(|e| monty_exception_to_error(&e))?;
+
+                loop {
+                    match progress {
+                        RunProgress::Complete(result) => return monty_to_js(&result, env),
+                        RunProgress::FunctionCall {
+                            function_name,
+                            args,
+                            kwargs,
+                            state,
+                        } => {
+                            let return_value = call_external_function(
+                                env,
+                                external_functions.as_ref(),
+                                &function_name,
+                                &args,
+                                &kwargs,
+                            )?;
+
+                            progress = state
+                                .run(return_value, &mut print_output)
+                                .map_err(|e| monty_exception_to_error(&e))?;
+                        }
+                    }
+                }
+            }};
+        }
+
+        if let Some(limits) = limits {
+            let tracker = LimitedTracker::new(limits.into());
+            run_loop!(tracker)
+        } else {
+            run_loop!(NoLimitTracker)
         }
     }
 
@@ -695,4 +762,120 @@ struct SerializedSnapshotOwned {
     function_name: String,
     args: Vec<MontyObject>,
     kwargs: Vec<(MontyObject, MontyObject)>,
+}
+
+// =============================================================================
+// External function support
+// =============================================================================
+
+/// Calls a JavaScript external function and returns the result.
+///
+/// Converts args/kwargs from Monty format, calls the JS function,
+/// and converts the result back to Monty format (or an exception).
+fn call_external_function(
+    env: &Env,
+    external_functions: Option<&Object<'_>>,
+    function_name: &str,
+    args: &[MontyObject],
+    kwargs: &[(MontyObject, MontyObject)],
+) -> Result<ExternalResult> {
+    // Get the external functions dict, or error if not provided
+    let functions = external_functions.ok_or_else(|| {
+        Error::from_reason(format!(
+            "External function '{function_name}' called but no externalFunctions provided"
+        ))
+    })?;
+
+    // Look up the function by name
+    if !functions.has_named_property(function_name)? {
+        // Return a KeyError exception that will be raised in Monty
+        let exc = MontyException::new(
+            ExcType::KeyError,
+            Some(format!("\"External function '{function_name}' not found\"")),
+        );
+        return Ok(ExternalResult::Error(exc));
+    }
+
+    let callable: Unknown = functions.get_named_property(function_name)?;
+
+    // Convert positional arguments to JS
+    let mut js_args: Vec<sys::napi_value> = Vec::with_capacity(args.len() + 1);
+    for arg in args {
+        js_args.push(monty_to_js(arg, env)?.raw());
+    }
+
+    // If we have kwargs, add them as a final object argument
+    if !kwargs.is_empty() {
+        let mut kwargs_obj = Object::new(env)?;
+        for (key, value) in kwargs {
+            let key_str = match key {
+                MontyObject::String(s) => s.clone(),
+                _ => format!("{key:?}"),
+            };
+            kwargs_obj.set_named_property(&key_str, monty_to_js(value, env)?)?;
+        }
+        js_args.push(kwargs_obj.raw());
+    }
+
+    // Get undefined for the 'this' argument
+    let mut undefined_raw = std::ptr::null_mut();
+    unsafe {
+        sys::napi_get_undefined(env.raw(), &raw mut undefined_raw);
+    }
+
+    // Call the function using raw napi
+    let mut result_raw = std::ptr::null_mut();
+    let status = unsafe {
+        sys::napi_call_function(
+            env.raw(),
+            undefined_raw, // this = undefined
+            callable.raw(),
+            js_args.len(),
+            js_args.as_ptr(),
+            &raw mut result_raw,
+        )
+    };
+
+    if status != sys::Status::napi_ok {
+        // An error occurred - get the pending exception
+        let mut is_exception = false;
+        unsafe { sys::napi_is_exception_pending(env.raw(), &raw mut is_exception) };
+
+        if is_exception {
+            let mut exception_raw = std::ptr::null_mut();
+            unsafe { sys::napi_get_and_clear_last_exception(env.raw(), &raw mut exception_raw) };
+
+            // Try to extract exception info
+            let exc = extract_js_exception(env, exception_raw);
+            return Ok(ExternalResult::Error(exc));
+        }
+
+        // Generic error
+        let exc = MontyException::new(ExcType::RuntimeError, Some("External function call failed".to_string()));
+        return Ok(ExternalResult::Error(exc));
+    }
+
+    // Convert the result back to Monty format
+    let result = unsafe { Unknown::from_raw_unchecked(env.raw(), result_raw) };
+    let monty_result = js_to_monty(result, *env)?;
+    Ok(ExternalResult::Return(monty_result))
+}
+
+/// Extracts exception info from a JS exception object.
+fn extract_js_exception(env: &Env, exception_raw: sys::napi_value) -> MontyException {
+    // Try to get the exception as an object and extract name/message
+    let exception_obj = Object::from_raw(env.raw(), exception_raw);
+
+    // Try to get the 'name' property (e.g., "ValueError")
+    let name: std::result::Result<String, _> = exception_obj.get_named_property("name");
+    // Try to get the 'message' property
+    let message: std::result::Result<String, _> = exception_obj.get_named_property("message");
+
+    let exc_type = name
+        .as_ref()
+        .map(|n| string_to_exc_type(n))
+        .unwrap_or(ExcType::RuntimeError);
+    let msg = message.ok();
+
+    MontyException::new(exc_type, msg)
 }

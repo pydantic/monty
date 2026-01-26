@@ -42,7 +42,14 @@ const JS_SAFE_INT_MAX: i64 = 1_i64 << 53;
 /// Wrapper for returning an unknown JS value from napi functions.
 ///
 /// This allows `monty_to_js` to return dynamically typed JS values.
-pub struct JsMontyObject<'env>(Unknown<'env>);
+pub struct JsMontyObject<'env>(pub(crate) Unknown<'env>);
+
+impl JsMontyObject<'_> {
+    /// Returns the raw napi value for use in low-level operations.
+    pub fn raw(&self) -> sys::napi_value {
+        self.0.raw()
+    }
+}
 
 impl ToNapiValue for JsMontyObject<'_> {
     unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
@@ -352,10 +359,16 @@ pub fn js_to_monty(value: Unknown<'_>, env: Env) -> Result<MontyObject> {
             Ok(MontyObject::Bool(b))
         }
         ValueType::Number => {
-            if let Ok(i) = value.coerce_to_number()?.get_int64() {
-                return Ok(MontyObject::Int(i));
-            }
             let n: f64 = value.coerce_to_number()?.get_double()?;
+            // Check if the number is actually an integer (no fractional part)
+            // and fits within i64 range
+            if n.fract() == 0.0 && n >= i64::MIN as f64 && n <= i64::MAX as f64 {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "Checked above that n is integer and within i64 range"
+                )]
+                return Ok(MontyObject::Int(n as i64));
+            }
             Ok(MontyObject::Float(n))
         }
         ValueType::BigInt => {
