@@ -96,7 +96,7 @@ async def run_monty_async(
                         e = KeyError(f'Function {progress.function_name} not found')
                         progress = await run_in_pool(partial(progress.resume, exception=e))
                 else:
-                    assert isinstance(progress, MontyFutureSnapshot)
+                    assert isinstance(progress, MontyFutureSnapshot), f'Unexpected progress type {progress!r}'
 
                     current_tasks: list[asyncio.Task[tuple[int, ExternalResult]]] = []
                     for call_id in progress.pending_call_ids:
