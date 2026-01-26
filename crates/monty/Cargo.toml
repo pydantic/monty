@@ -47,6 +47,8 @@ criterion = "0.5"
 datatest-stable = "0.2"
 serde_json = "1.0"
 pprof = { version = "0.15", features = ["flamegraph", "criterion"] }
+pretty_assertions = "1.4.1"
+similar = "2.7.0"
 
 [[bench]]
 name = "main"

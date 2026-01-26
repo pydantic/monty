@@ -15,6 +15,7 @@ use monty::{
     RunProgress, StdPrint,
 };
 use pyo3::{prelude::*, types::PyDict};
+use similar::TextDiff;
 
 /// Recursion limit for test execution.
 ///
@@ -398,11 +399,16 @@ struct TestFailure {
 
 impl std::fmt::Display for TestFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
+        writeln!(
             f,
-            "[{}] {} mismatch\n  expected: {}\n  actual: {}",
-            self.test_name, self.kind, self.expected, self.actual
-        )
+            "[{}] {} mismatch\ngot {:?}\ndiff:",
+            self.test_name, self.kind, self.actual
+        )?;
+
+        for change in TextDiff::from_lines(&self.expected, &self.actual).iter_all_changes() {
+            write!(f, "{}{}", change.tag(), change)?;
+        }
+        Ok(())
     }
 }
 

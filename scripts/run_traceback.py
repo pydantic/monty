@@ -58,7 +58,7 @@ def run_file_and_get_traceback(
         # Wrap code in async context: indent everything by 4 spaces and add wrapper
         indented = '\n'.join([f'    {line}' if line else '' for line in code.split('\n')])
 
-        code = f'async def __test_main():\n{indented}\nimport asyncio\nasyncio.run(__test_main())'
+        code = f'async def __test_main():\n{indented}\nimport asyncio as __asy\n__asy.run(__test_main())'
         # Async line offset: 1 lines for "async def __test_main():\n"
         line_offset = 1
 
@@ -92,7 +92,7 @@ def run_file_and_get_traceback(
                     if frame.startswith('Traceback'):
                         result_frames.append(frame)
                         continue
-                    elif 'asyncio.run(__test_main())' in frame:
+                    elif '__asy.run(__test_main())' in frame:
                         # Skip the asyncio.run(__test_main()) wrapper frame
                         continue
                     elif '/asyncio/' in frame:

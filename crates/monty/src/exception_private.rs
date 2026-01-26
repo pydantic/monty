@@ -810,7 +810,12 @@ impl ExcType {
     /// Matches CPython's format: `NameError: name 'x' is not defined`
     #[must_use]
     pub(crate) fn name_error(name: &str) -> SimpleException {
-        SimpleException::new_msg(Self::NameError, format!("name '{name}' is not defined"))
+        let mut msg = format!("name '{name}' is not defined");
+        // add the same suffix as cpython, but only for the modules supported by Monty
+        if matches!(name, "asyncio" | "sys" | "typing" | "types") {
+            write!(&mut msg, ". Did you forget to import '{name}'?").unwrap();
+        }
+        SimpleException::new_msg(Self::NameError, msg)
     }
 
     /// Creates an UnboundLocalError for accessing a local variable before assignment.
