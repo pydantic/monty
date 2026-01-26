@@ -293,7 +293,7 @@ impl MontyRuntimeError {
 ///
 /// Contains all the information needed to display a traceback line:
 /// the file location, function name, and optional source code preview.
-#[pyclass(name = "Frame", module = "monty", frozen)]
+#[pyclass(name = "Frame", module = "pydantic_monty", frozen)]
 #[derive(Debug, Clone)]
 pub struct PyFrame {
     /// The filename where the code is located.

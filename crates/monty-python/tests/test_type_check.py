@@ -1,19 +1,19 @@
 import pytest
 from inline_snapshot import snapshot
 
-import monty
+import pydantic_monty
 
 
 def test_type_check_no_errors():
     """Type checking code with no errors returns None."""
-    m = monty.Monty('x = 1')
+    m = pydantic_monty.Monty('x = 1')
     assert m.type_check() is None
 
 
 def test_type_check_with_errors():
     """Type checking code with type errors raises MontyTypingError."""
-    m = monty.Monty('"hello" + 1')
-    with pytest.raises(monty.MontyTypingError) as exc_info:
+    m = pydantic_monty.Monty('"hello" + 1')
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         m.type_check()
     assert str(exc_info.value) == snapshot("""\
 error[unsupported-operator]: Unsupported `+` operation
@@ -36,8 +36,8 @@ def test_type_check_function_return_type():
 def foo() -> int:
     return "not an int"
 """
-    m = monty.Monty(code)
-    with pytest.raises(monty.MontyTypingError) as exc_info:
+    m = pydantic_monty.Monty(code)
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         m.type_check()
     assert str(exc_info.value) == snapshot("""\
 error[invalid-return-type]: Return type does not match returned value
@@ -55,8 +55,8 @@ info: rule `invalid-return-type` is enabled by default
 
 def test_type_check_undefined_variable():
     """Type checking detects undefined variables."""
-    m = monty.Monty('print(undefined_var)')
-    with pytest.raises(monty.MontyTypingError) as exc_info:
+    m = pydantic_monty.Monty('print(undefined_var)')
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         m.type_check()
     assert str(exc_info.value) == snapshot("""\
 error[unresolved-reference]: Name `undefined_var` used when not defined
@@ -78,15 +78,15 @@ def add(a: int, b: int) -> int:
 
 add(1, 2)
 """
-    m = monty.Monty(code)
+    m = pydantic_monty.Monty(code)
     assert m.type_check() is None
 
 
 def test_type_check_with_prefix_code():
     """Type checking with prefix code for input declarations."""
-    m = monty.Monty('result = x + 1')
+    m = pydantic_monty.Monty('result = x + 1')
     # Without prefix, x is undefined
-    with pytest.raises(monty.MontyTypingError):
+    with pytest.raises(pydantic_monty.MontyTypingError):
         m.type_check()
     # With prefix declaring x as a variable, it should pass
     assert m.type_check(prefix_code='x = 0') is None
@@ -94,8 +94,8 @@ def test_type_check_with_prefix_code():
 
 def test_type_check_display_invalid_format():
     """Invalid format string on display() raises ValueError."""
-    m = monty.Monty('"hello" + 1')
-    with pytest.raises(monty.MontyTypingError) as exc_info:
+    m = pydantic_monty.Monty('"hello" + 1')
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         m.type_check()
     with pytest.raises(ValueError) as val_exc:
         exc_info.value.display('invalid_format')  # pyright: ignore[reportArgumentType]
@@ -104,8 +104,8 @@ def test_type_check_display_invalid_format():
 
 def test_type_check_display_concise_format():
     """Type checking with concise format via display()."""
-    m = monty.Monty('"hello" + 1')
-    with pytest.raises(monty.MontyTypingError) as exc_info:
+    m = pydantic_monty.Monty('"hello" + 1')
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         m.type_check()
     assert exc_info.value.display('concise') == snapshot(
         'main.py:1:1: error[unsupported-operator] Operator `+` is not supported between objects of type `Literal["hello"]` and `Literal[1]`\n'
@@ -117,18 +117,18 @@ def test_type_check_display_concise_format():
 
 def test_monty_typing_error_is_monty_error_subclass():
     """MontyTypingError is a subclass of MontyError."""
-    m = monty.Monty('"hello" + 1')
-    with pytest.raises(monty.MontyTypingError) as exc_info:
+    m = pydantic_monty.Monty('"hello" + 1')
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         m.type_check()
     error = exc_info.value
-    assert isinstance(error, monty.MontyError)
+    assert isinstance(error, pydantic_monty.MontyError)
     assert isinstance(error, Exception)
 
 
 def test_monty_typing_error_repr():
     """MontyTypingError has proper repr with truncation."""
-    m = monty.Monty('"hello" + 1')
-    with pytest.raises(monty.MontyTypingError) as exc_info:
+    m = pydantic_monty.Monty('"hello" + 1')
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         m.type_check()
     # repr truncates at 50 chars
     assert repr(exc_info.value) == snapshot("""\
@@ -149,15 +149,15 @@ info: rule `unsupported-operator` is enabled by default
 
 def test_monty_typing_error_caught_as_monty_error():
     """MontyTypingError can be caught as MontyError."""
-    m = monty.Monty('"hello" + 1')
-    with pytest.raises(monty.MontyError):
+    m = pydantic_monty.Monty('"hello" + 1')
+    with pytest.raises(pydantic_monty.MontyError):
         m.type_check()
 
 
 def test_monty_typing_error_display_default():
     """MontyTypingError display() defaults to full format."""
-    m = monty.Monty('"hello" + 1')
-    with pytest.raises(monty.MontyTypingError) as exc_info:
+    m = pydantic_monty.Monty('"hello" + 1')
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         m.type_check()
     # Default display should match str()
     assert exc_info.value.display() == str(exc_info.value)
@@ -169,16 +169,16 @@ def test_monty_typing_error_display_default():
 def test_constructor_type_check_default_false():
     """Type checking is disabled by default in constructor."""
     # This should NOT raise during construction (type_check=False is default)
-    m = monty.Monty('"hello" + 1')
+    m = pydantic_monty.Monty('"hello" + 1')
     # But we can still call type_check() manually later
-    with pytest.raises(monty.MontyTypingError):
+    with pytest.raises(pydantic_monty.MontyTypingError):
         m.type_check()
 
 
 def test_constructor_type_check_explicit_true():
     """Explicit type_check=True raises on type errors."""
-    with pytest.raises(monty.MontyTypingError) as exc_info:
-        monty.Monty('"hello" + 1', type_check=True)
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        pydantic_monty.Monty('"hello" + 1', type_check=True)
     assert str(exc_info.value) == snapshot("""\
 error[unsupported-operator]: Unsupported `+` operation
  --> main.py:1:1
@@ -197,16 +197,16 @@ info: rule `unsupported-operator` is enabled by default
 def test_constructor_type_check_explicit_false():
     """Explicit type_check=False skips type checking during construction."""
     # This should NOT raise during construction
-    m = monty.Monty('"hello" + 1', type_check=False)
+    m = pydantic_monty.Monty('"hello" + 1', type_check=False)
     # But we can still call type_check() manually later
-    with pytest.raises(monty.MontyTypingError):
+    with pytest.raises(pydantic_monty.MontyTypingError):
         m.type_check()
 
 
 def test_constructor_default_allows_run_with_inputs():
     """Default (type_check=False) allows running code that would fail type checking."""
     # Code with undefined variable - type checking would fail
-    m = monty.Monty('x + 1', inputs=['x'])
+    m = pydantic_monty.Monty('x + 1', inputs=['x'])
     # But runtime works fine with the input provided
     result = m.run(inputs={'x': 5})
     assert result == 6
@@ -216,7 +216,7 @@ def test_constructor_type_check_prefix_code():
     """type_check_prefix_code provides declarations for type checking."""
     # Without prefix, this would fail type checking (x is undefined)
     # Use assignment to define x, not just type annotation
-    m = monty.Monty('result = x + 1', type_check=True, type_check_prefix_code='x = 0')
+    m = pydantic_monty.Monty('result = x + 1', type_check=True, type_check_prefix_code='x = 0')
     # Should construct successfully because prefix declares x
     assert m is not None
 
@@ -228,7 +228,7 @@ def test_constructor_type_check_prefix_code_with_external_function():
 def fetch(url: str) -> str:
     return ''
 """
-    m = monty.Monty(
+    m = pydantic_monty.Monty(
         'result = fetch("https://example.com")',
         external_functions=['fetch'],
         type_check=True,
@@ -240,8 +240,8 @@ def fetch(url: str) -> str:
 def test_constructor_type_check_prefix_code_invalid():
     """type_check_prefix_code with wrong types still catches errors."""
     # Prefix defines x as str, but code tries to use it with int addition
-    with pytest.raises(monty.MontyTypingError) as exc_info:
-        monty.Monty(
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        pydantic_monty.Monty(
             'result: int = x + 1',
             type_check=True,
             type_check_prefix_code='x = "hello"',

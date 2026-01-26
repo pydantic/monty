@@ -1567,20 +1567,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "monty-python"
-version = "0.0.0"
-dependencies = [
- "indexmap",
- "monty",
- "monty_type_checking",
- "num-bigint",
- "postcard",
- "pyo3",
- "pyo3-build-config",
- "serde",
-]
-
-[[package]]
 name = "monty_type_checking"
 version = "0.0.0"
 dependencies = [
@@ -1986,6 +1972,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "535d180e0ecab6268a3e718bb9fd44db66bbbc256257165fc699dadf70d16fe7"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "pydantic-monty"
+version = "0.0.0"
+dependencies = [
+ "indexmap",
+ "monty",
+ "monty_type_checking",
+ "num-bigint",
+ "postcard",
+ "pyo3",
+ "pyo3-build-config",
+ "serde",
 ]
 
 [[package]]

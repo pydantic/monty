@@ -27,7 +27,7 @@ use crate::{
 /// Parses and compiles Python code on initialization, then can be run
 /// multiple times with different input values. This separates the parsing
 /// cost from execution, making repeated runs more efficient.
-#[pyclass(name = "Monty", module = "monty")]
+#[pyclass(name = "Monty", module = "pydantic_monty")]
 #[derive(Debug)]
 pub struct PyMonty {
     /// The compiled code snapshot, ready to execute.
@@ -604,7 +604,7 @@ enum EitherSnapshot {
     Done,
 }
 
-#[pyclass(name = "MontySnapshot", module = "monty")]
+#[pyclass(name = "MontySnapshot", module = "pydantic_monty")]
 #[derive(Debug)]
 pub struct PyMontySnapshot {
     snapshot: EitherSnapshot,
@@ -848,7 +848,7 @@ enum EitherFutureSnapshot {
     Done,
 }
 
-#[pyclass(name = "MontyFutureSnapshot", module = "monty")]
+#[pyclass(name = "MontyFutureSnapshot", module = "pydantic_monty")]
 #[derive(Debug)]
 pub struct PyMontyFutureSnapshot {
     snapshot: EitherFutureSnapshot,
@@ -1010,7 +1010,7 @@ impl PyMontyFutureSnapshot {
     }
 }
 
-#[pyclass(name = "MontyComplete", module = "monty")]
+#[pyclass(name = "MontyComplete", module = "pydantic_monty")]
 pub struct PyMontyComplete {
     #[pyo3(get)]
     pub output: Py<PyAny>,

@@ -1,5 +1,5 @@
 name: Build PGO wheel
-description: Builds a PGO-optimized wheel for monty-python
+description: Builds a PGO-optimized wheel for pydantic-monty
 
 inputs:
   interpreter:
@@ -41,7 +41,7 @@ runs:
 
     - name: generate pgo data
       run: |
-        pip install monty-python --no-index --no-deps --find-links pgo-wheel --force-reinstall
+        pip install pydantic-monty --no-index --no-deps --find-links pgo-wheel --force-reinstall
         python exercise.py
         rustup run ${{ inputs.rust-toolchain }} bash -c 'echo LLVM_PROFDATA=$RUSTUP_HOME/toolchains/$RUSTUP_TOOLCHAIN/lib/rustlib/$RUST_HOST/bin/llvm-profdata >> "$GITHUB_ENV"'
       shell: bash

@@ -305,8 +305,8 @@ jobs:
             ls -lh /dist/
             python3 -m venv venv
             source venv/bin/activate
-            python3 -m pip install monty-python --no-index --no-deps --find-links /dist --force-reinstall
-            python3 -c "import monty; print(monty.Monty('1 + 2').run())"
+            python3 -m pip install pydantic-monty --no-index --no-deps --find-links /dist --force-reinstall
+            python3 -c "import pydantic_monty; print(pydantic_monty.Monty('1 + 2').run())"
 
   # Test wheels on main OS platforms
   test-builds-os:
@@ -338,8 +338,8 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - run: pip install monty-python --no-index --find-links dist --force-reinstall
-      - run: python -c "import monty; print(monty.Monty('1 + 2').run())"
+      - run: pip install pydantic-monty --no-index --find-links dist --force-reinstall
+      - run: python -c "import pydantic_monty; print(pydantic_monty.Monty('1 + 2').run())"
 
   # Release to PyPI
   release-python:

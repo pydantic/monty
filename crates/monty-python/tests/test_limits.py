@@ -8,11 +8,11 @@ from types import FrameType
 import pytest
 from inline_snapshot import snapshot
 
-import monty
+import pydantic_monty
 
 
 def test_resource_limits_custom():
-    limits = monty.ResourceLimits(
+    limits = pydantic_monty.ResourceLimits(
         max_allocations=100,
         max_duration_secs=5.0,
         max_memory=1024,
@@ -27,13 +27,13 @@ def test_resource_limits_custom():
 
 
 def test_resource_limits_repr():
-    limits = monty.ResourceLimits(max_duration_secs=1.0)
+    limits = pydantic_monty.ResourceLimits(max_duration_secs=1.0)
     assert repr(limits) == snapshot("{'max_duration_secs': 1.0}")
 
 
 def test_run_with_limits():
-    m = monty.Monty('1 + 1')
-    limits = monty.ResourceLimits(max_duration_secs=5.0)
+    m = pydantic_monty.Monty('1 + 1')
+    limits = pydantic_monty.ResourceLimits(max_duration_secs=5.0)
     assert m.run(limits=limits) == snapshot(2)
 
 
@@ -46,9 +46,9 @@ def recurse(n):
 
 recurse(10)
 """
-    m = monty.Monty(code)
-    limits = monty.ResourceLimits(max_recursion_depth=5)
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty(code)
+    limits = pydantic_monty.ResourceLimits(max_recursion_depth=5)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(limits=limits)
     assert isinstance(exc_info.value.exception(), RecursionError)
 
@@ -62,8 +62,8 @@ def recurse(n):
 
 recurse(5)
 """
-    m = monty.Monty(code)
-    limits = monty.ResourceLimits(max_recursion_depth=100)
+    m = pydantic_monty.Monty(code)
+    limits = pydantic_monty.ResourceLimits(max_recursion_depth=100)
     assert m.run(limits=limits) == snapshot(5)
 
 
@@ -76,9 +76,9 @@ for i in range(10000):
     result.append([i])  # Each append creates a new list
 len(result)
 """
-    m = monty.Monty(code)
-    limits = monty.ResourceLimits(max_allocations=5)
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty(code)
+    limits = pydantic_monty.ResourceLimits(max_allocations=5)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(limits=limits)
     assert isinstance(exc_info.value.exception(), MemoryError)
 
@@ -90,27 +90,27 @@ for i in range(1000):
     result.append('x' * 100)
 len(result)
 """
-    m = monty.Monty(code)
-    limits = monty.ResourceLimits(max_memory=100)
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty(code)
+    limits = pydantic_monty.ResourceLimits(max_memory=100)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(limits=limits)
     assert isinstance(exc_info.value.exception(), MemoryError)
 
 
 def test_limits_with_inputs():
-    m = monty.Monty('x * 2', inputs=['x'])
-    limits = monty.ResourceLimits(max_duration_secs=5.0)
+    m = pydantic_monty.Monty('x * 2', inputs=['x'])
+    limits = pydantic_monty.ResourceLimits(max_duration_secs=5.0)
     assert m.run(inputs={'x': 21}, limits=limits) == snapshot(42)
 
 
 def test_limits_wrong_type_raises_error():
-    m = monty.Monty('1 + 1')
+    m = pydantic_monty.Monty('1 + 1')
     with pytest.raises(TypeError):
         m.run(limits={'max_allocations': 'not an int'})  # pyright: ignore[reportArgumentType]
 
 
 def test_limits_none_value_allowed():
-    m = monty.Monty('1 + 1')
+    m = pydantic_monty.Monty('1 + 1')
     # None is valid to explicitly disable a limit
     assert m.run(limits={'max_allocations': None}) == snapshot(2)  # pyright: ignore[reportArgumentType]
 
@@ -131,7 +131,7 @@ def fib(n):
 
 fib(35)
 """
-    m = monty.Monty(code)
+    m = pydantic_monty.Monty(code)
 
     def send_signal():
         time.sleep(0.1)
@@ -144,7 +144,7 @@ fib(35)
     thread.start()
     old_handler = signal.signal(signal.SIGINT, raise_potato)
     try:
-        with pytest.raises(monty.MontyRuntimeError) as exc_info:
+        with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
             m.run()
         inner = exc_info.value.exception()
         assert isinstance(inner, ValueError)
@@ -170,7 +170,7 @@ def fib(n):
 
 fib(35)
 """
-    m = monty.Monty(code)
+    m = pydantic_monty.Monty(code)
 
     # Send SIGINT after a short delay using a separate process
     proc = multiprocessing.Process(target=_send_sigint_after_delay, args=(os.getpid(), 0.05))
@@ -179,7 +179,7 @@ fib(35)
         raised_keyboard_interrupt = False
         try:
             m.run()
-        except monty.MontyRuntimeError as e:
+        except pydantic_monty.MontyRuntimeError as e:
             if isinstance(e.exception(), KeyboardInterrupt):
                 raised_keyboard_interrupt = True
 
@@ -190,18 +190,18 @@ fib(35)
 
 def test_pow_memory_limit():
     """Large pow should fail when memory limit is set."""
-    m = monty.Monty('2 ** 10000000')
-    limits = monty.ResourceLimits(max_memory=1_000_000)
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty('2 ** 10000000')
+    limits = pydantic_monty.ResourceLimits(max_memory=1_000_000)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(limits=limits)
     assert isinstance(exc_info.value.exception(), MemoryError)
 
 
 def test_lshift_memory_limit():
     """Large left shift should fail when memory limit is set."""
-    m = monty.Monty('1 << 10000000')
-    limits = monty.ResourceLimits(max_memory=1_000_000)
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty('1 << 10000000')
+    limits = pydantic_monty.ResourceLimits(max_memory=1_000_000)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(limits=limits)
     assert isinstance(exc_info.value.exception(), MemoryError)
 
@@ -213,16 +213,16 @@ def test_mult_memory_limit():
 big = 2 ** 4000000
 result = big * big
 """
-    m = monty.Monty(code)
-    limits = monty.ResourceLimits(max_memory=1_000_000)
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty(code)
+    limits = pydantic_monty.ResourceLimits(max_memory=1_000_000)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(limits=limits)
     assert isinstance(exc_info.value.exception(), MemoryError)
 
 
 def test_small_operations_within_limit():
     """Smaller operations should succeed even with limits."""
-    m = monty.Monty('2 ** 1000')
-    limits = monty.ResourceLimits(max_memory=1_000_000)
+    m = pydantic_monty.Monty('2 ** 1000')
+    limits = pydantic_monty.ResourceLimits(max_memory=1_000_000)
     result = m.run(limits=limits)
     assert result > 0

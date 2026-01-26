@@ -3,8 +3,8 @@ requires = ["maturin>=1.9.4,<2.0"]
 build-backend = "maturin"
 
 [project]
-# uses this package name since `monty` is taken, the module is still named `monty`
-name = "monty-python"
+# the module is named `pydantic_monty`
+name = "pydantic-monty"
 version = "0.1.0"
 description = "Python bindings for the Monty sandboxed Python interpreter"
 license = "MIT"
@@ -13,7 +13,7 @@ requires-python = ">=3.10"
 
 [tool.maturin]
 python-source = "python"
-module-name = "monty._monty"
+module-name = "pydantic_monty._pydantic_monty"
 features = ["pyo3/extension-module"]
 
 [dependency-groups]

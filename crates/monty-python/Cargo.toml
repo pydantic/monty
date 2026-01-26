@@ -1,5 +1,5 @@
 [package]
-name = "monty-python"
+name = "pydantic-monty"
 description = "Python bindings for the Monty sandboxed Python interpreter"
 readme = "README.md"
 version = { workspace = true }
@@ -13,7 +13,7 @@ homepage = { workspace = true }
 repository = { workspace = true }
 
 [lib]
-name = "_monty"
+name = "_pydantic_monty"
 crate-type = ["cdylib"]
 
 [dependencies]

@@ -35,7 +35,7 @@ fn get_version() -> &'static str {
 
 /// Monty - A sandboxed Python interpreter written in Rust.
 #[pymodule]
-mod _monty {
+mod _pydantic_monty {
     use pyo3::prelude::*;
 
     #[pymodule_export]

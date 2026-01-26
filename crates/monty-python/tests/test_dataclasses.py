@@ -11,7 +11,7 @@ from typing import NoReturn
 import pytest
 from inline_snapshot import snapshot
 
-import monty
+import pydantic_monty
 
 
 @dataclass
@@ -23,7 +23,7 @@ class Person:
 def test_dataclass_input():
     """Dataclass instances are converted and returned as MontyDataclass."""
 
-    m = monty.Monty('x', inputs=['x'])
+    m = pydantic_monty.Monty('x', inputs=['x'])
     m.register_dataclass(Person)
     result = m.run(inputs={'x': Person(name='Alice', age=30)})
     assert result.name == snapshot('Alice')
@@ -37,7 +37,7 @@ def test_dataclass_input():
 def test_dataclass_unknown():
     """Dataclass instances are converted and returned as MontyDataclass."""
 
-    m = monty.Monty('x', inputs=['x'])
+    m = pydantic_monty.Monty('x', inputs=['x'])
     result = m.run(inputs={'x': Person(name='Alice', age=30)})
     assert result.name == snapshot('Alice')
     assert result.age == snapshot(30)
@@ -56,7 +56,7 @@ class Point:
 def test_dataclass_frozen():
     """Frozen dataclasses are converted like regular dataclasses."""
 
-    m = monty.Monty('p', inputs=['p'], dataclass_registry=[Point])
+    m = pydantic_monty.Monty('p', inputs=['p'], dataclass_registry=[Point])
     result = m.run(inputs={'p': Point(x=10, y=20)})
     assert isinstance(result, Point)
     assert result.x == snapshot(10)
@@ -79,7 +79,7 @@ class PersonAddress:
 def test_dataclass_nested():
     """Nested dataclasses are recursively converted."""
 
-    m = monty.Monty('x', inputs=['x'])
+    m = pydantic_monty.Monty('x', inputs=['x'])
     m.register_dataclass(Address)
     m.register_dataclass(PersonAddress)
     result = m.run(inputs={'x': PersonAddress(name='Bob', address=Address(city='NYC', zip_code='10001'))})
@@ -91,7 +91,7 @@ def test_dataclass_nested():
 
 
 def test_dataclass_nested_unknown():
-    m = monty.Monty('x', inputs=['x'])
+    m = pydantic_monty.Monty('x', inputs=['x'])
     result = m.run(inputs={'x': PersonAddress(name='Bob', address=Address(city='NYC', zip_code='10001'))})
     assert not isinstance(result, PersonAddress)
     assert result.name == snapshot('Bob')
@@ -107,7 +107,7 @@ def test_dataclass_with_list_field():
     class Container:
         items: list[int]
 
-    m = monty.Monty('x', inputs=['x'])
+    m = pydantic_monty.Monty('x', inputs=['x'])
     m.register_dataclass(Container)
     result = m.run(inputs={'x': Container(items=[1, 2, 3])})
     assert result.items == snapshot([1, 2, 3])
@@ -120,7 +120,7 @@ def test_dataclass_with_dict_field():
     class Config:
         settings: dict[str, int]
 
-    m = monty.Monty('x', inputs=['x'])
+    m = pydantic_monty.Monty('x', inputs=['x'])
     m.register_dataclass(Config)
     result = m.run(inputs={'x': Config(settings={'a': 1, 'b': 2})})
     assert result.settings == snapshot({'a': 1, 'b': 2})
@@ -133,7 +133,7 @@ def test_dataclass_empty():
     class Empty:
         pass
 
-    m = monty.Monty('x', inputs=['x'])
+    m = pydantic_monty.Monty('x', inputs=['x'])
     m.register_dataclass(Empty)
     result = m.run(inputs={'x': Empty()})
     assert repr(result) == snapshot('test_dataclass_empty.<locals>.Empty()')
@@ -146,7 +146,7 @@ def test_dataclass_type_raises():
     class MyClass:
         value: int
 
-    m = monty.Monty('x', inputs=['x'])
+    m = pydantic_monty.Monty('x', inputs=['x'])
     m.register_dataclass(MyClass)
     with pytest.raises(TypeError, match='Cannot convert type to Monty value'):
         m.run(inputs={'x': MyClass})
@@ -163,17 +163,17 @@ def test_dataclass_field_access():
         name: str
         age: int
 
-    m = monty.Monty('x.name', inputs=['x'])
+    m = pydantic_monty.Monty('x.name', inputs=['x'])
     assert m.run(inputs={'x': Person(name='Alice', age=30)}) == snapshot('Alice')
 
-    m = monty.Monty('x.age', inputs=['x'])
+    m = pydantic_monty.Monty('x.age', inputs=['x'])
     assert m.run(inputs={'x': Person(name='Alice', age=30)}) == snapshot(30)
 
 
 def test_dataclass_field_access_nested():
     """Access fields of nested dataclasses."""
 
-    m = monty.Monty('x.address.city', inputs=['x'])
+    m = pydantic_monty.Monty('x.address.city', inputs=['x'])
     result = m.run(inputs={'x': PersonAddress(name='Bob', address=Address(city='NYC', zip_code='10001'))})
     assert result == snapshot('NYC')
 
@@ -186,7 +186,7 @@ def test_dataclass_field_in_expression():
         x: int
         y: int
 
-    m = monty.Monty('p.x + p.y', inputs=['p'])
+    m = pydantic_monty.Monty('p.x + p.y', inputs=['p'])
     assert m.run(inputs={'p': Point(x=10, y=20)}) == snapshot(30)
 
 
@@ -197,8 +197,8 @@ def test_dataclass_field_access_missing():
     class Person:
         name: str
 
-    m = monty.Monty('x.age', inputs=['x'])
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty('x.age', inputs=['x'])
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(inputs={'x': Person(name='Alice')})
     assert isinstance(exc_info.value.exception(), AttributeError)
 
@@ -214,7 +214,7 @@ def test_dataclass_repr():
         name: str
         age: int
 
-    m = monty.Monty('repr(x)', inputs=['x'])
+    m = pydantic_monty.Monty('repr(x)', inputs=['x'])
     assert m.run(inputs={'x': Person(name='Alice', age=30)}) == snapshot("Person(name='Alice', age=30)")
 
 
@@ -226,7 +226,7 @@ def test_dataclass_repr_frozen():
         x: int
         y: int
 
-    m = monty.Monty('repr(p)', inputs=['p'])
+    m = pydantic_monty.Monty('repr(p)', inputs=['p'])
     assert m.run(inputs={'p': Point(x=10, y=20)}) == snapshot('Point(x=10, y=20)')
 
 
@@ -241,7 +241,7 @@ def test_dataclass_repr_nested():
     class Outer:
         inner: Inner
 
-    m = monty.Monty('repr(x)', inputs=['x'])
+    m = pydantic_monty.Monty('repr(x)', inputs=['x'])
     assert m.run(inputs={'x': Outer(inner=Inner(value=42))}) == snapshot('Outer(inner=Inner(value=42))')
 
 
@@ -252,7 +252,7 @@ def test_dataclass_repr_empty():
     class Empty:
         pass
 
-    m = monty.Monty('repr(x)', inputs=['x'])
+    m = pydantic_monty.Monty('repr(x)', inputs=['x'])
     m.register_dataclass(Empty)
     assert m.run(inputs={'x': Empty()}) == snapshot('Empty()')
 
@@ -268,7 +268,7 @@ def test_dataclass_setattr_mutable_unknown():
         x: int
         y: int
 
-    m = monty.Monty('p', inputs=['p'])
+    m = pydantic_monty.Monty('p', inputs=['p'])
     result = m.run(inputs={'p': Point(x=10, y=20)})
 
     # Modify existing field
@@ -290,7 +290,7 @@ def test_dataclass_setattr_frozen():
         x: int
         y: int
 
-    m = monty.Monty('p', inputs=['p'])
+    m = pydantic_monty.Monty('p', inputs=['p'])
     result = m.run(inputs={'p': Point(x=10, y=20)})
 
     # FrozenInstanceError is raised (which is a subclass of AttributeError)
@@ -309,7 +309,7 @@ def test_frozen_instance_error_is_attribute_error():
         x: int
         y: int
 
-    m = monty.Monty('p', inputs=['p'])
+    m = pydantic_monty.Monty('p', inputs=['p'])
     result = m.run(inputs={'p': Point(x=10, y=20)})
 
     # Can catch with AttributeError (parent class)
@@ -331,7 +331,7 @@ def test_frozen_instance_error_message():
         x: int
         y: int
 
-    m = monty.Monty('p', inputs=['p'])
+    m = pydantic_monty.Monty('p', inputs=['p'])
     result = m.run(inputs={'p': Point(x=10, y=20)})
 
     with pytest.raises(FrozenInstanceError) as exc_info:
@@ -351,9 +351,9 @@ def test_frozen_instance_error_from_monty_code():
     code = """
 p.x = 100
 """
-    m = monty.Monty(code, inputs=['p'])
+    m = pydantic_monty.Monty(code, inputs=['p'])
 
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(inputs={'p': Point(x=10, y=20)})
     inner = exc_info.value.exception()
     assert isinstance(inner, FrozenInstanceError)
@@ -369,11 +369,11 @@ def test_frozen_instance_error_from_monty_caught_as_attribute_error():
         y: int
 
     code = 'p.x = 100'
-    m = monty.Monty(code, inputs=['p'])
+    m = pydantic_monty.Monty(code, inputs=['p'])
 
     # Wrapped in MontyRuntimeError, but inner exception is FrozenInstanceError
     # which is a subclass of AttributeError
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(inputs={'p': Point(x=10, y=20)})
     inner = exc_info.value.exception()
     assert isinstance(inner, AttributeError)
@@ -391,7 +391,7 @@ except AttributeError:
     caught = 'attr'
 caught
 """
-    m = monty.Monty(code, external_functions=['fail'])
+    m = pydantic_monty.Monty(code, external_functions=['fail'])
 
     def fail() -> NoReturn:
         raise FrozenInstanceError('cannot assign to field')
@@ -403,12 +403,12 @@ caught
 
 def test_frozen_instance_error_from_external_function_propagates():
     """FrozenInstanceError from external function propagates to Python."""
-    m = monty.Monty('fail()', external_functions=['fail'])
+    m = pydantic_monty.Monty('fail()', external_functions=['fail'])
 
     def fail() -> NoReturn:
         raise FrozenInstanceError('test frozen error')
 
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(external_functions={'fail': fail})
     inner = exc_info.value.exception()
     assert isinstance(inner, FrozenInstanceError)
@@ -426,7 +426,7 @@ def test_dataclass_equality_same():
         x: int
         y: int
 
-    m = monty.Monty('(a, b)', inputs=['a', 'b'])
+    m = pydantic_monty.Monty('(a, b)', inputs=['a', 'b'])
     a, b = m.run(inputs={'a': Point(x=10, y=20), 'b': Point(x=10, y=20)})
     assert a == b
 
@@ -439,7 +439,7 @@ def test_dataclass_equality_different_values():
         x: int
         y: int
 
-    m = monty.Monty('(a, b)', inputs=['a', 'b'])
+    m = pydantic_monty.Monty('(a, b)', inputs=['a', 'b'])
     a, b = m.run(inputs={'a': Point(x=10, y=20), 'b': Point(x=10, y=30)})
     assert a != b
 
@@ -457,7 +457,7 @@ def test_dataclass_equality_different_types():
         x: int
         y: int
 
-    m = monty.Monty('(a, b)', inputs=['a', 'b'])
+    m = pydantic_monty.Monty('(a, b)', inputs=['a', 'b'])
     a, b = m.run(inputs={'a': Point(x=10, y=20), 'b': Vector(x=10, y=20)})
     assert a != b
 
@@ -470,7 +470,7 @@ def test_dataclass_equality_with_other_type():
         x: int
         y: int
 
-    m = monty.Monty('p', inputs=['p'])
+    m = pydantic_monty.Monty('p', inputs=['p'])
     result = m.run(inputs={'p': Point(x=10, y=20)})
     assert result != {'x': 10, 'y': 20}
     assert result != (10, 20)
@@ -488,7 +488,7 @@ def test_dataclass_hash_frozen():
         x: int
         y: int
 
-    m = monty.Monty('p', inputs=['p'])
+    m = pydantic_monty.Monty('p', inputs=['p'])
     result = m.run(inputs={'p': Point(x=10, y=20)})
 
     h = hash(result)
@@ -505,7 +505,7 @@ def test_dataclass_hash_frozen_equal_values():
         x: int
         y: int
 
-    m = monty.Monty('(a, b)', inputs=['a', 'b'])
+    m = pydantic_monty.Monty('(a, b)', inputs=['a', 'b'])
     a, b = m.run(inputs={'a': Point(x=10, y=20), 'b': Point(x=10, y=20)})
 
     assert hash(a) == hash(b)
@@ -519,7 +519,7 @@ def test_dataclass_hash_mutable_raises():
         x: int
         y: int
 
-    m = monty.Monty('p', inputs=['p'])
+    m = pydantic_monty.Monty('p', inputs=['p'])
     result = m.run(inputs={'p': Point(x=10, y=20)})
 
     with pytest.raises(TypeError, match="unhashable type: 'UnknownDataclass'"):
@@ -534,7 +534,7 @@ def test_dataclass_hash_in_set():
         x: int
         y: int
 
-    m = monty.Monty('(a, b, c)', inputs=['a', 'b', 'c'])
+    m = pydantic_monty.Monty('(a, b, c)', inputs=['a', 'b', 'c'])
     a, b, c = m.run(
         inputs={
             'a': Point(x=10, y=20),
@@ -555,7 +555,7 @@ def test_dataclass_hash_as_dict_key():
         x: int
         y: int
 
-    m = monty.Monty('(a, b)', inputs=['a', 'b'])
+    m = pydantic_monty.Monty('(a, b)', inputs=['a', 'b'])
     a, b = m.run(inputs={'a': Point(x=10, y=20), 'b': Point(x=10, y=20)})
 
     d = {a: 'first'}
@@ -573,7 +573,7 @@ def test_dataclass_is_dataclass():
         name: str
         age: int
 
-    m = monty.Monty('x', inputs=['x'])
+    m = pydantic_monty.Monty('x', inputs=['x'])
     result = m.run(inputs={'x': Person(name='Alice', age=30)})
     assert is_dataclass(result) is True
 
@@ -586,7 +586,7 @@ def test_dataclass_fields():
         x: int
         y: int
 
-    m = monty.Monty('p', inputs=['p'])
+    m = pydantic_monty.Monty('p', inputs=['p'])
     result = m.run(inputs={'p': Point(x=10, y=20)})
 
     fs = fields(result)
@@ -605,7 +605,7 @@ def test_dataclass_fields_string():
     class Person:
         name: str
 
-    m = monty.Monty('p', inputs=['p'])
+    m = pydantic_monty.Monty('p', inputs=['p'])
     result = m.run(inputs={'p': Person(name='Alice')})
 
     fs = fields(result)
@@ -621,7 +621,7 @@ def test_dataclass_asdict():
         x: int
         y: int
 
-    m = monty.Monty('p', inputs=['p'])
+    m = pydantic_monty.Monty('p', inputs=['p'])
     result = m.run(inputs={'p': Point(x=10, y=20)})
 
     d = asdict(result)
@@ -639,7 +639,7 @@ def test_dataclass_asdict_nested():
     class Outer:
         inner: Inner
 
-    m = monty.Monty('x', inputs=['x'])
+    m = pydantic_monty.Monty('x', inputs=['x'])
     result = m.run(inputs={'x': Outer(inner=Inner(value=42))})
 
     d = asdict(result)
@@ -654,7 +654,7 @@ def test_dataclass_astuple():
         x: int
         y: int
 
-    m = monty.Monty('p', inputs=['p'])
+    m = pydantic_monty.Monty('p', inputs=['p'])
     result = m.run(inputs={'p': Point(x=10, y=20)})
 
     t = astuple(result)
@@ -669,7 +669,7 @@ def test_dataclass_dataclass_fields_attr():
         x: int
         y: int
 
-    m = monty.Monty('p', inputs=['p'])
+    m = pydantic_monty.Monty('p', inputs=['p'])
     result = m.run(inputs={'p': Point(x=10, y=20)})
 
     df = result.__dataclass_fields__
@@ -692,7 +692,7 @@ def test_dataclass_params_frozen():
         x: int
         y: int
 
-    m = monty.Monty('(f, m)', inputs=['f', 'm'])
+    m = pydantic_monty.Monty('(f, m)', inputs=['f', 'm'])
     frozen, mutable = m.run(inputs={'f': FrozenPoint(x=1, y=2), 'm': MutablePoint(x=3, y=4)})
 
     assert frozen.__dataclass_params__.frozen is True
@@ -707,7 +707,7 @@ def test_dataclass_params_attributes():
         x: int
         y: int
 
-    m = monty.Monty('p', inputs=['p'])
+    m = pydantic_monty.Monty('p', inputs=['p'])
     result = m.run(inputs={'p': Point(x=10, y=20)})
 
     params = result.__dataclass_params__
@@ -730,7 +730,7 @@ def test_repeat_dataclass_name():
         return Point
 
     point_cls2 = create_point()
-    m = monty.Monty('a, b', inputs=['a', 'b'], dataclass_registry=[Point, point_cls2])
+    m = pydantic_monty.Monty('a, b', inputs=['a', 'b'], dataclass_registry=[Point, point_cls2])
     a, b = m.run(inputs={'a': Point(x=10, y=20), 'b': point_cls2(x=30, y=40)})
     assert isinstance(a, Point)
     assert isinstance(b, point_cls2)
