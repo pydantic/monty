@@ -573,14 +573,21 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
         // If part of a gather, propagate error to waiter
         if let Some(gid) = gather_id {
-            let waiter = if let HeapData::GatherFuture(gather) = self.heap.get(gid) {
-                gather.waiter
+            // Get waiter and siblings from GatherFuture (O(1) via task_ids field)
+            let (waiter, siblings) = if let HeapData::GatherFuture(gather) = self.heap.get(gid) {
+                let sibs: Vec<TaskId> = gather
+                    .task_ids
+                    .iter()
+                    .copied()
+                    .filter(|&tid| tid != task_id && !self.scheduler().get_task(tid).is_finished())
+                    .collect();
+                (gather.waiter, sibs)
             } else {
-                None
+                (None, vec![])
             };
 
-            // Mark task as failed (need to do this before getting siblings)
-            let (_, siblings) = self.scheduler_mut().fail_task(task_id, error);
+            // Mark task as failed
+            self.scheduler_mut().fail_task(task_id, error);
 
             // Cancel sibling tasks
             // Use direct field access to avoid borrow conflicts with heap/namespaces
@@ -609,8 +616,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 }
             }
         } else {
-            // No gather - just mark task as failed
-            self.scheduler_mut().fail_task(task_id, error);
+            // No gather - just mark task as failed (ignore returned gather_id which is None)
+            let _ = self.scheduler_mut().fail_task(task_id, error);
         }
 
         // No gather or no waiter - switch to next task
@@ -884,11 +891,11 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     pub fn fail_future(&mut self, call_id: u32, error: RunError) {
         let call_id = CallId::new(call_id);
 
-        // Remove from scheduler's pending_calls
-        self.get_or_create_scheduler().remove_pending_call(call_id);
-
         // Check if a gather is waiting on this CallId
-        if let Some((gather_id, _result_idx)) = self.scheduler_mut().take_gather_waiter(call_id) {
+        if let Some((gather_id, _result_idx)) = self.get_or_create_scheduler().take_gather_waiter(call_id) {
+            // Remove from pending_calls so it doesn't appear in get_pending_call_ids()
+            // (fail_for_call handles this for the non-gather case)
+            self.scheduler_mut().remove_pending_call(call_id);
             // Get the gather's waiter task and sibling tasks
             let (waiter, task_ids) = if let HeapData::GatherFuture(gather) = self.heap.get(gather_id) {
                 (gather.waiter, gather.task_ids.clone())
@@ -912,9 +919,21 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 // Release the GatherFuture
                 self.heap.dec_ref(gather_id);
             }
-        } else if let Some((_, _, siblings)) = self.scheduler_mut().fail_for_call(call_id, error) {
-            // Original path: task is directly BlockedOnCall (non-gather case)
-            // Cancel sibling tasks if this task was part of a gather
+        } else if let Some((task_id, Some(gid))) = self.scheduler_mut().fail_for_call(call_id, error) {
+            // Original path: task is directly BlockedOnCall and part of a gather
+            // Get siblings from GatherFuture.task_ids
+            let siblings: Vec<TaskId> = if let HeapData::GatherFuture(gather) = self.heap.get(gid) {
+                gather
+                    .task_ids
+                    .iter()
+                    .copied()
+                    .filter(|&tid| tid != task_id && !self.scheduler().get_task(tid).is_finished())
+                    .collect()
+            } else {
+                vec![]
+            };
+
+            // Cancel sibling tasks
             for sibling_id in siblings {
                 self.scheduler.as_mut().expect("scheduler must exist").cancel_task(
                     sibling_id,

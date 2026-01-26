@@ -404,7 +404,7 @@ impl PyMonty {
                 }
                 RunProgress::ResolveFutures { .. } => {
                     return Err(PyRuntimeError::new_err(
-                        "async futures not yet supported in Python bindings",
+                        "async futures not yet supported with `Monty.run`",
                     ));
                 }
             }
@@ -460,7 +460,7 @@ impl PyMonty {
                 }
                 RunProgress::ResolveFutures { .. } => {
                     return Err(PyRuntimeError::new_err(
-                        "async futures not yet supported in Python bindings",
+                        "async futures not yet supported with `Monty.run`",
                     ));
                 }
             }
@@ -662,7 +662,7 @@ fn extract_external_result(
 impl PyMontySnapshot {
     /// Resumes execution with either a return value or an exception.
     ///
-    /// Exactly one of `return_value` or `exception` must be provided as a keyword argument.
+    /// Exactly one of `return_value`, `exception` or `future` must be provided as a keyword argument.
     ///
     /// # Raises
     /// * `TypeError` if both arguments are provided, or neither

@@ -307,22 +307,23 @@ impl Scheduler {
     ///
     /// Stores the value for later retrieval when the future is awaited.
     /// If a task is blocked on this call, it will be unblocked.
+    ///
+    /// Uses `pending_calls` for O(1) lookup of the blocked task instead of
+    /// scanning all tasks.
     pub fn resolve(&mut self, call_id: CallId, value: Value) {
-        // Remove from pending calls
-        self.pending_calls.remove(&call_id);
+        // Get blocked task from pending_calls before removing (O(1) lookup)
+        let blocked_task = self.pending_calls.remove(&call_id).map(|data| data.creator_task);
 
         // Store the resolved value
         self.resolved.insert(call_id, value);
 
-        // Find and unblock any task waiting on this call
-        for task in &mut self.tasks {
-            if let TaskState::BlockedOnCall(blocked_call_id) = task.state
-                && blocked_call_id == call_id
-            {
+        // Unblock the task if found
+        if let Some(task_id) = blocked_task {
+            let task = self.get_task_mut(task_id);
+            if matches!(task.state, TaskState::BlockedOnCall(cid) if cid == call_id) {
                 task.state = TaskState::Ready;
                 task.unblocked_by = Some(call_id);
-                self.ready_queue.push_back(task.id);
-                break;
+                self.ready_queue.push_back(task_id);
             }
         }
     }
@@ -441,29 +442,16 @@ impl Scheduler {
 
     /// Marks a task as failed with an error.
     ///
-    /// If the task is part of a gather, collects sibling task IDs for cancellation.
-    /// The caller should then call `cancel_task` for each sibling.
+    /// If the task is part of a gather, returns the gather_id so the caller
+    /// can collect siblings from `GatherFuture.task_ids` on the heap.
     ///
     /// # Returns
-    /// A tuple of:
-    /// - The gather_id if this task belongs to a gather
-    /// - Task IDs of sibling tasks that should be cancelled
-    pub fn fail_task(&mut self, task_id: TaskId, error: RunError) -> (Option<HeapId>, Vec<TaskId>) {
+    /// The gather_id if this task belongs to a gather (for sibling lookup).
+    pub fn fail_task(&mut self, task_id: TaskId, error: RunError) -> Option<HeapId> {
         let task = self.get_task_mut(task_id);
         let gather_id = task.gather_id;
         task.state = TaskState::Failed(error);
-
-        // Collect sibling task IDs for cancellation
-        let mut siblings = Vec::new();
-        if let Some(gid) = gather_id {
-            for task in &self.tasks {
-                if task.gather_id == Some(gid) && task.id != task_id && !task.is_finished() {
-                    siblings.push(task.id);
-                }
-            }
-        }
-
-        (gather_id, siblings)
+        gather_id
     }
 
     /// Cancels a task, cleaning up its resources.
@@ -580,25 +568,17 @@ impl Scheduler {
     /// Fails the task blocked on a specific CallId with an error.
     ///
     /// Used when an external function returns an error via `FutureSnapshot::resume`.
-    /// Finds the task blocked on this CallId and fails it with the given error.
+    /// Uses `pending_calls` for O(1) lookup of the blocked task.
     ///
     /// # Returns
-    /// A tuple of (task_id, gather_id, sibling_task_ids) if a task was found,
+    /// A tuple of (task_id, gather_id) if a task was found,
     /// or None if no task was blocked on this CallId.
-    pub fn fail_for_call(&mut self, call_id: CallId, error: RunError) -> Option<(TaskId, Option<HeapId>, Vec<TaskId>)> {
-        // Find the task blocked on this call
-        let task_id = self.tasks.iter().find_map(|task| {
-            if let TaskState::BlockedOnCall(blocked_call_id) = task.state
-                && blocked_call_id == call_id
-            {
-                return Some(task.id);
-            }
-            None
-        })?;
-
-        // Fail the task and get sibling info
-        let (gather_id, siblings) = self.fail_task(task_id, error);
-        Some((task_id, gather_id, siblings))
+    /// Callers should get siblings from `GatherFuture.task_ids` if gather_id is Some.
+    pub fn fail_for_call(&mut self, call_id: CallId, error: RunError) -> Option<(TaskId, Option<HeapId>)> {
+        // Get blocked task from pending_calls (O(1) lookup)
+        let task_id = self.pending_calls.remove(&call_id)?.creator_task;
+        let gather_id = self.fail_task(task_id, error);
+        Some((task_id, gather_id))
     }
 
     /// Returns the task that created a specific pending call.
