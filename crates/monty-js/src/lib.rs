@@ -33,9 +33,7 @@ mod exceptions;
 mod limits;
 mod monty_cls;
 
-pub use exceptions::{
-    ExceptionInfo, Frame, MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, RuntimeErrorInfo,
-};
+pub use exceptions::{ExceptionInfo, Frame, JsMontyException, MontyTypingError};
 pub use limits::JsResourceLimits;
 pub use monty_cls::{
     ExceptionInput, Monty, MontyComplete, MontyOptions, MontySnapshot, ResumeOptions, RunOptions, SnapshotLoadOptions,

@@ -55,7 +55,7 @@ use napi_derive::napi;
 
 use crate::{
     convert::{js_to_monty, monty_to_js, JsMontyObject},
-    exceptions::{monty_exception_to_error, typing_failure_to_error},
+    exceptions::{JsMontyException, MontyTypingError},
     limits::JsResourceLimits,
 };
 
@@ -121,10 +121,17 @@ pub struct StartOptions<'env> {
 impl Monty {
     /// Creates a new Monty interpreter by parsing the given code.
     ///
+    /// Returns either a Monty instance, a MontyException (for syntax errors), or a MontyTypingError.
+    /// The wrapper should check the result type and throw the appropriate error.
+    ///
     /// @param code - Python code to execute
     /// @param options - Configuration options
-    #[napi(constructor)]
-    pub fn new(code: String, options: Option<MontyOptions>) -> Result<Self> {
+    /// @returns Monty instance on success, or error object on failure
+    #[napi]
+    pub fn create(
+        code: String,
+        options: Option<MontyOptions>,
+    ) -> Result<Either3<Self, JsMontyException, MontyTypingError>> {
         let options = options.unwrap_or(MontyOptions {
             script_name: None,
             inputs: None,
@@ -140,37 +147,47 @@ impl Monty {
 
         // Perform type checking if requested
         if do_type_check {
-            run_type_check(&code, &script_name, options.type_check_prefix_code.as_deref())?;
+            if let Some(error) = run_type_check_result(&code, &script_name, options.type_check_prefix_code.as_deref())?
+            {
+                return Ok(Either3::C(error));
+            }
         }
 
         // Create the runner (parses the code)
-        let runner = MontyRun::new(code, &script_name, input_names.clone(), external_function_names.clone())
-            .map_err(|e| monty_exception_to_error(&e))?;
+        let runner = match MontyRun::new(code, &script_name, input_names.clone(), external_function_names.clone()) {
+            Ok(r) => r,
+            Err(exc) => return Ok(Either3::B(JsMontyException::new(exc))),
+        };
 
-        Ok(Self {
+        Ok(Either3::A(Self {
             runner,
             script_name,
             input_names,
             external_function_names,
-        })
+        }))
     }
 
     /// Performs static type checking on the code.
     ///
-    /// Analyzes the code for type errors without executing it.
+    /// Returns either nothing (success) or a MontyTypingError.
     ///
     /// @param prefixCode - Optional code to prepend before type checking
+    /// @returns null on success, or MontyTypingError on failure
     #[napi]
-    pub fn type_check(&self, prefix_code: Option<String>) -> Result<()> {
-        run_type_check(self.runner.code(), &self.script_name, prefix_code.as_deref())
+    pub fn type_check(&self, prefix_code: Option<String>) -> Result<Option<MontyTypingError>> {
+        run_type_check_result(self.runner.code(), &self.script_name, prefix_code.as_deref())
     }
 
-    /// Executes the code and returns the result.
+    /// Executes the code and returns the result, or an exception object if execution fails.
     ///
     /// @param options - Execution options (inputs, limits, externalFunctions)
-    /// @returns The result of the last expression in the code
+    /// @returns The result of the last expression, or a MontyException if execution fails
     #[napi]
-    pub fn run<'env>(&self, env: &'env Env, options: Option<RunOptions<'env>>) -> Result<JsMontyObject<'env>> {
+    pub fn run<'env>(
+        &self,
+        env: &'env Env,
+        options: Option<RunOptions<'env>>,
+    ) -> Result<Either<JsMontyObject<'env>, JsMontyException>> {
         // Extract input values
         let input_values = self.extract_input_values(options.as_ref().and_then(|opts| opts.inputs), *env)?;
 
@@ -197,8 +214,8 @@ impl Monty {
         };
 
         match result {
-            Ok(value) => monty_to_js(&value, env),
-            Err(exc) => Err(monty_exception_to_error(&exc)),
+            Ok(value) => Ok(Either::A(monty_to_js(&value, env)?)),
+            Err(exc) => Ok(Either::B(JsMontyException::new(exc))),
         }
     }
 
@@ -209,20 +226,25 @@ impl Monty {
         input_values: Vec<MontyObject>,
         limits: Option<JsResourceLimits>,
         external_functions: Option<Object<'env>>,
-    ) -> Result<JsMontyObject<'env>> {
+    ) -> Result<Either<JsMontyObject<'env>, JsMontyException>> {
         let mut print_output = CollectStringPrint::default();
         let runner = self.runner.clone();
 
         // Helper macro to handle the execution loop for both tracker types
         macro_rules! run_loop {
             ($tracker:expr) => {{
-                let mut progress = runner
-                    .start(input_values, $tracker, &mut print_output)
-                    .map_err(|e| monty_exception_to_error(&e))?;
+                let progress = runner.start(input_values, $tracker, &mut print_output);
+
+                let mut progress = match progress {
+                    Ok(p) => p,
+                    Err(exc) => return Ok(Either::B(JsMontyException::new(exc))),
+                };
 
                 loop {
                     match progress {
-                        RunProgress::Complete(result) => return monty_to_js(&result, env),
+                        RunProgress::Complete(result) => {
+                            return Ok(Either::A(monty_to_js(&result, env)?));
+                        }
                         RunProgress::FunctionCall {
                             function_name,
                             args,
@@ -238,9 +260,10 @@ impl Monty {
                                 &kwargs,
                             )?;
 
-                            progress = state
-                                .run(return_value, &mut print_output)
-                                .map_err(|e| monty_exception_to_error(&e))?;
+                            progress = match state.run(return_value, &mut print_output) {
+                                Ok(p) => p,
+                                Err(exc) => return Ok(Either::B(JsMontyException::new(exc))),
+                            };
                         }
                         RunProgress::ResolveFutures(_) => {
                             return Err(Error::from_reason(
@@ -260,19 +283,19 @@ impl Monty {
         }
     }
 
-    /// Starts execution and returns either a snapshot (paused at external call) or completion.
+    /// Starts execution and returns either a snapshot (paused at external call), completion, or error.
     ///
     /// This method enables iterative execution where code pauses at external function
     /// calls, allowing the host to provide return values or exceptions before resuming.
     ///
     /// @param options - Execution options (inputs, limits)
-    /// @returns MontySnapshot if an external function call is pending, MontyComplete if done
+    /// @returns MontySnapshot if paused, MontyComplete if done, or MontyException if failed
     #[napi]
     pub fn start<'env>(
         &self,
         env: &'env Env,
         options: Option<StartOptions<'env>>,
-    ) -> Result<Either<MontySnapshot, MontyComplete>> {
+    ) -> Result<Either3<MontySnapshot, MontyComplete, JsMontyException>> {
         // Extract input values
         let input_values = self.extract_input_values(options.and_then(|opts| opts.inputs), *env)?;
 
@@ -283,14 +306,16 @@ impl Monty {
         // Start execution with appropriate tracker
         if let Some(limits) = options.and_then(|opts| opts.limits) {
             let tracker = LimitedTracker::new(limits.into());
-            let progress = runner
-                .start(input_values, tracker, &mut print_output)
-                .map_err(|e| monty_exception_to_error(&e))?;
+            let progress = match runner.start(input_values, tracker, &mut print_output) {
+                Ok(p) => p,
+                Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
+            };
             Ok(progress_to_result(progress, self.script_name.clone()))
         } else {
-            let progress = runner
-                .start(input_values, NoLimitTracker, &mut print_output)
-                .map_err(|e| monty_exception_to_error(&e))?;
+            let progress = match runner.start(input_values, NoLimitTracker, &mut print_output) {
+                Ok(p) => p,
+                Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
+            };
             Ok(progress_to_result(progress, self.script_name.clone()))
         }
     }
@@ -402,8 +427,10 @@ impl Monty {
     }
 }
 
-/// Performs type checking on the code.
-fn run_type_check(code: &str, script_name: &str, prefix_code: Option<&str>) -> Result<()> {
+/// Performs type checking on the code and returns the error object if there are type errors.
+///
+/// Returns `None` if type checking passes, or `Some(MontyTypingError)` if there are errors.
+fn run_type_check_result(code: &str, script_name: &str, prefix_code: Option<&str>) -> Result<Option<MontyTypingError>> {
     let source_code: Cow<str> = if let Some(prefix_code) = prefix_code {
         format!("{prefix_code}\n{code}").into()
     } else {
@@ -413,11 +440,7 @@ fn run_type_check(code: &str, script_name: &str, prefix_code: Option<&str>) -> R
     let result =
         type_check(&source_code, script_name).map_err(|e| Error::from_reason(format!("Type checking failed: {e}")))?;
 
-    if let Some(failure) = result {
-        Err(typing_failure_to_error(failure))
-    } else {
-        Ok(())
-    }
+    Ok(result.map(MontyTypingError::from_failure))
 }
 
 // =============================================================================
@@ -525,13 +548,13 @@ impl MontySnapshot {
     /// Exactly one of `returnValue` or `exception` must be provided.
     ///
     /// @param options - Object with either `returnValue` or `exception`
-    /// @returns MontySnapshot if another external call is pending, MontyComplete if done
+    /// @returns MontySnapshot if paused, MontyComplete if done, or MontyException if failed
     #[napi]
     pub fn resume<'env>(
         &mut self,
         env: &'env Env,
         options: ResumeOptions<'env>,
-    ) -> Result<Either<Self, MontyComplete>> {
+    ) -> Result<Either3<Self, MontyComplete, JsMontyException>> {
         // Validate that exactly one of returnValue or exception is provided
         let external_result = match (options.return_value, options.exception) {
             (Some(value), None) => {
@@ -559,15 +582,17 @@ impl MontySnapshot {
         let mut print_output = CollectStringPrint::default();
         match snapshot {
             EitherSnapshot::NoLimit(state) => {
-                let progress = state
-                    .run(external_result, &mut print_output)
-                    .map_err(|e| monty_exception_to_error(&e))?;
+                let progress = match state.run(external_result, &mut print_output) {
+                    Ok(p) => p,
+                    Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
+                };
                 Ok(progress_to_result(progress, self.script_name.clone()))
             }
             EitherSnapshot::Limited(state) => {
-                let progress = state
-                    .run(external_result, &mut print_output)
-                    .map_err(|e| monty_exception_to_error(&e))?;
+                let progress = match state.run(external_result, &mut print_output) {
+                    Ok(p) => p,
+                    Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
+                };
                 Ok(progress_to_result(progress, self.script_name.clone()))
             }
             EitherSnapshot::Done => Err(Error::from_reason("Snapshot has already been resumed")),
@@ -661,17 +686,20 @@ impl MontyComplete {
 // Helper functions for progress conversion
 // =============================================================================
 
-/// Converts a `RunProgress` to either a `MontySnapshot` or `MontyComplete`.
+/// Converts a `RunProgress` to either a `MontySnapshot`, `MontyComplete`, or `JsMontyException`.
 ///
 /// # Panics
 /// Panics if the progress is `ResolveFutures` - async futures are not yet supported in the JS bindings.
-fn progress_to_result<T>(progress: RunProgress<T>, script_name: String) -> Either<MontySnapshot, MontyComplete>
+fn progress_to_result<T>(
+    progress: RunProgress<T>,
+    script_name: String,
+) -> Either3<MontySnapshot, MontyComplete, JsMontyException>
 where
     T: ResourceTracker + serde::Serialize + serde::de::DeserializeOwned,
     EitherSnapshot: FromSnapshot<T>,
 {
     match progress {
-        RunProgress::Complete(result) => Either::B(MontyComplete { output_value: result }),
+        RunProgress::Complete(result) => Either3::B(MontyComplete { output_value: result }),
         RunProgress::FunctionCall {
             function_name,
             args,
@@ -680,7 +708,7 @@ where
             ..
         } => {
             // Store args/kwargs as MontyObject directly for serialization
-            Either::A(MontySnapshot {
+            Either3::A(MontySnapshot {
                 snapshot: EitherSnapshot::from_snapshot(state),
                 script_name,
                 function_name,

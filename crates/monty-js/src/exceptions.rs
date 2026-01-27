@@ -1,97 +1,57 @@
-//! Custom exception types for the Monty TypeScript/JavaScript bindings.
+//! Exception types for the Monty TypeScript/JavaScript bindings.
 //!
-//! Provides exception classes that wrap Monty's internal exceptions,
-//! preserving traceback information and allowing JavaScript code to distinguish
-//! between syntax errors, runtime errors, and type checking errors.
+//! This module provides thin napi wrappers around Monty's internal exceptions.
+//! The JavaScript wrapper layer (`wrapper.js`) is responsible for converting
+//! these into proper JS `Error` subclasses (`MontySyntaxError`, `MontyRuntimeError`).
 //!
-//! ## Exception Hierarchy
+//! It is done this way because `napi` has no way to create JS `Error` subclasses from
+//! Rust.
 //!
-//! ```text
-//! MontyError (Error)           # Base class for all Monty exceptions
-//! ├── MontySyntaxError         # Raised when syntax is invalid or Monty can't parse the code
-//! ├── MontyRuntimeError        # Raised when code fails during execution
-//! └── MontyTypingError         # Raised when type checking finds errors in the code
-//! ```
+//! ## Architecture
 //!
-//! ## JavaScript Usage
-//!
-//! ```typescript
-//! import { Monty, MontySyntaxError, MontyRuntimeError, MontyTypingError } from 'monty';
-//!
-//! try {
-//!     const m = new Monty('def');  // Invalid syntax
-//! } catch (e) {
-//!     if (e instanceof MontySyntaxError) {
-//!         console.log('Syntax error:', e.display('msg'));
-//!     }
-//! }
-//!
-//! try {
-//!     const m = new Monty('1 / 0');
-//!     m.run();
-//! } catch (e) {
-//!     if (e instanceof MontyRuntimeError) {
-//!         console.log('Runtime error:', e.display('traceback'));
-//!         console.log('Frames:', e.traceback());
-//!     }
-//! }
-//! ```
+//! - `JsMontyException`: Thin wrapper around `monty::MontyException`. The JS wrapper
+//!   checks `exception.typeName` to distinguish syntax errors from runtime errors.
+//! - `MontyTypingError`: Wraps `TypeCheckingDiagnostics` for static type checking errors.
+//!   This is separate because type errors come from static analysis, not Python execution.
 
 use std::fmt;
 
-use monty::{ExcType, MontyException, StackFrame};
+use monty::StackFrame;
 use monty_type_checking::TypeCheckingDiagnostics;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde::{Deserialize, Serialize};
 
 // =============================================================================
-// MontyError - Base class for all Monty exceptions
+// JsMontyException - Thin wrapper around core MontyException
 // =============================================================================
 
-/// Base class for all Monty interpreter errors.
+/// Wrapper around core `MontyException` for napi bindings.
 ///
-/// This is the parent class for `MontySyntaxError`, `MontyRuntimeError`, and `MontyTypingError`.
-/// Catching `MontyError` will catch any exception raised by Monty.
-///
-/// In JavaScript, these are thrown as proper Error subclasses with the appropriate
-/// error name set, allowing `instanceof` checks to work correctly.
-#[napi]
-pub struct MontyError {
-    /// The exception type name (e.g., "ValueError", "TypeError").
-    type_name: String,
-    /// The exception message.
-    message: String,
-}
+/// This is a thin newtype wrapper that exposes the necessary getters for the
+/// JavaScript wrapper to construct appropriate error types (`MontySyntaxError`
+/// or `MontyRuntimeError`) based on the exception type.
+#[napi(js_name = "MontyException")]
+pub struct JsMontyException(monty::MontyException);
 
-impl fmt::Display for MontyError {
+impl fmt::Display for JsMontyException {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.message.is_empty() {
-            write!(f, "{}", self.type_name)
-        } else {
-            write!(f, "{}: {}", self.type_name, self.message)
-        }
+        write!(f, "{}", self.0)
     }
 }
 
 #[napi]
-impl MontyError {
-    /// Creates a new MontyError with the given type name and message.
-    #[napi(constructor)]
-    #[must_use]
-    pub fn new(type_name: String, message: String) -> Self {
-        Self { type_name, message }
-    }
-
+impl JsMontyException {
     /// Returns information about the inner Python exception.
     ///
-    /// Provides structured access to the exception type and message.
+    /// The `typeName` field can be used to distinguish syntax errors (`"SyntaxError"`)
+    /// from runtime errors (e.g., `"ValueError"`, `"TypeError"`).
     #[napi(getter)]
     #[must_use]
     pub fn exception(&self) -> ExceptionInfo {
         ExceptionInfo {
-            type_name: self.type_name.clone(),
-            message: self.message.clone(),
+            type_name: self.0.exc_type().to_string(),
+            message: self.0.message().unwrap_or_default().to_string(),
         }
     }
 
@@ -99,180 +59,16 @@ impl MontyError {
     #[napi(getter)]
     #[must_use]
     pub fn message(&self) -> String {
-        self.message.clone()
-    }
-
-    /// Returns a string representation of the error.
-    #[napi(js_name = "toString")]
-    #[must_use]
-    pub fn to_js_string(&self) -> String {
-        self.to_string()
-    }
-}
-
-impl MontyError {
-    /// Creates a MontyError from a MontyException.
-    #[must_use]
-    pub fn from_exception(exc: &MontyException) -> Self {
-        Self {
-            type_name: exc.exc_type().to_string(),
-            message: exc.message().unwrap_or_default().to_string(),
-        }
-    }
-}
-
-// =============================================================================
-// MontySyntaxError - Raised when Python code has syntax errors
-// =============================================================================
-
-/// Raised when Python code has syntax errors or cannot be parsed by Monty.
-///
-/// The inner exception is always a `SyntaxError`. Use `display()` to get
-/// formatted error output.
-#[napi]
-pub struct MontySyntaxError {
-    /// The exception message.
-    message: String,
-}
-
-impl fmt::Display for MontySyntaxError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "SyntaxError: {}", self.message)
-    }
-}
-
-#[napi]
-impl MontySyntaxError {
-    /// Creates a new MontySyntaxError with the given message.
-    #[napi(constructor)]
-    #[must_use]
-    pub fn new(message: String) -> Self {
-        Self { message }
-    }
-
-    /// Returns information about the inner Python exception.
-    #[napi(getter)]
-    #[must_use]
-    pub fn exception(&self) -> ExceptionInfo {
-        ExceptionInfo {
-            type_name: "SyntaxError".to_string(),
-            message: self.message.clone(),
-        }
-    }
-
-    /// Returns the error message.
-    #[napi(getter)]
-    #[must_use]
-    pub fn message(&self) -> String {
-        self.message.clone()
-    }
-
-    /// Returns formatted exception string.
-    ///
-    /// @param format - Output format:
-    ///   - 'type-msg' - 'ExceptionType: message' format
-    ///   - 'msg' - just the message (default)
-    #[napi]
-    pub fn display(&self, format: Option<String>) -> Result<String> {
-        let format = format.as_deref().unwrap_or("msg");
-        match format {
-            "msg" => Ok(self.message.clone()),
-            "type-msg" => Ok(format!("SyntaxError: {}", self.message)),
-            _ => Err(Error::from_reason(format!(
-                "Invalid display format: '{format}'. Expected 'type-msg' or 'msg'"
-            ))),
-        }
-    }
-
-    /// Returns a string representation of the error.
-    #[napi(js_name = "toString")]
-    #[must_use]
-    pub fn to_js_string(&self) -> String {
-        self.to_string()
-    }
-}
-
-impl MontySyntaxError {
-    /// Creates a MontySyntaxError from a MontyException.
-    #[must_use]
-    pub fn from_exception(exc: &MontyException) -> Self {
-        Self {
-            message: exc.message().unwrap_or_default().to_string(),
-        }
-    }
-
-    /// Converts to an napi Error that can be thrown.
-    #[must_use]
-    pub fn into_error(self) -> Error {
-        Error::new(Status::GenericFailure, self.to_string())
-    }
-}
-
-// =============================================================================
-// MontyRuntimeError - Raised when code fails during execution
-// =============================================================================
-
-/// Raised when Monty code fails during execution.
-///
-/// Provides access to the traceback frames where the error occurred via `traceback()`,
-/// and formatted output via `display()`.
-#[napi]
-pub struct MontyRuntimeError {
-    /// The exception type name.
-    type_name: String,
-    /// The exception message.
-    message: String,
-    /// The full traceback string (pre-formatted).
-    traceback_string: String,
-    /// The traceback frames.
-    frames: Vec<Frame>,
-}
-
-impl fmt::Display for MontyRuntimeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.traceback_string)
-    }
-}
-
-#[napi]
-impl MontyRuntimeError {
-    /// Creates a new MontyRuntimeError.
-    #[napi(constructor)]
-    #[must_use]
-    pub fn new(type_name: String, message: String, traceback_string: String, frames: Vec<Frame>) -> Self {
-        Self {
-            type_name,
-            message,
-            traceback_string,
-            frames,
-        }
-    }
-
-    /// Returns information about the inner Python exception.
-    #[napi(getter)]
-    #[must_use]
-    pub fn exception(&self) -> ExceptionInfo {
-        ExceptionInfo {
-            type_name: self.type_name.clone(),
-            message: self.message.clone(),
-        }
-    }
-
-    /// Returns the error message.
-    #[napi(getter)]
-    #[must_use]
-    pub fn message(&self) -> String {
-        self.message.clone()
+        self.0.message().unwrap_or_default().to_string()
     }
 
     /// Returns the Monty traceback as an array of Frame objects.
     ///
-    /// Each frame contains the filename, line/column numbers, function name,
-    /// and source code preview line.
+    /// For syntax errors, this will be an empty array.
+    /// For runtime errors, this contains the stack frames where the error occurred.
     #[napi]
-    #[must_use]
     pub fn traceback(&self) -> Vec<Frame> {
-        self.frames.clone()
+        self.0.traceback().iter().map(Frame::from_stack_frame).collect()
     }
 
     /// Returns formatted exception string.
@@ -285,15 +81,17 @@ impl MontyRuntimeError {
     pub fn display(&self, format: Option<String>) -> Result<String> {
         let format = format.as_deref().unwrap_or("traceback");
         match format {
-            "traceback" => Ok(self.traceback_string.clone()),
+            "traceback" => Ok(self.0.to_string()),
             "type-msg" => {
-                if self.message.is_empty() {
-                    Ok(self.type_name.clone())
+                let type_name = self.0.exc_type().to_string();
+                let message = self.0.message().unwrap_or_default();
+                if message.is_empty() {
+                    Ok(type_name)
                 } else {
-                    Ok(format!("{}: {}", self.type_name, self.message))
+                    Ok(format!("{type_name}: {message}"))
                 }
             }
-            "msg" => Ok(self.message.clone()),
+            "msg" => Ok(self.0.message().unwrap_or_default().to_string()),
             _ => Err(Error::from_reason(format!(
                 "Invalid display format: '{format}'. Expected 'traceback', 'type-msg', or 'msg'"
             ))),
@@ -308,22 +106,11 @@ impl MontyRuntimeError {
     }
 }
 
-impl MontyRuntimeError {
-    /// Creates a MontyRuntimeError from a MontyException.
+impl JsMontyException {
+    /// Creates a new JsMontyException from a core MontyException.
     #[must_use]
-    pub fn from_exception(exc: &MontyException) -> Self {
-        Self {
-            type_name: exc.exc_type().to_string(),
-            message: exc.message().unwrap_or_default().to_string(),
-            traceback_string: exc.to_string(),
-            frames: exc.traceback().iter().map(Frame::from_stack_frame).collect(),
-        }
-    }
-
-    /// Converts to an napi Error that can be thrown.
-    #[must_use]
-    pub fn into_error(self) -> Error {
-        Error::new(Status::GenericFailure, self.traceback_string)
+    pub fn new(exc: monty::MontyException) -> Self {
+        Self(exc)
     }
 }
 
@@ -407,34 +194,11 @@ impl MontyTypingError {
         let cached_string = failure.to_string();
         Self { failure, cached_string }
     }
-
-    /// Converts to an napi Error that can be thrown.
-    #[must_use]
-    pub fn into_error(self) -> Error {
-        Error::new(Status::GenericFailure, format!("TypeError: {}", self.cached_string))
-    }
 }
 
 // =============================================================================
-// Helper functions for creating and throwing errors
+// Helper types
 // =============================================================================
-
-/// Converts a `MontyException` to the appropriate napi `Error`.
-///
-/// Returns a formatted error message that includes the exception type and traceback.
-/// This is used for throwing errors in contexts where we can't use the class-based exceptions.
-pub fn monty_exception_to_error(exc: &MontyException) -> Error {
-    if exc.exc_type() == ExcType::SyntaxError {
-        MontySyntaxError::from_exception(exc).into_error()
-    } else {
-        MontyRuntimeError::from_exception(exc).into_error()
-    }
-}
-
-/// Converts a `TypeCheckingDiagnostics` to an napi `Error`.
-pub fn typing_failure_to_error(failure: TypeCheckingDiagnostics) -> Error {
-    MontyTypingError::from_failure(failure).into_error()
-}
 
 /// Information about the inner Python exception.
 ///
@@ -443,7 +207,7 @@ pub fn typing_failure_to_error(failure: TypeCheckingDiagnostics) -> Error {
 #[napi(object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExceptionInfo {
-    /// The exception type name (e.g., "ValueError", "TypeError").
+    /// The exception type name (e.g., "ValueError", "TypeError", "SyntaxError").
     pub type_name: String,
     /// The exception message.
     pub message: String,
@@ -485,43 +249,5 @@ impl Frame {
             function_name: frame.frame_name.clone(),
             source_line: frame.preview_line.clone(),
         }
-    }
-
-    /// Returns the Frame as a plain object (for compatibility with the interface).
-    #[must_use]
-    pub fn to_object(&self) -> Self {
-        self.clone()
-    }
-}
-
-// =============================================================================
-// Runtime error info (for backward compatibility)
-// =============================================================================
-
-/// Runtime error information including traceback.
-///
-/// This is provided for backward compatibility and structured error handling
-/// in cases where class instances cannot be used directly.
-#[napi(object)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RuntimeErrorInfo {
-    /// The exception type name and message.
-    pub exception: ExceptionInfo,
-    /// The full traceback string.
-    pub traceback: String,
-    /// The traceback frames.
-    pub frames: Vec<Frame>,
-}
-
-/// Creates a RuntimeErrorInfo from a MontyException.
-#[expect(dead_code, reason = "may be used in future for structured error reporting")]
-pub fn create_runtime_error_info(exc: &MontyException) -> RuntimeErrorInfo {
-    RuntimeErrorInfo {
-        exception: ExceptionInfo {
-            type_name: exc.exc_type().to_string(),
-            message: exc.message().unwrap_or_default().to_string(),
-        },
-        traceback: exc.to_string(),
-        frames: exc.traceback().iter().map(Frame::from_stack_frame).collect(),
     }
 }
