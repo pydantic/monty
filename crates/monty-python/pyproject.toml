@@ -5,11 +5,15 @@ build-backend = "maturin"
 [project]
 # the module is named `pydantic_monty`
 name = "pydantic-monty"
-version = "0.1.0"
 description = "Python bindings for the Monty sandboxed Python interpreter"
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.10"
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/pydantic/monty"
+Source = "https://github.com/pydantic/monty"
 
 [tool.maturin]
 python-source = "python"

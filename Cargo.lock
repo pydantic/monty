@@ -1525,7 +1525,7 @@ dependencies = [
 
 [[package]]
 name = "monty"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "ahash",
  "codspeed-criterion-compat",
@@ -1568,7 +1568,7 @@ dependencies = [
 
 [[package]]
 name = "monty_type_checking"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "monty_typeshed",
  "ruff_db",
@@ -1580,7 +1580,7 @@ dependencies = [
 
 [[package]]
 name = "monty_typeshed"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "path-slash",
  "ruff_db",
@@ -1976,7 +1976,7 @@ dependencies = [
 
 [[package]]
 name = "pydantic-monty"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "indexmap",
  "monty",

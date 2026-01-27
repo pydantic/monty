@@ -422,7 +422,6 @@ wheels = [
 
 [[package]]
 name = "pydantic-monty"
-version = "0.1.0"
 source = { editable = "crates/monty-python" }
 
 [package.dev-dependencies]
