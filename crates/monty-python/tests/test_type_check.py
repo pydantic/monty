@@ -275,7 +275,7 @@ prompt: str = ''
 """
 
     code = """\
-async def agent(prompt: str, messages: MXessages):
+async def agent(prompt: str, messages: Messages):
     while True:
         print(f'messages so far: {messages}')
         output = await call_llm(prompt, messages)
@@ -285,10 +285,18 @@ async def agent(prompt: str, messages: MXessages):
 
 await agent(prompt, [])
 """
+    pydantic_monty.Monty(
+        code,
+        inputs=['prompt'],
+        external_functions=['call_llm'],
+        script_name='agent.py',
+        type_check=True,
+        type_check_stubs=type_definitions,
+    )
 
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         pydantic_monty.Monty(
-            code,
+            code.replace('Messages', 'MXessages'),
             inputs=['prompt'],
             external_functions=['call_llm'],
             script_name='agent.py',
@@ -305,5 +313,36 @@ error[unresolved-reference]: Name `MXessages` used when not defined
 3 |         print(f'messages so far: {messages}')
   |
 info: rule `unresolved-reference` is enabled by default
+
+""")
+
+    code_call_func_wrong = 'await call_llm(prompt, 42)'
+
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        pydantic_monty.Monty(
+            code_call_func_wrong,
+            inputs=['prompt'],
+            external_functions=['call_llm'],
+            script_name='agent.py',
+            type_check=True,
+            type_check_stubs=type_definitions,
+        )
+    assert str(exc_info.value) == snapshot("""\
+error[invalid-argument-type]: Argument to function `call_llm` is incorrect
+ --> agent.py:1:24
+  |
+1 | await call_llm(prompt, 42)
+  |                        ^^ Expected `list[dict[str, Any]]`, found `Literal[42]`
+  |
+info: Function defined here
+ --> type_stubs.pyi:5:11
+  |
+3 | Messages = list[dict[str, Any]]
+4 |
+5 | async def call_llm(prompt: str, messages: Messages) -> str | Messages:
+  |           ^^^^^^^^              ------------------ Parameter declared here
+6 |     ...
+  |
+info: rule `invalid-argument-type` is enabled by default
 
 """)

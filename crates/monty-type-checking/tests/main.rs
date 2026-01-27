@@ -74,7 +74,6 @@ result = add(1, '2')";
         Some(&SourceFile::new(stubs, "type_stubs.pyi")),
     )
     .unwrap();
-    assert!(result.is_some());
 
     let error_diagnostics = result.unwrap();
     assert_eq!(

@@ -5,8 +5,11 @@ use std::{
 
 use ruff_db::{
     Db as SourceDb,
-    diagnostic::{Diagnostic, DiagnosticFormat, DiagnosticId, DisplayDiagnosticConfig, DisplayDiagnostics},
-    files::{FileRootKind, system_path_to_file},
+    diagnostic::{
+        Annotation, Diagnostic, DiagnosticFormat, DiagnosticId, DisplayDiagnosticConfig, DisplayDiagnostics,
+        UnifiedFile,
+    },
+    files::{File, FileRootKind, system_path_to_file},
     system::{DbWithWritableSystem as _, SystemPathBuf},
 };
 use ruff_text_size::{TextRange, TextSize};
@@ -103,8 +106,8 @@ pub fn type_check(
         0
     };
 
-    let file = system_path_to_file(&db, &main_path).map_err(to_string)?;
-    let mut diagnostics = check_types(&db, file);
+    let main_file = system_path_to_file(&db, &main_path).map_err(to_string)?;
+    let mut diagnostics = check_types(&db, main_file);
     diagnostics.retain(filter_diagnostics);
 
     if diagnostics.is_empty() {
@@ -118,11 +121,14 @@ pub fn type_check(
         if code_offset > 0 {
             let offset = TextSize::new(code_offset);
             for diagnostic in &mut diagnostics {
+                // Adjust spans in main diagnostic annotations (only for spans in the main file)
                 for ann in diagnostic.annotations_mut() {
-                    if let Some(range) = ann.get_span().range() {
-                        let new_range = TextRange::new(range.start() - offset, range.end() - offset);
-                        let new_span = ann.get_span().clone().with_range(new_range);
-                        ann.set_span(new_span);
+                    adjust_annotation_span(ann, main_file, offset);
+                }
+                // Adjust spans in sub-diagnostic annotations (e.g., "info: Function defined here")
+                for sub in diagnostic.sub_diagnostics_mut() {
+                    for ann in sub.annotations_mut() {
+                        adjust_annotation_span(ann, main_file, offset);
                     }
                 }
             }
@@ -136,6 +142,24 @@ pub fn type_check(
 
 fn to_string(err: impl Display) -> String {
     err.to_string()
+}
+
+/// Adjust the span of an annotation by subtracting the given offset.
+///
+/// This is used when we inject a stub import at the beginning of the source code,
+/// and need to adjust all spans to account for the injected code.
+/// Only adjusts spans that belong to the main file being type-checked.
+fn adjust_annotation_span(ann: &mut Annotation, main_file: File, offset: TextSize) {
+    let span = ann.get_span();
+    // Only adjust spans for the main file (not stubs or other files)
+    if let UnifiedFile::Ty(span_file) = span.file()
+        && *span_file == main_file
+        && let Some(range) = span.range()
+    {
+        let new_range = TextRange::new(range.start() - offset, range.end() - offset);
+        let new_span = span.clone().with_range(new_range);
+        ann.set_span(new_span);
+    }
 }
 
 /// Represents diagnostic details when type checking fails.
