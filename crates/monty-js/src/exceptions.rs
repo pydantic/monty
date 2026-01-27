@@ -140,6 +140,7 @@ impl fmt::Display for MontyTypingError {
 impl MontyTypingError {
     /// Returns information about the inner exception.
     #[napi(getter)]
+    #[must_use]
     pub fn exception(&self) -> ExceptionInfo {
         ExceptionInfo {
             type_name: "TypeError".to_string(),
@@ -149,6 +150,7 @@ impl MontyTypingError {
 
     /// Returns the error message.
     #[napi(getter)]
+    #[must_use]
     pub fn message(&self) -> String {
         self.cached_string.clone()
     }

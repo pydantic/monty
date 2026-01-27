@@ -49,7 +49,7 @@ use monty::{
     CollectStringPrint, ExcType, ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRun, NoLimitTracker,
     ResourceTracker, RunProgress, Snapshot,
 };
-use monty_type_checking::type_check;
+use monty_type_checking::{type_check, SourceFile};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
@@ -437,8 +437,9 @@ fn run_type_check_result(code: &str, script_name: &str, prefix_code: Option<&str
         code.into()
     };
 
+    let source_file = SourceFile::new(&source_code, script_name);
     let result =
-        type_check(&source_code, script_name).map_err(|e| Error::from_reason(format!("Type checking failed: {e}")))?;
+        type_check(&source_file, None).map_err(|e| Error::from_reason(format!("Type checking failed: {e}")))?;
 
     Ok(result.map(MontyTypingError::from_failure))
 }
