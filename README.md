@@ -9,21 +9,24 @@ A minimal, secure Python interpreter written in Rust for use by AI.
 
 Monty avoids the cost, latency, complexity and general faff of using full container based sandbox for running LLM generated code.
 
+Instead, it let's you run safely run Python code written by an LLM embedded in your agent, with startup times measured in single digit microseconds not hundreds of milliseconds.
+
 What Monty **can** do:
 * Run a reasonable subset of Python code - enough for your agent to express that it wants to do
 * Completely block access to the host environment: no filesystem, env variables or network access
-* Call a specific list of functions on the host that you provide
+* Call functions on the host - only functions you give it access to
 * Run typechecking - monty supports full modern python type hints and comes with [ty](https://docs.astral.sh/ty/) including in a single binary to run typechecking
 * Be snapshotted to bytes at external function calls, meaning you can store the interpreter state in a file or database, and resume later
 * Startup extremely fast (<1μs to go from code to execution result), and has runtime performance that is similar to CPython (generally between 5x faster and 5x slower)
 * Be called from Rust, Python, or Javascript - because Monty has no dependencies on cpython, you can use it anywhere you can run Rust
-* Control resource usage - Monty can track memory usage, allocations and execution time and cancel execution if it exceeds preset limits
+* Control resource usage - Monty can track memory usage, allocations, stack depth, and execution time and cancel execution if it exceeds preset limits
 * Collect stdout and stderr and return it to the caller
 
 What Monty **cannot** do:
 * Use the standard library (except a few select modules: `sys`, `typing`, `asyncio`, `dataclasses` (soon), `json` (soon))
 * Use third party libraries (like Pydantic), support for external python library is not a goal
 * define classes (support should come soon)
+* use match statements (again, support should come soon)
 
 ---
 
@@ -31,7 +34,7 @@ In short, Monty is extremely limited and designed for **one** use case:
 
 **To run code written by agents.**
 
-See:
+For motivation on why you might want to do this, see:
 * [Codemode](https://blog.cloudflare.com/code-mode/) from Cloudflare
 * [Programmatic Tool Calling](https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling) from Anthropic
 * [Code Execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) from Anthropic
