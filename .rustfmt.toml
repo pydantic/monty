@@ -1,4 +1,6 @@
 max_width = 120
 imports_granularity = "Crate"
 group_imports = "StdExternalCrate"
-reorder_imports = true
+# disabled due to wait failing on https://github.com/pydantic/monty/pull/75 where CI and local wanted imports ordered differently
+# TODO re-enabled soon!
+# reorder_imports = true
