@@ -1,7 +1,10 @@
 use std::{env, fs, process::ExitCode, time::Instant};
 
 use monty::{MontyObject, MontyRun, NoLimitTracker, RunProgress, StdPrint};
-use monty_type_checking::{type_check, SourceFile};
+// disabled due to format failing on https://github.com/pydantic/monty/pull/75 where CI and local wanted imports ordered differently
+// TODO re-enabled soon!
+#[rustfmt::skip]
+use monty_type_checking::{SourceFile, type_check};
 
 const EXT_FUNCTIONS: bool = false;
 
