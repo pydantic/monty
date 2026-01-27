@@ -27,6 +27,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          prefix-key: "v1-rust"
 
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --all-packages --only-dev
