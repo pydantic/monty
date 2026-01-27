@@ -9,6 +9,7 @@ paths = (
 
 @pytest.mark.parametrize('example', find_examples(*paths), ids=str)
 def test_readme_examples(example: CodeExample, eval_example: EvalExample):
+    eval_example.set_config(target_version='py310', ruff_ignore=['FA102'])
     eval_example.lint(example)
     if eval_example.update_examples:
         eval_example.run_print_update(example)

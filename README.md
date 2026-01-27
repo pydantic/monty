@@ -116,6 +116,7 @@ async def main():
         external_functions={'call_llm': call_llm},
     )
     print(output)
+    #> example output, message count 2
 
 
 if __name__ == '__main__':
