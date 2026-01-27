@@ -101,6 +101,10 @@ DEPENDENCY_FILES = [
     '_collections_abc.pyi',
     # Used in type annotations
     'types.pyi',
+    # So type checking works with dataclasses
+    'dataclasses.pyi',
+    # used by dataclasses
+    'enum.pyi',
 ]
 
 
@@ -129,13 +133,13 @@ def clone_or_update_typeshed() -> tuple[Path, str]:
         Tuple of (repo_path, commit_hash).
     """
     if TYPESHED_REPO_DIR.exists():
-        print(f'Updating existing typeshed repo at {TYPESHED_REPO_DIR}...')
-        subprocess.run(
-            ['git', 'pull'],
-            cwd=TYPESHED_REPO_DIR,
-            check=True,
-            capture_output=True,
-        )
+        print(f'{TYPESHED_REPO_DIR} exists, not pulling')
+        # subprocess.run(
+        #     ['git', 'pull'],
+        #     cwd=TYPESHED_REPO_DIR,
+        #     check=True,
+        #     capture_output=True,
+        # )
     else:
         print(f'Cloning typeshed to {TYPESHED_REPO_DIR}...')
         subprocess.run(
@@ -301,6 +305,7 @@ _typeshed: 3.0-  # not present at runtime, only for type checking
 asyncio: 3.4-
 builtins: 3.0-
 collections: 3.0-
+dataclasses: 3.7-
 sys: 3.0-
 typing: 3.5-
 typing_extensions: 3.7-

@@ -242,7 +242,7 @@ jobs:
           interpreter: ${{ matrix.interpreter }}
           rust-toolchain: stable
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v6
         with:
           name: pypi_files-${{ matrix.os }}-pgo
           path: ${{ steps.pgo.outputs.wheel-dir }}
@@ -438,7 +438,7 @@ jobs:
         shell: bash
         working-directory: crates/monty-js
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: js-bindings-${{ matrix.settings.target }}
           path: |

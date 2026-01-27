@@ -21,6 +21,7 @@ What Monty **can** do:
 * Be called from Rust, Python, or Javascript - because Monty has no dependencies on cpython, you can use it anywhere you can run Rust
 * Control resource usage - Monty can track memory usage, allocations, stack depth, and execution time and cancel execution if it exceeds preset limits
 * Collect stdout and stderr and return it to the caller
+* Run async or sync code on the host via async or sync code on the host
 
 What Monty **cannot** do:
 * Use the standard library (except a few select modules: `sys`, `typing`, `asyncio`, `dataclasses` (soon), `json` (soon))
@@ -61,20 +62,66 @@ uv add pydantic-monty
 Usage:
 
 ```python
+from typing import Any
+
 import pydantic_monty
 
 code = """
-def fib(n):
-    if n <= 1:
-        return n
-    return fib(n - 1) + fib(n - 2)
+async def agent(prompt: str, messages: Messages):
+    while True:
+        print(f'messages so far: {messages}')
+        output = await call_llm(prompt, messages)
+        if isinstance(output, str):
+            return output
+        messages.extend(output)
 
-fib(x)
+await agent(prompt, [])
 """
 
-m = pydantic_monty.Monty(code, inputs=['x'], script_name='fib.py')
-print(m.run(inputs={'x': 10}))
-#> 55
+type_definitions = """
+from typing import Any
+
+Messages = list[dict[str, Any]]
+
+async def call_llm(prompt: str, messages: Messages) -> str | Messages:
+    raise NotImplementedError()
+
+prompt: str = ''
+"""
+
+m = pydantic_monty.Monty(
+    code,
+    inputs=['prompt'],
+    external_functions=['call_llm'],
+    script_name='agent.py',
+    type_check=True,
+    type_check_prefix_code=type_definitions,
+)
+
+
+Messages = list[dict[str, Any]]
+
+
+async def call_llm(prompt: str, messages: Messages) -> str | Messages:
+    if len(messages) < 2:
+        return [{'role': 'system', 'content': 'example response'}]
+    else:
+        return f'example output, message count {len(messages)}'
+
+
+async def main():
+    output = await pydantic_monty.run_monty_async(
+        m,
+        inputs={'prompt': 'testing'},
+        external_functions={'call_llm': call_llm},
+    )
+    print(output)
+
+
+if __name__ == '__main__':
+    import asyncio
+
+    asyncio.run(main())
 ```
 
 #### Iterative Execution with External Functions
@@ -175,5 +222,3 @@ let runner2 = MontyRun::load(&bytes).unwrap();
 let result = runner2.run(vec![MontyObject::Int(41)], NoLimitTracker, &mut StdPrint).unwrap();
 assert_eq!(result, MontyObject::Int(42));
 ```
-
-## What Python Syntax is supported
