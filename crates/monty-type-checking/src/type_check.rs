@@ -6,8 +6,8 @@ use std::{
 use ruff_db::{
     Db as SourceDb,
     diagnostic::{Diagnostic, DiagnosticFormat, DiagnosticId, DisplayDiagnosticConfig, DisplayDiagnostics},
-    files::system_path_to_file,
-    system::DbWithWritableSystem as _,
+    files::{FileRootKind, system_path_to_file},
+    system::{DbWithWritableSystem as _, SystemPath, SystemPathBuf},
 };
 use ty_module_resolver::SearchPathSettings;
 use ty_python_semantic::{
@@ -48,6 +48,10 @@ pub fn type_check(
 ) -> Result<Option<TypeCheckingDiagnostics>, String> {
     let mut db = MemoryDb::new();
 
+    // Files must be written under a directory that's registered as a search path for module
+    // resolution to work. We use "/" as the root directory so paths appear without a prefix.
+    let src_root = SystemPathBuf::from("/");
+
     // The API is confusing here - we have to load the "program" here like this, otherwise we get unwrap
     // panics when calling `check_types`
     Program::from_settings(
@@ -58,16 +62,24 @@ pub fn type_check(
                 source: PythonVersionSource::default(),
             },
             python_platform: PythonPlatform::default(),
-            search_paths: SearchPathSettings::new(vec![])
+            search_paths: SearchPathSettings::new(vec![src_root.clone()])
                 .to_search_paths(db.system(), db.vendored())
                 .map_err(to_string)?,
         },
     );
 
+    // Register the source root for Salsa tracking - required for module resolution
+    db.files()
+        .try_add_root(&db, SystemPath::new("/"), FileRootKind::Project);
+
+    // Build absolute paths for files under /
+    let main_path = src_root.join(python_source.path);
+
     if let Some(stubs_file) = stubs_file {
+        let stubs_path = src_root.join(stubs_file.path);
+
         // write the stub file
-        db.write_file(stubs_file.path, stubs_file.source_code)
-            .map_err(to_string)?;
+        db.write_file(&stubs_path, stubs_file.source_code).map_err(to_string)?;
 
         // prepend the stub import to the main source code
         let stub_stem = stubs_file
@@ -77,14 +89,14 @@ pub fn type_check(
         let main_source = format!("from {} import *\n{}", stub_stem, python_source.source_code);
 
         // write the main source code
-        db.write_file(python_source.path, &main_source).map_err(to_string)?;
+        db.write_file(&main_path, &main_source).map_err(to_string)?;
     } else {
         // write just the main source code
-        db.write_file(python_source.path, python_source.source_code)
+        db.write_file(&main_path, python_source.source_code)
             .map_err(to_string)?;
     }
 
-    let file = system_path_to_file(&db, python_source.path).map_err(to_string)?;
+    let file = system_path_to_file(&db, &main_path).map_err(to_string)?;
     let mut diagnostics = check_types(&db, file);
     diagnostics.retain(filter_diagnostics);
 
