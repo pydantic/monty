@@ -1,4 +1,7 @@
-use std::fmt::{self, Display};
+use std::{
+    fmt::{self, Display},
+    sync::{Arc, Mutex},
+};
 
 use ruff_db::{
     Db as SourceDb,
@@ -63,8 +66,8 @@ fn to_string(err: impl Display) -> String {
 pub struct TypeCheckingDiagnostics {
     /// The actual diagnostic message
     diagnostics: Vec<Diagnostic>,
-    /// db used to display diagnostics
-    db: MemoryDb,
+    /// db used to display diagnostics, wrapped in Mutex for Sync so MontyTypingError is sendable
+    db: Arc<Mutex<MemoryDb>>,
     /// How to format the output
     format: DiagnosticFormat,
     /// Whether to highlight the output with ansi colors
@@ -74,17 +77,19 @@ pub struct TypeCheckingDiagnostics {
 impl fmt::Debug for TypeCheckingDiagnostics {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let config = self.config();
+        let db = self.db.lock().unwrap();
         write!(
             f,
             "TypeCheckingDiagnostics:\n{}",
-            DisplayDiagnostics::new(&self.db, &config, &self.diagnostics)
+            DisplayDiagnostics::new(&*db, &config, &self.diagnostics)
         )
     }
 }
 
 impl fmt::Display for TypeCheckingDiagnostics {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        DisplayDiagnostics::new(&self.db, &self.config(), &self.diagnostics).fmt(f)
+        let db = self.db.lock().unwrap();
+        DisplayDiagnostics::new(&*db, &self.config(), &self.diagnostics).fmt(f)
     }
 }
 
@@ -94,7 +99,7 @@ impl TypeCheckingDiagnostics {
         diagnostics.sort_by(|a, b| a.rendering_sort_key(&db).cmp(&b.rendering_sort_key(&db)));
         Self {
             diagnostics,
-            db,
+            db: Arc::new(Mutex::new(db)),
             format: DiagnosticFormat::Full,
             color: false,
         }
