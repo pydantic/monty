@@ -1,5 +1,5 @@
 [package]
-name = "monty-python"
+name = "pydantic-monty"
 description = "Python bindings for the Monty sandboxed Python interpreter"
 readme = "README.md"
 version = { workspace = true }

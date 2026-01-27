@@ -1,25 +1,25 @@
 import pytest
 from inline_snapshot import snapshot
 
-import monty
+import pydantic_monty
 
 # === MontyRuntimeError tests ===
 
 
 def test_zero_division_error():
-    m = monty.Monty('1 / 0')
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty('1 / 0')
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     # Check that it's also a MontyError
-    assert isinstance(exc_info.value, monty.MontyError)
+    assert isinstance(exc_info.value, pydantic_monty.MontyError)
     # Check the inner exception
     inner = exc_info.value.exception()
     assert isinstance(inner, ZeroDivisionError)
 
 
 def test_value_error():
-    m = monty.Monty("raise ValueError('bad value')")
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty("raise ValueError('bad value')")
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)
@@ -27,32 +27,32 @@ def test_value_error():
 
 
 def test_type_error():
-    m = monty.Monty("'string' + 1")
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty("'string' + 1")
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     inner = exc_info.value.exception()
     assert isinstance(inner, TypeError)
 
 
 def test_index_error():
-    m = monty.Monty('[1, 2, 3][10]')
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty('[1, 2, 3][10]')
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     inner = exc_info.value.exception()
     assert isinstance(inner, IndexError)
 
 
 def test_key_error():
-    m = monty.Monty("{'a': 1}['b']")
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty("{'a': 1}['b']")
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     inner = exc_info.value.exception()
     assert isinstance(inner, KeyError)
 
 
 def test_attribute_error():
-    m = monty.Monty("raise AttributeError('no such attr')")
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty("raise AttributeError('no such attr')")
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     inner = exc_info.value.exception()
     assert isinstance(inner, AttributeError)
@@ -60,24 +60,24 @@ def test_attribute_error():
 
 
 def test_name_error():
-    m = monty.Monty('undefined_variable')
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty('undefined_variable')
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     inner = exc_info.value.exception()
     assert isinstance(inner, NameError)
 
 
 def test_assertion_error():
-    m = monty.Monty('assert False')
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty('assert False')
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     inner = exc_info.value.exception()
     assert isinstance(inner, AssertionError)
 
 
 def test_assertion_error_with_message():
-    m = monty.Monty("assert False, 'custom message'")
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty("assert False, 'custom message'")
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     inner = exc_info.value.exception()
     assert isinstance(inner, AssertionError)
@@ -85,8 +85,8 @@ def test_assertion_error_with_message():
 
 
 def test_runtime_error():
-    m = monty.Monty("raise RuntimeError('runtime error')")
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty("raise RuntimeError('runtime error')")
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     inner = exc_info.value.exception()
     assert isinstance(inner, RuntimeError)
@@ -94,8 +94,8 @@ def test_runtime_error():
 
 
 def test_not_implemented_error():
-    m = monty.Monty("raise NotImplementedError('not implemented')")
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty("raise NotImplementedError('not implemented')")
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     inner = exc_info.value.exception()
     assert isinstance(inner, NotImplementedError)
@@ -106,25 +106,25 @@ def test_not_implemented_error():
 
 
 def test_syntax_error_on_init():
-    with pytest.raises(monty.MontySyntaxError) as exc_info:
-        monty.Monty('def')
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        pydantic_monty.Monty('def')
     # Check that it's also a MontyError
-    assert isinstance(exc_info.value, monty.MontyError)
+    assert isinstance(exc_info.value, pydantic_monty.MontyError)
     # Check the inner exception
     inner = exc_info.value.exception()
     assert isinstance(inner, SyntaxError)
 
 
 def test_syntax_error_unclosed_paren():
-    with pytest.raises(monty.MontySyntaxError) as exc_info:
-        monty.Monty('print(1')
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        pydantic_monty.Monty('print(1')
     inner = exc_info.value.exception()
     assert isinstance(inner, SyntaxError)
 
 
 def test_syntax_error_invalid_syntax():
-    with pytest.raises(monty.MontySyntaxError) as exc_info:
-        monty.Monty('x = = 1')
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        pydantic_monty.Monty('x = = 1')
     inner = exc_info.value.exception()
     assert isinstance(inner, SyntaxError)
 
@@ -133,14 +133,14 @@ def test_syntax_error_invalid_syntax():
 
 
 def test_catch_with_base_class():
-    m = monty.Monty('1 / 0')
-    with pytest.raises(monty.MontyError):
+    m = pydantic_monty.Monty('1 / 0')
+    with pytest.raises(pydantic_monty.MontyError):
         m.run()
 
 
 def test_catch_syntax_error_with_base_class():
-    with pytest.raises(monty.MontyError):
-        monty.Monty('def')
+    with pytest.raises(pydantic_monty.MontyError):
+        pydantic_monty.Monty('def')
 
 
 # === Exception handling within Monty ===
@@ -154,7 +154,7 @@ except ZeroDivisionError as e:
     result = 'caught'
 result
 """
-    m = monty.Monty(code)
+    m = pydantic_monty.Monty(code)
     assert m.run() == snapshot('caught')
 
 
@@ -165,8 +165,8 @@ def fail():
 
 fail()
 """
-    m = monty.Monty(code)
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty(code)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)
@@ -177,8 +177,8 @@ fail()
 
 
 def test_display_traceback():
-    m = monty.Monty('1 / 0')
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty('1 / 0')
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     display = exc_info.value.display()
     assert 'Traceback (most recent call last):' in display
@@ -186,16 +186,16 @@ def test_display_traceback():
 
 
 def test_display_type_msg():
-    m = monty.Monty("raise ValueError('test message')")
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty("raise ValueError('test message')")
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     display = exc_info.value.display('type-msg')
     assert display == snapshot('ValueError: test message')
 
 
 def test_runtime_display():
-    m = monty.Monty("raise ValueError('test message')")
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty("raise ValueError('test message')")
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     assert exc_info.value.display('msg') == snapshot('test message')
     assert exc_info.value.display('type-msg') == snapshot('ValueError: test message')
@@ -208,22 +208,22 @@ ValueError: test message\
 
 
 def test_str_returns_msg():
-    m = monty.Monty("raise ValueError('test message')")
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty("raise ValueError('test message')")
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     assert str(exc_info.value) == snapshot('ValueError: test message')
 
 
 def test_syntax_error_display():
-    with pytest.raises(monty.MontySyntaxError) as exc_info:
-        monty.Monty('def')
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        pydantic_monty.Monty('def')
     assert exc_info.value.display() == snapshot('Expected an identifier at byte range 3..3')
     assert exc_info.value.display('type-msg') == snapshot('SyntaxError: Expected an identifier at byte range 3..3')
 
 
 def test_syntax_error_str():
-    with pytest.raises(monty.MontySyntaxError) as exc_info:
-        monty.Monty('def')
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        pydantic_monty.Monty('def')
     # str() returns just the message
     assert 'SyntaxError' not in str(exc_info.value)
 
@@ -241,8 +241,8 @@ def outer():
 
 outer()
 """
-    m = monty.Monty(code)
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty(code)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     frames = exc_info.value.traceback()
     assert isinstance(frames, list)
@@ -301,8 +301,8 @@ def foo():
 
 foo()
 """
-    m = monty.Monty(code)
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty(code)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     frames = exc_info.value.traceback()
 
@@ -334,15 +334,15 @@ foo()
 
 
 def test_runtime_error_repr():
-    m = monty.Monty("raise ValueError('test')")
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty("raise ValueError('test')")
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     assert repr(exc_info.value) == snapshot('MontyRuntimeError(ValueError: test)')
 
 
 def test_syntax_error_repr():
-    with pytest.raises(monty.MontySyntaxError) as exc_info:
-        monty.Monty('def')
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        pydantic_monty.Monty('def')
     assert repr(exc_info.value) == snapshot('MontySyntaxError(Expected an identifier at byte range 3..3)')
 
 
@@ -353,8 +353,8 @@ def foo():
 
 foo()
 """
-    m = monty.Monty(code)
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    m = pydantic_monty.Monty(code)
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     frames = exc_info.value.traceback()
     frame = frames[0]

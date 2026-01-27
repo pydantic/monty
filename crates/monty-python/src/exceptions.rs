@@ -28,7 +28,7 @@ use crate::dataclass::get_frozen_instance_error;
 ///
 /// This is the parent class for both `MontySyntaxError` and `MontyRuntimeError`.
 /// Catching `MontyError` will catch any exception raised by Monty.
-#[pyclass(extends=exceptions::PyException, module="monty", subclass)]
+#[pyclass(extends=exceptions::PyException, module="pydantic_monty", subclass)]
 #[derive(Clone)]
 pub struct MontyError {
     /// The underlying Monty exception.
@@ -98,7 +98,7 @@ impl MontyError {
 /// Raised when Python code has syntax errors or cannot be parsed by Monty.
 ///
 /// Inherits from `MontyError`. The inner exception is always a `SyntaxError`.
-#[pyclass(extends=MontyError, module="monty")]
+#[pyclass(extends=MontyError, module="pydantic_monty")]
 #[derive(Clone)]
 pub struct MontySyntaxError;
 
@@ -156,7 +156,7 @@ impl MontySyntaxError {
 /// Inherits from `MontyError`. This exception is raised when static type
 /// analysis detects type errors. Stores the `TypeCheckingFailure` so diagnostics
 /// can be re-rendered with different format/color settings via `display()`.
-#[pyclass(extends=MontyError, module="monty", unsendable)]
+#[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyTypingError {
     failure: TypeCheckingDiagnostics,
 }
@@ -205,7 +205,7 @@ impl MontyTypingError {
 ///
 /// Inherits from `MontyError`. Additionally provides `traceback()` to access
 /// the Monty stack frames where the error occurred.
-#[pyclass(extends=MontyError, module="monty")]
+#[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyRuntimeError {
     /// The traceback frames where the error occurred (pre-converted to Python objects).
     frames: Vec<Py<PyFrame>>,
@@ -293,7 +293,7 @@ impl MontyRuntimeError {
 ///
 /// Contains all the information needed to display a traceback line:
 /// the file location, function name, and optional source code preview.
-#[pyclass(name = "Frame", module = "monty", frozen)]
+#[pyclass(name = "Frame", module = "pydantic_monty", frozen)]
 #[derive(Debug, Clone)]
 pub struct PyFrame {
     /// The filename where the code is located.

@@ -283,14 +283,14 @@ All these markers must be at the start of comment lines to be recognized.
 - Use `make complete-tests` to fill in blank expectations
 - Tests run via `datatest-stable` harness in `tests/datatest_runner.rs`, use `make test-cases` to run them
 
-## Python Package (`monty-python`)
+## Python Package (`pydantic-monty`)
 
 The Python package provides Python bindings for the Monty interpreter, located in `crates/monty-python/`.
 
 ### Structure
 
 - `crates/monty-python/src/` - Rust source for PyO3 bindings
-- `crates/monty-python/monty.pyi` - Type stubs for the Python module
+- `crates/monty-python/python/pydantic_monty/_monty.pyi` - Type stubs for the Python module
 - `crates/monty-python/tests/` - Python tests using pytest
 
 ### Building and Testing
@@ -321,7 +321,7 @@ Check and follow the style of other python tests.
 
 Make sure you put tests in the correct file.
 
-**DO NOT use python/pytest tests for `monty` core functionality!** When testing core functionality, add tests to `crates/monty/test_cases/` or `crates/monty/tests/`. Only use python/pytest tests for `monty-python` functionality testing.
+**DO NOT use python/pytest tests for `monty` core functionality!** When testing core functionality, add tests to `crates/monty/test_cases/` or `crates/monty/tests/`. Only use python/pytest tests for `pydantic_monty` functionality testing.
 
 **NEVER use class-based tests.** All tests should be simple functions.
 

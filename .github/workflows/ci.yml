@@ -27,6 +27,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          prefix-key: "v1-rust"
 
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --all-packages --only-dev
@@ -50,6 +51,10 @@ jobs:
       - run: uvx pre-commit run --color=always --all-files --verbose
         env:
           SKIP: test
+
+      - name: Show diff on failure
+        if: failure()
+        run: git diff
 
   test-rust:
     runs-on: ubuntu-latest
@@ -185,8 +190,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      - run: pip install -U twine
-
       - name: build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -196,8 +199,6 @@ jobs:
           rust-toolchain: stable
           docker-options: -e CI
           working-directory: crates/monty-python
-
-      - run: twine check --strict crates/monty-python/dist/*
 
       - uses: actions/upload-artifact@v4
         with:
@@ -239,8 +240,6 @@ jobs:
         with:
           components: llvm-tools
 
-      - run: pip install -U twine
-
       - name: build PGO wheel
         id: pgo
         uses: ./.github/actions/build-pgo-wheel
@@ -248,29 +247,10 @@ jobs:
           interpreter: ${{ matrix.interpreter }}
           rust-toolchain: stable
 
-      - run: twine check --strict ${{ steps.pgo.outputs.wheel-dir }}/*
-
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: pypi_files-${{ matrix.os }}-pgo
           path: ${{ steps.pgo.outputs.wheel-dir }}
-
-  # Inspect built artifacts
-  inspect-pypi-assets:
-    needs: [build, build-pgo]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: pypi_files-*
-          merge-multiple: true
-          path: dist
-
-      - name: list files
-        run: |
-          ls -lhR dist/
-          ls -1 dist/ | wc -l
-          echo "Expected ~50 wheel files (5 Python versions × 10 platform variants)"
 
   # Test wheels on exotic architectures via QEMU
   test-builds-arch:
@@ -305,8 +285,8 @@ jobs:
             ls -lh /dist/
             python3 -m venv venv
             source venv/bin/activate
-            python3 -m pip install monty-python --no-index --no-deps --find-links /dist --force-reinstall
-            python3 -c "import monty; print(monty.Monty('1 + 2').run())"
+            python3 -m pip install pydantic-monty --no-index --no-deps --find-links /dist --force-reinstall
+            python3 -c "import pydantic_monty; print(pydantic_monty.Monty('1 + 2').run())"
 
   # Test wheels on main OS platforms
   test-builds-os:
@@ -338,31 +318,64 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - run: pip install monty-python --no-index --find-links dist --force-reinstall
-      - run: python -c "import monty; print(monty.Monty('1 + 2').run())"
+      - run: pip install pydantic-monty --no-index --find-links dist --force-reinstall
+      - run: python -c "import pydantic_monty; print(pydantic_monty.Monty('1 + 2').run())"
 
-  # Release to PyPI
-  release-python:
-    name: release to PyPI
-    needs: [check, build, build-pgo, test-builds-arch, test-builds-os]
-    if: success() && startsWith(github.ref, 'refs/tags/')
+  # Inspect built artifacts
+  inspect-python-assets:
+    needs: [build, build-pgo]
     runs-on: ubuntu-latest
-    environment: release-python
-
-    permissions:
-      id-token: write
-
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: pypi_files-*
           merge-multiple: true
           path: dist
 
       - name: list files
-        run: ls -lhR dist/
+        run: |
+          ls -lhR dist/
+          ls -1 dist/ | wc -l
+          echo "Expected ~50 wheel files (5 Python versions × 10 platform variants)"
 
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: astral-sh/setup-uv@v7
+      - run: uvx twine check dist/*
+
+  # Release to PyPI
+  release-python:
+    name: release to PyPI
+    needs: [check, inspect-python-assets, test-builds-arch, test-builds-os]
+    if: success() && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+
+    environment:
+      name: release-python
+      url: https://pypi.org/project/pydantic-monty/${{ steps.check-version.outputs.VERSION }}
+
+    permissions:
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: pypi_files-*
+          merge-multiple: true
+          path: dist
+
+      - id: check-version
+        uses: samuelcolvin/check-python-version@v5
+        with:
+          version_file_path: "Cargo.toml"
+
+      - run: ls -lhR dist/
+
+      - name: Publish to PyPI
+        run: "uv publish --trusted-publishing always dist/*"
 
   build-js:
     strategy:
@@ -455,8 +468,8 @@ jobs:
             crates/monty-js/wasi-worker-browser.mjs
           if-no-files-found: error
     env:
-      MACOSX_DEPLOYMENT_TARGET: '10.13'
-      CARGO_INCREMENTAL: '1'
+      MACOSX_DEPLOYMENT_TARGET: "10.13"
+      CARGO_INCREMENTAL: "1"
 
   test-js-macOS-windows-binding:
     name: Test JS bindings on ${{ matrix.settings.target }} - node@${{ matrix.node }}
@@ -476,8 +489,8 @@ jobs:
             target: x86_64-apple-darwin
             architecture: x64
         node:
-          - '20'
-          - '22'
+          - "20"
+          - "22"
     runs-on: ${{ matrix.settings.host }}
     steps:
       - uses: actions/checkout@v6
@@ -519,8 +532,8 @@ jobs:
         target:
           - x86_64-unknown-linux-gnu
         node:
-          - '20'
-          - '22'
+          - "20"
+          - "22"
     runs-on: ${{ contains(matrix.target, 'aarch64') && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v6
@@ -577,7 +590,7 @@ jobs:
         uses: addnab/docker-run-action@v3
         with:
           image: ${{ steps.docker.outputs.IMAGE }}
-          options: '-v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }}/crates/monty-js --platform ${{ steps.docker.outputs.PLATFORM }}'
+          options: "-v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }}/crates/monty-js --platform ${{ steps.docker.outputs.PLATFORM }}"
           run: npm test
 
   test-js-wasi:
@@ -616,14 +629,16 @@ jobs:
           NAPI_RS_FORCE_WASI: 1
         working-directory: crates/monty-js
 
-  publish-js:
-    name: Publish JS
+  release-js:
+    name: Release to NPM
     runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
     needs:
-      - lint
+      - check
+      # make sure python release will work before publishing to npm
+      - inspect-python-assets
       - test-js-macOS-windows-binding
       - test-js-linux-binding
       - test-js-wasi

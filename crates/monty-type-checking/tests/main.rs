@@ -1,6 +1,7 @@
 use std::fs;
 
-use monty_type_checking::type_check;
+use monty_type_checking::{SourceFile, type_check};
+use pretty_assertions::assert_eq;
 use ruff_db::diagnostic::DiagnosticFormat;
 
 #[test]
@@ -12,39 +13,85 @@ def add(x: int, y: int) -> int:
 result = add(1, 2)
     ";
 
-    let result = type_check(code, "main.py").unwrap();
+    let result = type_check(&SourceFile::new(code, "main.py"), None).unwrap();
     assert!(result.is_none());
 }
 
 #[test]
 fn type_checking_error() {
-    let code = r"
+    let code = "\
 def add(x: int, y: int) -> int:
     return x + y
 
 result = add(1, '2')
     ";
 
-    let result = type_check(code, "main.py").unwrap();
+    let result = type_check(&SourceFile::new(code, "main.py"), None).unwrap();
     assert!(result.is_some());
 
     let error_diagnostics = result.unwrap().to_string();
     assert_eq!(
         error_diagnostics,
         r#"error[invalid-argument-type]: Argument to function `add` is incorrect
- --> main.py:5:17
+ --> main.py:4:17
   |
-3 |     return x + y
-4 |
-5 | result = add(1, '2')
+2 |     return x + y
+3 |
+4 | result = add(1, '2')
   |                 ^^^ Expected `int`, found `Literal["2"]`
   |
 info: Function defined here
- --> main.py:2:5
+ --> main.py:1:5
   |
-2 | def add(x: int, y: int) -> int:
+1 | def add(x: int, y: int) -> int:
   |     ^^^         ------ Parameter declared here
-3 |     return x + y
+2 |     return x + y
+  |
+info: rule `invalid-argument-type` is enabled by default
+
+"#
+    );
+}
+
+#[test]
+fn type_checking_error_stubs() {
+    let stubs = "\
+from dataclasses import dataclass
+
+@dataclass
+class User:
+    name: str
+    age: int
+";
+    let code = "\
+def add(x: int, y: int) -> int:
+    return x + y
+
+result = add(1, '2')";
+
+    let result = type_check(
+        &SourceFile::new(code, "main.py"),
+        Some(&SourceFile::new(stubs, "type_stubs.pyi")),
+    )
+    .unwrap();
+
+    let error_diagnostics = result.unwrap();
+    assert_eq!(
+        error_diagnostics.to_string(),
+        r#"error[invalid-argument-type]: Argument to function `add` is incorrect
+ --> main.py:4:17
+  |
+2 |     return x + y
+3 |
+4 | result = add(1, '2')
+  |                 ^^^ Expected `int`, found `Literal["2"]`
+  |
+info: Function defined here
+ --> main.py:1:5
+  |
+1 | def add(x: int, y: int) -> int:
+  |     ^^^         ------ Parameter declared here
+2 |     return x + y
   |
 info: rule `invalid-argument-type` is enabled by default
 
@@ -61,7 +108,7 @@ def add(x: int, y: int) -> int:
 result = add(1, '2')
     ";
 
-    let result = type_check(code, "main.py").unwrap();
+    let result = type_check(&SourceFile::new(code, "main.py"), None).unwrap();
     assert!(result.is_some());
 
     let failure = result.unwrap().format(DiagnosticFormat::Concise);
@@ -78,7 +125,7 @@ result = add(1, '2')
 fn missing_stdlib_datetime() {
     let code = "import datetime\nprint(datetime.datetime.now())";
 
-    let result = type_check(code, "main.py").unwrap();
+    let result = type_check(&SourceFile::new(code, "main.py"), None).unwrap();
     assert!(result.is_some());
 
     let failure = result.unwrap().format(DiagnosticFormat::Concise);
@@ -97,7 +144,7 @@ fn missing_stdlib_datetime() {
 #[test]
 fn type_good_types() {
     let code = include_str!("good_types.py");
-    let result = type_check(code, "good_types.py").unwrap();
+    let result = type_check(&SourceFile::new(code, "good_types.py"), None).unwrap();
     assert!(result.is_none(), "Expected no type errors, got: {result:#?}");
 }
 
@@ -134,7 +181,7 @@ fn check_file_content(file_name: &str, mut actual: &str) {
 #[test]
 fn type_bad_types() {
     let code = include_str!("bad_types.py");
-    let result = type_check(code, "bad_types.py").unwrap();
+    let result = type_check(&SourceFile::new(code, "bad_types.py"), None).unwrap();
 
     let failure = result.expect("Expected type errors in bad_types.py");
     let actual = failure
@@ -147,7 +194,7 @@ fn type_bad_types() {
 #[test]
 fn test_reveal_types() {
     let code = include_str!("reveal_types.py");
-    let result = type_check(code, "reveal_types.py").unwrap();
+    let result = type_check(&SourceFile::new(code, "reveal_types.py"), None).unwrap();
 
     let failure = result.expect("Expected type errors in reveal_types.py");
     let actual = failure

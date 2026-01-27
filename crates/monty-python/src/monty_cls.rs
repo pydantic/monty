@@ -6,7 +6,7 @@ use ::monty::{
     ResourceTracker, RunProgress, Snapshot, StdPrint,
 };
 use monty::FutureSnapshot;
-use monty_type_checking::type_check;
+use monty_type_checking::{SourceFile, type_check};
 use pyo3::{
     IntoPyObjectExt,
     exceptions::{PyKeyError, PyRuntimeError, PyTypeError, PyValueError},
@@ -27,7 +27,7 @@ use crate::{
 /// Parses and compiles Python code on initialization, then can be run
 /// multiple times with different input values. This separates the parsing
 /// cost from execution, making repeated runs more efficient.
-#[pyclass(name = "Monty", module = "monty")]
+#[pyclass(name = "Monty", module = "pydantic_monty")]
 #[derive(Debug)]
 pub struct PyMonty {
     /// The compiled code snapshot, ready to execute.
@@ -54,10 +54,10 @@ impl PyMonty {
     /// * `inputs` - List of input variable names available in the code
     /// * `external_functions` - List of external function names the code can call
     /// * `type_check` - Whether to perform type checking on the code
-    /// * `type_check_prefix_code` - Prefix code to be executed before type checking
+    /// * `type_check_stubs` - Prefix code to be executed before type checking
     /// * `dataclass_registry` - Registry of dataclass types for reconstructing original types on output.
     #[new]
-    #[pyo3(signature = (code, *, script_name="main.py", inputs=None, external_functions=None, type_check=false, type_check_prefix_code=None, dataclass_registry=None))]
+    #[pyo3(signature = (code, *, script_name="main.py", inputs=None, external_functions=None, type_check=false, type_check_stubs=None, dataclass_registry=None))]
     #[expect(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -66,14 +66,14 @@ impl PyMonty {
         inputs: Option<&Bound<'_, PyList>>,
         external_functions: Option<&Bound<'_, PyList>>,
         type_check: bool,
-        type_check_prefix_code: Option<&str>,
+        type_check_stubs: Option<&str>,
         dataclass_registry: Option<Bound<'_, PyList>>,
     ) -> PyResult<Self> {
         let input_names = list_str(inputs, "inputs")?;
         let external_function_names = list_str(external_functions, "external_functions")?;
 
         if type_check {
-            py_type_check(py, &code, script_name, type_check_prefix_code)?;
+            py_type_check(py, &code, script_name, type_check_stubs)?;
         }
 
         // Create the snapshot (parses the code)
@@ -308,15 +308,14 @@ impl PyMonty {
     }
 }
 
-fn py_type_check(py: Python<'_>, code: &str, script_name: &str, prefix_code: Option<&str>) -> PyResult<()> {
-    let source_code: Cow<str> = if let Some(prefix_code) = prefix_code {
-        format!("{prefix_code}\n{code}").into()
-    } else {
-        code.into()
-    };
-    let result = type_check(&source_code, script_name).map_err(PyRuntimeError::new_err)?;
-    if let Some(failure) = result {
-        Err(MontyTypingError::new_err(py, failure))
+fn py_type_check(py: Python<'_>, code: &str, script_name: &str, type_stubs: Option<&str>) -> PyResult<()> {
+    let type_stubs = type_stubs.map(|type_stubs| SourceFile::new(type_stubs, "type_stubs.pyi"));
+
+    let opt_diagnostics =
+        type_check(&SourceFile::new(code, script_name), type_stubs.as_ref()).map_err(PyRuntimeError::new_err)?;
+
+    if let Some(diagnostic) = opt_diagnostics {
+        Err(MontyTypingError::new_err(py, diagnostic))
     } else {
         Ok(())
     }
@@ -604,7 +603,7 @@ enum EitherSnapshot {
     Done,
 }
 
-#[pyclass(name = "MontySnapshot", module = "monty")]
+#[pyclass(name = "MontySnapshot", module = "pydantic_monty")]
 #[derive(Debug)]
 pub struct PyMontySnapshot {
     snapshot: EitherSnapshot,
@@ -848,7 +847,7 @@ enum EitherFutureSnapshot {
     Done,
 }
 
-#[pyclass(name = "MontyFutureSnapshot", module = "monty")]
+#[pyclass(name = "MontyFutureSnapshot", module = "pydantic_monty")]
 #[derive(Debug)]
 pub struct PyMontyFutureSnapshot {
     snapshot: EitherFutureSnapshot,
@@ -1010,7 +1009,7 @@ impl PyMontyFutureSnapshot {
     }
 }
 
-#[pyclass(name = "MontyComplete", module = "monty")]
+#[pyclass(name = "MontyComplete", module = "pydantic_monty")]
 pub struct PyMontyComplete {
     #[pyo3(get)]
     pub output: Py<PyAny>,

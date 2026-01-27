@@ -3,7 +3,7 @@ from typing import Callable, Literal
 import pytest
 from inline_snapshot import snapshot
 
-import monty
+import pydantic_monty
 
 PrintCallback = Callable[[Literal['stdout'], str], None]
 
@@ -20,7 +20,7 @@ def make_print_collector() -> tuple[list[str], PrintCallback]:
 
 
 def test_print_basic() -> None:
-    m = monty.Monty('print("hello")')
+    m = pydantic_monty.Monty('print("hello")')
     output, callback = make_print_collector()
     m.run(print_callback=callback)
     assert ''.join(output) == snapshot('hello\n')
@@ -31,42 +31,42 @@ def test_print_multiple() -> None:
 print("line 1")
 print("line 2")
 """
-    m = monty.Monty(code)
+    m = pydantic_monty.Monty(code)
     output, callback = make_print_collector()
     m.run(print_callback=callback)
     assert ''.join(output) == snapshot('line 1\nline 2\n')
 
 
 def test_print_with_values() -> None:
-    m = monty.Monty('print(1, 2, 3)')
+    m = pydantic_monty.Monty('print(1, 2, 3)')
     output, callback = make_print_collector()
     m.run(print_callback=callback)
     assert ''.join(output) == snapshot('1 2 3\n')
 
 
 def test_print_with_sep() -> None:
-    m = monty.Monty('print(1, 2, 3, sep="-")')
+    m = pydantic_monty.Monty('print(1, 2, 3, sep="-")')
     output, callback = make_print_collector()
     m.run(print_callback=callback)
     assert ''.join(output) == snapshot('1-2-3\n')
 
 
 def test_print_with_end() -> None:
-    m = monty.Monty('print("hello", end="!")')
+    m = pydantic_monty.Monty('print("hello", end="!")')
     output, callback = make_print_collector()
     m.run(print_callback=callback)
     assert ''.join(output) == snapshot('hello!')
 
 
 def test_print_returns_none() -> None:
-    m = monty.Monty('print("test")')
+    m = pydantic_monty.Monty('print("test")')
     _, callback = make_print_collector()
     result = m.run(print_callback=callback)
     assert result is None
 
 
 def test_print_empty() -> None:
-    m = monty.Monty('print()')
+    m = pydantic_monty.Monty('print()')
     output, callback = make_print_collector()
     m.run(print_callback=callback)
     assert ''.join(output) == snapshot('\n')
@@ -74,16 +74,16 @@ def test_print_empty() -> None:
 
 def test_print_with_limits() -> None:
     """Verify print_callback works together with resource limits."""
-    m = monty.Monty('print("with limits")')
+    m = pydantic_monty.Monty('print("with limits")')
     output, callback = make_print_collector()
-    limits = monty.ResourceLimits(max_duration_secs=5.0)
+    limits = pydantic_monty.ResourceLimits(max_duration_secs=5.0)
     m.run(print_callback=callback, limits=limits)
     assert ''.join(output) == snapshot('with limits\n')
 
 
 def test_print_with_inputs() -> None:
     """Verify print_callback works together with inputs."""
-    m = monty.Monty('print(x)', inputs=['x'])
+    m = pydantic_monty.Monty('print(x)', inputs=['x'])
     output, callback = make_print_collector()
     m.run(inputs={'x': 42}, print_callback=callback)
     assert ''.join(output) == snapshot('42\n')
@@ -94,14 +94,14 @@ def test_print_in_loop() -> None:
 for i in range(3):
     print(i)
 """
-    m = monty.Monty(code)
+    m = pydantic_monty.Monty(code)
     output, callback = make_print_collector()
     m.run(print_callback=callback)
     assert ''.join(output) == snapshot('0\n1\n2\n')
 
 
 def test_print_mixed_types() -> None:
-    m = monty.Monty('print(1, "hello", True, None)')
+    m = pydantic_monty.Monty('print(1, "hello", True, None)')
     output, callback = make_print_collector()
     m.run(print_callback=callback)
     assert ''.join(output) == snapshot('1 hello True None\n')
@@ -118,9 +118,9 @@ def make_error_callback(error: Exception) -> PrintCallback:
 
 def test_print_callback_raises_value_error() -> None:
     """Test that ValueError raised in callback propagates correctly."""
-    m = monty.Monty('print("hello")')
+    m = pydantic_monty.Monty('print("hello")')
     callback = make_error_callback(ValueError('callback error'))
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(print_callback=callback)
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)
@@ -129,9 +129,9 @@ def test_print_callback_raises_value_error() -> None:
 
 def test_print_callback_raises_type_error() -> None:
     """Test that TypeError raised in callback propagates correctly."""
-    m = monty.Monty('print("hello")')
+    m = pydantic_monty.Monty('print("hello")')
     callback = make_error_callback(TypeError('wrong type'))
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(print_callback=callback)
     inner = exc_info.value.exception()
     assert isinstance(inner, TypeError)
@@ -146,9 +146,9 @@ def greet(name):
 
 greet("World")
 """
-    m = monty.Monty(code)
+    m = pydantic_monty.Monty(code)
     callback = make_error_callback(RuntimeError('io error'))
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(print_callback=callback)
     inner = exc_info.value.exception()
     assert isinstance(inner, RuntimeError)
@@ -165,9 +165,9 @@ def outer():
 
 outer()
 """
-    m = monty.Monty(code)
+    m = pydantic_monty.Monty(code)
     callback = make_error_callback(ValueError('nested error'))
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(print_callback=callback)
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)
@@ -180,7 +180,7 @@ def test_print_callback_raises_in_loop() -> None:
 for i in range(5):
     print(i)
 """
-    m = monty.Monty(code)
+    m = pydantic_monty.Monty(code)
     call_count = 0
 
     def callback(stream: Literal['stdout'], text: str) -> None:
@@ -189,7 +189,7 @@ for i in range(5):
         if call_count >= 3:
             raise ValueError('stopped at 3')
 
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(print_callback=callback)
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)

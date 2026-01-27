@@ -1,5 +1,6 @@
 import asyncio
 import sys
+from dataclasses import dataclass
 from typing import assert_type
 
 # === Type checking helper functions ===
@@ -390,3 +391,16 @@ async def bar():
 
 
 await asyncio.gather(bar())  # pyright: ignore
+
+
+@dataclass
+class Point:
+    x: int
+    y: float
+
+
+p = Point(1, 2)
+assert_type(p.x, int)
+assert_type(p.y, float)
+p.x = 3
+print(p)

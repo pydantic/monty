@@ -799,6 +799,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "diff"
+version = "0.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56254986775e3233ffa9c4d7d3faaf6d36a2c09d30b20687e9f88bc8bafc16c8"
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1525,7 +1531,7 @@ dependencies = [
 
 [[package]]
 name = "monty"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "ahash",
  "codspeed-criterion-compat",
@@ -1550,7 +1556,7 @@ dependencies = [
 
 [[package]]
 name = "monty-cli"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "monty",
  "monty_type_checking",
@@ -1571,26 +1577,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "monty-python"
-version = "0.0.0"
-dependencies = [
- "indexmap",
- "monty",
- "monty_type_checking",
- "num-bigint",
- "postcard",
- "pyo3",
- "pyo3-build-config",
- "serde",
-]
-
-[[package]]
 name = "monty_type_checking"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "monty_typeshed",
+ "pretty_assertions",
  "ruff_db",
  "ruff_python_ast",
+ "ruff_text_size",
  "salsa",
  "ty_module_resolver",
  "ty_python_semantic",
@@ -1598,7 +1592,7 @@ dependencies = [
 
 [[package]]
 name = "monty_typeshed"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "path-slash",
  "ruff_db",
@@ -1973,6 +1967,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pretty_assertions"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ae130e2f271fbc2ac3a40fb1d07180839cdbbe443c7a27e1e3c13c5cac0116d"
+dependencies = [
+ "diff",
+ "yansi",
+]
+
+[[package]]
 name = "proc-macro-utils"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1990,6 +1994,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "535d180e0ecab6268a3e718bb9fd44db66bbbc256257165fc699dadf70d16fe7"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "pydantic-monty"
+version = "0.0.1"
+dependencies = [
+ "indexmap",
+ "monty",
+ "monty_type_checking",
+ "num-bigint",
+ "postcard",
+ "pyo3",
+ "pyo3-build-config",
+ "serde",
 ]
 
 [[package]]
@@ -3492,6 +3510,12 @@ checksum = "05f360fc0b24296329c78fda852a1e9ae82de9cf7b27dae4b7f62f118f77b9ed"
 dependencies = [
  "tap",
 ]
+
+[[package]]
+name = "yansi"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049"
 
 [[package]]
 name = "zerocopy"

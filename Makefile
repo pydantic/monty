@@ -54,7 +54,7 @@ dev-js-release: ## Build the JS package (release)
 dev-py-pgo: ## Install the python package for development with profile-guided optimization
 	$(eval PROFDATA := $(shell mktemp -d))
 	RUSTFLAGS='-Cprofile-generate=$(PROFDATA)' uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
-	uv run --package monty-python --only-dev pytest crates/monty-python/tests -k "not test_parallel_exec"
+	uv run --package pydantic-monty --only-dev pytest crates/monty-python/tests -k "not test_parallel_exec"
 	$(eval LLVM_PROFDATA := $(shell rustup run stable bash -c 'echo $$RUSTUP_HOME/toolchains/$$RUSTUP_TOOLCHAIN/lib/rustlib/$$(rustc -Vv | grep host | cut -d " " -f 2)/bin/llvm-profdata'))
 	$(LLVM_PROFDATA) merge -o $(PROFDATA)/merged.profdata $(PROFDATA)
 	RUSTFLAGS='-Cprofile-use=$(PROFDATA)/merged.profdata' $(uv-run-no-sync) maturin develop --uv -m crates/monty-python/Cargo.toml --release
@@ -94,7 +94,7 @@ lint-py: dev-py ## Lint Python code with ruff
 	uv run ruff check
 	uv run basedpyright
 	# mypy-stubtest requires a build of the python package, hence dev-py
-	uv run -m mypy.stubtest monty._monty --ignore-disjoint-bases
+	uv run -m mypy.stubtest pydantic_monty._monty --ignore-disjoint-bases
 
 .PHONY: lint
 lint: lint-rs lint-py ## Lint the code with ruff and clippy
@@ -127,14 +127,14 @@ test-type-checking: ## Run rust tests on monty_type_checking
 
 .PHONY: pytest
 pytest: ## Run Python tests with pytest
-	uv run --package monty-python --only-dev pytest crates/monty-python/tests
+	uv run --package pydantic-monty --only-dev pytest crates/monty-python/tests
 
 .PHONY: test-py
 test-py: dev-py pytest ## Build the python package (debug profile) and run tests
 
 .PHONY: test-docs
 test-docs: dev-py ## Test docs examples only
-	uv run --package monty-python --only-dev pytest crates/monty-python/tests/test_readme_examples.py
+	uv run --package pydantic-monty --only-dev pytest crates/monty-python/tests/test_readme_examples.py
 	cargo test --doc -p monty
 
 .PHONY: test
