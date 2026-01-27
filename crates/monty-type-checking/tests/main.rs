@@ -1,6 +1,7 @@
 use std::fs;
 
 use monty_type_checking::{SourceFile, type_check};
+use pretty_assertions::assert_eq;
 use ruff_db::diagnostic::DiagnosticFormat;
 
 #[test]
@@ -18,7 +19,7 @@ result = add(1, 2)
 
 #[test]
 fn type_checking_error() {
-    let code = r"
+    let code = "\
 def add(x: int, y: int) -> int:
     return x + y
 
@@ -32,19 +33,66 @@ result = add(1, '2')
     assert_eq!(
         error_diagnostics,
         r#"error[invalid-argument-type]: Argument to function `add` is incorrect
- --> main.py:5:17
+ --> main.py:4:17
   |
-3 |     return x + y
-4 |
-5 | result = add(1, '2')
+2 |     return x + y
+3 |
+4 | result = add(1, '2')
   |                 ^^^ Expected `int`, found `Literal["2"]`
   |
 info: Function defined here
- --> main.py:2:5
+ --> main.py:1:5
   |
-2 | def add(x: int, y: int) -> int:
+1 | def add(x: int, y: int) -> int:
   |     ^^^         ------ Parameter declared here
-3 |     return x + y
+2 |     return x + y
+  |
+info: rule `invalid-argument-type` is enabled by default
+
+"#
+    );
+}
+
+#[test]
+fn type_checking_error_stubs() {
+    let stubs = "\
+from dataclasses import dataclass
+
+@dataclass
+class User:
+    name: str
+    age: int
+";
+    let code = "\
+def add(x: int, y: int) -> int:
+    return x + y
+
+result = add(1, '2')";
+
+    let result = type_check(
+        &SourceFile::new(code, "main.py"),
+        Some(&SourceFile::new(stubs, "type_stubs.pyi")),
+    )
+    .unwrap();
+    assert!(result.is_some());
+
+    let error_diagnostics = result.unwrap();
+    assert_eq!(
+        error_diagnostics.to_string(),
+        r#"error[invalid-argument-type]: Argument to function `add` is incorrect
+ --> main.py:4:17
+  |
+2 |     return x + y
+3 |
+4 | result = add(1, '2')
+  |                 ^^^ Expected `int`, found `Literal["2"]`
+  |
+info: Function defined here
+ --> main.py:1:5
+  |
+1 | def add(x: int, y: int) -> int:
+  |     ^^^         ------ Parameter declared here
+2 |     return x + y
   |
 info: rule `invalid-argument-type` is enabled by default
 

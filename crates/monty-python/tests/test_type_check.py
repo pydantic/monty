@@ -212,17 +212,17 @@ def test_constructor_default_allows_run_with_inputs():
     assert result == 6
 
 
-def test_constructor_type_check_prefix_code():
-    """type_check_prefix_code provides declarations for type checking."""
+def test_constructor_type_check_stubs():
+    """type_check_stubs provides declarations for type checking."""
     # Without prefix, this would fail type checking (x is undefined)
     # Use assignment to define x, not just type annotation
-    m = pydantic_monty.Monty('result = x + 1', type_check=True, type_check_prefix_code='x = 0')
+    m = pydantic_monty.Monty('result = x + 1', type_check=True, type_check_stubs='x = 0')
     # Should construct successfully because prefix declares x
     assert m is not None
 
 
-def test_constructor_type_check_prefix_code_with_external_function():
-    """type_check_prefix_code can declare external function signatures."""
+def test_constructor_type_check_stubs_with_external_function():
+    """type_check_stubs can declare external function signatures."""
     # Define fetch as a function that takes a string and returns a string
     prefix = """
 def fetch(url: str) -> str:
@@ -232,32 +232,78 @@ def fetch(url: str) -> str:
         'result = fetch("https://example.com")',
         external_functions=['fetch'],
         type_check=True,
-        type_check_prefix_code=prefix,
+        type_check_stubs=prefix,
     )
     assert m is not None
 
 
-def test_constructor_type_check_prefix_code_invalid():
-    """type_check_prefix_code with wrong types still catches errors."""
+def test_constructor_type_check_stubs_invalid():
+    """type_check_stubs with wrong types still catches errors."""
     # Prefix defines x as str, but code tries to use it with int addition
     with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
         pydantic_monty.Monty(
             'result: int = x + 1',
             type_check=True,
-            type_check_prefix_code='x = "hello"',
+            type_check_stubs='x = "hello"',
         )
     # Should fail because str + int is invalid
     assert str(exc_info.value) == snapshot("""\
 error[unsupported-operator]: Unsupported `+` operation
- --> main.py:2:15
+ --> main.py:1:15
   |
-1 | x = "hello"
-2 | result: int = x + 1
+1 | result: int = x + 1
   |               -^^^-
   |               |   |
   |               |   Has type `Literal[1]`
   |               Has type `Literal["hello"]`
   |
 info: rule `unsupported-operator` is enabled by default
+
+""")
+
+
+def test_inject_stubs_offset():
+    type_definitions = """\
+from typing import Any
+
+Messages = list[dict[str, Any]]
+
+async def call_llm(prompt: str, messages: Messages) -> str | Messages:
+    ...
+
+prompt: str = ''
+"""
+
+    code = """\
+async def agent(prompt: str, messages: MXessages):
+    while True:
+        print(f'messages so far: {messages}')
+        output = await call_llm(prompt, messages)
+        if isinstance(output, str):
+            return output
+        messages.extend(output)
+
+await agent(prompt, [])
+"""
+
+    with pytest.raises(pydantic_monty.MontyTypingError) as exc_info:
+        pydantic_monty.Monty(
+            code,
+            inputs=['prompt'],
+            external_functions=['call_llm'],
+            script_name='agent.py',
+            type_check=True,
+            type_check_stubs=type_definitions,
+        )
+    assert str(exc_info.value) == snapshot("""\
+error[unresolved-reference]: Name `MXessages` used when not defined
+ --> agent.py:1:40
+  |
+1 | async def agent(prompt: str, messages: MXessages):
+  |                                        ^^^^^^^^^
+2 |     while True:
+3 |         print(f'messages so far: {messages}')
+  |
+info: rule `unresolved-reference` is enabled by default
 
 """)

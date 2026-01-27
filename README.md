@@ -95,7 +95,7 @@ m = pydantic_monty.Monty(
     external_functions=['call_llm'],
     script_name='agent.py',
     type_check=True,
-    type_check_prefix_code=type_definitions,
+    type_check_stubs=type_definitions,
 )
 
 

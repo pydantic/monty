@@ -50,6 +50,7 @@ num-integer = "0.1"
 indexmap = { version = "2.9", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 postcard = { version = "1.1", features = ["alloc"] }
+pretty_assertions = "1.4"
 
 [workspace.lints.rust]
 # codspeed cfg is set by codspeed-criterion-compat when running in CodSpeed environment

@@ -7,8 +7,9 @@ use ruff_db::{
     Db as SourceDb,
     diagnostic::{Diagnostic, DiagnosticFormat, DiagnosticId, DisplayDiagnosticConfig, DisplayDiagnostics},
     files::{FileRootKind, system_path_to_file},
-    system::{DbWithWritableSystem as _, SystemPath, SystemPathBuf},
+    system::{DbWithWritableSystem as _, SystemPathBuf},
 };
+use ruff_text_size::{TextRange, TextSize};
 use ty_module_resolver::SearchPathSettings;
 use ty_python_semantic::{
     Program, ProgramSettings, PythonPlatform, PythonVersionSource, PythonVersionWithSource, types::check_types,
@@ -52,6 +53,13 @@ pub fn type_check(
     // resolution to work. We use "/" as the root directory so paths appear without a prefix.
     let src_root = SystemPathBuf::from("/");
 
+    // Register the source root for Salsa tracking - required for module resolution
+    db.files().try_add_root(&db, &src_root, FileRootKind::Project);
+
+    let search_paths = SearchPathSettings::new(vec![src_root.clone()])
+        .to_search_paths(db.system(), db.vendored())
+        .map_err(to_string)?;
+
     // The API is confusing here - we have to load the "program" here like this, otherwise we get unwrap
     // panics when calling `check_types`
     Program::from_settings(
@@ -62,20 +70,15 @@ pub fn type_check(
                 source: PythonVersionSource::default(),
             },
             python_platform: PythonPlatform::default(),
-            search_paths: SearchPathSettings::new(vec![src_root.clone()])
-                .to_search_paths(db.system(), db.vendored())
-                .map_err(to_string)?,
+            search_paths,
         },
     );
 
-    // Register the source root for Salsa tracking - required for module resolution
-    db.files()
-        .try_add_root(&db, SystemPath::new("/"), FileRootKind::Project);
-
     // Build absolute paths for files under /
     let main_path = src_root.join(python_source.path);
+    let main_source = python_source.source_code;
 
-    if let Some(stubs_file) = stubs_file {
+    let code_offset: u32 = if let Some(stubs_file) = stubs_file {
         let stubs_path = src_root.join(stubs_file.path);
 
         // write the stub file
@@ -86,15 +89,19 @@ pub fn type_check(
             .path
             .split_once('.')
             .map_or(stubs_file.path, |(before, _)| before);
-        let main_source = format!("from {} import *\n{}", stub_stem, python_source.source_code);
+        let mut new_source = format!("from {stub_stem} import *\n");
+        let offset = u32::try_from(new_source.len()).map_err(to_string)?;
+        new_source.push_str(main_source);
 
         // write the main source code
-        db.write_file(&main_path, &main_source).map_err(to_string)?;
+        db.write_file(&main_path, &new_source).map_err(to_string)?;
+        // one line offset for errors vs. the original source code since we injected the stub import
+        offset
     } else {
         // write just the main source code
-        db.write_file(&main_path, python_source.source_code)
-            .map_err(to_string)?;
-    }
+        db.write_file(&main_path, main_source).map_err(to_string)?;
+        0
+    };
 
     let file = system_path_to_file(&db, &main_path).map_err(to_string)?;
     let mut diagnostics = check_types(&db, file);
@@ -103,6 +110,26 @@ pub fn type_check(
     if diagnostics.is_empty() {
         Ok(None)
     } else {
+        // without all this errors would appear on the wrong line because we injected `from type_stubs import *`
+
+        // if we injected the stubs import, we need to write the actual source back to the file in the database
+        db.write_file(&main_path, main_source).map_err(to_string)?;
+        // and then adjust each span in the error message to account for the injected stubs import
+        if code_offset > 0 {
+            let offset = TextSize::new(code_offset);
+            for diagnostic in &mut diagnostics {
+                for ann in diagnostic.annotations_mut() {
+                    if let Some(range) = ann.get_span().range() {
+                        let new_range = TextRange::new(range.start() - offset, range.end() - offset);
+                        let new_span = ann.get_span().clone().with_range(new_range);
+                        ann.set_span(new_span);
+                    }
+                }
+            }
+        }
+        // Sort diagnostics by line number
+        diagnostics.sort_by(|a, b| a.rendering_sort_key(&db).cmp(&b.rendering_sort_key(&db)));
+
         Ok(Some(TypeCheckingDiagnostics::new(diagnostics, db)))
     }
 }
@@ -124,6 +151,9 @@ pub struct TypeCheckingDiagnostics {
     color: bool,
 }
 
+/// Debug output for TypeCheckingDiagnostics shows the pretty typing output, and no other values since
+/// this will be displayed when users are printing `Result<..., TypeCheckingDiagnostics>` etc. and the
+/// raw errors are not useful to end users.
 impl fmt::Debug for TypeCheckingDiagnostics {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let config = self.config();
@@ -136,6 +166,16 @@ impl fmt::Debug for TypeCheckingDiagnostics {
     }
 }
 
+/// To display true debugs details about the TypeCheckingDiagnostics
+#[derive(Debug)]
+#[expect(dead_code)]
+pub struct DebugTypeCheckingDiagnostics<'a> {
+    diagnostics: &'a [Diagnostic],
+    db: Arc<Mutex<MemoryDb>>,
+    format: DiagnosticFormat,
+    color: bool,
+}
+
 impl fmt::Display for TypeCheckingDiagnostics {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let db = self.db.lock().unwrap();
@@ -144,9 +184,7 @@ impl fmt::Display for TypeCheckingDiagnostics {
 }
 
 impl TypeCheckingDiagnostics {
-    fn new(mut diagnostics: Vec<Diagnostic>, db: MemoryDb) -> Self {
-        // Sort diagnostics by line number
-        diagnostics.sort_by(|a, b| a.rendering_sort_key(&db).cmp(&b.rendering_sort_key(&db)));
+    fn new(diagnostics: Vec<Diagnostic>, db: MemoryDb) -> Self {
         Self {
             diagnostics,
             db: Arc::new(Mutex::new(db)),
@@ -157,6 +195,17 @@ impl TypeCheckingDiagnostics {
 
     fn config(&self) -> DisplayDiagnosticConfig {
         DisplayDiagnosticConfig::default().format(self.format).color(self.color)
+    }
+
+    /// To display debug details for the TypeCheckingDiagnostics since debug is the pretty output
+    #[must_use]
+    pub fn debug_details(&self) -> DebugTypeCheckingDiagnostics<'_> {
+        DebugTypeCheckingDiagnostics {
+            diagnostics: &self.diagnostics,
+            db: self.db.clone(),
+            format: self.format,
+            color: self.color,
+        }
     }
 
     /// Set the format of the diagnostics.
