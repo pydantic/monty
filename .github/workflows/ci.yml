@@ -51,6 +51,10 @@ jobs:
         env:
           SKIP: test
 
+      - name: Show diff on failure
+        if: failure()
+        run: git diff
+
   test-rust:
     runs-on: ubuntu-latest
 
