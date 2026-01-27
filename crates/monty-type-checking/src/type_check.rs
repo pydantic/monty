@@ -16,17 +16,36 @@ use ty_python_semantic::{
 
 use crate::db::MemoryDb;
 
+/// Definition of a source file.
+pub struct SourceFile<'a> {
+    /// source code
+    pub source_code: &'a str,
+    /// file path
+    pub path: &'a str,
+}
+
+impl<'a> SourceFile<'a> {
+    /// Create a new source file.
+    #[must_use]
+    pub fn new(source_code: &'a str, path: &'a str) -> Self {
+        Self { source_code, path }
+    }
+}
+
 /// Type check some python source code, checking if it's valid to run with monty.
 ///
 /// # Arguments
 /// * `python_source` - The python source code to type check.
-/// * `python_file_path` - The path for the python file used in the output.
+/// * `stubs_file` - Optional stubs file to use for type checking.
 ///
 /// # Returns
 /// * `Ok(Some(TypeCheckingFailure))` - If there are typing errors.
 /// * `Ok(None)` - If there are no typing errors.
 /// * `Err(String)` - If there was an unexpected/internal error during type checking.
-pub fn type_check(python_source: &str, python_file_path: &str) -> Result<Option<TypeCheckingDiagnostics>, String> {
+pub fn type_check(
+    python_source: &SourceFile<'_>,
+    stubs_file: Option<&SourceFile<'_>>,
+) -> Result<Option<TypeCheckingDiagnostics>, String> {
     let mut db = MemoryDb::new();
 
     // The API is confusing here - we have to load the "program" here like this, otherwise we get unwrap
@@ -45,8 +64,27 @@ pub fn type_check(python_source: &str, python_file_path: &str) -> Result<Option<
         },
     );
 
-    db.write_file(python_file_path, python_source).map_err(to_string)?;
-    let file = system_path_to_file(&db, python_file_path).map_err(to_string)?;
+    if let Some(stubs_file) = stubs_file {
+        // write the stub file
+        db.write_file(stubs_file.path, stubs_file.source_code)
+            .map_err(to_string)?;
+
+        // prepend the stub import to the main source code
+        let stub_stem = stubs_file
+            .path
+            .split_once('.')
+            .map_or(stubs_file.path, |(before, _)| before);
+        let main_source = format!("from {} import *\n{}", stub_stem, python_source.source_code);
+
+        // write the main source code
+        db.write_file(python_source.path, &main_source).map_err(to_string)?;
+    } else {
+        // write just the main source code
+        db.write_file(python_source.path, python_source.source_code)
+            .map_err(to_string)?;
+    }
+
+    let file = system_path_to_file(&db, python_source.path).map_err(to_string)?;
     let mut diagnostics = check_types(&db, file);
     diagnostics.retain(filter_diagnostics);
 

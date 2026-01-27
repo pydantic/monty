@@ -6,7 +6,7 @@ use ::monty::{
     ResourceTracker, RunProgress, Snapshot, StdPrint,
 };
 use monty::FutureSnapshot;
-use monty_type_checking::type_check;
+use monty_type_checking::{SourceFile, type_check};
 use pyo3::{
     IntoPyObjectExt,
     exceptions::{PyKeyError, PyRuntimeError, PyTypeError, PyValueError},
@@ -309,14 +309,11 @@ impl PyMonty {
 }
 
 fn py_type_check(py: Python<'_>, code: &str, script_name: &str, prefix_code: Option<&str>) -> PyResult<()> {
-    let source_code: Cow<str> = if let Some(prefix_code) = prefix_code {
-        format!("{prefix_code}\n{code}").into()
-    } else {
-        code.into()
-    };
-    let result = type_check(&source_code, script_name).map_err(PyRuntimeError::new_err)?;
-    if let Some(failure) = result {
-        Err(MontyTypingError::new_err(py, failure))
+    let sub_file = prefix_code.map(|prefix_code| SourceFile::new(prefix_code, "type_stubs.pyi"));
+    let opt_diagnostics =
+        type_check(&SourceFile::new(code, script_name), sub_file.as_ref()).map_err(PyRuntimeError::new_err)?;
+    if let Some(diagnostic) = opt_diagnostics {
+        Err(MontyTypingError::new_err(py, diagnostic))
     } else {
         Ok(())
     }
