@@ -1,9 +1,20 @@
 # Tests for BigInt (arbitrary precision integer) support
-# Note: Monty's parser doesn't support literals > i64, so we compute large values
 
 # === Setup constants ===
 MAX_I64 = 9223372036854775807  # i64::MAX
 MIN_I64 = -MAX_I64 - 1  # i64::MIN (compute to avoid type checker overflow)
+
+# === BigInt literals ===
+# Monty supports parsing integer literals larger than i64
+LITERAL_BIG = 10000000000000000000000000000000000000000
+assert LITERAL_BIG == 10**40, 'bigint literal equals computed value'
+assert str(LITERAL_BIG) == '10000000000000000000000000000000000000000', 'bigint literal str'
+assert type(LITERAL_BIG) == int, 'bigint literal type is int'
+
+# Negative bigint literal (via unary negation)
+NEG_BIG_LITERAL = -10000000000000000000000000000000000000000
+assert NEG_BIG_LITERAL == -(10**40), 'negative bigint literal'
+assert str(NEG_BIG_LITERAL) == '-10000000000000000000000000000000000000000', 'negative bigint literal str'
 
 # === Overflow promotion ===
 bigger = MAX_I64 + 1
