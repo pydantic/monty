@@ -126,17 +126,23 @@ test('monty typing error is monty error subclass', (t) => {
   t.true(error instanceof Error)
 })
 
-test('monty typing error display', (t) => {
+test('monty typing error displayDiagnostics', (t) => {
   const m = new Monty('"hello" + 1')
   const error = t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
-  // display() returns the raw message without the "TypeError:" prefix
-  // error.message includes the prefix: "TypeError: <raw_message>"
-  t.is(error.message, `TypeError: ${error.display()}`)
+  // displayDiagnostics() returns rich diagnostics, display('msg') returns the raw message
+  t.is(error.message, `TypeError: ${error.display('msg')}`)
 })
 
-test('monty typing error display concise format', (t) => {
+test('monty typing error displayDiagnostics concise format', (t) => {
   const m = new Monty('"hello" + 1')
   const error = t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
-  const concise = error.display('concise')
+  const concise = error.displayDiagnostics('concise')
   t.true(concise.includes('error[unsupported-operator]'))
+})
+
+test('monty typing error inherits base display formats', (t) => {
+  const m = new Monty('"hello" + 1')
+  const error = t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
+  t.is(error.display('msg'), error.exception.message)
+  t.true(error.display('type-msg').startsWith('TypeError:'))
 })

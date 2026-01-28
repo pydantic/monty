@@ -390,3 +390,20 @@ test('exception getter returns correct info for syntax error', (t) => {
   const error = t.throws(() => new Monty('def'), { instanceOf: MontySyntaxError })
   t.is(error.exception.typeName, 'SyntaxError')
 })
+
+// =============================================================================
+// Polymorphic display() tests
+// =============================================================================
+
+test('display() works polymorphically on MontyTypingError', (t) => {
+  try {
+    new Monty('x: int = "str"', { typeCheck: true })
+    t.fail('Should have thrown')
+  } catch (e) {
+    t.true(e instanceof MontyError)
+    const msg = (e as MontyError).display('msg')
+    t.true(msg.length > 0)
+    const typeMsg = (e as MontyError).display('type-msg')
+    t.true(typeMsg.startsWith('TypeError:'))
+  }
+})

@@ -1,31 +1,56 @@
 // Custom error classes that extend Error for proper JavaScript error handling.
 // These wrap the native Rust classes to provide instanceof support.
 
-const native = require('./index.js')
+import type {
+  MontyOptions,
+  RunOptions,
+  ResourceLimits,
+  Frame,
+  ExceptionInfo,
+  StartOptions,
+  ResumeOptions,
+  ExceptionInput,
+  SnapshotLoadOptions,
+  JsMontyObject,
+} from './index.js'
 
-// Re-export native classes for instanceof checks
-const {
-  Monty: NativeMonty,
-  MontySnapshot: NativeMontySnapshot,
-  MontyComplete: NativeMontyComplete,
-  MontyException: NativeMontyException,
-  MontyTypingError: NativeMontyTypingError,
-} = native
+import {
+  Monty as NativeMonty,
+  MontySnapshot as NativeMontySnapshot,
+  MontyComplete as NativeMontyComplete,
+  MontyException as NativeMontyException,
+  MontyTypingError as NativeMontyTypingError,
+} from './index.js'
+
+export type {
+  MontyOptions,
+  RunOptions,
+  ResourceLimits,
+  Frame,
+  ExceptionInfo,
+  StartOptions,
+  ResumeOptions,
+  ExceptionInput,
+  SnapshotLoadOptions,
+  JsMontyObject,
+}
+
+/**
+ * Alias for ResourceLimits (deprecated name).
+ */
+export type JsResourceLimits = ResourceLimits
 
 /**
  * Base class for all Monty interpreter errors.
  *
  * This is the parent class for `MontySyntaxError`, `MontyRuntimeError`, and `MontyTypingError`.
  * Catching `MontyError` will catch any exception raised by Monty.
- *
- * @extends Error
  */
-class MontyError extends Error {
-  /**
-   * @param {string} typeName - The Python exception type name
-   * @param {string} message - The error message
-   */
-  constructor(typeName, message) {
+export class MontyError extends Error {
+  protected _typeName: string
+  protected _message: string
+
+  constructor(typeName: string, message: string) {
     super(message ? `${typeName}: ${message}` : typeName)
     this.name = 'MontyError'
     this._typeName = typeName
@@ -38,9 +63,8 @@ class MontyError extends Error {
 
   /**
    * Returns information about the inner Python exception.
-   * @returns {{ typeName: string, message: string }}
    */
-  get exception() {
+  get exception(): ExceptionInfo {
     return {
       typeName: this._typeName,
       message: this._message,
@@ -49,10 +73,9 @@ class MontyError extends Error {
 
   /**
    * Returns formatted exception string.
-   * @param {'type-msg' | 'msg'} [format='msg'] - Output format
-   * @returns {string}
+   * @param format - 'type-msg' for 'ExceptionType: message', 'msg' for just the message
    */
-  display(format = 'msg') {
+  display(format: 'type-msg' | 'msg' = 'msg'): string {
     switch (format) {
       case 'msg':
         return this._message
@@ -69,19 +92,15 @@ class MontyError extends Error {
  *
  * The inner exception is always a `SyntaxError`. Use `display()` to get
  * formatted error output.
- *
- * @extends MontyError
  */
-class MontySyntaxError extends MontyError {
-  /**
-   * @param {string | NativeMontyException} messageOrNative - The syntax error message or native exception
-   */
-  constructor(messageOrNative) {
+export class MontySyntaxError extends MontyError {
+  private _native: NativeMontyException | null
+
+  constructor(messageOrNative: string | NativeMontyException) {
     if (typeof messageOrNative === 'string') {
       super('SyntaxError', messageOrNative)
       this._native = null
     } else {
-      // Native exception object
       const exc = messageOrNative.exception
       super('SyntaxError', exc.message)
       this._native = messageOrNative
@@ -94,10 +113,9 @@ class MontySyntaxError extends MontyError {
 
   /**
    * Returns formatted exception string.
-   * @param {'type-msg' | 'msg'} [format='msg'] - Output format
-   * @returns {string}
+   * @param format - 'type-msg' for 'SyntaxError: message', 'msg' for just the message
    */
-  display(format = 'msg') {
+  override display(format: 'type-msg' | 'msg' = 'msg'): string {
     if (this._native && typeof this._native.display === 'function') {
       return this._native.display(format)
     }
@@ -110,23 +128,24 @@ class MontySyntaxError extends MontyError {
  *
  * Provides access to the traceback frames where the error occurred via `traceback()`,
  * and formatted output via `display()`.
- *
- * @extends MontyError
  */
-class MontyRuntimeError extends MontyError {
-  /**
-   * @param {NativeMontyException | string} nativeOrTypeName - Native exception or type name
-   * @param {string} [message] - The error message (only if first arg is type name)
-   * @param {string} [tracebackString] - The full traceback string (only if first arg is type name)
-   * @param {Array<import('./index').Frame>} [frames] - The traceback frames (only if first arg is type name)
-   */
-  constructor(nativeOrTypeName, message, tracebackString, frames) {
+export class MontyRuntimeError extends MontyError {
+  private _native: NativeMontyException | null
+  private _tracebackString: string | null
+  private _frames: Frame[] | null
+
+  constructor(
+    nativeOrTypeName: NativeMontyException | string,
+    message?: string,
+    tracebackString?: string,
+    frames?: Frame[],
+  ) {
     if (typeof nativeOrTypeName === 'string') {
       // Legacy constructor: (typeName, message, tracebackString, frames)
-      super(nativeOrTypeName, message)
+      super(nativeOrTypeName, message!)
       this._native = null
-      this._tracebackString = tracebackString
-      this._frames = frames
+      this._tracebackString = tracebackString ?? null
+      this._frames = frames ?? null
     } else {
       // New constructor: (nativeException)
       const exc = nativeOrTypeName.exception
@@ -143,9 +162,8 @@ class MontyRuntimeError extends MontyError {
 
   /**
    * Returns the Monty traceback as an array of Frame objects.
-   * @returns {Array<import('./index').Frame>}
    */
-  traceback() {
+  traceback(): Frame[] {
     if (this._native) {
       return this._native.traceback()
     }
@@ -154,10 +172,9 @@ class MontyRuntimeError extends MontyError {
 
   /**
    * Returns formatted exception string.
-   * @param {'traceback' | 'type-msg' | 'msg'} [format='traceback'] - Output format
-   * @returns {string}
+   * @param format - 'traceback' for full traceback, 'type-msg' for 'ExceptionType: message', 'msg' for just the message
    */
-  display(format = 'traceback') {
+  display(format: 'traceback' | 'type-msg' | 'msg' = 'traceback'): string {
     if (this._native && typeof this._native.display === 'function') {
       return this._native.display(format)
     }
@@ -175,25 +192,32 @@ class MontyRuntimeError extends MontyError {
   }
 }
 
+export type TypingDisplayFormat =
+  | 'full'
+  | 'concise'
+  | 'azure'
+  | 'json'
+  | 'jsonlines'
+  | 'rdjson'
+  | 'pylint'
+  | 'gitlab'
+  | 'github'
+
 /**
  * Raised when type checking finds errors in the code.
  *
  * This exception is raised when static type analysis detects type errors.
- * Use `display()` to render diagnostics in various formats.
- *
- * @extends MontyError
+ * Use `displayDiagnostics()` to render rich diagnostics in various formats for tooling integration.
+ * Use `display()` (inherited) for simple 'type-msg' or 'msg' formats.
  */
-class MontyTypingError extends MontyError {
-  /**
-   * @param {string | NativeMontyTypingError} messageOrNative - The type error message or native error
-   * @param {object} [nativeError] - Deprecated: The native MontyTypingError instance
-   */
-  constructor(messageOrNative, nativeError = null) {
+export class MontyTypingError extends MontyError {
+  private _native: NativeMontyTypingError | null
+
+  constructor(messageOrNative: string | NativeMontyTypingError, nativeError: NativeMontyTypingError | null = null) {
     if (typeof messageOrNative === 'string') {
       super('TypeError', messageOrNative)
       this._native = nativeError
     } else {
-      // Native error object
       const exc = messageOrNative.exception
       super('TypeError', exc.message)
       this._native = messageOrNative
@@ -205,17 +229,15 @@ class MontyTypingError extends MontyError {
   }
 
   /**
-   * Renders the type error diagnostics with the specified format and color.
+   * Renders rich type error diagnostics for tooling integration.
    *
-   * @param {'full' | 'concise' | 'azure' | 'json' | 'jsonlines' | 'rdjson' | 'pylint' | 'gitlab' | 'github'} [format='full']
-   * @param {boolean} [color=false] - Whether to include ANSI color codes
-   * @returns {string}
+   * @param format - Output format (default: 'full')
+   * @param color - Include ANSI color codes (default: false)
    */
-  display(format = 'full', color = false) {
+  displayDiagnostics(format: TypingDisplayFormat = 'full', color: boolean = false): string {
     if (this._native && typeof this._native.display === 'function') {
       return this._native.display(format, color)
     }
-    // Fallback if no native error
     return this._message
   }
 }
@@ -223,16 +245,18 @@ class MontyTypingError extends MontyError {
 /**
  * Wrapped Monty class that throws proper Error subclasses.
  */
-class Monty {
+export class Monty {
+  private _native: NativeMonty
+
   /**
    * Creates a new Monty interpreter by parsing the given code.
    *
-   * @param {string} code - Python code to execute
-   * @param {import('./index').MontyOptions} [options] - Configuration options
+   * @param code - Python code to execute
+   * @param options - Configuration options
    * @throws {MontySyntaxError} If the code has syntax errors
    * @throws {MontyTypingError} If type checking is enabled and finds errors
    */
-  constructor(code, options) {
+  constructor(code: string, options?: MontyOptions) {
     const result = NativeMonty.create(code, options)
 
     if (result instanceof NativeMontyException) {
@@ -252,10 +276,10 @@ class Monty {
   /**
    * Performs static type checking on the code.
    *
-   * @param {string} [prefixCode] - Optional code to prepend before type checking
+   * @param prefixCode - Optional code to prepend before type checking
    * @throws {MontyTypingError} If type checking finds errors
    */
-  typeCheck(prefixCode) {
+  typeCheck(prefixCode?: string): void {
     const result = this._native.typeCheck(prefixCode)
     if (result instanceof NativeMontyTypingError) {
       throw new MontyTypingError(result)
@@ -265,11 +289,11 @@ class Monty {
   /**
    * Executes the code and returns the result.
    *
-   * @param {import('./index').RunOptions} [options] - Execution options
-   * @returns {any} The result of the last expression
+   * @param options - Execution options (inputs, limits)
+   * @returns The result of the last expression
    * @throws {MontyRuntimeError} If the code raises an exception
    */
-  run(options) {
+  run(options?: RunOptions): JsMontyObject {
     const result = this._native.run(options)
     if (result instanceof NativeMontyException) {
       throw new MontyRuntimeError(result)
@@ -280,62 +304,58 @@ class Monty {
   /**
    * Starts execution and returns either a snapshot (paused at external call) or completion.
    *
-   * @param {import('./index').StartOptions} [options] - Execution options
-   * @returns {MontySnapshot | MontyComplete}
+   * @param options - Execution options (inputs, limits)
+   * @returns MontySnapshot if an external function call is pending, MontyComplete if done
    * @throws {MontyRuntimeError} If the code raises an exception
    */
-  start(options) {
+  start(options?: StartOptions): MontySnapshot | MontyComplete {
     const result = this._native.start(options)
     return wrapStartResult(result)
   }
 
   /**
    * Serializes the Monty instance to a binary format.
-   * @returns {Buffer}
    */
-  dump() {
+  dump(): Buffer {
     return this._native.dump()
   }
 
   /**
    * Deserializes a Monty instance from binary format.
-   * @param {Buffer} data
-   * @returns {Monty}
    */
-  static load(data) {
-    const instance = Object.create(Monty.prototype)
+  static load(data: Buffer): Monty {
+    const instance = Object.create(Monty.prototype) as Monty
     instance._native = NativeMonty.load(data)
     return instance
   }
 
-  /** @returns {string} */
-  get scriptName() {
+  /** Returns the script name. */
+  get scriptName(): string {
     return this._native.scriptName
   }
 
-  /** @returns {string[]} */
-  get inputs() {
+  /** Returns the input variable names. */
+  get inputs(): string[] {
     return this._native.inputs
   }
 
-  /** @returns {string[]} */
-  get externalFunctions() {
+  /** Returns the external function names. */
+  get externalFunctions(): string[] {
     return this._native.externalFunctions
   }
 
-  /** @returns {string} */
-  repr() {
+  /** Returns a string representation of the Monty instance. */
+  repr(): string {
     return this._native.repr()
   }
 }
 
 /**
  * Helper to wrap native start/resume results, throwing errors as needed.
- * @param {NativeMontySnapshot | NativeMontyComplete | NativeMontyException} result
- * @returns {MontySnapshot | MontyComplete}
- * @throws {MontyRuntimeError}
  */
-function wrapStartResult(result) {
+function wrapStartResult(
+  result: NativeMontySnapshot | NativeMontyComplete | NativeMontyException,
+): MontySnapshot | MontyComplete {
   if (result instanceof NativeMontyException) {
     throw new MontyRuntimeError(result)
   }
@@ -345,8 +365,7 @@ function wrapStartResult(result) {
   if (result instanceof NativeMontyComplete) {
     return new MontyComplete(result)
   }
-  // Fallback - shouldn't happen, but handle gracefully
-  return result
+  throw new Error(`Unexpected result type from native binding: ${result}`)
 }
 
 /**
@@ -355,67 +374,62 @@ function wrapStartResult(result) {
  * Contains information about the pending external function call and allows
  * resuming execution with the return value or an exception.
  */
-class MontySnapshot {
-  /**
-   * @param {NativeMontySnapshot} nativeSnapshot - The native MontySnapshot instance
-   */
-  constructor(nativeSnapshot) {
+export class MontySnapshot {
+  private _native: NativeMontySnapshot
+
+  constructor(nativeSnapshot: NativeMontySnapshot) {
     this._native = nativeSnapshot
   }
 
-  /** @returns {string} */
-  get scriptName() {
+  /** Returns the name of the script being executed. */
+  get scriptName(): string {
     return this._native.scriptName
   }
 
-  /** @returns {string} */
-  get functionName() {
+  /** Returns the name of the external function being called. */
+  get functionName(): string {
     return this._native.functionName
   }
 
-  /** @returns {any[]} */
-  get args() {
+  /** Returns the positional arguments passed to the external function. */
+  get args(): JsMontyObject[] {
     return this._native.args
   }
 
-  /** @returns {Record<string, any>} */
-  get kwargs() {
-    return this._native.kwargs
+  /** Returns the keyword arguments passed to the external function as an object. */
+  get kwargs(): Record<string, JsMontyObject> {
+    return this._native.kwargs as Record<string, JsMontyObject>
   }
 
   /**
    * Resumes execution with either a return value or an exception.
    *
-   * @param {import('./index').ResumeOptions} options - Object with either `returnValue` or `exception`
-   * @returns {MontySnapshot | MontyComplete}
+   * @param options - Object with either `returnValue` or `exception`
+   * @returns MontySnapshot if another external call is pending, MontyComplete if done
    * @throws {MontyRuntimeError} If the code raises an exception
    */
-  resume(options) {
+  resume(options: ResumeOptions): MontySnapshot | MontyComplete {
     const result = this._native.resume(options)
     return wrapStartResult(result)
   }
 
   /**
    * Serializes the MontySnapshot to a binary format.
-   * @returns {Buffer}
    */
-  dump() {
+  dump(): Buffer {
     return this._native.dump()
   }
 
   /**
    * Deserializes a MontySnapshot from binary format.
-   * @param {Buffer} data
-   * @param {import('./index').SnapshotLoadOptions} [options]
-   * @returns {MontySnapshot}
    */
-  static load(data, options) {
+  static load(data: Buffer, options?: SnapshotLoadOptions): MontySnapshot {
     const nativeSnapshot = NativeMontySnapshot.load(data, options)
     return new MontySnapshot(nativeSnapshot)
   }
 
-  /** @returns {string} */
-  repr() {
+  /** Returns a string representation of the MontySnapshot. */
+  repr(): string {
     return this._native.repr()
   }
 }
@@ -423,23 +437,34 @@ class MontySnapshot {
 /**
  * Represents completed execution with a final output value.
  */
-class MontyComplete {
-  /**
-   * @param {NativeMontyComplete} nativeComplete - The native MontyComplete instance
-   */
-  constructor(nativeComplete) {
+export class MontyComplete {
+  private _native: NativeMontyComplete
+
+  constructor(nativeComplete: NativeMontyComplete) {
     this._native = nativeComplete
   }
 
-  /** @returns {any} */
-  get output() {
+  /** Returns the final output value from the executed code. */
+  get output(): JsMontyObject {
     return this._native.output
   }
 
-  /** @returns {string} */
-  repr() {
+  /** Returns a string representation of the MontyComplete. */
+  repr(): string {
     return this._native.repr()
   }
+}
+
+/**
+ * Options for `runMontyAsync`.
+ */
+export interface RunMontyAsyncOptions {
+  /** Input values for the script. */
+  inputs?: Record<string, JsMontyObject>
+  /** External function implementations (sync or async). */
+  externalFunctions?: Record<string, (...args: unknown[]) => unknown>
+  /** Resource limits. */
+  limits?: ResourceLimits
 }
 
 /**
@@ -449,12 +474,9 @@ class MontyComplete {
  * When an external function returns a Promise, it will be awaited before
  * resuming execution.
  *
- * @param {Monty} montyRunner - The Monty runner instance to execute
- * @param {Object} [options] - Execution options
- * @param {Record<string, any>} [options.inputs] - Input values for the script
- * @param {Record<string, Function>} [options.externalFunctions] - External function implementations (sync or async)
- * @param {import('./index').JsResourceLimits} [options.limits] - Resource limits
- * @returns {Promise<any>} The output of the Monty script
+ * @param montyRunner - The Monty runner instance to execute
+ * @param options - Execution options
+ * @returns The output of the Monty script
  * @throws {MontyRuntimeError} If the code raises an exception
  * @throws {MontySyntaxError} If the code has syntax errors
  *
@@ -474,75 +496,51 @@ class MontyComplete {
  *   }
  * });
  */
-async function runMontyAsync(montyRunner, options = {}) {
+export async function runMontyAsync(montyRunner: Monty, options: RunMontyAsyncOptions = {}): Promise<JsMontyObject> {
   const { inputs, externalFunctions = {}, limits } = options
 
-  let progress = montyRunner.start({ inputs, limits })
+  let progress: MontySnapshot | MontyComplete = montyRunner.start({ inputs, limits })
 
-  while (true) {
-    if (progress instanceof MontyComplete) {
-      return progress.output
+  while (progress instanceof MontySnapshot) {
+    const snapshot = progress
+    const funcName = snapshot.functionName
+    const extFunction = externalFunctions[funcName]
+
+    if (!extFunction) {
+      // Function not found - resume with a KeyError exception
+      progress = snapshot.resume({
+        exception: {
+          type: 'KeyError',
+          message: `"External function '${funcName}' not found"`,
+        },
+      })
+      continue
     }
 
-    if (progress instanceof MontySnapshot) {
-      const funcName = progress.functionName
-      const extFunction = externalFunctions[funcName]
+    try {
+      // Call the external function
+      let result = extFunction(...snapshot.args, snapshot.kwargs)
 
-      if (!extFunction) {
-        // Function not found - resume with a KeyError exception
-        progress = progress.resume({
-          exception: {
-            type: 'KeyError',
-            message: `"External function '${funcName}' not found"`,
-          },
-        })
-        continue
+      // If the result is a Promise, await it
+      if (result && typeof (result as Promise<unknown>).then === 'function') {
+        result = await result
       }
 
-      try {
-        // Call the external function
-        let result = extFunction(...progress.args, progress.kwargs)
-
-        // If the result is a Promise, await it
-        if (result && typeof result.then === 'function') {
-          result = await result
-        }
-
-        // Resume with the return value
-        progress = progress.resume({ returnValue: result })
-      } catch (error) {
-        // External function threw an exception - convert to Monty exception
-        const excType = error.name || 'RuntimeError'
-        const excMessage = error.message || String(error)
-        progress = progress.resume({
-          exception: {
-            type: excType,
-            message: excMessage,
-          },
-        })
-      }
-    } else {
-      // Unexpected progress type
-      throw new Error(`Unexpected progress type: ${progress}`)
+      // Resume with the return value
+      progress = snapshot.resume({ returnValue: result })
+    } catch (error) {
+      // External function threw an exception - convert to Monty exception
+      const err = error as Error
+      const excType = err.name || 'RuntimeError'
+      const excMessage = err.message || String(error)
+      progress = snapshot.resume({
+        exception: {
+          type: excType,
+          message: excMessage,
+        },
+      })
     }
   }
-}
 
-module.exports = {
-  // Main class
-  Monty,
-  // Iterative execution classes
-  MontySnapshot,
-  MontyComplete,
-  // Error classes
-  MontyError,
-  MontySyntaxError,
-  MontyRuntimeError,
-  MontyTypingError,
-  // Async execution helper
-  runMontyAsync,
-  // Re-export types/interfaces (these are just for documentation, not actual values)
+  return progress.output
 }
-
-// Also export as ES module compatible
-module.exports.default = module.exports
