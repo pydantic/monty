@@ -16,6 +16,111 @@ NEG_BIG_LITERAL = -10000000000000000000000000000000000000000
 assert NEG_BIG_LITERAL == -(10**40), 'negative bigint literal'
 assert str(NEG_BIG_LITERAL) == '-10000000000000000000000000000000000000000', 'negative bigint literal str'
 
+# === BigInt literal arithmetic ===
+# bigint_literal * int
+assert 10000000000000000000000000000000000000000 * 2 == 2 * 10**40, 'bigint literal * int'
+assert 2 * 10000000000000000000000000000000000000000 == 2 * 10**40, 'int * bigint literal'
+
+# bigint_literal / int (true division)
+assert 10000000000000000000000000000000000000000 / 2 == 10**40 / 2, 'bigint literal / int'
+assert 10000000000000000000000000000000000000000 / 10000000000000000000000000000000000000000 == 1.0, (
+    'bigint literal / bigint literal'
+)
+
+# bigint_literal // int (floor division)
+assert 10000000000000000000000000000000000000000 // 3 == 10**40 // 3, 'bigint literal // int'
+assert 10000000000000000000000000000000000000000 // 10000000000000000000000000000000000000000 == 1, (
+    'bigint literal // bigint literal'
+)
+
+# bigint_literal % int (modulo)
+assert 10000000000000000000000000000000000000000 % 7 == 10**40 % 7, 'bigint literal % int'
+assert 10000000000000000000000000000000000000001 % 10000000000000000000000000000000000000000 == 1, (
+    'bigint literal % bigint literal'
+)
+
+# bigint_literal + int
+assert 10000000000000000000000000000000000000000 + 1 == 10**40 + 1, 'bigint literal + int'
+assert 1 + 10000000000000000000000000000000000000000 == 10**40 + 1, 'int + bigint literal'
+
+# bigint_literal - int
+assert 10000000000000000000000000000000000000000 - 1 == 10**40 - 1, 'bigint literal - int'
+assert 10000000000000000000000000000000000000001 - 10000000000000000000000000000000000000000 == 1, (
+    'bigint literal - bigint literal'
+)
+
+# bigint_literal ** int
+assert 10000000000000000000**2 == 10**38, 'bigint literal ** 2'
+
+# === int() parsing of big integers ===
+assert int('10000000000000000000000000000000000000000') == 10**40, 'int() parses bigint string'
+assert int('-10000000000000000000000000000000000000000') == -(10**40), 'int() parses negative bigint string'
+assert int('99999999999999999999999999999999999999999999999999') == 10**50 - 1, 'int() parses very large bigint string'
+
+# === BigInt literal comparisons ===
+assert 10000000000000000000000000000000000000000 > 9999999999999999999999999999999999999999, (
+    'bigint literal > bigint literal'
+)
+assert 10000000000000000000000000000000000000000 >= 10000000000000000000000000000000000000000, (
+    'bigint literal >= bigint literal'
+)
+assert 9999999999999999999999999999999999999999 < 10000000000000000000000000000000000000000, (
+    'bigint literal < bigint literal'
+)
+assert 10000000000000000000000000000000000000000 <= 10000000000000000000000000000000000000000, (
+    'bigint literal <= bigint literal'
+)
+assert 10000000000000000000000000000000000000000 == 10000000000000000000000000000000000000000, (
+    'bigint literal == bigint literal'
+)
+assert 10000000000000000000000000000000000000000 != 10000000000000000000000000000000000000001, (
+    'bigint literal != bigint literal'
+)
+
+# bigint literal vs int comparisons
+assert 10000000000000000000000000000000000000000 > 1, 'bigint literal > int'
+assert 1 < 10000000000000000000000000000000000000000, 'int < bigint literal'
+
+# === BigInt literal bool conversion ===
+assert bool(10000000000000000000000000000000000000000), 'bigint literal is truthy'
+assert bool(-10000000000000000000000000000000000000000), 'negative bigint literal is truthy'
+
+# === BigInt literal hash consistency ===
+# Same literal value should have same hash
+h1 = hash(10000000000000000000000000000000000000000)
+h2 = hash(10000000000000000000000000000000000000000)
+assert h1 == h2, 'same bigint literal has same hash'
+
+# Computed equal value should have same hash
+h3 = hash(10**40)
+assert h1 == h3, 'bigint literal hash equals computed hash'
+
+# === BigInt literal bitwise operations ===
+assert 10000000000000000000000000000000000000000 & 0xFF == (10**40) & 0xFF, 'bigint literal & int'
+assert 10000000000000000000000000000000000000000 | 1 == (10**40) | 1, 'bigint literal | int'
+assert 10000000000000000000000000000000000000000 ^ 10000000000000000000000000000000000000000 == 0, (
+    'bigint literal ^ bigint literal'
+)
+assert 10000000000000000000000000000000000000000 >> 10 == (10**40) >> 10, 'bigint literal >> int'
+assert 10000000000000000000000000000000000000000 << 10 == (10**40) << 10, 'bigint literal << int'
+
+# === BigInt literal in collections ===
+d = {10000000000000000000000000000000000000000: 'value'}
+assert d[10000000000000000000000000000000000000000] == 'value', 'bigint literal as dict key'
+assert d[10**40] == 'value', 'computed bigint finds literal key'
+
+lst = [10000000000000000000000000000000000000000, 20000000000000000000000000000000000000000]
+assert lst[0] == 10**40, 'bigint literal in list'
+assert lst[1] == 2 * 10**40, 'bigint literal in list index 1'
+
+# === BigInt literal repr/str ===
+assert repr(10000000000000000000000000000000000000000) == '10000000000000000000000000000000000000000', (
+    'bigint literal repr'
+)
+assert str(10000000000000000000000000000000000000000) == '10000000000000000000000000000000000000000', (
+    'bigint literal str'
+)
+
 # === Overflow promotion ===
 bigger = MAX_I64 + 1
 assert bigger == MAX_I64 + 1, 'add overflow promotes to bigint'

@@ -670,9 +670,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let idx = fetch_u16!(cached_frame);
                     // Copy without incrementing refcount first (avoids borrow conflict)
                     let value = cached_frame.code.constants().get(idx).copy_for_extend();
-                    // Handle InternBigInt specially - convert to heap-allocated LongInt
-                    if let Value::InternBigInt(bigint_id) = value {
-                        let bi = self.interns.get_bigint(bigint_id).clone();
+                    // Handle InternLongInt specially - convert to heap-allocated LongInt
+                    if let Value::InternLongInt(long_int_id) = value {
+                        let bi = self.interns.get_long_int(long_int_id).clone();
                         match LongInt::new(bi).into_value(self.heap) {
                             Ok(v) => self.push(v),
                             Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),

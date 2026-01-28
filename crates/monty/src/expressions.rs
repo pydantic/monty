@@ -2,7 +2,7 @@ use crate::{
     args::ArgExprs,
     builtins::Builtins,
     fstring::FStringPart,
-    intern::{BigIntId, BytesId, StringId},
+    intern::{BytesId, LongIntId, StringId},
     namespace::NamespaceId,
     parse::{CodeRange, ParsedSignature, Try},
     signature::Signature,
@@ -325,9 +325,9 @@ pub enum Literal {
     Str(StringId),
     /// An interned bytes literal. The BytesId references the bytes in the Interns table.
     Bytes(BytesId),
-    /// An interned big integer literal. The BigIntId references the BigInt in the Interns table.
+    /// An interned long integer literal. The `LongIntId` references the value in the Interns table.
     /// Used for integer literals that exceed the i64 range.
-    BigInt(BigIntId),
+    LongInt(LongIntId),
     /// A marker value (e.g., typing constructs like Any, Optional, etc.).
     Marker(Marker),
 }
@@ -346,7 +346,7 @@ impl From<Literal> for Value {
             Literal::Float(v) => Self::Float(v),
             Literal::Str(string_id) => Self::InternString(string_id),
             Literal::Bytes(bytes_id) => Self::InternBytes(bytes_id),
-            Literal::BigInt(bigint_id) => Self::InternBigInt(bigint_id),
+            Literal::LongInt(long_int_id) => Self::InternLongInt(long_int_id),
             Literal::Marker(marker) => Self::Marker(marker),
         }
     }

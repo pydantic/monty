@@ -859,8 +859,8 @@ impl<'a> Parser<'a> {
                                 .to_string()
                                 .parse::<BigInt>()
                                 .expect("ruff Int should always be valid");
-                            let bigint_id = self.interner.intern_bigint(bi);
-                            Literal::BigInt(bigint_id)
+                            let long_int_id = self.interner.intern_long_int(bi);
+                            Literal::LongInt(long_int_id)
                         }
                     }
                     Number::Float(f) => Literal::Float(f),
