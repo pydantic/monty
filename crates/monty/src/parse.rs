@@ -855,10 +855,9 @@ impl<'a> Parser<'a> {
                             Literal::Int(i)
                         } else {
                             // Integer too large for i64, parse string representation as BigInt
-                            let bi = i
-                                .to_string()
-                                .parse::<BigInt>()
-                                .expect("ruff Int should always be valid");
+                            // Handles radix prefixes (0x, 0o, 0b) and underscores
+                            let bi = parse_int_literal(&i.to_string())
+                                .ok_or_else(|| ParseError::syntax(format!("invalid integer literal: {i}"), position))?;
                             let long_int_id = self.interner.intern_long_int(bi);
                             Literal::LongInt(long_int_id)
                         }
@@ -1436,4 +1435,34 @@ impl ParseError {
             ),
         }
     }
+}
+
+/// Parses an integer literal string into a `BigInt`, handling radix prefixes and underscores.
+///
+/// Supports Python integer literal formats:
+/// - Decimal: `123`, `1_000_000`
+/// - Hexadecimal: `0x1a2b`, `0X1A2B`
+/// - Octal: `0o777`, `0O777`
+/// - Binary: `0b1010`, `0B1010`
+///
+/// Returns `None` if the string cannot be parsed.
+fn parse_int_literal(s: &str) -> Option<BigInt> {
+    // Remove underscores (Python allows them as digit separators)
+    let cleaned: String = s.chars().filter(|c| *c != '_').collect();
+    let cleaned = cleaned.as_str();
+
+    // Detect radix from prefix
+    if cleaned.len() >= 2 {
+        let prefix = &cleaned[..2];
+        let digits = &cleaned[2..];
+        match prefix.to_ascii_lowercase().as_str() {
+            "0x" => return BigInt::parse_bytes(digits.as_bytes(), 16),
+            "0o" => return BigInt::parse_bytes(digits.as_bytes(), 8),
+            "0b" => return BigInt::parse_bytes(digits.as_bytes(), 2),
+            _ => {}
+        }
+    }
+
+    // Default to decimal
+    cleaned.parse::<BigInt>().ok()
 }

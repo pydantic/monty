@@ -193,13 +193,15 @@ impl Type {
                             Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
                             Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), heap),
                             Value::Ref(heap_id) => {
-                                // Clone the string to release the borrow on heap
-                                let s = match heap.get(*heap_id) {
-                                    HeapData::Str(s) => s.to_string(),
-                                    HeapData::LongInt(li) => return Ok(li.clone().into_value(heap)?),
-                                    _ => return Err(ExcType::type_error_int_conversion(v.py_type(heap))),
-                                };
-                                parse_int_from_str(&s, heap)
+                                // Clone data to release the borrow on heap before mutation
+                                match heap.get(*heap_id) {
+                                    HeapData::Str(s) => {
+                                        let s = s.to_string();
+                                        parse_int_from_str(&s, heap)
+                                    }
+                                    HeapData::LongInt(li) => li.clone().into_value(heap).map_err(Into::into),
+                                    _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
+                                }
                             }
                             _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
                         };

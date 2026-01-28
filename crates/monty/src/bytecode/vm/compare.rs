@@ -5,7 +5,7 @@ use crate::{
     exception_private::{ExcType, RunError},
     io::PrintWriter,
     resource::ResourceTracker,
-    types::PyTrait,
+    types::{LongInt, PyTrait},
     value::Value,
 };
 
@@ -111,8 +111,19 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
             match mod_value {
                 Ok(Some(v)) => {
-                    let is_equal = v.py_eq(k, self.heap, self.interns);
+                    // Handle InternLongInt by converting to heap LongInt for comparison
+                    let (k_value, k_needs_drop) = if let Value::InternLongInt(id) = k {
+                        let bi = self.interns.get_long_int(*id).clone();
+                        (LongInt::new(bi).into_value(self.heap)?, true)
+                    } else {
+                        (k.copy_for_extend(), false)
+                    };
+
+                    let is_equal = v.py_eq(&k_value, self.heap, self.interns);
                     v.drop_with_heap(self.heap);
+                    if k_needs_drop {
+                        k_value.drop_with_heap(self.heap);
+                    }
                     self.push(Value::Bool(is_equal));
                     Ok(())
                 }

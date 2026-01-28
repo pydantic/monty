@@ -104,6 +104,26 @@ assert 10000000000000000000000000000000000000000 ^ 10000000000000000000000000000
 assert 10000000000000000000000000000000000000000 >> 10 == (10**40) >> 10, 'bigint literal >> int'
 assert 10000000000000000000000000000000000000000 << 10 == (10**40) << 10, 'bigint literal << int'
 
+# === Non-decimal BigInt literals ===
+# Large hex literal (2^64)
+big_hex = 0x10000000000000000
+assert big_hex == 2**64, 'large hex literal'
+
+bigger_hex = 0x10000000000000000123
+assert bigger_hex == 75557863725914323419427, f'large hex literal {bigger_hex}'
+
+# Large binary literal (2^65)
+big_bin = 0b100000000000000000000000000000000000000000000000000000000000000000
+assert big_bin == 2**65, 'large binary literal'
+
+# Large octal literal
+big_oct = 0o10000000000000000000000
+assert big_oct == 8**22, 'large octal literal'
+
+# Underscores in large non-decimal
+big_hex_underscore = 0x1_0000_0000_0000_0000
+assert big_hex_underscore == 2**64, 'large hex with underscores'
+
 # === BigInt literal in collections ===
 d = {10000000000000000000000000000000000000000: 'value'}
 assert d[10000000000000000000000000000000000000000] == 'value', 'bigint literal as dict key'
