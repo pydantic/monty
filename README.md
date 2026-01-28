@@ -258,9 +258,11 @@ assert_eq!(result, MontyObject::Int(42));
       """Get the population of a city."""
       return {'london': 9_000_000, 'paris': 2_100_000, 'tokyo': 14_000_000}.get(city.lower(), 0)
 
+  toolset = CodeModeToolset(toolset)
+
   agent = Agent(
       'anthropic:claude-sonnet-4-5',
-      toolsets=[CodeModeToolset(wrapped=toolset)],
+      toolsets=[toolset],
   )
 
   result = agent.run_sync('Compare the weather and population of London, Paris, and Tokyo.')
