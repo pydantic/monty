@@ -56,6 +56,7 @@
     "lint": "oxlint .",
     "prepublishOnly": "napi prepublish -t npm",
     "test": "ava",
+    "smoke-test": "bash scripts/smoke-test.sh",
     "preversion": "napi build --platform && git add .",
     "version": "napi version"
   },

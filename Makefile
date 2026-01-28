@@ -42,6 +42,10 @@ lint-js: install-js ## Lint JS code with oxlint
 test-js: dev-js ## Build and test the JS package
 	cd crates/monty-js && npm test
 
+.PHONY: smoke-test-js
+smoke-test-js: ## Run smoke test for JS package (builds, packs, and tests installation)
+	cd crates/monty-js && npm run smoke-test
+
 .PHONY: dev-py-release
 dev-py-release: ## Install the python package for development with a release build
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
