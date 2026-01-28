@@ -245,20 +245,18 @@ assert_eq!(result, MontyObject::Int(42));
       conditions: str
 
 
+  toolset = FunctionToolset()
+
+  @toolset.tool
   def get_weather(city: str) -> WeatherResult:
       """Get current weather for a city."""
       # your real implementation here
       return {'city': city, 'temp_c': 18, 'conditions': 'partly cloudy'}
 
-
+  @toolset.tool
   def get_population(city: str) -> int:
       """Get the population of a city."""
       return {'london': 9_000_000, 'paris': 2_100_000, 'tokyo': 14_000_000}.get(city.lower(), 0)
-
-
-  toolset = FunctionToolset()
-  toolset.add_function(get_weather, takes_ctx=False)
-  toolset.add_function(get_population, takes_ctx=False)
 
   agent = Agent(
       'anthropic:claude-sonnet-4-5',
