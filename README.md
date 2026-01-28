@@ -227,7 +227,7 @@ assert_eq!(result, MontyObject::Int(42));
   ## PydanticAI Integration
 
   Monty will power code-mode in
-  [PydanticAI](https://github.com/pydantic/pydantic-ai). Instead of making
+  [Pydantic AI](https://github.com/pydantic/pydantic-ai). Instead of making
   sequential tool calls, the LLM writes Python code that calls your tools
   as functions and Monty executes it safely.
 
