@@ -137,3 +137,10 @@ monty.wasi.cjs
 monty.wasi-browser.js
 wasi-worker.mjs
 wasi-worker-browser.mjs
+
+# tsc output (source is wrapper.ts)
+wrapper.js
+wrapper.d.ts
+wrapper.d.ts.map
+wrapper.js.map
+.claude/settings.local.json
