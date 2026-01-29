@@ -50,7 +50,7 @@ jobs:
 
       - run: uvx pre-commit run --color=always --all-files --verbose
         env:
-          SKIP: test
+          SKIP: no-commit-to-branch
 
       - name: Show diff on failure
         if: failure()
@@ -412,6 +412,11 @@ jobs:
         run: "uv publish --trusted-publishing always dist/*"
 
   build-js:
+    name: build JS - ${{ matrix.settings.target }} - node@22
+    runs-on: ${{ matrix.settings.host }}
+    # only run on push to main, on tags, or if 'Full Build' label is present
+    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build')
+
     strategy:
       fail-fast: false
       matrix:
@@ -431,8 +436,6 @@ jobs:
           - host: ubuntu-latest
             target: wasm32-wasip1-threads
             build: npm run build:napi -- --target wasm32-wasip1-threads && npm run build:ts
-    name: build JS - ${{ matrix.settings.target }} - node@22
-    runs-on: ${{ matrix.settings.host }}
     steps:
       - uses: actions/checkout@v6
       - name: Setup node
