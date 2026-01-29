@@ -634,6 +634,10 @@ impl<'a> Compiler<'a> {
                 }
             }
 
+            Expr::ChainCmp { left, comparisons } => {
+                self.compile_chain_comparison(left, comparisons, expr_loc.position)?;
+            }
+
             Expr::Not(operand) => {
                 self.compile_expr(operand)?;
                 // Restore the full expression's position for traceback caret range
@@ -953,6 +957,93 @@ impl<'a> Compiler<'a> {
                 self.code.emit(operator_to_opcode(op));
             }
         }
+        Ok(())
+    }
+
+    /// Compiles a chain comparison expression like `a < b < c < d`.
+    ///
+    /// Chain comparisons evaluate each intermediate value only once and short-circuit
+    /// on the first false result. Uses stack manipulation to avoid namespace pollution.
+    ///
+    /// Bytecode strategy for `a < b < c`:
+    /// ```text
+    /// eval a              # Stack: [a]
+    /// eval b              # Stack: [a, b]
+    /// Dup                 # Stack: [a, b, b]
+    /// Rot3                # Stack: [b, a, b]
+    /// CompareLt           # Stack: [b, result1]
+    /// JumpIfFalseOrPop    # if false: jump to cleanup; if true: pop, stack=[b]
+    /// eval c              # Stack: [b, c]
+    /// CompareLt           # Stack: [result2]
+    /// Jump @end
+    /// @cleanup:           # Stack: [b, False]
+    /// Rot2                # Stack: [False, b]
+    /// Pop                 # Stack: [False]
+    /// @end:
+    /// ```
+    fn compile_chain_comparison(
+        &mut self,
+        left: &ExprLoc,
+        comparisons: &[(CmpOperator, ExprLoc)],
+        position: CodeRange,
+    ) -> Result<(), CompileError> {
+        let n = comparisons.len();
+
+        // Remember stack depth before the chain for cleanup calculation
+        let base_depth = self.code.stack_depth();
+
+        // Compile leftmost operand
+        self.compile_expr(left)?;
+
+        // Track jump targets for short-circuit cleanup
+        let mut cleanup_jumps = Vec::with_capacity(n - 1);
+
+        for (i, (op, right)) in comparisons.iter().enumerate() {
+            let is_last = i == n - 1;
+
+            // Compile the right operand
+            self.compile_expr(right)?;
+
+            if !is_last {
+                // Keep a copy of the intermediate for the next comparison
+                self.code.emit(Opcode::Dup);
+                // Reorder: [prev, curr, curr] -> [curr, prev, curr]
+                self.code.emit(Opcode::Rot3);
+            }
+
+            // Emit comparison
+            self.code.set_location(position, None);
+            if let CmpOperator::ModEq(value) = op {
+                let const_idx = self.code.add_const(Value::Int(*value));
+                self.code.emit_u16(Opcode::CompareModEq, const_idx);
+            } else {
+                self.code.emit(cmp_operator_to_opcode(op));
+            }
+
+            if !is_last {
+                // Short-circuit: if false, jump to cleanup
+                let jump = self.code.emit_jump(Opcode::JumpIfFalseOrPop);
+                cleanup_jumps.push(jump);
+            }
+        }
+
+        // Jump past cleanup (result already on stack)
+        let end_jump = self.code.emit_jump(Opcode::Jump);
+
+        // Cleanup: remove the saved intermediate value, keep False result
+        // The cleanup is only reached via JumpIfFalseOrPop which doesn't pop,
+        // so the stack has: [intermediate, False] (2 extra items from base)
+        for jump in cleanup_jumps {
+            self.code.patch_jump(jump);
+        }
+        self.code.set_stack_depth(base_depth + 2); // [intermediate, False]
+        self.code.emit(Opcode::Rot2); // [False, intermediate]
+        self.code.emit(Opcode::Pop); // [False]
+
+        self.code.patch_jump(end_jump);
+        // Final result is on stack: base_depth + 1
+        self.code.set_stack_depth(base_depth + 1);
+
         Ok(())
     }
 

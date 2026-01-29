@@ -145,11 +145,6 @@ pub struct Parser<'a> {
     filename_id: StringId,
     /// String interner for names (variables, functions, etc).
     pub interner: InternerBuilder,
-    /// Counter for generating unique chain comparison variable names.
-    ///
-    /// Used to create synthetic variable names like `_chain_cmp_0`, `_chain_cmp_1`, etc.
-    /// for storing intermediate values in chain comparisons like `a < b < c`.
-    chain_cmp_counter: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -168,7 +163,6 @@ impl<'a> Parser<'a> {
             code,
             filename_id,
             interner,
-            chain_cmp_counter: 0,
         }
     }
 
@@ -1013,30 +1007,12 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Transforms a chain comparison into nested `And` expressions.
+    /// Parses a chain comparison expression like `a < b < c < d`.
     ///
-    /// Chain comparisons like `a < b < c` are semantically equivalent to
-    /// `(a < b) and (b < c)` with `b` evaluated only once. We transform them to:
-    /// ```text
-    /// And {
-    ///   left: CmpOp(a, <, (_chain_cmp_0 := b)),
-    ///   right: CmpOp(_chain_cmp_0, <, c)
-    /// }
-    /// ```
-    ///
-    /// For longer chains like `a < b < c < d`:
-    /// ```text
-    /// And {
-    ///   left: And {
-    ///     left: CmpOp(a, <, (_chain_cmp_0 := b)),
-    ///     right: CmpOp(_chain_cmp_0, <, (_chain_cmp_1 := c))
-    ///   },
-    ///   right: CmpOp(_chain_cmp_1, <, d)
-    /// }
-    /// ```
-    ///
-    /// Each intermediate value is stored using a walrus operator (Named expression)
-    /// and referenced in subsequent comparisons using the synthetic variable name.
+    /// Chain comparisons evaluate each intermediate value only once and short-circuit
+    /// on the first false result. This creates an `Expr::ChainCmp` node which is
+    /// compiled to bytecode using stack manipulation (Dup, Rot) rather than
+    /// temporary variables, avoiding namespace pollution.
     fn parse_chain_comparison(
         &mut self,
         left: AstExpr,
@@ -1045,68 +1021,19 @@ impl<'a> Parser<'a> {
         position: CodeRange,
     ) -> Result<ExprLoc, ParseError> {
         let left_expr = self.parse_expression(left)?;
-        let n = ops.len();
+        let comparisons = ops
+            .into_iter()
+            .zip(comparators)
+            .map(|(op, cmp)| Ok((convert_compare_op(op), self.parse_expression(cmp)?)))
+            .collect::<Result<Vec<_>, ParseError>>()?;
 
-        // Build the comparisons from left to right, storing intermediate values
-        let mut comparisons = Vec::with_capacity(n);
-        let mut prev_expr = Some(left_expr);
-
-        for (i, (op, comparator)) in ops.into_iter().zip(comparators).enumerate() {
-            let is_last = i == n - 1;
-            let comparator_expr = self.parse_expression(comparator)?;
-
-            let (right_expr, next_expr) = if is_last {
-                // Last comparison: no need to store the value
-                (comparator_expr, None)
-            } else {
-                // Intermediate: store value in synthetic variable using walrus operator
-                let var_name = format!("_chain_cmp_{}", self.chain_cmp_counter);
-                self.chain_cmp_counter += 1;
-                let name_id = self.interner.intern(&var_name);
-                let ident = Identifier::new(name_id, position);
-
-                // Wrap comparator in Named expression: (_chain_cmp_N := comparator)
-                let named_expr = ExprLoc::new(
-                    position,
-                    Expr::Named {
-                        target: ident,
-                        value: Box::new(comparator_expr),
-                    },
-                );
-
-                // Create a Name expression to reference the stored value
-                let name_ref = ExprLoc::new(position, Expr::Name(Identifier::new(name_id, position)));
-
-                (named_expr, Some(name_ref))
-            };
-
-            let cmp_expr = ExprLoc::new(
-                position,
-                Expr::CmpOp {
-                    left: Box::new(prev_expr.take().expect("prev_expr should always be Some")),
-                    op: convert_compare_op(op),
-                    right: Box::new(right_expr),
-                },
-            );
-
-            comparisons.push(cmp_expr);
-            prev_expr = next_expr;
-        }
-
-        // Fold comparisons left to right with And operator
-        let mut result = comparisons.remove(0);
-        for cmp in comparisons {
-            result = ExprLoc::new(
-                position,
-                Expr::Op {
-                    left: Box::new(result),
-                    op: Operator::And,
-                    right: Box::new(cmp),
-                },
-            );
-        }
-
-        Ok(result)
+        Ok(ExprLoc::new(
+            position,
+            Expr::ChainCmp {
+                left: Box::new(left_expr),
+                comparisons,
+            },
+        ))
     }
 
     /// Parses an unpack target - either a single identifier or a nested tuple.

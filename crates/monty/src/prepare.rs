@@ -580,6 +580,13 @@ impl<'i> Prepare<'i> {
                 op,
                 right: Box::new(self.prepare_expression(*right)?),
             },
+            Expr::ChainCmp { left, comparisons } => Expr::ChainCmp {
+                left: Box::new(self.prepare_expression(*left)?),
+                comparisons: comparisons
+                    .into_iter()
+                    .map(|(op, expr)| Ok((op, self.prepare_expression(expr)?)))
+                    .collect::<Result<Vec<_>, _>>()?,
+            },
             Expr::Call { callable, mut args } => {
                 // Prepare the arguments
                 args.prepare_args(|expr| self.prepare_expression(expr))?;
@@ -1902,6 +1909,12 @@ fn collect_assigned_names_from_expr(expr: &ExprLoc, assigned_names: &mut AHashSe
             collect_assigned_names_from_expr(left, assigned_names, interner);
             collect_assigned_names_from_expr(right, assigned_names, interner);
         }
+        Expr::ChainCmp { left, comparisons } => {
+            collect_assigned_names_from_expr(left, assigned_names, interner);
+            for (_, expr) in comparisons {
+                collect_assigned_names_from_expr(expr, assigned_names, interner);
+            }
+        }
         Expr::Not(operand)
         | Expr::UnaryMinus(operand)
         | Expr::UnaryPlus(operand)
@@ -2216,6 +2229,12 @@ fn collect_cell_vars_from_expr(
             collect_cell_vars_from_expr(left, our_locals, cell_vars, interner);
             collect_cell_vars_from_expr(right, our_locals, cell_vars, interner);
         }
+        Expr::ChainCmp { left, comparisons } => {
+            collect_cell_vars_from_expr(left, our_locals, cell_vars, interner);
+            for (_, expr) in comparisons {
+                collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
+            }
+        }
         Expr::Not(operand) | Expr::UnaryMinus(operand) | Expr::UnaryPlus(operand) | Expr::UnaryInvert(operand) => {
             collect_cell_vars_from_expr(operand, our_locals, cell_vars, interner);
         }
@@ -2463,6 +2482,12 @@ fn collect_referenced_names_from_expr(
         Expr::Op { left, right, .. } | Expr::CmpOp { left, right, .. } => {
             collect_referenced_names_from_expr(left, referenced, interner);
             collect_referenced_names_from_expr(right, referenced, interner);
+        }
+        Expr::ChainCmp { left, comparisons } => {
+            collect_referenced_names_from_expr(left, referenced, interner);
+            for (_, expr) in comparisons {
+                collect_referenced_names_from_expr(expr, referenced, interner);
+            }
         }
         Expr::Not(operand) | Expr::UnaryMinus(operand) | Expr::UnaryPlus(operand) | Expr::UnaryInvert(operand) => {
             collect_referenced_names_from_expr(operand, referenced, interner);

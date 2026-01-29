@@ -153,6 +153,18 @@ pub enum Expr {
         op: CmpOperator,
         right: Box<ExprLoc>,
     },
+    /// Chain comparison expression: `a < b < c < d`
+    ///
+    /// Unlike single comparisons, chain comparisons evaluate intermediate values
+    /// only once and short-circuit on the first false result. Compiled to bytecode
+    /// that uses stack manipulation (Dup, Rot) rather than temporary variables,
+    /// avoiding namespace pollution.
+    ChainCmp {
+        /// The leftmost operand in the chain.
+        left: Box<ExprLoc>,
+        /// Sequence of (operator, operand) pairs: `[(op1, b), (op2, c), ...]`
+        comparisons: Vec<(CmpOperator, ExprLoc)>,
+    },
     List(Vec<ExprLoc>),
     Tuple(Vec<ExprLoc>),
     Subscript {
