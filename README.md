@@ -233,7 +233,7 @@ assert_eq!(result, MontyObject::Int(42));
 
   ```python
   from typing_extensions import TypedDict
-  
+
   from pydantic_ai import Agent
   from pydantic_ai.toolsets.code_mode import CodeModeToolset
   from pydantic_ai.toolsets.function import FunctionToolset
