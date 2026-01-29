@@ -280,9 +280,10 @@ pub enum Expr {
     },
 }
 
-/// Target for tuple unpacking - can be a single name or nested tuple.
+/// Target for tuple unpacking - can be a single name, nested tuple, or starred target.
 ///
 /// Supports recursive structures like `(a, b), c` or `a, (b, c)`.
+/// Also supports starred targets like `first, *rest = [1, 2, 3, 4]`.
 /// Used in assignment statements, for loop targets, and comprehension targets.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum UnpackTarget {
@@ -295,6 +296,10 @@ pub enum UnpackTarget {
         /// Source position covering all targets (for error caret placement)
         position: CodeRange,
     },
+    /// Starred target: `*rest` - captures remaining values into a list.
+    ///
+    /// Only one starred target is allowed per unpacking level.
+    Starred(Identifier),
 }
 
 /// A generator clause in a comprehension: `for target in iter [if cond1] [if cond2]...`

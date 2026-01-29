@@ -509,6 +509,19 @@ impl<'a> Parser<'a> {
                     object: self.parse_expression(rhs)?,
                 })
             }
+            // List unpacking like [a, b] = value or [a, *rest] = value
+            AstExpr::List(ast::ExprList { elts, range, .. }) => {
+                let targets_position = self.convert_range(range);
+                let targets = elts
+                    .into_iter()
+                    .map(|e| self.parse_unpack_target(e))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Node::UnpackAssign {
+                    targets,
+                    targets_position,
+                    object: self.parse_expression(rhs)?,
+                })
+            }
             // Simple identifier assignment like x = value
             _ => Ok(Node::Assign {
                 target: self.parse_identifier(lhs)?,
@@ -1050,6 +1063,46 @@ impl<'a> Parser<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 if targets.is_empty() {
                     return Err(ParseError::syntax("empty tuple in unpack target", position));
+                }
+                // Validate at most one starred target
+                let starred_count = targets.iter().filter(|t| matches!(t, UnpackTarget::Starred(_))).count();
+                if starred_count > 1 {
+                    return Err(ParseError::syntax(
+                        "multiple starred expressions in assignment",
+                        position,
+                    ));
+                }
+                Ok(UnpackTarget::Tuple { targets, position })
+            }
+            AstExpr::Starred(ast::ExprStarred { value, range, .. }) => {
+                // Starred target must be a simple name
+                match *value {
+                    AstExpr::Name(ast::ExprName { id, range, .. }) => {
+                        Ok(UnpackTarget::Starred(self.identifier(&id, range)))
+                    }
+                    _ => Err(ParseError::syntax(
+                        "starred assignment target must be a name",
+                        self.convert_range(range),
+                    )),
+                }
+            }
+            AstExpr::List(ast::ExprList { elts, range, .. }) => {
+                // List unpacking target [a, b, *rest] - same as tuple
+                let position = self.convert_range(range);
+                let targets = elts
+                    .into_iter()
+                    .map(|e| self.parse_unpack_target(e))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if targets.is_empty() {
+                    return Err(ParseError::syntax("empty list in unpack target", position));
+                }
+                // Validate at most one starred target
+                let starred_count = targets.iter().filter(|t| matches!(t, UnpackTarget::Starred(_))).count();
+                if starred_count > 1 {
+                    return Err(ParseError::syntax(
+                        "multiple starred expressions in assignment",
+                        position,
+                    ));
                 }
                 Ok(UnpackTarget::Tuple { targets, position })
             }

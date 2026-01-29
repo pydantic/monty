@@ -88,6 +88,27 @@ impl Range {
         self.len() == 0
     }
 
+    /// Checks if an integer value is contained within this range (O(1)).
+    ///
+    /// A value is contained if it falls within the range bounds and is aligned
+    /// with the step (i.e., `(n - start) % step == 0`).
+    #[must_use]
+    pub fn contains(&self, n: i64) -> bool {
+        if self.step > 0 {
+            // Forward range: start <= n < stop
+            if n < self.start || n >= self.stop {
+                return false;
+            }
+        } else {
+            // Backward range: stop < n <= start
+            if n > self.start || n <= self.stop {
+                return false;
+            }
+        }
+        // Check if n is on the step grid
+        (n - self.start) % self.step == 0
+    }
+
     /// Creates a range from the `range()` constructor call.
     ///
     /// Supports:

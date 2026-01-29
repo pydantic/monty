@@ -264,11 +264,25 @@ impl<'a> Compiler<'a> {
                 object,
             } => {
                 self.compile_expr(object)?;
-                let count = u8::try_from(targets.len()).expect("too many targets in unpack");
+
+                // Check if there's a starred target
+                let star_idx = targets.iter().position(|t| matches!(t, UnpackTarget::Starred(_)));
+
                 // Set location to targets for proper caret in tracebacks
                 self.code.set_location(*targets_position, None);
-                self.code.emit_u8(Opcode::UnpackSequence, count);
-                // After UnpackSequence, values are on stack with first item on top
+
+                if let Some(star_idx) = star_idx {
+                    // Has starred target - use UnpackEx
+                    let before = u8::try_from(star_idx).expect("too many targets before star");
+                    let after = u8::try_from(targets.len() - star_idx - 1).expect("too many targets after star");
+                    self.code.emit_u8_u8(Opcode::UnpackEx, before, after);
+                } else {
+                    // No starred target - use UnpackSequence
+                    let count = u8::try_from(targets.len()).expect("too many targets in unpack");
+                    self.code.emit_u8(Opcode::UnpackSequence, count);
+                }
+
+                // After UnpackSequence/UnpackEx, values are on stack with first item on top
                 // Store them in order (first target gets first item), handling nesting
                 for target in targets {
                     self.compile_unpack_target(target);
@@ -2099,23 +2113,40 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles storage of an unpack target - either a single identifier or nested tuple.
+    /// Compiles storage of an unpack target - either a single identifier, nested tuple, or starred.
     ///
     /// For single identifiers: emits a simple store.
-    /// For nested tuples: emits `UnpackSequence` and recursively handles each sub-target.
+    /// For nested tuples: emits `UnpackSequence` (or `UnpackEx` with starred) and recursively
+    /// handles each sub-target.
     fn compile_unpack_target(&mut self, target: &UnpackTarget) {
         match target {
             UnpackTarget::Name(ident) => {
                 // Single identifier - just store directly
                 self.compile_store(ident);
             }
+            UnpackTarget::Starred(ident) => {
+                // Starred target by itself (shouldn't happen at top level normally)
+                // Just store as if it were a name
+                self.compile_store(ident);
+            }
             UnpackTarget::Tuple { targets, position } => {
-                // Nested tuple - emit UnpackSequence then recursively store each
-                let count = u8::try_from(targets.len()).expect("too many targets in nested unpack");
-                // Set location to targets for proper caret in tracebacks
+                // Check if there's a starred target
+                let star_idx = targets.iter().position(|t| matches!(t, UnpackTarget::Starred(_)));
+
                 self.code.set_location(*position, None);
-                self.code.emit_u8(Opcode::UnpackSequence, count);
-                // After UnpackSequence, values are on stack with first item on top
+
+                if let Some(star_idx) = star_idx {
+                    // Has starred target - use UnpackEx
+                    let before = u8::try_from(star_idx).expect("too many targets before star");
+                    let after = u8::try_from(targets.len() - star_idx - 1).expect("too many targets after star");
+                    self.code.emit_u8_u8(Opcode::UnpackEx, before, after);
+                } else {
+                    // No starred target - use UnpackSequence
+                    let count = u8::try_from(targets.len()).expect("too many targets in nested unpack");
+                    self.code.emit_u8(Opcode::UnpackSequence, count);
+                }
+
+                // After UnpackSequence/UnpackEx, values are on stack with first item on top
                 // Store them in order, recursively handling further nesting
                 for target in targets {
                     self.compile_unpack_target(target);

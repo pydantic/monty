@@ -1351,7 +1351,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     try_catch_sync!(self, cached_frame, self.unpack_sequence(count));
                 }
                 Opcode::UnpackEx => {
-                    todo!("UnpackEx not implemented")
+                    let before = fetch_u8!(cached_frame) as usize;
+                    let after = fetch_u8!(cached_frame) as usize;
+                    try_catch_sync!(self, cached_frame, self.unpack_ex(before, after));
                 }
                 // Special
                 Opcode::Nop => {

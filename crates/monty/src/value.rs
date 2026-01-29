@@ -418,6 +418,9 @@ impl PyTrait for Value {
                 }
             }
             (Self::Float(v1), Self::Float(v2)) => Ok(Some(Self::Float(v1 + v2))),
+            // Int + Float and Float + Int
+            (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 + b))),
+            (Self::Float(a), Self::Int(b)) => Ok(Some(Self::Float(a + *b as f64))),
             (Self::Ref(id1), Self::Ref(id2)) => {
                 // Check if both are LongInts
                 let is_longint1 = matches!(heap.get(*id1), HeapData::LongInt(_));
@@ -542,6 +545,11 @@ impl PyTrait for Value {
                     Ok(None)
                 }
             }
+            // Float - Float
+            (Self::Float(a), Self::Float(b)) => Ok(Some(Self::Float(a - b))),
+            // Int - Float and Float - Int
+            (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 - b))),
+            (Self::Float(a), Self::Int(b)) => Ok(Some(Self::Float(a - *b as f64))),
             _ => Ok(None),
         }
     }
@@ -1629,6 +1637,15 @@ impl Value {
                     HeapData::Set(set) => set.contains(item, heap, interns),
                     HeapData::FrozenSet(fset) => fset.contains(item, heap, interns),
                     HeapData::Str(s) => str_contains(s.as_str(), item, heap, interns),
+                    HeapData::Range(range) => {
+                        // Range containment is O(1) - check bounds and step alignment
+                        let n = match item {
+                            Self::Int(i) => *i,
+                            Self::Bool(b) => i64::from(*b),
+                            _ => return Ok(false),
+                        };
+                        Ok(range.contains(n))
+                    }
                     other => {
                         let type_name = other.py_type(heap);
                         Err(ExcType::type_error(format!(
