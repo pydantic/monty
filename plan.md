@@ -70,9 +70,12 @@ pub trait OsAccess: fmt::Debug {
     fn is_symlink(&self, path: &str) -> Result<bool, String>;
     fn read_bytes(&self, path: &str) -> Result<Vec<u8>, String>;
     fn read_text(&self, path: &str, encoding: &str) -> Result<String, String>;
-    fn iterdir(&self, path: &str) -> Result<Vec<String>, String>;
-    fn resolve(&self, path: &str) -> Result<String, String>;
-    fn absolute(&self, path: &str) -> Result<String, String>;
+    /// Returns list of entry names in the directory
+    fn iterdir(&self, path: &str) -> Result<Vec<Cow<'_, str>>, String>;
+    /// Returns the canonical absolute path, resolving symlinks
+    fn resolve<'a>(&self, path: &'a str) -> Result<Cow<'a, str>, String>;
+    /// Returns the absolute path without resolving symlinks
+    fn absolute<'a>(&self, path: &'a str) -> Result<Cow<'a, str>, String>;
 }
 ```
 
@@ -168,6 +171,9 @@ impl Stat {
 /// Implementations provide the actual filesystem operations. The runtime
 /// calls these methods when Python code uses pathlib.Path filesystem methods.
 /// Used as a generic parameter (`impl OsAccess`) to avoid dynamic dispatch.
+///
+/// Methods returning paths use `Cow<'a, str>` to allow returning either borrowed
+/// (if the path is unchanged) or owned strings (if modified).
 pub trait OsAccess: fmt::Debug {
     fn stat(&self, path: &str) -> Result<Stat, String>;
     fn exists(&self, path: &str) -> Result<bool, String>;
@@ -176,15 +182,20 @@ pub trait OsAccess: fmt::Debug {
     fn is_symlink(&self, path: &str) -> Result<bool, String>;
     fn read_bytes(&self, path: &str) -> Result<Vec<u8>, String>;
     fn read_text(&self, path: &str, encoding: &str) -> Result<String, String>;
-    fn iterdir(&self, path: &str) -> Result<Vec<String>, String>;
-    fn resolve(&self, path: &str) -> Result<String, String>;
-    fn absolute(&self, path: &str) -> Result<String, String>;
+    /// Returns list of entry names in the directory
+    fn iterdir(&self, path: &str) -> Result<Vec<Cow<'_, str>>, String>;
+    /// Returns the canonical absolute path, resolving symlinks
+    fn resolve<'a>(&self, path: &'a str) -> Result<Cow<'a, str>, String>;
+    /// Returns the absolute path without resolving symlinks
+    fn absolute<'a>(&self, path: &'a str) -> Result<Cow<'a, str>, String>;
 }
 ```
 
 ### Phase 2: Path Type (`crates/monty/src/types/path.rs`) - NEW FILE
 
-Internal heap-allocated Path type with pure methods:
+Internal heap-allocated Path type with pure methods. Implements `PyTrait` with
+`py_call_attr` for pure methods and `py_call_attr_raw` for filesystem methods
+that need to yield external calls.
 
 ```rust
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -196,7 +207,7 @@ impl Path {
     pub fn new(path: String) -> Self { Self { path: normalize_path(path) } }
     pub fn as_str(&self) -> &str { &self.path }
 
-    // Pure methods (no I/O)
+    // Pure methods (no I/O) - called from py_call_attr
     pub fn name(&self) -> &str { /* last component */ }
     pub fn parent(&self) -> Option<&str> { /* parent path */ }
     pub fn stem(&self) -> Option<&str> { /* name without suffix */ }
@@ -206,6 +217,40 @@ impl Path {
     pub fn joinpath(&self, other: &str) -> String { /* join paths */ }
     pub fn with_name(&self, name: &str) -> Result<String, String> { /* replace name */ }
     pub fn with_suffix(&self, suffix: &str) -> String { /* replace suffix */ }
+}
+
+impl PyTrait for Path {
+    // py_call_attr handles pure methods (name, parent, joinpath, etc.)
+    fn py_call_attr(&mut self, heap, attr, args, interns) -> RunResult<Value> {
+        match attr.as_static_string() {
+            Some(StaticStrings::Name) => Ok(self.name().into()),
+            Some(StaticStrings::Parent) => Ok(self.parent().into()),
+            Some(StaticStrings::Joinpath) => { /* ... */ }
+            // ... other pure methods
+            _ => Err(ExcType::attribute_error(Type::Path, attr_name))
+        }
+    }
+
+    // py_call_attr_raw handles filesystem methods by returning FrameExit::ExternalCall
+    fn py_call_attr_raw(&mut self, heap, attr, args, interns) -> Result<FrameExit, RunError> {
+        match attr.as_static_string() {
+            // Filesystem methods - return external call
+            Some(StaticStrings::Exists) => {
+                let ext_id = interns.get_ext_function_id("__os_access_exists__");
+                let call_args = ArgValues::One(Value::from(self.path.clone()));
+                Ok(FrameExit::ExternalCall(ext_id, call_args))
+            }
+            Some(StaticStrings::Stat) => { /* similar */ }
+            Some(StaticStrings::ReadBytes) => { /* similar */ }
+            // ... other filesystem methods
+
+            // Fall back to py_call_attr for pure methods
+            _ => {
+                let value = self.py_call_attr(heap, attr, args, interns)?;
+                Ok(FrameExit::Return(value))
+            }
+        }
+    }
 }
 ```
 
@@ -226,7 +271,7 @@ Define reserved external function names for path operations:
 
 | External Function | OsAccess Method | Returns |
 |-------------------|-----------------|---------|
-| `__os_access_stat__` | `stat(path)` | `Stat` → dict |
+| `__os_access_stat__` | `stat(path)` | `Stat` → NamedTuple (os.stat_result) |
 | `__os_access_exists__` | `exists(path)` | `bool` |
 | `__os_access_is_file__` | `is_file(path)` | `bool` |
 | `__os_access_is_dir__` | `is_dir(path)` | `bool` |
@@ -234,8 +279,11 @@ Define reserved external function names for path operations:
 | `__os_access_read_bytes__` | `read_bytes(path)` | `bytes` |
 | `__os_access_read_text__` | `read_text(path, encoding)` | `str` |
 | `__os_access_iterdir__` | `iterdir(path)` | `list[str]` |
-| `__os_access_resolve__` | `resolve(path)` | `str` |
-| `__os_access_absolute__` | `absolute(path)` | `str` |
+| `__os_access_resolve__` | `resolve(path)` | `str` (new path) |
+| `__os_access_absolute__` | `absolute(path)` | `str` (new path) |
+
+Note: `__os_access_stat__` returns a NamedTuple matching Python's `os.stat_result` with fields:
+`st_mode`, `st_ino`, `st_dev`, `st_nlink`, `st_uid`, `st_gid`, `st_size`, `st_atime`, `st_mtime`, `st_ctime`
 
 ### Phase 5: Run Loop Integration (`crates/monty/src/run.rs`)
 
@@ -277,6 +325,7 @@ fn handle_os_access_call<O: OsAccess>(
     args: &ArgValues,
     os_access: Option<&O>,
     heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
 ) -> Result<Option<Value>, MontyException> {
     let os = os_access.ok_or_else(|| /* OSError: no filesystem access */)?;
 
@@ -289,11 +338,55 @@ fn handle_os_access_call<O: OsAccess>(
         "__os_access_stat__" => {
             let path = extract_path_arg(args)?;
             let stat = os.stat(&path).map_err(|e| /* convert to OSError */)?;
-            Ok(Some(stat_to_namedtuple(stat, heap)?))
+            // Convert Stat to NamedTuple matching os.stat_result
+            let nt = stat_to_namedtuple(stat, heap, interns)?;
+            Ok(Some(Value::Ref(nt)))
+        }
+        "__os_access_read_bytes__" => {
+            let path = extract_path_arg(args)?;
+            let bytes = os.read_bytes(&path).map_err(|e| /* convert to OSError */)?;
+            let bytes_id = heap.allocate(HeapData::Bytes(Bytes::new(bytes)))?;
+            Ok(Some(Value::Ref(bytes_id)))
         }
         // ... other __os_access_* handlers ...
         _ => Ok(None),  // Not an os_access call
     }
+}
+
+/// Convert Stat to a NamedTuple matching Python's os.stat_result
+fn stat_to_namedtuple(
+    stat: Stat,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> Result<HeapId, ResourceError> {
+    let nt = NamedTuple::new(
+        StaticStrings::StatResult.into(),
+        vec![
+            StaticStrings::StMode.into(),
+            StaticStrings::StIno.into(),
+            StaticStrings::StDev.into(),
+            StaticStrings::StNlink.into(),
+            StaticStrings::StUid.into(),
+            StaticStrings::StGid.into(),
+            StaticStrings::StSize.into(),
+            StaticStrings::StAtime.into(),
+            StaticStrings::StMtime.into(),
+            StaticStrings::StCtime.into(),
+        ],
+        vec![
+            Value::Int(stat.st_mode as i64),
+            Value::Int(stat.st_ino as i64),
+            Value::Int(stat.st_dev as i64),
+            Value::Int(stat.st_nlink as i64),
+            Value::Int(stat.st_uid as i64),
+            Value::Int(stat.st_gid as i64),
+            Value::Int(stat.st_size as i64),
+            Value::Float(stat.st_atime),
+            Value::Float(stat.st_mtime),
+            Value::Float(stat.st_ctime),
+        ],
+    );
+    heap.allocate(HeapData::NamedTuple(nt))
 }
 ```
 
@@ -313,14 +406,55 @@ PathClass,
 Name,
 #[strum(serialize = "parent")]
 Parent,
+#[strum(serialize = "stem")]
+Stem,
+#[strum(serialize = "suffix")]
+Suffix,
 // ... etc
+
+// stat_result NamedTuple name and fields
+#[strum(serialize = "os.stat_result")]
+StatResult,
+#[strum(serialize = "st_mode")]
+StMode,
+#[strum(serialize = "st_ino")]
+StIno,
+#[strum(serialize = "st_dev")]
+StDev,
+#[strum(serialize = "st_nlink")]
+StNlink,
+#[strum(serialize = "st_uid")]
+StUid,
+#[strum(serialize = "st_gid")]
+StGid,
+#[strum(serialize = "st_size")]
+StSize,
+#[strum(serialize = "st_atime")]
+StAtime,
+#[strum(serialize = "st_mtime")]
+StMtime,
+#[strum(serialize = "st_ctime")]
+StCtime,
 
 // Reserved external functions
 #[strum(serialize = "__os_access_stat__")]
 OsAccessStat,
 #[strum(serialize = "__os_access_exists__")]
 OsAccessExists,
-// ... etc
+#[strum(serialize = "__os_access_is_file__")]
+OsAccessIsFile,
+#[strum(serialize = "__os_access_is_dir__")]
+OsAccessIsDir,
+#[strum(serialize = "__os_access_read_bytes__")]
+OsAccessReadBytes,
+#[strum(serialize = "__os_access_read_text__")]
+OsAccessReadText,
+#[strum(serialize = "__os_access_iterdir__")]
+OsAccessIterdir,
+#[strum(serialize = "__os_access_resolve__")]
+OsAccessResolve,
+#[strum(serialize = "__os_access_absolute__")]
+OsAccessAbsolute,
 ```
 
 #### 6.2 BuiltinModule (`crates/monty/src/modules/mod.rs`)
@@ -357,59 +491,93 @@ pub fn create_module(
 - Add `HeapData::Path(Path)` to `heap.rs`
 - Add `Type::Path` to `types/type.rs`
 
-### Phase 7: Path Method Implementation
+### Phase 7: PyTrait Extension for External Calls
 
-When a Path method like `exists()` is called:
+Add a new method to `PyTrait` that allows types to return `FrameExit` directly,
+enabling Path to yield external calls for filesystem operations.
 
-1. `call_attr` in `call.rs` dispatches to Path's `py_call_attr`
-2. For filesystem methods, Path emits an external function call
-3. The run loop intercepts and routes through OsAccess
+#### 7.1 Add `py_call_attr_raw` to PyTrait (`crates/monty/src/types/py_trait.rs`)
 
 ```rust
-// In Path's py_call_attr implementation
-impl PyTrait for Path {
-    fn py_call_attr(&self, heap, attr, args, interns) -> RunResult<Value> {
-        match attr.as_static_string() {
-            // Pure methods - handle directly
-            Some(StaticStrings::Name) => Ok(self.name().into()),
-            Some(StaticStrings::Joinpath) => { /* ... */ }
+pub trait PyTrait {
+    // ... existing methods ...
 
-            // Filesystem methods - need external call
-            // These should trigger FrameExit::ExternalCall
-            Some(StaticStrings::Exists) |
-            Some(StaticStrings::IsFile) |
-            Some(StaticStrings::Stat) => {
-                // Return a marker that causes VM to yield external call
-                // Implementation TBD - may need CallResult::OsAccess variant
-            }
-            _ => Err(ExcType::attribute_error(Type::Path, attr_name))
-        }
+    /// Call an attribute method, returning a FrameExit directly.
+    ///
+    /// This allows types to yield external calls (FrameExit::ExternalCall) or
+    /// other control flow. The default implementation calls py_call_attr and
+    /// wraps the result in FrameExit::Return.
+    ///
+    /// Override this for types that need to yield external calls (like Path).
+    fn py_call_attr_raw(
+        &mut self,
+        heap: &mut Heap<impl ResourceTracker>,
+        attr: &Attr,
+        args: ArgValues,
+        interns: &Interns,
+    ) -> Result<FrameExit, RunError> {
+        // Default: call py_call_attr and wrap in Return
+        let value = self.py_call_attr(heap, attr, args, interns)?;
+        Ok(FrameExit::Return(value))
     }
 }
 ```
 
-**Implementation detail**: We need a way for `py_call_attr` to signal that an external call is needed. Options:
-1. Add `CallResult::OsAccess(OsAccessOp, args)` variant
-2. Store external function IDs at compile time
-3. Have Path methods directly construct `FrameExit::ExternalCall`
+#### 7.2 Update call_attr in VM (`crates/monty/src/bytecode/vm/call.rs`)
 
-Recommend option 1 - cleanest separation.
+```rust
+fn call_attr(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<CallResult, RunError> {
+    match obj {
+        Value::Ref(heap_id) => {
+            // For types that implement py_call_attr_raw, use it
+            match self.heap.get_mut(heap_id) {
+                HeapData::Path(path) => {
+                    let exit = path.py_call_attr_raw(self.heap, &attr, args, self.interns)?;
+                    match exit {
+                        FrameExit::Return(value) => {
+                            obj.drop_with_heap(self.heap);
+                            Ok(CallResult::Push(value))
+                        }
+                        FrameExit::ExternalCall(ext_id, ext_args) => {
+                            obj.drop_with_heap(self.heap);
+                            Ok(CallResult::External(ext_id, ext_args))
+                        }
+                        // ... handle other FrameExit variants
+                    }
+                }
+                // ... other heap types use py_call_attr as before
+            }
+        }
+        // ...
+    }
+}
+```
+
+#### 7.3 Path implements py_call_attr_raw
+
+Path overrides `py_call_attr_raw` to return `FrameExit::ExternalCall` for filesystem methods:
+
+- Pure methods (name, parent, joinpath, etc.) → delegates to `py_call_attr`, returns `FrameExit::Return`
+- Filesystem methods (exists, stat, read_bytes, etc.) → returns `FrameExit::ExternalCall`
+
+This cleanly separates pure path manipulation from I/O operations that need host involvement.
 
 ## Files to Modify
 
 | File | Change |
 |------|--------|
 | `crates/monty/src/os_access.rs` | **NEW** - Stat struct and OsAccess trait |
-| `crates/monty/src/types/path.rs` | **NEW** - Path type with pure methods |
+| `crates/monty/src/types/path.rs` | **NEW** - Path type with pure methods + py_call_attr_raw |
 | `crates/monty/src/types/mod.rs` | Add `pub(crate) mod path;` |
+| `crates/monty/src/types/py_trait.rs` | Add `py_call_attr_raw` method with default impl |
 | `crates/monty/src/heap.rs` | Add `HeapData::Path(Path)` variant |
 | `crates/monty/src/types/type.rs` | Add `Type::Path` variant |
-| `crates/monty/src/intern.rs` | Add StaticStrings for pathlib |
+| `crates/monty/src/intern.rs` | Add StaticStrings for pathlib + stat_result fields |
 | `crates/monty/src/modules/mod.rs` | Add `BuiltinModule::Pathlib` |
 | `crates/monty/src/modules/pathlib.rs` | **NEW** - Module creation |
 | `crates/monty/src/object.rs` | Add `MontyObject::Path(String)` |
-| `crates/monty/src/run.rs` | Add `os_access` parameter, intercept calls |
-| `crates/monty/src/bytecode/vm/call.rs` | Handle Path method calls |
+| `crates/monty/src/run.rs` | Add `os_access` parameter, intercept calls, stat_to_namedtuple |
+| `crates/monty/src/bytecode/vm/call.rs` | Handle Path py_call_attr_raw for external calls |
 | `crates/monty/src/lib.rs` | Export `OsAccess`, `Stat` |
 
 ## Path Methods
