@@ -323,6 +323,8 @@ pub enum StaticStrings {
     WithSuffix,
     #[strum(serialize = "as_posix")]
     AsPosix,
+    #[strum(serialize = "__fspath__")]
+    Fspath,
 
     // Path filesystem methods (require OsAccess - yield external calls)
     #[strum(serialize = "exists")]

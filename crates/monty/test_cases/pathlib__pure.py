@@ -4,6 +4,14 @@ from pathlib import Path
 p = Path('/usr/local/bin/python')
 assert str(p) == '/usr/local/bin/python', 'Path str should match input'
 
+# Constructor with multiple arguments
+assert str(Path('folder', 'file.txt')) == 'folder/file.txt', 'Path with two args joins'
+assert str(Path('/usr', 'local', 'bin')) == '/usr/local/bin', 'Path with three args joins'
+assert str(Path('start', '/absolute', 'end')) == '/absolute/end', 'absolute in middle replaces'
+
+# Constructor with no arguments
+assert str(Path()) == '.', 'Path() returns current dir'
+
 # === name property ===
 assert p.name == 'python', 'name should be final component'
 assert Path('/usr/local/bin/').name == 'bin', 'name should handle trailing slash'
@@ -64,6 +72,9 @@ assert str(Path('/usr') / 'local' / 'bin') == '/usr/local/bin', '/ operator chai
 
 # === as_posix method ===
 assert Path('/usr/bin').as_posix() == '/usr/bin', 'as_posix returns string'
+
+# === __fspath__ method (os.PathLike protocol) ===
+assert Path('/usr/bin').__fspath__() == '/usr/bin', '__fspath__ returns string'
 
 # === repr ===
 r = repr(Path('/usr/bin'))

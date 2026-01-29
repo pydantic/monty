@@ -252,35 +252,49 @@ impl Path {
 
     /// Creates a `Path` from the `Path()` constructor call.
     ///
-    /// Accepts a single string argument representing the path.
+    /// Accepts zero or more path segments that are joined together.
+    /// - `Path()` returns `Path('.')`
+    /// - `Path('a')` returns `Path('a')`
+    /// - `Path('a', 'b', 'c')` returns `Path('a/b/c')`
+    /// - If an absolute path appears, it replaces everything before it.
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-        // Get exactly one argument
         let path_str = match args {
-            ArgValues::Empty => return Err(ExcType::type_error_at_least("Path", 1, 0)),
+            // Path() with no args returns '.'
+            ArgValues::Empty => ".".to_owned(),
             ArgValues::One(val) => {
                 let result = extract_path_string(&val, heap, interns);
                 val.drop_with_heap(heap);
                 result?
             }
             ArgValues::Two(a, b) => {
+                let a_str = extract_path_string(&a, heap, interns);
+                let b_str = extract_path_string(&b, heap, interns);
                 a.drop_with_heap(heap);
                 b.drop_with_heap(heap);
-                return Err(ExcType::type_error_at_most("Path", 1, 2));
+                Self::new(a_str?).joinpath(&b_str?)
             }
             ArgValues::Kwargs(kwargs) => {
                 kwargs.drop_with_heap(heap);
                 return Err(ExcType::type_error_no_kwargs("Path"));
             }
-            ArgValues::ArgsKargs { args, kwargs } => {
-                let arg_count = args.len();
-                for v in args {
-                    v.drop_with_heap(heap);
-                }
+            ArgValues::ArgsKargs { args: vals, kwargs } => {
                 if !kwargs.is_empty() {
+                    for v in vals {
+                        v.drop_with_heap(heap);
+                    }
                     kwargs.drop_with_heap(heap);
                     return Err(ExcType::type_error_no_kwargs("Path"));
                 }
-                return Err(ExcType::type_error_at_most("Path", 1, arg_count));
+                if vals.is_empty() {
+                    return Ok(Value::Ref(heap.allocate(HeapData::Path(Self::new(".".to_owned())))?));
+                }
+                let mut result = String::new();
+                for val in vals {
+                    let part = extract_path_string(&val, heap, interns);
+                    val.drop_with_heap(heap);
+                    result = Self::new(result).joinpath(&part?);
+                }
+                result
             }
         };
 
@@ -543,7 +557,8 @@ impl PyTrait for Path {
                     .map_err(|e| crate::exception_private::SimpleException::new_msg(ExcType::ValueError, &e))?;
                 Ok(Value::Ref(heap.allocate(HeapData::Path(Self::new(result)))?))
             }
-            StaticStrings::AsPosix => {
+            StaticStrings::AsPosix | StaticStrings::Fspath => {
+                // Both as_posix() and __fspath__() return the string representation
                 args.drop_with_heap(heap);
                 Ok(Value::Ref(
                     heap.allocate(HeapData::Str(Str::new(self.as_posix().to_owned())))?,
