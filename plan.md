@@ -304,12 +304,16 @@ impl MontyRun {
             match vm.run_module()? {
                 FrameExit::Return(value) => return Ok(MontyObject::new(value, heap, interns)),
                 FrameExit::ExternalCall(ext_id, args) => {
-                    let func_name = interns.get_ext_function_name(ext_id);
+                    // Get the StringId and try to convert to StaticStrings
+                    let string_id = interns.get_ext_function_string_id(ext_id);
+                    let static_string = StaticStrings::from_string_id(string_id);
 
                     // Intercept __os_access_* calls
-                    if let Some(result) = handle_os_access_call(func_name, &args, os_access, heap)? {
-                        vm.push(result);
-                        continue;
+                    if let Some(ss) = static_string {
+                        if let Some(result) = handle_os_access_call(ss, &args, os_access, heap, interns)? {
+                            vm.push(result);
+                            continue;
+                        }
                     }
 
                     // Regular external function - yield to caller
@@ -321,7 +325,7 @@ impl MontyRun {
 }
 
 fn handle_os_access_call<O: OsAccess>(
-    func_name: &str,
+    func: StaticStrings,
     args: &ArgValues,
     os_access: Option<&O>,
     heap: &mut Heap<impl ResourceTracker>,
@@ -329,26 +333,36 @@ fn handle_os_access_call<O: OsAccess>(
 ) -> Result<Option<Value>, MontyException> {
     let os = os_access.ok_or_else(|| /* OSError: no filesystem access */)?;
 
-    match func_name {
-        "__os_access_exists__" => {
+    match func {
+        StaticStrings::OsAccessExists => {
             let path = extract_path_arg(args)?;
             let result = os.exists(&path).map_err(|e| /* convert to OSError */)?;
             Ok(Some(Value::Bool(result)))
         }
-        "__os_access_stat__" => {
+        StaticStrings::OsAccessStat => {
             let path = extract_path_arg(args)?;
             let stat = os.stat(&path).map_err(|e| /* convert to OSError */)?;
             // Convert Stat to NamedTuple matching os.stat_result
             let nt = stat_to_namedtuple(stat, heap, interns)?;
             Ok(Some(Value::Ref(nt)))
         }
-        "__os_access_read_bytes__" => {
+        StaticStrings::OsAccessReadBytes => {
             let path = extract_path_arg(args)?;
             let bytes = os.read_bytes(&path).map_err(|e| /* convert to OSError */)?;
             let bytes_id = heap.allocate(HeapData::Bytes(Bytes::new(bytes)))?;
             Ok(Some(Value::Ref(bytes_id)))
         }
-        // ... other __os_access_* handlers ...
+        StaticStrings::OsAccessIsFile => {
+            let path = extract_path_arg(args)?;
+            let result = os.is_file(&path).map_err(|e| /* convert to OSError */)?;
+            Ok(Some(Value::Bool(result)))
+        }
+        StaticStrings::OsAccessIsDir => {
+            let path = extract_path_arg(args)?;
+            let result = os.is_dir(&path).map_err(|e| /* convert to OSError */)?;
+            Ok(Some(Value::Bool(result)))
+        }
+        // ... other StaticStrings::OsAccess* handlers ...
         _ => Ok(None),  // Not an os_access call
     }
 }
