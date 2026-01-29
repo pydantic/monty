@@ -244,12 +244,11 @@ assert_eq!(result, MontyObject::Int(42));
   sequential tool calls, the LLM writes Python code that calls your tools
   as functions and Monty executes it safely.
 
-  ```python
-  from typing_extensions import TypedDict
-
+  ```python test="false"
   from pydantic_ai import Agent
   from pydantic_ai.toolsets.code_mode import CodeModeToolset
   from pydantic_ai.toolsets.function import FunctionToolset
+  from typing_extensions import TypedDict
 
 
   class WeatherResult(TypedDict):
@@ -260,16 +259,21 @@ assert_eq!(result, MontyObject::Int(42));
 
   toolset = FunctionToolset()
 
+
   @toolset.tool
   def get_weather(city: str) -> WeatherResult:
       """Get current weather for a city."""
       # your real implementation here
       return {'city': city, 'temp_c': 18, 'conditions': 'partly cloudy'}
 
+
   @toolset.tool
   def get_population(city: str) -> int:
       """Get the population of a city."""
-      return {'london': 9_000_000, 'paris': 2_100_000, 'tokyo': 14_000_000}.get(city.lower(), 0)
+      return {'london': 9_000_000, 'paris': 2_100_000, 'tokyo': 14_000_000}.get(
+          city.lower(), 0
+      )
+
 
   toolset = CodeModeToolset(toolset)
 
@@ -278,6 +282,8 @@ assert_eq!(result, MontyObject::Int(42));
       toolsets=[toolset],
   )
 
-  result = agent.run_sync('Compare the weather and population of London, Paris, and Tokyo.')
+  result = agent.run_sync(
+      'Compare the weather and population of London, Paris, and Tokyo.'
+  )
   print(result.output)
   ```
