@@ -50,7 +50,7 @@ jobs:
 
       - run: uvx pre-commit run --color=always --all-files --verbose
         env:
-          SKIP: test
+          SKIP: no-commit-to-branch
 
       - name: Show diff on failure
         if: failure()
