@@ -23,7 +23,7 @@ use crate::{
     types::{
         LongInt, PyTrait, Str, Tuple, Type,
         bytes::{bytes_repr_fmt, get_byte_at_index, get_bytes_slice},
-        slice,
+        path, slice,
         str::{allocate_char, get_char_at_index, get_str_slice, string_repr_fmt},
     },
 };
@@ -897,7 +897,12 @@ impl PyTrait for Value {
         }
     }
 
-    fn py_div(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_div(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<Option<Value>> {
         match (self, other) {
             // True division always returns float
             (Self::Int(a), Self::Int(b)) => {
@@ -1044,7 +1049,15 @@ impl PyTrait for Value {
                     Err(ExcType::zero_division().into())
                 }
             }
-            _ => Ok(None),
+            _ => {
+                // Check for Path / (str or Path) - path concatenation
+                if let Self::Ref(id) = self
+                    && matches!(heap.get(*id), HeapData::Path(_))
+                {
+                    return path::path_div(*id, other, heap, interns);
+                }
+                Ok(None)
+            }
         }
     }
 
@@ -1785,6 +1798,11 @@ impl Value {
                         "step" => Ok(slice::option_i64_to_value(slice.step)),
                         _ => Err(ExcType::attribute_error(Type::Slice, attr_name)),
                     }
+                }
+                HeapData::Path(path) => {
+                    // Clone the path to avoid borrow conflict with heap
+                    let path_clone = path.clone();
+                    path::get_path_attr(&path_clone, attr_name, heap)
                 }
                 _ => {
                     let type_name = heap_data.py_type(heap);

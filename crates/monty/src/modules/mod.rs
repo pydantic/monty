@@ -17,6 +17,7 @@ use crate::{
 };
 
 pub(crate) mod asyncio;
+pub(crate) mod pathlib;
 pub(crate) mod sys;
 pub(crate) mod typing;
 
@@ -30,6 +31,8 @@ pub(crate) enum BuiltinModule {
     Typing,
     /// The `asyncio` module providing async/await support (only `gather()` implemented).
     Asyncio,
+    /// The `pathlib` module providing object-oriented filesystem paths.
+    Pathlib,
 }
 
 impl BuiltinModule {
@@ -39,6 +42,7 @@ impl BuiltinModule {
             StaticStrings::Sys => Some(Self::Sys),
             StaticStrings::Typing => Some(Self::Typing),
             StaticStrings::Asyncio => Some(Self::Asyncio),
+            StaticStrings::Pathlib => Some(Self::Pathlib),
             _ => None,
         }
     }
@@ -55,6 +59,7 @@ impl BuiltinModule {
             Self::Sys => sys::create_module(heap, interns),
             Self::Typing => typing::create_module(heap, interns),
             Self::Asyncio => asyncio::create_module(heap, interns),
+            Self::Pathlib => pathlib::create_module(heap, interns),
         }
     }
 }

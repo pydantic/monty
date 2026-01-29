@@ -288,6 +288,85 @@ pub enum StaticStrings {
     // ==========================
     // Exception attributes
     Args,
+
+    // ==========================
+    // pathlib module strings
+    #[strum(serialize = "pathlib")]
+    Pathlib,
+    #[strum(serialize = "Path")]
+    PathClass,
+
+    // Path properties (pure - no I/O)
+    #[strum(serialize = "name")]
+    Name,
+    #[strum(serialize = "parent")]
+    Parent,
+    #[strum(serialize = "stem")]
+    Stem,
+    #[strum(serialize = "suffix")]
+    Suffix,
+    #[strum(serialize = "suffixes")]
+    Suffixes,
+    #[strum(serialize = "parts")]
+    Parts,
+
+    // Path pure methods (no I/O)
+    #[strum(serialize = "is_absolute")]
+    IsAbsolute,
+    #[strum(serialize = "joinpath")]
+    Joinpath,
+    #[strum(serialize = "with_name")]
+    WithName,
+    #[strum(serialize = "with_stem")]
+    WithStem,
+    #[strum(serialize = "with_suffix")]
+    WithSuffix,
+    #[strum(serialize = "as_posix")]
+    AsPosix,
+
+    // Path filesystem methods (require OsAccess - yield external calls)
+    #[strum(serialize = "exists")]
+    Exists,
+    #[strum(serialize = "is_file")]
+    IsFile,
+    #[strum(serialize = "is_dir")]
+    IsDir,
+    #[strum(serialize = "is_symlink")]
+    IsSymlink,
+    #[strum(serialize = "stat")]
+    StatMethod,
+    #[strum(serialize = "read_bytes")]
+    ReadBytes,
+    #[strum(serialize = "read_text")]
+    ReadText,
+    #[strum(serialize = "iterdir")]
+    Iterdir,
+    #[strum(serialize = "resolve")]
+    Resolve,
+    #[strum(serialize = "absolute")]
+    Absolute,
+
+    // Reserved external function names for path operations
+    #[strum(serialize = "__os_access_stat__")]
+    OsAccessStat,
+    #[strum(serialize = "__os_access_exists__")]
+    OsAccessExists,
+    #[strum(serialize = "__os_access_is_file__")]
+    OsAccessIsFile,
+    #[strum(serialize = "__os_access_is_dir__")]
+    OsAccessIsDir,
+    #[strum(serialize = "__os_access_is_symlink__")]
+    OsAccessIsSymlink,
+    #[strum(serialize = "__os_access_read_bytes__")]
+    OsAccessReadBytes,
+    #[strum(serialize = "__os_access_read_text__")]
+    OsAccessReadText,
+    #[strum(serialize = "__os_access_iterdir__")]
+    OsAccessIterdir,
+    #[strum(serialize = "__os_access_resolve__")]
+    OsAccessResolve,
+    #[strum(serialize = "__os_access_absolute__")]
+    OsAccessAbsolute,
 }
 
 impl StaticStrings {

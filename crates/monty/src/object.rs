@@ -423,6 +423,10 @@ impl MontyObject {
                         // GatherFutures are represented as a repr string
                         Self::Repr(format!("<gather({})>", gather.item_count()))
                     }
+                    HeapData::Path(path) => {
+                        // Paths are represented as a repr string
+                        Self::Repr(format!("PosixPath('{}')", path.as_str()))
+                    }
                 };
 
                 // Remove from visited set after processing

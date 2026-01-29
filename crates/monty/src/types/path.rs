@@ -1,0 +1,672 @@
+//! Python `pathlib.Path` type implementation.
+//!
+//! Provides a path object with both pure methods (no I/O) and filesystem methods
+//! (require `OsAccess` implementation). Pure methods are handled directly by the VM,
+//! while filesystem methods yield external function calls for the host to resolve.
+
+use std::fmt::Write;
+
+use ahash::AHashSet;
+
+use crate::{
+    args::ArgValues,
+    exception_private::{ExcType, RunResult},
+    heap::{Heap, HeapData, HeapId},
+    intern::Interns,
+    resource::ResourceTracker,
+    types::{PyTrait, Type},
+    value::Value,
+};
+
+/// Python `pathlib.Path` object representing a filesystem path.
+///
+/// Stores a normalized POSIX path string. Windows-style paths are converted
+/// to POSIX format (backslashes to forward slashes).
+///
+/// The path is immutable - all operations that would modify the path return
+/// new `Path` objects or strings.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Path {
+    /// The normalized path string.
+    path: String,
+}
+
+impl Path {
+    /// Creates a new `Path` from a path string.
+    ///
+    /// The path is normalized:
+    /// - Backslashes are converted to forward slashes
+    /// - Trailing slashes are preserved for root paths only
+    #[must_use]
+    pub fn new(path: String) -> Self {
+        Self {
+            path: normalize_path(path),
+        }
+    }
+
+    /// Returns the path as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.path
+    }
+
+    /// Returns the final component of the path.
+    ///
+    /// Returns an empty string if the path ends with a separator or is empty.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        self.path.rsplit_once('/').map_or(self.path.as_str(), |(_, name)| name)
+    }
+
+    /// Returns the path without its final component (parent directory).
+    ///
+    /// For relative paths without a directory (like `file.txt`), returns `.`.
+    /// Returns `None` only for the root path `/`.
+    #[must_use]
+    pub fn parent(&self) -> Option<&str> {
+        if self.path == "/" {
+            return None;
+        }
+        match self.path.rsplit_once('/') {
+            Some((parent, _)) => Some(if parent.is_empty() { "/" } else { parent }),
+            None => Some("."), // Relative path without directory component
+        }
+    }
+
+    /// Returns the final component without its last suffix.
+    ///
+    /// If the name has multiple suffixes (e.g., "file.tar.gz"), only the
+    /// last suffix is removed.
+    #[must_use]
+    pub fn stem(&self) -> &str {
+        let name = self.name();
+        if name.starts_with('.') && !name[1..].contains('.') {
+            // Hidden file without extension (e.g., ".bashrc")
+            return name;
+        }
+        name.rsplit_once('.').map_or(name, |(stem, _)| stem)
+    }
+
+    /// Returns the file extension (last suffix), including the leading dot.
+    ///
+    /// Returns an empty string if there is no extension.
+    #[must_use]
+    pub fn suffix(&self) -> &str {
+        let name = self.name();
+        if name.starts_with('.') && !name[1..].contains('.') {
+            // Hidden file without extension (e.g., ".bashrc")
+            return "";
+        }
+        name.rfind('.').map_or("", |idx| &name[idx..])
+    }
+
+    /// Returns all file extensions as a list of strings.
+    ///
+    /// Each suffix includes its leading dot. Returns an empty list if no extensions.
+    #[must_use]
+    pub fn suffixes(&self) -> Vec<&str> {
+        let name = self.name();
+        if name.is_empty() || name == "." || name == ".." {
+            return Vec::new();
+        }
+
+        let start_idx = usize::from(name.starts_with('.'));
+        let search_str = &name[start_idx..];
+
+        let mut result = Vec::new();
+        let mut pos = 0;
+        while let Some(idx) = search_str[pos..].find('.') {
+            let abs_idx = pos + idx;
+            // Each suffix is from this dot to the end or next dot
+            let suffix_end = search_str[abs_idx + 1..]
+                .find('.')
+                .map_or(search_str.len(), |next| abs_idx + 1 + next);
+            result.push(&name[start_idx + abs_idx..start_idx + suffix_end]);
+            pos = abs_idx + 1;
+        }
+        result
+    }
+
+    /// Returns the path components as a list of strings.
+    ///
+    /// Absolute paths start with "/" as the first component.
+    #[must_use]
+    pub fn parts(&self) -> Vec<&str> {
+        if self.path.is_empty() {
+            return Vec::new();
+        }
+
+        let mut parts = Vec::new();
+        if self.path.starts_with('/') {
+            parts.push("/");
+            let rest = &self.path[1..];
+            if !rest.is_empty() {
+                parts.extend(rest.split('/').filter(|s| !s.is_empty()));
+            }
+        } else {
+            parts.extend(self.path.split('/').filter(|s| !s.is_empty()));
+        }
+        parts
+    }
+
+    /// Returns `true` if the path is absolute (starts with `/`).
+    #[must_use]
+    pub fn is_absolute(&self) -> bool {
+        self.path.starts_with('/')
+    }
+
+    /// Joins this path with another path component.
+    ///
+    /// If `other` is an absolute path, it replaces `self` entirely.
+    #[must_use]
+    pub fn joinpath(&self, other: &str) -> String {
+        if other.starts_with('/') || self.path.is_empty() || self.path == "." {
+            normalize_path(other.to_owned())
+        } else if self.path.ends_with('/') {
+            normalize_path(format!("{}{}", self.path, other))
+        } else {
+            normalize_path(format!("{}/{}", self.path, other))
+        }
+    }
+
+    /// Returns a new path with the name changed.
+    ///
+    /// # Errors
+    /// Returns an error if the path has no name or if the new name is empty.
+    pub fn with_name(&self, name: &str) -> Result<String, String> {
+        if name.is_empty() {
+            return Err("Invalid name: empty string".to_owned());
+        }
+        if name.contains('/') {
+            return Err(format!("Invalid name: {name:?} contains path separator"));
+        }
+        if self.name().is_empty() {
+            return Err("Path has no name".to_owned());
+        }
+
+        if let Some(parent) = self.parent() {
+            if parent == "/" {
+                Ok(format!("/{name}"))
+            } else if parent == "." {
+                // Relative path without directory - just use the new name
+                Ok(name.to_owned())
+            } else {
+                Ok(format!("{parent}/{name}"))
+            }
+        } else {
+            Ok(name.to_owned())
+        }
+    }
+
+    /// Returns a new path with the stem changed (keeps the suffix).
+    ///
+    /// # Errors
+    /// Returns an error if the path has no name or if the new stem is empty.
+    pub fn with_stem(&self, stem: &str) -> Result<String, String> {
+        if stem.is_empty() {
+            return Err("Invalid stem: empty string".to_owned());
+        }
+        if stem.contains('/') {
+            return Err(format!("Invalid stem: {stem:?} contains path separator"));
+        }
+        if self.name().is_empty() {
+            return Err("Path has no name".to_owned());
+        }
+
+        let suffix = self.suffix();
+        let new_name = format!("{stem}{suffix}");
+        self.with_name(&new_name)
+    }
+
+    /// Returns a new path with the suffix changed.
+    ///
+    /// If the suffix is empty, removes the existing suffix.
+    /// If the suffix doesn't start with '.', it's added.
+    pub fn with_suffix(&self, suffix: &str) -> Result<String, String> {
+        if self.name().is_empty() {
+            return Err("Path has no name".to_owned());
+        }
+
+        let suffix = if suffix.is_empty() || suffix.starts_with('.') {
+            suffix.to_owned()
+        } else {
+            format!(".{suffix}")
+        };
+
+        if suffix.contains('/') {
+            return Err(format!("Invalid suffix: {suffix:?} contains path separator"));
+        }
+
+        let stem = self.stem();
+        let new_name = format!("{stem}{suffix}");
+        self.with_name(&new_name)
+    }
+
+    /// Returns the path as a POSIX string (forward slashes).
+    ///
+    /// Since paths are already stored in POSIX format, this just returns the path.
+    #[must_use]
+    pub fn as_posix(&self) -> &str {
+        &self.path
+    }
+
+    /// Creates a `Path` from the `Path()` constructor call.
+    ///
+    /// Accepts a single string argument representing the path.
+    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+        // Get exactly one argument
+        let path_str = match args {
+            ArgValues::Empty => return Err(ExcType::type_error_at_least("Path", 1, 0)),
+            ArgValues::One(val) => {
+                let result = extract_path_string(&val, heap, interns);
+                val.drop_with_heap(heap);
+                result?
+            }
+            ArgValues::Two(a, b) => {
+                a.drop_with_heap(heap);
+                b.drop_with_heap(heap);
+                return Err(ExcType::type_error_at_most("Path", 1, 2));
+            }
+            ArgValues::Kwargs(kwargs) => {
+                kwargs.drop_with_heap(heap);
+                return Err(ExcType::type_error_no_kwargs("Path"));
+            }
+            ArgValues::ArgsKargs { args, kwargs } => {
+                let arg_count = args.len();
+                for v in args {
+                    v.drop_with_heap(heap);
+                }
+                if !kwargs.is_empty() {
+                    kwargs.drop_with_heap(heap);
+                    return Err(ExcType::type_error_no_kwargs("Path"));
+                }
+                return Err(ExcType::type_error_at_most("Path", 1, arg_count));
+            }
+        };
+
+        let path = Self::new(path_str);
+        Ok(Value::Ref(heap.allocate(HeapData::Path(path))?))
+    }
+}
+
+/// Extracts a string from a Value for use as a path.
+fn extract_path_string(val: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<String> {
+    match val {
+        Value::InternString(string_id) => Ok(interns.get_str(*string_id).to_owned()),
+        Value::Ref(heap_id) => match heap.get(*heap_id) {
+            HeapData::Str(s) => Ok(s.as_str().to_owned()),
+            HeapData::Path(p) => Ok(p.as_str().to_owned()),
+            _ => Err(ExcType::type_error(format!(
+                "expected str or Path, got {}",
+                val.py_type(heap)
+            ))),
+        },
+        _ => Err(ExcType::type_error(format!(
+            "expected str or Path, got {}",
+            val.py_type(heap)
+        ))),
+    }
+}
+
+/// Handles the `/` operator for Path objects (path concatenation).
+///
+/// In Python, `Path('/usr') / 'bin'` produces `Path('/usr/bin')`.
+pub(crate) fn path_div(
+    path_id: HeapId,
+    other: &Value,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Option<Value>> {
+    // Extract the right-hand side as a string
+    let other_str = match other {
+        Value::InternString(string_id) => interns.get_str(*string_id).to_owned(),
+        Value::Ref(other_id) => match heap.get(*other_id) {
+            HeapData::Str(s) => s.as_str().to_owned(),
+            HeapData::Path(p) => p.as_str().to_owned(),
+            _ => return Ok(None),
+        },
+        _ => return Ok(None),
+    };
+
+    // Get the path string
+    let path_str = match heap.get(path_id) {
+        HeapData::Path(p) => p.as_str().to_owned(),
+        _ => return Ok(None),
+    };
+
+    // Perform path concatenation
+    let result = Path::new(path_str).joinpath(&other_str);
+    Ok(Some(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))?)))
+}
+
+/// Gets a Path attribute by name.
+///
+/// Handles Path properties (name, parent, stem, suffix, suffixes, parts)
+/// and methods that don't require I/O (is_absolute).
+///
+/// I/O methods (exists, read_text, etc.) return bound methods that
+/// yield external function calls when invoked.
+pub(crate) fn get_path_attr(path: &Path, attr_name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    use crate::types::Str;
+
+    match attr_name {
+        // Properties returning strings
+        "name" => {
+            let name = path.name();
+            Ok(Value::Ref(heap.allocate(HeapData::Str(Str::new(name.to_owned())))?))
+        }
+        "parent" => {
+            if let Some(parent) = path.parent() {
+                let parent_path = Path::new(parent.to_owned());
+                Ok(Value::Ref(heap.allocate(HeapData::Path(parent_path))?))
+            } else {
+                // Return self when there's no parent (root or relative path)
+                let same_path = Path::new(path.as_str().to_owned());
+                Ok(Value::Ref(heap.allocate(HeapData::Path(same_path))?))
+            }
+        }
+        "stem" => {
+            let stem = path.stem();
+            Ok(Value::Ref(heap.allocate(HeapData::Str(Str::new(stem.to_owned())))?))
+        }
+        "suffix" => {
+            let suffix = path.suffix();
+            Ok(Value::Ref(heap.allocate(HeapData::Str(Str::new(suffix.to_owned())))?))
+        }
+        "suffixes" => {
+            use crate::types::List;
+
+            let suffixes = path.suffixes();
+            let mut items = Vec::with_capacity(suffixes.len());
+            for suffix in suffixes {
+                let str_id = heap.allocate(HeapData::Str(Str::new(suffix.to_owned())))?;
+                items.push(Value::Ref(str_id));
+            }
+            Ok(Value::Ref(heap.allocate(HeapData::List(List::new(items)))?))
+        }
+        "parts" => {
+            use crate::types::Tuple;
+
+            let parts = path.parts();
+            let mut items = Vec::with_capacity(parts.len());
+            for part in parts {
+                let str_id = heap.allocate(HeapData::Str(Str::new(part.to_owned())))?;
+                items.push(Value::Ref(str_id));
+            }
+            Ok(Value::Ref(heap.allocate(HeapData::Tuple(Tuple::new(items)))?))
+        }
+        // Method is_absolute() returns bool - handled as property since it takes no args
+        // NOTE: For method calls, we'd need to return a bound method. For now, properties only.
+        _ => Err(ExcType::attribute_error(Type::Path, attr_name)),
+    }
+}
+
+/// Normalizes a path string to POSIX format.
+///
+/// - Converts backslashes to forward slashes
+/// - Removes trailing slashes (except for root "/")
+/// - Does NOT resolve `.` or `..` components (that requires I/O for symlinks)
+fn normalize_path(mut path: String) -> String {
+    // Convert backslashes to forward slashes
+    if path.contains('\\') {
+        path = path.replace('\\', "/");
+    }
+
+    // Remove trailing slashes, but keep root "/"
+    while path.len() > 1 && path.ends_with('/') {
+        path.pop();
+    }
+
+    path
+}
+
+impl PyTrait for Path {
+    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+        Type::Path
+    }
+
+    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
+        // Paths don't have a length in Python
+        None
+    }
+
+    fn py_eq(&self, other: &Self, _heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
+        self.path == other.path
+    }
+
+    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
+        // Paths are always truthy (even empty paths)
+        true
+    }
+
+    fn py_repr_fmt(
+        &self,
+        f: &mut impl Write,
+        _heap: &Heap<impl ResourceTracker>,
+        _heap_ids: &mut AHashSet<HeapId>,
+        _interns: &Interns,
+    ) -> std::fmt::Result {
+        // Format like: PosixPath('/usr/bin')
+        write!(f, "PosixPath('{}')", self.path)
+    }
+
+    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
+        // Path doesn't contain heap references, nothing to do
+    }
+
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>() + self.path.capacity()
+    }
+
+    fn py_call_attr(
+        &mut self,
+        heap: &mut Heap<impl ResourceTracker>,
+        attr: &crate::value::Attr,
+        args: ArgValues,
+        interns: &Interns,
+    ) -> RunResult<Value> {
+        use crate::{intern::StaticStrings, types::Str};
+
+        let Some(method) = attr.static_string() else {
+            args.drop_with_heap(heap);
+            return Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)));
+        };
+
+        match method {
+            // Pure methods (no I/O)
+            StaticStrings::IsAbsolute => {
+                args.drop_with_heap(heap);
+                Ok(Value::Bool(self.is_absolute()))
+            }
+            StaticStrings::Joinpath => match args {
+                ArgValues::Empty => Err(ExcType::type_error_at_least("joinpath", 1, 0)),
+                ArgValues::One(val) => {
+                    let other = extract_path_string(&val, heap, interns);
+                    val.drop_with_heap(heap);
+                    let result = self.joinpath(&other?);
+                    Ok(Value::Ref(heap.allocate(HeapData::Path(Self::new(result)))?))
+                }
+                ArgValues::Two(a, b) => {
+                    let a_str = extract_path_string(&a, heap, interns);
+                    let b_str = extract_path_string(&b, heap, interns);
+                    a.drop_with_heap(heap);
+                    b.drop_with_heap(heap);
+                    let mut result = self.joinpath(&a_str?);
+                    result = Self::new(result).joinpath(&b_str?);
+                    Ok(Value::Ref(heap.allocate(HeapData::Path(Self::new(result)))?))
+                }
+                ArgValues::Kwargs(kwargs) => {
+                    kwargs.drop_with_heap(heap);
+                    Err(ExcType::type_error_no_kwargs("joinpath"))
+                }
+                ArgValues::ArgsKargs { args: vals, kwargs } => {
+                    if !kwargs.is_empty() {
+                        for v in vals {
+                            v.drop_with_heap(heap);
+                        }
+                        kwargs.drop_with_heap(heap);
+                        return Err(ExcType::type_error_no_kwargs("joinpath"));
+                    }
+                    let mut result = self.path.clone();
+                    for val in vals {
+                        let part = extract_path_string(&val, heap, interns);
+                        val.drop_with_heap(heap);
+                        result = Self::new(result).joinpath(&part?);
+                    }
+                    Ok(Value::Ref(heap.allocate(HeapData::Path(Self::new(result)))?))
+                }
+            },
+            StaticStrings::WithName => {
+                let name_val = args.get_one_arg("with_name", heap)?;
+                let name = extract_path_string(&name_val, heap, interns);
+                name_val.drop_with_heap(heap);
+                let result = self
+                    .with_name(&name?)
+                    .map_err(|e| crate::exception_private::SimpleException::new_msg(ExcType::ValueError, &e))?;
+                Ok(Value::Ref(heap.allocate(HeapData::Path(Self::new(result)))?))
+            }
+            StaticStrings::WithStem => {
+                let stem_val = args.get_one_arg("with_stem", heap)?;
+                let stem = extract_path_string(&stem_val, heap, interns);
+                stem_val.drop_with_heap(heap);
+                let result = self
+                    .with_stem(&stem?)
+                    .map_err(|e| crate::exception_private::SimpleException::new_msg(ExcType::ValueError, &e))?;
+                Ok(Value::Ref(heap.allocate(HeapData::Path(Self::new(result)))?))
+            }
+            StaticStrings::WithSuffix => {
+                let suffix_val = args.get_one_arg("with_suffix", heap)?;
+                let suffix = extract_path_string(&suffix_val, heap, interns);
+                suffix_val.drop_with_heap(heap);
+                let result = self
+                    .with_suffix(&suffix?)
+                    .map_err(|e| crate::exception_private::SimpleException::new_msg(ExcType::ValueError, &e))?;
+                Ok(Value::Ref(heap.allocate(HeapData::Path(Self::new(result)))?))
+            }
+            StaticStrings::AsPosix => {
+                args.drop_with_heap(heap);
+                Ok(Value::Ref(
+                    heap.allocate(HeapData::Str(Str::new(self.as_posix().to_owned())))?,
+                ))
+            }
+            // TODO: Filesystem methods (exists, is_file, etc.) should yield external calls
+            // For now, return an error indicating they're not yet supported
+            StaticStrings::Exists
+            | StaticStrings::IsFile
+            | StaticStrings::IsDir
+            | StaticStrings::IsSymlink
+            | StaticStrings::StatMethod
+            | StaticStrings::ReadBytes
+            | StaticStrings::ReadText
+            | StaticStrings::Iterdir
+            | StaticStrings::Resolve
+            | StaticStrings::Absolute => {
+                let method_name = attr.as_str(interns);
+                args.drop_with_heap(heap);
+                Err(
+                    ExcType::not_implemented(&format!("Path.{method_name}() requires OsAccess (not yet implemented)"))
+                        .into(),
+                )
+            }
+            _ => {
+                args.drop_with_heap(heap);
+                Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_name() {
+        assert_eq!(Path::new("/usr/local/bin/python".to_owned()).name(), "python");
+        assert_eq!(Path::new("/usr/local/bin/".to_owned()).name(), "bin");
+        assert_eq!(Path::new("file.txt".to_owned()).name(), "file.txt");
+        assert_eq!(Path::new("/".to_owned()).name(), "");
+    }
+
+    #[test]
+    fn test_parent() {
+        assert_eq!(Path::new("/usr/local/bin".to_owned()).parent(), Some("/usr/local"));
+        assert_eq!(Path::new("/usr".to_owned()).parent(), Some("/"));
+        assert_eq!(Path::new("/".to_owned()).parent(), None);
+        assert_eq!(Path::new("file.txt".to_owned()).parent(), Some("."));
+    }
+
+    #[test]
+    fn test_stem() {
+        assert_eq!(Path::new("/path/file.tar.gz".to_owned()).stem(), "file.tar");
+        assert_eq!(Path::new("/path/file.txt".to_owned()).stem(), "file");
+        assert_eq!(Path::new("/path/.bashrc".to_owned()).stem(), ".bashrc");
+        assert_eq!(Path::new("/path/file".to_owned()).stem(), "file");
+    }
+
+    #[test]
+    fn test_suffix() {
+        assert_eq!(Path::new("/path/file.tar.gz".to_owned()).suffix(), ".gz");
+        assert_eq!(Path::new("/path/file.txt".to_owned()).suffix(), ".txt");
+        assert_eq!(Path::new("/path/.bashrc".to_owned()).suffix(), "");
+        assert_eq!(Path::new("/path/file".to_owned()).suffix(), "");
+    }
+
+    #[test]
+    fn test_suffixes() {
+        assert_eq!(
+            Path::new("/path/file.tar.gz".to_owned()).suffixes(),
+            vec![".tar", ".gz"]
+        );
+        assert_eq!(Path::new("/path/file.txt".to_owned()).suffixes(), vec![".txt"]);
+        assert!(Path::new("/path/.bashrc".to_owned()).suffixes().is_empty());
+    }
+
+    #[test]
+    fn test_is_absolute() {
+        assert!(Path::new("/usr/bin".to_owned()).is_absolute());
+        assert!(!Path::new("usr/bin".to_owned()).is_absolute());
+        assert!(!Path::new(String::new()).is_absolute());
+    }
+
+    #[test]
+    fn test_joinpath() {
+        assert_eq!(Path::new("/usr".to_owned()).joinpath("local"), "/usr/local");
+        assert_eq!(Path::new("/usr".to_owned()).joinpath("/etc"), "/etc");
+        assert_eq!(Path::new(".".to_owned()).joinpath("file"), "file");
+    }
+
+    #[test]
+    fn test_with_name() {
+        assert_eq!(
+            Path::new("/path/file.txt".to_owned()).with_name("other.py").unwrap(),
+            "/path/other.py"
+        );
+        assert_eq!(
+            Path::new("file.txt".to_owned()).with_name("other.py").unwrap(),
+            "other.py"
+        );
+    }
+
+    #[test]
+    fn test_with_suffix() {
+        assert_eq!(
+            Path::new("/path/file.txt".to_owned()).with_suffix(".py").unwrap(),
+            "/path/file.py"
+        );
+        assert_eq!(
+            Path::new("/path/file.txt".to_owned()).with_suffix("").unwrap(),
+            "/path/file"
+        );
+    }
+
+    #[test]
+    fn test_parts() {
+        assert_eq!(
+            Path::new("/usr/local/bin".to_owned()).parts(),
+            vec!["/", "usr", "local", "bin"]
+        );
+        assert_eq!(Path::new("usr/local".to_owned()).parts(), vec!["usr", "local"]);
+        assert_eq!(Path::new("/".to_owned()).parts(), vec!["/"]);
+    }
+}

@@ -104,7 +104,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     pub(super) fn binary_div(&mut self) -> Result<(), RunError> {
         let rhs = self.pop();
         let lhs = self.pop();
-        let result = lhs.py_div(&rhs, self.heap);
+        let result = lhs.py_div(&rhs, self.heap, self.interns);
         match result {
             Ok(Some(v)) => {
                 lhs.drop_with_heap(self.heap);
