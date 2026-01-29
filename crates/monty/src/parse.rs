@@ -145,6 +145,11 @@ pub struct Parser<'a> {
     filename_id: StringId,
     /// String interner for names (variables, functions, etc).
     pub interner: InternerBuilder,
+    /// Counter for generating unique chain comparison variable names.
+    ///
+    /// Used to create synthetic variable names like `_chain_cmp_0`, `_chain_cmp_1`, etc.
+    /// for storing intermediate values in chain comparisons like `a < b < c`.
+    chain_cmp_counter: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -163,6 +168,7 @@ impl<'a> Parser<'a> {
             code,
             filename_id,
             interner,
+            chain_cmp_counter: 0,
         }
     }
 
@@ -743,14 +749,26 @@ impl<'a> Parser<'a> {
                 comparators,
                 range,
                 ..
-            }) => Ok(ExprLoc::new(
-                self.convert_range(range),
-                Expr::CmpOp {
-                    left: Box::new(self.parse_expression(*left)?),
-                    op: convert_compare_op(first(ops.into_vec(), self.convert_range(range))?),
-                    right: Box::new(self.parse_expression(first(comparators.into_vec(), self.convert_range(range))?)?),
-                },
-            )),
+            }) => {
+                let position = self.convert_range(range);
+                let ops_vec = ops.into_vec();
+                let comparators_vec = comparators.into_vec();
+
+                // Simple case: single comparison (most common)
+                if ops_vec.len() == 1 {
+                    return Ok(ExprLoc::new(
+                        position,
+                        Expr::CmpOp {
+                            left: Box::new(self.parse_expression(*left)?),
+                            op: convert_compare_op(ops_vec.into_iter().next().unwrap()),
+                            right: Box::new(self.parse_expression(comparators_vec.into_iter().next().unwrap())?),
+                        },
+                    ));
+                }
+
+                // Chain comparison: transform to nested And expressions
+                self.parse_chain_comparison(*left, ops_vec, comparators_vec, position)
+            }
             AstExpr::Call(ast::ExprCall {
                 func, arguments, range, ..
             }) => {
@@ -993,6 +1011,102 @@ impl<'a> Parser<'a> {
                 self.convert_range(other.range()),
             )),
         }
+    }
+
+    /// Transforms a chain comparison into nested `And` expressions.
+    ///
+    /// Chain comparisons like `a < b < c` are semantically equivalent to
+    /// `(a < b) and (b < c)` with `b` evaluated only once. We transform them to:
+    /// ```text
+    /// And {
+    ///   left: CmpOp(a, <, (_chain_cmp_0 := b)),
+    ///   right: CmpOp(_chain_cmp_0, <, c)
+    /// }
+    /// ```
+    ///
+    /// For longer chains like `a < b < c < d`:
+    /// ```text
+    /// And {
+    ///   left: And {
+    ///     left: CmpOp(a, <, (_chain_cmp_0 := b)),
+    ///     right: CmpOp(_chain_cmp_0, <, (_chain_cmp_1 := c))
+    ///   },
+    ///   right: CmpOp(_chain_cmp_1, <, d)
+    /// }
+    /// ```
+    ///
+    /// Each intermediate value is stored using a walrus operator (Named expression)
+    /// and referenced in subsequent comparisons using the synthetic variable name.
+    fn parse_chain_comparison(
+        &mut self,
+        left: AstExpr,
+        ops: Vec<CmpOp>,
+        comparators: Vec<AstExpr>,
+        position: CodeRange,
+    ) -> Result<ExprLoc, ParseError> {
+        let left_expr = self.parse_expression(left)?;
+        let n = ops.len();
+
+        // Build the comparisons from left to right, storing intermediate values
+        let mut comparisons = Vec::with_capacity(n);
+        let mut prev_expr = Some(left_expr);
+
+        for (i, (op, comparator)) in ops.into_iter().zip(comparators).enumerate() {
+            let is_last = i == n - 1;
+            let comparator_expr = self.parse_expression(comparator)?;
+
+            let (right_expr, next_expr) = if is_last {
+                // Last comparison: no need to store the value
+                (comparator_expr, None)
+            } else {
+                // Intermediate: store value in synthetic variable using walrus operator
+                let var_name = format!("_chain_cmp_{}", self.chain_cmp_counter);
+                self.chain_cmp_counter += 1;
+                let name_id = self.interner.intern(&var_name);
+                let ident = Identifier::new(name_id, position);
+
+                // Wrap comparator in Named expression: (_chain_cmp_N := comparator)
+                let named_expr = ExprLoc::new(
+                    position,
+                    Expr::Named {
+                        target: ident,
+                        value: Box::new(comparator_expr),
+                    },
+                );
+
+                // Create a Name expression to reference the stored value
+                let name_ref = ExprLoc::new(position, Expr::Name(Identifier::new(name_id, position)));
+
+                (named_expr, Some(name_ref))
+            };
+
+            let cmp_expr = ExprLoc::new(
+                position,
+                Expr::CmpOp {
+                    left: Box::new(prev_expr.take().expect("prev_expr should always be Some")),
+                    op: convert_compare_op(op),
+                    right: Box::new(right_expr),
+                },
+            );
+
+            comparisons.push(cmp_expr);
+            prev_expr = next_expr;
+        }
+
+        // Fold comparisons left to right with And operator
+        let mut result = comparisons.remove(0);
+        for cmp in comparisons {
+            result = ExprLoc::new(
+                position,
+                Expr::Op {
+                    left: Box::new(result),
+                    op: Operator::And,
+                    right: Box::new(cmp),
+                },
+            );
+        }
+
+        Ok(result)
     }
 
     /// Parses an unpack target - either a single identifier or a nested tuple.
