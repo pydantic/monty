@@ -227,7 +227,7 @@ assert_eq!(result, MontyObject::Int(42));
   ## PydanticAI Integration
 
   Monty will power code-mode in
-  [PydanticAI](https://github.com/pydantic/pydantic-ai). Instead of making
+  [Pydantic AI](https://github.com/pydantic/pydantic-ai). Instead of making
   sequential tool calls, the LLM writes Python code that calls your tools
   as functions and Monty executes it safely.
 
@@ -245,24 +245,24 @@ assert_eq!(result, MontyObject::Int(42));
       conditions: str
 
 
+  toolset = FunctionToolset()
+
+  @toolset.tool
   def get_weather(city: str) -> WeatherResult:
       """Get current weather for a city."""
       # your real implementation here
       return {'city': city, 'temp_c': 18, 'conditions': 'partly cloudy'}
 
-
+  @toolset.tool
   def get_population(city: str) -> int:
       """Get the population of a city."""
       return {'london': 9_000_000, 'paris': 2_100_000, 'tokyo': 14_000_000}.get(city.lower(), 0)
 
-
-  toolset = FunctionToolset()
-  toolset.add_function(get_weather, takes_ctx=False)
-  toolset.add_function(get_population, takes_ctx=False)
+  toolset = CodeModeToolset(toolset)
 
   agent = Agent(
       'anthropic:claude-sonnet-4-5',
-      toolsets=[CodeModeToolset(wrapped=toolset)],
+      toolsets=[toolset],
   )
 
   result = agent.run_sync('Compare the weather and population of London, Paris, and Tokyo.')

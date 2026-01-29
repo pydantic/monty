@@ -12,7 +12,7 @@ env:
   COLUMNS: 150
   UV_PYTHON: "3.14"
   UV_FROZEN: "1"
-  DEBUG: napi:*
+  DEBUG: "napi:*"
 
 jobs:
   lint:
@@ -142,6 +142,25 @@ jobs:
         uses: re-actors/alls-green@release/v1
         with:
           jobs: ${{ toJSON(needs) }}
+
+  # Build source distribution
+  build-sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+          rust-toolchain: stable
+          working-directory: crates/monty-python
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pypi_files-sdist
+          path: crates/monty-python/dist
 
   # Build wheels for exotic architectures (non-PGO)
   build:
@@ -323,7 +342,7 @@ jobs:
 
   # Inspect built artifacts
   inspect-python-assets:
-    needs: [build, build-pgo]
+    needs: [build, build-pgo, build-sdist]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v7
