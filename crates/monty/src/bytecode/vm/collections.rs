@@ -505,13 +505,14 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         let items: Vec<Value> = match &value {
             Value::InternString(string_id) => {
                 let s = self.interns.get_str(*string_id);
-                let str_len = s.chars().count();
-                if str_len < min_items {
-                    return Err(unpack_ex_too_few_error(min_items, str_len));
+                // Collect chars once to avoid double iteration over UTF-8 data
+                let chars: Vec<char> = s.chars().collect();
+                if chars.len() < min_items {
+                    return Err(unpack_ex_too_few_error(min_items, chars.len()));
                 }
                 // Allocate each character as a new string
-                let mut items = Vec::with_capacity(str_len);
-                for c in s.chars() {
+                let mut items = Vec::with_capacity(chars.len());
+                for c in chars {
                     items.push(allocate_char(c, self.heap)?);
                 }
                 // String items are newly allocated, push and return
@@ -536,12 +537,12 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                     tuple.as_vec().iter().map(Value::copy_for_extend).collect()
                 }
                 HeapData::Str(s) => {
-                    let str_len = s.as_str().chars().count();
-                    if str_len < min_items {
-                        value.drop_with_heap(self.heap);
-                        return Err(unpack_ex_too_few_error(min_items, str_len));
-                    }
+                    // Collect chars once to avoid double iteration over UTF-8 data
                     let chars: Vec<char> = s.as_str().chars().collect();
+                    if chars.len() < min_items {
+                        value.drop_with_heap(self.heap);
+                        return Err(unpack_ex_too_few_error(min_items, chars.len()));
+                    }
                     value.drop_with_heap(self.heap);
                     let mut items = Vec::with_capacity(chars.len());
                     for c in chars {
@@ -600,15 +601,12 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         }
 
         // Middle items as a list (starred target)
-        // Items going into the list need their own reference
+        // Items already have their refcount incremented in unpack_ex (for list/tuple)
+        // or are freshly allocated (for strings), so no additional inc_ref needed here.
         let middle_start = before;
         let middle_end = total - after;
         let mut middle = Vec::with_capacity(middle_end - middle_start);
         for item in &items[middle_start..middle_end] {
-            // Increment refcount for each item going into the list
-            if let Value::Ref(id) = item {
-                self.heap.inc_ref(*id);
-            }
             middle.push(item.copy_for_extend());
         }
         let middle_list = List::new(middle);

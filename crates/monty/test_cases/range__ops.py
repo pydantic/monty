@@ -219,7 +219,16 @@ assert 0 not in range(5, 5), '0 not in empty equal range'
 
 # Non-int types return False (no TypeError)
 assert 'a' not in range(5), 'string not in range'
-assert 3.5 not in range(5), 'float not in range'
+
+# Float containment (floats equal to integers are contained)
+assert 3.0 in range(5), '3.0 in range(5)'
+assert 0.0 in range(5), '0.0 in range(5)'
+assert 4.0 in range(5), '4.0 in range(5)'
+assert 3.5 not in range(5), '3.5 not in range(5)'
+assert 5.0 not in range(5), '5.0 not in range(5)'
+assert 2.0 in range(0, 10, 2), '2.0 in even range'
+assert 3.0 not in range(0, 10, 2), '3.0 not in even range'
+assert -1.0 not in range(5), '-1.0 not in range(5)'
 
 # Bool as container element (True=1, False=0 for comparison)
 assert True in range(5), 'True in range(5)'

@@ -1642,6 +1642,23 @@ impl Value {
                         let n = match item {
                             Self::Int(i) => *i,
                             Self::Bool(b) => i64::from(*b),
+                            Self::Float(f) => {
+                                // Floats are contained if they equal an integer in the range
+                                // e.g., 3.0 in range(5) is True, but 3.5 in range(5) is False
+                                if f.fract() != 0.0 {
+                                    return Ok(false);
+                                }
+                                // Check if float is within i64 range and convert safely
+                                // f64 can represent integers up to 2^53 exactly
+                                let int_val = f.trunc();
+                                if int_val < i64::MIN as f64 || int_val > i64::MAX as f64 {
+                                    return Ok(false);
+                                }
+                                // Safe conversion: we've verified it's a whole number in i64 range
+                                #[expect(clippy::cast_possible_truncation)]
+                                let n = int_val as i64;
+                                n
+                            }
                             _ => return Ok(false),
                         };
                         Ok(range.contains(n))
