@@ -3,6 +3,8 @@ assert (1 < 2 < 3) == True, 'ascending chain'
 assert (1 < 3 < 2) == False, 'fails at second comparison'
 assert (3 < 2 < 1) == False, 'fails at first comparison'
 assert (1 <= 2 <= 2) == True, 'with equality'
+assert 1 <= 2 <= 2, 'with equality'
+assert 1 <= 2 <= 2 <= 3, 'chained with equality'
 
 # === Mixed operators ===
 assert (1 < 2 <= 2 < 3) == True, 'mixed lt and le'
