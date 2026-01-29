@@ -244,7 +244,7 @@ assert_eq!(result, MontyObject::Int(42));
   sequential tool calls, the LLM writes Python code that calls your tools
   as functions and Monty executes it safely.
 
-  ```python test="false"
+  ```python test="skip"
   from pydantic_ai import Agent
   from pydantic_ai.toolsets.code_mode import CodeModeToolset
   from pydantic_ai.toolsets.function import FunctionToolset
