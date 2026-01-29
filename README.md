@@ -237,53 +237,53 @@ let result = runner2.run(vec![MontyObject::Int(41)], NoLimitTracker, &mut StdPri
 assert_eq!(result, MontyObject::Int(42));
 ```
 
-  ## PydanticAI Integration
+## PydanticAI Integration
 
-  Monty will power code-mode in
-  [Pydantic AI](https://github.com/pydantic/pydantic-ai). Instead of making
-  sequential tool calls, the LLM writes Python code that calls your tools
-  as functions and Monty executes it safely.
+Monty will power code-mode in
+[Pydantic AI](https://github.com/pydantic/pydantic-ai). Instead of making
+sequential tool calls, the LLM writes Python code that calls your tools
+as functions and Monty executes it safely.
 
-  ```python test="skip"
-  from pydantic_ai import Agent
-  from pydantic_ai.toolsets.code_mode import CodeModeToolset
-  from pydantic_ai.toolsets.function import FunctionToolset
-  from typing_extensions import TypedDict
-
-
-  class WeatherResult(TypedDict):
-      city: str
-      temp_c: float
-      conditions: str
+```python test="skip"
+from pydantic_ai import Agent
+from pydantic_ai.toolsets.code_mode import CodeModeToolset
+from pydantic_ai.toolsets.function import FunctionToolset
+from typing_extensions import TypedDict
 
 
-  toolset = FunctionToolset()
+class WeatherResult(TypedDict):
+    city: str
+    temp_c: float
+    conditions: str
 
 
-  @toolset.tool
-  def get_weather(city: str) -> WeatherResult:
-      """Get current weather for a city."""
-      # your real implementation here
-      return {'city': city, 'temp_c': 18, 'conditions': 'partly cloudy'}
+toolset = FunctionToolset()
 
 
-  @toolset.tool
-  def get_population(city: str) -> int:
-      """Get the population of a city."""
-      return {'london': 9_000_000, 'paris': 2_100_000, 'tokyo': 14_000_000}.get(
-          city.lower(), 0
-      )
+@toolset.tool
+def get_weather(city: str) -> WeatherResult:
+    """Get current weather for a city."""
+    # your real implementation here
+    return {'city': city, 'temp_c': 18, 'conditions': 'partly cloudy'}
 
 
-  toolset = CodeModeToolset(toolset)
+@toolset.tool
+def get_population(city: str) -> int:
+    """Get the population of a city."""
+    return {'london': 9_000_000, 'paris': 2_100_000, 'tokyo': 14_000_000}.get(
+        city.lower(), 0
+    )
 
-  agent = Agent(
-      'anthropic:claude-sonnet-4-5',
-      toolsets=[toolset],
-  )
 
-  result = agent.run_sync(
-      'Compare the weather and population of London, Paris, and Tokyo.'
-  )
-  print(result.output)
-  ```
+toolset = CodeModeToolset(toolset)
+
+agent = Agent(
+    'anthropic:claude-sonnet-4-5',
+    toolsets=[toolset],
+)
+
+result = agent.run_sync(
+    'Compare the weather and population of London, Paris, and Tokyo.'
+)
+print(result.output)
+```
