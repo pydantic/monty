@@ -115,6 +115,23 @@ impl CodeBuilder {
         }
     }
 
+    /// Emits an instruction with two u8 operands and updates stack depth tracking.
+    ///
+    /// Used for UnpackEx: before_count (u8) + after_count (u8)
+    pub fn emit_u8_u8(&mut self, op: Opcode, operand1: u8, operand2: u8) {
+        self.record_location();
+        self.bytecode.push(op as u8);
+        self.bytecode.push(operand1);
+        self.bytecode.push(operand2);
+        // UnpackEx: pops 1, pushes (before + 1 + after) = before + after + 1
+        // Net effect: before + after
+        if op == Opcode::UnpackEx {
+            self.adjust_stack(i16::from(operand1) + i16::from(operand2));
+        } else if let Some(effect) = op.stack_effect() {
+            self.adjust_stack(effect);
+        }
+    }
+
     /// Emits an instruction with a u16 operand (little-endian) and updates stack depth tracking.
     pub fn emit_u16(&mut self, op: Opcode, operand: u16) {
         self.record_location();

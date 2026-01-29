@@ -17,7 +17,7 @@ use crate::{
     builtins::Builtins,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId},
-    intern::{BytesId, ExtFunctionId, FunctionId, Interns, StaticStrings, StringId},
+    intern::{BytesId, ExtFunctionId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
     resource::{LARGE_RESULT_THRESHOLD, ResourceTracker},
     types::{
@@ -54,6 +54,9 @@ pub(crate) enum Value {
     /// An interned bytes literal. The BytesId references the bytes in the Interns table.
     /// To get the actual bytes content, use `interns.get_bytes(bytes_id)`.
     InternBytes(BytesId),
+    /// An interned long integer literal. The `LongIntId` references the `BigInt` in the Interns table.
+    /// Used for integer literals exceeding i64 range. Converted to heap-allocated `LongInt` on load.
+    InternLongInt(LongIntId),
     /// A builtin function or exception type
     Builtin(Builtins),
     /// A function from a module (not a global builtin).
@@ -112,7 +115,7 @@ impl PyTrait for Value {
             Self::Ellipsis => Type::Ellipsis,
             Self::None => Type::NoneType,
             Self::Bool(_) => Type::Bool,
-            Self::Int(_) => Type::Int,
+            Self::Int(_) | Self::InternLongInt(_) => Type::Int,
             Self::Float(_) => Type::Float,
             Self::InternString(_) => Type::Str,
             Self::InternBytes(_) => Type::Bytes,
@@ -302,6 +305,8 @@ impl PyTrait for Value {
             Self::Bool(b) => *b,
             Self::Int(v) => *v != 0,
             Self::Float(f) => *f != 0.0,
+            // InternLongInt is always truthy (if it were zero, it would fit in i64)
+            Self::InternLongInt(_) => true,
             Self::Builtin(_) | Self::ModuleFunction(_) => true, // Builtins are always truthy
             Self::DefFunction(_) | Self::ExtFunction(_) => true, // Functions are always truthy
             Self::Marker(_) => true,                            // Markers are always truthy
@@ -328,6 +333,7 @@ impl PyTrait for Value {
             Self::Bool(true) => f.write_str("True"),
             Self::Bool(false) => f.write_str("False"),
             Self::Int(v) => write!(f, "{v}"),
+            Self::InternLongInt(long_int_id) => write!(f, "{}", interns.get_long_int(*long_int_id)),
             Self::Float(v) => {
                 let s = v.to_string();
                 if s.contains('.') {
@@ -412,6 +418,9 @@ impl PyTrait for Value {
                 }
             }
             (Self::Float(v1), Self::Float(v2)) => Ok(Some(Self::Float(v1 + v2))),
+            // Int + Float and Float + Int
+            (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 + b))),
+            (Self::Float(a), Self::Int(b)) => Ok(Some(Self::Float(a + *b as f64))),
             (Self::Ref(id1), Self::Ref(id2)) => {
                 // Check if both are LongInts
                 let is_longint1 = matches!(heap.get(*id1), HeapData::LongInt(_));
@@ -536,6 +545,11 @@ impl PyTrait for Value {
                     Ok(None)
                 }
             }
+            // Float - Float
+            (Self::Float(a), Self::Float(b)) => Ok(Some(Self::Float(a - b))),
+            // Int - Float and Float - Int
+            (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 - b))),
+            (Self::Float(a), Self::Int(b)) => Ok(Some(Self::Float(a - *b as f64))),
             _ => Ok(None),
         }
     }
@@ -1479,9 +1493,12 @@ impl Value {
                     singleton_id(SingletonSlot::False)
                 }
             }
-            // Interned strings/bytes use their index directly - the index is the stable identifier
+            // Interned strings/bytes/bigints use their index directly - the index is the stable identifier
             Self::InternString(string_id) => INTERN_STR_ID_TAG | (string_id.index() & INTERN_STR_ID_MASK),
             Self::InternBytes(bytes_id) => INTERN_BYTES_ID_TAG | (bytes_id.index() & INTERN_BYTES_ID_MASK),
+            Self::InternLongInt(long_int_id) => {
+                INTERN_LONG_INT_ID_TAG | (long_int_id.index() & INTERN_LONG_INT_ID_MASK)
+            }
             // Already heap-allocated (includes Range and Exception), return id within a dedicated tag range
             Self::Ref(id) => heap_tagged_id(*id),
             // Value-based IDs for immediate types (no heap allocation!)
@@ -1538,7 +1555,7 @@ impl Value {
     /// The `interns` parameter is needed for InternString/InternBytes to look up
     /// their actual content and hash it consistently with equivalent heap Str/Bytes.
     pub fn py_hash(&self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Option<u64> {
-        // strings bytes and heap allocated values have their own hashing logic
+        // strings bytes bigints and heap allocated values have their own hashing logic
         match self {
             // Hash just the actual string or bytes content for consistency with heap Str/Bytes
             // hence we don't include the discriminant
@@ -1550,6 +1567,15 @@ impl Value {
             Self::InternBytes(bytes_id) => {
                 let mut hasher = DefaultHasher::new();
                 interns.get_bytes(*bytes_id).hash(&mut hasher);
+                return Some(hasher.finish());
+            }
+            // Hash BigInt consistently with LongInt (using sign and bytes for large values)
+            Self::InternLongInt(long_int_id) => {
+                let bi = interns.get_long_int(*long_int_id);
+                let mut hasher = DefaultHasher::new();
+                let (sign, bytes) = bi.to_bytes_le();
+                sign.hash(&mut hasher);
+                bytes.hash(&mut hasher);
                 return Some(hasher.finish());
             }
             // For heap-allocated values (includes Range and Exception), compute hash lazily and cache it
@@ -1576,7 +1602,9 @@ impl Value {
             Self::Marker(m) => m.hash(&mut hasher),
             // ExternalFutures are hashable based on their call ID
             Self::ExternalFuture(call_id) => call_id.raw().hash(&mut hasher),
-            Self::InternString(_) | Self::InternBytes(_) | Self::Ref(_) => unreachable!("covered above"),
+            Self::InternString(_) | Self::InternBytes(_) | Self::InternLongInt(_) | Self::Ref(_) => {
+                unreachable!("covered above")
+            }
             #[cfg(feature = "ref-count-panic")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
@@ -1609,6 +1637,32 @@ impl Value {
                     HeapData::Set(set) => set.contains(item, heap, interns),
                     HeapData::FrozenSet(fset) => fset.contains(item, heap, interns),
                     HeapData::Str(s) => str_contains(s.as_str(), item, heap, interns),
+                    HeapData::Range(range) => {
+                        // Range containment is O(1) - check bounds and step alignment
+                        let n = match item {
+                            Self::Int(i) => *i,
+                            Self::Bool(b) => i64::from(*b),
+                            Self::Float(f) => {
+                                // Floats are contained if they equal an integer in the range
+                                // e.g., 3.0 in range(5) is True, but 3.5 in range(5) is False
+                                if f.fract() != 0.0 {
+                                    return Ok(false);
+                                }
+                                // Check if float is within i64 range and convert safely
+                                // f64 can represent integers up to 2^53 exactly
+                                let int_val = f.trunc();
+                                if int_val < i64::MIN as f64 || int_val > i64::MAX as f64 {
+                                    return Ok(false);
+                                }
+                                // Safe conversion: we've verified it's a whole number in i64 range
+                                #[expect(clippy::cast_possible_truncation)]
+                                let n = int_val as i64;
+                                n
+                            }
+                            _ => return Ok(false),
+                        };
+                        Ok(range.contains(n))
+                    }
                     other => {
                         let type_name = other.py_type(heap);
                         Err(ExcType::type_error(format!(
@@ -1978,6 +2032,7 @@ impl Value {
             Self::ExtFunction(f) => Self::ExtFunction(*f),
             Self::InternString(s) => Self::InternString(*s),
             Self::InternBytes(b) => Self::InternBytes(*b),
+            Self::InternLongInt(bi) => Self::InternLongInt(*bi),
             Self::Marker(m) => Self::Marker(*m),
             Self::ExternalFuture(call_id) => Self::ExternalFuture(*call_id),
             Self::Ref(id) => Self::Ref(*id), // Caller must increment refcount!
@@ -2184,6 +2239,8 @@ const MARKER_ID_TAG: usize = 1usize << (usize::BITS - 10);
 const EXTERNAL_FUTURE_ID_TAG: usize = 1usize << (usize::BITS - 11);
 /// High-bit tag for ModuleFunction value-based IDs.
 const MODULE_FUNCTION_ID_TAG: usize = 1usize << (usize::BITS - 12);
+/// High-bit tag for interned LongInt `id()` values.
+const INTERN_LONG_INT_ID_TAG: usize = 1usize << (usize::BITS - 13);
 
 /// Masks for value-based ID tags (keep bits below the tag bit).
 const INT_ID_MASK: usize = INT_ID_TAG - 1;
@@ -2194,6 +2251,7 @@ const EXTFUNCTION_ID_MASK: usize = EXTFUNCTION_ID_TAG - 1;
 const MARKER_ID_MASK: usize = MARKER_ID_TAG - 1;
 const EXTERNAL_FUTURE_ID_MASK: usize = EXTERNAL_FUTURE_ID_TAG - 1;
 const MODULE_FUNCTION_ID_MASK: usize = MODULE_FUNCTION_ID_TAG - 1;
+const INTERN_LONG_INT_ID_MASK: usize = INTERN_LONG_INT_ID_TAG - 1;
 
 /// Enumerates singleton literal slots so we can issue stable `id()` values without heap allocation.
 #[repr(usize)]

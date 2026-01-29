@@ -5,6 +5,7 @@ from functools import partial
 from typing import cast
 
 import pytest
+from inline_snapshot import snapshot
 
 import pydantic_monty
 
@@ -29,6 +30,38 @@ x
     assert result == 200_000
 
     threads = [threading.Thread(target=m.run) for _ in range(4)]
+    start = time.perf_counter()
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    diff_parallel = time.perf_counter() - start
+    # check that running the function in parallel 4 times is less than 1.5x slower than running it once
+    time_multiple = diff_parallel / diff
+    assert time_multiple < 1.5, 'Execution should not be slower in parallel'
+
+
+def test_parallel_exec_print():
+    """Run code directly, run it in parallel, check that parallel execution not much slower."""
+    code = """
+x = 0
+for i in range(200_000):
+    x += 1
+print(x)
+"""
+    captured: list[str] = []
+
+    def print_callback(file: str, content: str):
+        captured.append(f'{file}: {content}')
+
+    m = pydantic_monty.Monty(code)
+    start = time.perf_counter()
+    result = m.run(print_callback=print_callback)
+    diff = time.perf_counter() - start
+    assert result is None
+    assert captured == snapshot(['stdout: 200000', 'stdout: \n'])
+
+    threads = [threading.Thread(target=partial(m.run, print_callback=print_callback)) for _ in range(4)]
     start = time.perf_counter()
     for t in threads:
         t.start()

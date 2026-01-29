@@ -147,38 +147,24 @@ impl PyMonty {
         // Extract input values in the order they were declared
         let input_values = self.extract_input_values(inputs)?;
 
-        // Use SignalCheckingTracker when limits are provided, NoLimitTracker otherwise
-        match (limits, print_callback) {
-            (Some(limits), Some(callback)) => {
-                let inner_tracker = LimitedTracker::new(extract_limits(limits)?);
-                let tracker = PySignalTracker::new(inner_tracker);
-                self.run_hold_gil(
-                    py,
-                    input_values,
-                    tracker,
-                    external_functions,
-                    CallbackStringPrint(callback),
-                )
+        // Build print writer
+        let print_writer = print_callback.map(CallbackStringPrint::new);
+
+        // Run with appropriate tracker type (must branch due to different generic types)
+        if let Some(limits) = limits {
+            let tracker = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
+            if let Some(print_writer) = print_writer {
+                self.run_impl(py, input_values, tracker, external_functions, print_writer)
+            } else {
+                self.run_impl(py, input_values, tracker, external_functions, StdPrint)
             }
-            (Some(limits), None) => {
-                let inner_tracker = LimitedTracker::new(extract_limits(limits)?);
-                let tracker = PySignalTracker::new(inner_tracker);
-                self.run_release_gil(py, input_values, tracker, external_functions, StdPrint)
+        } else {
+            let tracker = PySignalTracker::new(NoLimitTracker);
+            if let Some(print_writer) = print_writer {
+                self.run_impl(py, input_values, tracker, external_functions, print_writer)
+            } else {
+                self.run_impl(py, input_values, tracker, external_functions, StdPrint)
             }
-            (None, Some(callback)) => self.run_hold_gil(
-                py,
-                input_values,
-                PySignalTracker::new(NoLimitTracker),
-                external_functions,
-                CallbackStringPrint(callback),
-            ),
-            (None, None) => self.run_release_gil(
-                py,
-                input_values,
-                PySignalTracker::new(NoLimitTracker),
-                external_functions,
-                StdPrint,
-            ),
         }
     }
 
@@ -193,40 +179,33 @@ impl PyMonty {
         // Extract input values in the order they were declared
         let input_values = self.extract_input_values(inputs)?;
 
-        // Clone the runner since start() consumes it - allows reuse of the parsed code
-        macro_rules! start_hold_gil {
-            ($resource_tracker:expr, $print_output:expr) => {
-                self.runner
-                    .clone()
-                    .start(input_values, $resource_tracker, &mut $print_output)
-                    .map_err(|e| MontyError::new_err(py, e))?
-            };
-        }
-        macro_rules! start_release_gil {
-            ($resource_tracker:expr, $print_output:expr) => {{
+        // Helper macro to start execution with GIL released
+        // CallbackStringPrint is Send so this works for both print_callback cases
+        macro_rules! start_impl {
+            ($tracker:expr, $print_output:expr) => {{
                 let runner = self.runner.clone();
-                py.detach(|| runner.start(input_values, $resource_tracker, &mut $print_output))
+                py.detach(|| runner.start(input_values, $tracker, &mut $print_output))
                     .map_err(|e| MontyError::new_err(py, e))?
             }};
         }
 
-        // separate code paths due to generics
-        let progress = match (limits, print_callback) {
-            (Some(limits), Some(callback)) => {
-                let limits = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
-                EitherProgress::Limited(start_hold_gil!(limits, CallbackStringPrint(callback)))
+        // Build print writer - CallbackStringPrint is Send so GIL can be released
+        let print_writer = print_callback.map(CallbackStringPrint::new);
+
+        // Branch on limits (different generic types) then on print_writer
+        let progress = if let Some(limits) = limits {
+            let tracker = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
+            if let Some(mut print_writer) = print_writer {
+                EitherProgress::Limited(start_impl!(tracker, print_writer))
+            } else {
+                EitherProgress::Limited(start_impl!(tracker, StdPrint))
             }
-            (Some(limits), None) => {
-                let limits = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
-                EitherProgress::Limited(start_release_gil!(limits, StdPrint))
-            }
-            (None, Some(callback)) => {
-                let limits = PySignalTracker::new(NoLimitTracker);
-                EitherProgress::NoLimit(start_hold_gil!(limits, CallbackStringPrint(callback)))
-            }
-            (None, None) => {
-                let limits = PySignalTracker::new(NoLimitTracker);
-                EitherProgress::NoLimit(start_release_gil!(limits, StdPrint))
+        } else {
+            let tracker = PySignalTracker::new(NoLimitTracker);
+            if let Some(mut print_writer) = print_writer {
+                EitherProgress::NoLimit(start_impl!(tracker, print_writer))
+            } else {
+                EitherProgress::NoLimit(start_impl!(tracker, StdPrint))
             }
         };
         progress.progress_or_complete(
@@ -354,64 +333,11 @@ impl PyMonty {
             .collect::<PyResult<_>>()
     }
 
-    /// Runs code with a generic resource tracker while holding the GIL.
-    fn run_hold_gil(
-        &self,
-        py: Python<'_>,
-        input_values: Vec<MontyObject>,
-        tracker: impl ResourceTracker,
-        external_functions: Option<&Bound<'_, PyDict>>,
-        mut print_output: impl PrintWriter,
-    ) -> PyResult<Py<PyAny>> {
-        let dataclass_registry = self.dataclass_registry.bind(py);
-        if self.external_function_names.is_empty() {
-            return match self.runner.run(input_values, tracker, &mut print_output) {
-                Ok(v) => monty_to_py(py, &v, dataclass_registry),
-                Err(err) => Err(MontyError::new_err(py, err)),
-            };
-        }
-        // Clone the runner since start() consumes it - allows reuse of the parsed code
-        let mut progress = self
-            .runner
-            .clone()
-            .start(input_values, tracker, &mut print_output)
-            .map_err(|e| MontyError::new_err(py, e))?;
-
-        loop {
-            match progress {
-                RunProgress::Complete(result) => return monty_to_py(py, &result, dataclass_registry),
-                RunProgress::FunctionCall {
-                    function_name,
-                    args,
-                    kwargs,
-                    state,
-                    ..
-                } => {
-                    let registry = external_functions
-                        .map(|d| ExternalFunctionRegistry::new(py, d, dataclass_registry))
-                        .ok_or_else(|| {
-                            PyRuntimeError::new_err(format!(
-                                "External function '{function_name}' called but no external_functions provided"
-                            ))
-                        })?;
-
-                    let return_value = registry.call(&function_name, &args, &kwargs);
-
-                    progress = state
-                        .run(return_value, &mut print_output)
-                        .map_err(|e| MontyError::new_err(py, e))?;
-                }
-                RunProgress::ResolveFutures { .. } => {
-                    return Err(PyRuntimeError::new_err(
-                        "async futures not yet supported with `Monty.run`",
-                    ));
-                }
-            }
-        }
-    }
-
-    /// Runs code with a generic resource tracker while releasing the GIL.
-    fn run_release_gil(
+    /// Runs code with a generic resource tracker, releasing the GIL during execution.
+    ///
+    /// The GIL is released during Monty execution and re-acquired when needed
+    /// (e.g., for external function calls or print callbacks).
+    fn run_impl(
         &self,
         py: Python<'_>,
         input_values: Vec<MontyObject>,
@@ -675,18 +601,25 @@ impl PyMontySnapshot {
         let external_result = extract_external_result(py, kwargs, ARGS_ERROR)?;
 
         let snapshot = std::mem::replace(&mut self.snapshot, EitherSnapshot::Done);
+
+        // Build print writer before detaching - clone_ref needs py token
+        let print_writer = self
+            .print_callback
+            .as_ref()
+            .map(|cb| CallbackStringPrint::from_py(cb.clone_ref(py)));
+
         let progress = match snapshot {
             EitherSnapshot::NoLimit(snapshot) => {
-                let result = if let Some(print_callback) = &self.print_callback {
-                    snapshot.run(external_result, &mut CallbackStringPrint(print_callback.bind(py)))
+                let result = if let Some(mut print_writer) = print_writer {
+                    py.detach(|| snapshot.run(external_result, &mut print_writer))
                 } else {
                     py.detach(|| snapshot.run(external_result, &mut StdPrint))
                 };
                 EitherProgress::NoLimit(result.map_err(|e| MontyError::new_err(py, e))?)
             }
             EitherSnapshot::Limited(snapshot) => {
-                let result = if let Some(print_callback) = &self.print_callback {
-                    snapshot.run(external_result, &mut CallbackStringPrint(print_callback.bind(py)))
+                let result = if let Some(mut print_writer) = print_writer {
+                    py.detach(|| snapshot.run(external_result, &mut print_writer))
                 } else {
                     py.detach(|| snapshot.run(external_result, &mut StdPrint))
                 };
@@ -875,18 +808,25 @@ impl PyMontyFutureSnapshot {
             })
             .collect::<PyResult<Vec<_>>>()?;
         let snapshot = std::mem::replace(&mut self.snapshot, EitherFutureSnapshot::Done);
+
+        // Build print writer before detaching - clone_ref needs py token
+        let print_writer = self
+            .print_callback
+            .as_ref()
+            .map(|cb| CallbackStringPrint::from_py(cb.clone_ref(py)));
+
         let progress = match snapshot {
             EitherFutureSnapshot::NoLimit(snapshot) => {
-                let result = if let Some(print_callback) = &self.print_callback {
-                    snapshot.resume(external_results, &mut CallbackStringPrint(print_callback.bind(py)))
+                let result = if let Some(mut print_writer) = print_writer {
+                    py.detach(|| snapshot.resume(external_results, &mut print_writer))
                 } else {
                     py.detach(|| snapshot.resume(external_results, &mut StdPrint))
                 };
                 EitherProgress::NoLimit(result.map_err(|e| MontyError::new_err(py, e))?)
             }
             EitherFutureSnapshot::Limited(snapshot) => {
-                let result = if let Some(print_callback) = &self.print_callback {
-                    snapshot.resume(external_results, &mut CallbackStringPrint(print_callback.bind(py)))
+                let result = if let Some(mut print_writer) = print_writer {
+                    py.detach(|| snapshot.resume(external_results, &mut print_writer))
                 } else {
                     py.detach(|| snapshot.resume(external_results, &mut StdPrint))
                 };
@@ -1057,23 +997,41 @@ fn list_str(arg: Option<&Bound<'_, PyList>>, name: &str) -> PyResult<Vec<String>
     }
 }
 
+/// A `PrintWriter` implementation that calls a Python callback for each print output.
+///
+/// This struct holds a GIL-independent `Py<PyAny>` reference to the callback,
+/// allowing it to be used across GIL release boundaries. The GIL is re-acquired
+/// briefly for each callback invocation.
 #[derive(Debug)]
-pub struct CallbackStringPrint<'py>(&'py Bound<'py, PyAny>);
+pub struct CallbackStringPrint(Py<PyAny>);
 
-impl<'py> CallbackStringPrint<'py> {
-    fn write(&mut self, output: impl IntoPyObject<'py>) -> PyResult<()> {
-        self.0.call1(("stdout", output))?;
-        Ok(())
+impl CallbackStringPrint {
+    /// Creates a new `CallbackStringPrint` from a borrowed Python callback.
+    fn new(callback: &Bound<'_, PyAny>) -> Self {
+        Self(callback.clone().unbind())
+    }
+
+    /// Creates a new `CallbackStringPrint` from an owned `Py<PyAny>`.
+    fn from_py(callback: Py<PyAny>) -> Self {
+        Self(callback)
     }
 }
 
-impl PrintWriter for CallbackStringPrint<'_> {
+impl PrintWriter for CallbackStringPrint {
     fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
-        self.write(output).map_err(|e| exc_py_to_monty(self.0.py(), &e))
+        Python::attach(|py| {
+            self.0.bind(py).call1(("stdout", output.as_ref()))?;
+            Ok::<_, PyErr>(())
+        })
+        .map_err(|e| Python::attach(|py| exc_py_to_monty(py, &e)))
     }
 
     fn stdout_push(&mut self, end: char) -> Result<(), MontyException> {
-        self.write(end).map_err(|e| exc_py_to_monty(self.0.py(), &e))
+        Python::attach(|py| {
+            self.0.bind(py).call1(("stdout", end.to_string()))?;
+            Ok::<_, PyErr>(())
+        })
+        .map_err(|e| Python::attach(|py| exc_py_to_monty(py, &e)))
     }
 }
 

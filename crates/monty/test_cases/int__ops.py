@@ -7,6 +7,23 @@ assert 0 + 5 == 5, 'zero add'
 assert 5 - 3 == 2, 'basic sub'
 assert 5 - 0 == 5, 'sub zero'
 
+# === Mixed int/float addition ===
+assert 3 + 4.0 == 7.0, 'int add float'
+assert 4.0 + 3 == 7.0, 'float add int'
+assert -2 + 3.5 == 1.5, 'neg int add float'
+assert 0 + 2.5 == 2.5, 'zero add float'
+assert 2.5 + 0 == 2.5, 'float add zero'
+
+# === Mixed int/float subtraction ===
+assert 5 - 2.5 == 2.5, 'int sub float'
+assert 5.5 - 2 == 3.5, 'float sub int'
+assert -3 - 1.5 == -4.5, 'neg int sub float'
+assert 1.5 - (-2) == 3.5, 'float sub neg int'
+
+# === Float subtraction ===
+assert 5.5 - 2.5 == 3.0, 'float sub float'
+assert 0.0 - 1.5 == -1.5, 'zero sub float'
+
 # === Integer modulo ===
 assert 10 % 3 == 1, 'basic mod'
 assert 3 % 10 == 3, 'mod larger divisor'

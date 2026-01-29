@@ -1,7 +1,7 @@
-//! String and bytes interning for efficient storage of literals and identifiers.
+//! String, bytes, and long integer interning for efficient storage of literals and identifiers.
 //!
-//! This module provides interners that store unique strings and bytes in vectors
-//! and return indices (`StringId`, `BytesId`) for efficient storage and comparison.
+//! This module provides interners that store unique strings, bytes, and long integers in vectors
+//! and return indices (`StringId`, `BytesId`, `LongIntId`) for efficient storage and comparison.
 //! This avoids the overhead of cloning strings or using atomic reference counting.
 //!
 //! The interners are populated during parsing and preparation, then owned by the `Executor`.
@@ -15,6 +15,7 @@
 use std::{str::FromStr, sync::LazyLock};
 
 use ahash::AHashMap;
+use num_bigint::BigInt;
 use strum::{EnumString, FromRepr, IntoStaticStr};
 
 use crate::{function::Function, value::Value};
@@ -340,6 +341,21 @@ impl BytesId {
     }
 }
 
+/// Index into the long integer interner's storage.
+///
+/// Used for integer literals that exceed i64 range. The actual `BigInt` values
+/// are stored in the `Interns` table and looked up by index at runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct LongIntId(u32);
+
+impl LongIntId {
+    /// Returns the raw index value.
+    #[inline]
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 /// Unique identifier for functions
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct FunctionId(u32);
@@ -377,11 +393,11 @@ impl ExtFunctionId {
     }
 }
 
-/// A string and bytes interner that stores unique values and returns indices for lookup.
+/// A string, bytes, and long integer interner that stores unique values and returns indices for lookup.
 ///
 /// Interns are deduplicated on insertion - interning the same string twice returns
-/// the same `StringId`. Bytes are NOT deduplicated (rare enough that it's not worth it).
-/// The interner owns all strings/bytes and provides lookup by index.
+/// the same `StringId`. Bytes and long integers are NOT deduplicated (rare enough that it's not worth it).
+/// The interner owns all strings/bytes/long integers and provides lookup by index.
 ///
 /// # Thread Safety
 ///
@@ -396,6 +412,9 @@ pub struct InternerBuilder {
     /// Storage for interned bytes literals, indexed by `BytesId`.
     /// Not deduplicated since bytes literals are rare.
     bytes: Vec<Vec<u8>>,
+    /// Storage for interned long integer literals, indexed by `LongIntId`.
+    /// Not deduplicated since long integer literals are rare.
+    long_ints: Vec<BigInt>,
 }
 
 impl InternerBuilder {
@@ -421,6 +440,7 @@ impl InternerBuilder {
             string_map: AHashMap::with_capacity(capacity),
             strings: Vec::with_capacity(capacity),
             bytes: Vec::new(),
+            long_ints: Vec::new(),
         }
     }
 
@@ -454,6 +474,15 @@ impl InternerBuilder {
         id
     }
 
+    /// Interns a long integer, returning its `LongIntId`.
+    ///
+    /// Big integers are not deduplicated since literals exceeding i64 are rare.
+    pub fn intern_long_int(&mut self, bi: BigInt) -> LongIntId {
+        let id = LongIntId(self.long_ints.len().try_into().expect("LongIntId overflow"));
+        self.long_ints.push(bi);
+        id
+    }
+
     /// Looks up a string by its `StringId`.
     #[inline]
     pub fn get_str(&self, id: StringId) -> &str {
@@ -477,13 +506,14 @@ fn get_str(strings: &[String], id: StringId) -> &str {
     }
 }
 
-/// Read-only storage for interned string and bytes.
+/// Read-only storage for interned strings, bytes, and long integers.
 ///
-/// This provides lookup by `StringId`, `BytesId` and `FunctionId` for interned literals and functions
+/// This provides lookup by `StringId`, `BytesId`, `LongIntId` and `FunctionId` for interned literals and functions.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Interns {
     strings: Vec<String>,
     bytes: Vec<Vec<u8>>,
+    long_ints: Vec<BigInt>,
     functions: Vec<Function>,
     external_functions: Vec<String>,
 }
@@ -493,6 +523,7 @@ impl Interns {
         Self {
             strings: interner.strings,
             bytes: interner.bytes,
+            long_ints: interner.long_ints,
             functions,
             external_functions,
         }
@@ -516,6 +547,16 @@ impl Interns {
     #[inline]
     pub fn get_bytes(&self, id: BytesId) -> &[u8] {
         &self.bytes[id.index()]
+    }
+
+    /// Looks up a long integer by its `LongIntId`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `LongIntId` is invalid.
+    #[inline]
+    pub fn get_long_int(&self, id: LongIntId) -> &BigInt {
+        &self.long_ints[id.index()]
     }
 
     /// Lookup a function by its `FunctionId`

@@ -1567,9 +1567,13 @@ name = "monty-js"
 version = "0.1.0"
 dependencies = [
  "monty",
+ "monty_type_checking",
  "napi",
  "napi-build",
  "napi-derive",
+ "num-bigint",
+ "postcard",
+ "serde",
 ]
 
 [[package]]

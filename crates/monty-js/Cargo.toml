@@ -1,5 +1,6 @@
 [package]
 name = "monty-js"
+description = "TypeScript/JavaScript bindings for the Monty sandboxed Python interpreter"
 authors = ["Samuel Colvin <samuel@pydantic.dev>"]
 edition = "2021"
 version = "0.1.0"
@@ -9,8 +10,15 @@ crate-type = ["cdylib"]
 
 [dependencies]
 monty = { path = "../monty" }
-napi = { version = "3.0.0", default-features = false, features = ["napi4"] }
+monty_type_checking = { path = "../monty-type-checking" }
+napi = { version = "3.0.0", default-features = false, features = ["napi6", "compat-mode"] }
 napi-derive = "3.0.0"
+num-bigint = { workspace = true }
+serde = { workspace = true }
+postcard = { workspace = true }
 
 [build-dependencies]
 napi-build = "2"
+
+[lints]
+workspace = true

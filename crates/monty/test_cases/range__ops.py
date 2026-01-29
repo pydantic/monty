@@ -177,3 +177,60 @@ assert r[i] == 50, 'range getitem with variable index'
 r = range(10, 15)
 assert r[False] == 10, 'range getitem with False'
 assert r[True] == 11, 'range getitem with True'
+
+# === Range containment ('in' operator) ===
+# Basic containment
+assert 0 in range(5), '0 in range(5)'
+assert 4 in range(5), '4 in range(5)'
+assert 5 not in range(5), '5 not in range(5)'
+assert -1 not in range(5), '-1 not in range(5)'
+
+# Range with start
+assert 10 in range(10, 15), '10 in range(10, 15)'
+assert 14 in range(10, 15), '14 in range(10, 15)'
+assert 15 not in range(10, 15), '15 not in range(10, 15)'
+assert 9 not in range(10, 15), '9 not in range(10, 15)'
+
+# Range with step
+assert 0 in range(0, 10, 2), '0 in range(0, 10, 2)'
+assert 2 in range(0, 10, 2), '2 in range(0, 10, 2)'
+assert 8 in range(0, 10, 2), '8 in range(0, 10, 2)'
+assert 3 not in range(0, 10, 2), '3 not in range(0, 10, 2)'
+assert 10 not in range(0, 10, 2), '10 not in range(0, 10, 2)'
+
+# Range with negative step
+assert 10 in range(10, 0, -1), '10 in countdown'
+assert 1 in range(10, 0, -1), '1 in countdown'
+assert 0 not in range(10, 0, -1), '0 not in countdown'
+assert 11 not in range(10, 0, -1), '11 not in countdown'
+
+# Negative step with step > 1
+assert 10 in range(10, 0, -2), '10 in range(10, 0, -2)'
+assert 8 in range(10, 0, -2), '8 in range(10, 0, -2)'
+assert 9 not in range(10, 0, -2), '9 not in range(10, 0, -2)'
+
+# Negative ranges
+assert -3 in range(-5, 0), '-3 in range(-5, 0)'
+assert 0 not in range(-5, 0), '0 not in range(-5, 0)'
+
+# Empty ranges
+assert 5 not in range(0), '5 not in empty range'
+assert 0 not in range(5, 5), '0 not in empty equal range'
+
+# Non-int types return False (no TypeError)
+assert 'a' not in range(5), 'string not in range'
+
+# Float containment (floats equal to integers are contained)
+assert 3.0 in range(5), '3.0 in range(5)'
+assert 0.0 in range(5), '0.0 in range(5)'
+assert 4.0 in range(5), '4.0 in range(5)'
+assert 3.5 not in range(5), '3.5 not in range(5)'
+assert 5.0 not in range(5), '5.0 not in range(5)'
+assert 2.0 in range(0, 10, 2), '2.0 in even range'
+assert 3.0 not in range(0, 10, 2), '3.0 not in even range'
+assert -1.0 not in range(5), '-1.0 not in range(5)'
+
+# Bool as container element (True=1, False=0 for comparison)
+assert True in range(5), 'True in range(5)'
+assert False in range(5), 'False in range(5)'
+assert True not in range(0), 'True not in empty range'

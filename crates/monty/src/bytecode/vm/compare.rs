@@ -5,7 +5,7 @@ use crate::{
     exception_private::{ExcType, RunError},
     io::PrintWriter,
     resource::ResourceTracker,
-    types::PyTrait,
+    types::{LongInt, PyTrait},
     value::Value,
 };
 
@@ -83,24 +83,53 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// This is an optimization for patterns like `x % 3 == 0`. The constant k
     /// is provided by the caller (fetched from the constant pool using the
     /// cached code reference in the run loop).
+    ///
+    /// Uses a fast path for Int/Float types via `py_mod_eq`, and falls back to
+    /// computing `py_mod` then comparing with `py_eq` for other types (e.g., LongInt).
     pub(super) fn compare_mod_eq(&mut self, k: &Value) -> Result<(), RunError> {
         let rhs = self.pop(); // divisor (b)
         let lhs = self.pop(); // dividend (a)
 
-        // Compute a % b
+        // Try fast path for Int/Float types
         let mod_result = match k {
-            Value::Int(k) => lhs.py_mod_eq(&rhs, *k),
+            Value::Int(k_val) => lhs.py_mod_eq(&rhs, *k_val),
             _ => None,
         };
 
-        lhs.drop_with_heap(self.heap);
-        rhs.drop_with_heap(self.heap);
-
         if let Some(is_equal) = mod_result {
+            // Fast path succeeded
+            lhs.drop_with_heap(self.heap);
+            rhs.drop_with_heap(self.heap);
             self.push(Value::Bool(is_equal));
             Ok(())
         } else {
-            Err(ExcType::type_error("unsupported operand type(s) for %"))
+            // Fallback: compute py_mod then compare with py_eq
+            // This handles LongInt and other Ref types
+            let mod_value = lhs.py_mod(&rhs, self.heap);
+            lhs.drop_with_heap(self.heap);
+            rhs.drop_with_heap(self.heap);
+
+            match mod_value {
+                Ok(Some(v)) => {
+                    // Handle InternLongInt by converting to heap LongInt for comparison
+                    let (k_value, k_needs_drop) = if let Value::InternLongInt(id) = k {
+                        let bi = self.interns.get_long_int(*id).clone();
+                        (LongInt::new(bi).into_value(self.heap)?, true)
+                    } else {
+                        (k.copy_for_extend(), false)
+                    };
+
+                    let is_equal = v.py_eq(&k_value, self.heap, self.interns);
+                    v.drop_with_heap(self.heap);
+                    if k_needs_drop {
+                        k_value.drop_with_heap(self.heap);
+                    }
+                    self.push(Value::Bool(is_equal));
+                    Ok(())
+                }
+                Ok(None) => Err(ExcType::type_error("unsupported operand type(s) for %")),
+                Err(e) => Err(e),
+            }
         }
     }
 }

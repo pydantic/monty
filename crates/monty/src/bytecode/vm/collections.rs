@@ -489,6 +489,148 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         }
         Ok(())
     }
+
+    /// Unpacks a sequence with a starred target.
+    ///
+    /// `before` is the number of targets before the star, `after` is the number after.
+    /// The starred target collects all middle items into a list.
+    ///
+    /// For example, `first, *rest, last = [1, 2, 3, 4, 5]` has before=1, after=1.
+    /// After execution, the stack has: first (top), rest_list, last.
+    pub(super) fn unpack_ex(&mut self, before: usize, after: usize) -> Result<(), RunError> {
+        let value = self.pop();
+        let min_items = before + after;
+
+        // Extract items from the sequence
+        let items: Vec<Value> = match &value {
+            Value::InternString(string_id) => {
+                let s = self.interns.get_str(*string_id);
+                // Collect chars once to avoid double iteration over UTF-8 data
+                let chars: Vec<char> = s.chars().collect();
+                if chars.len() < min_items {
+                    return Err(unpack_ex_too_few_error(min_items, chars.len()));
+                }
+                // Allocate each character as a new string
+                let mut items = Vec::with_capacity(chars.len());
+                for c in chars {
+                    items.push(allocate_char(c, self.heap)?);
+                }
+                // String items are newly allocated, push and return
+                self.push_unpack_ex_results(&items, before, after)?;
+                return Ok(());
+            }
+            Value::Ref(heap_id) => match self.heap.get(*heap_id) {
+                HeapData::List(list) => {
+                    let list_len = list.len();
+                    if list_len < min_items {
+                        value.drop_with_heap(self.heap);
+                        return Err(unpack_ex_too_few_error(min_items, list_len));
+                    }
+                    list.as_vec().iter().map(Value::copy_for_extend).collect()
+                }
+                HeapData::Tuple(tuple) => {
+                    let tuple_len = tuple.as_vec().len();
+                    if tuple_len < min_items {
+                        value.drop_with_heap(self.heap);
+                        return Err(unpack_ex_too_few_error(min_items, tuple_len));
+                    }
+                    tuple.as_vec().iter().map(Value::copy_for_extend).collect()
+                }
+                HeapData::Str(s) => {
+                    // Collect chars once to avoid double iteration over UTF-8 data
+                    let chars: Vec<char> = s.as_str().chars().collect();
+                    if chars.len() < min_items {
+                        value.drop_with_heap(self.heap);
+                        return Err(unpack_ex_too_few_error(min_items, chars.len()));
+                    }
+                    value.drop_with_heap(self.heap);
+                    let mut items = Vec::with_capacity(chars.len());
+                    for c in chars {
+                        items.push(allocate_char(c, self.heap)?);
+                    }
+                    // String items are newly allocated, push and return
+                    self.push_unpack_ex_results(&items, before, after)?;
+                    return Ok(());
+                }
+                other => {
+                    let type_name = other.py_type(self.heap);
+                    value.drop_with_heap(self.heap);
+                    return Err(unpack_type_error(type_name));
+                }
+            },
+            _ => {
+                let type_name = value.py_type(self.heap);
+                value.drop_with_heap(self.heap);
+                return Err(unpack_type_error(type_name));
+            }
+        };
+
+        // Increment refcounts BEFORE dropping the container.
+        // Items were copied with copy_for_extend (no refcount change).
+        // We need to increment for:
+        // - Each item going to the "before" targets
+        // - Each item going to the "middle" list
+        // - Each item going to the "after" targets
+        // That's one increment per item.
+        for item in &items {
+            if let Value::Ref(id) = item {
+                self.heap.inc_ref(*id);
+            }
+        }
+
+        // Drop the original container
+        value.drop_with_heap(self.heap);
+
+        // Now push the results
+        self.push_unpack_ex_results(&items, before, after)?;
+        Ok(())
+    }
+
+    /// Helper to push unpacked items with starred target onto the stack.
+    ///
+    /// Takes a slice of items and creates the middle list.
+    fn push_unpack_ex_results(&mut self, items: &[Value], before: usize, after: usize) -> Result<(), RunError> {
+        let total = items.len();
+
+        // Collect results: before items, middle list, after items
+        let mut results = Vec::with_capacity(before + 1 + after);
+
+        // Before items
+        for item in items.iter().take(before) {
+            results.push(item.copy_for_extend());
+        }
+
+        // Middle items as a list (starred target)
+        // Items already have their refcount incremented in unpack_ex (for list/tuple)
+        // or are freshly allocated (for strings), so no additional inc_ref needed here.
+        let middle_start = before;
+        let middle_end = total - after;
+        let mut middle = Vec::with_capacity(middle_end - middle_start);
+        for item in &items[middle_start..middle_end] {
+            middle.push(item.copy_for_extend());
+        }
+        let middle_list = List::new(middle);
+        let list_id = self.heap.allocate(HeapData::List(middle_list))?;
+        results.push(Value::Ref(list_id));
+
+        // After items
+        for item in items.iter().skip(total - after) {
+            results.push(item.copy_for_extend());
+        }
+
+        // Push in reverse order so first item is on top
+        for item in results.into_iter().rev() {
+            self.push(item);
+        }
+
+        Ok(())
+    }
+}
+
+/// Creates the ValueError for star unpacking when there are too few values.
+fn unpack_ex_too_few_error(min_needed: usize, actual: usize) -> RunError {
+    let message = format!("not enough values to unpack (expected at least {min_needed}, got {actual})");
+    SimpleException::new_msg(ExcType::ValueError, message).into()
 }
 
 /// Creates the appropriate ValueError for unpacking size mismatches.

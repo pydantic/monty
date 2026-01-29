@@ -1,8 +1,16 @@
 {
   "name": "@pydantic/monty",
   "version": "1.0.0",
-  "description": "Template project for writing node package with napi-rs",
-  "main": "index.js",
+  "type": "module",
+  "description": "Sandboxed Python interpreter for JavaScript/TypeScript",
+  "main": "wrapper.js",
+  "types": "wrapper.d.ts",
+  "exports": {
+    ".": {
+      "types": "./wrapper.d.ts",
+      "default": "./wrapper.js"
+    }
+  },
   "repository": {
     "type": "git",
     "url": "github.com/pydantic/monty"
@@ -12,6 +20,8 @@
   "files": [
     "index.d.ts",
     "index.js",
+    "wrapper.js",
+    "wrapper.d.ts",
     "browser.js"
   ],
   "napi": {
@@ -22,7 +32,8 @@
       "x86_64-unknown-linux-gnu",
       "aarch64-apple-darwin",
       "wasm32-wasip1-threads"
-    ]
+    ],
+    "dtsHeaderFile": "./index-header.d.ts"
   },
   "engines": {
     "node": ">= 6.14.2 < 7 || >= 8.11.2 < 9 || >= 9.11.0 < 10 || >= 10.0.0"
@@ -34,8 +45,11 @@
   "scripts": {
     "artifacts": "napi artifacts",
     "bench": "node --import @oxc-node/core/register benchmark/bench.ts",
-    "build": "napi build --platform --release",
-    "build:debug": "napi build --platform",
+    "build": "run-s build:napi build:ts",
+    "build:debug": "run-s build:napi:debug build:ts",
+    "build:napi": "napi build --platform --release --esm",
+    "build:napi:debug": "napi build --platform --esm",
+    "build:ts": "tsc",
     "create-npm-dirs": "napi create-npm-dirs",
     "format": "run-p format:prettier format:rs format:toml",
     "format:prettier": "prettier . -w",
@@ -44,6 +58,7 @@
     "lint": "oxlint .",
     "prepublishOnly": "napi prepublish -t npm",
     "test": "ava",
+    "smoke-test": "bash scripts/smoke-test.sh",
     "preversion": "napi build --platform && git add .",
     "version": "napi version"
   },
@@ -54,6 +69,7 @@
     "@oxc-node/core": "^0.0.35",
     "@taplo/cli": "^0.7.0",
     "@tybys/wasm-util": "^0.10.0",
+    "@types/node": "^25.0.9",
     "ava": "^6.4.1",
     "chalk": "^5.6.2",
     "npm-run-all2": "^8.0.4",
@@ -68,9 +84,6 @@
     },
     "timeout": "2m",
     "workerThreads": false,
-    "environmentVariables": {
-      "OXC_TSCONFIG_PATH": "./__test__/tsconfig.json"
-    },
     "nodeArguments": [
       "--import",
       "@oxc-node/core/register"

@@ -5,13 +5,10 @@
 
 use std::time::Duration;
 
-use monty::{ResourceError, ResourceTracker};
+use monty::{DEFAULT_MAX_RECURSION_DEPTH, ResourceError, ResourceTracker};
 use pyo3::{prelude::*, types::PyDict};
 
 use crate::exceptions::exc_py_to_monty;
-
-/// Default maximum recursion depth if not specified.
-const DEFAULT_MAX_RECURSION_DEPTH: usize = 1000;
 
 /// Extracts resource limits from a Python dict.
 ///

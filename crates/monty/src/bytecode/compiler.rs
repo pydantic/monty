@@ -264,11 +264,25 @@ impl<'a> Compiler<'a> {
                 object,
             } => {
                 self.compile_expr(object)?;
-                let count = u8::try_from(targets.len()).expect("too many targets in unpack");
+
+                // Check if there's a starred target
+                let star_idx = targets.iter().position(|t| matches!(t, UnpackTarget::Starred(_)));
+
                 // Set location to targets for proper caret in tracebacks
                 self.code.set_location(*targets_position, None);
-                self.code.emit_u8(Opcode::UnpackSequence, count);
-                // After UnpackSequence, values are on stack with first item on top
+
+                if let Some(star_idx) = star_idx {
+                    // Has starred target - use UnpackEx
+                    let before = u8::try_from(star_idx).expect("too many targets before star");
+                    let after = u8::try_from(targets.len() - star_idx - 1).expect("too many targets after star");
+                    self.code.emit_u8_u8(Opcode::UnpackEx, before, after);
+                } else {
+                    // No starred target - use UnpackSequence
+                    let count = u8::try_from(targets.len()).expect("too many targets in unpack");
+                    self.code.emit_u8(Opcode::UnpackSequence, count);
+                }
+
+                // After UnpackSequence/UnpackEx, values are on stack with first item on top
                 // Store them in order (first target gets first item), handling nesting
                 for target in targets {
                     self.compile_unpack_target(target);
@@ -634,6 +648,10 @@ impl<'a> Compiler<'a> {
                 }
             }
 
+            Expr::ChainCmp { left, comparisons } => {
+                self.compile_chain_comparison(left, comparisons, expr_loc.position)?;
+            }
+
             Expr::Not(operand) => {
                 self.compile_expr(operand)?;
                 // Restore the full expression's position for traceback caret range
@@ -953,6 +971,93 @@ impl<'a> Compiler<'a> {
                 self.code.emit(operator_to_opcode(op));
             }
         }
+        Ok(())
+    }
+
+    /// Compiles a chain comparison expression like `a < b < c < d`.
+    ///
+    /// Chain comparisons evaluate each intermediate value only once and short-circuit
+    /// on the first false result. Uses stack manipulation to avoid namespace pollution.
+    ///
+    /// Bytecode strategy for `a < b < c`:
+    /// ```text
+    /// eval a              # Stack: [a]
+    /// eval b              # Stack: [a, b]
+    /// Dup                 # Stack: [a, b, b]
+    /// Rot3                # Stack: [b, a, b]
+    /// CompareLt           # Stack: [b, result1]
+    /// JumpIfFalseOrPop    # if false: jump to cleanup; if true: pop, stack=[b]
+    /// eval c              # Stack: [b, c]
+    /// CompareLt           # Stack: [result2]
+    /// Jump @end
+    /// @cleanup:           # Stack: [b, False]
+    /// Rot2                # Stack: [False, b]
+    /// Pop                 # Stack: [False]
+    /// @end:
+    /// ```
+    fn compile_chain_comparison(
+        &mut self,
+        left: &ExprLoc,
+        comparisons: &[(CmpOperator, ExprLoc)],
+        position: CodeRange,
+    ) -> Result<(), CompileError> {
+        let n = comparisons.len();
+
+        // Remember stack depth before the chain for cleanup calculation
+        let base_depth = self.code.stack_depth();
+
+        // Compile leftmost operand
+        self.compile_expr(left)?;
+
+        // Track jump targets for short-circuit cleanup
+        let mut cleanup_jumps = Vec::with_capacity(n - 1);
+
+        for (i, (op, right)) in comparisons.iter().enumerate() {
+            let is_last = i == n - 1;
+
+            // Compile the right operand
+            self.compile_expr(right)?;
+
+            if !is_last {
+                // Keep a copy of the intermediate for the next comparison
+                self.code.emit(Opcode::Dup);
+                // Reorder: [prev, curr, curr] -> [curr, prev, curr]
+                self.code.emit(Opcode::Rot3);
+            }
+
+            // Emit comparison
+            self.code.set_location(position, None);
+            if let CmpOperator::ModEq(value) = op {
+                let const_idx = self.code.add_const(Value::Int(*value));
+                self.code.emit_u16(Opcode::CompareModEq, const_idx);
+            } else {
+                self.code.emit(cmp_operator_to_opcode(op));
+            }
+
+            if !is_last {
+                // Short-circuit: if false, jump to cleanup
+                let jump = self.code.emit_jump(Opcode::JumpIfFalseOrPop);
+                cleanup_jumps.push(jump);
+            }
+        }
+
+        // Jump past cleanup (result already on stack)
+        let end_jump = self.code.emit_jump(Opcode::Jump);
+
+        // Cleanup: remove the saved intermediate value, keep False result
+        // The cleanup is only reached via JumpIfFalseOrPop which doesn't pop,
+        // so the stack has: [intermediate, False] (2 extra items from base)
+        for jump in cleanup_jumps {
+            self.code.patch_jump(jump);
+        }
+        self.code.set_stack_depth(base_depth + 2); // [intermediate, False]
+        self.code.emit(Opcode::Rot2); // [False, intermediate]
+        self.code.emit(Opcode::Pop); // [False]
+
+        self.code.patch_jump(end_jump);
+        // Final result is on stack: base_depth + 1
+        self.code.set_stack_depth(base_depth + 1);
+
         Ok(())
     }
 
@@ -2008,23 +2113,40 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles storage of an unpack target - either a single identifier or nested tuple.
+    /// Compiles storage of an unpack target - either a single identifier, nested tuple, or starred.
     ///
     /// For single identifiers: emits a simple store.
-    /// For nested tuples: emits `UnpackSequence` and recursively handles each sub-target.
+    /// For nested tuples: emits `UnpackSequence` (or `UnpackEx` with starred) and recursively
+    /// handles each sub-target.
     fn compile_unpack_target(&mut self, target: &UnpackTarget) {
         match target {
             UnpackTarget::Name(ident) => {
                 // Single identifier - just store directly
                 self.compile_store(ident);
             }
+            UnpackTarget::Starred(ident) => {
+                // Starred target by itself (shouldn't happen at top level normally)
+                // Just store as if it were a name
+                self.compile_store(ident);
+            }
             UnpackTarget::Tuple { targets, position } => {
-                // Nested tuple - emit UnpackSequence then recursively store each
-                let count = u8::try_from(targets.len()).expect("too many targets in nested unpack");
-                // Set location to targets for proper caret in tracebacks
+                // Check if there's a starred target
+                let star_idx = targets.iter().position(|t| matches!(t, UnpackTarget::Starred(_)));
+
                 self.code.set_location(*position, None);
-                self.code.emit_u8(Opcode::UnpackSequence, count);
-                // After UnpackSequence, values are on stack with first item on top
+
+                if let Some(star_idx) = star_idx {
+                    // Has starred target - use UnpackEx
+                    let before = u8::try_from(star_idx).expect("too many targets before star");
+                    let after = u8::try_from(targets.len() - star_idx - 1).expect("too many targets after star");
+                    self.code.emit_u8_u8(Opcode::UnpackEx, before, after);
+                } else {
+                    // No starred target - use UnpackSequence
+                    let count = u8::try_from(targets.len()).expect("too many targets in nested unpack");
+                    self.code.emit_u8(Opcode::UnpackSequence, count);
+                }
+
+                // After UnpackSequence/UnpackEx, values are on stack with first item on top
                 // Store them in order, recursively handling further nesting
                 for target in targets {
                     self.compile_unpack_target(target);

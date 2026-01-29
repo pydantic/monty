@@ -176,6 +176,20 @@ impl PyTrait for Tuple {
         true
     }
 
+    fn py_add(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        _interns: &Interns,
+    ) -> Result<Option<Value>, crate::resource::ResourceError> {
+        // Clone both tuples' contents with proper refcounting
+        let mut result: Vec<Value> = self.items.iter().map(|obj| obj.clone_with_heap(heap)).collect();
+        let other_cloned: Vec<Value> = other.items.iter().map(|obj| obj.clone_with_heap(heap)).collect();
+        result.extend(other_cloned);
+        let id = heap.allocate(HeapData::Tuple(Self::new(result)))?;
+        Ok(Some(Value::Ref(id)))
+    }
+
     /// Pushes all heap IDs contained in this tuple onto the stack.
     ///
     /// Called during garbage collection to decrement refcounts of nested values.

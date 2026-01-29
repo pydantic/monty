@@ -1,50 +1,41 @@
-//! Node.js bindings for the Monty sandboxed Python interpreter.
+// napi macros generate code that triggers some clippy lints
+#![allow(clippy::needless_pass_by_value)]
+
+//! Node.js/TypeScript bindings for the Monty sandboxed Python interpreter.
 //!
 //! This module provides a JavaScript/TypeScript interface to Monty via napi-rs,
-//! allowing execution of sandboxed Python code from Node.js.
+//! allowing execution of sandboxed Python code from Node.js with configurable
+//! inputs, resource limits, and external function callbacks.
+//!
+//! ## Quick Start
+//!
+//! ```typescript
+//! import { Monty } from 'monty';
+//!
+//! // Simple execution
+//! const m = new Monty('1 + 2');
+//! const result = m.run(); // returns 3
+//!
+//! // With inputs
+//! const m2 = new Monty('x + y', { inputs: ['x', 'y'] });
+//! const result2 = m2.run({ inputs: { x: 10, y: 20 } }); // returns 30
+//!
+//! // Iterative execution with external functions
+//! const m3 = new Monty('external_func()', { externalFunctions: ['external_func'] });
+//! let progress = m3.start();
+//! if (progress instanceof MontySnapshot) {
+//!     progress = progress.resume({ returnValue: 42 });
+//! }
+//! ```
 
-use monty::{CollectStringPrint, MontyRun, NoLimitTracker};
-use napi::bindgen_prelude::*;
-use napi_derive::napi;
+mod convert;
+mod exceptions;
+mod limits;
+mod monty_cls;
 
-/// Runs Python code and returns the result as a string.
-///
-/// The code is executed in a sandboxed environment with no resource limits.
-/// Print statements are captured and returned along with the final result.
-///
-/// # Arguments
-/// * `code` - The Python code to execute
-///
-/// # Returns
-/// A `RunResult` containing the printed output and the result of the last expression.
-///
-/// # Errors
-/// Returns an error if the code fails to parse or encounters a runtime error.
-#[napi]
-pub fn run(code: String) -> Result<RunResult> {
-    let runner = MontyRun::new(code, "main.py", vec![], vec![]).map_err(monty_err_to_napi)?;
-
-    let mut print_output = CollectStringPrint::default();
-    let result = runner
-        .run(vec![], NoLimitTracker, &mut print_output)
-        .map_err(monty_err_to_napi)?;
-
-    Ok(RunResult {
-        output: print_output.into_output(),
-        result: format!("{result:?}"),
-    })
-}
-
-/// Result of running Python code.
-#[napi(object)]
-pub struct RunResult {
-    /// Any output from print statements during execution.
-    pub output: String,
-    /// The debug representation of the final result.
-    pub result: String,
-}
-
-/// Converts a `MontyException` to a napi `Error`.
-fn monty_err_to_napi(e: monty::MontyException) -> Error {
-    Error::from_reason(e.to_string())
-}
+pub use exceptions::{ExceptionInfo, Frame, JsMontyException, MontyTypingError};
+pub use limits::JsResourceLimits;
+pub use monty_cls::{
+    ExceptionInput, Monty, MontyComplete, MontyOptions, MontySnapshot, ResumeOptions, RunOptions, SnapshotLoadOptions,
+    StartOptions,
+};

@@ -1,5 +1,6 @@
 use std::fmt;
 
+use num_bigint::BigInt;
 use strum::EnumString;
 
 use crate::{
@@ -8,7 +9,9 @@ use crate::{
     heap::{Heap, HeapData},
     intern::Interns,
     resource::ResourceTracker,
-    types::{Bytes, Dict, FrozenSet, List, MontyIter, PyTrait, Range, Set, Slice, Str, Tuple, str::StringRepr},
+    types::{
+        Bytes, Dict, FrozenSet, List, LongInt, MontyIter, PyTrait, Range, Set, Slice, Str, Tuple, str::StringRepr,
+    },
     value::Value,
 };
 
@@ -188,11 +191,18 @@ impl Type {
                             Value::Int(i) => Ok(Value::Int(*i)),
                             Value::Float(f) => Ok(Value::Int(f64_to_i64_truncate(*f))),
                             Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
-                            Value::InternString(string_id) => parse_i64_from_str(interns.get_str(*string_id)),
-                            Value::Ref(heap_id) => match heap.get(*heap_id) {
-                                HeapData::Str(s) => parse_i64_from_str(s.as_str()),
-                                _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
-                            },
+                            Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), heap),
+                            Value::Ref(heap_id) => {
+                                // Clone data to release the borrow on heap before mutation
+                                match heap.get(*heap_id) {
+                                    HeapData::Str(s) => {
+                                        let s = s.to_string();
+                                        parse_int_from_str(&s, heap)
+                                    }
+                                    HeapData::LongInt(li) => li.clone().into_value(heap).map_err(Into::into),
+                                    _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
+                                }
+                            }
                             _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
                         };
                         v.drop_with_heap(heap);
@@ -300,22 +310,33 @@ fn value_error_could_not_convert_string_to_float(value: &str) -> RunError {
     .into()
 }
 
-/// Parses a Python `int()` string argument into an `i64`.
+/// Parses a Python `int()` string argument into an `Int` or `LongInt`.
 ///
-/// Handles whitespace stripping and removing _ and returns appropriate `ValueError` on failure.
-fn parse_i64_from_str(value: &str) -> RunResult<Value> {
+/// Handles whitespace stripping and removing `_` separators. Returns `Value::Int` if the value
+/// fits in i64, otherwise allocates a `LongInt` on the heap. Returns `ValueError` on failure.
+fn parse_int_from_str(value: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    // Try parsing as i64 first (fast path)
     if let Ok(int) = value.parse::<i64>() {
         return Ok(Value::Int(int));
     }
     let trimmed = value.trim();
 
     if let Ok(int) = trimmed.parse::<i64>() {
-        Ok(Value::Int(int))
-    } else if let Ok(int) = trimmed.replace('_', "").parse::<i64>() {
-        Ok(Value::Int(int))
-    } else {
-        Err(value_error_invalid_literal_for_int(value))
+        return Ok(Value::Int(int));
     }
+
+    // Try with underscores removed
+    let normalized = trimmed.replace('_', "");
+    if let Ok(int) = normalized.parse::<i64>() {
+        return Ok(Value::Int(int));
+    }
+
+    // Try parsing as BigInt for values too large for i64
+    if let Ok(bi) = normalized.parse::<BigInt>() {
+        return Ok(LongInt::new(bi).into_value(heap)?);
+    }
+
+    Err(value_error_invalid_literal_for_int(value))
 }
 
 /// Creates the `ValueError` raised by `int()` when a string cannot be parsed.

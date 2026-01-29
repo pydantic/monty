@@ -18,6 +18,14 @@ assert ((1, 2), (3, 4)) == ((1, 2), (3, 4)), 'nested tuple'
 assert repr((1, 2)) == '(1, 2)', 'tuple repr'
 assert str((1, 2)) == '(1, 2)', 'tuple str'
 
+# === Tuple concatenation (+) ===
+assert (1, 2) + (3, 4) == (1, 2, 3, 4), 'tuple add basic'
+assert () + (1, 2) == (1, 2), 'empty add tuple'
+assert (1, 2) + () == (1, 2), 'tuple add empty'
+assert () + () == (), 'empty add empty'
+assert ('a', 'b') + ('c',) == ('a', 'b', 'c'), 'tuple add strings'
+assert ((1, 2),) + ((3, 4),) == ((1, 2), (3, 4)), 'tuple add nested'
+
 # === Tuple repetition (*) ===
 assert (1, 2) * 3 == (1, 2, 1, 2, 1, 2), 'tuple mult int'
 assert 3 * (1, 2) == (1, 2, 1, 2, 1, 2), 'int mult tuple'
