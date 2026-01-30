@@ -301,14 +301,14 @@ I'll try to run through the most obvious alternatives, and why there aren't righ
 
 NOTE: all these technologies are impressive and have widespread uses, this commentary on their limitations for our use case should not be seen as a criticism. Most of these solutions were not conceived with the goal of providing an LLM sandbox, which is why they're not necessary great at it.
 
-| Tech               | Language completeness | Security     | Start latency  | Cost     | Setup complexity | File mounting complexity |
-|--------------------|-----------------------|--------------|----------------|----------|------------------|--------------------------|
-| Monty              | partial               | strict       | 0.06ms         | free     | easy             | easy                     |
-| Docker             | full                  | good         | 195ms          | free     | intermediate     | easy                     |
-| Pyodide            | full                  | poor         | 2800ms         | free     | intermediate     | easy                     |
-| starlark-rust      | very limited          | good         | 1.7ms          | free     | easy             | none?                    |
-| sandboxing service | full                  | strict       | 1033ms         | not free | intermediate     | hard                     |
-| YOLO Python        | full                  | non-existent | 0.1ms / 30ms   | free     | easy             | easy / scary             |
+| Tech               | Language completeness | Security     | Start latency  | Cost     | Setup complexity | File mounting  | Snapshotting |
+|--------------------|-----------------------|--------------|----------------|----------|------------------|----------------|--------------|
+| Monty              | partial               | strict       | 0.06ms         | free     | easy             | easy           | easy         |
+| Docker             | full                  | good         | 195ms          | free     | intermediate     | easy           | intermediate |
+| Pyodide            | full                  | poor         | 2800ms         | free     | intermediate     | easy           | hard         |
+| starlark-rust      | very limited          | good         | 1.7ms          | free     | easy             | not available? | impossible?  |
+| sandboxing service | full                  | strict       | 1033ms         | not free | intermediate     | hard           | intermediate |
+| YOLO Python        | full                  | non-existent | 0.1ms / 30ms   | free     | easy             | easy / scary   | hard         |
 
 See [./scripts/startup_performance.py](scripts/startup_performance.py) for the script used to calculate the startup performance numbers.
 
@@ -321,6 +321,7 @@ Details on each row below:
 - **Start latency**: Starts in microseconds
 - **Setup complexity**: just `pip install pydantic-monty` or `npm install @pydantic/monty`, ~4.5MB download
 - **File mounting**: Strictly controlled, see [#85](https://github.com/pydantic/monty/pull/85)
+- **Snapshotting**: Monty's pause and resume functionality with `dump()` and `load()` makes it trivial to pause, resume and fork execution
 
 ### Docker
 
@@ -329,6 +330,7 @@ Details on each row below:
 - **Start latency**: Container startup overhead (~195ms measured)
 - **Setup complexity**: Requires Docker daemon, container images, orchestration, `python:3.14-alpine` is 50MB - docker can't be installed from PyPI
 - **File mounting**: Volume mounts work well
+- **Snapshotting**: Possible with durable execution solutions like Temporal, or snapshotting an image and saving it as a Docker image.
 
 ### Pyodide
 
@@ -337,14 +339,18 @@ Details on each row below:
 - **Start latency**: WASM runtime loading is slow (~2800ms cold start)
 - **Setup complexity**: Need to load WASM runtime, handle async initialization, pyodide NPM package is ~12MB, deno is ~50MB - Pyodide can't be called with just PyPI packages
 - **File mounting**: Virtual filesystem via browser APIs
+- **Snapshotting**: Possible with durable execution solutions like Temporal presumably, but hard
 
 ### starlark-rust
+
+See [starlark-rust](https://github.com/facebook/starlark-rust).
 
 - **Language completeness**: Configuration language, not Python - no classes, exceptions, async
 - **Security**: Deterministic and hermetic by design
 - **Start latency**: runs embedded in the process like Monty, hence impressive startup time
 - **Setup complexity**: Usable in python via [starlark-pyo3](https://github.com/inducer/starlark-pyo3)
-- **File mounting**: No file handling by design AFAIK
+- **File mounting**: No file handling by design AFAIK?
+- **Snapshotting**: Impossible AFAIK?
 
 ### sandboxing service
 
@@ -354,10 +360,11 @@ There are similar challenges, more setup complexity but lower network latency fo
 
 - **Language completeness**: Full CPython with any library
 - **Security**: Professionally managed container isolation
-- **Start latency**: Network round-trip and container startup time. I got ~1ms cold start time with Daytona EU from London, Daytona advertise sub 90ms latency, presumably that's for an existing container.
+- **Start latency**: Network round-trip and container startup time. I got ~1s cold start time with Daytona EU from London, Daytona advertise sub 90ms latency, presumably that's for an existing container, not clear if it includes network latency
 - **Cost**: Pay per execution or compute time
 - **Setup complexity**: API integration, auth tokens - fine for startups but generally a non-start for enterprises
 - **File mounting**: Upload/download via API calls
+- **Snapshotting**: Possible with durable execution solutions like Temporal, also the services offer some solutions for this, I think based con docker containers
 
 ### YOLO Python
 
@@ -368,3 +375,4 @@ Running Python directly via `exec()` (~0.1ms) or subprocess (~30ms).
 - **Start latency**: Near-zero for `exec()`, ~30ms for subprocess
 - **Setup complexity**: None
 - **File mounting**: Direct filesystem access (that's the problem)
+- **Snapshotting**: Possible with durable execution solutions like Temporal
