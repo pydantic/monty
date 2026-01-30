@@ -11,8 +11,8 @@ use std::{
 
 use ahash::AHashMap;
 use monty::{
-    ExcType, ExternalResult, LimitedTracker, MontyException, MontyFuture, MontyObject, MontyRun, ResourceLimits,
-    RunProgress, StdPrint,
+    ExcType, ExternalResult, LimitedTracker, MontyException, MontyFuture, MontyObject, MontyRun, OsFunction,
+    ResourceLimits, RunProgress, StdPrint, dir_stat, file_stat,
 };
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
@@ -385,6 +385,173 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
             DispatchResult::Async(args.into_iter().next().unwrap())
         }
         _ => panic!("Unknown external function: {name}"),
+    }
+}
+
+// =============================================================================
+// Virtual Filesystem for OS Call Tests
+// =============================================================================
+
+/// Virtual file entry for OS call tests.
+struct VirtualFile {
+    content: &'static [u8],
+    mode: i64,
+}
+
+/// Virtual filesystem modification time (arbitrary fixed timestamp).
+const VFS_MTIME: f64 = 1_700_000_000.0;
+
+/// Virtual filesystem for testing Path methods.
+///
+/// Structure:
+/// ```text
+/// /virtual/
+/// ├── file.txt           (file, 644, "hello world\n")
+/// ├── data.bin           (file, 644, b"\x00\x01\x02\x03")
+/// ├── empty.txt          (file, 644, "")
+/// ├── subdir/
+/// │   ├── nested.txt     (file, 644, "nested content")
+/// │   └── deep/
+/// │       └── file.txt   (file, 644, "deep")
+/// └── readonly.txt       (file, 444, "readonly")
+///
+/// /nonexistent           (does not exist)
+/// ```
+fn get_virtual_file(path: &str) -> Option<VirtualFile> {
+    match path {
+        "/virtual/file.txt" => Some(VirtualFile {
+            content: b"hello world\n",
+            mode: 0o644,
+        }),
+        "/virtual/data.bin" => Some(VirtualFile {
+            content: b"\x00\x01\x02\x03",
+            mode: 0o644,
+        }),
+        "/virtual/empty.txt" => Some(VirtualFile {
+            content: b"",
+            mode: 0o644,
+        }),
+        "/virtual/subdir/nested.txt" => Some(VirtualFile {
+            content: b"nested content",
+            mode: 0o644,
+        }),
+        "/virtual/subdir/deep/file.txt" => Some(VirtualFile {
+            content: b"deep",
+            mode: 0o644,
+        }),
+        "/virtual/readonly.txt" => Some(VirtualFile {
+            content: b"readonly",
+            mode: 0o444,
+        }),
+        _ => None,
+    }
+}
+
+/// Check if the given path is a directory in the virtual filesystem.
+fn is_virtual_dir(path: &str) -> bool {
+    matches!(path, "/virtual" | "/virtual/subdir" | "/virtual/subdir/deep")
+}
+
+/// Get directory entries for a virtual directory.
+fn get_virtual_dir_entries(path: &str) -> Option<Vec<&'static str>> {
+    match path {
+        "/virtual" => Some(vec![
+            "/virtual/file.txt",
+            "/virtual/data.bin",
+            "/virtual/empty.txt",
+            "/virtual/subdir",
+            "/virtual/readonly.txt",
+        ]),
+        "/virtual/subdir" => Some(vec!["/virtual/subdir/nested.txt", "/virtual/subdir/deep"]),
+        "/virtual/subdir/deep" => Some(vec!["/virtual/subdir/deep/file.txt"]),
+        _ => None,
+    }
+}
+
+/// Dispatches an OS function call using the virtual filesystem.
+///
+/// Returns an `ExternalResult` to pass back to the Monty interpreter.
+/// Raises `FileNotFoundError` for missing files/directories.
+#[expect(clippy::cast_possible_wrap)] // Virtual file sizes are tiny, no wrap possible
+fn dispatch_os_call(function: OsFunction, args: &[MontyObject]) -> ExternalResult {
+    let path = String::try_from(&args[0]).expect("OS call: first arg must be path string");
+
+    match function {
+        OsFunction::Exists => {
+            let exists = get_virtual_file(&path).is_some() || is_virtual_dir(&path);
+            MontyObject::Bool(exists).into()
+        }
+        OsFunction::IsFile => {
+            let is_file = get_virtual_file(&path).is_some();
+            MontyObject::Bool(is_file).into()
+        }
+        OsFunction::IsDir => {
+            let is_dir = is_virtual_dir(&path);
+            MontyObject::Bool(is_dir).into()
+        }
+        OsFunction::IsSymlink => {
+            // Virtual filesystem doesn't have symlinks
+            MontyObject::Bool(false).into()
+        }
+        OsFunction::ReadText => {
+            if let Some(file) = get_virtual_file(&path) {
+                match std::str::from_utf8(file.content) {
+                    Ok(text) => MontyObject::String(text.to_owned()).into(),
+                    Err(_) => MontyException::new(
+                        ExcType::UnicodeDecodeError,
+                        Some("'utf-8' codec can't decode bytes".to_owned()),
+                    )
+                    .into(),
+                }
+            } else {
+                MontyException::new(
+                    ExcType::FileNotFoundError,
+                    Some(format!("[Errno 2] No such file or directory: '{path}'")),
+                )
+                .into()
+            }
+        }
+        OsFunction::ReadBytes => {
+            if let Some(file) = get_virtual_file(&path) {
+                MontyObject::Bytes(file.content.to_vec()).into()
+            } else {
+                MontyException::new(
+                    ExcType::FileNotFoundError,
+                    Some(format!("[Errno 2] No such file or directory: '{path}'")),
+                )
+                .into()
+            }
+        }
+        OsFunction::Stat => {
+            if let Some(file) = get_virtual_file(&path) {
+                file_stat(file.mode, file.content.len() as i64, VFS_MTIME).into()
+            } else if is_virtual_dir(&path) {
+                dir_stat(0o755, VFS_MTIME).into()
+            } else {
+                MontyException::new(
+                    ExcType::FileNotFoundError,
+                    Some(format!("[Errno 2] No such file or directory: '{path}'")),
+                )
+                .into()
+            }
+        }
+        OsFunction::Iterdir => {
+            if let Some(entries) = get_virtual_dir_entries(&path) {
+                let list: Vec<MontyObject> = entries.iter().map(|e| MontyObject::String((*e).to_owned())).collect();
+                MontyObject::List(list).into()
+            } else {
+                MontyException::new(
+                    ExcType::FileNotFoundError,
+                    Some(format!("[Errno 2] No such file or directory: '{path}'")),
+                )
+                .into()
+            }
+        }
+        OsFunction::Resolve | OsFunction::Absolute => {
+            // For virtual paths, return as-is (they're already absolute)
+            MontyObject::String(path).into()
+        }
+        _ => panic!("OS function not implemented in tests: {function:?}"),
     }
 }
 
@@ -804,8 +971,11 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
 
                 progress = state.resume(results, &mut StdPrint)?;
             }
-            RunProgress::OsCall { function, .. } => {
-                panic!("OS calls not supported in tests: {function:?}");
+            RunProgress::OsCall {
+                function, args, state, ..
+            } => {
+                let result = dispatch_os_call(function, &args);
+                progress = state.run(result, &mut StdPrint)?;
             }
         }
     }

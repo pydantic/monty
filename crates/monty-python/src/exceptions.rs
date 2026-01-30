@@ -403,6 +403,8 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
         ExcType::UnicodeDecodeError => exceptions::PyUnicodeDecodeError::new_err(msg),
         ExcType::ImportError => exceptions::PyImportError::new_err(msg),
         ExcType::ModuleNotFoundError => exceptions::PyModuleNotFoundError::new_err(msg),
+        ExcType::OSError => exceptions::PyOSError::new_err(msg),
+        ExcType::FileNotFoundError => exceptions::PyFileNotFoundError::new_err(msg),
     }
 }
 
@@ -486,6 +488,13 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
                 ExcType::UnboundLocalError
             } else {
                 ExcType::NameError
+            }
+        // OSError hierarchy (check FileNotFoundError first as it's a subclass)
+        } else if exceptions::PyOSError::type_check(exc) {
+            if exceptions::PyFileNotFoundError::type_check(exc) {
+                ExcType::FileNotFoundError
+            } else {
+                ExcType::OSError
             }
         // other standalone exception types
         } else if exceptions::PyTimeoutError::type_check(exc) {

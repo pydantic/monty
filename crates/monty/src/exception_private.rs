@@ -80,6 +80,12 @@ pub enum ExcType {
     /// Subclass of ImportError - for when a module cannot be found.
     ModuleNotFoundError,
 
+    // --- OSError hierarchy ---
+    /// OS-related errors (file not found, permission denied, etc.)
+    OSError,
+    /// Subclass of OSError - for when a file or directory cannot be found.
+    FileNotFoundError,
+
     // --- Standalone exception types ---
     AssertionError,
     MemoryError,
@@ -123,6 +129,8 @@ impl ExcType {
             Self::ValueError => matches!(self, Self::UnicodeDecodeError),
             // ImportError catches ModuleNotFoundError
             Self::ImportError => matches!(self, Self::ModuleNotFoundError),
+            // OSError catches FileNotFoundError
+            Self::OSError => matches!(self, Self::FileNotFoundError),
             // All other types only match exactly (handled by self == handler_type above)
             _ => false,
         }
