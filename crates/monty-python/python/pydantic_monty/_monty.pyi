@@ -3,7 +3,7 @@ from typing import Any, Callable, Literal, final, overload
 
 from typing_extensions import Self
 
-from . import ExternalResult, ResourceLimits
+from . import ExternalResult, OsFunction, ResourceLimits
 
 __all__ = [
     'Monty',
@@ -86,6 +86,7 @@ class Monty:
         limits: ResourceLimits | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        os_callback: Callable[[OsFunction, tuple[Any, ...]], Any] | None = None,
     ) -> Any:
         """
         Execute the code and return the result.
@@ -97,12 +98,17 @@ class Monty:
             limits: Optional resource limits configuration
             external_functions: Dict of external function callbacks (must match names from __init__)
             print_callback: Optional callback for print output
+            os_callback: Optional callback for OS calls.
+                Called with (function_name, args) where function_name is like 'Path.exists'
+                and args is a tuple of arguments. Must return the appropriate value for the
+                OS function (e.g., bool for exists(), stat_result for stat()).
 
         Returns:
             The result of the last expression in the code
 
         Raises:
             MontyRuntimeError: If the code raises an exception during execution
+            RuntimeError: If an OS call is made but no os_callback is provided
         """
 
     def start(
@@ -200,11 +206,14 @@ class MontySnapshot:
 
     @property
     def is_os_function(self) -> bool:
-        """Whether this snapshot is for an OS function call (e.g., Path.stat())."""
+        """Whether this snapshot is for an OS function call (e.g., Path.stat)."""
 
     @property
-    def function_name(self) -> str:
-        """The name of the function being called (external function or OS function like 'stat')."""
+    def function_name(self) -> str | OsFunction:
+        """The name of the function being called (external function or OS function like 'Path.stat').
+
+        Will be a `OsFunction` if `is_os_function` is `True`.
+        """
 
     @property
     def args(self) -> tuple[Any, ...]:

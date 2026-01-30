@@ -39,8 +39,28 @@ __all__ = (
     'file_stat',
     'dir_stat',
     'symlink_stat',
+    'OsFunction',
 )
 T = TypeVar('T')
+
+OsFunction = Literal[
+    'Path.exists',
+    'Path.is_file',
+    'Path.is_dir',
+    'Path.is_symlink',
+    'Path.read_text',
+    'Path.read_bytes',
+    'Path.write_text',
+    'Path.write_bytes',
+    'Path.mkdir',
+    'Path.unlink',
+    'Path.rmdir',
+    'Path.iterdir',
+    'Path.stat',
+    'Path.rename',
+    'Path.resolve',
+    'Path.absolute',
+]
 
 
 async def run_monty_async(

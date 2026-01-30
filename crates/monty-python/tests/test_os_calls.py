@@ -5,6 +5,8 @@ with the right function name and arguments, and that return values from
 the host are properly converted and used by Monty code.
 """
 
+from typing import Any
+
 from inline_snapshot import snapshot
 
 import pydantic_monty
@@ -254,3 +256,86 @@ def test_os_call_vs_external_function():
     result2 = m2.start()
     assert isinstance(result2, pydantic_monty.MontySnapshot)
     assert result2.is_os_function is False
+
+
+# =============================================================================
+# os_callback in run() method
+# =============================================================================
+
+
+def test_os_callback_basic():
+    """os_callback receives function name and args, return value is used."""
+    calls: list[Any] = []
+
+    def os_handler(function_name: str, args: tuple[Any, ...]) -> bool:
+        calls.append((function_name, args))
+        return True
+
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/test.txt").exists()')
+    result = m.run(os_callback=os_handler)
+
+    assert result is True
+    assert calls == snapshot([('Path.exists', ('/tmp/test.txt',))])
+
+
+def test_os_callback_stat():
+    """os_callback can return stat_result for Path.stat()."""
+
+    def os_handler(function_name: str, args: tuple[Any, ...]) -> Any:
+        if function_name == 'Path.stat':
+            return file_stat(0o644, 1024, 1700000000.0)
+        return None
+
+    code = """
+from pathlib import Path
+info = Path('/tmp/file.txt').stat()
+(info.st_mode, info.st_size)
+"""
+    m = pydantic_monty.Monty(code)
+    result = m.run(os_callback=os_handler)
+
+    assert result == snapshot((0o100_644, 1024))
+
+
+def test_os_callback_multiple_calls():
+    """os_callback is called for each OS operation."""
+    calls: list[Any] = []
+
+    def os_handler(function_name: str, args: tuple[Any, ...]) -> bool | str | None:
+        calls.append(function_name)
+        match function_name:
+            case 'Path.exists':
+                return True
+            case 'Path.read_text':
+                return 'file contents'
+            case _:
+                return None
+
+    code = """
+from pathlib import Path
+p = Path('/tmp/test.txt')
+if p.exists():
+    result = p.read_text()
+else:
+    result = 'not found'
+result
+"""
+    m = pydantic_monty.Monty(code)
+    result = m.run(os_callback=os_handler)
+
+    assert result == snapshot('file contents')
+    assert calls == snapshot(['Path.exists', 'Path.read_text'])
+
+
+def test_os_callback_not_provided_error():
+    """Error is raised when OS call is made without os_callback."""
+    import pytest
+
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp").exists()')
+    # When no external functions and no os_callback, run() takes the fast path
+    # and OS calls raise NotImplementedError inside Monty
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run()
+    assert str(exc_info.value) == snapshot(
+        'NotImplementedError: The monty syntax parser does not yet support OS function calls not supported by standard execution.'
+    )

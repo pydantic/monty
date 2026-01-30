@@ -333,6 +333,9 @@ Use `@pytest.mark.parametrize` whenever testing multiple similar cases.
 
 Use `snapshot` from `inline-snapshot` for all test asserts.
 
+NEVER do the lazy `assert '...' in ...` instead always do `assert value == snapshot()`,
+then run the test and inline-snapshot will fill in the missing value in the `snapshot()` call.
+
 Use `pytest.raises` for expected exceptions, like this
 
 ```py
