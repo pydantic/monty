@@ -287,3 +287,41 @@ result = agent.run_sync(
 )
 print(result.output)
 ```
+
+# Alternatives
+
+There are generally two responses when you show people Monty:
+
+1. Oh my god, this solves so many problems, I want it.
+2. Why not X?
+
+Where X is some alternative technology. Oddly often these responses are combined, suggesting people have not yet found an alternative that works for them, but are incredulous that there's really no good alternative to creating an entire Python implementation from scratch.
+
+I'll try to run through the most obvious alternatives, and why there aren't right for what we wanted.
+
+NOTE: all these technologies are impressive and have widespread uses, this commentary on their limitations for our use case should not be seen as a criticism. Most of these solutions were not conceived with the goal of providing an LLM sandbox, which is why they're not necessary great at it.
+
+| Tech               | Language completeness | Security     | Start latency  | Cost     | Setup complexity | File mounting complexity |
+|--------------------|-----------------------|--------------|----------------|----------|------------------|--------------------------|
+| Monty              | partial               | strict       | 0.06ms         | free     | easy             | easy                     |
+| Docker             | full                  | good         | 195ms          | free     | intermediate     | easy                     |
+| Pyodide            | full                  | poor         | 2800ms         | free     | intermediate     | easy                     |
+| starlark-rust      | very limited          | good         | 22.5ms         | free     | hard             | none?                    |
+| sandboxing service | full                  | strict       | 1033ms         | not free | intermediate     | hard                     |
+| YOLO Python        | full                  | non-existent | 0.001ms / 30ms | free     | easy             | easy / scary             |
+
+Details on each row below:
+
+### Monty
+
+### Docker
+
+### Pyodide
+
+### starlark-rust
+
+### sandboxing service
+
+I used <https://daytona.io> in the EU region from London.
+
+### YOLO Python
