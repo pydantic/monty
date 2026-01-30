@@ -10,8 +10,6 @@
 //! I/O, filesystem, or network operations. Instead, the host decides whether to
 //! permit and execute such operations.
 
-use strum::{EnumString, FromRepr, IntoStaticStr};
-
 use crate::{MontyObject, intern::StaticStrings};
 
 /// OS operations that require host system access.
@@ -24,43 +22,58 @@ use crate::{MontyObject, intern::StaticStrings};
 ///
 /// When adding new operations, add both the variant here and update the
 /// `TryFrom<StaticStrings>` implementation to map method names to operations.
-#[repr(u8)]
+// #[repr(u8)]
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, FromRepr, EnumString, IntoStaticStr, serde::Serialize, serde::Deserialize,
+    Debug, Clone, Copy, PartialEq, Eq, strum::EnumString, strum::Display, serde::Serialize, serde::Deserialize,
 )]
-#[strum(serialize_all = "snake_case")]
 pub enum OsFunction {
-    /// Check if a path exists: `Path.exists()`
+    /// Check if a path exists
+    #[strum(serialize = "Path.exists")]
     Exists,
-    /// Check if path is a file: `Path.is_file()`
+    /// Check if path is a file
+    #[strum(serialize = "Path.is_file")]
     IsFile,
-    /// Check if path is a directory: `Path.is_dir()`
+    /// Check if path is a directory
+    #[strum(serialize = "Path.is_dir")]
     IsDir,
-    /// Check if path is a symbolic link: `Path.is_symlink()`
+    /// Check if path is a symbolic link
+    #[strum(serialize = "Path.is_symlink")]
     IsSymlink,
-    /// Read file contents as text: `Path.read_text()`
+    /// Read file contents as text
+    #[strum(serialize = "Path.read_text")]
     ReadText,
-    /// Read file contents as bytes: `Path.read_bytes()`
+    /// Read file contents as bytes
+    #[strum(serialize = "Path.read_bytes")]
     ReadBytes,
-    /// Write text to file: `Path.write_text(content)`
+    /// Write text to file
+    #[strum(serialize = "Path.write_text")]
     WriteText,
-    /// Write bytes to file: `Path.write_bytes(content)`
+    /// Write bytes to file
+    #[strum(serialize = "Path.write_bytes")]
     WriteBytes,
-    /// Create directory: `Path.mkdir()`
+    /// Create directory
+    #[strum(serialize = "Path.mkdir")]
     Mkdir,
-    /// Remove file: `Path.unlink()`
+    /// Remove file
+    #[strum(serialize = "Path.unlink")]
     Unlink,
-    /// Remove directory: `Path.rmdir()`
+    /// Remove directory
+    #[strum(serialize = "Path.rmdir")]
     Rmdir,
-    /// List directory contents: `Path.iterdir()`
+    /// List directory contents
+    #[strum(serialize = "Path.iterdir")]
     Iterdir,
-    /// Get file stats: `Path.stat()`
+    /// Get file stats
+    #[strum(serialize = "Path.stat")]
     Stat,
-    /// Rename/move file: `Path.rename(target)`
+    /// Rename/move file
+    #[strum(serialize = "Path.rename")]
     Rename,
-    /// Get resolved absolute path: `Path.resolve()`
+    /// Get resolved absolute path
+    #[strum(serialize = "Path.resolve")]
     Resolve,
-    /// Get absolute path (without resolving symlinks): `Path.absolute()`
+    /// Get absolute path (without resolving symlinks)
+    #[strum(serialize = "Path.absolute")]
     Absolute,
 }
 

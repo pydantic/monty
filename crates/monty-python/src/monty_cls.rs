@@ -5,7 +5,7 @@ use ::monty::{
     ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRun, NoLimitTracker, PrintWriter,
     ResourceTracker, RunProgress, Snapshot, StdPrint,
 };
-use monty::FutureSnapshot;
+use monty::{FutureSnapshot, OsFunction};
 use monty_type_checking::{SourceFile, type_check};
 use pyo3::{
     IntoPyObjectExt,
@@ -440,9 +440,23 @@ impl EitherProgress {
                     print_callback,
                     dc_registry,
                 ),
-                RunProgress::OsCall { function, .. } => Err(PyRuntimeError::new_err(format!(
-                    "OS calls not yet supported: {function:?}",
-                ))),
+                RunProgress::OsCall {
+                    function,
+                    args,
+                    kwargs,
+                    call_id,
+                    state,
+                } => Self::os_function_snapshot(
+                    py,
+                    function,
+                    &args,
+                    &kwargs,
+                    call_id,
+                    EitherSnapshot::NoLimit(state),
+                    script_name,
+                    print_callback,
+                    dc_registry,
+                ),
             },
             Self::Limited(p) => match p {
                 RunProgress::Complete(result) => PyMontyComplete::create(py, &result, &dc_registry),
@@ -470,9 +484,23 @@ impl EitherProgress {
                     print_callback,
                     dc_registry,
                 ),
-                RunProgress::OsCall { function, .. } => Err(PyRuntimeError::new_err(format!(
-                    "OS calls not yet supported: {function:?}",
-                ))),
+                RunProgress::OsCall {
+                    function,
+                    args,
+                    kwargs,
+                    call_id,
+                    state,
+                } => Self::os_function_snapshot(
+                    py,
+                    function,
+                    &args,
+                    &kwargs,
+                    call_id,
+                    EitherSnapshot::Limited(state),
+                    script_name,
+                    print_callback,
+                    dc_registry,
+                ),
             },
         }
     }
@@ -501,7 +529,42 @@ impl EitherProgress {
             snapshot,
             print_callback: print_callback.map(|callback| callback.clone_ref(py)),
             script_name,
+            is_os_function: false,
             function_name,
+            args: PyTuple::new(py, items?)?.unbind(),
+            kwargs: dict.unbind(),
+            call_id,
+            dc_registry,
+        };
+        slf.into_bound_py_any(py)
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    fn os_function_snapshot<'py>(
+        py: Python<'py>,
+        function: OsFunction,
+        args: &[MontyObject],
+        kwargs: &[(MontyObject, MontyObject)],
+        call_id: u32,
+        snapshot: EitherSnapshot,
+        script_name: String,
+        print_callback: Option<Py<PyAny>>,
+        dc_registry: Py<PyDict>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let dcr = dc_registry.bind(py);
+        let items: PyResult<Vec<Py<PyAny>>> = args.iter().map(|item| monty_to_py(py, item, dcr)).collect();
+
+        let dict = PyDict::new(py);
+        for (k, v) in kwargs {
+            dict.set_item(monty_to_py(py, k, dcr)?, monty_to_py(py, v, dcr)?)?;
+        }
+
+        let slf = PyMontySnapshot {
+            snapshot,
+            print_callback: print_callback.map(|callback| callback.clone_ref(py)),
+            script_name,
+            is_os_function: true,
+            function_name: function.to_string(),
             args: PyTuple::new(py, items?)?.unbind(),
             kwargs: dict.unbind(),
             call_id,
@@ -550,6 +613,10 @@ pub struct PyMontySnapshot {
     /// Name of the script being executed
     #[pyo3(get)]
     pub script_name: String,
+
+    /// Whether this call refers to an OS function
+    #[pyo3(get)]
+    pub is_os_function: bool,
 
     /// The name of the function being called.
     #[pyo3(get)]
@@ -666,6 +733,7 @@ impl PyMontySnapshot {
         struct SerializedSnapshot<'a> {
             snapshot: &'a EitherSnapshot,
             script_name: &'a str,
+            is_os_function: bool,
             function_name: &'a str,
             args: Vec<MontyObject>,
             kwargs: Vec<(MontyObject, MontyObject)>,
@@ -697,6 +765,7 @@ impl PyMontySnapshot {
         let serialized = SerializedSnapshot {
             snapshot: &self.snapshot,
             script_name: &self.script_name,
+            is_os_function: self.is_os_function,
             function_name: &self.function_name,
             args,
             kwargs,
@@ -733,6 +802,7 @@ impl PyMontySnapshot {
         struct SerializedSnapshotOwned {
             snapshot: EitherSnapshot,
             script_name: String,
+            is_os_function: bool,
             function_name: String,
             args: Vec<MontyObject>,
             kwargs: Vec<(MontyObject, MontyObject)>,
@@ -764,6 +834,7 @@ impl PyMontySnapshot {
             print_callback,
             dc_registry: dc_registry.unbind(),
             script_name: serialized.script_name,
+            is_os_function: serialized.is_os_function,
             function_name: serialized.function_name,
             args: PyTuple::new(py, args)?.unbind(),
             kwargs: kwargs_dict.unbind(),
