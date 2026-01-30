@@ -4,7 +4,7 @@
 //! with the correct `OsFunction` variant and arguments, and that
 //! return values are correctly used by Python code.
 
-use monty::{MontyObject, MontyRun, NoLimitTracker, OsFunction, RunProgress, StdPrint};
+use monty::{MontyObject, MontyRun, NoLimitTracker, OsFunction, RunProgress, StatMode, StatPerms, StdPrint, file_stat};
 
 /// Helper to run code and extract the OsCall progress.
 ///
@@ -248,21 +248,13 @@ entries[0]
 }
 
 #[test]
-fn stat_result_attribute_access() {
+fn stat_result_st_size() {
     let code = r"
 from pathlib import Path
 info = Path('/tmp/file.txt').stat()
-info['st_size']
+info.st_size
 ";
-    // Return a dict simulating stat result
-    let mock_stat = MontyObject::Dict(
-        vec![
-            (MontyObject::String("st_size".to_owned()), MontyObject::Int(1024)),
-            (MontyObject::String("st_mode".to_owned()), MontyObject::Int(33188)),
-        ]
-        .into(),
-    );
-    let (func, args, result) = run_oscall_with_result(code, mock_stat);
+    let (func, args, result) = run_oscall_with_result(code, file_stat(0o644, 1024, 0.0));
 
     assert_eq!(func, OsFunction::Stat);
     assert_eq!(args[0], MontyObject::String("/tmp/file.txt".to_owned()));
@@ -270,25 +262,51 @@ info['st_size']
 }
 
 #[test]
+fn stat_result_st_mode() {
+    let code = r"
+from pathlib import Path
+info = Path('/tmp/file.txt').stat()
+info.st_mode
+";
+    // Use StatMode for rwxr-xr-x permissions
+    let mode = StatMode::file(StatPerms::RWX, StatPerms::RX, StatPerms::RX);
+    let (func, args, result) = run_oscall_with_result(code, file_stat(mode, 0, 0.0));
+
+    assert_eq!(func, OsFunction::Stat);
+    assert_eq!(args[0], MontyObject::String("/tmp/file.txt".to_owned()));
+    assert_eq!(result, MontyObject::Int(0o100_755));
+}
+
+#[test]
 fn stat_result_multiple_fields() {
     let code = r"
 from pathlib import Path
 info = Path('/var/log/syslog').stat()
-(info['st_size'], info['st_mode'])
+(info.st_size, info.st_mode)
 ";
-    let mock_stat = MontyObject::Dict(
-        vec![
-            (MontyObject::String("st_size".to_owned()), MontyObject::Int(4096)),
-            (MontyObject::String("st_mode".to_owned()), MontyObject::Int(33188)),
-        ]
-        .into(),
-    );
-    let (func, args, result) = run_oscall_with_result(code, mock_stat);
+    // Use StatMode for rw-r--r-- permissions
+    let mode = StatMode::file(StatPerms::RW, StatPerms::R, StatPerms::R);
+    let (func, args, result) = run_oscall_with_result(code, file_stat(mode, 4096, 0.0));
 
     assert_eq!(func, OsFunction::Stat);
     assert_eq!(args[0], MontyObject::String("/var/log/syslog".to_owned()));
     assert_eq!(
         result,
-        MontyObject::Tuple(vec![MontyObject::Int(4096), MontyObject::Int(33188)])
+        MontyObject::Tuple(vec![MontyObject::Int(4096), MontyObject::Int(0o100_644)])
     );
+}
+
+#[test]
+fn stat_result_index_access() {
+    // stat_result also supports index access like a tuple
+    let code = r"
+from pathlib import Path
+info = Path('/tmp/file.txt').stat()
+info[6]  # st_size is at index 6
+";
+    let (func, args, result) = run_oscall_with_result(code, file_stat(0o644, 2048, 0.0));
+
+    assert_eq!(func, OsFunction::Stat);
+    assert_eq!(args[0], MontyObject::String("/tmp/file.txt".to_owned()));
+    assert_eq!(result, MontyObject::Int(2048));
 }

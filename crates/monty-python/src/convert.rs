@@ -106,6 +106,12 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &Bound<'_, Py
                 items.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
             Ok(PyTuple::new(py, py_items?)?.into_any().unbind())
         }
+        // NamedTuple is converted to a regular tuple (loses named access)
+        MontyObject::NamedTuple { values, .. } => {
+            let py_items: PyResult<Vec<Py<PyAny>>> =
+                values.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
+            Ok(PyTuple::new(py, py_items?)?.into_any().unbind())
+        }
         MontyObject::Dict(map) => {
             let dict = PyDict::new(py);
             for (k, v) in map {

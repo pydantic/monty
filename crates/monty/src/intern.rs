@@ -222,6 +222,31 @@ pub enum StaticStrings {
     Monty,
 
     // ==========================
+    // os.stat_result fields
+    #[strum(serialize = "os.stat_result")]
+    OsStatResult,
+    #[strum(serialize = "st_mode")]
+    StMode,
+    #[strum(serialize = "st_ino")]
+    StIno,
+    #[strum(serialize = "st_dev")]
+    StDev,
+    #[strum(serialize = "st_nlink")]
+    StNlink,
+    #[strum(serialize = "st_uid")]
+    StUid,
+    #[strum(serialize = "st_gid")]
+    StGid,
+    #[strum(serialize = "st_size")]
+    StSize,
+    #[strum(serialize = "st_atime")]
+    StAtime,
+    #[strum(serialize = "st_mtime")]
+    StMtime,
+    #[strum(serialize = "st_ctime")]
+    StCtime,
+
+    // ==========================
     // typing module strings
     #[strum(serialize = "typing")]
     Typing,

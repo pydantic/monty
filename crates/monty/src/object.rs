@@ -90,6 +90,19 @@ pub enum MontyObject {
     List(Vec<Self>),
     /// Python tuple (immutable sequence).
     Tuple(Vec<Self>),
+    /// Python named tuple (immutable sequence with named fields).
+    ///
+    /// Named tuples behave like tuples but also support attribute access by field name.
+    /// The type_name is used in repr (e.g., "os.stat_result"), and field_names provides
+    /// the attribute names for each position.
+    NamedTuple {
+        /// Type name for repr (e.g., "os.stat_result").
+        type_name: String,
+        /// Field names in order.
+        field_names: Vec<String>,
+        /// Values in order (same length as field_names).
+        values: Vec<Self>,
+    },
     /// Python dictionary (insertion-ordered mapping).
     Dict(DictPairs),
     /// Python set (mutable, unordered collection of unique elements).
@@ -204,6 +217,33 @@ impl MontyObject {
                     .map(|item| item.to_value(heap, interns))
                     .collect::<Result<_, _>>()?;
                 Ok(Value::Ref(heap.allocate(HeapData::Tuple(Tuple::new(values)))?))
+            }
+            Self::NamedTuple {
+                type_name,
+                field_names,
+                values: items,
+            } => {
+                use std::str::FromStr;
+
+                use crate::{intern::StaticStrings, types::NamedTuple};
+                let values: Vec<Value> = items
+                    .into_iter()
+                    .map(|item| item.to_value(heap, interns))
+                    .collect::<Result<_, _>>()?;
+                // Look up type_name and field_names in StaticStrings
+                let type_name_id = StaticStrings::from_str(&type_name)
+                    .map_err(|_| InvalidInputError::invalid_type("unknown NamedTuple type_name"))?
+                    .into();
+                let field_name_ids: Result<Vec<_>, _> = field_names
+                    .iter()
+                    .map(|n| {
+                        StaticStrings::from_str(n)
+                            .map(Into::into)
+                            .map_err(|_| InvalidInputError::invalid_type("unknown NamedTuple field_name"))
+                    })
+                    .collect();
+                let nt = NamedTuple::new(type_name_id, field_name_ids?, values);
+                Ok(Value::Ref(heap.allocate(HeapData::NamedTuple(nt))?))
             }
             Self::Dict(map) => {
                 let pairs: Result<Vec<(Value, Value)>, InvalidInputError> = map
@@ -322,16 +362,19 @@ impl MontyObject {
                             .map(|obj| Self::from_value_inner(obj, heap, visited, interns))
                             .collect(),
                     ),
-                    HeapData::NamedTuple(nt) => {
-                        // Convert NamedTuple to Tuple for now (MontyObject doesn't have a NamedTuple variant)
-                        // This preserves the tuple-like data while losing the named fields
-                        Self::Tuple(
-                            nt.as_vec()
-                                .iter()
-                                .map(|obj| Self::from_value_inner(obj, heap, visited, interns))
-                                .collect(),
-                        )
-                    }
+                    HeapData::NamedTuple(nt) => Self::NamedTuple {
+                        type_name: interns.get_str(nt.type_name()).to_owned(),
+                        field_names: nt
+                            .field_names()
+                            .iter()
+                            .map(|id| interns.get_str(*id).to_owned())
+                            .collect(),
+                        values: nt
+                            .as_vec()
+                            .iter()
+                            .map(|obj| Self::from_value_inner(obj, heap, visited, interns))
+                            .collect(),
+                    },
                     HeapData::Dict(dict) => Self::Dict(DictPairs(
                         dict.into_iter()
                             .map(|(k, v)| {
@@ -495,6 +538,26 @@ impl MontyObject {
                 }
                 f.write_char(')')
             }
+            Self::NamedTuple {
+                type_name,
+                field_names,
+                values,
+            } => {
+                // Format: type_name(field1=value1, field2=value2, ...)
+                f.write_str(type_name)?;
+                f.write_char('(')?;
+                let mut first = true;
+                for (name, value) in field_names.iter().zip(values) {
+                    if !first {
+                        f.write_str(", ")?;
+                    }
+                    first = false;
+                    f.write_str(name)?;
+                    f.write_char('=')?;
+                    value.repr_fmt(f)?;
+                }
+                f.write_char(')')
+            }
             Self::Dict(d) => {
                 f.write_char('{')?;
                 let mut iter = d.iter();
@@ -609,6 +672,7 @@ impl MontyObject {
             Self::Bytes(b) => !b.is_empty(),
             Self::List(l) => !l.is_empty(),
             Self::Tuple(t) => !t.is_empty(),
+            Self::NamedTuple { values, .. } => !values.is_empty(),
             Self::Dict(d) => !d.is_empty(),
             Self::Set(s) => !s.is_empty(),
             Self::FrozenSet(fs) => !fs.is_empty(),
@@ -633,6 +697,7 @@ impl MontyObject {
             Self::Bytes(_) => "bytes",
             Self::List(_) => "list",
             Self::Tuple(_) => "tuple",
+            Self::NamedTuple { .. } => "namedtuple",
             Self::Dict(_) => "dict",
             Self::Set(_) => "set",
             Self::FrozenSet(_) => "frozenset",
@@ -696,6 +761,22 @@ impl PartialEq for MontyObject {
             (Self::Bytes(a), Self::Bytes(b)) => a == b,
             (Self::List(a), Self::List(b)) => a == b,
             (Self::Tuple(a), Self::Tuple(b)) => a == b,
+            (
+                Self::NamedTuple {
+                    type_name: a_type,
+                    field_names: a_fields,
+                    values: a_values,
+                },
+                Self::NamedTuple {
+                    type_name: b_type,
+                    field_names: b_fields,
+                    values: b_values,
+                },
+            ) => a_type == b_type && a_fields == b_fields && a_values == b_values,
+            // NamedTuple can compare with Tuple by values only (matching Python semantics)
+            (Self::NamedTuple { values, .. }, Self::Tuple(t)) | (Self::Tuple(t), Self::NamedTuple { values, .. }) => {
+                values == t
+            }
             (Self::Dict(a), Self::Dict(b)) => a == b,
             (Self::Set(a), Self::Set(b)) => a == b,
             (Self::FrozenSet(a), Self::FrozenSet(b)) => a == b,

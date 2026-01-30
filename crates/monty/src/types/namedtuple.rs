@@ -91,6 +91,12 @@ impl NamedTuple {
         self.type_name
     }
 
+    /// Returns a reference to the field names.
+    #[must_use]
+    pub fn field_names(&self) -> &[StringId] {
+        &self.field_names
+    }
+
     /// Returns a reference to the underlying items vector.
     #[must_use]
     pub fn as_vec(&self) -> &Vec<Value> {
