@@ -202,13 +202,16 @@ pub enum RunProgress<T: ResourceTracker> {
         /// The execution state that can be resumed with a return value.
         state: Snapshot<T>,
     },
-    /// Execution paused at an os function call.
+    /// Execution paused for an OS-level operation.
     ///
-    /// The host can resume execution the same ways as for the `FunctionCall` variant.
+    /// The host should execute the OS operation (filesystem, network, etc.) and
+    /// call `state.run(return_value)` to provide the result and continue.
+    ///
+    /// This enables sandboxed execution where the interpreter never directly performs I/O.
     OsCall {
-        /// The OS function being called.
+        /// The OS function to execute.
         function: OsFunction,
-        /// The positional arguments passed to the function.
+        /// The positional arguments for the OS function.
         args: Vec<MontyObject>,
         /// The keyword arguments passed to the function (key, value pairs).
         kwargs: Vec<(MontyObject, MontyObject)>,

@@ -101,6 +101,11 @@ fn main() -> ExitCode {
                     eprintln!("{elapsed:?}, async futures not supported in CLI: {pending:?}");
                     return ExitCode::FAILURE;
                 }
+                RunProgress::OsCall { function, args, .. } => {
+                    let elapsed = start.elapsed();
+                    eprintln!("{elapsed:?}, OS calls not supported in CLI: {function:?}({args:?})");
+                    return ExitCode::FAILURE;
+                }
             }
         }
     } else {

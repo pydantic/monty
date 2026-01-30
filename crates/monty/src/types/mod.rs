@@ -31,7 +31,7 @@ pub(crate) use long_int::LongInt;
 pub(crate) use module::Module;
 pub(crate) use namedtuple::NamedTuple;
 pub(crate) use path::Path;
-pub(crate) use py_trait::PyTrait;
+pub(crate) use py_trait::{AttrCallResult, PyTrait};
 pub(crate) use range::Range;
 pub(crate) use set::{FrozenSet, Set};
 pub(crate) use slice::Slice;

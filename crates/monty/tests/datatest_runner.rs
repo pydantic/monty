@@ -804,6 +804,9 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
 
                 progress = state.resume(results, &mut StdPrint)?;
             }
+            RunProgress::OsCall { function, .. } => {
+                panic!("OS calls not supported in tests: {function:?}");
+            }
         }
     }
 }

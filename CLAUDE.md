@@ -118,13 +118,17 @@ explain what it does and why and any considerations or potential foot-guns of us
 
 The only exception is trait implementation methods where a docstring is not necessary if the method is self-explanatory.
 
+It's important that docstrings cover the motivation and primary usage patterns of code, not just the simple "what it does".
+
+Similarly, you should add comments to code, especially if the code is complex or esoteric.
+
 Only add examples to docstrings of public functions and structs, examples should be <=8 lines, if the example is more, remove it.
 
 If you add example code to docstrings, it must be run in tests. NEVER add examples that are ignored.
 
-Similarly, you should add lots of comments to code.
+If you encounter a comment or docstring that's out of date - you MUST update it to be correct.
 
-If you see a comment or docstring that's out of date - you MUST update it to be correct.
+Similarly, if you encounter code that has no docstrings or comments, or they are minimal, you should add more detail.
 
 NOTE: COMMENTS AND DOCSTRINGS ARE EXTREMELY IMPORTANT TO THE LONG TERM HEALTH OF THE PROJECT.
 

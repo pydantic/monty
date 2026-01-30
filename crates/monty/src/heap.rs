@@ -16,8 +16,8 @@ use crate::{
     intern::{FunctionId, Interns},
     resource::{ResourceError, ResourceTracker},
     types::{
-        Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait, Range, Set,
-        Slice, Str, Tuple, Type,
+        AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait,
+        Range, Set, Slice, Str, Tuple, Type,
     },
     value::{Attr, Value},
 };
@@ -1108,24 +1108,30 @@ impl<T: ResourceTracker> Heap<T> {
         hash
     }
 
-    /// Calls an attribute on the heap entry at `id` while temporarily taking ownership
-    /// of its payload so we can borrow the heap again inside the call. This avoids the
-    /// borrow checker conflict that arises when attribute implementations also need
-    /// mutable access to the heap (e.g. for refcounting).
-    pub fn call_attr(&mut self, id: HeapId, attr: &Attr, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-        // Take data out in a block so the borrow of self.entries ends
+    /// Calls an attribute on the heap entry, returning an `AttrCallResult` that may signal
+    /// OS or external calls.
+    ///
+    /// Temporarily takes ownership of the payload to avoid borrow conflicts when attribute
+    /// implementations also need mutable heap access (e.g. for refcounting).
+    ///
+    /// Returns `AttrCallResult` which may be:
+    /// - `Value(v)` - Method completed synchronously with value `v`
+    /// - `OsCall(func, args)` - Method needs OS operation; VM should yield to host
+    /// - `ExternalCall(id, args)` - Method needs external function call
+    pub fn call_attr_raw(
+        &mut self,
+        id: HeapId,
+        attr: &Attr,
+        args: ArgValues,
+        interns: &Interns,
+    ) -> RunResult<AttrCallResult> {
+        // Take data out so the borrow of self.entries ends
         let mut data = take_data!(self, id, "call_attr");
 
-        let result = data.py_call_attr(self, attr, args, interns);
+        let result = data.py_call_attr_raw(self, attr, args, interns);
 
         // Restore data
-        let entry = self
-            .entries
-            .get_mut(id.index())
-            .expect("Heap::call_attr: slot missing")
-            .as_mut()
-            .expect("Heap::call_attr: object already freed");
-        entry.data = Some(data);
+        restore_data!(self, id, data, "call_attr_raw");
         result
     }
 

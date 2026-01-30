@@ -13,9 +13,10 @@ use crate::{
     heap::{Heap, HeapData, HeapId},
     intern::{ExtFunctionId, FunctionId, Interns, StaticStrings, StringId},
     io::PrintWriter,
+    os::OsFunction,
     resource::ResourceTracker,
     types::{
-        Dict, PyTrait, Type,
+        AttrCallResult, Dict, PyTrait, Type,
         bytes::{bytes_fromhex, call_bytes_method},
         dict::dict_fromkeys,
         list::do_list_sort,
@@ -36,6 +37,20 @@ pub(super) enum CallResult {
     FramePushed,
     /// External function call requested - VM should pause and return to caller.
     External(ExtFunctionId, ArgValues),
+    /// OS operation call requested - VM should yield `FrameExit::OsCall` to host.
+    ///
+    /// The host executes the OS operation and resumes the VM with the result.
+    OsCall(OsFunction, ArgValues),
+}
+
+impl From<AttrCallResult> for CallResult {
+    fn from(result: AttrCallResult) -> Self {
+        match result {
+            AttrCallResult::Value(v) => Self::Push(v),
+            AttrCallResult::OsCall(func, args) => Self::OsCall(func, args),
+            AttrCallResult::ExternalCall(ext_id, args) => Self::External(ext_id, args),
+        }
+    }
 }
 
 impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
@@ -125,8 +140,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// Executes `CallAttr` opcode.
     ///
     /// Pops the object and arguments from the stack, calls the attribute,
-    /// and returns the result value.
-    pub(super) fn exec_call_attr(&mut self, name_id: StringId, arg_count: usize) -> Result<Value, RunError> {
+    /// and returns a `CallResult` which may indicate an OS or external call.
+    pub(super) fn exec_call_attr(&mut self, name_id: StringId, arg_count: usize) -> Result<CallResult, RunError> {
         let args = self.pop_n_args(arg_count);
         let obj = self.pop();
         self.call_attr(obj, name_id, args)
@@ -136,12 +151,13 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Pops the object, positional args, and keyword args from the stack,
     /// builds the appropriate `ArgValues`, and calls the attribute.
+    /// Returns a `CallResult` which may indicate an OS or external call.
     pub(super) fn exec_call_attr_kw(
         &mut self,
         name_id: StringId,
         pos_count: usize,
         kwname_ids: Vec<StringId>,
-    ) -> Result<Value, RunError> {
+    ) -> Result<CallResult, RunError> {
         let kw_count = kwname_ids.len();
 
         // Pop keyword values (TOS is last kwarg value)
@@ -212,13 +228,16 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// Calls an attribute on an object.
     ///
     /// For heap-allocated objects (`Value::Ref`), dispatches to the type's
-    /// `py_call_attr` implementation via `heap.call_attr()`.
+    /// `py_call_attr_raw` implementation via `heap.call_attr_raw()`, which may return
+    /// `AttrCallResult::OsCall` or `AttrCallResult::ExternalCall` for operations that
+    /// require host involvement.
+    ///
     /// For interned strings (`Value::InternString`), uses the unified `call_str_method`.
     /// For interned bytes (`Value::InternBytes`), uses the unified `call_bytes_method`.
     ///
     /// Special handling: `list.sort(key=...)` is intercepted here to allow calling
     /// builtin key functions with VM access.
-    fn call_attr(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<Value, RunError> {
+    fn call_attr(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<CallResult, RunError> {
         let attr = Attr::Interned(name_id);
 
         match obj {
@@ -227,26 +246,27 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 if name_id == StaticStrings::Sort && matches!(self.heap.get(heap_id), HeapData::List(_)) {
                     let result = do_list_sort(heap_id, args, self.heap, self.interns, self.print_writer);
                     obj.drop_with_heap(self.heap);
-                    return result.map(|()| Value::None);
+                    return result.map(|()| CallResult::Push(Value::None));
                 }
-                // Call the method on the heap object (handles modules via HeapData::py_call_attr)
-                let result = self.heap.call_attr(heap_id, &attr, args, self.interns);
+                // Call the method on the heap object using call_attr_raw to support OS/external calls
+                let result = self.heap.call_attr_raw(heap_id, &attr, args, self.interns);
                 obj.drop_with_heap(self.heap);
-                result
+                // Convert AttrCallResult to CallResult
+                result.map(Into::into)
             }
             Value::InternString(string_id) => {
                 // Call string method on interned string literal using the unified dispatcher
                 let s = self.interns.get_str(string_id);
-                call_str_method(s, name_id, args, self.heap, self.interns)
+                call_str_method(s, name_id, args, self.heap, self.interns).map(CallResult::Push)
             }
             Value::InternBytes(bytes_id) => {
                 // Call bytes method on interned bytes literal using the unified dispatcher
                 let b = self.interns.get_bytes(bytes_id);
-                call_bytes_method(b, name_id, args, self.heap, self.interns)
+                call_bytes_method(b, name_id, args, self.heap, self.interns).map(CallResult::Push)
             }
             Value::Builtin(Builtins::Type(t)) => {
                 // Handle classmethods on type objects like dict.fromkeys()
-                call_type_method(t, name_id, args, self.heap, self.interns)
+                call_type_method(t, name_id, args, self.heap, self.interns).map(CallResult::Push)
             }
             _ => {
                 // Non-heap values without method support

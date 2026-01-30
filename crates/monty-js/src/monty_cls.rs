@@ -270,6 +270,11 @@ impl Monty {
                                 "Async futures are not supported in synchronous run(). Use start() for async execution.",
                             ));
                         }
+                        RunProgress::OsCall { function, .. } => {
+                            return Err(Error::from_reason(format!(
+                                "OS calls are not supported: {function:?}",
+                            )));
+                        }
                     }
                 }
             }};
@@ -719,6 +724,9 @@ where
         }
         RunProgress::ResolveFutures(_) => {
             panic!("Async futures (ResolveFutures) are not yet supported in the JS bindings")
+        }
+        RunProgress::OsCall { function, .. } => {
+            panic!("OS calls are not yet supported in the JS bindings: {function:?}")
         }
     }
 }

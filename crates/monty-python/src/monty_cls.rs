@@ -388,6 +388,11 @@ impl PyMonty {
                         "async futures not yet supported with `Monty.run`",
                     ));
                 }
+                RunProgress::OsCall { function, .. } => {
+                    return Err(PyRuntimeError::new_err(format!(
+                        "OS calls not yet supported with `Monty.run`: {function:?}",
+                    )));
+                }
             }
         }
     }
@@ -435,6 +440,9 @@ impl EitherProgress {
                     print_callback,
                     dc_registry,
                 ),
+                RunProgress::OsCall { function, .. } => Err(PyRuntimeError::new_err(format!(
+                    "OS calls not yet supported: {function:?}",
+                ))),
             },
             Self::Limited(p) => match p {
                 RunProgress::Complete(result) => PyMontyComplete::create(py, &result, &dc_registry),
@@ -462,6 +470,9 @@ impl EitherProgress {
                     print_callback,
                     dc_registry,
                 ),
+                RunProgress::OsCall { function, .. } => Err(PyRuntimeError::new_err(format!(
+                    "OS calls not yet supported: {function:?}",
+                ))),
             },
         }
     }

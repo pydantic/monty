@@ -17,10 +17,48 @@ use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapId},
-    intern::Interns,
+    intern::{ExtFunctionId, Interns},
+    os::OsFunction,
     resource::ResourceTracker,
     value::{Attr, Value},
 };
+
+/// Result of calling an attribute method via `py_call_attr_raw`.
+///
+/// This enum enables attribute methods to signal different outcomes to the VM:
+/// - `Value`: The call completed synchronously with a return value
+/// - `OsCall`: The method needs an OS operation; VM should yield to host
+/// - `ExternalCall`: The method needs to call an external function
+///
+/// This unifies the pattern where `call_function` returns `CallResult` to indicate
+/// different outcomes. Types that only support synchronous attribute calls can
+/// use the default `py_call_attr_raw` implementation which wraps `py_call_attr`.
+///
+/// # Future Extensibility
+///
+/// When needed for features like `list.sort(key=func)`, we can add:
+/// ```ignore
+/// CallFunction(Value, ArgValues)  // Call a callable, result becomes attr result
+/// ```
+#[derive(Debug)]
+pub enum AttrCallResult {
+    /// Call completed synchronously with a value to return.
+    Value(Value),
+
+    /// The method needs an OS operation. VM should yield `FrameExit::OsCall` to host.
+    ///
+    /// The host executes the OS operation and resumes the VM with the result.
+    /// Currently unused - will be used when Path filesystem methods are implemented.
+    #[expect(dead_code)]
+    OsCall(OsFunction, ArgValues),
+
+    /// The method needs to call an external function. VM should yield `FrameExit::ExternalCall`.
+    ///
+    /// Used when attribute methods delegate to registered external functions.
+    /// Currently unused - will be used when types need to call external functions from attribute methods.
+    #[expect(dead_code)]
+    ExternalCall(ExtFunctionId, ArgValues),
+}
 
 /// Common operations for heap-allocated Python values.
 ///
@@ -236,6 +274,32 @@ pub trait PyTrait {
         interns: &Interns,
     ) -> RunResult<Value> {
         Err(ExcType::attribute_error(self.py_type(heap), attr.as_str(interns)))
+    }
+
+    /// Calls an attribute method, returning an `AttrCallResult` that may signal OS or external calls.
+    ///
+    /// This method enables types to signal that they need operations the VM cannot perform
+    /// directly (OS operations, external function calls). The VM converts the result to the
+    /// appropriate `FrameExit` variant.
+    ///
+    /// The default implementation wraps `py_call_attr` in `AttrCallResult::Value`. Types that
+    /// need to perform OS or external operations should override this method.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(AttrCallResult::Value(v))` - Method completed synchronously with value `v`
+    /// - `Ok(AttrCallResult::OsCall(func, args))` - Method needs OS operation; VM yields to host
+    /// - `Ok(AttrCallResult::ExternalCall(id, args))` - Method needs external function call
+    /// - `Err(e)` - Method call failed with error
+    fn py_call_attr_raw(
+        &mut self,
+        heap: &mut Heap<impl ResourceTracker>,
+        attr: &Attr,
+        args: ArgValues,
+        interns: &Interns,
+    ) -> RunResult<AttrCallResult> {
+        let value = self.py_call_attr(heap, attr, args, interns)?;
+        Ok(AttrCallResult::Value(value))
     }
 
     /// Estimates the memory size in bytes of this value.

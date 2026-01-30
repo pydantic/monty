@@ -69,6 +69,9 @@ fn drive_to_resolve_futures<T: monty::ResourceTracker>(
             RunProgress::Complete(_) => {
                 panic!("unexpected Complete before ResolveFutures");
             }
+            RunProgress::OsCall { function, .. } => {
+                panic!("unexpected OsCall: {function:?}");
+            }
         }
     }
 }
