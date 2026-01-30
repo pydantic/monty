@@ -106,23 +106,11 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &Bound<'_, Py
                 items.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
             Ok(PyTuple::new(py, py_items?)?.into_any().unbind())
         }
-        // NamedTuple - create a proper Python namedtuple using collections.namedtuple
-        MontyObject::NamedTuple {
-            type_name,
-            field_names,
-            values,
-        } => {
-            // Create a namedtuple type: collections.namedtuple(type_name, field_names)
-            let collections = py.import("collections")?;
-            let namedtuple_fn = collections.getattr("namedtuple")?;
-            let py_field_names = PyList::new(py, field_names)?;
-            let nt_type = namedtuple_fn.call1((type_name.as_str(), py_field_names))?;
-
-            // Convert values and instantiate the namedtuple
-            let py_values: PyResult<Vec<Py<PyAny>>> =
+        // NamedTuple is converted to a regular tuple (loses named access)
+        MontyObject::NamedTuple { values, .. } => {
+            let py_items: PyResult<Vec<Py<PyAny>>> =
                 values.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
-            let instance = nt_type.call1((PyTuple::new(py, py_values?)?,))?;
-            Ok(instance.into_any().unbind())
+            Ok(PyTuple::new(py, py_items?)?.into_any().unbind())
         }
         MontyObject::Dict(map) => {
             let dict = PyDict::new(py);
