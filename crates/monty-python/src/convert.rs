@@ -51,6 +51,34 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
         let items: PyResult<Vec<MontyObject>> = list.iter().map(|item| py_to_monty(&item)).collect();
         Ok(MontyObject::List(items?))
     } else if let Ok(tuple) = obj.cast::<PyTuple>() {
+        // Check for namedtuple BEFORE treating as regular tuple
+        // Namedtuples have a `_fields` attribute with field names
+        if let Ok(fields) = obj.getattr("_fields")
+            && let Ok(fields_tuple) = fields.cast::<PyTuple>()
+        {
+            let py_type = obj.get_type();
+            // Get the simple class name (e.g., "stat_result")
+            let simple_name = py_type.name()?.to_string();
+            // Get the module (e.g., "os" or "__main__")
+            let module: String = py_type.getattr("__module__")?.extract()?;
+            // Construct full type name: "os.stat_result"
+            // Skip module prefix if it's a Python built-in module
+            let type_name = if module.starts_with('_') || module == "builtins" {
+                simple_name
+            } else {
+                format!("{module}.{simple_name}")
+            };
+            // Extract field names as strings
+            let field_names: PyResult<Vec<String>> = fields_tuple.iter().map(|f| f.extract::<String>()).collect();
+            // Extract values
+            let values: PyResult<Vec<MontyObject>> = tuple.iter().map(|item| py_to_monty(&item)).collect();
+            return Ok(MontyObject::NamedTuple {
+                type_name,
+                field_names: field_names?,
+                values: values?,
+            });
+        }
+        // Regular tuple
         let items: PyResult<Vec<MontyObject>> = tuple.iter().map(|item| py_to_monty(&item)).collect();
         Ok(MontyObject::Tuple(items?))
     } else if let Ok(dict) = obj.cast::<PyDict>() {
@@ -112,20 +140,31 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &Bound<'_, Py
             field_names,
             values,
         } => {
-            // Extract the simple name (after the last dot) for namedtuple creation
-            // e.g., "sys.version_info" -> "version_info", "os.stat_result" -> "stat_result"
-            let simple_name = type_name.rsplit('.').next().unwrap_or(type_name);
+            // Extract module and simple name from full type_name
+            // e.g., "os.stat_result" -> module="os", simple_name="stat_result"
+            let (module, simple_name) = if let Some(idx) = type_name.rfind('.') {
+                (&type_name[..idx], &type_name[idx + 1..])
+            } else {
+                ("", type_name.as_str())
+            };
 
-            // Create a namedtuple type: collections.namedtuple(simple_name, field_names)
+            // Create a namedtuple type with the module set for round-trip support
+            // collections.namedtuple(typename, field_names, module=module)
             let namedtuple_fn = get_namedtuple(py)?;
             let py_field_names = PyList::new(py, field_names)?;
-            let nt_type = namedtuple_fn.call1((simple_name, py_field_names))?;
+            let nt_type = if module.is_empty() {
+                namedtuple_fn.call1((simple_name, py_field_names))?
+            } else {
+                let kwargs = PyDict::new(py);
+                kwargs.set_item("module", module)?;
+                namedtuple_fn.call((simple_name, py_field_names), Some(&kwargs))?
+            };
 
             // Convert values and instantiate using _make() which accepts an iterable
-            let py_values: PyResult<Vec<Py<PyAny>>> =
-                values.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
             // note `_make` might start with an underscore, but it's a public documented method
             // https://docs.python.org/3/library/collections.html#collections.somenamedtuple._make
+            let py_values: PyResult<Vec<Py<PyAny>>> =
+                values.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
             let instance = nt_type.call_method1("_make", (py_values?,))?;
             Ok(instance.into_any().unbind())
         }

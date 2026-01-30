@@ -10,6 +10,7 @@ mod exceptions;
 mod external;
 mod limits;
 mod monty_cls;
+mod stat;
 
 use std::sync::OnceLock;
 
@@ -56,11 +57,14 @@ mod _monty {
     use super::PyMontyFutureSnapshot as MontyFutureSnapshot;
     #[pymodule_export]
     use super::PyMontySnapshot as MontySnapshot;
-    use super::get_version;
+    use super::{get_version, stat};
 
     #[pymodule_init]
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add("__version__", get_version())?;
+        m.add_function(wrap_pyfunction!(stat::py_file_stat, m)?)?;
+        m.add_function(wrap_pyfunction!(stat::py_dir_stat, m)?)?;
+        m.add_function(wrap_pyfunction!(stat::py_symlink_stat, m)?)?;
         Ok(())
     }
 }

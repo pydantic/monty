@@ -17,6 +17,9 @@ from ._monty import (
     MontySyntaxError,
     MontyTypingError,
     __version__,
+    dir_stat,
+    file_stat,
+    symlink_stat,
 )
 
 __all__ = (
@@ -33,6 +36,9 @@ __all__ = (
     'run_monty_async',
     'ResourceLimits',
     'ExternalResult',
+    'file_stat',
+    'dir_stat',
+    'symlink_stat',
 )
 T = TypeVar('T')
 

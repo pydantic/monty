@@ -16,6 +16,9 @@ __all__ = [
     'MontyTypingError',
     'Frame',
     '__version__',
+    'file_stat',
+    'dir_stat',
+    'symlink_stat',
 ]
 __version__: str
 
@@ -196,8 +199,12 @@ class MontySnapshot:
         """The name of the script being executed."""
 
     @property
+    def is_os_function(self) -> bool:
+        """Whether this snapshot is for an OS function call (e.g., Path.stat())."""
+
+    @property
     def function_name(self) -> str:
-        """The name of the external function being called."""
+        """The name of the function being called (external function or OS function like 'stat')."""
 
     @property
     def args(self) -> tuple[Any, ...]:
@@ -506,3 +513,48 @@ class Frame:
 
     def dict(self) -> dict[str, int | str | None]:
         """dict of attributes."""
+
+# =============================================================================
+# stat_result builders for OS call responses
+# =============================================================================
+
+def file_stat(mode: int, size: int, mtime: float) -> tuple[Any, ...]:
+    """Creates a stat_result namedtuple for a regular file.
+
+    Use this when responding to Path.stat() OS calls.
+
+    Args:
+        mode: File permissions as octal (e.g., 0o644) or full mode with file type
+        size: File size in bytes
+        mtime: Modification time as Unix timestamp
+
+    Returns:
+        A namedtuple with stat_result fields (st_mode, st_ino, st_dev, st_nlink,
+        st_uid, st_gid, st_size, st_atime, st_mtime, st_ctime)
+    """
+
+def dir_stat(mode: int, mtime: float) -> tuple[Any, ...]:
+    """Creates a stat_result namedtuple for a directory.
+
+    Use this when responding to Path.stat() OS calls on directories.
+
+    Args:
+        mode: Directory permissions as octal (e.g., 0o755) or full mode with file type
+        mtime: Modification time as Unix timestamp
+
+    Returns:
+        A namedtuple with stat_result fields
+    """
+
+def symlink_stat(mode: int, mtime: float) -> tuple[Any, ...]:
+    """Creates a stat_result namedtuple for a symbolic link.
+
+    Use this when responding to Path.stat() OS calls on symlinks.
+
+    Args:
+        mode: Symlink permissions as octal (e.g., 0o777) or full mode with file type
+        mtime: Modification time as Unix timestamp
+
+    Returns:
+        A namedtuple with stat_result fields
+    """
