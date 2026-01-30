@@ -12,9 +12,9 @@ use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
-    intern::Interns,
+    intern::{Interns, StaticStrings},
     resource::ResourceTracker,
-    types::{PyTrait, Type},
+    types::{PyTrait, Str, Type},
     value::Value,
 };
 
@@ -479,8 +479,6 @@ impl PyTrait for Path {
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
-        use crate::{intern::StaticStrings, types::Str};
-
         let Some(method) = attr.static_string() else {
             args.drop_with_heap(heap);
             return Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)));
@@ -563,25 +561,6 @@ impl PyTrait for Path {
                 Ok(Value::Ref(
                     heap.allocate(HeapData::Str(Str::new(self.as_posix().to_owned())))?,
                 ))
-            }
-            // TODO: Filesystem methods (exists, is_file, etc.) should yield external calls
-            // For now, return an error indicating they're not yet supported
-            StaticStrings::Exists
-            | StaticStrings::IsFile
-            | StaticStrings::IsDir
-            | StaticStrings::IsSymlink
-            | StaticStrings::StatMethod
-            | StaticStrings::ReadBytes
-            | StaticStrings::ReadText
-            | StaticStrings::Iterdir
-            | StaticStrings::Resolve
-            | StaticStrings::Absolute => {
-                let method_name = attr.as_str(interns);
-                args.drop_with_heap(heap);
-                Err(
-                    ExcType::not_implemented(&format!("Path.{method_name}() requires OsAccess (not yet implemented)"))
-                        .into(),
-                )
             }
             _ => {
                 args.drop_with_heap(heap);

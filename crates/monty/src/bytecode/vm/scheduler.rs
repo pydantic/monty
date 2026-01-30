@@ -19,7 +19,6 @@ use crate::{
     asyncio::{CallId, TaskId},
     exception_private::RunError,
     heap::HeapId,
-    intern::ExtFunctionId,
     namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
     parse::CodeRange,
     value::Value,
@@ -144,7 +143,7 @@ impl Task {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PendingCallData {
     /// The external function being called.
-    pub ext_function_id: ExtFunctionId,
+    // pub ext_function_id: ExtFunctionId,
     /// Arguments for the function (includes both positional and keyword args).
     pub args: ArgValues,
     /// Task that created this call (for ignoring results if task is cancelled).
@@ -196,13 +195,13 @@ impl Scheduler {
     /// It starts as the current task (not in the ready queue) since it runs
     /// immediately without needing to be scheduled.
     pub fn new() -> Self {
-        let mut main_task = Task::new(TaskId::new(0), None, None, None);
+        let mut main_task = Task::new(TaskId::default(), None, None, None);
         // Main task starts Running, not Ready (it's the current task, not waiting)
         main_task.state = TaskState::Ready; // Will be set properly when it blocks
         Self {
             tasks: vec![main_task],
             ready_queue: VecDeque::new(), // Main task is current, not in ready queue
-            current_task: Some(TaskId::new(0)),
+            current_task: Some(TaskId::default()),
             next_task_id: 1,
             next_call_id: 0,
             pending_calls: AHashMap::new(),

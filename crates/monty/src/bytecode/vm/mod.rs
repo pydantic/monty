@@ -29,6 +29,7 @@ use crate::{
     io::PrintWriter,
     modules::BuiltinModule,
     namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
+    os::OsFunction,
     parse::CodeRange,
     resource::ResourceTracker,
     types::{LongInt, MontyIter, PyTrait, iter::advance_on_heap},
@@ -162,6 +163,20 @@ pub enum FrameExit {
     ExternalCall {
         /// ID of the external function to call.
         ext_function_id: ExtFunctionId,
+        /// Arguments for the external function (includes both positional and keyword args).
+        args: ArgValues,
+        /// Unique ID for this call, used for async correlation.
+        call_id: CallId,
+    },
+
+    /// Execution paused for an os function call.
+    ///
+    /// The caller should execute a function corresponding to the `os_call` and call `resume()`
+    /// with the result. The `call_id` allows the host to use async resolution
+    /// by calling `run_pending()` instead of `run(result)`.
+    OsCall {
+        /// ID of the os function to call.
+        function: OsFunction,
         /// Arguments for the external function (includes both positional and keyword args).
         args: ArgValues,
         /// Unique ID for this call, used for async correlation.

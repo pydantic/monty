@@ -31,8 +31,9 @@ impl CallId {
 /// Unique identifier for an async task.
 ///
 /// Sequential integers allocated by the scheduler. Task 0 is always the main task
-/// which uses the VM's stack/frames directly. Spawned tasks (1+) store their own context.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+/// which uses the VM's stack/frames directly. Spawned tasks (1+) store their own context,
+/// hence `TaskId::default()` is the main task.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct TaskId(u32);
 
 impl TaskId {

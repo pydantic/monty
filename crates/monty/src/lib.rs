@@ -14,7 +14,7 @@ mod io;
 mod modules;
 mod namespace;
 mod object;
-mod os_access;
+mod os;
 mod parse;
 mod prepare;
 mod resource;
@@ -30,7 +30,7 @@ pub use crate::{
     exception_public::{CodeLoc, MontyException, StackFrame},
     io::{CollectStringPrint, NoPrint, PrintWriter, StdPrint},
     object::{DictPairs, InvalidInputError, MontyObject},
-    os_access::{OsAccess, Stat},
+    os::{OsFunction, Stat},
     resource::{
         DEFAULT_MAX_RECURSION_DEPTH, LimitedTracker, NoLimitTracker, ResourceError, ResourceLimits, ResourceTracker,
     },

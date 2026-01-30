@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
     ExcType, MontyException,
+    asyncio::CallId,
     bytecode::{Code, Compiler, FrameExit, VM, VMSnapshot},
     exception_private::RunResult,
     heap::Heap,
@@ -10,6 +11,7 @@ use crate::{
     io::{PrintWriter, StdPrint},
     namespace::Namespaces,
     object::MontyObject,
+    os::OsFunction,
     parse::parse,
     prepare::prepare,
     resource::{NoLimitTracker, ResourceTracker},
@@ -200,6 +202,21 @@ pub enum RunProgress<T: ResourceTracker> {
         /// The execution state that can be resumed with a return value.
         state: Snapshot<T>,
     },
+    /// Execution paused at an os function call.
+    ///
+    /// The host can resume execution the same ways as for the `FunctionCall` variant.
+    OsCall {
+        /// The OS function being called.
+        function: OsFunction,
+        /// The positional arguments passed to the function.
+        args: Vec<MontyObject>,
+        /// The keyword arguments passed to the function (key, value pairs).
+        kwargs: Vec<(MontyObject, MontyObject)>,
+        /// Unique identifier for this call (used for async correlation).
+        call_id: u32,
+        /// The execution state that can be resumed with a return value.
+        state: Snapshot<T>,
+    },
     /// All async tasks are blocked waiting for external futures to resolve.
     ///
     /// The host must resolve some or all of the pending calls before continuing.
@@ -234,7 +251,7 @@ impl<T: ResourceTracker> RunProgress<T> {
                 call_id,
                 state,
             } => Some((function_name, args, kwargs, call_id, state)),
-            Self::Complete(_) | Self::ResolveFutures { .. } => None,
+            _ => None,
         }
     }
 
@@ -243,7 +260,7 @@ impl<T: ResourceTracker> RunProgress<T> {
     pub fn into_complete(self) -> Option<MontyObject> {
         match self {
             Self::Complete(value) => Some(value),
-            Self::FunctionCall { .. } | Self::ResolveFutures { .. } => None,
+            _ => None,
         }
     }
 
@@ -254,7 +271,7 @@ impl<T: ResourceTracker> RunProgress<T> {
     pub fn into_resolve_futures(self) -> Option<FutureSnapshot<T>> {
         match self {
             Self::ResolveFutures(state) => Some(state),
-            Self::FunctionCall { .. } | Self::Complete(_) => None,
+            _ => None,
         }
     }
 }
@@ -306,9 +323,6 @@ pub struct Snapshot<T: ResourceTracker> {
     /// The call_id from the most recent FunctionCall that created this Snapshot.
     /// Used by `run_pending()` to push the correct `ExternalFuture`.
     pending_call_id: u32,
-    /// The external function ID from the most recent FunctionCall.
-    /// Used by `run_pending()` to store pending call data in the scheduler.
-    pending_ext_function_id: ExtFunctionId,
 }
 
 #[derive(Debug)]
@@ -378,12 +392,11 @@ impl<T: ResourceTracker> Snapshot<T> {
             ExternalResult::Error(exc) => vm.resume_with_exception(exc.into()),
             ExternalResult::Future => {
                 // Get the call_id and ext_function_id that were stored when this Snapshot was created
-                let call_id = crate::asyncio::CallId::new(self.pending_call_id);
-                let ext_function_id = self.pending_ext_function_id;
+                let call_id = CallId::new(self.pending_call_id);
 
                 // Store pending call data in the scheduler so we can track the creator task
                 // and ignore results if the task is cancelled
-                vm.add_pending_call(call_id, ext_function_id);
+                vm.add_pending_call(call_id);
 
                 // Push the ExternalFuture value onto the stack
                 // This allows the code to continue and potentially await this future later
@@ -601,6 +614,18 @@ fn handle_vm_result<T: ResourceTracker>(
     mut heap: Heap<T>,
     mut namespaces: Namespaces,
 ) -> Result<RunProgress<T>, MontyException> {
+    macro_rules! new_snapshot {
+        ($call_id: expr) => {
+            Snapshot {
+                executor,
+                vm_state: vm_state.expect("snapshot should exist for ExternalCall"),
+                heap,
+                namespaces,
+                pending_call_id: $call_id.raw(),
+            }
+        };
+    }
+
     match result {
         Ok(FrameExit::Return(value)) => {
             #[cfg(feature = "ref-count-panic")]
@@ -622,14 +647,22 @@ fn handle_vm_result<T: ResourceTracker>(
                 args: args_py,
                 kwargs: kwargs_py,
                 call_id: call_id.raw(),
-                state: Snapshot {
-                    executor,
-                    vm_state: vm_state.expect("snapshot should exist for ExternalCall"),
-                    heap,
-                    namespaces,
-                    pending_call_id: call_id.raw(),
-                    pending_ext_function_id: ext_function_id,
-                },
+                state: new_snapshot!(call_id),
+            })
+        }
+        Ok(FrameExit::OsCall {
+            function,
+            args,
+            call_id,
+        }) => {
+            let (args_py, kwargs_py) = args.into_py_objects(&mut heap, &executor.interns);
+
+            Ok(RunProgress::OsCall {
+                function,
+                args: args_py,
+                kwargs: kwargs_py,
+                call_id: call_id.raw(),
+                state: new_snapshot!(call_id),
             })
         }
         Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
@@ -870,6 +903,9 @@ fn frame_exit_to_object(
         FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, heap, interns)),
         FrameExit::ExternalCall { .. } => {
             Err(ExcType::not_implemented("external function calls not supported by standard execution.").into())
+        }
+        FrameExit::OsCall { .. } => {
+            Err(ExcType::not_implemented("OS function calls not supported by standard execution.").into())
         }
         FrameExit::ResolveFutures(_) => {
             Err(ExcType::not_implemented("async futures not supported by standard execution.").into())

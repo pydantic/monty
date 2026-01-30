@@ -347,28 +347,6 @@ pub enum StaticStrings {
     Resolve,
     #[strum(serialize = "absolute")]
     Absolute,
-
-    // Reserved external function names for path operations
-    #[strum(serialize = "__os_access_stat__")]
-    OsAccessStat,
-    #[strum(serialize = "__os_access_exists__")]
-    OsAccessExists,
-    #[strum(serialize = "__os_access_is_file__")]
-    OsAccessIsFile,
-    #[strum(serialize = "__os_access_is_dir__")]
-    OsAccessIsDir,
-    #[strum(serialize = "__os_access_is_symlink__")]
-    OsAccessIsSymlink,
-    #[strum(serialize = "__os_access_read_bytes__")]
-    OsAccessReadBytes,
-    #[strum(serialize = "__os_access_read_text__")]
-    OsAccessReadText,
-    #[strum(serialize = "__os_access_iterdir__")]
-    OsAccessIterdir,
-    #[strum(serialize = "__os_access_resolve__")]
-    OsAccessResolve,
-    #[strum(serialize = "__os_access_absolute__")]
-    OsAccessAbsolute,
 }
 
 impl StaticStrings {

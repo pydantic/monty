@@ -14,7 +14,7 @@ use crate::{
     bytecode::vm::scheduler::{PendingCallData, Scheduler, SerializedTaskFrame, TaskState},
     exception_private::{ExcType, RunError, SimpleException},
     heap::{HeapData, HeapId},
-    intern::{ExtFunctionId, FunctionId},
+    intern::FunctionId,
     io::PrintWriter,
     resource::ResourceTracker,
     types::{List, PyTrait},
@@ -928,13 +928,12 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Note: The args are empty because the host already has them from the
     /// `FunctionCall` return value. We only need to track the creator task.
-    pub fn add_pending_call(&mut self, call_id: CallId, ext_function_id: ExtFunctionId) {
+    pub fn add_pending_call(&mut self, call_id: CallId) {
         let scheduler = self.get_or_create_scheduler();
-        let current_task = scheduler.current_task_id().unwrap_or(TaskId::new(0));
+        let current_task = scheduler.current_task_id().unwrap_or_default();
         scheduler.add_pending_call(
             call_id,
             PendingCallData {
-                ext_function_id,
                 args: ArgValues::Empty,
                 creator_task: current_task,
             },
