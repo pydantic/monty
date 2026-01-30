@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Callable, Literal, TypedDict, TypeVar
 
 if TYPE_CHECKING:
@@ -40,6 +41,7 @@ __all__ = (
     'dir_stat',
     'symlink_stat',
     'OsFunction',
+    'AbstractFileSystem',
 )
 T = TypeVar('T')
 
@@ -193,3 +195,116 @@ class ExternalFuture(TypedDict):
 
 
 ExternalResult = ExternalReturnValue | ExternalException | ExternalFuture
+
+
+class AbstractFileSystem(ABC):
+    """Abstract base class for implementing virtual filesystems.
+
+    Subclass this and implement the abstract methods to provide a custom
+    filesystem that Monty code can interact with via Path methods.
+
+    Pass an instance as the `os_callback` parameter to `Monty.run()`.
+    """
+
+    def __call__(self, function_name: OsFunction, args: tuple[Any, ...]) -> Any:
+        match function_name:
+            case 'Path.exists':
+                return self.path_exists(*args)
+            case 'Path.is_file':
+                return self.path_is_file(*args)
+            case 'Path.is_dir':
+                return self.path_is_dir(*args)
+            case 'Path.is_symlink':
+                return self.path_is_symlink(*args)
+            case 'Path.read_text':
+                return self.path_read_text(*args)
+            case 'Path.read_bytes':
+                return self.path_read_bytes(*args)
+            case 'Path.write_text':
+                return self.path_write_text(*args)
+            case 'Path.write_bytes':
+                return self.path_write_bytes(*args)
+            case 'Path.mkdir':
+                return self.path_mkdir(*args)
+            case 'Path.unlink':
+                return self.path_unlink(*args)
+            case 'Path.rmdir':
+                return self.path_rmdir(*args)
+            case 'Path.iterdir':
+                return self.path_iterdir(*args)
+            case 'Path.stat':
+                return self.path_stat(*args)
+            case 'Path.rename':
+                return self.path_rename(*args)
+            case 'Path.resolve':
+                return self.path_resolve(*args)
+            case 'Path.absolute':
+                return self.path_absolute(*args)
+
+    @abstractmethod
+    def path_exists(self, path: str) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def path_is_file(self, path: str) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def path_is_dir(self, path: str) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def path_is_symlink(self, path: str) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def path_read_text(self, path: str) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def path_read_bytes(self, path: str) -> bytes:
+        raise NotImplementedError
+
+    @abstractmethod
+    def path_write_text(self, path: str, data: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def path_write_bytes(self, path: str, data: bytes) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def path_mkdir(self, path: str, parents: bool, exist_ok: bool) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def path_unlink(self, path: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def path_rmdir(self, path: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def path_iterdir(self, path: str) -> list[str]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def path_stat(self, path: str) -> tuple[Any, ...]:
+        """Return stat result for the path.
+
+        Use file_stat(), dir_stat(), or symlink_stat() helpers to create the return value.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def path_rename(self, path: str, target: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def path_resolve(self, path: str) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def path_absolute(self, path: str) -> str:
+        raise NotImplementedError
