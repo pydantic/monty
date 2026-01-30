@@ -93,6 +93,7 @@ exclude = [
     "crates/monty/test_cases/loop__continue_in_function_error.py",
     "crates/monty/test_cases/loop__break_in_if_error.py",
     "crates/monty/test_cases/loop__continue_in_if_error.py",
+    "scripts/startup_performance.py",
 ]
 venv = ".venv"
 
