@@ -106,11 +106,28 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &Bound<'_, Py
                 items.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
             Ok(PyTuple::new(py, py_items?)?.into_any().unbind())
         }
-        // NamedTuple is converted to a regular tuple (loses named access)
-        MontyObject::NamedTuple { values, .. } => {
-            let py_items: PyResult<Vec<Py<PyAny>>> =
+        // NamedTuple - create a proper Python namedtuple using collections.namedtuple
+        MontyObject::NamedTuple {
+            type_name,
+            field_names,
+            values,
+        } => {
+            // Extract the simple name (after the last dot) for namedtuple creation
+            // e.g., "sys.version_info" -> "version_info", "os.stat_result" -> "stat_result"
+            let simple_name = type_name.rsplit('.').next().unwrap_or(type_name);
+
+            // Create a namedtuple type: collections.namedtuple(simple_name, field_names)
+            let namedtuple_fn = get_namedtuple(py)?;
+            let py_field_names = PyList::new(py, field_names)?;
+            let nt_type = namedtuple_fn.call1((simple_name, py_field_names))?;
+
+            // Convert values and instantiate using _make() which accepts an iterable
+            let py_values: PyResult<Vec<Py<PyAny>>> =
                 values.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
-            Ok(PyTuple::new(py, py_items?)?.into_any().unbind())
+            // note `_make` might start with an underscore, but it's a public documented method
+            // https://docs.python.org/3/library/collections.html#collections.somenamedtuple._make
+            let instance = nt_type.call_method1("_make", (py_values?,))?;
+            Ok(instance.into_any().unbind())
         }
         MontyObject::Dict(map) => {
             let dict = PyDict::new(py);
@@ -158,4 +175,11 @@ pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {
     static BUILTINS: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
 
     BUILTINS.get_or_try_init(py, || py.import("builtins").map(Bound::unbind))
+}
+
+/// Cached import of `collections.namedtuple` function.
+fn get_namedtuple(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static NAMEDTUPLE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    NAMEDTUPLE.import(py, "collections", "namedtuple")
 }

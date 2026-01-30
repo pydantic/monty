@@ -403,3 +403,44 @@ def test_bigint_hash_consistency_large_values():
     # Dict lookup must work
     d = {result1: 'value'}
     assert d[result2] == 'value', 'lookup with equal bigint works'
+
+
+# === NamedTuple output ===
+
+
+def test_namedtuple_sys_version_info():
+    """sys.version_info returns a proper namedtuple with attribute access."""
+    m = pydantic_monty.Monty('import sys; sys.version_info')
+    result = m.run()
+
+    # Should have named attribute access
+    assert hasattr(result, 'major')
+    assert hasattr(result, 'minor')
+    assert hasattr(result, 'micro')
+    assert hasattr(result, 'releaselevel')
+    assert hasattr(result, 'serial')
+
+    # Values should match Monty's Python version (3.14)
+    assert result.major == snapshot(3)
+    assert result.minor == snapshot(14)
+    assert result.micro == snapshot(0)
+    assert result.releaselevel == snapshot('final')
+    assert result.serial == snapshot(0)
+
+
+def test_namedtuple_sys_version_info_index_access():
+    """sys.version_info supports both index and attribute access."""
+    m = pydantic_monty.Monty('import sys; sys.version_info')
+    result = m.run()
+
+    # Index access should work
+    assert result[0] == result.major
+    assert result[1] == result.minor
+    assert result[2] == result.micro
+
+
+def test_namedtuple_sys_version_info_tuple_comparison():
+    """sys.version_info can be compared to tuples."""
+    m = pydantic_monty.Monty('import sys; (sys.version_info.major, sys.version_info.minor, sys.version_info.micro)')
+    result = m.run()
+    assert result == snapshot((3, 14, 0))

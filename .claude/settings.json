@@ -27,7 +27,6 @@
       "Bash(git mv:*)",
       "Bash(git log:*)",
       "Bash(git grep:*)",
-      "Bash(git commit:*)",
       "Bash(gh pr view:*)",
       "Bash(gh api:*)",
       "Bash(gh run view:*)",
@@ -43,7 +42,8 @@
       "WebFetch(domain:docs.anthropic.com)",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:15r10nk.github.io)",
-      "WebFetch(domain:docs.rs)"
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:pyo3.rs)"
     ],
     "deny": [],
     "ask": []
