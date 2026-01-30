@@ -4,7 +4,7 @@
 //! with the correct `OsFunction` variant and arguments, and that
 //! return values are correctly used by Python code.
 
-use monty::{MontyObject, MontyRun, NoLimitTracker, OsFunction, RunProgress, StatMode, StatPerms, StdPrint, file_stat};
+use monty::{MontyObject, MontyRun, NoLimitTracker, OsFunction, RunProgress, StdPrint, file_stat};
 
 /// Helper to run code and extract the OsCall progress.
 ///
@@ -268,9 +268,8 @@ from pathlib import Path
 info = Path('/tmp/file.txt').stat()
 info.st_mode
 ";
-    // Use StatMode for rwxr-xr-x permissions
-    let mode = StatMode::file(StatPerms::RWX, StatPerms::RX, StatPerms::RX);
-    let (func, args, result) = run_oscall_with_result(code, file_stat(mode, 0, 0.0));
+    // 0o755 = rwxr-xr-x (file_stat adds 0o100_000 for regular file type)
+    let (func, args, result) = run_oscall_with_result(code, file_stat(0o755, 0, 0.0));
 
     assert_eq!(func, OsFunction::Stat);
     assert_eq!(args[0], MontyObject::String("/tmp/file.txt".to_owned()));
@@ -284,9 +283,8 @@ from pathlib import Path
 info = Path('/var/log/syslog').stat()
 (info.st_size, info.st_mode)
 ";
-    // Use StatMode for rw-r--r-- permissions
-    let mode = StatMode::file(StatPerms::RW, StatPerms::R, StatPerms::R);
-    let (func, args, result) = run_oscall_with_result(code, file_stat(mode, 4096, 0.0));
+    // 0o644 = rw-r--r-- (file_stat adds 0o100_000 for regular file type)
+    let (func, args, result) = run_oscall_with_result(code, file_stat(0o644, 4096, 0.0));
 
     assert_eq!(func, OsFunction::Stat);
     assert_eq!(args[0], MontyObject::String("/var/log/syslog".to_owned()));
