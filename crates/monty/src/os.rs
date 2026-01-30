@@ -36,7 +36,9 @@ pub enum OsFunction {
     IsFile,
     /// Check if path is a directory: `Path.is_dir()`
     IsDir,
-    /// Read file contents: `Path.read_text()` / `Path.read_bytes()`
+    /// Check if path is a symbolic link: `Path.is_symlink()`
+    IsSymlink,
+    /// Read file contents as text: `Path.read_text()`
     ReadText,
     /// Read file contents as bytes: `Path.read_bytes()`
     ReadBytes,
@@ -56,8 +58,10 @@ pub enum OsFunction {
     Stat,
     /// Rename/move file: `Path.rename(target)`
     Rename,
-    /// Get absolute path: `Path.resolve()`
+    /// Get resolved absolute path: `Path.resolve()`
     Resolve,
+    /// Get absolute path (without resolving symlinks): `Path.absolute()`
+    Absolute,
 }
 
 impl TryFrom<StaticStrings> for OsFunction {
@@ -67,9 +71,18 @@ impl TryFrom<StaticStrings> for OsFunction {
     ///
     /// Returns `Err(())` if the method name doesn't correspond to an OS operation.
     fn try_from(method: StaticStrings) -> Result<Self, Self::Error> {
-        // Currently no StaticStrings map to OsFunction
-        // This will be extended when Path methods are added to StaticStrings
-        let _ = method;
-        Err(())
+        match method {
+            StaticStrings::Exists => Ok(Self::Exists),
+            StaticStrings::IsFile => Ok(Self::IsFile),
+            StaticStrings::IsDir => Ok(Self::IsDir),
+            StaticStrings::IsSymlink => Ok(Self::IsSymlink),
+            StaticStrings::ReadText => Ok(Self::ReadText),
+            StaticStrings::ReadBytes => Ok(Self::ReadBytes),
+            StaticStrings::StatMethod => Ok(Self::Stat),
+            StaticStrings::Iterdir => Ok(Self::Iterdir),
+            StaticStrings::Resolve => Ok(Self::Resolve),
+            StaticStrings::Absolute => Ok(Self::Absolute),
+            _ => Err(()),
+        }
     }
 }

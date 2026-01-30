@@ -48,8 +48,7 @@ pub enum AttrCallResult {
     /// The method needs an OS operation. VM should yield `FrameExit::OsCall` to host.
     ///
     /// The host executes the OS operation and resumes the VM with the result.
-    /// Currently unused - will be used when Path filesystem methods are implemented.
-    #[expect(dead_code)]
+    /// Used by `Path` filesystem methods like `exists()`, `read_text()`, etc.
     OsCall(OsFunction, ArgValues),
 
     /// The method needs to call an external function. VM should yield `FrameExit::ExternalCall`.

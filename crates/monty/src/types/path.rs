@@ -9,12 +9,13 @@ use std::fmt::Write;
 use ahash::AHashSet;
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, KwargsValues},
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
+    os::OsFunction,
     resource::ResourceTracker,
-    types::{PyTrait, Str, Type},
+    types::{AttrCallResult, PyTrait, Str, Type},
     value::Value,
 };
 
@@ -434,6 +435,29 @@ fn normalize_path(mut path: String) -> String {
     path
 }
 
+/// Prepends the path string argument to existing arguments for OS calls.
+///
+/// OS functions expect the path as the first argument, so we need to
+/// combine it with any additional arguments passed to the method.
+fn prepend_path_arg(path_arg: Value, args: ArgValues) -> ArgValues {
+    match args {
+        ArgValues::Empty => ArgValues::One(path_arg),
+        ArgValues::One(v) => ArgValues::Two(path_arg, v),
+        ArgValues::Two(a, b) => ArgValues::ArgsKargs {
+            args: vec![path_arg, a, b],
+            kwargs: KwargsValues::Empty,
+        },
+        ArgValues::Kwargs(kwargs) => ArgValues::ArgsKargs {
+            args: vec![path_arg],
+            kwargs,
+        },
+        ArgValues::ArgsKargs { args: mut vals, kwargs } => {
+            vals.insert(0, path_arg);
+            ArgValues::ArgsKargs { args: vals, kwargs }
+        }
+    }
+}
+
 impl PyTrait for Path {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::Path
@@ -567,6 +591,29 @@ impl PyTrait for Path {
                 Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)))
             }
         }
+    }
+
+    fn py_call_attr_raw(
+        &mut self,
+        heap: &mut Heap<impl ResourceTracker>,
+        attr: &crate::value::Attr,
+        args: ArgValues,
+        interns: &Interns,
+    ) -> RunResult<AttrCallResult> {
+        let Some(method) = attr.static_string() else {
+            return self.py_call_attr(heap, attr, args, interns).map(AttrCallResult::Value);
+        };
+
+        // Check if this is an OS method that requires host system access
+        if let Ok(os_fn) = OsFunction::try_from(method) {
+            // Package path string as first argument for OS call
+            let path_arg = Value::Ref(heap.allocate(HeapData::Str(Str::new(self.path.clone())))?);
+            let os_args = prepend_path_arg(path_arg, args);
+            return Ok(AttrCallResult::OsCall(os_fn, os_args));
+        }
+
+        // Fall back to py_call_attr for pure methods
+        self.py_call_attr(heap, attr, args, interns).map(AttrCallResult::Value)
     }
 }
 
