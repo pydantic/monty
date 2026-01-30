@@ -688,6 +688,23 @@ impl PyTrait for HeapData {
         }
     }
 
+    fn py_call_attr_raw(
+        &mut self,
+        heap: &mut Heap<impl ResourceTracker>,
+        attr: &Attr,
+        args: ArgValues,
+        interns: &Interns,
+    ) -> RunResult<AttrCallResult> {
+        match self {
+            // Path has special handling for OS calls (exists, read_text, etc.)
+            Self::Path(p) => p.py_call_attr_raw(heap, attr, args, interns),
+            // Dataclass has special handling for external method calls
+            Self::Dataclass(dc) => dc.py_call_attr_raw(heap, attr, args, interns),
+            // All other types use the default implementation (wrap py_call_attr)
+            _ => self.py_call_attr(heap, attr, args, interns).map(AttrCallResult::Value),
+        }
+    }
+
     fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Value> {
         match self {
             Self::Str(s) => s.py_getitem(key, heap, interns),

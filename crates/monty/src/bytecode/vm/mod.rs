@@ -502,7 +502,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     pub fn check_snapshot(mut self, result: &RunResult<FrameExit>) -> Option<VMSnapshot> {
         if matches!(
             result,
-            Ok(FrameExit::ExternalCall { .. } | FrameExit::ResolveFutures(_))
+            Ok(FrameExit::ExternalCall { .. } | FrameExit::OsCall { .. } | FrameExit::ResolveFutures(_))
         ) {
             Some(self.snapshot())
         } else {
