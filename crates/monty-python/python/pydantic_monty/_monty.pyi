@@ -3,7 +3,7 @@ from typing import Any, Callable, Literal, final, overload
 
 from typing_extensions import Self
 
-from . import ExternalResult, OsFunction, ResourceLimits
+from . import ExternalResult, OsFunction, ResourceLimits, StatResult
 
 __all__ = [
     'Monty',
@@ -527,7 +527,7 @@ class Frame:
 # stat_result builders for OS call responses
 # =============================================================================
 
-def file_stat(mode: int, size: int, mtime: float) -> tuple[Any, ...]:
+def file_stat(mode: int, size: int, mtime: float) -> StatResult:
     """Creates a stat_result namedtuple for a regular file.
 
     Use this when responding to Path.stat() OS calls.
@@ -542,7 +542,7 @@ def file_stat(mode: int, size: int, mtime: float) -> tuple[Any, ...]:
         st_uid, st_gid, st_size, st_atime, st_mtime, st_ctime)
     """
 
-def dir_stat(mode: int, mtime: float) -> tuple[Any, ...]:
+def dir_stat(mode: int, mtime: float) -> StatResult:
     """Creates a stat_result namedtuple for a directory.
 
     Use this when responding to Path.stat() OS calls on directories.
@@ -555,7 +555,7 @@ def dir_stat(mode: int, mtime: float) -> tuple[Any, ...]:
         A namedtuple with stat_result fields
     """
 
-def symlink_stat(mode: int, mtime: float) -> tuple[Any, ...]:
+def symlink_stat(mode: int, mtime: float) -> StatResult:
     """Creates a stat_result namedtuple for a symbolic link.
 
     Use this when responding to Path.stat() OS calls on symlinks.

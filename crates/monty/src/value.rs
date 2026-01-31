@@ -1726,7 +1726,7 @@ impl Value {
                                 Ok(Some(value)) => Ok(value.clone_with_heap(heap)),
                                 Ok(None) => {
                                     // Use the dataclass's actual name for the error message
-                                    Err(ExcType::attribute_error_not_found(dc.name(), attr_name))
+                                    Err(ExcType::attribute_error(dc.name(), interns.get_str(name_id)))
                                 }
                                 Err(e) => Err(e),
                             }
@@ -1748,7 +1748,7 @@ impl Value {
                                 Ok(value)
                             } else {
                                 let module_name = interns.get_str(module.name());
-                                Err(ExcType::attribute_error_module(module_name, attr_name))
+                                Err(ExcType::attribute_error_module(module_name, interns.get_str(name_id)))
                             }
                         } else {
                             unreachable!("type changed during borrow")
@@ -1766,10 +1766,7 @@ impl Value {
                         }
                         Ok(copied)
                     } else {
-                        Err(ExcType::attribute_error_not_found(
-                            interns.get_str(nt.type_name()),
-                            attr_name,
-                        ))
+                        Err(ExcType::attribute_error(nt.py_type(heap), interns.get_str(name_id)))
                     }
                 }
                 HeapData::Exception(exc) => {
@@ -1787,26 +1784,26 @@ impl Value {
                         Ok(Self::Ref(tuple_id))
                     } else {
                         let exc_type = exc.py_type();
-                        Err(ExcType::attribute_error(exc_type, attr_name))
+                        Err(ExcType::attribute_error(exc_type, interns.get_str(name_id)))
                     }
                 }
                 HeapData::Slice(slice) => {
                     // Handle slice attributes: start, stop, step
-                    match attr_name {
+                    match interns.get_str(name_id) {
                         "start" => Ok(slice::option_i64_to_value(slice.start)),
                         "stop" => Ok(slice::option_i64_to_value(slice.stop)),
                         "step" => Ok(slice::option_i64_to_value(slice.step)),
-                        _ => Err(ExcType::attribute_error(Type::Slice, attr_name)),
+                        _ => Err(ExcType::attribute_error(Type::Slice, interns.get_str(name_id))),
                     }
                 }
                 HeapData::Path(path) => {
                     // Clone the path to avoid borrow conflict with heap
                     let path_clone = path.clone();
-                    path::get_path_attr(&path_clone, attr_name, heap)
+                    path::get_path_attr(&path_clone, interns.get_str(name_id), heap)
                 }
                 _ => {
                     let type_name = heap_data.py_type(heap);
-                    Err(ExcType::attribute_error(type_name, attr_name))
+                    Err(ExcType::attribute_error(type_name, interns.get_str(name_id)))
                 }
             }
         } else if let Self::Marker(marker) = self {
@@ -2086,7 +2083,7 @@ impl Value {
 
 /// Interned or heap-owned string identifier.
 #[derive(Debug, Clone)]
-pub enum EitherStr {
+pub(crate) enum EitherStr {
     /// Interned string identifier (cheap comparisons and no allocation).
     Interned(StringId),
     /// Heap-owned string extracted from a `str` object.

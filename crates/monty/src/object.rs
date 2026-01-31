@@ -1,6 +1,7 @@
 use std::{
     fmt::{self, Write},
     hash::{Hash, Hasher},
+    str::FromStr,
 };
 
 use ahash::AHashSet;
@@ -12,10 +13,10 @@ use crate::{
     builtins::{Builtins, BuiltinsFunctions},
     exception_private::{ExcType, SimpleException},
     heap::{Heap, HeapData, HeapId},
-    intern::Interns,
+    intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
     types::{
-        LongInt, PyTrait, Type,
+        LongInt, NamedTuple, PyTrait, Type,
         bytes::{Bytes, bytes_repr},
         dict::Dict,
         list::List,
@@ -221,19 +222,12 @@ impl MontyObject {
             Self::NamedTuple {
                 type_name,
                 field_names,
-                values: items,
+                values,
             } => {
-                use std::str::FromStr;
-
-                use crate::{intern::StaticStrings, types::NamedTuple};
-                let values: Vec<Value> = items
+                let values: Vec<Value> = values
                     .into_iter()
                     .map(|item| item.to_value(heap, interns))
                     .collect::<Result<_, _>>()?;
-                // Look up type_name and field_names in StaticStrings
-                let type_name_id = StaticStrings::from_str(&type_name)
-                    .map_err(|_| InvalidInputError::invalid_type("unknown NamedTuple type_name"))?
-                    .into();
                 let field_name_ids: Result<Vec<_>, _> = field_names
                     .iter()
                     .map(|n| {
@@ -242,7 +236,7 @@ impl MontyObject {
                             .map_err(|_| InvalidInputError::invalid_type("unknown NamedTuple field_name"))
                     })
                     .collect();
-                let nt = NamedTuple::new(type_name_id, field_name_ids?, values);
+                let nt = NamedTuple::new(type_name, field_name_ids?, values);
                 Ok(Value::Ref(heap.allocate(HeapData::NamedTuple(nt))?))
             }
             Self::Dict(map) => {
@@ -295,7 +289,7 @@ impl MontyObject {
                 let dict = Dict::from_pairs(pairs?, heap, interns)
                     .map_err(|_| InvalidInputError::invalid_type("unhashable dataclass attr keys"))?;
                 // Convert methods Vec to AHashSet
-                let methods_set: ahash::AHashSet<String> = methods.into_iter().collect();
+                let methods_set: AHashSet<String> = methods.into_iter().collect();
                 let dc = Dataclass::new(name, type_id, field_names, dict, methods_set, frozen);
                 Ok(Value::Ref(heap.allocate(HeapData::Dataclass(dc))?))
             }
@@ -363,7 +357,7 @@ impl MontyObject {
                             .collect(),
                     ),
                     HeapData::NamedTuple(nt) => Self::NamedTuple {
-                        type_name: interns.get_str(nt.type_name()).to_owned(),
+                        type_name: nt.type_name().to_owned(),
                         field_names: nt
                             .field_names()
                             .iter()

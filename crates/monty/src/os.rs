@@ -107,7 +107,7 @@ impl TryFrom<StaticStrings> for OsFunction {
 // os.stat_result structure. The stat_result has 10 fields:
 // st_mode, st_ino, st_dev, st_nlink, st_uid, st_gid, st_size, st_atime, st_mtime, st_ctime
 
-const STAT_RESULT_TYPE_NAME: &str = "os.stat_result";
+const STAT_RESULT_TYPE_NAME: &str = "StatResult";
 const STAT_RESULT_FIELDS: &[&str] = &[
     "st_mode", "st_ino", "st_dev", "st_nlink", "st_uid", "st_gid", "st_size", "st_atime", "st_mtime", "st_ctime",
 ];

@@ -4,8 +4,6 @@ These tests verify that AbstractFileSystem can be subclassed to provide
 a virtual filesystem that Monty code can interact with via Path methods.
 """
 
-from typing import Any
-
 import pytest
 from inline_snapshot import snapshot
 
@@ -13,8 +11,10 @@ import pydantic_monty
 from pydantic_monty import AbstractFileSystem, dir_stat, file_stat
 
 
-class InMemoryFileSystem(AbstractFileSystem):
+class TestFileSystem(AbstractFileSystem):
     """A simple in-memory filesystem for testing."""
+
+    __test__ = False
 
     def __init__(self) -> None:
         self.files: dict[str, bytes] = {}
@@ -106,7 +106,7 @@ class InMemoryFileSystem(AbstractFileSystem):
                     result.append(child)
         return sorted(result)
 
-    def path_stat(self, path: str) -> tuple[Any, ...]:
+    def path_stat(self, path: str) -> pydantic_monty.StatResult:
         if path in self.files:
             return file_stat(0o644, len(self.files[path]), 0.0)
         elif path in self.directories:
@@ -154,7 +154,7 @@ class InMemoryFileSystem(AbstractFileSystem):
 
 def test_abstract_filesystem_exists():
     """AbstractFileSystem.path_exists() works with os_callback."""
-    fs = InMemoryFileSystem()
+    fs = TestFileSystem()
     fs.files['/test.txt'] = b'hello'
 
     m = pydantic_monty.Monty('from pathlib import Path; Path("/test.txt").exists()')
@@ -165,7 +165,7 @@ def test_abstract_filesystem_exists():
 
 def test_abstract_filesystem_exists_missing():
     """AbstractFileSystem.path_exists() returns False for missing files."""
-    fs = InMemoryFileSystem()
+    fs = TestFileSystem()
 
     m = pydantic_monty.Monty('from pathlib import Path; Path("/missing.txt").exists()')
     result = m.run(os_callback=fs)
@@ -175,7 +175,7 @@ def test_abstract_filesystem_exists_missing():
 
 def test_abstract_filesystem_is_file():
     """AbstractFileSystem.path_is_file() distinguishes files from directories."""
-    fs = InMemoryFileSystem()
+    fs = TestFileSystem()
     fs.files['/file.txt'] = b'content'
     fs.directories.add('/mydir')
 
@@ -191,7 +191,7 @@ from pathlib import Path
 
 def test_abstract_filesystem_is_dir():
     """AbstractFileSystem.path_is_dir() distinguishes directories from files."""
-    fs = InMemoryFileSystem()
+    fs = TestFileSystem()
     fs.files['/file.txt'] = b'content'
     fs.directories.add('/mydir')
 
@@ -207,7 +207,7 @@ from pathlib import Path
 
 def test_abstract_filesystem_read_text():
     """AbstractFileSystem.path_read_text() returns file contents."""
-    fs = InMemoryFileSystem()
+    fs = TestFileSystem()
     fs.files['/hello.txt'] = b'Hello, World!'
 
     m = pydantic_monty.Monty('from pathlib import Path; Path("/hello.txt").read_text()')
@@ -218,7 +218,7 @@ def test_abstract_filesystem_read_text():
 
 def test_abstract_filesystem_read_text_missing():
     """AbstractFileSystem.path_read_text() raises FileNotFoundError for missing files."""
-    fs = InMemoryFileSystem()
+    fs = TestFileSystem()
 
     m = pydantic_monty.Monty('from pathlib import Path; Path("/missing.txt").read_text()')
     with pytest.raises(FileNotFoundError):
@@ -227,7 +227,7 @@ def test_abstract_filesystem_read_text_missing():
 
 def test_abstract_filesystem_read_bytes():
     """AbstractFileSystem.path_read_bytes() returns raw bytes."""
-    fs = InMemoryFileSystem()
+    fs = TestFileSystem()
     fs.files['/data.bin'] = b'\x00\x01\x02\x03'
 
     m = pydantic_monty.Monty('from pathlib import Path; Path("/data.bin").read_bytes()')
@@ -243,7 +243,7 @@ def test_abstract_filesystem_read_bytes():
 
 def test_abstract_filesystem_stat_file():
     """AbstractFileSystem.path_stat() returns stat result for files."""
-    fs = InMemoryFileSystem()
+    fs = TestFileSystem()
     fs.files['/file.txt'] = b'hello world'
 
     code = """
@@ -259,7 +259,7 @@ s = Path('/file.txt').stat()
 
 def test_abstract_filesystem_stat_directory():
     """AbstractFileSystem.path_stat() returns stat result for directories."""
-    fs = InMemoryFileSystem()
+    fs = TestFileSystem()
     fs.directories.add('/mydir')
 
     code = """
@@ -275,7 +275,7 @@ s.st_mode
 
 def test_abstract_filesystem_stat_missing():
     """AbstractFileSystem.path_stat() raises FileNotFoundError for missing paths."""
-    fs = InMemoryFileSystem()
+    fs = TestFileSystem()
 
     m = pydantic_monty.Monty('from pathlib import Path; Path("/missing").stat()')
     with pytest.raises(FileNotFoundError):
@@ -289,7 +289,7 @@ def test_abstract_filesystem_stat_missing():
 
 def test_abstract_filesystem_iterdir():
     """AbstractFileSystem.path_iterdir() lists directory contents."""
-    fs = InMemoryFileSystem()
+    fs = TestFileSystem()
     fs.directories.add('/mydir')
     fs.files['/mydir/a.txt'] = b'a'
     fs.files['/mydir/b.txt'] = b'b'
@@ -310,7 +310,7 @@ list(Path('/mydir').iterdir())
 
 def test_abstract_filesystem_iterdir_empty():
     """AbstractFileSystem.path_iterdir() returns empty list for empty directory."""
-    fs = InMemoryFileSystem()
+    fs = TestFileSystem()
     fs.directories.add('/empty')
 
     code = """
@@ -330,7 +330,7 @@ list(Path('/empty').iterdir())
 
 def test_abstract_filesystem_resolve():
     """AbstractFileSystem.path_resolve() normalizes paths."""
-    fs = InMemoryFileSystem()
+    fs = TestFileSystem()
 
     code = """
 from pathlib import Path
@@ -344,7 +344,7 @@ str(Path('/foo/bar/../baz').resolve())
 
 def test_abstract_filesystem_absolute():
     """AbstractFileSystem.path_absolute() returns absolute path."""
-    fs = InMemoryFileSystem()
+    fs = TestFileSystem()
 
     code = """
 from pathlib import Path

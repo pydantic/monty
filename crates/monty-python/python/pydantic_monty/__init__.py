@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Callable, Literal, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Literal, NamedTuple, TypedDict, TypeVar
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -42,6 +42,7 @@ __all__ = (
     'symlink_stat',
     'OsFunction',
     'AbstractFileSystem',
+    'StatResult',
 )
 T = TypeVar('T')
 
@@ -290,7 +291,7 @@ class AbstractFileSystem(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_stat(self, path: str) -> tuple[Any, ...]:
+    def path_stat(self, path: str) -> StatResult:
         """Return stat result for the path.
 
         Use file_stat(), dir_stat(), or symlink_stat() helpers to create the return value.
@@ -308,3 +309,37 @@ class AbstractFileSystem(ABC):
     @abstractmethod
     def path_absolute(self, path: str) -> str:
         raise NotImplementedError
+
+
+class StatResult(NamedTuple):
+    """Equivalent to os.stat_result"""
+
+    st_mode: int
+    """protection bits"""
+
+    st_ino: int
+    """inode"""
+
+    st_dev: int
+    """device"""
+
+    st_nlink: int
+    """number of hard links"""
+
+    st_uid: int
+    """user ID of owner"""
+
+    st_gid: int
+    """group ID of owner"""
+
+    st_size: int
+    """total size, in bytes"""
+
+    st_atime: float
+    """time of last access"""
+
+    st_mtime: float
+    """time of last modification"""
+
+    st_ctime: float
+    """time of last change"""

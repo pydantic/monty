@@ -223,7 +223,7 @@ pub enum StaticStrings {
 
     // ==========================
     // os.stat_result fields
-    #[strum(serialize = "os.stat_result")]
+    #[strum(serialize = "StatResult")]
     OsStatResult,
     #[strum(serialize = "st_mode")]
     StMode,

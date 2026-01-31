@@ -1,4 +1,4 @@
-use std::fmt::Write;
+use std::{fmt::Write, str::FromStr};
 
 use ahash::AHashSet;
 
@@ -7,7 +7,7 @@ use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapId},
-    intern::Interns,
+    intern::{Interns, StaticStrings},
     resource::ResourceTracker,
     types::Type,
     value::{Attr, Value},
@@ -43,7 +43,7 @@ use crate::{
 #[derive(Debug)]
 pub(crate) struct Dataclass {
     /// The class name (e.g., "Point", "User")
-    name: String,
+    name: ObjectName,
     /// Identifier of the type, from `id(type(dc))` in python.
     type_id: u64,
     /// Declared field names in definition order (for repr and hashing)
@@ -68,7 +68,7 @@ impl Dataclass {
     /// * `frozen` - Whether this dataclass instance is immutable (affects hashability)
     #[must_use]
     pub fn new(
-        name: String,
+        name: impl Into<ObjectName>,
         type_id: u64,
         field_names: Vec<String>,
         attrs: Dict,
@@ -76,7 +76,7 @@ impl Dataclass {
         frozen: bool,
     ) -> Self {
         Self {
-            name,
+            name: name.into(),
             type_id,
             field_names,
             attrs,
@@ -88,7 +88,7 @@ impl Dataclass {
     /// Returns the class name.
     #[must_use]
     pub fn name(&self) -> &str {
-        &self.name
+        self.name.as_str()
     }
 
     /// Returns the type ID of the dataclass.
@@ -208,7 +208,7 @@ impl PyTrait for Dataclass {
 
     fn py_estimate_size(&self) -> usize {
         std::mem::size_of::<Self>()
-            + self.name.len()
+            + self.name.py_estimate_size()
             + self.field_names.iter().map(String::len).sum::<usize>()
             + self.attrs.py_estimate_size()
             + self.methods.len() * std::mem::size_of::<String>()
@@ -243,7 +243,7 @@ impl PyTrait for Dataclass {
     ) -> std::fmt::Result {
         // Format: ClassName(field1=value1, field2=value2, ...)
         // Only declared fields are shown, not dynamically added attributes
-        f.write_str(&self.name)?;
+        f.write_str(self.name())?;
         f.write_char('(')?;
 
         let mut first = true;
@@ -283,7 +283,10 @@ impl PyTrait for Dataclass {
             // TODO: Integrate with external call system
             // For now, drop args and return an error indicating this needs implementation
             args.drop_with_heap(heap);
-            Err(ExcType::attribute_error_method_not_implemented(&self.name, method_name))
+            Err(ExcType::attribute_error_method_not_implemented(
+                self.name(),
+                method_name,
+            ))
         } else {
             args.drop_with_heap(heap);
             Err(ExcType::attribute_error(Type::Dataclass, method_name))
@@ -314,7 +317,7 @@ impl<'de> serde::Deserialize<'de> for Dataclass {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize)]
         struct DataclassData {
-            name: String,
+            name: ObjectName,
             type_id: u64,
             field_names: Vec<String>,
             attrs: Dict,
@@ -330,5 +333,45 @@ impl<'de> serde::Deserialize<'de> for Dataclass {
             methods: dc.methods.into_iter().collect(),
             frozen: dc.frozen,
         })
+    }
+}
+
+/// Either static string or standard string
+#[derive(Debug, Clone, Hash, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum ObjectName {
+    Static(StaticStrings),
+    /// Standard rust heap allocated string
+    String(String),
+}
+
+impl From<StaticStrings> for ObjectName {
+    fn from(s: StaticStrings) -> Self {
+        Self::Static(s)
+    }
+}
+
+impl From<String> for ObjectName {
+    fn from(s: String) -> Self {
+        match StaticStrings::from_str(s.as_str()) {
+            Ok(static_string) => Self::Static(static_string),
+            Err(_) => Self::String(s),
+        }
+    }
+}
+
+impl ObjectName {
+    /// Returns the keyword as a str slice for error messages or comparisons.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Static(s) => s.into(),
+            Self::String(s) => s.as_str(),
+        }
+    }
+
+    pub fn py_estimate_size(&self) -> usize {
+        match self {
+            Self::Static(_) => 0,
+            Self::String(s) => s.capacity(),
+        }
     }
 }

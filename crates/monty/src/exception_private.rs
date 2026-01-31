@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    fmt::{self, Write},
+    fmt::{self, Display, Write},
 };
 
 use serde::{Deserialize, Serialize};
@@ -190,10 +190,10 @@ impl ExcType {
     ///
     /// Sets `hide_caret: true` because CPython doesn't show carets for attribute GET errors.
     #[must_use]
-    pub(crate) fn attribute_error(type_: Type, attr: &str) -> RunError {
+    pub(crate) fn attribute_error(type_name: impl Display, attr: &str) -> RunError {
         let exc = SimpleException::new_msg(
             Self::AttributeError,
-            format!("'{type_}' object has no attribute '{attr}'"),
+            format!("'{type_name}' object has no attribute '{attr}'"),
         );
         RunError::Exc(ExceptionRaise {
             exc,
@@ -213,23 +213,6 @@ impl ExcType {
             format!("'{class_name}' object method '{method_name}' requires external call (not yet implemented)"),
         )
         .into()
-    }
-
-    /// Creates an AttributeError for when a specific attribute is not found (GET operation).
-    ///
-    /// Matches CPython's format: `AttributeError: 'ClassName' object has no attribute 'attr_name'`
-    /// Sets `hide_caret: true` because CPython doesn't show carets for attribute GET errors.
-    #[must_use]
-    pub(crate) fn attribute_error_not_found(class_name: &str, attr_name: &str) -> RunError {
-        let exc = SimpleException::new_msg(
-            Self::AttributeError,
-            format!("'{class_name}' object has no attribute '{attr_name}'"),
-        );
-        RunError::Exc(ExceptionRaise {
-            exc,
-            frame: None,
-            hide_caret: true, // CPython doesn't show carets for attribute GET errors
-        })
     }
 
     /// Creates an AttributeError for attribute assignment on types that don't support it.

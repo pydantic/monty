@@ -170,7 +170,7 @@ Path('/tmp/file.txt').stat()
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert repr(result.output) == snapshot(
-        'stat_result(st_mode=33188, st_ino=0, st_dev=0, st_nlink=1, st_uid=0, st_gid=0, st_size=512, st_atime=0.0, st_mtime=0.0, st_ctime=0.0)'
+        'StatResult(st_mode=33188, st_ino=0, st_dev=0, st_nlink=1, st_uid=0, st_gid=0, st_size=512, st_atime=0.0, st_mtime=0.0, st_ctime=0.0)'
     )
     # Should be a tuple subclass
     assert len(result.output) == 10

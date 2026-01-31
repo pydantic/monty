@@ -25,7 +25,7 @@ use crate::{
     heap::{Heap, HeapId},
     intern::{Interns, StringId},
     resource::ResourceTracker,
-    types::Type,
+    types::{Type, dataclass::ObjectName},
     value::Value,
 };
 
@@ -48,7 +48,7 @@ use crate::{
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct NamedTuple {
     /// Type name for repr (e.g., "sys.version_info").
-    type_name: StringId,
+    name: ObjectName,
     /// Field names in order, e.g., `major`, `minor`, `micro`, `releaselevel`, `serial`.
     field_names: Vec<StringId>,
     /// Values in order (same length as field_names).
@@ -70,7 +70,7 @@ impl NamedTuple {
     ///
     /// Panics if `field_names.len() != items.len()`.
     #[must_use]
-    pub fn new(type_name: StringId, field_names: Vec<StringId>, items: Vec<Value>) -> Self {
+    pub fn new(name: impl Into<ObjectName>, field_names: Vec<StringId>, items: Vec<Value>) -> Self {
         assert_eq!(
             field_names.len(),
             items.len(),
@@ -78,7 +78,7 @@ impl NamedTuple {
         );
         let contains_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
         Self {
-            type_name,
+            name: name.into(),
             field_names,
             items,
             contains_refs,
@@ -87,8 +87,8 @@ impl NamedTuple {
 
     /// Returns the type name (e.g., "sys.version_info").
     #[must_use]
-    pub fn type_name(&self) -> StringId {
-        self.type_name
+    pub fn type_name(&self) -> &str {
+        self.name.as_str()
     }
 
     /// Returns a reference to the field names.
@@ -217,7 +217,7 @@ impl PyTrait for NamedTuple {
         interns: &Interns,
     ) -> std::fmt::Result {
         // Format: type_name(field1=value1, field2=value2, ...)
-        f.write_str(interns.get_str(self.type_name))?;
+        f.write_str(self.name.as_str())?;
         f.write_char('(')?;
 
         let mut first = true;
