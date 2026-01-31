@@ -91,7 +91,7 @@ class Monty:
         """
         Execute the code and return the result.
 
-        The GIL is released allowing parallel execution if `print_callback` is `None`.
+        The GIL is released allowing parallel execution.
 
         Arguments:
             inputs: Dict of input variable values (must match names from __init__)
@@ -123,7 +123,7 @@ class Monty:
 
         This allows you to iteratively run code and parse/resume whenever an external function is called.
 
-        The GIL is released allowing parallel execution if `print_callback` is `None`.
+        The GIL is released allowing parallel execution.
 
         Arguments:
             inputs: Dict of input variable values (must match names from __init__)
@@ -233,7 +233,7 @@ class MontySnapshot:
 
         `resume` may only be called once on each MontySnapshot instance.
 
-        The GIL is released allowing parallel execution if `print_callback` is `None`.
+        The GIL is released allowing parallel execution.
 
         Arguments:
             return_value: The value to return from the external function call.
@@ -341,7 +341,7 @@ class MontyFutureSnapshot:
 
         `resume` may only be called once on each MontyFutureSnapshot instance.
 
-        The GIL is released allowing parallel execution if `print_callback` is `None`.
+        The GIL is released allowing parallel execution.
 
         Arguments:
             results: Dict mapping call_id to result dict. Each result dict must have

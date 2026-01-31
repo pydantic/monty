@@ -208,6 +208,18 @@ class AbstractFileSystem(ABC):
     """
 
     def __call__(self, function_name: OsFunction, args: tuple[Any, ...]) -> Any:
+        """Dispatch a filesystem operation to the appropriate method.
+
+        This is called by Monty when Monty code invokes Path methods.
+        You typically don't need to override this method.
+
+        Args:
+            function_name: The Path method being called (e.g., 'Path.exists').
+            args: The arguments passed to the method.
+
+        Returns:
+            The result of the filesystem operation.
+        """
         match function_name:
             case 'Path.exists':
                 return self.path_exists(*args)
@@ -244,70 +256,223 @@ class AbstractFileSystem(ABC):
 
     @abstractmethod
     def path_exists(self, path: str) -> bool:
+        """Check if a path exists.
+
+        Args:
+            path: The path to check.
+
+        Returns:
+            True if the path exists, False otherwise.
+        """
         raise NotImplementedError
 
     @abstractmethod
     def path_is_file(self, path: str) -> bool:
+        """Check if a path is a regular file.
+
+        Args:
+            path: The path to check.
+
+        Returns:
+            True if the path is a regular file, False otherwise.
+        """
         raise NotImplementedError
 
     @abstractmethod
     def path_is_dir(self, path: str) -> bool:
+        """Check if a path is a directory.
+
+        Args:
+            path: The path to check.
+
+        Returns:
+            True if the path is a directory, False otherwise.
+        """
         raise NotImplementedError
 
     @abstractmethod
     def path_is_symlink(self, path: str) -> bool:
+        """Check if a path is a symbolic link.
+
+        Args:
+            path: The path to check.
+
+        Returns:
+            True if the path is a symbolic link, False otherwise.
+        """
         raise NotImplementedError
 
     @abstractmethod
     def path_read_text(self, path: str) -> str:
+        """Read the contents of a file as text.
+
+        Args:
+            path: The path to the file.
+
+        Returns:
+            The file contents as a string.
+
+        Raises:
+            FileNotFoundError: If the file does not exist.
+            IsADirectoryError: If the path is a directory.
+        """
         raise NotImplementedError
 
     @abstractmethod
     def path_read_bytes(self, path: str) -> bytes:
+        """Read the contents of a file as bytes.
+
+        Args:
+            path: The path to the file.
+
+        Returns:
+            The file contents as bytes.
+
+        Raises:
+            FileNotFoundError: If the file does not exist.
+            IsADirectoryError: If the path is a directory.
+        """
         raise NotImplementedError
 
     @abstractmethod
     def path_write_text(self, path: str, data: str) -> None:
+        """Write text data to a file.
+
+        Args:
+            path: The path to the file.
+            data: The text content to write.
+
+        Raises:
+            FileNotFoundError: If the parent directory does not exist.
+            IsADirectoryError: If the path is a directory.
+        """
         raise NotImplementedError
 
     @abstractmethod
     def path_write_bytes(self, path: str, data: bytes) -> None:
+        """Write binary data to a file.
+
+        Args:
+            path: The path to the file.
+            data: The binary content to write.
+
+        Raises:
+            FileNotFoundError: If the parent directory does not exist.
+            IsADirectoryError: If the path is a directory.
+        """
         raise NotImplementedError
 
     @abstractmethod
     def path_mkdir(self, path: str, parents: bool, exist_ok: bool) -> None:
+        """Create a directory.
+
+        Args:
+            path: The path of the directory to create.
+            parents: If True, create parent directories as needed.
+            exist_ok: If True, don't raise an error if the directory exists.
+
+        Raises:
+            FileNotFoundError: If parents is False and parent directory doesn't exist.
+            FileExistsError: If exist_ok is False and the directory already exists.
+        """
         raise NotImplementedError
 
     @abstractmethod
     def path_unlink(self, path: str) -> None:
+        """Remove a file.
+
+        Args:
+            path: The path to the file to remove.
+
+        Raises:
+            FileNotFoundError: If the file does not exist.
+            IsADirectoryError: If the path is a directory.
+        """
         raise NotImplementedError
 
     @abstractmethod
     def path_rmdir(self, path: str) -> None:
+        """Remove an empty directory.
+
+        Args:
+            path: The path to the directory to remove.
+
+        Raises:
+            FileNotFoundError: If the directory does not exist.
+            NotADirectoryError: If the path is not a directory.
+            OSError: If the directory is not empty.
+        """
         raise NotImplementedError
 
     @abstractmethod
     def path_iterdir(self, path: str) -> list[str]:
+        """List the contents of a directory.
+
+        Args:
+            path: The path to the directory.
+
+        Returns:
+            A list of entry names (not full paths) in the directory.
+
+        Raises:
+            FileNotFoundError: If the directory does not exist.
+            NotADirectoryError: If the path is not a directory.
+        """
         raise NotImplementedError
 
     @abstractmethod
     def path_stat(self, path: str) -> StatResult:
-        """Return stat result for the path.
+        """Get file status information.
 
         Use file_stat(), dir_stat(), or symlink_stat() helpers to create the return value.
+
+        Args:
+            path: The path to stat.
+
+        Returns:
+            A StatResult with file metadata.
+
+        Raises:
+            FileNotFoundError: If the path does not exist.
         """
         raise NotImplementedError
 
     @abstractmethod
     def path_rename(self, path: str, target: str) -> None:
+        """Rename a file or directory.
+
+        Args:
+            path: The current path.
+            target: The new path.
+
+        Raises:
+            FileNotFoundError: If the source path does not exist.
+            FileExistsError: If the target already exists (platform-dependent).
+        """
         raise NotImplementedError
 
     @abstractmethod
     def path_resolve(self, path: str) -> str:
+        """Resolve a path to an absolute path, resolving any symlinks.
+
+        Args:
+            path: The path to resolve.
+
+        Returns:
+            The resolved absolute path with symlinks resolved.
+        """
         raise NotImplementedError
 
     @abstractmethod
     def path_absolute(self, path: str) -> str:
+        """Convert a path to an absolute path without resolving symlinks.
+
+        Args:
+            path: The path to convert.
+
+        Returns:
+            The absolute path.
+        """
         raise NotImplementedError
 
 
