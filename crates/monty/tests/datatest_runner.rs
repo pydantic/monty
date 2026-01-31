@@ -551,6 +551,29 @@ fn dispatch_os_call(function: OsFunction, args: &[MontyObject]) -> ExternalResul
             // For virtual paths, return as-is (they're already absolute)
             MontyObject::String(path).into()
         }
+        OsFunction::Getenv => {
+            // Virtual environment for testing os.getenv()
+            // args[0] is key, args[1] is default (may be None)
+            let key = String::try_from(&args[0]).expect("getenv: first arg must be key string");
+            let default = &args[1];
+
+            // Provide a few test environment variables
+            let value = match key.as_str() {
+                "VIRTUAL_HOME" => Some("/virtual/home"),
+                "VIRTUAL_USER" => Some("testuser"),
+                "VIRTUAL_EMPTY" => Some(""),
+                _ => None,
+            };
+
+            if let Some(v) = value {
+                MontyObject::String(v.to_owned()).into()
+            } else if matches!(default, MontyObject::None) {
+                MontyObject::None.into()
+            } else {
+                // Return the default value
+                default.clone().into()
+            }
+        }
         _ => panic!("OS function not implemented in tests: {function:?}"),
     }
 }

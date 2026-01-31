@@ -2069,7 +2069,7 @@ impl Value {
     ///
     /// Returns `Some(KeywordStr)` for `InternString` values or heap `str`
     /// objects, otherwise returns `None`.
-    pub fn as_either_str<T: ResourceTracker>(&self, heap: &mut Heap<T>) -> Option<EitherStr> {
+    pub fn as_either_str(&self, heap: &Heap<impl ResourceTracker>) -> Option<EitherStr> {
         match self {
             Self::InternString(id) => Some(EitherStr::Interned(*id)),
             Self::Ref(heap_id) => match heap.get(*heap_id) {
@@ -2077,6 +2077,15 @@ impl Value {
                 _ => None,
             },
             _ => None,
+        }
+    }
+
+    /// check if the value is a string.
+    pub fn is_str(&self, heap: &Heap<impl ResourceTracker>) -> bool {
+        match self {
+            Self::InternString(_) => true,
+            Self::Ref(heap_id) => matches!(heap.get(*heap_id), HeapData::Str(_)),
+            _ => false,
         }
     }
 }

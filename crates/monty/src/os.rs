@@ -75,6 +75,9 @@ pub enum OsFunction {
     /// Get absolute path (without resolving symlinks)
     #[strum(serialize = "Path.absolute")]
     Absolute,
+    /// Get an environment variable value
+    #[strum(serialize = "os.getenv")]
+    Getenv,
 }
 
 impl TryFrom<StaticStrings> for OsFunction {

@@ -293,7 +293,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             }
             Value::ModuleFunction(mf) => {
                 let result = mf.call(self.heap, args)?;
-                Ok(CallResult::Push(result))
+                Ok(result.into())
             }
             Value::ExtFunction(ext_id) => {
                 // External function - return to caller to execute

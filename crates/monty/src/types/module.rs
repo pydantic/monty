@@ -6,7 +6,7 @@ use crate::{
     heap::{Heap, HeapId},
     intern::{Interns, StringId},
     resource::ResourceTracker,
-    types::{Dict, PyTrait},
+    types::{AttrCallResult, Dict, PyTrait},
     value::{Attr, Value},
 };
 
@@ -101,13 +101,16 @@ impl Module {
     ///
     /// Modules don't have methods - they have callable attributes. This looks up
     /// the attribute and calls it if it's a `ModuleFunction`.
-    pub fn py_call_attr(
+    ///
+    /// Returns `AttrCallResult` because module functions may need OS operations
+    /// (e.g., `os.getenv()`) that require host involvement.
+    pub fn py_call_attr_raw(
         &self,
         heap: &mut Heap<impl ResourceTracker>,
         attr: &Attr,
         args: ArgValues,
         interns: &Interns,
-    ) -> RunResult<Value> {
+    ) -> RunResult<AttrCallResult> {
         let attr_key = match attr {
             Attr::Interned(id) => Value::InternString(*id),
             Attr::Other(s) => {

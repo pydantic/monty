@@ -14,7 +14,7 @@ use crate::{
     intern::{Interns, StaticStrings},
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
-    types::Module,
+    types::{AttrCallResult, Module},
     value::Value,
 };
 
@@ -52,9 +52,9 @@ pub(super) fn call(
     heap: &mut Heap<impl ResourceTracker>,
     functions: AsyncioFunctions,
     args: ArgValues,
-) -> RunResult<Value> {
+) -> RunResult<AttrCallResult> {
     match functions {
-        AsyncioFunctions::Gather => gather(heap, args),
+        AsyncioFunctions::Gather => gather(heap, args).map(AttrCallResult::Value),
     }
 }
 

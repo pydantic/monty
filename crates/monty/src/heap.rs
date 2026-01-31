@@ -682,7 +682,6 @@ impl PyTrait for HeapData {
             Self::Set(s) => s.py_call_attr(heap, attr, args, interns),
             Self::FrozenSet(fs) => fs.py_call_attr(heap, attr, args, interns),
             Self::Dataclass(dc) => dc.py_call_attr(heap, attr, args, interns),
-            Self::Module(m) => m.py_call_attr(heap, attr, args, interns),
             Self::Path(p) => p.py_call_attr(heap, attr, args, interns),
             _ => Err(ExcType::attribute_error(self.py_type(heap), attr.as_str(interns))),
         }
@@ -700,6 +699,8 @@ impl PyTrait for HeapData {
             Self::Path(p) => p.py_call_attr_raw(heap, attr, args, interns),
             // Dataclass has special handling for external method calls
             Self::Dataclass(dc) => dc.py_call_attr_raw(heap, attr, args, interns),
+            // Module has special handling for OS calls (os.getenv, etc.)
+            Self::Module(m) => m.py_call_attr_raw(heap, attr, args, interns),
             // All other types use the default implementation (wrap py_call_attr)
             _ => self.py_call_attr(heap, attr, args, interns).map(AttrCallResult::Value),
         }

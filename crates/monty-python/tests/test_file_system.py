@@ -146,6 +146,14 @@ class TestFileSystem(AbstractFileSystem):
             return path
         return '/' + path
 
+    def getenv(self, key: str, default: str | None = None) -> str | None:
+        # Simple virtual environment for testing
+        env = {
+            'TEST_VAR': 'test_value',
+            'HOME': '/test/home',
+        }
+        return env.get(key, default)
+
 
 # =============================================================================
 # Basic AbstractFileSystem tests
@@ -354,6 +362,48 @@ str(Path('/already/absolute').absolute())
     result = m.run(os_callback=fs)
 
     assert result == snapshot('/already/absolute')
+
+
+def test_abstract_filesystem_getenv():
+    """AbstractFileSystem.getenv() returns environment variable value."""
+    fs = TestFileSystem()
+
+    code = """
+import os
+os.getenv('TEST_VAR')
+"""
+    m = pydantic_monty.Monty(code)
+    result = m.run(os_callback=fs)
+
+    assert result == snapshot('test_value')
+
+
+def test_abstract_filesystem_getenv_missing():
+    """AbstractFileSystem.getenv() returns None for missing variable."""
+    fs = TestFileSystem()
+
+    code = """
+import os
+os.getenv('NONEXISTENT')
+"""
+    m = pydantic_monty.Monty(code)
+    result = m.run(os_callback=fs)
+
+    assert result is None
+
+
+def test_abstract_filesystem_getenv_default():
+    """AbstractFileSystem.getenv() returns default for missing variable."""
+    fs = TestFileSystem()
+
+    code = """
+import os
+os.getenv('NONEXISTENT', 'my_default')
+"""
+    m = pydantic_monty.Monty(code)
+    result = m.run(os_callback=fs)
+
+    assert result == snapshot('my_default')
 
 
 # =============================================================================

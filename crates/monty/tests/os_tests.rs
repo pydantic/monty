@@ -36,6 +36,7 @@ fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
                 | OsFunction::Unlink
                 | OsFunction::Rmdir
                 | OsFunction::Rename => MontyObject::None,
+                OsFunction::Getenv => MontyObject::String("mock_env_value".to_owned()),
             };
             let _ = state.run(mock_result, &mut StdPrint);
             (function, args)

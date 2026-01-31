@@ -63,6 +63,7 @@ OsFunction = Literal[
     'Path.rename',
     'Path.resolve',
     'Path.absolute',
+    'os.getenv',
 ]
 
 
@@ -253,6 +254,8 @@ class AbstractFileSystem(ABC):
                 return self.path_resolve(*args)
             case 'Path.absolute':
                 return self.path_absolute(*args)
+            case 'os.getenv':
+                return self.getenv(*args)
 
     @abstractmethod
     def path_exists(self, path: str) -> bool:
@@ -472,6 +475,19 @@ class AbstractFileSystem(ABC):
 
         Returns:
             The absolute path.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def getenv(self, key: str, default: str | None = None) -> str | None:
+        """Get an environment variable value.
+
+        Args:
+            key: The name of the environment variable.
+            default: The value to return if the environment variable is not set.
+
+        Returns:
+            The value of the environment variable, or `default` if not set.
         """
         raise NotImplementedError
 

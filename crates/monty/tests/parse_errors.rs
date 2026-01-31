@@ -47,8 +47,8 @@ mod not_implemented_error {
 
     #[test]
     fn unknown_imports_return_module_not_found_error() {
-        // Unknown modules (not sys or typing) return a ModuleNotFoundError
-        let result = MontyRun::new("import os".to_owned(), "test.py", vec![], vec![]);
+        // Unknown modules (not sys, typing, os, etc.) return a ModuleNotFoundError
+        let result = MontyRun::new("import foobar".to_owned(), "test.py", vec![], vec![]);
         assert_eq!(get_exc_type(result), ExcType::ModuleNotFoundError);
     }
 

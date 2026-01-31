@@ -311,6 +311,15 @@ pub enum StaticStrings {
     Gather,
 
     // ==========================
+    // os module strings
+    #[strum(serialize = "os")]
+    Os,
+    #[strum(serialize = "getenv")]
+    Getenv,
+    #[strum(serialize = "default")]
+    Default,
+
+    // ==========================
     // Exception attributes
     Args,
 

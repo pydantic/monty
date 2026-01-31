@@ -339,3 +339,75 @@ def test_os_callback_not_provided_error():
     assert str(exc_info.value) == snapshot(
         'NotImplementedError: The monty syntax parser does not yet support OS function calls not supported by standard execution.'
     )
+
+
+# =============================================================================
+# os.getenv() tests
+# =============================================================================
+
+
+def test_os_getenv_yields_oscall():
+    """os.getenv() yields an OS call with correct function and args."""
+    m = pydantic_monty.Monty('import os; os.getenv("HOME")')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert result.is_os_function is True
+    assert result.function_name == snapshot('os.getenv')
+    assert result.args == snapshot(('HOME', None))
+
+
+def test_os_getenv_with_default_yields_oscall():
+    """os.getenv() with default yields an OS call with both args."""
+    m = pydantic_monty.Monty('import os; os.getenv("MISSING", "fallback")')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert result.is_os_function is True
+    assert result.function_name == snapshot('os.getenv')
+    assert result.args == snapshot(('MISSING', 'fallback'))
+
+
+def test_os_getenv_callback():
+    """os.getenv() with os_callback works correctly."""
+
+    def os_handler(function_name: str, args: tuple[Any, ...]) -> str | None:
+        if function_name == 'os.getenv':
+            key, default = args
+            env = {'HOME': '/home/user', 'USER': 'testuser'}
+            return env.get(key, default)
+        return None
+
+    m = pydantic_monty.Monty('import os; os.getenv("HOME")')
+    result = m.run(os_callback=os_handler)
+    assert result == snapshot('/home/user')
+
+
+def test_os_getenv_callback_missing():
+    """os.getenv() returns None for missing env var when no default."""
+
+    def os_handler(function_name: str, args: tuple[Any, ...]) -> str | None:
+        if function_name == 'os.getenv':
+            key, default = args
+            env: dict[str, str] = {}
+            return env.get(key, default)
+        return None
+
+    m = pydantic_monty.Monty('import os; os.getenv("NONEXISTENT")')
+    result = m.run(os_callback=os_handler)
+    assert result is None
+
+
+def test_os_getenv_callback_with_default():
+    """os.getenv() uses default when env var is missing."""
+
+    def os_handler(function_name: str, args: tuple[Any, ...]) -> str | None:
+        if function_name == 'os.getenv':
+            key, default = args
+            env: dict[str, str] = {}
+            return env.get(key, default)
+        return None
+
+    m = pydantic_monty.Monty('import os; os.getenv("NONEXISTENT", "default_value")')
+    result = m.run(os_callback=os_handler)
+    assert result == snapshot('default_value')

@@ -282,6 +282,45 @@ def _virtual_path_new(cls: type, *args: object, **kwargs: object) -> Path:
 Path.__new__ = _virtual_path_new
 
 
+# =============================================================================
+# Virtual Environment for os.getenv Tests
+# =============================================================================
+
+# Virtual environment variables (matches Rust test constants)
+VIRTUAL_ENV: dict[str, str] = {
+    'VIRTUAL_HOME': '/virtual/home',
+    'VIRTUAL_USER': 'testuser',
+    'VIRTUAL_EMPTY': '',
+}
+
+# Store the original os.getenv function
+_original_getenv = os.getenv
+
+
+def _virtual_getenv(key: str, default: str | None = None) -> str | None:
+    """Virtual os.getenv that returns predefined values for VIRTUAL_* keys.
+
+    For keys starting with 'VIRTUAL_', returns the virtual environment value
+    or None if not in the virtual env (ignoring default for these keys to match Monty behavior).
+    For all other keys, falls through to the real os.getenv.
+    """
+    # Check key type first to match CPython's behavior
+    if not isinstance(key, str):  # pyright: ignore[reportUnnecessaryIsInstance]
+        # to get the real error
+        return _original_getenv(key)
+
+    if key.startswith('VIRTUAL_') or key in ('NONEXISTENT', 'ALSO_MISSING', 'MISSING'):
+        value = VIRTUAL_ENV.get(key)
+        if value is not None:
+            return value
+        return default
+    return _original_getenv(key, default)
+
+
+# Monkey-patch os.getenv to use virtual environment for test keys
+os.getenv = _virtual_getenv
+
+
 # All external functions available to iter mode tests
 ITER_MODE_GLOBALS: dict[str, object] = {
     'add_ints': add_ints,
