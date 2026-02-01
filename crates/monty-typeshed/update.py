@@ -66,6 +66,8 @@ ALLOWED_CLASSES = {
     'zip',
     # Slicing
     'slice',
+    # property is used by pathlib.Path
+    'property',
     # Exception hierarchy (from crates/monty/src/exception_private.rs)
     'BaseException',
     'Exception',
@@ -112,7 +114,28 @@ DEPENDENCY_FILES = [
 DEPENDENCY_DIRS = [
     'collections',
     '_typeshed',
+    'pathlib',
 ]
+# content for typeshed's `VERSIONS` file
+VERSIONS = """\
+# absolutely minimal VERSIONS file exposing only the modules required
+# all these modules are required to get type checking working with ty
+# or for the stdlib modules we (partially) implement
+
+_collections_abc: 3.3-
+_typeshed: 3.0-  # not present at runtime, only for type checking
+asyncio: 3.4-
+builtins: 3.0-
+collections: 3.0-
+dataclasses: 3.7-
+os: 3.0-
+pathlib: 3.4-
+pathlib.types: 3.14-
+sys: 3.0-
+typing: 3.5-
+typing_extensions: 3.7-
+types: 3.0-
+"""
 
 SCRIPT_DIR = Path(__file__).parent
 VENDOR_DIR = SCRIPT_DIR / 'vendor' / 'typeshed'
@@ -296,21 +319,7 @@ def main() -> int:
     # Write output files
     STDLIB_DIR.mkdir(parents=True, exist_ok=True)
     (STDLIB_DIR / 'builtins.pyi').write_text(filtered)
-    (STDLIB_DIR / 'VERSIONS').write_text("""\
-# absolutely minimal VERSIONS file exposing only the modules required
-# all these modules are required to get type checking working with ty
-
-_collections_abc: 3.3-
-_typeshed: 3.0-  # not present at runtime, only for type checking
-asyncio: 3.4-
-builtins: 3.0-
-collections: 3.0-
-dataclasses: 3.7-
-sys: 3.0-
-typing: 3.5-
-typing_extensions: 3.7-
-types: 3.0-
-""")
+    (STDLIB_DIR / 'VERSIONS').write_text(VERSIONS)
 
     # Copy dependency modules
     copy_dependencies(src_stdlib, STDLIB_DIR)

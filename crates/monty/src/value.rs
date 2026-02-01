@@ -1711,8 +1711,6 @@ impl Value {
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<Self> {
-        let attr_name = interns.get_str(name_id);
-
         if let Self::Ref(heap_id) = self {
             let heap_id = *heap_id;
             let heap_data = heap.get(heap_id);
@@ -1788,12 +1786,13 @@ impl Value {
                     }
                 }
                 HeapData::Slice(slice) => {
-                    // Handle slice attributes: start, stop, step
-                    match interns.get_str(name_id) {
+                    // Handle slice attributes: start, stop,
+                    let attr_name = interns.get_str(name_id);
+                    match attr_name {
                         "start" => Ok(slice::option_i64_to_value(slice.start)),
                         "stop" => Ok(slice::option_i64_to_value(slice.stop)),
                         "step" => Ok(slice::option_i64_to_value(slice.step)),
-                        _ => Err(ExcType::attribute_error(Type::Slice, interns.get_str(name_id))),
+                        _ => Err(ExcType::attribute_error(Type::Slice, attr_name)),
                     }
                 }
                 HeapData::Path(path) => {
@@ -1806,12 +1805,9 @@ impl Value {
                     Err(ExcType::attribute_error(type_name, interns.get_str(name_id)))
                 }
             }
-        } else if let Self::Marker(marker) = self {
-            // Markers don't support attribute access - report the marker's actual type
-            Err(ExcType::attribute_error(marker.py_type(), attr_name))
         } else {
             let type_name = self.py_type(heap);
-            Err(ExcType::attribute_error(type_name, attr_name))
+            Err(ExcType::attribute_error(type_name, interns.get_str(name_id)))
         }
     }
 

@@ -1,6 +1,8 @@
 import asyncio
+import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import assert_type
 
 # === Type checking helper functions ===
@@ -404,3 +406,20 @@ assert_type(p.x, int)
 assert_type(p.y, float)
 p.x = 3
 print(p)
+
+path = Path(__file__)
+assert_type(path, Path)
+# assert_type(path.name, str)
+
+p2 = path.parent
+assert_type(p2, Path)
+
+p3 = path / 'test.txt'
+assert_type(p3, Path)
+assert p3.name == 'test.txt'
+
+x = os.getenv('foobar')
+assert_type(x, str | None)
+
+y = os.getenv('foobar', default=int('123'))
+assert_type(y, str | int)
