@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import PurePosixPath
-from typing import Any, Callable, Literal, NamedTuple, Protocol, Self, TypeAlias, TypeGuard
+from typing import TYPE_CHECKING, Any, Callable, Literal, NamedTuple, Protocol, TypeAlias, TypeGuard
 
 from typing_extensions import Sequence
+
+if TYPE_CHECKING:
+    # Self is 3.11+, hence this
+    from typing import Self
 
 __all__ = 'OsFunction', 'AbstractOS', 'AbstractFile', 'MemoryFile', 'CallbackFile', 'OSAccess', 'StatResult'
 
