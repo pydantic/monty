@@ -10,7 +10,7 @@ from typing import Any
 from inline_snapshot import snapshot
 
 import pydantic_monty
-from pydantic_monty import file_stat
+from pydantic_monty import StatResult
 
 # =============================================================================
 # Basic OS call yielding
@@ -124,7 +124,7 @@ info = Path('/tmp/file.txt').stat()
     assert snapshot_result.function_name == snapshot('Path.stat')
 
     # Resume with a file_stat result - Monty accesses multiple fields
-    result = snapshot_result.resume(return_value=file_stat(0o100_644, 1024, 1234567890.0))
+    result = snapshot_result.resume(return_value=StatResult.file_stat(1024, 0o100_644, 1234567890.0))
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     # st_mode=0o100_644, st_size=1024, info[6]=st_size=1024
@@ -141,7 +141,7 @@ Path('/tmp/file.txt').stat()
     snapshot_result = m.start()
 
     assert isinstance(snapshot_result, pydantic_monty.MontySnapshot)
-    result = snapshot_result.resume(return_value=file_stat(0o100_755, 2048, 1700000000.0))
+    result = snapshot_result.resume(return_value=StatResult.file_stat(2048, 0o100_755, 1700000000.0))
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     stat_result = result.output
@@ -166,7 +166,7 @@ Path('/tmp/file.txt').stat()
     snapshot_result = m.start()
 
     assert isinstance(snapshot_result, pydantic_monty.MontySnapshot)
-    result = snapshot_result.resume(return_value=file_stat(0o644, 512, 0.0))
+    result = snapshot_result.resume(return_value=StatResult.file_stat(512, 0o644, 0.0))
 
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert repr(result.output) == snapshot(
@@ -283,7 +283,7 @@ def test_os_stat():
 
     def os_handler(function_name: str, args: tuple[Any, ...]) -> Any:
         if function_name == 'Path.stat':
-            return file_stat(0o644, 1024, 1700000000.0)
+            return StatResult.file_stat(1024, 0o644, 1700000000.0)
         return None
 
     code = """

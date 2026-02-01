@@ -17,13 +17,16 @@ from ._monty import (
     MontySyntaxError,
     MontyTypingError,
     __version__,
-    dir_stat,
-    file_stat,
-    symlink_stat,
 )
 from .os_access import AbstractFile, AbstractOS, CallbackFile, MemoryFile, OSAccess, OsFunction, StatResult
 
 __all__ = (
+    # this file
+    'run_monty_async',
+    'ExternalResult',
+    'ResourceLimits',
+    # _monty
+    '__version__',
     'Monty',
     'MontyComplete',
     'MontySnapshot',
@@ -33,13 +36,7 @@ __all__ = (
     'MontyRuntimeError',
     'MontyTypingError',
     'Frame',
-    '__version__',
-    'run_monty_async',
-    'ResourceLimits',
-    'ExternalResult',
-    'file_stat',
-    'dir_stat',
-    'symlink_stat',
+    # os_access
     'StatResult',
     'OsFunction',
     'AbstractOS',

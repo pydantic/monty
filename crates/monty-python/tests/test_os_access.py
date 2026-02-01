@@ -8,7 +8,7 @@ import pytest
 from inline_snapshot import snapshot
 
 import pydantic_monty
-from pydantic_monty import AbstractOS, StatResult, dir_stat, file_stat
+from pydantic_monty import AbstractOS, StatResult
 
 
 class TestOS(AbstractOS):
@@ -413,7 +413,7 @@ os.getenv('NONEXISTENT', 'my_default')
 
 def test_file_stat_helper():
     """file_stat() creates a proper stat result."""
-    stat = file_stat(0o644, 1024, 1700000000.0)
+    stat = StatResult.file_stat(1024, 0o644, 1700000000.0)
 
     # Check it has the expected structure (10 fields)
     assert len(stat) == snapshot(10)
@@ -425,7 +425,7 @@ def test_file_stat_helper():
 
 def test_dir_stat_helper():
     """dir_stat() creates a proper stat result for directories."""
-    stat = dir_stat(0o755, 1700000000.0)
+    stat = StatResult.dir_stat(0o755, 1700000000.0)
 
     assert len(stat) == snapshot(10)
     # Index access: st_mode=0, st_size=6, st_mtime=8
