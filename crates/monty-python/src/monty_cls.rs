@@ -5,7 +5,7 @@ use ::monty::{
     ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRun, NoLimitTracker, PrintWriter,
     ResourceTracker, RunProgress, Snapshot, StdPrint,
 };
-use monty::{FutureSnapshot, OsFunction};
+use monty::{ExcType, FutureSnapshot, OsFunction};
 use monty_type_checking::{SourceFile, type_check};
 use pyo3::{
     IntoPyObjectExt,
@@ -142,6 +142,13 @@ impl PyMonty {
     ) -> PyResult<Py<PyAny>> {
         // Extract input values in the order they were declared
         let input_values = self.extract_input_values(inputs)?;
+
+        if let Some(os_callback) = os
+            && !os_callback.is_callable()
+        {
+            let msg = format!("TypeError: '{}' object is not callable", os_callback.get_type().name()?);
+            return Err(PyTypeError::new_err(msg));
+        }
 
         // Build print writer
         let print_writer = print_callback.map(CallbackStringPrint::new);
@@ -386,22 +393,29 @@ impl PyMonty {
                 RunProgress::OsCall {
                     function, args, state, ..
                 } => {
-                    let callback =
-                        os.ok_or_else(|| PyRuntimeError::new_err(format!("OS call '{function}' but no os provided")))?;
+                    let result: ExternalResult = if let Some(os_callback) = os {
+                        // Convert args to Python
+                        let py_args: Vec<Py<PyAny>> = args
+                            .iter()
+                            .map(|arg| monty_to_py(py, arg, dataclass_registry))
+                            .collect::<PyResult<_>>()?;
+                        let py_args_tuple = PyTuple::new(py, py_args)?;
 
-                    // Convert args to Python
-                    let py_args: Vec<Py<PyAny>> = args
-                        .iter()
-                        .map(|arg| monty_to_py(py, arg, dataclass_registry))
-                        .collect::<PyResult<_>>()?;
-                    let py_args_tuple = PyTuple::new(py, py_args)?;
-
-                    // Call the callback with (function_name, args)
-                    let result = callback.call1((function.to_string(), py_args_tuple))?;
-                    let return_value = py_to_monty(&result)?;
+                        // call the os callback, if an exception is raised, return it to monty
+                        match os_callback.call1((function.to_string(), py_args_tuple)) {
+                            Ok(result) => py_to_monty(&result)?.into(),
+                            Err(err) => exc_py_to_monty(py, &err).into(),
+                        }
+                    } else {
+                        MontyException::new(
+                            ExcType::NotImplementedError,
+                            Some(format!("OS function '{function}' not implemented")),
+                        )
+                        .into()
+                    };
 
                     progress = py
-                        .detach(|| state.run(ExternalResult::Return(return_value), &mut print_output))
+                        .detach(|| state.run(result, &mut print_output))
                         .map_err(|e| MontyError::new_err(py, e))?;
                 }
             }

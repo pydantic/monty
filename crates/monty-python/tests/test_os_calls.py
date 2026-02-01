@@ -7,6 +7,7 @@ the host are properly converted and used by Monty code.
 
 from typing import Any
 
+import pytest
 from inline_snapshot import snapshot
 
 import pydantic_monty
@@ -337,8 +338,28 @@ def test_os_not_provided_error():
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     assert str(exc_info.value) == snapshot(
-        'NotImplementedError: The monty syntax parser does not yet support OS function calls not supported by standard execution.'
+        "NotImplementedError: OS function 'Path.exists' not implemented with standard execution"
     )
+
+
+def test_os_not_provided_error_ext_func():
+    """Error is raised when OS call is made without os."""
+    import pytest
+
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp").exists()', external_functions=['x'])
+    # When no external functions and no os, run() takes the fast path
+    # and OS calls raise NotImplementedError inside Monty
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run(external_functions={'x': int})
+    assert str(exc_info.value) == snapshot("NotImplementedError: OS function 'Path.exists' not implemented")
+
+
+def test_not_callable():
+    """Raise NotImplementedError inside inside monty if so os"""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/test.txt").exists()')
+
+    with pytest.raises(TypeError, match="TypeError: 'int' object is not callable"):
+        m.run(os=123)  # type: ignore
 
 
 # =============================================================================

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any, Callable, Literal, NamedTuple, Protocol, Self, TypeAlias, TypeGuard
+
+from typing_extensions import Sequence
 
 __all__ = 'OsFunction', 'AbstractOS', 'AbstractFile', 'MemoryFile', 'CallbackFile', 'OSAccess', 'StatResult'
 
@@ -44,6 +44,8 @@ class StatResult(NamedTuple):
             mtime: Modification time as Unix timestamp, defaults to Now.
 
         """
+        import time
+
         # If only permission bits provided (no file type), add regular file type
         if mode < 0o1000:
             mode = mode | 0o100_000
@@ -63,6 +65,7 @@ class StatResult(NamedTuple):
         Returns:
             A namedtuple with stat_result fields
         """
+        import time
 
         # If only permission bits provided (no file type), add directory type
         if mode < 0o1000:
@@ -489,15 +492,17 @@ class CallbackFile:
 _type_check_callback_file: AbstractFile = CallbackFile('test.txt', lambda _: '', lambda _, __: None)
 
 
-@dataclass
 class OSAccess(AbstractOS):
     """High level type for giving Monty access to a pseudo OS."""
 
-    files: list[AbstractFile] = field(default_factory=list)
-    environ: dict[str, str] = field(default_factory=dict)
-    _tree: Tree = field(init=False, default_factory=dict)
+    files: list[AbstractFile]
+    environ: dict[str, str]
+    _tree: Tree
 
-    def __post_init__(self):
+    def __init__(self, files: Sequence[AbstractFile] | None = None, environ: dict[str, str] | None = None):
+        self.files = list(files) if files else []
+        self.env = environ or {}
+        self._tree = {}
         for file in self.files:
             if not file.path.is_absolute():
                 raise ValueError(f'Files must have absolute paths, {file.path} is not absolute')
@@ -512,6 +517,9 @@ class OSAccess(AbstractOS):
                     raise ValueError(f'Cannot put file {file} within sub-directory of file {entry}')
 
             subtree[name] = file
+
+    def __repr__(self) -> str:
+        return f'OSAccess(files={self.files}, environ={self.environ})'
 
     def path_exists(self, path: str) -> bool:
         return self._get_entry(path) is not None

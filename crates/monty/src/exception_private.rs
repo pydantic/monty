@@ -576,7 +576,7 @@ impl ExcType {
 
     /// Creates a simple TypeError with a custom message.
     #[must_use]
-    pub(crate) fn type_error(msg: impl Into<String>) -> RunError {
+    pub(crate) fn type_error(msg: impl fmt::Display) -> RunError {
         SimpleException::new_msg(Self::TypeError, msg).into()
     }
 
@@ -825,11 +825,8 @@ impl ExcType {
     /// Used during parsing when encountering Python syntax that Monty doesn't yet support.
     /// The message format is: "The monty syntax parser does not yet support {feature}"
     #[must_use]
-    pub(crate) fn not_implemented(feature: &str) -> SimpleException {
-        SimpleException::new_msg(
-            Self::NotImplementedError,
-            format!("The monty syntax parser does not yet support {feature}"),
-        )
+    pub(crate) fn not_implemented(msg: impl fmt::Display) -> SimpleException {
+        SimpleException::new_msg(Self::NotImplementedError, msg)
     }
 
     /// Creates a ZeroDivisionError for division by zero.
@@ -1121,10 +1118,10 @@ impl SimpleException {
 
     /// Creates a new exception with the given type and argument message.
     #[must_use]
-    pub fn new_msg(exc_type: ExcType, arg: impl Into<String>) -> Self {
+    pub fn new_msg(exc_type: ExcType, arg: impl fmt::Display) -> Self {
         Self {
             exc_type,
-            arg: Some(arg.into()),
+            arg: Some(arg.to_string()),
         }
     }
 
@@ -1369,7 +1366,7 @@ impl From<FormatError> for RunError {
             FormatError::Overflow(_) => ExcType::OverflowError,
             FormatError::InvalidAlignment(_) | FormatError::ValueError(_) => ExcType::ValueError,
         };
-        Self::Exc(SimpleException::new_msg(exc_type, err.to_string()).into())
+        Self::Exc(SimpleException::new_msg(exc_type, err).into())
     }
 }
 
