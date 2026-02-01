@@ -259,12 +259,12 @@ def test_os_call_vs_external_function():
 
 
 # =============================================================================
-# os_callback in run() method
+# os in run() method
 # =============================================================================
 
 
-def test_os_callback_basic():
-    """os_callback receives function name and args, return value is used."""
+def test_os_basic():
+    """os receives function name and args, return value is used."""
     calls: list[Any] = []
 
     def os_handler(function_name: str, args: tuple[Any, ...]) -> bool:
@@ -272,14 +272,14 @@ def test_os_callback_basic():
         return True
 
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/test.txt").exists()')
-    result = m.run(os_callback=os_handler)
+    result = m.run(os=os_handler)
 
     assert result is True
     assert calls == snapshot([('Path.exists', ('/tmp/test.txt',))])
 
 
-def test_os_callback_stat():
-    """os_callback can return stat_result for Path.stat()."""
+def test_os_stat():
+    """os can return stat_result for Path.stat()."""
 
     def os_handler(function_name: str, args: tuple[Any, ...]) -> Any:
         if function_name == 'Path.stat':
@@ -292,13 +292,13 @@ info = Path('/tmp/file.txt').stat()
 (info.st_mode, info.st_size)
 """
     m = pydantic_monty.Monty(code)
-    result = m.run(os_callback=os_handler)
+    result = m.run(os=os_handler)
 
     assert result == snapshot((0o100_644, 1024))
 
 
-def test_os_callback_multiple_calls():
-    """os_callback is called for each OS operation."""
+def test_os_multiple_calls():
+    """os is called for each OS operation."""
     calls: list[Any] = []
 
     def os_handler(function_name: str, args: tuple[Any, ...]) -> bool | str | None:
@@ -321,18 +321,18 @@ else:
 result
 """
     m = pydantic_monty.Monty(code)
-    result = m.run(os_callback=os_handler)
+    result = m.run(os=os_handler)
 
     assert result == snapshot('file contents')
     assert calls == snapshot(['Path.exists', 'Path.read_text'])
 
 
-def test_os_callback_not_provided_error():
-    """Error is raised when OS call is made without os_callback."""
+def test_os_not_provided_error():
+    """Error is raised when OS call is made without os."""
     import pytest
 
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp").exists()')
-    # When no external functions and no os_callback, run() takes the fast path
+    # When no external functions and no os, run() takes the fast path
     # and OS calls raise NotImplementedError inside Monty
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
@@ -369,7 +369,7 @@ def test_os_getenv_with_default_yields_oscall():
 
 
 def test_os_getenv_callback():
-    """os.getenv() with os_callback works correctly."""
+    """os.getenv() with os works correctly."""
 
     def os_handler(function_name: str, args: tuple[Any, ...]) -> str | None:
         if function_name == 'os.getenv':
@@ -379,7 +379,7 @@ def test_os_getenv_callback():
         return None
 
     m = pydantic_monty.Monty('import os; os.getenv("HOME")')
-    result = m.run(os_callback=os_handler)
+    result = m.run(os=os_handler)
     assert result == snapshot('/home/user')
 
 
@@ -394,7 +394,7 @@ def test_os_getenv_callback_missing():
         return None
 
     m = pydantic_monty.Monty('import os; os.getenv("NONEXISTENT")')
-    result = m.run(os_callback=os_handler)
+    result = m.run(os=os_handler)
     assert result is None
 
 
@@ -409,5 +409,5 @@ def test_os_getenv_callback_with_default():
         return None
 
     m = pydantic_monty.Monty('import os; os.getenv("NONEXISTENT", "default_value")')
-    result = m.run(os_callback=os_handler)
+    result = m.run(os=os_handler)
     assert result == snapshot('default_value')

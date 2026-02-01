@@ -1,9 +1,11 @@
+from os import stat_result
 from types import EllipsisType
 from typing import Any, Callable, Literal, final, overload
 
 from typing_extensions import Self
 
-from . import ExternalResult, OsFunction, ResourceLimits, StatResult
+from . import ExternalResult, ResourceLimits
+from .os_access import OsFunction
 
 __all__ = [
     'Monty',
@@ -86,7 +88,7 @@ class Monty:
         limits: ResourceLimits | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-        os_callback: Callable[[OsFunction, tuple[Any, ...]], Any] | None = None,
+        os: Callable[[OsFunction, tuple[Any, ...]], Any] | None = None,
     ) -> Any:
         """
         Execute the code and return the result.
@@ -98,7 +100,7 @@ class Monty:
             limits: Optional resource limits configuration
             external_functions: Dict of external function callbacks (must match names from __init__)
             print_callback: Optional callback for print output
-            os_callback: Optional callback for OS calls.
+            os: Optional callback for OS calls.
                 Called with (function_name, args) where function_name is like 'Path.exists'
                 and args is a tuple of arguments. Must return the appropriate value for the
                 OS function (e.g., bool for exists(), stat_result for stat()).
@@ -108,7 +110,6 @@ class Monty:
 
         Raises:
             MontyRuntimeError: If the code raises an exception during execution
-            RuntimeError: If an OS call is made but no os_callback is provided
         """
 
     def start(
@@ -526,6 +527,9 @@ class Frame:
 # =============================================================================
 # stat_result builders for OS call responses
 # =============================================================================
+
+# technically these methods return something that is compliant with stat_result, not an actual stat_result
+StatResult = stat_result
 
 def file_stat(mode: int, size: int, mtime: float) -> StatResult:
     """Creates a stat_result namedtuple for a regular file.

@@ -125,17 +125,12 @@ impl PyMonty {
 
     /// Executes the code and returns the result.
     ///
-    /// # Arguments
-    /// * `inputs` - Dict of input variable values (must match names from `__init__`)
-    /// * `limits` - Optional `ResourceLimits` configuration
-    /// * `external_functions` - Dict of external function callbacks (must match names from `__init__`)
-    ///
     /// # Returns
     /// The result of the last expression in the code
     ///
     /// # Raises
     /// Various Python exceptions matching what the code would raise
-    #[pyo3(signature = (*, inputs=None, limits=None, external_functions=None, print_callback=None, os_callback=None))]
+    #[pyo3(signature = (*, inputs=None, limits=None, external_functions=None, print_callback=None, os=None))]
     fn run(
         &self,
         py: Python<'_>,
@@ -143,7 +138,7 @@ impl PyMonty {
         limits: Option<&Bound<'_, PyDict>>,
         external_functions: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
-        os_callback: Option<&Bound<'_, PyAny>>,
+        os: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         // Extract input values in the order they were declared
         let input_values = self.extract_input_values(inputs)?;
@@ -155,16 +150,16 @@ impl PyMonty {
         if let Some(limits) = limits {
             let tracker = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
             if let Some(print_writer) = print_writer {
-                self.run_impl(py, input_values, tracker, external_functions, os_callback, print_writer)
+                self.run_impl(py, input_values, tracker, external_functions, os, print_writer)
             } else {
-                self.run_impl(py, input_values, tracker, external_functions, os_callback, StdPrint)
+                self.run_impl(py, input_values, tracker, external_functions, os, StdPrint)
             }
         } else {
             let tracker = PySignalTracker::new(NoLimitTracker);
             if let Some(print_writer) = print_writer {
-                self.run_impl(py, input_values, tracker, external_functions, os_callback, print_writer)
+                self.run_impl(py, input_values, tracker, external_functions, os, print_writer)
             } else {
-                self.run_impl(py, input_values, tracker, external_functions, os_callback, StdPrint)
+                self.run_impl(py, input_values, tracker, external_functions, os, StdPrint)
             }
         }
     }
@@ -344,11 +339,11 @@ impl PyMonty {
         input_values: Vec<MontyObject>,
         tracker: impl ResourceTracker + Send,
         external_functions: Option<&Bound<'_, PyDict>>,
-        os_callback: Option<&Bound<'_, PyAny>>,
+        os: Option<&Bound<'_, PyAny>>,
         mut print_output: impl PrintWriter + Send,
     ) -> PyResult<Py<PyAny>> {
         let dataclass_registry = self.dataclass_registry.bind(py);
-        if self.external_function_names.is_empty() && os_callback.is_none() {
+        if self.external_function_names.is_empty() && os.is_none() {
             let runner = &self.runner;
             return match py.detach(|| runner.run(input_values, tracker, &mut print_output)) {
                 Ok(v) => monty_to_py(py, &v, dataclass_registry),
@@ -391,9 +386,8 @@ impl PyMonty {
                 RunProgress::OsCall {
                     function, args, state, ..
                 } => {
-                    let callback = os_callback.ok_or_else(|| {
-                        PyRuntimeError::new_err(format!("OS call '{function}' but no os_callback provided"))
-                    })?;
+                    let callback =
+                        os.ok_or_else(|| PyRuntimeError::new_err(format!("OS call '{function}' but no os provided")))?;
 
                     // Convert args to Python
                     let py_args: Vec<Py<PyAny>> = args
