@@ -4,7 +4,10 @@ use std::{
     fs,
     panic::{self, AssertUnwindSafe},
     path::Path,
-    sync::mpsc::{self, RecvTimeoutError},
+    sync::{
+        OnceLock,
+        mpsc::{self, RecvTimeoutError},
+    },
     thread,
     time::Duration,
 };
@@ -247,6 +250,36 @@ const ITER_EXT_FUNCTIONS: &[&str] = &[
 /// This is loaded from `scripts/iter_test_methods.py` which is also imported by
 /// `scripts/run_traceback.py` to ensure consistency.
 const ITER_EXT_FUNCTIONS_PYTHON: &str = include_str!("../../../scripts/iter_test_methods.py");
+
+/// Pre-imports Python modules that can cause race conditions during parallel test execution.
+///
+/// Python's import machinery isn't fully thread-safe during module initialization.
+/// When multiple tests try to import modules like `typing` or `dataclasses` simultaneously,
+/// one thread may see a partially initialized module, causing `AttributeError`.
+///
+/// This function must be called once before any parallel test execution to ensure
+/// all relevant modules are fully initialized.
+fn ensure_python_modules_imported() {
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        Python::attach(|py| {
+            // Import modules that are used by iter_test_methods.py and can cause race conditions.
+            // The order matters: import dependencies first.
+            py.import("typing").expect("Failed to import typing");
+            py.import("dataclasses").expect("Failed to import dataclasses");
+            py.import("pathlib").expect("Failed to import pathlib");
+            py.import("stat").expect("Failed to import stat");
+            py.import("asyncio").expect("Failed to import asyncio");
+            py.import("traceback").expect("Failed to import traceback");
+
+            // Also pre-execute the iter_test_methods code once to ensure all its
+            // module-level code (dataclass definitions, monkey-patches) is initialized
+            let ext_funcs_cstr = CString::new(ITER_EXT_FUNCTIONS_PYTHON).expect("Invalid C string");
+            py.run(&ext_funcs_cstr, None, None)
+                .expect("Failed to pre-initialize iter_test_methods");
+        });
+    });
+}
 
 /// Result from dispatching an external function call.
 ///
@@ -1194,6 +1227,10 @@ fn try_run_cpython_test(
     iter_mode: bool,
     async_mode: bool,
 ) -> Result<(), TestFailure> {
+    // Ensure Python modules are imported before parallel tests access them.
+    // This prevents race conditions during module initialization.
+    ensure_python_modules_imported();
+
     // Skip RefCounts tests - only relevant for Monty
     if matches!(expectation, Expectation::RefCounts(_)) {
         return Ok(());
