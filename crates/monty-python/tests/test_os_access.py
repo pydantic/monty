@@ -8,7 +8,7 @@ import pytest
 from inline_snapshot import snapshot
 
 import pydantic_monty
-from pydantic_monty import AbstractOS, dir_stat, file_stat
+from pydantic_monty import AbstractOS, StatResult, dir_stat, file_stat
 
 
 class TestOS(AbstractOS):
@@ -106,11 +106,11 @@ class TestOS(AbstractOS):
                     result.append(child)
         return sorted(result)
 
-    def path_stat(self, path: str) -> pydantic_monty.StatResult:
+    def path_stat(self, path: str) -> StatResult:
         if path in self.files:
-            return file_stat(0o644, len(self.files[path]), 0.0)
+            return StatResult.file_stat(len(self.files[path]), 0o644, 0.0)
         elif path in self.directories:
-            return dir_stat(0o755, 0.0)
+            return StatResult.dir_stat(0o755, 0.0)
         else:
             raise FileNotFoundError(f'No such file or directory: {path}')
 

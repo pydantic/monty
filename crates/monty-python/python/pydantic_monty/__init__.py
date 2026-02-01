@@ -21,7 +21,7 @@ from ._monty import (
     file_stat,
     symlink_stat,
 )
-from .os_access import AbstractFile, AbstractOS, CallbackFile, MemoryFile, OSAccess, OsFunction
+from .os_access import AbstractFile, AbstractOS, CallbackFile, MemoryFile, OSAccess, OsFunction, StatResult
 
 __all__ = (
     'Monty',
@@ -40,6 +40,7 @@ __all__ = (
     'file_stat',
     'dir_stat',
     'symlink_stat',
+    'StatResult',
     'OsFunction',
     'AbstractOS',
     'AbstractFile',

@@ -1,4 +1,3 @@
-from os import stat_result
 from types import EllipsisType
 from typing import Any, Callable, Literal, final, overload
 
@@ -528,10 +527,7 @@ class Frame:
 # stat_result builders for OS call responses
 # =============================================================================
 
-# technically these methods return something that is compliant with stat_result, not an actual stat_result
-StatResult = stat_result
-
-def file_stat(mode: int, size: int, mtime: float) -> StatResult:
+def file_stat(mode: int, size: int, mtime: float) -> tuple[Any, ...]:
     """Creates a stat_result namedtuple for a regular file.
 
     Use this when responding to Path.stat() OS calls.
@@ -546,7 +542,7 @@ def file_stat(mode: int, size: int, mtime: float) -> StatResult:
         st_uid, st_gid, st_size, st_atime, st_mtime, st_ctime)
     """
 
-def dir_stat(mode: int, mtime: float) -> StatResult:
+def dir_stat(mode: int, mtime: float) -> tuple[Any, ...]:
     """Creates a stat_result namedtuple for a directory.
 
     Use this when responding to Path.stat() OS calls on directories.
@@ -559,7 +555,7 @@ def dir_stat(mode: int, mtime: float) -> StatResult:
         A namedtuple with stat_result fields
     """
 
-def symlink_stat(mode: int, mtime: float) -> StatResult:
+def symlink_stat(mode: int, mtime: float) -> tuple[Any, ...]:
     """Creates a stat_result namedtuple for a symbolic link.
 
     Use this when responding to Path.stat() OS calls on symlinks.
