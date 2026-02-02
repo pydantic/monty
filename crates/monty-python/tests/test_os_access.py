@@ -590,6 +590,29 @@ def test_rename_directory_non_empty_target_direct():
     assert str(exc_info.value) == snapshot('[Errno 66] Directory not empty: /test/src -> /test/dst')
 
 
+def test_rename_directory_updates_file_paths_direct():
+    """path_rename updates paths of all files within renamed directory."""
+    file1 = MemoryFile('/old/dir/file1.txt', content='one')
+    file2 = MemoryFile('/old/dir/subdir/file2.txt', content='two')
+    fs = OSAccess([file1, file2])
+
+    # Create target parent and rename the directory
+    fs.path_mkdir('/new', parents=False, exist_ok=False)
+    fs.path_rename('/old/dir', '/new/location')
+
+    # Verify files are accessible at new paths
+    assert fs.path_read_text('/new/location/file1.txt') == 'one'
+    assert fs.path_read_text('/new/location/subdir/file2.txt') == 'two'
+
+    # Verify the AbstractFile objects have updated paths
+    assert file1.path.as_posix() == '/new/location/file1.txt'
+    assert file2.path.as_posix() == '/new/location/subdir/file2.txt'
+
+    # Verify old paths no longer exist
+    assert fs.path_exists('/old/dir') is False
+    assert fs.path_exists('/old/dir/file1.txt') is False
+
+
 # =============================================================================
 # Path Resolution (via Monty)
 # =============================================================================

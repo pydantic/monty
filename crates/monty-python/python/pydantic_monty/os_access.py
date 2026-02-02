@@ -665,7 +665,8 @@ class OSAccess(AbstractOS):
             # and put it in the new directory
             target_parent[target_name] = src_entry
 
-            # TODO(Samuel) here we need to update the path on all files in the src directory to have the right paths!
+            # Update paths for all files in the renamed directory
+            self._update_paths_recursive(src_entry, PurePosixPath(path), PurePosixPath(target))
 
     def path_resolve(self, path: str) -> str:
         # No symlinks in OSAccess, so resolve is same as absolute with normalization
@@ -718,3 +719,18 @@ class OSAccess(AbstractOS):
 
     def _parent_entry(self, path: str) -> Tree | AbstractFile | None:
         return self._get_entry(str(PurePosixPath(path).parent))
+
+    def _update_paths_recursive(self, tree: Tree, old_prefix: PurePosixPath, new_prefix: PurePosixPath) -> None:
+        """Update path attributes for all files in a tree after directory rename.
+
+        When a directory is renamed, the internal tree structure is moved but
+        AbstractFile objects still have their old paths. This method recursively
+        updates all file paths by replacing old_prefix with new_prefix.
+        """
+        for entry in tree.values():
+            if _is_file(entry):
+                # Replace old prefix with new prefix in file path
+                relative = entry.path.relative_to(old_prefix)
+                entry.path = new_prefix / relative
+            elif _is_dir(entry):
+                self._update_paths_recursive(entry, old_prefix, new_prefix)
