@@ -507,11 +507,18 @@ class OSAccess(AbstractOS):
         self,
         files: Sequence[AbstractFile] | None = None,
         environ: dict[str, str] | None = None,
+        *,
+        root_dir: str | PurePosixPath = '/',
     ):
         self.files = list(files) if files else []
         self.environ = environ or {}
         self._tree = {}
+        root_dir = PurePosixPath(root_dir)
+        assert root_dir.is_absolute(), f'Root directory must be absolute, got {root_dir}'
         for file in self.files:
+            if not file.path.is_absolute():
+                file.path = root_dir / file.path
+
             subtree = self._tree
             *dir_parts, name = file.path.parts
             for part in dir_parts:

@@ -8,7 +8,6 @@ This ensures that code written for real filesystems works correctly in the
 sandboxed Monty environment.
 """
 
-import os
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, TypeAlias
@@ -132,22 +131,29 @@ class CPythonRunner(CodeRunner):
     def run_code(self, code: str) -> Any:
         import ast
 
-        # Change to temp directory so relative paths work
-        old_cwd = os.getcwd()
-        os.chdir(self._root)
-        try:
-            namespace: dict[str, Any] = {'Path': Path}
-            exec(code, namespace)
+        # Map absolute paths (starting with /) to the temp directory
+        # This matches OSAccess behavior which normalizes relative paths to /
+        root = self._root
 
-            # Find the last expression result
-            tree = ast.parse(code)
-            if tree.body and isinstance(tree.body[-1], ast.Expr):
-                last_expr = ast.Expression(tree.body[-1].value)
-                compiled = compile(last_expr, '<string>', 'eval')
-                return eval(compiled, namespace)
-            return None
-        finally:
-            os.chdir(old_cwd)
+        def rooted_path(p: str | Path) -> Path:
+            path = Path(p)
+            if path.is_absolute():
+                # Absolute path - strip leading / and map to root
+                return root / str(path).lstrip('/')
+            else:
+                # Relative path - prepend / then map to root
+                return root / p
+
+        namespace: dict[str, Any] = {'Path': rooted_path}
+        exec(code, namespace)
+
+        # Find the last expression result
+        tree = ast.parse(code)
+        if tree.body and isinstance(tree.body[-1], ast.Expr):
+            last_expr = ast.Expression(tree.body[-1].value)
+            compiled = compile(last_expr, '<string>', 'eval')
+            return eval(compiled, namespace)
+        return None
 
     def tree(self) -> TreeDict:
         def build_tree(path: Path) -> TreeDict:
@@ -186,35 +192,35 @@ def runner(request: pytest.FixtureRequest, tmp_path: Path) -> CodeRunner:
 def test_path_exists_file(runner: CodeRunner) -> None:
     """Path.exists() returns True for existing files."""
     runner.write_file('test/file.txt', 'hello')
-    result = runner.run_code("Path('test/file.txt').exists()")
+    result = runner.run_code("Path('/test/file.txt').exists()")
     assert result is True
 
 
 def test_path_exists_directory(runner: CodeRunner) -> None:
     """Path.exists() returns True for directories."""
     runner.write_file('test/subdir/file.txt', 'hello')
-    result = runner.run_code("Path('test/subdir').exists()")
+    result = runner.run_code("Path('/test/subdir').exists()")
     assert result is True
 
 
 def test_path_exists_missing(runner: CodeRunner) -> None:
     """Path.exists() returns False for non-existent paths."""
-    result = runner.run_code("Path('missing/file.txt').exists()")
+    result = runner.run_code("Path('/missing/file.txt').exists()")
     assert result is False
 
 
 def test_path_is_file(runner: CodeRunner) -> None:
     """Path.is_file() returns True for files, False for directories."""
     runner.write_file('test/file.txt', 'hello')
-    assert runner.run_code("Path('test/file.txt').is_file()") is True
-    assert runner.run_code("Path('test').is_file()") is False
+    assert runner.run_code("Path('/test/file.txt').is_file()") is True
+    assert runner.run_code("Path('/test').is_file()") is False
 
 
 def test_path_is_dir(runner: CodeRunner) -> None:
     """Path.is_dir() returns True for directories, False for files."""
     runner.write_file('test/file.txt', 'hello')
-    assert runner.run_code("Path('test').is_dir()") is True
-    assert runner.run_code("Path('test/file.txt').is_dir()") is False
+    assert runner.run_code("Path('/test').is_dir()") is True
+    assert runner.run_code("Path('/test/file.txt').is_dir()") is False
 
 
 # =============================================================================
@@ -225,21 +231,21 @@ def test_path_is_dir(runner: CodeRunner) -> None:
 def test_read_text(runner: CodeRunner) -> None:
     """Path.read_text() returns file content as string."""
     runner.write_file('data/hello.txt', 'hello world')
-    result = runner.run_code("Path('data/hello.txt').read_text()")
+    result = runner.run_code("Path('/data/hello.txt').read_text()")
     assert result == 'hello world'
 
 
 def test_read_bytes(runner: CodeRunner) -> None:
     """Path.read_bytes() returns file content as bytes."""
     runner.write_file('data/binary.bin', b'\x00\x01\x02\x03')
-    result = runner.run_code("Path('data/binary.bin').read_bytes()")
+    result = runner.run_code("Path('/data/binary.bin').read_bytes()")
     assert result == b'\x00\x01\x02\x03'
 
 
 def test_read_text_unicode(runner: CodeRunner) -> None:
     """Path.read_text() handles unicode content."""
     runner.write_file('unicode.txt', 'hello \u2603 world')
-    result = runner.run_code("Path('unicode.txt').read_text()")
+    result = runner.run_code("Path('/unicode.txt').read_text()")
     assert result == 'hello \u2603 world'
 
 
@@ -277,7 +283,7 @@ def test_tree_mixed(runner: CodeRunner) -> None:
 def test_stat_size(runner: CodeRunner) -> None:
     """Path.stat().st_size returns correct file size."""
     runner.write_file('sized.txt', 'hello')
-    result = runner.run_code("Path('sized.txt').stat().st_size")
+    result = runner.run_code("Path('/sized.txt').stat().st_size")
     assert result == 5
 
 
@@ -285,7 +291,7 @@ def test_stat_size_unicode(runner: CodeRunner) -> None:
     """Path.stat().st_size returns byte size for unicode content."""
     # Unicode snowman is 3 bytes in UTF-8
     runner.write_file('unicode.txt', '\u2603')
-    result = runner.run_code("Path('unicode.txt').stat().st_size")
+    result = runner.run_code("Path('/unicode.txt').stat().st_size")
     assert result == 3
 
 
@@ -306,7 +312,7 @@ def test_iterdir(runner: CodeRunner) -> None:
     runner.write_file('dir/subdir/c.txt', 'c')
     # Get filenames - Monty returns strings, CPython returns Paths with full path
     # Use list() to collect, then sort in Python
-    result = runner.run_code("list(Path('dir').iterdir())")
+    result = runner.run_code("list(Path('/dir').iterdir())")
     # Normalize: Monty gives strings, CPython gives Paths
     if isinstance(result[0], str):
         names = result  # Monty: already filenames

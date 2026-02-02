@@ -23,7 +23,10 @@ from pydantic_monty import CallbackFile, MemoryFile, Monty, MontyRuntimeError, O
 def test_non_absolute_path():
     """OSAccess rejects files with relative paths."""
     osa = OSAccess([MemoryFile('relative/path.txt', content='test')])
-    assert osa.files[0].path.as_posix() == 'relative/path.txt'
+    assert osa.files[0].path.as_posix() == '/relative/path.txt'
+
+    osa = OSAccess([MemoryFile('relative/path.txt', content='test')], root_dir='/foo/bar')
+    assert osa.files[0].path.as_posix() == '/foo/bar/relative/path.txt'
 
 
 def test_file_nested_within_file_rejected():
