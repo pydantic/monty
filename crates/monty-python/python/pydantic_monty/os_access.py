@@ -503,14 +503,15 @@ class OSAccess(AbstractOS):
     environ: dict[str, str]
     _tree: Tree
 
-    def __init__(self, files: Sequence[AbstractFile] | None = None, environ: dict[str, str] | None = None):
+    def __init__(
+        self,
+        files: Sequence[AbstractFile] | None = None,
+        environ: dict[str, str] | None = None,
+    ):
         self.files = list(files) if files else []
         self.environ = environ or {}
         self._tree = {}
         for file in self.files:
-            if not file.path.is_absolute():
-                raise ValueError(f'Files must have absolute paths, {file.path} is not absolute')
-
             subtree = self._tree
             *dir_parts, name = file.path.parts
             for part in dir_parts:

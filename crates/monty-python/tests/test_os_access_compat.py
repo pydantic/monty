@@ -8,6 +8,7 @@ This ensures that code written for real filesystems works correctly in the
 sandboxed Monty environment.
 """
 
+import os
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, TypeAlias
@@ -74,8 +75,8 @@ class MontyRunner(CodeRunner):
         self._os_access: OSAccess | None = None
 
     def write_file(self, path: str, content: str | bytes) -> None:
-        abs_path = '/' + path.lstrip('/')
-        self._files.append(MemoryFile(abs_path, content=content))
+        # Use relative paths - OSAccess now supports them
+        self._files.append(MemoryFile(path, content=content))
         # Reset OSAccess so it gets rebuilt with new files
         self._os_access = None
 
@@ -85,25 +86,13 @@ class MontyRunner(CodeRunner):
         return self._os_access
 
     def run_code(self, code: str) -> Any:
-        # Wrap relative paths to absolute for Monty's OSAccess using a function
-        # (Monty doesn't support class definitions, so we can't subclass Path)
-        wrapped_code = f"""
-from pathlib import Path as _OrigPath
-
-def Path(p):
-    path = _OrigPath(p)
-    if not path.is_absolute():
-        return _OrigPath('/' + str(path))
-    return path
-
-{code}
-"""
+        # Prepend pathlib import - OSAccess now handles relative paths
+        wrapped_code = f'from pathlib import Path\n{code}'
         m = Monty(wrapped_code)
         return m.run(os=self._get_os_access())
 
     def tree(self) -> TreeDict:
         result: TreeDict = {}
-        os_access = self._get_os_access()
 
         def add_to_tree(tree: TreeDict, parts: list[str], content: str | bytes) -> None:
             if len(parts) == 1:
@@ -119,28 +108,10 @@ def Path(p):
         for file in self._files:
             if file.deleted:
                 continue
-            path_parts = [p for p in file.path.parts if p != '/']
+            path_parts = list(file.path.parts)
             content = file.read_content()
             add_to_tree(result, path_parts, content)
 
-        # Also include directories created via mkdir
-        # Walk the OSAccess tree to find empty directories
-        def walk_for_empty_dirs(path: str, tree: TreeDict) -> None:
-            try:
-                entries = os_access.path_iterdir(path)
-            except (FileNotFoundError, NotADirectoryError):
-                return
-
-            for entry in entries:
-                entry_path = path.rstrip('/') + '/' + entry
-                if os_access.path_is_dir(entry_path):
-                    if entry not in tree:
-                        tree[entry] = {}
-                    sub: Any = tree[entry]
-                    if isinstance(sub, dict):
-                        walk_for_empty_dirs(entry_path, sub)  # type: ignore[arg-type]
-
-        walk_for_empty_dirs('/', result)
         return result
 
 
@@ -159,30 +130,24 @@ class CPythonRunner(CodeRunner):
             full_path.write_text(content)
 
     def run_code(self, code: str) -> Any:
-        # Create a modified Path class that roots relative paths to tmp_path
-        root = self._root
-
-        class RootedPath(type(Path())):
-            def __new__(cls, *args: str | Path) -> Path:  # type: ignore[override]
-                p = Path(*args)
-                if not p.is_absolute():
-                    return root / p
-                return p
-
-        namespace: dict[str, Any] = {'Path': RootedPath}
-        exec(code, namespace)
-
-        # Find the last expression result
-        # We compile to get the last expression
         import ast
 
-        tree = ast.parse(code)
-        if tree.body and isinstance(tree.body[-1], ast.Expr):
-            # The last statement is an expression, evaluate it
-            last_expr = ast.Expression(tree.body[-1].value)
-            compiled = compile(last_expr, '<string>', 'eval')
-            return eval(compiled, namespace)
-        return None
+        # Change to temp directory so relative paths work
+        old_cwd = os.getcwd()
+        os.chdir(self._root)
+        try:
+            namespace: dict[str, Any] = {'Path': Path}
+            exec(code, namespace)
+
+            # Find the last expression result
+            tree = ast.parse(code)
+            if tree.body and isinstance(tree.body[-1], ast.Expr):
+                last_expr = ast.Expression(tree.body[-1].value)
+                compiled = compile(last_expr, '<string>', 'eval')
+                return eval(compiled, namespace)
+            return None
+        finally:
+            os.chdir(old_cwd)
 
     def tree(self) -> TreeDict:
         def build_tree(path: Path) -> TreeDict:
