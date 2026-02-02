@@ -505,7 +505,7 @@ class OSAccess(AbstractOS):
 
     def __init__(self, files: Sequence[AbstractFile] | None = None, environ: dict[str, str] | None = None):
         self.files = list(files) if files else []
-        self.env = environ or {}
+        self.environ = environ or {}
         self._tree = {}
         for file in self.files:
             if not file.path.is_absolute():
@@ -582,7 +582,8 @@ class OSAccess(AbstractOS):
         parent_entry = self._parent_entry(path)
         if _is_dir(parent_entry):
             parent_entry[PurePosixPath(path).name] = {}
-        if _is_file(parent_entry):
+            return
+        elif _is_file(parent_entry):
             raise NotADirectoryError(f'[Errno 20] Not a directory: {path!r}')
         elif parents:
             subtree = self._tree
@@ -635,7 +636,7 @@ class OSAccess(AbstractOS):
         target_parent = self._parent_entry(target)
         if not _is_dir(target_parent):
             raise FileNotFoundError(f'[Errno 2] No such file or directory: {path} -> {target}')
-        target_entry = self._get_entry(path)
+        target_entry = self._get_entry(target)
 
         if _is_file(src_entry):
             if _is_dir(target_entry):
@@ -644,11 +645,12 @@ class OSAccess(AbstractOS):
                 # need to mark the target as deleted as it'll be overwritten
                 target_entry.delete()
 
-            entry_name = src_entry.path.name
+            src_name = src_entry.path.name
+            target_name = PurePosixPath(target).name
             # remove it from the old directory
-            del parent_dir[entry_name]
-            # an put it in the new directory
-            target_parent[entry_name] = src_entry
+            del parent_dir[src_name]
+            # and put it in the new directory
+            target_parent[target_name] = src_entry
         else:
             assert _is_dir(src_entry), 'src path must be a directory here'
             if _is_file(target_entry):
@@ -656,11 +658,12 @@ class OSAccess(AbstractOS):
             elif _is_dir(target_entry) and target_entry:
                 raise OSError(f'[Errno 66] Directory not empty: {path} -> {target}')
 
-            entry_name = PurePosixPath(target).name
+            src_name = PurePosixPath(path).name
+            target_name = PurePosixPath(target).name
             # remove it from the old directory
-            del parent_dir[entry_name]
-            # an put it in the new directory
-            target_parent[entry_name] = src_entry
+            del parent_dir[src_name]
+            # and put it in the new directory
+            target_parent[target_name] = src_entry
 
             # TODO(Samuel) here we need to update the path on all files in the src directory to have the right paths!
 
