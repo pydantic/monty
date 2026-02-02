@@ -403,16 +403,45 @@ class AbstractOS(ABC):
 
 
 class AbstractFile(Protocol):
+    """Protocol defining the interface for files used with OSAccess.
+
+    This protocol allows custom file implementations to be used with OSAccess.
+    The built-in implementations are:
+
+    - `MemoryFile`: Stores content in memory (recommended for sandboxed execution)
+    - `CallbackFile`: Delegates to custom callbacks (use with caution - see its docstring)
+
+    Security Note:
+        Custom implementations of this protocol run in the host Python environment.
+        The `read_content()` and `write_content()` methods can execute arbitrary code,
+        including accessing the real filesystem. Only use implementations you trust.
+
+        For sandboxed execution where Monty code should not access real files,
+        use `MemoryFile` which stores all content in memory.
+
+    Attributes:
+        path: The virtual path of the file within the OSAccess filesystem.
+        name: The filename (basename) extracted from path.
+        permissions: Unix-style permission bits (e.g., 0o644).
+        deleted: Whether the file has been marked as deleted.
+    """
+
     path: PurePosixPath
     name: str
     permissions: int
     deleted: bool
 
-    def read_content(self) -> str | bytes: ...
+    def read_content(self) -> str | bytes:
+        """Read and return the file's content."""
+        ...
 
-    def write_content(self, content: str | bytes) -> None: ...
+    def write_content(self, content: str | bytes) -> None:
+        """Write content to the file."""
+        ...
 
-    def delete(self) -> None: ...
+    def delete(self) -> None:
+        """Mark the file as deleted."""
+        ...
 
 
 Tree: TypeAlias = 'dict[str, AbstractFile | Tree]'
@@ -427,6 +456,39 @@ def _is_dir(entry: None | AbstractFile | Tree) -> TypeGuard[Tree]:
 
 
 class MemoryFile:
+    """An in-memory virtual file for use with OSAccess.
+
+    This is the recommended file type for sandboxed Monty execution. Content is
+    stored entirely in Python memory with no access to the real filesystem.
+
+    When Monty code reads from this file, it receives the stored content.
+    When Monty code writes to this file, the content attribute is updated.
+
+    Example::
+
+        from pydantic_monty import Monty, OSAccess, MemoryFile
+
+        fs = OSAccess(
+            [
+                MemoryFile('/config.json', '{"debug": true}'),
+                MemoryFile('/data.bin', b'\\x00\\x01\\x02'),
+            ]
+        )
+
+        result = Monty('''
+            from pathlib import Path
+            Path('/config.json').read_text()
+        ''').run(os=fs)
+        # result == '{"debug": true}'
+
+    Attributes:
+        path: The virtual path of the file within the OSAccess filesystem.
+        name: The filename (basename) extracted from path.
+        content: The file content (str for text, bytes for binary).
+        permissions: Unix-style permission bits (default: 0o644).
+        deleted: Whether the file has been marked as deleted.
+    """
+
     path: PurePosixPath
     name: str
     content: str | bytes
@@ -434,6 +496,13 @@ class MemoryFile:
     deleted: bool
 
     def __init__(self, path: str | PurePosixPath, content: str | bytes, *, permissions: int = 0o644) -> None:
+        """Create an in-memory virtual file.
+
+        Args:
+            path: The virtual path for this file in the OSAccess filesystem.
+            content: The initial file content (str for text, bytes for binary).
+            permissions: Unix-style permission bits (default: 0o644).
+        """
         self.path = PurePosixPath(path)
         self.name = self.path.name
         self.content = content
@@ -441,12 +510,15 @@ class MemoryFile:
         self.deleted = False
 
     def read_content(self) -> str | bytes:
+        """Return the stored content."""
         return self.content
 
     def write_content(self, content: str | bytes) -> None:
+        """Update the stored content."""
         self.content = content
 
     def delete(self) -> None:
+        """Mark the file as deleted."""
         self.deleted = True
 
     def __repr__(self) -> str:
@@ -458,6 +530,46 @@ _type_check_memory_file: AbstractFile = MemoryFile('test.txt', '')
 
 
 class CallbackFile:
+    """A virtual file backed by custom read/write callbacks.
+
+    This class allows you to create files whose content is dynamically generated
+    or persisted through custom logic. When Monty code reads or writes to this file,
+    the provided callbacks are invoked.
+
+    Security Warning:
+        The callbacks execute in the host Python environment with FULL access to
+        the real filesystem, network, and all system resources. A callback that
+        accesses the real filesystem effectively breaks the Monty sandbox.
+
+        Example of UNSAFE usage that breaks the sandbox::
+
+            # DON'T DO THIS - allows Monty to read real files!
+            CallbackFile(
+                '/config.txt',
+                read=lambda p: open('/etc/passwd').read(),
+                write=lambda p, c: open('/tmp/out', 'w').write(c),
+            )
+
+        For sandboxed execution, use `MemoryFile` instead, which stores content
+        purely in memory with no external access.
+
+    Safe use cases for CallbackFile:
+        - Returning dynamically computed content (e.g., current timestamp)
+        - Logging writes without persisting them
+        - Validating/transforming content before storage in memory
+        - Integration testing with controlled external resources
+
+    Attributes:
+        path: The virtual path of the file within the OSAccess filesystem.
+        name: The filename (basename) extracted from path.
+        read: Callback invoked when the file is read. Receives the path and
+            must return str or bytes.
+        write: Callback invoked when the file is written. Receives the path
+            and content (str or bytes).
+        permissions: Unix-style permission bits (default: 0o644).
+        deleted: Whether the file has been marked as deleted.
+    """
+
     path: PurePosixPath
     name: str
     read: Callable[[PurePosixPath], str | bytes]
@@ -473,6 +585,14 @@ class CallbackFile:
         *,
         permissions: int = 0o644,
     ) -> None:
+        """Create a callback-backed virtual file.
+
+        Args:
+            path: The virtual path for this file in the OSAccess filesystem.
+            read: Callback to generate content when the file is read.
+            write: Callback to handle content when the file is written.
+            permissions: Unix-style permission bits (default: 0o644).
+        """
         self.path = PurePosixPath(path)
         self.name = self.path.name
         self.read = read
@@ -481,12 +601,15 @@ class CallbackFile:
         self.deleted = False
 
     def read_content(self) -> str | bytes:
+        """Read content by invoking the read callback."""
         return self.read(self.path)
 
     def write_content(self, content: str | bytes) -> None:
+        """Write content by invoking the write callback."""
         self.write(self.path, content)
 
     def delete(self) -> None:
+        """Mark the file as deleted."""
         self.deleted = True
 
     def __repr__(self) -> str:
@@ -497,7 +620,27 @@ _type_check_callback_file: AbstractFile = CallbackFile('test.txt', lambda _: '',
 
 
 class OSAccess(AbstractOS):
-    """High level type for giving Monty access to a pseudo OS."""
+    """In-memory virtual filesystem for sandboxed Monty execution.
+
+    OSAccess provides a complete virtual filesystem that Monty code can interact
+    with via `pathlib.Path` methods. Files exist only in memory (when using
+    `MemoryFile`) and cannot access the real filesystem.
+
+    Security Model:
+        When using `MemoryFile` objects, OSAccess is fully sandboxed:
+
+        - Monty code can only access files explicitly registered with OSAccess
+        - Path traversal (e.g., `../../etc/passwd`) cannot escape to real files
+        - All file content is stored in Python memory, not on disk
+        - Environment variables are isolated to the provided `environ` dict
+
+        However, if `CallbackFile` is used, the callbacks run in the host
+        environment and CAN access real resources. See `CallbackFile` docstring.
+
+    Attributes:
+        files: List of AbstractFile objects registered with this filesystem.
+        environ: Dictionary of environment variables accessible via os.getenv().
+    """
 
     files: list[AbstractFile]
     environ: dict[str, str]
@@ -510,6 +653,22 @@ class OSAccess(AbstractOS):
         *,
         root_dir: str | PurePosixPath = '/',
     ):
+        """Create a virtual filesystem with the given files.
+
+        Args:
+            files: Files to register in the virtual filesystem. Use `MemoryFile`
+                for sandboxed in-memory files, or `CallbackFile` for custom logic
+                (with security caveats - see its docstring).
+            environ: Environment variables accessible to Monty code via os.getenv().
+                Isolated from the real environment.
+            root_dir: Base directory for normalizing relative file paths. Relative
+                paths in files will be prefixed with this. Default is '/'.
+
+        Raises:
+            AssertionError: If root_dir is not an absolute path.
+            ValueError: If a file path conflicts with another file (e.g., trying
+                to create a file inside another file's path).
+        """
         self.files = list(files) if files else []
         self.environ = environ or {}
         self._tree = {}

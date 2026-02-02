@@ -14,6 +14,29 @@ Project goals:
 - **Snapshotting and iteration**: Plan is to allow code to be iteratively executed and snapshotted at each function call
 - Targets the latest stable version of Python, currently Python 3.14
 
+## Important Security Notice
+
+It's ABSOLUTELY CRITICAL that there's no way for code run in a Monty sandbox to access the host filesystem, or environment or to in any way "escape the sandbox".
+
+**Monty will be used to run untrusted, potentially malicious code.**
+
+Make sure there's no risk of this, either in the implementation, or in the public API that makes it more like that a developer using the pydantic_monty package might make such a mistake.
+
+Possible security risks to consider:
+* filesystem access
+* path traversal to access files the users did not intend to expose to the monty sandbox
+* memory errors - use of unsafe memory operations
+* excessive memory usage - evading monty's resource limits
+* infinite loops - evading monty's resource limits
+* network access - sockets, HTTP requests
+* subprocess/shell execution - os.system, subprocess, etc.
+* import system abuse - importing modules with side effects or accessing `__import__`
+* external function/callback misuse - callbacks run in host environment
+* deserialization attacks - loading untrusted serialized Monty/snapshot data
+* regex/string DoS - catastrophic backtracking or operations bypassing limits
+* information leakage via timing or error messages
+* Python/Javascript/Rust APIs that accidentally allow developers to expose their host to monty code
+
 ## Bytecode VM Architecture
 
 Monty is implemented as a bytecode VM, same as CPython.
