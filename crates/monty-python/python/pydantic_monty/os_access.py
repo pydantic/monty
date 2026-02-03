@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any, Callable, Literal, NamedTuple, Protocol, TypeAlias, TypeGuard
-
-from typing_extensions import Sequence
+from typing import TYPE_CHECKING, Any, Callable, Literal, NamedTuple, Protocol, Sequence, TypeAlias, TypeGuard
 
 if TYPE_CHECKING:
     # Self is 3.11+, hence this
@@ -682,7 +680,8 @@ class OSAccess(AbstractOS):
         """
         self.files = list(files) if files else []
         self.environ = environ or {}
-        self._tree = {}
+        # Initialize tree with root directory - / is always present
+        self._tree = {'/': {}}
         root_dir = PurePosixPath(root_dir)
         assert root_dir.is_absolute(), f'Root directory must be absolute, got {root_dir}'
         for file in self.files:

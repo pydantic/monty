@@ -85,6 +85,12 @@ pub enum ExcType {
     OSError,
     /// Subclass of OSError - for when a file or directory cannot be found.
     FileNotFoundError,
+    /// Subclass of OSError - for when a file already exists.
+    FileExistsError,
+    /// Subclass of OSError - for when a path is a directory but a file was expected.
+    IsADirectoryError,
+    /// Subclass of OSError - for when a path is not a directory but one was expected.
+    NotADirectoryError,
 
     // --- Standalone exception types ---
     AssertionError,
@@ -129,8 +135,11 @@ impl ExcType {
             Self::ValueError => matches!(self, Self::UnicodeDecodeError),
             // ImportError catches ModuleNotFoundError
             Self::ImportError => matches!(self, Self::ModuleNotFoundError),
-            // OSError catches FileNotFoundError
-            Self::OSError => matches!(self, Self::FileNotFoundError),
+            // OSError catches FileNotFoundError, FileExistsError, IsADirectoryError, NotADirectoryError
+            Self::OSError => matches!(
+                self,
+                Self::FileNotFoundError | Self::FileExistsError | Self::IsADirectoryError | Self::NotADirectoryError
+            ),
             // All other types only match exactly (handled by self == handler_type above)
             _ => false,
         }

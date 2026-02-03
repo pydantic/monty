@@ -319,3 +319,344 @@ def test_iterdir(runner: CodeRunner) -> None:
     else:
         names = [p.name for p in result]  # CPython: extract name from Path
     assert sorted(names) == ['a.txt', 'b.txt', 'subdir']
+
+
+# =============================================================================
+# Error Cases - FileNotFoundError
+# =============================================================================
+
+
+def test_read_text_file_not_found(runner: CodeRunner) -> None:
+    """Path.read_text() raises FileNotFoundError for missing files."""
+    result = runner.run_code("""
+result = None
+try:
+    Path('/missing.txt').read_text()
+except FileNotFoundError as e:
+    result = type(e).__name__
+result
+""")
+    assert result == 'FileNotFoundError'
+
+
+def test_read_bytes_file_not_found(runner: CodeRunner) -> None:
+    """Path.read_bytes() raises FileNotFoundError for missing files."""
+    result = runner.run_code("""
+result = None
+try:
+    Path('/missing.bin').read_bytes()
+except FileNotFoundError as e:
+    result = type(e).__name__
+result
+""")
+    assert result == 'FileNotFoundError'
+
+
+def test_stat_file_not_found(runner: CodeRunner) -> None:
+    """Path.stat() raises FileNotFoundError for missing files."""
+    result = runner.run_code("""
+result = None
+try:
+    Path('/missing.txt').stat()
+except FileNotFoundError as e:
+    result = type(e).__name__
+result
+""")
+    assert result == 'FileNotFoundError'
+
+
+def test_iterdir_not_found(runner: CodeRunner) -> None:
+    """Path.iterdir() raises FileNotFoundError for missing directories."""
+    result = runner.run_code("""
+result = None
+try:
+    list(Path('/missing_dir').iterdir())
+except FileNotFoundError as e:
+    result = type(e).__name__
+result
+""")
+    assert result == 'FileNotFoundError'
+
+
+# =============================================================================
+# Error Cases - IsADirectoryError
+# =============================================================================
+
+
+def test_read_text_is_directory(runner: CodeRunner) -> None:
+    """Path.read_text() raises IsADirectoryError when path is a directory."""
+    runner.write_file('mydir/file.txt', 'content')
+    result = runner.run_code("""
+result = None
+try:
+    Path('/mydir').read_text()
+except IsADirectoryError as e:
+    result = type(e).__name__
+result
+""")
+    assert result == 'IsADirectoryError'
+
+
+def test_read_bytes_is_directory(runner: CodeRunner) -> None:
+    """Path.read_bytes() raises IsADirectoryError when path is a directory."""
+    runner.write_file('mydir/file.txt', 'content')
+    result = runner.run_code("""
+result = None
+try:
+    Path('/mydir').read_bytes()
+except IsADirectoryError as e:
+    result = type(e).__name__
+result
+""")
+    assert result == 'IsADirectoryError'
+
+
+# =============================================================================
+# Error Cases - NotADirectoryError
+# =============================================================================
+
+
+def test_iterdir_not_a_directory(runner: CodeRunner) -> None:
+    """Path.iterdir() raises NotADirectoryError when path is a file."""
+    runner.write_file('file.txt', 'content')
+    result = runner.run_code("""
+result = None
+try:
+    list(Path('/file.txt').iterdir())
+except NotADirectoryError as e:
+    result = type(e).__name__
+result
+""")
+    assert result == 'NotADirectoryError'
+
+
+# =============================================================================
+# Error Cases - FileExistsError
+# =============================================================================
+
+
+def test_mkdir_file_exists(runner: CodeRunner) -> None:
+    """Path.mkdir() raises FileExistsError when directory already exists."""
+    runner.write_file('existing_dir/file.txt', 'content')
+    result = runner.run_code("""
+result = None
+try:
+    Path('/existing_dir').mkdir()
+except FileExistsError as e:
+    result = type(e).__name__
+result
+""")
+    assert result == 'FileExistsError'
+
+
+def test_mkdir_file_at_path(runner: CodeRunner) -> None:
+    """Path.mkdir() raises FileExistsError when a file exists at the path."""
+    runner.write_file('somefile.txt', 'content')
+    result = runner.run_code("""
+result = None
+try:
+    Path('/somefile.txt').mkdir()
+except FileExistsError as e:
+    result = type(e).__name__
+result
+""")
+    assert result == 'FileExistsError'
+
+
+def test_mkdir_exist_ok_no_error(runner: CodeRunner) -> None:
+    """Path.mkdir(exist_ok=True) doesn't raise when directory exists."""
+    runner.write_file('existing_dir/file.txt', 'content')
+    result = runner.run_code("""
+Path('/existing_dir').mkdir(exist_ok=True)
+'no error'
+""")
+    assert result == 'no error'
+
+
+# =============================================================================
+# Error Cases - mkdir parent not found
+# =============================================================================
+
+
+def test_mkdir_parent_not_found(runner: CodeRunner) -> None:
+    """Path.mkdir() raises FileNotFoundError when parent doesn't exist."""
+    result = runner.run_code("""
+result = None
+try:
+    Path('/no/parent/here').mkdir()
+except FileNotFoundError as e:
+    result = type(e).__name__
+result
+""")
+    assert result == 'FileNotFoundError'
+
+
+def test_mkdir_parents_creates_all(runner: CodeRunner) -> None:
+    """Path.mkdir(parents=True) creates all parent directories."""
+    result = runner.run_code("""
+Path('/a/b/c/d').mkdir(parents=True)
+Path('/a/b/c/d').is_dir()
+""")
+    assert result is True
+
+
+# =============================================================================
+# Error Cases - unlink
+# =============================================================================
+
+
+def test_unlink_file_not_found(runner: CodeRunner) -> None:
+    """Path.unlink() raises FileNotFoundError for missing files."""
+    result = runner.run_code("""
+result = None
+try:
+    Path('/missing.txt').unlink()
+except FileNotFoundError as e:
+    result = type(e).__name__
+result
+""")
+    assert result == 'FileNotFoundError'
+
+
+def test_unlink_is_directory(runner: CodeRunner) -> None:
+    """Path.unlink() raises an error when path is a directory.
+
+    Note: On macOS, CPython raises PermissionError for unlink() on directories,
+    while Linux raises IsADirectoryError. OSAccess consistently raises IsADirectoryError.
+    """
+    runner.write_file('mydir/file.txt', 'content')
+    # Use OSError as catch-all since PermissionError and IsADirectoryError are subclasses
+    result = runner.run_code("""
+result = None
+try:
+    Path('/mydir').unlink()
+except OSError as e:
+    result = type(e).__name__
+result
+""")
+    # OSAccess raises IsADirectoryError, CPython on macOS raises PermissionError
+    assert result in ('IsADirectoryError', 'PermissionError')
+
+
+# =============================================================================
+# Error Cases - rmdir
+# =============================================================================
+
+
+def test_rmdir_not_found(runner: CodeRunner) -> None:
+    """Path.rmdir() raises FileNotFoundError for missing directories."""
+    result = runner.run_code("""
+result = None
+try:
+    Path('/missing_dir').rmdir()
+except FileNotFoundError as e:
+    result = type(e).__name__
+result
+""")
+    assert result == 'FileNotFoundError'
+
+
+def test_rmdir_not_a_directory(runner: CodeRunner) -> None:
+    """Path.rmdir() raises NotADirectoryError when path is a file."""
+    runner.write_file('file.txt', 'content')
+    result = runner.run_code("""
+result = None
+try:
+    Path('/file.txt').rmdir()
+except NotADirectoryError as e:
+    result = type(e).__name__
+result
+""")
+    assert result == 'NotADirectoryError'
+
+
+def test_rmdir_not_empty(runner: CodeRunner) -> None:
+    """Path.rmdir() raises OSError when directory is not empty."""
+    runner.write_file('nonempty/file.txt', 'content')
+    result = runner.run_code("""
+result = None
+try:
+    Path('/nonempty').rmdir()
+except OSError as e:
+    result = type(e).__name__
+result
+""")
+    assert result == 'OSError'
+
+
+# =============================================================================
+# Error Cases - rename
+# =============================================================================
+
+
+def test_rename_source_not_found(runner: CodeRunner) -> None:
+    """Path.rename() raises FileNotFoundError when source doesn't exist."""
+    result = runner.run_code("""
+result = None
+try:
+    Path('/missing.txt').rename(Path('/new.txt'))
+except FileNotFoundError as e:
+    result = type(e).__name__
+result
+""")
+    assert result == 'FileNotFoundError'
+
+
+# =============================================================================
+# Write Operations
+# =============================================================================
+
+
+def test_write_text_new_file(runner: CodeRunner) -> None:
+    """Path.write_text() creates a new file and returns character count."""
+    result = runner.run_code("""
+count = Path('/new_file.txt').write_text('hello world')
+(count, Path('/new_file.txt').read_text())
+""")
+    assert result == (11, 'hello world')
+
+
+def test_write_text_overwrite(runner: CodeRunner) -> None:
+    """Path.write_text() overwrites existing files."""
+    runner.write_file('existing.txt', 'old content')
+    result = runner.run_code("""
+Path('/existing.txt').write_text('new content')
+Path('/existing.txt').read_text()
+""")
+    assert result == 'new content'
+
+
+def test_write_bytes_new_file(runner: CodeRunner) -> None:
+    """Path.write_bytes() creates a new file and returns byte count."""
+    result = runner.run_code("""
+count = Path('/new_binary.bin').write_bytes(b'\\x00\\x01\\x02')
+(count, Path('/new_binary.bin').read_bytes())
+""")
+    assert result == (3, b'\x00\x01\x02')
+
+
+def test_write_text_parent_not_found(runner: CodeRunner) -> None:
+    """Path.write_text() raises FileNotFoundError when parent doesn't exist."""
+    result = runner.run_code("""
+result = None
+try:
+    Path('/no/parent/file.txt').write_text('content')
+except FileNotFoundError as e:
+    result = type(e).__name__
+result
+""")
+    assert result == 'FileNotFoundError'
+
+
+def test_write_text_to_directory(runner: CodeRunner) -> None:
+    """Path.write_text() raises IsADirectoryError when writing to a directory."""
+    runner.write_file('mydir/file.txt', 'content')
+    result = runner.run_code("""
+result = None
+try:
+    Path('/mydir').write_text('content')
+except IsADirectoryError as e:
+    result = type(e).__name__
+result
+""")
+    assert result == 'IsADirectoryError'

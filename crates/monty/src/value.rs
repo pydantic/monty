@@ -1805,6 +1805,15 @@ impl Value {
                     Err(ExcType::attribute_error(type_name, interns.get_str(name_id)))
                 }
             }
+        } else if let Self::Builtin(Builtins::Type(t)) = self {
+            // Handle type object attributes like __name__
+            if name_id == StaticStrings::DunderName {
+                let name_str = t.to_string();
+                let str_id = heap.allocate(HeapData::Str(Str::from(name_str)))?;
+                Ok(Self::Ref(str_id))
+            } else {
+                Err(ExcType::attribute_error(Type::Type, interns.get_str(name_id)))
+            }
         } else {
             let type_name = self.py_type(heap);
             Err(ExcType::attribute_error(type_name, interns.get_str(name_id)))

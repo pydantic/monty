@@ -324,6 +324,11 @@ pub enum StaticStrings {
     Args,
 
     // ==========================
+    // Type attributes
+    #[strum(serialize = "__name__")]
+    DunderName,
+
+    // ==========================
     // pathlib module strings
     #[strum(serialize = "pathlib")]
     Pathlib,

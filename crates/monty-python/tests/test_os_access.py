@@ -206,7 +206,7 @@ def test_read_text_is_a_directory():
     with pytest.raises(MontyRuntimeError) as exc_info:
         Monty('from pathlib import Path; Path("/test/subdir").read_text()').run(os=fs)
     # Monty reports this as OSError, not IsADirectoryError
-    assert str(exc_info.value) == snapshot("OSError: [Errno 21] Is a directory: '/test/subdir'")
+    assert str(exc_info.value) == snapshot("IsADirectoryError: [Errno 21] Is a directory: '/test/subdir'")
 
 
 def test_read_bytes_is_a_directory():
@@ -215,7 +215,7 @@ def test_read_bytes_is_a_directory():
     with pytest.raises(MontyRuntimeError) as exc_info:
         Monty('from pathlib import Path; Path("/test/subdir").read_bytes()').run(os=fs)
     # Monty reports this as OSError, not IsADirectoryError
-    assert str(exc_info.value) == snapshot("OSError: [Errno 21] Is a directory: '/test/subdir'")
+    assert str(exc_info.value) == snapshot("IsADirectoryError: [Errno 21] Is a directory: '/test/subdir'")
 
 
 # =============================================================================
@@ -280,7 +280,7 @@ def test_write_text_to_directory_via_monty():
     fs = OSAccess([MemoryFile('/test/subdir/file.txt', content='hello')])
     with pytest.raises(MontyRuntimeError) as exc_info:
         Monty("from pathlib import Path; Path('/test/subdir').write_text('test')").run(os=fs)
-    assert str(exc_info.value) == snapshot("OSError: [Errno 21] Is a directory: '/test/subdir'")
+    assert str(exc_info.value) == snapshot("IsADirectoryError: [Errno 21] Is a directory: '/test/subdir'")
 
 
 # =============================================================================
@@ -392,7 +392,7 @@ def test_mkdir_exist_ok_false_via_monty():
     with pytest.raises(MontyRuntimeError) as exc_info:
         Monty("from pathlib import Path; Path('/test/subdir').mkdir()").run(os=fs)
     # Monty maps FileExistsError to OSError
-    assert str(exc_info.value) == snapshot("OSError: [Errno 17] File exists: '/test/subdir'")
+    assert str(exc_info.value) == snapshot("FileExistsError: [Errno 17] File exists: '/test/subdir'")
 
 
 def test_mkdir_parent_not_exists_via_monty():
@@ -515,7 +515,7 @@ def test_rmdir_file_not_directory_via_monty():
 
     with pytest.raises(MontyRuntimeError) as exc_info:
         Monty("from pathlib import Path; Path('/test/file.txt').rmdir()").run(os=fs)
-    assert str(exc_info.value) == snapshot("OSError: [Errno 20] Not a directory: '/test/file.txt'")
+    assert str(exc_info.value) == snapshot("NotADirectoryError: [Errno 20] Not a directory: '/test/file.txt'")
 
 
 # =============================================================================
@@ -640,7 +640,7 @@ def test_unlink_is_directory_via_monty():
 
     with pytest.raises(MontyRuntimeError) as exc_info:
         Monty("from pathlib import Path; Path('/test/subdir').unlink()").run(os=fs)
-    assert str(exc_info.value) == snapshot("OSError: [Errno 21] Is a directory: '/test/subdir'")
+    assert str(exc_info.value) == snapshot("IsADirectoryError: [Errno 21] Is a directory: '/test/subdir'")
 
 
 # =============================================================================
