@@ -382,16 +382,29 @@ The JavaScript package provides Node.js bindings for the Monty interpreter via n
 
 ### Current API
 
-The package currently exposes a single function:
+The package exposes:
+
+- `Monty` class - Parse and execute Python code with inputs, external functions, and resource limits
+- `MontySnapshot` / `MontyComplete` - For iterative execution with `start()` / `resume()`
+- `runMontyAsync()` - Helper for async external functions
+- `MontySyntaxError` / `MontyRuntimeError` / `MontyTypingError` - Error classes
 
 ```ts
-function run(code: string): RunResult
+import { Monty, MontySnapshot, runMontyAsync } from '@pydantic/monty'
 
-interface RunResult {
-  output: string  // Captured print() output
-  result: string  // Debug representation of final value
+// Basic execution
+const m = new Monty('x + 1', { inputs: ['x'] })
+const result = m.run({ inputs: { x: 10 } }) // returns 11
+
+// Iterative execution for external functions
+const m2 = new Monty('fetch(url)', { inputs: ['url'], externalFunctions: ['fetch'] })
+let progress = m2.start({ inputs: { url: 'https://...' } })
+if (progress instanceof MontySnapshot) {
+  progress = progress.resume({ returnValue: 'response data' })
 }
 ```
+
+See `crates/monty-js/README.md` for full API documentation.
 
 ### Building and Testing
 
@@ -428,14 +441,4 @@ npm test
 
 - Tests use [ava](https://github.com/avajs/ava) and live in `crates/monty-js/__test__/`
 - Tests are written in TypeScript
-- Follow the existing test style in `index.spec.ts`
-
-### Future Work
-
-The JS bindings currently only expose a simple `run()` function. Future work may expose:
-- Input variables
-- Resource limits
-- External functions
-- Snapshot/resume (iterative execution)
-
-These features mirror the Python package API and are implemented in the Rust core.
+- Follow the existing test style in the `__test__/` directory
