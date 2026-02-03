@@ -7,6 +7,12 @@ on:
     tags:
       - "**"
   pull_request: {}
+  workflow_dispatch:
+    inputs:
+      run_release:
+        description: 'Run release jobs (for manual tag releases)'
+        type: boolean
+        default: false
 
 env:
   COLUMNS: 150
@@ -181,7 +187,7 @@ jobs:
   build:
     name: build on ${{ matrix.os }} (${{ matrix.target }} - ${{ matrix.manylinux || 'auto' }})
     # only run on push to main, on tags, or if 'Full Build' label is present
-    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build')
+    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build') || (github.event_name == 'workflow_dispatch' && inputs.run_release)
     strategy:
       fail-fast: false
       matrix:
@@ -243,7 +249,7 @@ jobs:
   build-pgo:
     name: build pgo on ${{ matrix.os }}
     # only run on push to main, on tags, or if 'Full Build' label is present
-    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build')
+    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build') || (github.event_name == 'workflow_dispatch' && inputs.run_release)
     strategy:
       fail-fast: false
       matrix:
@@ -379,7 +385,7 @@ jobs:
   release-python:
     name: release to PyPI
     needs: [check, inspect-python-assets, test-builds-arch, test-builds-os]
-    if: success() && startsWith(github.ref, 'refs/tags/')
+    if: success() && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.run_release))
     runs-on: ubuntu-latest
 
     environment:
@@ -415,7 +421,7 @@ jobs:
     name: build JS - ${{ matrix.settings.target }} - node@22
     runs-on: ${{ matrix.settings.host }}
     # only run on push to main, on tags, or if 'Full Build' label is present
-    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build')
+    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build') || (github.event_name == 'workflow_dispatch' && inputs.run_release)
 
     strategy:
       fail-fast: false
