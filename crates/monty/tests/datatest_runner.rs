@@ -507,7 +507,12 @@ fn get_virtual_dir_entries(path: &str) -> Option<Vec<&'static str>> {
 /// Raises `FileNotFoundError` for missing files/directories.
 #[expect(clippy::cast_possible_wrap)] // Virtual file sizes are tiny, no wrap possible
 fn dispatch_os_call(function: OsFunction, args: &[MontyObject]) -> ExternalResult {
-    let path = String::try_from(&args[0]).expect("OS call: first arg must be path string");
+    // Extract path from MontyObject::Path (or String for backwards compatibility)
+    let path = match &args[0] {
+        MontyObject::Path(p) => p.clone(),
+        MontyObject::String(s) => s.clone(),
+        other => panic!("OS call: first arg must be path, got {other:?}"),
+    };
 
     match function {
         OsFunction::Exists => {

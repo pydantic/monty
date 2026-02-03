@@ -168,7 +168,7 @@ class AbstractOS(ABC):
                 return self.getenv(*args)
 
     @abstractmethod
-    def path_exists(self, path: str) -> bool:
+    def path_exists(self, path: PurePosixPath) -> bool:
         """Check if a path exists.
 
         Args:
@@ -180,7 +180,7 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_is_file(self, path: str) -> bool:
+    def path_is_file(self, path: PurePosixPath) -> bool:
         """Check if a path is a regular file.
 
         Args:
@@ -192,7 +192,7 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_is_dir(self, path: str) -> bool:
+    def path_is_dir(self, path: PurePosixPath) -> bool:
         """Check if a path is a directory.
 
         Args:
@@ -204,7 +204,7 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_is_symlink(self, path: str) -> bool:
+    def path_is_symlink(self, path: PurePosixPath) -> bool:
         """Check if a path is a symbolic link.
 
         Args:
@@ -216,7 +216,7 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_read_text(self, path: str) -> str:
+    def path_read_text(self, path: PurePosixPath) -> str:
         """Read the contents of a file as text.
 
         Args:
@@ -232,7 +232,7 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_read_bytes(self, path: str) -> bytes:
+    def path_read_bytes(self, path: PurePosixPath) -> bytes:
         """Read the contents of a file as bytes.
 
         Args:
@@ -248,7 +248,7 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_write_text(self, path: str, data: str) -> None:
+    def path_write_text(self, path: PurePosixPath, data: str) -> None:
         """Write text data to a file.
 
         Args:
@@ -262,7 +262,7 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_write_bytes(self, path: str, data: bytes) -> None:
+    def path_write_bytes(self, path: PurePosixPath, data: bytes) -> None:
         """Write binary data to a file.
 
         Args:
@@ -276,7 +276,7 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_mkdir(self, path: str, parents: bool, exist_ok: bool) -> None:
+    def path_mkdir(self, path: PurePosixPath, parents: bool, exist_ok: bool) -> None:
         """Create a directory.
 
         Args:
@@ -291,7 +291,7 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_unlink(self, path: str) -> None:
+    def path_unlink(self, path: PurePosixPath) -> None:
         """Remove a file.
 
         Args:
@@ -304,7 +304,7 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_rmdir(self, path: str) -> None:
+    def path_rmdir(self, path: PurePosixPath) -> None:
         """Remove an empty directory.
 
         Args:
@@ -318,7 +318,7 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_iterdir(self, path: str) -> list[PurePosixPath]:
+    def path_iterdir(self, path: PurePosixPath) -> list[PurePosixPath]:
         """List the contents of a directory.
 
         Args:
@@ -334,7 +334,7 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_stat(self, path: str) -> StatResult:
+    def path_stat(self, path: PurePosixPath) -> StatResult:
         """Get file status information.
 
         Use file_stat(), dir_stat(), or symlink_stat() helpers to create the return value.
@@ -351,7 +351,7 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_rename(self, path: str, target: str) -> None:
+    def path_rename(self, path: PurePosixPath, target: PurePosixPath) -> None:
         """Rename a file or directory.
 
         Args:
@@ -365,7 +365,7 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_resolve(self, path: str) -> str:
+    def path_resolve(self, path: PurePosixPath) -> str:
         """Resolve a path to an absolute path, resolving any symlinks.
 
         Args:
@@ -377,7 +377,7 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_absolute(self, path: str) -> str:
+    def path_absolute(self, path: PurePosixPath) -> str:
         """Convert a path to an absolute path without resolving symlinks.
 
         Args:
@@ -692,40 +692,40 @@ class OSAccess(AbstractOS):
     def __repr__(self) -> str:
         return f'OSAccess(files={self.files}, environ={self.environ})'
 
-    def path_exists(self, path: str) -> bool:
+    def path_exists(self, path: PurePosixPath) -> bool:
         return self._get_entry(path) is not None
 
-    def path_is_file(self, path: str) -> bool:
+    def path_is_file(self, path: PurePosixPath) -> bool:
         return _is_file(self._get_entry(path))
 
-    def path_is_dir(self, path: str) -> bool:
+    def path_is_dir(self, path: PurePosixPath) -> bool:
         return _is_dir(self._get_entry(path))
 
-    def path_is_symlink(self, path: str) -> bool:
+    def path_is_symlink(self, path: PurePosixPath) -> bool:
         return False
 
-    def path_read_text(self, path: str) -> str:
+    def path_read_text(self, path: PurePosixPath) -> str:
         file = self._get_file(path)
         content = file.read_content()
         return content if isinstance(content, str) else content.decode()
 
-    def path_read_bytes(self, path: str) -> bytes:
+    def path_read_bytes(self, path: PurePosixPath) -> bytes:
         file = self._get_file(path)
         content = file.read_content()
         return content if isinstance(content, bytes) else content.encode()
 
-    def path_write_text(self, path: str, data: str) -> None:
+    def path_write_text(self, path: PurePosixPath, data: str) -> None:
         self._write_file(path, data)
 
-    def path_write_bytes(self, path: str, data: bytes) -> None:
+    def path_write_bytes(self, path: PurePosixPath, data: bytes) -> None:
         self._write_file(path, data)
 
-    def _write_file(self, path: str, data: bytes | str) -> None:
+    def _write_file(self, path: PurePosixPath, data: bytes | str) -> None:
         entry = self._get_entry(path)
         if _is_file(entry):
             entry.write_content(data)
         elif _is_dir(entry):
-            raise IsADirectoryError(f'[Errno 21] Is a directory: {path!r}')
+            raise IsADirectoryError(f'[Errno 21] Is a directory: {str(path)!r}')
 
         # write a new file if the parent directory exists
         parent_entry = self._parent_entry(path)
@@ -734,24 +734,24 @@ class OSAccess(AbstractOS):
             parent_entry[file_path.name] = new_file = MemoryFile(file_path, data)
             self.files.append(new_file)
         else:
-            raise FileNotFoundError(f'[Errno 2] No such file or directory: {path!r}')
+            raise FileNotFoundError(f'[Errno 2] No such file or directory: {str(path)!r}')
 
-    def path_mkdir(self, path: str, parents: bool, exist_ok: bool) -> None:
+    def path_mkdir(self, path: PurePosixPath, parents: bool, exist_ok: bool) -> None:
         entry = self._get_entry(path)
         if _is_file(entry):
-            raise FileExistsError(f'[Errno 17] File exists: {path!r}')
+            raise FileExistsError(f'[Errno 17] File exists: {str(path)!r}')
         elif _is_dir(entry):
             if exist_ok:
                 return
             else:
-                raise FileExistsError(f'[Errno 17] File exists: {path!r}')
+                raise FileExistsError(f'[Errno 17] File exists: {str(path)!r}')
 
         parent_entry = self._parent_entry(path)
         if _is_dir(parent_entry):
             parent_entry[PurePosixPath(path).name] = {}
             return
         elif _is_file(parent_entry):
-            raise NotADirectoryError(f'[Errno 20] Not a directory: {path!r}')
+            raise NotADirectoryError(f'[Errno 20] Not a directory: {str(path)!r}')
         elif parents:
             subtree = self._tree
             for part in PurePosixPath(path).parts:
@@ -759,11 +759,11 @@ class OSAccess(AbstractOS):
                 if _is_dir(entry):
                     subtree = entry
                 else:
-                    raise NotADirectoryError(f'[Errno 20] Not a directory: {path!r}')
+                    raise NotADirectoryError(f'[Errno 20] Not a directory: {str(path)!r}')
         else:
-            raise FileNotFoundError(f'[Errno 2] No such file or directory: {path!r}')
+            raise FileNotFoundError(f'[Errno 2] No such file or directory: {str(path)!r}')
 
-    def path_unlink(self, path: str) -> None:
+    def path_unlink(self, path: PurePosixPath) -> None:
         file = self._get_file(path)
         file.delete()
         # remove from parent
@@ -771,21 +771,21 @@ class OSAccess(AbstractOS):
         assert _is_dir(parent_dir), f'Expected parent of a file to always be a directory, got {parent_dir}'
         del parent_dir[file.name]
 
-    def path_rmdir(self, path: str) -> None:
+    def path_rmdir(self, path: PurePosixPath) -> None:
         dir = self._get_dir(path)
         if dir:
-            raise OSError(f'[Errno 39] Directory not empty: {path!r}')
+            raise OSError(f'[Errno 39] Directory not empty: {str(path)!r}')
         # remove from parent
         parent_dir = self._parent_entry(path)
         assert _is_dir(parent_dir), f'Expected parent of a file to always be a directory, got {parent_dir}'
         del parent_dir[PurePosixPath(path).name]
 
-    def path_iterdir(self, path: str) -> list[PurePosixPath]:
+    def path_iterdir(self, path: PurePosixPath) -> list[PurePosixPath]:
         # Return full paths as PurePosixPath objects (will be converted to MontyObject::Path)
         dir_path = PurePosixPath(path)
         return [dir_path / name for name in self._get_dir(path).keys()]
 
-    def path_stat(self, path: str) -> StatResult:
+    def path_stat(self, path: PurePosixPath) -> StatResult:
         entry = self._get_entry_exists(path)
         if _is_file(entry):
             content = entry.read_content()
@@ -794,22 +794,22 @@ class OSAccess(AbstractOS):
         else:
             return StatResult.dir_stat()
 
-    def path_rename(self, path: str, target: str) -> None:
+    def path_rename(self, path: PurePosixPath, target: PurePosixPath) -> None:
         src_entry = self._get_entry(path)
         if src_entry is None:
-            raise FileNotFoundError(f'[Errno 2] No such file or directory: {path} -> {target}')
+            raise FileNotFoundError(f'[Errno 2] No such file or directory: {str(path)!r} -> {str(target)!r}')
 
         parent_dir = self._parent_entry(path)
         assert _is_dir(parent_dir), f'Expected parent of a file to always be a directory, got {parent_dir}'
 
         target_parent = self._parent_entry(target)
         if not _is_dir(target_parent):
-            raise FileNotFoundError(f'[Errno 2] No such file or directory: {path} -> {target}')
+            raise FileNotFoundError(f'[Errno 2] No such file or directory: {str(path)!r} -> {str(target)!r}')
         target_entry = self._get_entry(target)
 
         if _is_file(src_entry):
             if _is_dir(target_entry):
-                raise IsADirectoryError(f'[Errno 21] Is a directory: {path} -> {target}')
+                raise IsADirectoryError(f'[Errno 21] Is a directory: {str(path)!r} -> {str(target)!r}')
             if _is_file(target_entry):
                 # need to mark the target as deleted as it'll be overwritten
                 target_entry.delete()
@@ -823,9 +823,9 @@ class OSAccess(AbstractOS):
         else:
             assert _is_dir(src_entry), 'src path must be a directory here'
             if _is_file(target_entry):
-                raise NotADirectoryError(f'[Errno 20] Not a directory: {path} -> {target}')
+                raise NotADirectoryError(f'[Errno 20] Not a directory: {str(path)!r} -> {str(target)!r}')
             elif _is_dir(target_entry) and target_entry:
-                raise OSError(f'[Errno 66] Directory not empty: {path} -> {target}')
+                raise OSError(f'[Errno 66] Directory not empty: {str(path)!r} -> {str(target)!r}')
 
             src_name = PurePosixPath(path).name
             target_name = PurePosixPath(target).name
@@ -837,11 +837,11 @@ class OSAccess(AbstractOS):
             # Update paths for all files in the renamed directory
             self._update_paths_recursive(src_entry, PurePosixPath(path), PurePosixPath(target))
 
-    def path_resolve(self, path: str) -> str:
+    def path_resolve(self, path: PurePosixPath) -> str:
         # No symlinks in OSAccess, so resolve is same as absolute with normalization
         return self.path_absolute(path)
 
-    def path_absolute(self, path: str) -> str:
+    def path_absolute(self, path: PurePosixPath) -> str:
         p = PurePosixPath(path)
         if p.is_absolute():
             return str(p)
@@ -851,7 +851,7 @@ class OSAccess(AbstractOS):
     def getenv(self, key: str, default: str | None = None) -> str | None:
         return self.environ.get(key, default)
 
-    def _get_entry(self, path: str) -> Tree | AbstractFile | None:
+    def _get_entry(self, path: PurePosixPath) -> Tree | AbstractFile | None:
         dir = self._tree
 
         *dir_parts, name = PurePosixPath(path).parts
@@ -865,29 +865,29 @@ class OSAccess(AbstractOS):
 
         return dir.get(name)
 
-    def _get_entry_exists(self, path: str) -> Tree | AbstractFile:
+    def _get_entry_exists(self, path: PurePosixPath) -> Tree | AbstractFile:
         entry = self._get_entry(path)
         if entry is None:
-            raise FileNotFoundError(f'[Errno 2] No such file or directory: {path!r}')
+            raise FileNotFoundError(f'[Errno 2] No such file or directory: {str(path)!r}')
         else:
             return entry
 
-    def _get_file(self, path: str) -> AbstractFile:
+    def _get_file(self, path: PurePosixPath) -> AbstractFile:
         entry = self._get_entry_exists(path)
         if _is_file(entry):
             return entry
         else:
-            raise IsADirectoryError(f'[Errno 21] Is a directory: {path!r}')
+            raise IsADirectoryError(f'[Errno 21] Is a directory: {str(path)!r}')
 
-    def _get_dir(self, path: str) -> Tree:
+    def _get_dir(self, path: PurePosixPath) -> Tree:
         entry = self._get_entry_exists(path)
         if _is_dir(entry):
             return entry
         else:
-            raise NotADirectoryError(f'[Errno 20] Not a directory: {path!r}')
+            raise NotADirectoryError(f'[Errno 20] Not a directory: {str(path)!r}')
 
-    def _parent_entry(self, path: str) -> Tree | AbstractFile | None:
-        return self._get_entry(str(PurePosixPath(path).parent))
+    def _parent_entry(self, path: PurePosixPath) -> Tree | AbstractFile | None:
+        return self._get_entry(PurePosixPath(path).parent)
 
     def _update_paths_recursive(self, tree: Tree, old_prefix: PurePosixPath, new_prefix: PurePosixPath) -> None:
         """Update path attributes for all files in a tree after directory rename.

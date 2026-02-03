@@ -70,70 +70,70 @@ fn run_oscall_with_result(code: &str, mock_result: MontyObject) -> (OsFunction, 
 fn path_exists() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/test.txt').exists()");
     assert_eq!(func, OsFunction::Exists);
-    assert_eq!(args, vec![MontyObject::String("/tmp/test.txt".to_owned())]);
+    assert_eq!(args, vec![MontyObject::Path("/tmp/test.txt".to_owned())]);
 }
 
 #[test]
 fn path_is_file() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/test.txt').is_file()");
     assert_eq!(func, OsFunction::IsFile);
-    assert_eq!(args, vec![MontyObject::String("/tmp/test.txt".to_owned())]);
+    assert_eq!(args, vec![MontyObject::Path("/tmp/test.txt".to_owned())]);
 }
 
 #[test]
 fn path_is_dir() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp').is_dir()");
     assert_eq!(func, OsFunction::IsDir);
-    assert_eq!(args, vec![MontyObject::String("/tmp".to_owned())]);
+    assert_eq!(args, vec![MontyObject::Path("/tmp".to_owned())]);
 }
 
 #[test]
 fn path_is_symlink() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/link').is_symlink()");
     assert_eq!(func, OsFunction::IsSymlink);
-    assert_eq!(args, vec![MontyObject::String("/tmp/link".to_owned())]);
+    assert_eq!(args, vec![MontyObject::Path("/tmp/link".to_owned())]);
 }
 
 #[test]
 fn path_read_text() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/file.txt').read_text()");
     assert_eq!(func, OsFunction::ReadText);
-    assert_eq!(args, vec![MontyObject::String("/tmp/file.txt".to_owned())]);
+    assert_eq!(args, vec![MontyObject::Path("/tmp/file.txt".to_owned())]);
 }
 
 #[test]
 fn path_read_bytes() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/file.bin').read_bytes()");
     assert_eq!(func, OsFunction::ReadBytes);
-    assert_eq!(args, vec![MontyObject::String("/tmp/file.bin".to_owned())]);
+    assert_eq!(args, vec![MontyObject::Path("/tmp/file.bin".to_owned())]);
 }
 
 #[test]
 fn path_stat() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/file.txt').stat()");
     assert_eq!(func, OsFunction::Stat);
-    assert_eq!(args, vec![MontyObject::String("/tmp/file.txt".to_owned())]);
+    assert_eq!(args, vec![MontyObject::Path("/tmp/file.txt".to_owned())]);
 }
 
 #[test]
 fn path_iterdir() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp').iterdir()");
     assert_eq!(func, OsFunction::Iterdir);
-    assert_eq!(args, vec![MontyObject::String("/tmp".to_owned())]);
+    assert_eq!(args, vec![MontyObject::Path("/tmp".to_owned())]);
 }
 
 #[test]
 fn path_resolve() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('./relative').resolve()");
     assert_eq!(func, OsFunction::Resolve);
-    assert_eq!(args, vec![MontyObject::String("./relative".to_owned())]);
+    assert_eq!(args, vec![MontyObject::Path("./relative".to_owned())]);
 }
 
 #[test]
 fn path_absolute() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('./relative').absolute()");
     assert_eq!(func, OsFunction::Absolute);
-    assert_eq!(args, vec![MontyObject::String("./relative".to_owned())]);
+    assert_eq!(args, vec![MontyObject::Path("./relative".to_owned())]);
 }
 
 // =============================================================================
@@ -144,14 +144,14 @@ fn path_absolute() {
 fn path_with_spaces() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/path/with spaces/file.txt').exists()");
     assert_eq!(func, OsFunction::Exists);
-    assert_eq!(args[0], MontyObject::String("/path/with spaces/file.txt".to_owned()));
+    assert_eq!(args[0], MontyObject::Path("/path/with spaces/file.txt".to_owned()));
 }
 
 #[test]
 fn path_with_unicode() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/путь/文件.txt').exists()");
     assert_eq!(func, OsFunction::Exists);
-    assert_eq!(args[0], MontyObject::String("/путь/文件.txt".to_owned()));
+    assert_eq!(args[0], MontyObject::Path("/путь/文件.txt".to_owned()));
 }
 
 #[test]
@@ -165,7 +165,7 @@ full.exists()
 ",
     );
     assert_eq!(func, OsFunction::Exists);
-    assert_eq!(args[0], MontyObject::String("/home/user/file.txt".to_owned()));
+    assert_eq!(args[0], MontyObject::Path("/home/user/file.txt".to_owned()));
 }
 
 // =============================================================================
@@ -226,7 +226,7 @@ len(entries)
     let (func, args, result) = run_oscall_with_result(code, mock_entries);
 
     assert_eq!(func, OsFunction::Iterdir);
-    assert_eq!(args[0], MontyObject::String("/tmp".to_owned()));
+    assert_eq!(args[0], MontyObject::Path("/tmp".to_owned()));
     assert_eq!(result, MontyObject::Int(3));
 }
 
@@ -244,7 +244,7 @@ entries[0]
     let (func, args, result) = run_oscall_with_result(code, mock_entries);
 
     assert_eq!(func, OsFunction::Iterdir);
-    assert_eq!(args[0], MontyObject::String("/home/user".to_owned()));
+    assert_eq!(args[0], MontyObject::Path("/home/user".to_owned()));
     assert_eq!(result, MontyObject::String("/home/user/documents".to_owned()));
 }
 
@@ -258,7 +258,7 @@ info.st_size
     let (func, args, result) = run_oscall_with_result(code, file_stat(0o644, 1024, 0.0));
 
     assert_eq!(func, OsFunction::Stat);
-    assert_eq!(args[0], MontyObject::String("/tmp/file.txt".to_owned()));
+    assert_eq!(args[0], MontyObject::Path("/tmp/file.txt".to_owned()));
     assert_eq!(result, MontyObject::Int(1024));
 }
 
@@ -273,7 +273,7 @@ info.st_mode
     let (func, args, result) = run_oscall_with_result(code, file_stat(0o755, 0, 0.0));
 
     assert_eq!(func, OsFunction::Stat);
-    assert_eq!(args[0], MontyObject::String("/tmp/file.txt".to_owned()));
+    assert_eq!(args[0], MontyObject::Path("/tmp/file.txt".to_owned()));
     assert_eq!(result, MontyObject::Int(0o100_755));
 }
 
@@ -288,7 +288,7 @@ info = Path('/var/log/syslog').stat()
     let (func, args, result) = run_oscall_with_result(code, file_stat(0o644, 4096, 0.0));
 
     assert_eq!(func, OsFunction::Stat);
-    assert_eq!(args[0], MontyObject::String("/var/log/syslog".to_owned()));
+    assert_eq!(args[0], MontyObject::Path("/var/log/syslog".to_owned()));
     assert_eq!(
         result,
         MontyObject::Tuple(vec![MontyObject::Int(4096), MontyObject::Int(0o100_644)])
@@ -306,6 +306,6 @@ info[6]  # st_size is at index 6
     let (func, args, result) = run_oscall_with_result(code, file_stat(0o644, 2048, 0.0));
 
     assert_eq!(func, OsFunction::Stat);
-    assert_eq!(args[0], MontyObject::String("/tmp/file.txt".to_owned()));
+    assert_eq!(args[0], MontyObject::Path("/tmp/file.txt".to_owned()));
     assert_eq!(result, MontyObject::Int(2048));
 }

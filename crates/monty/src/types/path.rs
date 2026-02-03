@@ -362,8 +362,6 @@ pub(crate) fn path_div(
 /// I/O methods (exists, read_text, etc.) return bound methods that
 /// yield external function calls when invoked.
 pub(crate) fn get_path_attr(path: &Path, attr_name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-    use crate::types::Str;
-
     match attr_name {
         // Properties returning strings
         "name" => {
@@ -606,8 +604,8 @@ impl PyTrait for Path {
 
         // Check if this is an OS method that requires host system access
         if let Ok(os_fn) = OsFunction::try_from(method) {
-            // Package path string as first argument for OS call
-            let path_arg = Value::Ref(heap.allocate(HeapData::Str(Str::new(self.path.clone())))?);
+            // Package path as first argument for OS call (as Path, not string)
+            let path_arg = Value::Ref(heap.allocate(HeapData::Path(self.clone()))?);
             let os_args = prepend_path_arg(path_arg, args);
             return Ok(AttrCallResult::OsCall(os_fn, os_args));
         }

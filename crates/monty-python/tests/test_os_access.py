@@ -15,6 +15,9 @@ from inline_snapshot import snapshot
 
 from pydantic_monty import CallbackFile, MemoryFile, Monty, MontyRuntimeError, OSAccess
 
+# Alias for brevity in tests
+P = PurePosixPath
+
 # =============================================================================
 # OSAccess Initialization & Validation
 # =============================================================================
@@ -225,42 +228,42 @@ def test_write_text_new_file_direct():
     fs = OSAccess([MemoryFile('/test/existing.txt', content='existing')])
 
     # Write a new file
-    fs.path_write_text('/test/new.txt', 'new content')
+    fs.path_write_text(P('/test/new.txt'), 'new content')
 
     # Verify it was created
-    assert fs.path_exists('/test/new.txt') is True
-    assert fs.path_read_text('/test/new.txt') == 'new content'
+    assert fs.path_exists(P('/test/new.txt')) is True
+    assert fs.path_read_text(P('/test/new.txt')) == 'new content'
 
 
 def test_write_text_overwrite_existing_direct():
     """path_write_text overwrites existing file content via direct API."""
     fs = OSAccess([MemoryFile('/test/file.txt', content='original')])
 
-    fs.path_write_text('/test/file.txt', 'updated')
-    assert fs.path_read_text('/test/file.txt') == 'updated'
+    fs.path_write_text(P('/test/file.txt'), 'updated')
+    assert fs.path_read_text(P('/test/file.txt')) == 'updated'
 
 
 def test_write_bytes_new_file_direct():
     """path_write_bytes creates a new file via direct API."""
     fs = OSAccess([MemoryFile('/test/existing.txt', content='existing')])
 
-    fs.path_write_bytes('/test/new.bin', b'binary data')
-    assert fs.path_read_bytes('/test/new.bin') == b'binary data'
+    fs.path_write_bytes(P('/test/new.bin'), b'binary data')
+    assert fs.path_read_bytes(P('/test/new.bin')) == b'binary data'
 
 
 def test_write_bytes_overwrite_existing_direct():
     """path_write_bytes overwrites existing file content via direct API."""
     fs = OSAccess([MemoryFile('/test/file.bin', content=b'original')])
 
-    fs.path_write_bytes('/test/file.bin', b'updated')
-    assert fs.path_read_bytes('/test/file.bin') == b'updated'
+    fs.path_write_bytes(P('/test/file.bin'), b'updated')
+    assert fs.path_read_bytes(P('/test/file.bin')) == b'updated'
 
 
 def test_write_text_parent_not_exists_direct():
     """path_write_text raises FileNotFoundError when parent doesn't exist via direct API."""
     fs = OSAccess()
     with pytest.raises(FileNotFoundError) as exc_info:
-        fs.path_write_text('/no/parent/file.txt', 'test')
+        fs.path_write_text(P('/no/parent/file.txt'), 'test')
     assert str(exc_info.value) == snapshot("[Errno 2] No such file or directory: '/no/parent/file.txt'")
 
 
@@ -268,7 +271,7 @@ def test_write_text_to_directory_direct():
     """path_write_text raises IsADirectoryError when writing to a directory via direct API."""
     fs = OSAccess([MemoryFile('/test/subdir/file.txt', content='hello')])
     with pytest.raises(IsADirectoryError) as exc_info:
-        fs.path_write_text('/test/subdir', 'test')
+        fs.path_write_text(P('/test/subdir'), 'test')
     assert str(exc_info.value) == snapshot("[Errno 21] Is a directory: '/test/subdir'")
 
 
@@ -281,19 +284,19 @@ def test_mkdir_basic_direct():
     """path_mkdir creates a directory via direct API."""
     fs = OSAccess([MemoryFile('/test/file.txt', content='hello')])
 
-    fs.path_mkdir('/test/newdir', parents=False, exist_ok=False)
-    assert fs.path_is_dir('/test/newdir') is True
+    fs.path_mkdir(P('/test/newdir'), parents=False, exist_ok=False)
+    assert fs.path_is_dir(P('/test/newdir')) is True
 
 
 def test_mkdir_with_parents_direct():
     """path_mkdir with parents=True creates parent directories via direct API."""
     fs = OSAccess()
 
-    fs.path_mkdir('/a/b/c/d', parents=True, exist_ok=False)
-    assert fs.path_is_dir('/a') is True
-    assert fs.path_is_dir('/a/b') is True
-    assert fs.path_is_dir('/a/b/c') is True
-    assert fs.path_is_dir('/a/b/c/d') is True
+    fs.path_mkdir(P('/a/b/c/d'), parents=True, exist_ok=False)
+    assert fs.path_is_dir(P('/a')) is True
+    assert fs.path_is_dir(P('/a/b')) is True
+    assert fs.path_is_dir(P('/a/b/c')) is True
+    assert fs.path_is_dir(P('/a/b/c/d')) is True
 
 
 def test_mkdir_exist_ok_true_direct():
@@ -301,8 +304,8 @@ def test_mkdir_exist_ok_true_direct():
     fs = OSAccess([MemoryFile('/test/subdir/file.txt', content='hello')])
 
     # Should not raise
-    fs.path_mkdir('/test/subdir', parents=False, exist_ok=True)
-    assert fs.path_is_dir('/test/subdir') is True
+    fs.path_mkdir(P('/test/subdir'), parents=False, exist_ok=True)
+    assert fs.path_is_dir(P('/test/subdir')) is True
 
 
 def test_mkdir_exist_ok_false_direct():
@@ -310,7 +313,7 @@ def test_mkdir_exist_ok_false_direct():
     fs = OSAccess([MemoryFile('/test/subdir/file.txt', content='hello')])
 
     with pytest.raises(FileExistsError) as exc_info:
-        fs.path_mkdir('/test/subdir', parents=False, exist_ok=False)
+        fs.path_mkdir(P('/test/subdir'), parents=False, exist_ok=False)
     assert str(exc_info.value) == snapshot("[Errno 17] File exists: '/test/subdir'")
 
 
@@ -319,7 +322,7 @@ def test_mkdir_file_exists_direct():
     fs = OSAccess([MemoryFile('/test/file.txt', content='hello')])
 
     with pytest.raises(FileExistsError) as exc_info:
-        fs.path_mkdir('/test/file.txt', parents=False, exist_ok=False)
+        fs.path_mkdir(P('/test/file.txt'), parents=False, exist_ok=False)
     assert str(exc_info.value) == snapshot("[Errno 17] File exists: '/test/file.txt'")
 
 
@@ -328,7 +331,7 @@ def test_mkdir_parent_not_exists_direct():
     fs = OSAccess()
 
     with pytest.raises(FileNotFoundError) as exc_info:
-        fs.path_mkdir('/no/parent/dir', parents=False, exist_ok=False)
+        fs.path_mkdir(P('/no/parent/dir'), parents=False, exist_ok=False)
     assert str(exc_info.value) == snapshot("[Errno 2] No such file or directory: '/no/parent/dir'")
 
 
@@ -337,7 +340,7 @@ def test_mkdir_parent_is_file_direct():
     fs = OSAccess([MemoryFile('/test/file.txt', content='hello')])
 
     with pytest.raises(NotADirectoryError) as exc_info:
-        fs.path_mkdir('/test/file.txt/subdir', parents=True, exist_ok=False)
+        fs.path_mkdir(P('/test/file.txt/subdir'), parents=True, exist_ok=False)
     assert str(exc_info.value) == snapshot("[Errno 20] Not a directory: '/test/file.txt/subdir'")
 
 
@@ -350,9 +353,9 @@ def test_rmdir_empty_directory_direct():
     """path_rmdir removes an empty directory via direct API."""
     fs = OSAccess([MemoryFile('/test/subdir/file.txt', content='hello')])
 
-    fs.path_mkdir('/test/newdir', parents=False, exist_ok=False)
-    fs.path_rmdir('/test/newdir')
-    assert fs.path_exists('/test/newdir') is False
+    fs.path_mkdir(P('/test/newdir'), parents=False, exist_ok=False)
+    fs.path_rmdir(P('/test/newdir'))
+    assert fs.path_exists(P('/test/newdir')) is False
 
 
 def test_rmdir_non_empty_directory_direct():
@@ -360,7 +363,7 @@ def test_rmdir_non_empty_directory_direct():
     fs = OSAccess([MemoryFile('/test/subdir/file.txt', content='hello')])
 
     with pytest.raises(OSError) as exc_info:
-        fs.path_rmdir('/test/subdir')
+        fs.path_rmdir(P('/test/subdir'))
     assert str(exc_info.value) == snapshot("[Errno 39] Directory not empty: '/test/subdir'")
 
 
@@ -369,7 +372,7 @@ def test_rmdir_file_not_directory_direct():
     fs = OSAccess([MemoryFile('/test/file.txt', content='hello')])
 
     with pytest.raises(NotADirectoryError) as exc_info:
-        fs.path_rmdir('/test/file.txt')
+        fs.path_rmdir(P('/test/file.txt'))
     assert str(exc_info.value) == snapshot("[Errno 20] Not a directory: '/test/file.txt'")
 
 
@@ -378,7 +381,7 @@ def test_rmdir_not_found_direct():
     fs = OSAccess()
 
     with pytest.raises(FileNotFoundError) as exc_info:
-        fs.path_rmdir('/missing')
+        fs.path_rmdir(P('/missing'))
     assert str(exc_info.value) == snapshot("[Errno 2] No such file or directory: '/missing'")
 
 
@@ -408,9 +411,9 @@ from pathlib import Path
 def test_iterdir_empty_directory_direct():
     """path_iterdir returns empty list for empty directory via direct API."""
     fs = OSAccess([MemoryFile('/test/subdir/file.txt', content='hello')])
-    fs.path_mkdir('/test/empty', parents=False, exist_ok=False)
+    fs.path_mkdir(P('/test/empty'), parents=False, exist_ok=False)
 
-    result = fs.path_iterdir('/test/empty')
+    result = fs.path_iterdir(P('/test/empty'))
     assert result == snapshot([])
 
 
@@ -419,7 +422,7 @@ def test_iterdir_not_a_directory_direct():
     fs = OSAccess([MemoryFile('/test/file.txt', content='hello')])
 
     with pytest.raises(NotADirectoryError) as exc_info:
-        fs.path_iterdir('/test/file.txt')
+        fs.path_iterdir(P('/test/file.txt'))
     assert str(exc_info.value) == snapshot("[Errno 20] Not a directory: '/test/file.txt'")
 
 
@@ -440,8 +443,8 @@ def test_unlink_file_direct():
     """path_unlink removes a file via direct API."""
     fs = OSAccess([MemoryFile('/test/file.txt', content='hello')])
 
-    fs.path_unlink('/test/file.txt')
-    assert fs.path_exists('/test/file.txt') is False
+    fs.path_unlink(P('/test/file.txt'))
+    assert fs.path_exists(P('/test/file.txt')) is False
 
 
 def test_unlink_file_not_found_direct():
@@ -449,7 +452,7 @@ def test_unlink_file_not_found_direct():
     fs = OSAccess()
 
     with pytest.raises(FileNotFoundError) as exc_info:
-        fs.path_unlink('/missing.txt')
+        fs.path_unlink(P('/missing.txt'))
     assert str(exc_info.value) == snapshot("[Errno 2] No such file or directory: '/missing.txt'")
 
 
@@ -458,7 +461,7 @@ def test_unlink_is_directory_direct():
     fs = OSAccess([MemoryFile('/test/subdir/file.txt', content='hello')])
 
     with pytest.raises(IsADirectoryError) as exc_info:
-        fs.path_unlink('/test/subdir')
+        fs.path_unlink(P('/test/subdir'))
     assert str(exc_info.value) == snapshot("[Errno 21] Is a directory: '/test/subdir'")
 
 
@@ -544,11 +547,11 @@ def test_rename_file_direct():
     """path_rename renames a file via direct API."""
     fs = OSAccess([MemoryFile('/test/old.txt', content='content')])
 
-    fs.path_rename('/test/old.txt', '/test/new.txt')
+    fs.path_rename(P('/test/old.txt'), P('/test/new.txt'))
 
-    assert fs.path_exists('/test/old.txt') is False
-    assert fs.path_exists('/test/new.txt') is True
-    assert fs.path_read_text('/test/new.txt') == 'content'
+    assert fs.path_exists(P('/test/old.txt')) is False
+    assert fs.path_exists(P('/test/new.txt')) is True
+    assert fs.path_read_text(P('/test/new.txt')) == 'content'
 
 
 def test_rename_source_not_found_direct():
@@ -556,8 +559,8 @@ def test_rename_source_not_found_direct():
     fs = OSAccess()
 
     with pytest.raises(FileNotFoundError) as exc_info:
-        fs.path_rename('/missing.txt', '/new.txt')
-    assert str(exc_info.value) == snapshot('[Errno 2] No such file or directory: /missing.txt -> /new.txt')
+        fs.path_rename(P('/missing.txt'), P('/new.txt'))
+    assert str(exc_info.value) == snapshot("[Errno 2] No such file or directory: '/missing.txt' -> '/new.txt'")
 
 
 def test_rename_target_parent_not_found_direct():
@@ -565,17 +568,19 @@ def test_rename_target_parent_not_found_direct():
     fs = OSAccess([MemoryFile('/test/file.txt', content='content')])
 
     with pytest.raises(FileNotFoundError) as exc_info:
-        fs.path_rename('/test/file.txt', '/no/parent/file.txt')
-    assert str(exc_info.value) == snapshot('[Errno 2] No such file or directory: /test/file.txt -> /no/parent/file.txt')
+        fs.path_rename(P('/test/file.txt'), P('/no/parent/file.txt'))
+    assert str(exc_info.value) == snapshot(
+        "[Errno 2] No such file or directory: '/test/file.txt' -> '/no/parent/file.txt'"
+    )
 
 
 def test_rename_directory_direct():
     """path_rename renames a directory via direct API."""
     fs = OSAccess([MemoryFile('/test/olddir/file.txt', content='content')])
-    fs.path_mkdir('/test/newdir', parents=False, exist_ok=False)
+    fs.path_mkdir(P('/test/newdir'), parents=False, exist_ok=False)
 
-    fs.path_rename('/test/newdir', '/test/renamed')
-    assert fs.path_is_dir('/test/renamed') is True
+    fs.path_rename(P('/test/newdir'), P('/test/renamed'))
+    assert fs.path_is_dir(P('/test/renamed')) is True
 
 
 def test_rename_directory_non_empty_target_direct():
@@ -588,8 +593,8 @@ def test_rename_directory_non_empty_target_direct():
     )
 
     with pytest.raises(OSError) as exc_info:
-        fs.path_rename('/test/src', '/test/dst')
-    assert str(exc_info.value) == snapshot('[Errno 66] Directory not empty: /test/src -> /test/dst')
+        fs.path_rename(P('/test/src'), P('/test/dst'))
+    assert str(exc_info.value) == snapshot("[Errno 66] Directory not empty: '/test/src' -> '/test/dst'")
 
 
 def test_rename_directory_updates_file_paths_direct():
@@ -599,20 +604,20 @@ def test_rename_directory_updates_file_paths_direct():
     fs = OSAccess([file1, file2])
 
     # Create target parent and rename the directory
-    fs.path_mkdir('/new', parents=False, exist_ok=False)
-    fs.path_rename('/old/dir', '/new/location')
+    fs.path_mkdir(P('/new'), parents=False, exist_ok=False)
+    fs.path_rename(P('/old/dir'), P('/new/location'))
 
     # Verify files are accessible at new paths
-    assert fs.path_read_text('/new/location/file1.txt') == 'one'
-    assert fs.path_read_text('/new/location/subdir/file2.txt') == 'two'
+    assert fs.path_read_text(P('/new/location/file1.txt')) == 'one'
+    assert fs.path_read_text(P('/new/location/subdir/file2.txt')) == 'two'
 
     # Verify the AbstractFile objects have updated paths
     assert file1.path.as_posix() == '/new/location/file1.txt'
     assert file2.path.as_posix() == '/new/location/subdir/file2.txt'
 
     # Verify old paths no longer exist
-    assert fs.path_exists('/old/dir') is False
-    assert fs.path_exists('/old/dir/file1.txt') is False
+    assert fs.path_exists(P('/old/dir')) is False
+    assert fs.path_exists(P('/old/dir/file1.txt')) is False
 
 
 # =============================================================================
@@ -791,7 +796,7 @@ def test_callback_file_write_direct():
     fs = OSAccess([file])
 
     # Use direct API since write_text not implemented in Monty
-    fs.path_write_text('/test/file.txt', 'new content')
+    fs.path_write_text(P('/test/file.txt'), 'new content')
     assert len(written) == 1
     assert written[0][1] == snapshot('new content')
 
@@ -876,30 +881,30 @@ def test_os_access_direct_api():
     )
 
     # Test path_exists
-    assert fs.path_exists('/test/file.txt') is True
-    assert fs.path_exists('/missing') is False
+    assert fs.path_exists(P('/test/file.txt')) is True
+    assert fs.path_exists(P('/missing')) is False
 
     # Test path_is_file / path_is_dir
-    assert fs.path_is_file('/test/file.txt') is True
-    assert fs.path_is_dir('/test/file.txt') is False
-    assert fs.path_is_dir('/test/subdir') is True
-    assert fs.path_is_file('/test/subdir') is False
+    assert fs.path_is_file(P('/test/file.txt')) is True
+    assert fs.path_is_dir(P('/test/file.txt')) is False
+    assert fs.path_is_dir(P('/test/subdir')) is True
+    assert fs.path_is_file(P('/test/subdir')) is False
 
     # Test path_read_text / path_read_bytes
-    assert fs.path_read_text('/test/file.txt') == 'hello'
-    assert fs.path_read_bytes('/test/file.txt') == b'hello'
+    assert fs.path_read_text(P('/test/file.txt')) == 'hello'
+    assert fs.path_read_bytes(P('/test/file.txt')) == b'hello'
 
     # Test path_stat
-    stat = fs.path_stat('/test/file.txt')
+    stat = fs.path_stat(P('/test/file.txt'))
     assert stat.st_size == 5
 
     # Test path_iterdir
-    contents = fs.path_iterdir('/test')
+    contents = fs.path_iterdir(P('/test'))
     assert sorted(contents) == snapshot([PurePosixPath('/test/file.txt'), PurePosixPath('/test/subdir')])
 
     # Test path_absolute
-    assert fs.path_absolute('relative') == '/relative'
-    assert fs.path_absolute('/absolute') == '/absolute'
+    assert fs.path_absolute(P('relative')) == '/relative'
+    assert fs.path_absolute(P('/absolute')) == '/absolute'
 
 
 # =============================================================================

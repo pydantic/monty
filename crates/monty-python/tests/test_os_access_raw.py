@@ -29,67 +29,76 @@ class TestOS(AbstractOS):
             parent = '/'.join(parts[:i]) or '/'
             self.directories.add(parent)
 
-    def path_exists(self, path: str) -> bool:
-        return path in self.files or path in self.directories
+    def path_exists(self, path: PurePosixPath) -> bool:
+        p = str(path)
+        return p in self.files or p in self.directories
 
-    def path_is_file(self, path: str) -> bool:
-        return path in self.files
+    def path_is_file(self, path: PurePosixPath) -> bool:
+        return str(path) in self.files
 
-    def path_is_dir(self, path: str) -> bool:
-        return path in self.directories
+    def path_is_dir(self, path: PurePosixPath) -> bool:
+        return str(path) in self.directories
 
-    def path_is_symlink(self, path: str) -> bool:
+    def path_is_symlink(self, path: PurePosixPath) -> bool:
         return False  # No symlink support in this simple implementation
 
-    def path_read_text(self, path: str) -> str:
-        if path not in self.files:
-            raise FileNotFoundError(f'No such file: {path}')
-        return self.files[path].decode('utf-8')
+    def path_read_text(self, path: PurePosixPath) -> str:
+        p = str(path)
+        if p not in self.files:
+            raise FileNotFoundError(f'No such file: {p}')
+        return self.files[p].decode('utf-8')
 
-    def path_read_bytes(self, path: str) -> bytes:
-        if path not in self.files:
-            raise FileNotFoundError(f'No such file: {path}')
-        return self.files[path]
+    def path_read_bytes(self, path: PurePosixPath) -> bytes:
+        p = str(path)
+        if p not in self.files:
+            raise FileNotFoundError(f'No such file: {p}')
+        return self.files[p]
 
-    def path_write_text(self, path: str, data: str) -> None:
-        self._ensure_parent_exists(path)
-        self.files[path] = data.encode('utf-8')
+    def path_write_text(self, path: PurePosixPath, data: str) -> None:
+        p = str(path)
+        self._ensure_parent_exists(p)
+        self.files[p] = data.encode('utf-8')
 
-    def path_write_bytes(self, path: str, data: bytes) -> None:
-        self._ensure_parent_exists(path)
-        self.files[path] = data
+    def path_write_bytes(self, path: PurePosixPath, data: bytes) -> None:
+        p = str(path)
+        self._ensure_parent_exists(p)
+        self.files[p] = data
 
-    def path_mkdir(self, path: str, parents: bool, exist_ok: bool) -> None:
-        if path in self.directories:
+    def path_mkdir(self, path: PurePosixPath, parents: bool, exist_ok: bool) -> None:
+        p = str(path)
+        if p in self.directories:
             if not exist_ok:
-                raise FileExistsError(f'Directory exists: {path}')
+                raise FileExistsError(f'Directory exists: {p}')
             return
         if parents:
-            self._ensure_parent_exists(path)
-        self.directories.add(path)
+            self._ensure_parent_exists(p)
+        self.directories.add(p)
 
-    def path_unlink(self, path: str) -> None:
-        if path not in self.files:
-            raise FileNotFoundError(f'No such file: {path}')
-        del self.files[path]
+    def path_unlink(self, path: PurePosixPath) -> None:
+        p = str(path)
+        if p not in self.files:
+            raise FileNotFoundError(f'No such file: {p}')
+        del self.files[p]
 
-    def path_rmdir(self, path: str) -> None:
-        if path not in self.directories:
-            raise FileNotFoundError(f'No such directory: {path}')
+    def path_rmdir(self, path: PurePosixPath) -> None:
+        p = str(path)
+        if p not in self.directories:
+            raise FileNotFoundError(f'No such directory: {p}')
         # Check if directory is empty
         for f in self.files:
-            if f.startswith(path + '/'):
-                raise OSError(f'Directory not empty: {path}')
+            if f.startswith(p + '/'):
+                raise OSError(f'Directory not empty: {p}')
         for d in self.directories:
-            if d != path and d.startswith(path + '/'):
-                raise OSError(f'Directory not empty: {path}')
-        self.directories.remove(path)
+            if d != p and d.startswith(p + '/'):
+                raise OSError(f'Directory not empty: {p}')
+        self.directories.remove(p)
 
-    def path_iterdir(self, path: str) -> list[PurePosixPath]:
-        if path not in self.directories:
-            raise FileNotFoundError(f'No such directory: {path}')
+    def path_iterdir(self, path: PurePosixPath) -> list[PurePosixPath]:
+        p = str(path)
+        if p not in self.directories:
+            raise FileNotFoundError(f'No such directory: {p}')
         result: list[PurePosixPath] = []
-        prefix = path.rstrip('/') + '/'
+        prefix = p.rstrip('/') + '/'
         seen: set[str] = set()
         for f in self.files:
             if f.startswith(prefix):
@@ -98,44 +107,48 @@ class TestOS(AbstractOS):
                 child = rest.split('/')[0]
                 if child and child not in seen:
                     seen.add(child)
-                    result.append(PurePosixPath(child))
+                    result.append(PurePosixPath(prefix + child))
         for d in self.directories:
-            if d.startswith(prefix) and d != path:
+            if d.startswith(prefix) and d != p:
                 rest = d[len(prefix) :]
                 child = rest.split('/')[0]
                 if child and child not in seen:
                     seen.add(child)
-                    result.append(PurePosixPath(child))
+                    result.append(PurePosixPath(prefix + child))
         return sorted(result)
 
-    def path_stat(self, path: str) -> StatResult:
-        if path in self.files:
-            return StatResult.file_stat(len(self.files[path]), 0o644, 0.0)
-        elif path in self.directories:
+    def path_stat(self, path: PurePosixPath) -> StatResult:
+        p = str(path)
+        if p in self.files:
+            return StatResult.file_stat(len(self.files[p]), 0o644, 0.0)
+        elif p in self.directories:
             return StatResult.dir_stat(0o755, 0.0)
         else:
-            raise FileNotFoundError(f'No such file or directory: {path}')
+            raise FileNotFoundError(f'No such file or directory: {p}')
 
-    def path_rename(self, path: str, target: str) -> None:
-        if path in self.files:
-            self._ensure_parent_exists(target)
-            self.files[target] = self.files.pop(path)
-        elif path in self.directories:
-            self._ensure_parent_exists(target)
-            self.directories.remove(path)
-            self.directories.add(target)
+    def path_rename(self, path: PurePosixPath, target: PurePosixPath) -> None:
+        p = str(path)
+        t = str(target)
+        if p in self.files:
+            self._ensure_parent_exists(t)
+            self.files[t] = self.files.pop(p)
+        elif p in self.directories:
+            self._ensure_parent_exists(t)
+            self.directories.remove(p)
+            self.directories.add(t)
             # Move all files under this directory
-            prefix = path.rstrip('/') + '/'
-            to_move = [(f, target + f[len(path) :]) for f in self.files if f.startswith(prefix)]
+            prefix = p.rstrip('/') + '/'
+            to_move = [(f, t + f[len(p) :]) for f in self.files if f.startswith(prefix)]
             for old, new in to_move:
                 self.files[new] = self.files.pop(old)
         else:
-            raise FileNotFoundError(f'No such file or directory: {path}')
+            raise FileNotFoundError(f'No such file or directory: {p}')
 
-    def path_resolve(self, path: str) -> str:
+    def path_resolve(self, path: PurePosixPath) -> str:
         # Simple implementation: just normalize the path
+        p = str(path)
         parts: list[str] = []
-        for part in path.split('/'):
+        for part in p.split('/'):
             if part == '..':
                 if parts:
                     parts.pop()
@@ -143,10 +156,11 @@ class TestOS(AbstractOS):
                 parts.append(part)
         return '/' + '/'.join(parts)
 
-    def path_absolute(self, path: str) -> str:
-        if path.startswith('/'):
-            return path
-        return '/' + path
+    def path_absolute(self, path: PurePosixPath) -> str:
+        p = str(path)
+        if p.startswith('/'):
+            return p
+        return '/' + p
 
     def getenv(self, key: str, default: str | None = None) -> str | None:
         # Simple virtual environment for testing
@@ -326,7 +340,7 @@ list(Path('/mydir').iterdir())
     # Result is a list of Path objects with child names joined to parent
     assert len(result) == 3
     names = sorted(str(p) for p in result)
-    assert names == snapshot(['a.txt', 'b.txt', 'subdir'])
+    assert names == snapshot(['/mydir/a.txt', '/mydir/b.txt', '/mydir/subdir'])
 
 
 def test_abstract_filesystem_iterdir_empty():

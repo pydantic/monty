@@ -5,6 +5,7 @@ with the right function name and arguments, and that return values from
 the host are properly converted and used by Monty code.
 """
 
+from pathlib import PurePosixPath
 from typing import Any
 
 import pytest
@@ -26,7 +27,7 @@ def test_path_exists_yields_oscall():
     assert isinstance(result, pydantic_monty.MontySnapshot)
     assert result.is_os_function is True
     assert result.function_name == snapshot('Path.exists')
-    assert result.args == snapshot(('/tmp/test.txt',))
+    assert result.args == snapshot((PurePosixPath('/tmp/test.txt'),))
     assert result.kwargs == snapshot({})
 
 
@@ -38,7 +39,7 @@ def test_path_stat_yields_oscall():
     assert isinstance(result, pydantic_monty.MontySnapshot)
     assert result.is_os_function is True
     assert result.function_name == snapshot('Path.stat')
-    assert result.args == snapshot(('/etc/passwd',))
+    assert result.args == snapshot((PurePosixPath('/etc/passwd'),))
 
 
 def test_path_read_text_yields_oscall():
@@ -49,7 +50,7 @@ def test_path_read_text_yields_oscall():
     assert isinstance(result, pydantic_monty.MontySnapshot)
     assert result.is_os_function is True
     assert result.function_name == snapshot('Path.read_text')
-    assert result.args == snapshot(('/tmp/hello.txt',))
+    assert result.args == snapshot((PurePosixPath('/tmp/hello.txt'),))
 
 
 # =============================================================================
@@ -69,7 +70,7 @@ full.exists()
     result = m.start()
 
     assert isinstance(result, pydantic_monty.MontySnapshot)
-    assert result.args == snapshot(('/home/user/documents/file.txt',))
+    assert result.args == snapshot((PurePosixPath('/home/user/documents/file.txt'),))
 
 
 # =============================================================================
@@ -276,7 +277,7 @@ def test_os_basic():
     result = m.run(os=os_handler)
 
     assert result is True
-    assert calls == snapshot([('Path.exists', ('/tmp/test.txt',))])
+    assert calls == snapshot([('Path.exists', (PurePosixPath('/tmp/test.txt'),))])
 
 
 def test_os_stat():
