@@ -269,7 +269,7 @@ def test_os_basic():
     """os receives function name and args, return value is used."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...]) -> bool:
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> bool:
         calls.append((function_name, args))
         return True
 
@@ -283,7 +283,7 @@ def test_os_basic():
 def test_os_stat():
     """os can return stat_result for Path.stat()."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...]) -> Any:
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
         if function_name == 'Path.stat':
             return StatResult.file_stat(1024, 0o644, 1700000000.0)
         return None
@@ -303,7 +303,9 @@ def test_os_multiple_calls():
     """os is called for each OS operation."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...]) -> bool | str | None:
+    def os_handler(
+        function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None
+    ) -> bool | str | None:
         calls.append(function_name)
         match function_name:
             case 'Path.exists':
@@ -393,7 +395,7 @@ def test_os_getenv_with_default_yields_oscall():
 def test_os_getenv_callback():
     """os.getenv() with os works correctly."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...]) -> str | None:
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> str | None:
         if function_name == 'os.getenv':
             key, default = args
             env = {'HOME': '/home/user', 'USER': 'testuser'}
@@ -408,7 +410,7 @@ def test_os_getenv_callback():
 def test_os_getenv_callback_missing():
     """os.getenv() returns None for missing env var when no default."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...]) -> str | None:
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> str | None:
         if function_name == 'os.getenv':
             key, default = args
             env: dict[str, str] = {}
@@ -423,7 +425,7 @@ def test_os_getenv_callback_missing():
 def test_os_getenv_callback_with_default():
     """os.getenv() uses default when env var is missing."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...]) -> str | None:
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> str | None:
         if function_name == 'os.getenv':
             key, default = args
             env: dict[str, str] = {}
@@ -433,3 +435,264 @@ def test_os_getenv_callback_with_default():
     m = pydantic_monty.Monty('import os; os.getenv("NONEXISTENT", "default_value")')
     result = m.run(os=os_handler)
     assert result == snapshot('default_value')
+
+
+# =============================================================================
+# Path write operations - write_text()
+# =============================================================================
+
+
+def test_path_write_text_yields_oscall():
+    """Path.write_text() yields an OS call with correct function, path, and content."""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/output.txt").write_text("hello world")')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert result.is_os_function is True
+    assert result.function_name == snapshot('Path.write_text')
+    assert result.args == snapshot((PurePosixPath('/tmp/output.txt'), 'hello world'))
+
+
+def test_path_write_text_resume():
+    """Resuming write_text() with byte count returns it to Monty code."""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/output.txt").write_text("hello")')
+    snapshot_result = m.start()
+
+    assert isinstance(snapshot_result, pydantic_monty.MontySnapshot)
+    result = snapshot_result.resume(return_value=5)  # write_text returns number of bytes written
+
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(5)
+
+
+def test_path_write_text_callback():
+    """Path.write_text() with os callback works correctly."""
+    written_files: dict[str, str] = {}
+
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> int | None:
+        if function_name == 'Path.write_text':
+            path, content = args
+            written_files[str(path)] = content
+            return len(content.encode('utf-8'))
+        return None
+
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/test.txt").write_text("test content")')
+    result = m.run(os=os_handler)
+
+    assert result == snapshot(12)
+    assert written_files == snapshot({'/tmp/test.txt': 'test content'})
+
+
+# =============================================================================
+# Path write operations - write_bytes()
+# =============================================================================
+
+
+def test_path_write_bytes_yields_oscall():
+    """Path.write_bytes() yields an OS call with correct function, path, and bytes."""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/data.bin").write_bytes(b"\\x00\\x01\\x02")')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert result.is_os_function is True
+    assert result.function_name == snapshot('Path.write_bytes')
+    assert result.args == snapshot((PurePosixPath('/tmp/data.bin'), b'\x00\x01\x02'))
+
+
+def test_path_write_bytes_resume():
+    """Resuming write_bytes() with byte count returns it to Monty code."""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/data.bin").write_bytes(b"abc")')
+    snapshot_result = m.start()
+
+    assert isinstance(snapshot_result, pydantic_monty.MontySnapshot)
+    result = snapshot_result.resume(return_value=3)
+
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(3)
+
+
+# =============================================================================
+# Path write operations - mkdir()
+# =============================================================================
+
+
+def test_path_mkdir_yields_oscall():
+    """Path.mkdir() yields an OS call with correct function and path."""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/newdir").mkdir()')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert result.is_os_function is True
+    assert result.function_name == snapshot('Path.mkdir')
+    assert result.args == snapshot((PurePosixPath('/tmp/newdir'),))
+
+
+def test_path_mkdir_with_parents_yields_oscall():
+    """Path.mkdir(parents=True) yields an OS call with kwargs."""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/a/b/c").mkdir(parents=True)')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert result.is_os_function is True
+    assert result.function_name == snapshot('Path.mkdir')
+    assert result.args == snapshot((PurePosixPath('/tmp/a/b/c'),))
+    assert result.kwargs == snapshot({'parents': True})
+
+
+def test_path_mkdir_with_exist_ok_yields_oscall():
+    """Path.mkdir(exist_ok=True) yields an OS call with kwargs."""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/existing").mkdir(exist_ok=True)')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert result.is_os_function is True
+    assert result.function_name == snapshot('Path.mkdir')
+    assert result.kwargs == snapshot({'exist_ok': True})
+
+
+def test_path_mkdir_with_both_kwargs():
+    """Path.mkdir(parents=True, exist_ok=True) yields an OS call with both kwargs."""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/a/b").mkdir(parents=True, exist_ok=True)')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert result.kwargs == snapshot({'parents': True, 'exist_ok': True})
+
+
+def test_path_mkdir_resume():
+    """Resuming mkdir() with None returns correctly."""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/newdir").mkdir()')
+    snapshot_result = m.start()
+
+    assert isinstance(snapshot_result, pydantic_monty.MontySnapshot)
+    result = snapshot_result.resume(return_value=None)
+
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output is None
+
+
+# =============================================================================
+# Path write operations - unlink()
+# =============================================================================
+
+
+def test_path_unlink_yields_oscall():
+    """Path.unlink() yields an OS call with correct function and path."""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/to_delete.txt").unlink()')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert result.is_os_function is True
+    assert result.function_name == snapshot('Path.unlink')
+    assert result.args == snapshot((PurePosixPath('/tmp/to_delete.txt'),))
+
+
+def test_path_unlink_resume():
+    """Resuming unlink() with None returns correctly."""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/file.txt").unlink()')
+    snapshot_result = m.start()
+
+    assert isinstance(snapshot_result, pydantic_monty.MontySnapshot)
+    result = snapshot_result.resume(return_value=None)
+
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output is None
+
+
+# =============================================================================
+# Path write operations - rmdir()
+# =============================================================================
+
+
+def test_path_rmdir_yields_oscall():
+    """Path.rmdir() yields an OS call with correct function and path."""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/empty_dir").rmdir()')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert result.is_os_function is True
+    assert result.function_name == snapshot('Path.rmdir')
+    assert result.args == snapshot((PurePosixPath('/tmp/empty_dir'),))
+
+
+def test_path_rmdir_resume():
+    """Resuming rmdir() with None returns correctly."""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/dir").rmdir()')
+    snapshot_result = m.start()
+
+    assert isinstance(snapshot_result, pydantic_monty.MontySnapshot)
+    result = snapshot_result.resume(return_value=None)
+
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output is None
+
+
+# =============================================================================
+# Path write operations - rename()
+# =============================================================================
+
+
+def test_path_rename_yields_oscall():
+    """Path.rename() yields an OS call with source and target paths."""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/old.txt").rename(Path("/tmp/new.txt"))')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert result.is_os_function is True
+    assert result.function_name == snapshot('Path.rename')
+    assert result.args == snapshot((PurePosixPath('/tmp/old.txt'), PurePosixPath('/tmp/new.txt')))
+
+
+def test_path_rename_resume():
+    """Resuming rename() returns the new path."""
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/old.txt").rename(Path("/tmp/new.txt"))')
+    snapshot_result = m.start()
+
+    assert isinstance(snapshot_result, pydantic_monty.MontySnapshot)
+    # rename() returns None (the new Path is constructed by Monty)
+    result = snapshot_result.resume(return_value=None)
+
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output is None
+
+
+# =============================================================================
+# Write operations with os callback
+# =============================================================================
+
+
+def test_write_operations_callback():
+    """Multiple write operations work with os callback."""
+    operations: list[tuple[str, tuple[Any, ...]]] = []
+
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
+        operations.append((function_name, args))
+        match function_name:
+            case 'Path.mkdir':
+                return None
+            case 'Path.write_text':
+                return len(args[1].encode('utf-8'))
+            case 'Path.exists':
+                return True
+            case 'Path.read_text':
+                return 'file content'
+            case _:
+                return None
+
+    code = """
+from pathlib import Path
+Path('/tmp/mydir').mkdir()
+Path('/tmp/mydir/file.txt').write_text('hello')
+Path('/tmp/mydir/file.txt').read_text()
+"""
+    m = pydantic_monty.Monty(code)
+    result = m.run(os=os_handler)
+
+    assert result == snapshot('file content')
+    assert operations == snapshot(
+        [
+            ('Path.mkdir', (PurePosixPath('/tmp/mydir'),)),
+            ('Path.write_text', (PurePosixPath('/tmp/mydir/file.txt'), 'hello')),
+            ('Path.read_text', (PurePosixPath('/tmp/mydir/file.txt'),)),
+        ]
+    )

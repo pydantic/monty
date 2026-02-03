@@ -391,7 +391,11 @@ impl PyMonty {
                     return Err(PyRuntimeError::new_err("async futures not supported with `Monty.run`"));
                 }
                 RunProgress::OsCall {
-                    function, args, state, ..
+                    function,
+                    args,
+                    kwargs,
+                    state,
+                    ..
                 } => {
                     let result: ExternalResult = if let Some(os_callback) = os {
                         // Convert args to Python
@@ -401,8 +405,17 @@ impl PyMonty {
                             .collect::<PyResult<_>>()?;
                         let py_args_tuple = PyTuple::new(py, py_args)?;
 
+                        // Convert kwargs to Python dict
+                        let py_kwargs = PyDict::new(py);
+                        for (k, v) in &kwargs {
+                            py_kwargs.set_item(
+                                monty_to_py(py, k, dataclass_registry)?,
+                                monty_to_py(py, v, dataclass_registry)?,
+                            )?;
+                        }
+
                         // call the os callback, if an exception is raised, return it to monty
-                        match os_callback.call1((function.to_string(), py_args_tuple)) {
+                        match os_callback.call1((function.to_string(), py_args_tuple, py_kwargs)) {
                             Ok(result) => py_to_monty(&result)?.into(),
                             Err(err) => exc_py_to_monty(py, &err).into(),
                         }

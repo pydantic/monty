@@ -381,6 +381,20 @@ pub enum StaticStrings {
     Resolve,
     #[strum(serialize = "absolute")]
     Absolute,
+
+    // Path write methods (require OsAccess - yield external calls)
+    #[strum(serialize = "write_text")]
+    WriteText,
+    #[strum(serialize = "write_bytes")]
+    WriteBytes,
+    #[strum(serialize = "mkdir")]
+    Mkdir,
+    #[strum(serialize = "unlink")]
+    Unlink,
+    #[strum(serialize = "rmdir")]
+    Rmdir,
+    #[strum(serialize = "rename")]
+    Rename,
 }
 
 impl StaticStrings {

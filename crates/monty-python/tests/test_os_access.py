@@ -219,7 +219,72 @@ def test_read_bytes_is_a_directory():
 
 
 # =============================================================================
-# Writing Files (via direct API - not yet implemented in Monty)
+# Writing Files (via Monty)
+# =============================================================================
+
+
+def test_write_text_via_monty():
+    """Path.write_text() creates a new file via Monty."""
+    fs = OSAccess([MemoryFile('/test/existing.txt', content='existing')])
+
+    code = """
+from pathlib import Path
+Path('/test/new.txt').write_text('new content')
+"""
+    result = Monty(code).run(os=fs)
+    # write_text returns the number of bytes written
+    assert result == snapshot(11)
+
+    # Verify file was created
+    assert fs.path_exists(P('/test/new.txt')) is True
+    assert fs.path_read_text(P('/test/new.txt')) == 'new content'
+
+
+def test_write_text_overwrite_via_monty():
+    """Path.write_text() overwrites existing file via Monty."""
+    fs = OSAccess([MemoryFile('/test/file.txt', content='original')])
+
+    code = """
+from pathlib import Path
+Path('/test/file.txt').write_text('updated')
+"""
+    Monty(code).run(os=fs)
+    assert fs.path_read_text(P('/test/file.txt')) == 'updated'
+
+
+def test_write_bytes_via_monty():
+    """Path.write_bytes() creates a new file via Monty."""
+    fs = OSAccess([MemoryFile('/test/existing.txt', content='existing')])
+
+    code = """
+from pathlib import Path
+Path('/test/new.bin').write_bytes(b'binary data')
+"""
+    result = Monty(code).run(os=fs)
+    assert result == snapshot(11)
+    assert fs.path_read_bytes(P('/test/new.bin')) == b'binary data'
+
+
+def test_write_text_parent_not_exists_via_monty():
+    """Path.write_text() raises FileNotFoundError when parent doesn't exist via Monty."""
+    fs = OSAccess()
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        Monty("from pathlib import Path; Path('/no/parent/file.txt').write_text('test')").run(os=fs)
+    assert str(exc_info.value) == snapshot(
+        "FileNotFoundError: [Errno 2] No such file or directory: '/no/parent/file.txt'"
+    )
+
+
+def test_write_text_to_directory_via_monty():
+    """Path.write_text() raises IsADirectoryError when writing to a directory via Monty."""
+    fs = OSAccess([MemoryFile('/test/subdir/file.txt', content='hello')])
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        Monty("from pathlib import Path; Path('/test/subdir').write_text('test')").run(os=fs)
+    assert str(exc_info.value) == snapshot("OSError: [Errno 21] Is a directory: '/test/subdir'")
+
+
+# =============================================================================
+# Writing Files (via direct API)
 # =============================================================================
 
 
@@ -276,7 +341,71 @@ def test_write_text_to_directory_direct():
 
 
 # =============================================================================
-# Directory Operations - mkdir (via direct API - not yet implemented in Monty)
+# Directory Operations - mkdir (via Monty)
+# =============================================================================
+
+
+def test_mkdir_basic_via_monty():
+    """Path.mkdir() creates a directory via Monty."""
+    fs = OSAccess([MemoryFile('/test/file.txt', content='hello')])
+
+    code = """
+from pathlib import Path
+Path('/test/newdir').mkdir()
+"""
+    Monty(code).run(os=fs)
+    assert fs.path_is_dir(P('/test/newdir')) is True
+
+
+def test_mkdir_with_parents_via_monty():
+    """Path.mkdir(parents=True) creates parent directories via Monty."""
+    fs = OSAccess()
+
+    code = """
+from pathlib import Path
+Path('/a/b/c/d').mkdir(parents=True)
+"""
+    Monty(code).run(os=fs)
+    assert fs.path_is_dir(P('/a')) is True
+    assert fs.path_is_dir(P('/a/b')) is True
+    assert fs.path_is_dir(P('/a/b/c')) is True
+    assert fs.path_is_dir(P('/a/b/c/d')) is True
+
+
+def test_mkdir_exist_ok_true_via_monty():
+    """Path.mkdir(exist_ok=True) doesn't raise for existing directory via Monty."""
+    fs = OSAccess([MemoryFile('/test/subdir/file.txt', content='hello')])
+
+    code = """
+from pathlib import Path
+Path('/test/subdir').mkdir(exist_ok=True)
+"""
+    # Should not raise
+    Monty(code).run(os=fs)
+    assert fs.path_is_dir(P('/test/subdir')) is True
+
+
+def test_mkdir_exist_ok_false_via_monty():
+    """Path.mkdir() raises OSError (FileExistsError) for existing directory via Monty."""
+    fs = OSAccess([MemoryFile('/test/subdir/file.txt', content='hello')])
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        Monty("from pathlib import Path; Path('/test/subdir').mkdir()").run(os=fs)
+    # Monty maps FileExistsError to OSError
+    assert str(exc_info.value) == snapshot("OSError: [Errno 17] File exists: '/test/subdir'")
+
+
+def test_mkdir_parent_not_exists_via_monty():
+    """Path.mkdir() raises FileNotFoundError when parent doesn't exist via Monty."""
+    fs = OSAccess()
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        Monty("from pathlib import Path; Path('/no/parent/dir').mkdir()").run(os=fs)
+    assert str(exc_info.value) == snapshot("FileNotFoundError: [Errno 2] No such file or directory: '/no/parent/dir'")
+
+
+# =============================================================================
+# Directory Operations - mkdir (via direct API)
 # =============================================================================
 
 
@@ -345,7 +474,52 @@ def test_mkdir_parent_is_file_direct():
 
 
 # =============================================================================
-# Directory Operations - rmdir (via direct API - not yet implemented in Monty)
+# Directory Operations - rmdir (via Monty)
+# =============================================================================
+
+
+def test_rmdir_empty_directory_via_monty():
+    """Path.rmdir() removes an empty directory via Monty."""
+    fs = OSAccess([MemoryFile('/test/subdir/file.txt', content='hello')])
+    fs.path_mkdir(P('/test/newdir'), parents=False, exist_ok=False)
+
+    code = """
+from pathlib import Path
+Path('/test/newdir').rmdir()
+"""
+    Monty(code).run(os=fs)
+    assert fs.path_exists(P('/test/newdir')) is False
+
+
+def test_rmdir_non_empty_directory_via_monty():
+    """Path.rmdir() raises OSError for non-empty directory via Monty."""
+    fs = OSAccess([MemoryFile('/test/subdir/file.txt', content='hello')])
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        Monty("from pathlib import Path; Path('/test/subdir').rmdir()").run(os=fs)
+    assert str(exc_info.value) == snapshot("OSError: [Errno 39] Directory not empty: '/test/subdir'")
+
+
+def test_rmdir_not_found_via_monty():
+    """Path.rmdir() raises FileNotFoundError for non-existent path via Monty."""
+    fs = OSAccess()
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        Monty("from pathlib import Path; Path('/missing').rmdir()").run(os=fs)
+    assert str(exc_info.value) == snapshot("FileNotFoundError: [Errno 2] No such file or directory: '/missing'")
+
+
+def test_rmdir_file_not_directory_via_monty():
+    """Path.rmdir() raises NotADirectoryError for files via Monty."""
+    fs = OSAccess([MemoryFile('/test/file.txt', content='hello')])
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        Monty("from pathlib import Path; Path('/test/file.txt').rmdir()").run(os=fs)
+    assert str(exc_info.value) == snapshot("OSError: [Errno 20] Not a directory: '/test/file.txt'")
+
+
+# =============================================================================
+# Directory Operations - rmdir (via direct API)
 # =============================================================================
 
 
@@ -435,7 +609,42 @@ def test_iterdir_not_found():
 
 
 # =============================================================================
-# File Operations - unlink (via direct API - not yet implemented in Monty)
+# File Operations - unlink (via Monty)
+# =============================================================================
+
+
+def test_unlink_file_via_monty():
+    """Path.unlink() removes a file via Monty."""
+    fs = OSAccess([MemoryFile('/test/file.txt', content='hello')])
+
+    code = """
+from pathlib import Path
+Path('/test/file.txt').unlink()
+"""
+    Monty(code).run(os=fs)
+    assert fs.path_exists(P('/test/file.txt')) is False
+
+
+def test_unlink_file_not_found_via_monty():
+    """Path.unlink() raises FileNotFoundError for non-existent files via Monty."""
+    fs = OSAccess()
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        Monty("from pathlib import Path; Path('/missing.txt').unlink()").run(os=fs)
+    assert str(exc_info.value) == snapshot("FileNotFoundError: [Errno 2] No such file or directory: '/missing.txt'")
+
+
+def test_unlink_is_directory_via_monty():
+    """Path.unlink() raises IsADirectoryError for directories via Monty."""
+    fs = OSAccess([MemoryFile('/test/subdir/file.txt', content='hello')])
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        Monty("from pathlib import Path; Path('/test/subdir').unlink()").run(os=fs)
+    assert str(exc_info.value) == snapshot("OSError: [Errno 21] Is a directory: '/test/subdir'")
+
+
+# =============================================================================
+# File Operations - unlink (via direct API)
 # =============================================================================
 
 
@@ -539,7 +748,49 @@ Path('/test/file.txt').stat().st_size
 
 
 # =============================================================================
-# Rename Operations (via direct API - not yet implemented in Monty)
+# Rename Operations (via Monty)
+# =============================================================================
+
+
+def test_rename_file_via_monty():
+    """Path.rename() renames a file via Monty."""
+    fs = OSAccess([MemoryFile('/test/old.txt', content='content')])
+
+    code = """
+from pathlib import Path
+Path('/test/old.txt').rename(Path('/test/new.txt'))
+"""
+    Monty(code).run(os=fs)
+
+    assert fs.path_exists(P('/test/old.txt')) is False
+    assert fs.path_exists(P('/test/new.txt')) is True
+    assert fs.path_read_text(P('/test/new.txt')) == 'content'
+
+
+def test_rename_source_not_found_via_monty():
+    """Path.rename() raises FileNotFoundError when source doesn't exist via Monty."""
+    fs = OSAccess()
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        Monty("from pathlib import Path; Path('/missing.txt').rename(Path('/new.txt'))").run(os=fs)
+    assert str(exc_info.value) == snapshot(
+        "FileNotFoundError: [Errno 2] No such file or directory: '/missing.txt' -> '/new.txt'"
+    )
+
+
+def test_rename_target_parent_not_found_via_monty():
+    """Path.rename() raises FileNotFoundError when target parent doesn't exist via Monty."""
+    fs = OSAccess([MemoryFile('/test/file.txt', content='content')])
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        Monty("from pathlib import Path; Path('/test/file.txt').rename(Path('/no/parent/file.txt'))").run(os=fs)
+    assert str(exc_info.value) == snapshot(
+        "FileNotFoundError: [Errno 2] No such file or directory: '/test/file.txt' -> '/no/parent/file.txt'"
+    )
+
+
+# =============================================================================
+# Rename Operations (via direct API)
 # =============================================================================
 
 

@@ -54,15 +54,17 @@ class TestOS(AbstractOS):
             raise FileNotFoundError(f'No such file: {p}')
         return self.files[p]
 
-    def path_write_text(self, path: PurePosixPath, data: str) -> None:
+    def path_write_text(self, path: PurePosixPath, data: str) -> int:
         p = str(path)
         self._ensure_parent_exists(p)
         self.files[p] = data.encode('utf-8')
+        return len(data)
 
-    def path_write_bytes(self, path: PurePosixPath, data: bytes) -> None:
+    def path_write_bytes(self, path: PurePosixPath, data: bytes) -> int:
         p = str(path)
         self._ensure_parent_exists(p)
         self.files[p] = data
+        return len(data)
 
     def path_mkdir(self, path: PurePosixPath, parents: bool, exist_ok: bool) -> None:
         p = str(path)

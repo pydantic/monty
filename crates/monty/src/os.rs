@@ -88,6 +88,7 @@ impl TryFrom<StaticStrings> for OsFunction {
     /// Returns `Err(())` if the method name doesn't correspond to an OS operation.
     fn try_from(method: StaticStrings) -> Result<Self, Self::Error> {
         match method {
+            // Read operations
             StaticStrings::Exists => Ok(Self::Exists),
             StaticStrings::IsFile => Ok(Self::IsFile),
             StaticStrings::IsDir => Ok(Self::IsDir),
@@ -98,6 +99,13 @@ impl TryFrom<StaticStrings> for OsFunction {
             StaticStrings::Iterdir => Ok(Self::Iterdir),
             StaticStrings::Resolve => Ok(Self::Resolve),
             StaticStrings::Absolute => Ok(Self::Absolute),
+            // Write operations
+            StaticStrings::WriteText => Ok(Self::WriteText),
+            StaticStrings::WriteBytes => Ok(Self::WriteBytes),
+            StaticStrings::Mkdir => Ok(Self::Mkdir),
+            StaticStrings::Unlink => Ok(Self::Unlink),
+            StaticStrings::Rmdir => Ok(Self::Rmdir),
+            StaticStrings::Rename => Ok(Self::Rename),
             _ => Err(()),
         }
     }

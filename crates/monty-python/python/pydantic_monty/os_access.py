@@ -118,7 +118,7 @@ class AbstractOS(ABC):
     Pass an instance as the `os` parameter to `Monty.run()`.
     """
 
-    def __call__(self, function_name: OsFunction, args: tuple[Any, ...]) -> Any:
+    def __call__(self, function_name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
         """Dispatch a filesystem operation to the appropriate method.
 
         This is called by Monty when Monty code invokes Path methods.
@@ -127,10 +127,12 @@ class AbstractOS(ABC):
         Args:
             function_name: The Path method being called (e.g., 'Path.exists').
             args: The arguments passed to the method.
+            kwargs: The keyword arguments passed to the method.
 
         Returns:
             The result of the filesystem operation.
         """
+        kwargs = kwargs or {}
         match function_name:
             case 'Path.exists':
                 return self.path_exists(*args)
@@ -149,7 +151,10 @@ class AbstractOS(ABC):
             case 'Path.write_bytes':
                 return self.path_write_bytes(*args)
             case 'Path.mkdir':
-                return self.path_mkdir(*args)
+                assert len(kwargs) <= 2, f'Unexpected keyword arguments: {kwargs}'
+                parents = kwargs.get('parents', False)
+                exist_ok = kwargs.get('exist_ok', False)
+                return self.path_mkdir(*args, parents=parents, exist_ok=exist_ok)
             case 'Path.unlink':
                 return self.path_unlink(*args)
             case 'Path.rmdir':
@@ -248,12 +253,15 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_write_text(self, path: PurePosixPath, data: str) -> None:
+    def path_write_text(self, path: PurePosixPath, data: str) -> int:
         """Write text data to a file.
 
         Args:
             path: The path to the file.
             data: The text content to write.
+
+        Returns:
+            The number of characters written.
 
         Raises:
             FileNotFoundError: If the parent directory does not exist.
@@ -262,12 +270,15 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_write_bytes(self, path: PurePosixPath, data: bytes) -> None:
+    def path_write_bytes(self, path: PurePosixPath, data: bytes) -> int:
         """Write binary data to a file.
 
         Args:
             path: The path to the file.
             data: The binary content to write.
+
+        Returns:
+            The number of bytes written.
 
         Raises:
             FileNotFoundError: If the parent directory does not exist.
@@ -714,16 +725,19 @@ class OSAccess(AbstractOS):
         content = file.read_content()
         return content if isinstance(content, bytes) else content.encode()
 
-    def path_write_text(self, path: PurePosixPath, data: str) -> None:
+    def path_write_text(self, path: PurePosixPath, data: str) -> int:
         self._write_file(path, data)
+        return len(data)
 
-    def path_write_bytes(self, path: PurePosixPath, data: bytes) -> None:
+    def path_write_bytes(self, path: PurePosixPath, data: bytes) -> int:
         self._write_file(path, data)
+        return len(data)
 
     def _write_file(self, path: PurePosixPath, data: bytes | str) -> None:
         entry = self._get_entry(path)
         if _is_file(entry):
             entry.write_content(data)
+            return
         elif _is_dir(entry):
             raise IsADirectoryError(f'[Errno 21] Is a directory: {str(path)!r}')
 

@@ -96,3 +96,41 @@ base = Path('/virtual')
 full = base / 'subdir' / 'nested.txt'
 assert full.read_text() == 'nested content', 'path concat then read'
 assert full.exists() == True, 'path concat then exists'
+
+# === write_text() ===
+Path('/virtual/new_file.txt').write_text('created by write_text')
+assert Path('/virtual/new_file.txt').read_text() == 'created by write_text', 'write_text creates file'
+# Overwrite existing file
+Path('/virtual/file.txt').write_text('overwritten')
+assert Path('/virtual/file.txt').read_text() == 'overwritten', 'write_text overwrites'
+
+# === write_bytes() ===
+Path('/virtual/binary.dat').write_bytes(b'\xff\xfe\xfd')
+assert Path('/virtual/binary.dat').read_bytes() == b'\xff\xfe\xfd', 'write_bytes creates file'
+
+# === mkdir() ===
+Path('/virtual/new_dir').mkdir()
+assert Path('/virtual/new_dir').is_dir() == True, 'mkdir creates directory'
+# mkdir with parents
+Path('/virtual/a/b/c').mkdir(parents=True)
+assert Path('/virtual/a/b/c').is_dir() == True, 'mkdir parents creates nested'
+# mkdir with exist_ok
+Path('/virtual/new_dir').mkdir(exist_ok=True)  # Should not raise
+
+# === unlink() ===
+Path('/virtual/to_delete.txt').write_text('delete me')
+assert Path('/virtual/to_delete.txt').exists() == True, 'file exists before unlink'
+Path('/virtual/to_delete.txt').unlink()
+assert Path('/virtual/to_delete.txt').exists() == False, 'unlink removes file'
+
+# === rmdir() ===
+Path('/virtual/empty_dir').mkdir()
+assert Path('/virtual/empty_dir').is_dir() == True, 'dir exists before rmdir'
+Path('/virtual/empty_dir').rmdir()
+assert Path('/virtual/empty_dir').exists() == False, 'rmdir removes directory'
+
+# === rename() ===
+Path('/virtual/old_name.txt').write_text('rename test')
+Path('/virtual/old_name.txt').rename(Path('/virtual/new_name.txt'))
+assert Path('/virtual/old_name.txt').exists() == False, 'rename removes old path'
+assert Path('/virtual/new_name.txt').read_text() == 'rename test', 'rename creates new path'

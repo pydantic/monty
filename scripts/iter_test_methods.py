@@ -256,8 +256,118 @@ class VirtualPath(type(Path())):
             return VirtualPath(path_str)
         return VirtualPath(super().absolute())
 
+    def write_text(
+        self,
+        data: str,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> int:
+        path_str = str(self)
+        if is_virtual_path(path_str):
+            content = data.encode(encoding or 'utf-8')
+            VIRTUAL_FILES[path_str] = (content, 0o644)
+            # Add to parent directory contents
+            _add_to_parent_dir(path_str)
+            return len(content)
+        return super().write_text(data, encoding=encoding, errors=errors, newline=newline)
+
+    def write_bytes(self, data: bytes) -> int:  # pyright: ignore[reportIncompatibleMethodOverride]
+        path_str = str(self)
+        if is_virtual_path(path_str):
+            VIRTUAL_FILES[path_str] = (data, 0o644)
+            # Add to parent directory contents
+            _add_to_parent_dir(path_str)
+            return len(data)
+        return super().write_bytes(data)
+
+    def mkdir(self, mode: int = 0o777, parents: bool = False, exist_ok: bool = False) -> None:
+        path_str = str(self)
+        if is_virtual_path(path_str):
+            if path_str in VIRTUAL_DIRS:
+                if exist_ok:
+                    return
+                raise FileExistsError(17, 'File exists', path_str)
+            if path_str in VIRTUAL_FILES:
+                raise FileExistsError(17, 'File exists', path_str)
+
+            # Check if parent exists
+            parent_str = str(self.parent)
+            if parent_str and parent_str not in VIRTUAL_DIRS:
+                if parents:
+                    VirtualPath(parent_str).mkdir(mode=mode, parents=True, exist_ok=True)
+                else:
+                    raise FileNotFoundError(2, 'No such file or directory', path_str)
+
+            VIRTUAL_DIRS.add(path_str)
+            _add_to_parent_dir(path_str)
+            # Initialize empty directory contents
+            if path_str not in VIRTUAL_DIR_CONTENTS:
+                VIRTUAL_DIR_CONTENTS[path_str] = []
+            return
+        super().mkdir(mode=mode, parents=parents, exist_ok=exist_ok)
+
+    def unlink(self, missing_ok: bool = False) -> None:
+        path_str = str(self)
+        if is_virtual_path(path_str):
+            if path_str in VIRTUAL_FILES:
+                del VIRTUAL_FILES[path_str]
+                _remove_from_parent_dir(path_str)
+                return
+            if not missing_ok:
+                raise FileNotFoundError(2, 'No such file or directory', path_str)
+            return
+        super().unlink(missing_ok=missing_ok)
+
+    def rmdir(self) -> None:
+        path_str = str(self)
+        if is_virtual_path(path_str):
+            if path_str in VIRTUAL_DIRS:
+                VIRTUAL_DIRS.remove(path_str)
+                if path_str in VIRTUAL_DIR_CONTENTS:
+                    del VIRTUAL_DIR_CONTENTS[path_str]
+                _remove_from_parent_dir(path_str)
+                return
+            raise FileNotFoundError(2, 'No such file or directory', path_str)
+        super().rmdir()
+
+    def rename(self, target: 'VirtualPath | str') -> 'VirtualPath':  # pyright: ignore[reportIncompatibleMethodOverride]
+        path_str = str(self)
+        target_str = str(target)
+        if is_virtual_path(path_str):
+            if path_str in VIRTUAL_FILES:
+                content, mode = VIRTUAL_FILES[path_str]
+                del VIRTUAL_FILES[path_str]
+                _remove_from_parent_dir(path_str)
+                VIRTUAL_FILES[target_str] = (content, mode)
+                _add_to_parent_dir(target_str)
+                return VirtualPath(target_str)
+            if path_str in VIRTUAL_DIRS:
+                VIRTUAL_DIRS.remove(path_str)
+                _remove_from_parent_dir(path_str)
+                VIRTUAL_DIRS.add(target_str)
+                _add_to_parent_dir(target_str)
+                return VirtualPath(target_str)
+            raise FileNotFoundError(2, 'No such file or directory', path_str)
+        return VirtualPath(super().rename(target))
+
     # __truediv__ is NOT overridden - the parent class already uses type(self)
     # to create new paths, which will be VirtualPath instances
+
+
+def _add_to_parent_dir(path_str: str) -> None:
+    """Add a path to its parent directory's contents."""
+    parent = str(Path(path_str).parent)
+    if parent in VIRTUAL_DIR_CONTENTS:
+        if path_str not in VIRTUAL_DIR_CONTENTS[parent]:
+            VIRTUAL_DIR_CONTENTS[parent].append(path_str)
+
+
+def _remove_from_parent_dir(path_str: str) -> None:
+    """Remove a path from its parent directory's contents."""
+    parent = str(Path(path_str).parent)
+    if parent in VIRTUAL_DIR_CONTENTS and path_str in VIRTUAL_DIR_CONTENTS[parent]:
+        VIRTUAL_DIR_CONTENTS[parent].remove(path_str)
 
 
 # Monkey-patch pathlib.Path to use VirtualPath
