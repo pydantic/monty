@@ -21,7 +21,7 @@ use crate::{
     modules::ModuleFunctions,
     resource::{LARGE_RESULT_THRESHOLD, ResourceTracker},
     types::{
-        LongInt, PyTrait, Str, Type,
+        AttrCallResult, LongInt, PyTrait, Str, Type,
         bytes::{bytes_repr_fmt, get_byte_at_index, get_bytes_slice},
         path,
         py_trait::AttrValue,
@@ -1700,26 +1700,20 @@ impl Value {
 
     /// Gets an attribute from this value.
     ///
-    /// Dispatches to `py_getattr` on the underlying type for:
-    /// - Dataclass objects: returns field values
-    /// - Module objects: returns module attributes
-    /// - NamedTuple objects: returns field values by name
-    /// - Exception objects: `.args` returns a tuple of exception arguments
-    /// - Slice objects: `start`, `stop`, `step` properties
-    /// - Path objects: `name`, `parent`, `stem`, `suffix`, etc.
+    /// Dispatches to `py_getattr` on the underlying types where appropriate.
     ///
     /// Returns `AttributeError` for other types or unknown attributes.
-    pub fn py_get_attr(
+    pub fn py_getattr(
         &self,
         name_id: StringId,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<Self> {
+    ) -> RunResult<AttrCallResult> {
         match self {
             Self::Ref(heap_id) => {
                 // Use with_entry_mut to get access to both data and heap without borrow conflicts.
                 // This allows py_getattr to allocate (for computed attributes) while we hold the data.
-                let opt_value = heap.with_entry_mut(*heap_id, |heap, data| -> RunResult<Option<Self>> {
+                let opt_result = heap.with_entry_mut(*heap_id, |heap, data| -> RunResult<Option<AttrCallResult>> {
                     match data.py_getattr(name_id, heap, interns)? {
                         AttrValue::Borrowed(value) => {
                             let value = value.clone_with_heap(heap);
@@ -1727,14 +1721,15 @@ impl Value {
                             if let Self::Ref(ref_id) = &value {
                                 heap.inc_ref(*ref_id);
                             }
-                            Ok(Some(value))
+                            Ok(Some(AttrCallResult::Value(value)))
                         }
-                        AttrValue::Owned(value) => Ok(Some(value)),
+                        AttrValue::Owned(value) => Ok(Some(AttrCallResult::Value(value))),
+                        AttrValue::OsCall(os_function, args) => Ok(Some(AttrCallResult::OsCall(os_function, args))),
                         AttrValue::AttributeError => Ok(None),
                     }
                 })?;
-                if let Some(value) = opt_value {
-                    return Ok(value);
+                if let Some(call_result) = opt_result {
+                    return Ok(call_result);
                 }
             }
             Self::Builtin(Builtins::Type(t)) => {
@@ -1742,7 +1737,7 @@ impl Value {
                 if name_id == StaticStrings::DunderName {
                     let name_str = t.to_string();
                     let str_id = heap.allocate(HeapData::Str(Str::from(name_str)))?;
-                    return Ok(Self::Ref(str_id));
+                    return Ok(AttrCallResult::Value(Self::Ref(str_id)));
                 }
             }
             _ => {}
