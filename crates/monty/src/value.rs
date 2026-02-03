@@ -1717,11 +1717,9 @@ impl Value {
     ) -> RunResult<Self> {
         match self {
             Self::Ref(heap_id) => {
-                let heap_id = *heap_id;
-
                 // Use with_entry_mut to get access to both data and heap without borrow conflicts.
                 // This allows py_getattr to allocate (for computed attributes) while we hold the data.
-                let opt_value = heap.with_entry_mut(heap_id, |heap, data| -> RunResult<Option<Self>> {
+                let opt_value = heap.with_entry_mut(*heap_id, |heap, data| -> RunResult<Option<Self>> {
                     match data.py_getattr(name_id, heap, interns)? {
                         AttrValue::Borrowed(value) => {
                             let value = value.clone_with_heap(heap);

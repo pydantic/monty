@@ -744,7 +744,7 @@ impl PyTrait for HeapData {
     ) -> RunResult<AttrValue<'a>> {
         match self {
             Self::Dataclass(dc) => dc.py_getattr(attr_id, heap, interns),
-            Self::Module(m) => m.py_getattr(attr_id, heap, interns),
+            Self::Module(m) => Ok(m.py_getattr(attr_id, heap, interns)),
             Self::NamedTuple(nt) => nt.py_getattr(attr_id, heap, interns),
             Self::Slice(s) => s.py_getattr(attr_id, heap, interns),
             Self::Exception(exc) => exc.py_getattr(attr_id, heap, interns),
