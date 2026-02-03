@@ -13,11 +13,11 @@ use crate::{
     args::ArgValues,
     asyncio::{Coroutine, GatherFuture, GatherItem},
     exception_private::{ExcType, RunResult, SimpleException},
-    intern::{FunctionId, Interns},
+    intern::{FunctionId, Interns, StringId},
     resource::{ResourceError, ResourceTracker},
     types::{
         AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait,
-        Range, Set, Slice, Str, Tuple, Type,
+        Range, Set, Slice, Str, Tuple, Type, py_trait::AttrValue,
     },
     value::{Attr, Value},
 };
@@ -733,6 +733,24 @@ impl PyTrait for HeapData {
             Self::Tuple(t) => t.py_setitem(key, value, heap, interns),
             Self::Dict(d) => d.py_setitem(key, value, heap, interns),
             _ => Err(ExcType::type_error_not_sub_assignment(self.py_type(heap))),
+        }
+    }
+
+    fn py_getattr<'a>(
+        &'a self,
+        attr_id: StringId,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<AttrValue<'a>> {
+        match self {
+            Self::Dataclass(dc) => dc.py_getattr(attr_id, heap, interns),
+            Self::Module(m) => m.py_getattr(attr_id, heap, interns),
+            Self::NamedTuple(nt) => nt.py_getattr(attr_id, heap, interns),
+            Self::Slice(s) => s.py_getattr(attr_id, heap, interns),
+            Self::Exception(exc) => exc.py_getattr(attr_id, heap, interns),
+            Self::Path(p) => p.py_getattr(attr_id, heap, interns),
+            // All other types don't support attribute access via py_getattr
+            _ => Ok(AttrValue::AttributeError),
         }
     }
 }

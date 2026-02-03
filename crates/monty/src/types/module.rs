@@ -6,7 +6,7 @@ use crate::{
     heap::{Heap, HeapId},
     intern::{Interns, StringId},
     resource::ResourceTracker,
-    types::{AttrCallResult, Dict, PyTrait},
+    types::{AttrCallResult, Dict, PyTrait, py_trait::AttrValue},
     value::{Attr, Value},
 };
 
@@ -95,6 +95,25 @@ impl Module {
     /// Collects child HeapIds for reference counting.
     pub fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.attrs.py_dec_ref_ids(stack);
+    }
+
+    /// Gets an attribute by string ID for the `py_getattr` trait method.
+    ///
+    /// Returns a reference to the attribute value if found, or an `AttributeError`
+    /// if the attribute doesn't exist.
+    #[expect(clippy::unnecessary_wraps)]
+    pub fn py_getattr<'a>(
+        &'a self,
+        attr_id: StringId,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<AttrValue<'a>> {
+        let attr_name = interns.get_str(attr_id);
+        if let Some(value) = self.attrs.get_by_str(attr_name, heap, interns) {
+            Ok(AttrValue::Borrowed(value))
+        } else {
+            Ok(AttrValue::AttributeError)
+        }
     }
 
     /// Calls an attribute as a function on this module.

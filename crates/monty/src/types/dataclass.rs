@@ -7,9 +7,9 @@ use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapId},
-    intern::{Interns, StaticStrings},
+    intern::{Interns, StaticStrings, StringId},
     resource::ResourceTracker,
-    types::Type,
+    types::{Type, py_trait::AttrValue},
     value::{Attr, Value},
 };
 
@@ -128,19 +128,6 @@ impl Dataclass {
     #[must_use]
     pub fn is_frozen(&self) -> bool {
         self.frozen
-    }
-
-    /// Gets an attribute value by name.
-    ///
-    /// Returns Ok(Some(&Value)) if the attribute exists, Ok(None) if it doesn't.
-    /// Returns Err if the key is unhashable (should not happen with string keys).
-    pub fn get_attr(
-        &self,
-        name: &Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<Option<&Value>> {
-        self.attrs.get(name, heap, interns)
     }
 
     /// Sets an attribute value.
@@ -290,6 +277,20 @@ impl PyTrait for Dataclass {
         } else {
             args.drop_with_heap(heap);
             Err(ExcType::attribute_error(Type::Dataclass, method_name))
+        }
+    }
+
+    fn py_getattr<'a>(
+        &'a self,
+        attr_id: StringId,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<AttrValue<'a>> {
+        let attr_name = interns.get_str(attr_id);
+        match self.attrs.get_by_str(attr_name, heap, interns) {
+            Some(value) => Ok(AttrValue::Borrowed(value)),
+            // we use name here, not `self.py_type(heap)` hence returning a Ok(AttrValue::AttributeError)
+            None => Err(ExcType::attribute_error(self.name(), attr_name)),
         }
     }
 }

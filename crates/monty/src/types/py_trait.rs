@@ -17,7 +17,7 @@ use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapId},
-    intern::{ExtFunctionId, Interns},
+    intern::{ExtFunctionId, Interns, StringId},
     os::OsFunction,
     resource::ResourceTracker,
     value::{Attr, Value},
@@ -346,4 +346,36 @@ pub trait PyTrait {
         )
         .into())
     }
+
+    /// Python attribute get operation (`__getattr__`), e.g., `obj.attr`.
+    ///
+    /// Returns the value associated with the attribute (owned), or `Ok(None)` if the type
+    /// doesn't support attribute access at all. Types that support attributes should return
+    /// `Err(AttributeError)` when an attribute is not found, not `Ok(None)`.
+    ///
+    /// The returned `Value` is always owned:
+    /// - For stored values (Dataclass, Module, NamedTuple fields): clone with `clone_with_heap`
+    /// - For computed values (Exception.args, Slice.start, Path.name): return newly created value
+    ///
+    /// Takes `&mut Heap` to allow:
+    /// - Cloning stored values with proper reference counting
+    /// - Allocating computed values that need heap storage
+    ///
+    /// Default implementation returns `Ok(AttrValue::AttributeError)`, indicating the type doesn't support
+    /// attribute access and a generic `AttributeError` should be raised by the caller.
+    fn py_getattr<'a>(
+        &'a self,
+        _attr_id: StringId,
+        _heap: &mut Heap<impl ResourceTracker>,
+        _interns: &Interns,
+    ) -> RunResult<AttrValue<'a>> {
+        Ok(AttrValue::AttributeError)
+    }
+}
+
+/// We can't use `Cow` since it requires the value to be Clonable
+pub(crate) enum AttrValue<'a> {
+    Owned(Value),
+    Borrowed(&'a Value),
+    AttributeError,
 }

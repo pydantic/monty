@@ -21,9 +21,10 @@ use crate::{
     modules::ModuleFunctions,
     resource::{LARGE_RESULT_THRESHOLD, ResourceTracker},
     types::{
-        LongInt, PyTrait, Str, Tuple, Type,
+        LongInt, PyTrait, Str, Type,
         bytes::{bytes_repr_fmt, get_byte_at_index, get_bytes_slice},
-        path, slice,
+        path,
+        py_trait::AttrValue,
         str::{allocate_char, get_char_at_index, get_str_slice, string_repr_fmt},
     },
 };
@@ -1699,125 +1700,57 @@ impl Value {
 
     /// Gets an attribute from this value.
     ///
-    /// Supports attribute access for:
+    /// Dispatches to `py_getattr` on the underlying type for:
     /// - Dataclass objects: returns field values
     /// - Module objects: returns module attributes
+    /// - NamedTuple objects: returns field values by name
     /// - Exception objects: `.args` returns a tuple of exception arguments
+    /// - Slice objects: `start`, `stop`, `step` properties
+    /// - Path objects: `name`, `parent`, `stem`, `suffix`, etc.
     ///
-    /// Returns AttributeError for other types.
+    /// Returns `AttributeError` for other types or unknown attributes.
     pub fn py_get_attr(
         &self,
         name_id: StringId,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<Self> {
-        if let Self::Ref(heap_id) = self {
-            let heap_id = *heap_id;
-            let heap_data = heap.get(heap_id);
+        match self {
+            Self::Ref(heap_id) => {
+                let heap_id = *heap_id;
 
-            match heap_data {
-                HeapData::Dataclass(_) => {
-                    let name_value = Self::InternString(name_id);
-                    heap.with_entry_mut(heap_id, |heap, data| {
-                        if let HeapData::Dataclass(dc) = data {
-                            match dc.get_attr(&name_value, heap, interns) {
-                                Ok(Some(value)) => Ok(value.clone_with_heap(heap)),
-                                Ok(None) => {
-                                    // Use the dataclass's actual name for the error message
-                                    Err(ExcType::attribute_error(dc.name(), interns.get_str(name_id)))
-                                }
-                                Err(e) => Err(e),
+                // Use with_entry_mut to get access to both data and heap without borrow conflicts.
+                // This allows py_getattr to allocate (for computed attributes) while we hold the data.
+                let opt_value = heap.with_entry_mut(heap_id, |heap, data| -> RunResult<Option<Self>> {
+                    match data.py_getattr(name_id, heap, interns)? {
+                        AttrValue::Borrowed(value) => {
+                            let value = value.clone_with_heap(heap);
+                            // Increment refcount for Ref values
+                            if let Self::Ref(ref_id) = &value {
+                                heap.inc_ref(*ref_id);
                             }
-                        } else {
-                            unreachable!("type changed during borrow")
+                            Ok(Some(value))
                         }
-                    })
-                }
-                HeapData::Module(_) => {
-                    // Look up attribute in module's attrs dict
-                    let name_value = Self::InternString(name_id);
-                    heap.with_entry_mut(heap_id, |heap, data| {
-                        if let HeapData::Module(module) = data {
-                            if let Some(value) = module.get_attr(&name_value, heap, interns) {
-                                // Increment refcount for Ref values
-                                if let Self::Ref(ref_id) = &value {
-                                    heap.inc_ref(*ref_id);
-                                }
-                                Ok(value)
-                            } else {
-                                let module_name = interns.get_str(module.name());
-                                Err(ExcType::attribute_error_module(module_name, interns.get_str(name_id)))
-                            }
-                        } else {
-                            unreachable!("type changed during borrow")
-                        }
-                    })
-                }
-                HeapData::NamedTuple(nt) => {
-                    // Look up attribute by field name
-                    // Copy the value (and type_name for error) without incrementing refcount while we hold the borrow
-                    if let Some(value) = nt.get_by_name(name_id) {
-                        let copied = value.copy_for_extend();
-                        // Increment refcount for heap refs
-                        if let Self::Ref(ref_id) = &copied {
-                            heap.inc_ref(*ref_id);
-                        }
-                        Ok(copied)
-                    } else {
-                        Err(ExcType::attribute_error(nt.py_type(heap), interns.get_str(name_id)))
+                        AttrValue::Owned(value) => Ok(Some(value)),
+                        AttrValue::AttributeError => Ok(None),
                     }
-                }
-                HeapData::Exception(exc) => {
-                    if name_id == StaticStrings::Args {
-                        // Clone the arg to avoid borrow conflict when allocating
-                        let arg_clone = exc.arg().cloned();
-                        // Construct tuple with 0 or 1 elements based on whether arg exists
-                        let elements = if let Some(arg_str) = arg_clone {
-                            let str_id = heap.allocate(HeapData::Str(Str::from(arg_str)))?;
-                            vec![Self::Ref(str_id)]
-                        } else {
-                            vec![]
-                        };
-                        let tuple_id = heap.allocate(HeapData::Tuple(Tuple::new(elements)))?;
-                        Ok(Self::Ref(tuple_id))
-                    } else {
-                        let exc_type = exc.py_type();
-                        Err(ExcType::attribute_error(exc_type, interns.get_str(name_id)))
-                    }
-                }
-                HeapData::Slice(slice) => {
-                    // Handle slice attributes: start, stop,
-                    let attr_name = interns.get_str(name_id);
-                    match attr_name {
-                        "start" => Ok(slice::option_i64_to_value(slice.start)),
-                        "stop" => Ok(slice::option_i64_to_value(slice.stop)),
-                        "step" => Ok(slice::option_i64_to_value(slice.step)),
-                        _ => Err(ExcType::attribute_error(Type::Slice, attr_name)),
-                    }
-                }
-                HeapData::Path(path) => {
-                    // Clone the path to avoid borrow conflict with heap
-                    let path_clone = path.clone();
-                    path::get_path_attr(&path_clone, interns.get_str(name_id), heap)
-                }
-                _ => {
-                    let type_name = heap_data.py_type(heap);
-                    Err(ExcType::attribute_error(type_name, interns.get_str(name_id)))
+                })?;
+                if let Some(value) = opt_value {
+                    return Ok(value);
                 }
             }
-        } else if let Self::Builtin(Builtins::Type(t)) = self {
-            // Handle type object attributes like __name__
-            if name_id == StaticStrings::DunderName {
-                let name_str = t.to_string();
-                let str_id = heap.allocate(HeapData::Str(Str::from(name_str)))?;
-                Ok(Self::Ref(str_id))
-            } else {
-                Err(ExcType::attribute_error(Type::Type, interns.get_str(name_id)))
+            Self::Builtin(Builtins::Type(t)) => {
+                // Handle type object attributes like __name__
+                if name_id == StaticStrings::DunderName {
+                    let name_str = t.to_string();
+                    let str_id = heap.allocate(HeapData::Str(Str::from(name_str)))?;
+                    return Ok(Self::Ref(str_id));
+                }
             }
-        } else {
-            let type_name = self.py_type(heap);
-            Err(ExcType::attribute_error(type_name, interns.get_str(name_id)))
+            _ => {}
         }
+        let type_name = self.py_type(heap);
+        Err(ExcType::attribute_error(type_name, interns.get_str(name_id)))
     }
 
     /// Sets an attribute on this value.

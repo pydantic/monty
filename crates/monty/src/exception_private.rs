@@ -11,10 +11,10 @@ use crate::{
     exception_public::{MontyException, StackFrame},
     fstring::FormatError,
     heap::{Heap, HeapData},
-    intern::{Interns, StringId},
+    intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
     resource::ResourceTracker,
-    types::{PyTrait, Type, str::string_repr_fmt},
+    types::{PyTrait, Str, Tuple, Type, py_trait::AttrValue, str::string_repr_fmt},
     value::Value,
 };
 
@@ -1179,6 +1179,31 @@ impl SimpleException {
             exc: self,
             frame: Some(RawStackFrame::from_position(position)),
             hide_caret: false,
+        }
+    }
+
+    /// Gets an attribute from this exception.
+    ///
+    /// Handles the `.args` attribute by allocating a tuple containing the message.
+    /// Returns `Err(AttributeError)` for all other attributes.
+    pub fn py_getattr<'a>(
+        &'a self,
+        attr_id: StringId,
+        heap: &mut Heap<impl ResourceTracker>,
+        _interns: &Interns,
+    ) -> RunResult<AttrValue<'a>> {
+        if attr_id == StaticStrings::Args {
+            // Construct tuple with 0 or 1 elements based on whether arg exists
+            let elements = if let Some(arg_str) = &self.arg {
+                let str_id = heap.allocate(HeapData::Str(Str::from(arg_str.clone())))?;
+                vec![Value::Ref(str_id)]
+            } else {
+                vec![]
+            };
+            let tuple_id = heap.allocate(HeapData::Tuple(Tuple::new(elements)))?;
+            Ok(AttrValue::Owned(Value::Ref(tuple_id)))
+        } else {
+            Ok(AttrValue::AttributeError)
         }
     }
 }
