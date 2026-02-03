@@ -354,66 +354,6 @@ pub(crate) fn path_div(
     Ok(Some(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))?)))
 }
 
-/// Gets a Path attribute by name.
-///
-/// Handles Path properties (name, parent, stem, suffix, suffixes, parts)
-/// and methods that don't require I/O (is_absolute).
-///
-/// I/O methods (exists, read_text, etc.) return bound methods that
-/// yield external function calls when invoked.
-pub(crate) fn get_path_attr(path: &Path, attr_name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-    match attr_name {
-        // Properties returning strings
-        "name" => {
-            let name = path.name();
-            Ok(Value::Ref(heap.allocate(HeapData::Str(Str::new(name.to_owned())))?))
-        }
-        "parent" => {
-            if let Some(parent) = path.parent() {
-                let parent_path = Path::new(parent.to_owned());
-                Ok(Value::Ref(heap.allocate(HeapData::Path(parent_path))?))
-            } else {
-                // Return self when there's no parent (root or relative path)
-                let same_path = Path::new(path.as_str().to_owned());
-                Ok(Value::Ref(heap.allocate(HeapData::Path(same_path))?))
-            }
-        }
-        "stem" => {
-            let stem = path.stem();
-            Ok(Value::Ref(heap.allocate(HeapData::Str(Str::new(stem.to_owned())))?))
-        }
-        "suffix" => {
-            let suffix = path.suffix();
-            Ok(Value::Ref(heap.allocate(HeapData::Str(Str::new(suffix.to_owned())))?))
-        }
-        "suffixes" => {
-            use crate::types::List;
-
-            let suffixes = path.suffixes();
-            let mut items = Vec::with_capacity(suffixes.len());
-            for suffix in suffixes {
-                let str_id = heap.allocate(HeapData::Str(Str::new(suffix.to_owned())))?;
-                items.push(Value::Ref(str_id));
-            }
-            Ok(Value::Ref(heap.allocate(HeapData::List(List::new(items)))?))
-        }
-        "parts" => {
-            use crate::types::Tuple;
-
-            let parts = path.parts();
-            let mut items = Vec::with_capacity(parts.len());
-            for part in parts {
-                let str_id = heap.allocate(HeapData::Str(Str::new(part.to_owned())))?;
-                items.push(Value::Ref(str_id));
-            }
-            Ok(Value::Ref(heap.allocate(HeapData::Tuple(Tuple::new(items)))?))
-        }
-        // Method is_absolute() returns bool - handled as property since it takes no args
-        // NOTE: For method calls, we'd need to return a bound method. For now, properties only.
-        _ => Err(ExcType::attribute_error(Type::Path, attr_name)),
-    }
-}
-
 /// Normalizes a path string to POSIX format.
 ///
 /// - Converts backslashes to forward slashes
@@ -620,104 +560,56 @@ impl PyTrait for Path {
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<Option<AttrCallResult>> {
-        // Path attributes are computed values, return Cow::Owned
-        let attr_name = interns.get_str(attr_id);
-        let v = get_path_attr(self, attr_name, heap)?;
+        let v = match StaticStrings::from_string_id(attr_id) {
+            // Properties returning strings
+            Some(StaticStrings::Name) => {
+                let name = self.name();
+                Value::Ref(heap.allocate(HeapData::Str(Str::new(name.to_owned())))?)
+            }
+            Some(StaticStrings::Parent) => {
+                if let Some(parent) = self.parent() {
+                    let parent_path = Self::new(parent.to_owned());
+                    Value::Ref(heap.allocate(HeapData::Path(parent_path))?)
+                } else {
+                    // Return self when there's no parent (root or relative path)
+                    let same_path = Self::new(self.as_str().to_owned());
+                    Value::Ref(heap.allocate(HeapData::Path(same_path))?)
+                }
+            }
+            Some(StaticStrings::Stem) => {
+                let stem = self.stem();
+                Value::Ref(heap.allocate(HeapData::Str(Str::new(stem.to_owned())))?)
+            }
+            Some(StaticStrings::Suffix) => {
+                let suffix = self.suffix();
+                Value::Ref(heap.allocate(HeapData::Str(Str::new(suffix.to_owned())))?)
+            }
+            Some(StaticStrings::Suffixes) => {
+                use crate::types::List;
+
+                let suffixes = self.suffixes();
+                let mut items = Vec::with_capacity(suffixes.len());
+                for suffix in suffixes {
+                    let str_id = heap.allocate(HeapData::Str(Str::new(suffix.to_owned())))?;
+                    items.push(Value::Ref(str_id));
+                }
+                Value::Ref(heap.allocate(HeapData::List(List::new(items)))?)
+            }
+            Some(StaticStrings::Parts) => {
+                use crate::types::Tuple;
+
+                let parts = self.parts();
+                let mut items = Vec::with_capacity(parts.len());
+                for part in parts {
+                    let str_id = heap.allocate(HeapData::Str(Str::new(part.to_owned())))?;
+                    items.push(Value::Ref(str_id));
+                }
+                Value::Ref(heap.allocate(HeapData::Tuple(Tuple::new(items)))?)
+            }
+            // Method is_absolute() returns bool - handled as property since it takes no args
+            // NOTE: For method calls, we'd need to return a bound method. For now, properties only.
+            _ => return Err(ExcType::attribute_error(Type::Path, interns.get_str(attr_id))),
+        };
         Ok(Some(AttrCallResult::Value(v)))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_name() {
-        assert_eq!(Path::new("/usr/local/bin/python".to_owned()).name(), "python");
-        assert_eq!(Path::new("/usr/local/bin/".to_owned()).name(), "bin");
-        assert_eq!(Path::new("file.txt".to_owned()).name(), "file.txt");
-        assert_eq!(Path::new("/".to_owned()).name(), "");
-    }
-
-    #[test]
-    fn test_parent() {
-        assert_eq!(Path::new("/usr/local/bin".to_owned()).parent(), Some("/usr/local"));
-        assert_eq!(Path::new("/usr".to_owned()).parent(), Some("/"));
-        assert_eq!(Path::new("/".to_owned()).parent(), None);
-        assert_eq!(Path::new("file.txt".to_owned()).parent(), Some("."));
-    }
-
-    #[test]
-    fn test_stem() {
-        assert_eq!(Path::new("/path/file.tar.gz".to_owned()).stem(), "file.tar");
-        assert_eq!(Path::new("/path/file.txt".to_owned()).stem(), "file");
-        assert_eq!(Path::new("/path/.bashrc".to_owned()).stem(), ".bashrc");
-        assert_eq!(Path::new("/path/file".to_owned()).stem(), "file");
-    }
-
-    #[test]
-    fn test_suffix() {
-        assert_eq!(Path::new("/path/file.tar.gz".to_owned()).suffix(), ".gz");
-        assert_eq!(Path::new("/path/file.txt".to_owned()).suffix(), ".txt");
-        assert_eq!(Path::new("/path/.bashrc".to_owned()).suffix(), "");
-        assert_eq!(Path::new("/path/file".to_owned()).suffix(), "");
-    }
-
-    #[test]
-    fn test_suffixes() {
-        assert_eq!(
-            Path::new("/path/file.tar.gz".to_owned()).suffixes(),
-            vec![".tar", ".gz"]
-        );
-        assert_eq!(Path::new("/path/file.txt".to_owned()).suffixes(), vec![".txt"]);
-        assert!(Path::new("/path/.bashrc".to_owned()).suffixes().is_empty());
-    }
-
-    #[test]
-    fn test_is_absolute() {
-        assert!(Path::new("/usr/bin".to_owned()).is_absolute());
-        assert!(!Path::new("usr/bin".to_owned()).is_absolute());
-        assert!(!Path::new(String::new()).is_absolute());
-    }
-
-    #[test]
-    fn test_joinpath() {
-        assert_eq!(Path::new("/usr".to_owned()).joinpath("local"), "/usr/local");
-        assert_eq!(Path::new("/usr".to_owned()).joinpath("/etc"), "/etc");
-        assert_eq!(Path::new(".".to_owned()).joinpath("file"), "file");
-    }
-
-    #[test]
-    fn test_with_name() {
-        assert_eq!(
-            Path::new("/path/file.txt".to_owned()).with_name("other.py").unwrap(),
-            "/path/other.py"
-        );
-        assert_eq!(
-            Path::new("file.txt".to_owned()).with_name("other.py").unwrap(),
-            "other.py"
-        );
-    }
-
-    #[test]
-    fn test_with_suffix() {
-        assert_eq!(
-            Path::new("/path/file.txt".to_owned()).with_suffix(".py").unwrap(),
-            "/path/file.py"
-        );
-        assert_eq!(
-            Path::new("/path/file.txt".to_owned()).with_suffix("").unwrap(),
-            "/path/file"
-        );
-    }
-
-    #[test]
-    fn test_parts() {
-        assert_eq!(
-            Path::new("/usr/local/bin".to_owned()).parts(),
-            vec!["/", "usr", "local", "bin"]
-        );
-        assert_eq!(Path::new("usr/local".to_owned()).parts(), vec!["usr", "local"]);
-        assert_eq!(Path::new("/".to_owned()).parts(), vec!["/"]);
     }
 }

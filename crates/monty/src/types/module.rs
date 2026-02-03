@@ -107,9 +107,8 @@ impl Module {
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> Option<AttrCallResult> {
-        let attr_name = interns.get_str(attr_id);
         self.attrs
-            .get_by_str(attr_name, heap, interns)
+            .get_by_str(interns.get_str(attr_id), heap, interns)
             .map(|value| AttrCallResult::Value(value.clone_with_heap(heap)))
     }
 
