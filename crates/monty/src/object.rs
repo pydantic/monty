@@ -16,7 +16,7 @@ use crate::{
     intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
     types::{
-        LongInt, NamedTuple, PyTrait, Type,
+        LongInt, NamedTuple, Path, PyTrait, Type,
         bytes::{Bytes, bytes_repr},
         dict::Dict,
         list::List,
@@ -122,6 +122,10 @@ pub enum MontyObject {
     /// Returned by the `type()` builtin and can be compared with other types.
     Type(Type),
     BuiltinFunction(BuiltinsFunctions),
+    /// Python `pathlib.Path` object (or technically a `PurePosixPath`).
+    ///
+    /// Represents a filesystem path. Can be used both as input (from host) and output.
+    Path(String),
     /// A dataclass instance with class name, field names, attributes, method names, and mutability.
     Dataclass {
         /// The class name (e.g., "Point", "User").
@@ -293,6 +297,7 @@ impl MontyObject {
                 let dc = Dataclass::new(name, type_id, field_names, dict, methods_set, frozen);
                 Ok(Value::Ref(heap.allocate(HeapData::Dataclass(dc))?))
             }
+            Self::Path(s) => Ok(Value::Ref(heap.allocate(HeapData::Path(Path::new(s)))?)),
             Self::Type(t) => Ok(Value::Builtin(Builtins::Type(t))),
             Self::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
             Self::Repr(_) => Err(InvalidInputError::invalid_type("Repr")),
@@ -460,10 +465,7 @@ impl MontyObject {
                         // GatherFutures are represented as a repr string
                         Self::Repr(format!("<gather({})>", gather.item_count()))
                     }
-                    HeapData::Path(path) => {
-                        // Paths are represented as a repr string
-                        Self::Repr(format!("PosixPath('{}')", path.as_str()))
-                    }
+                    HeapData::Path(path) => Self::Path(path.as_str().to_owned()),
                 };
 
                 // Remove from visited set after processing
@@ -637,6 +639,7 @@ impl MontyObject {
                 }
                 f.write_char(')')
             }
+            Self::Path(p) => write!(f, "PosixPath('{p}')"),
             Self::Type(t) => write!(f, "<class '{t}'>"),
             Self::BuiltinFunction(func) => write!(f, "<built-in function {func}>"),
             Self::Repr(s) => write!(f, "Repr({})", StringRepr(s)),
@@ -671,6 +674,7 @@ impl MontyObject {
             Self::Set(s) => !s.is_empty(),
             Self::FrozenSet(fs) => !fs.is_empty(),
             Self::Exception { .. } => true,
+            Self::Path(_) => true,          // Path instances are always truthy
             Self::Dataclass { .. } => true, // Dataclass instances are always truthy
             Self::Type(_) | Self::BuiltinFunction(_) | Self::Repr(_) | Self::Cycle(_, _) => true,
         }
@@ -696,6 +700,7 @@ impl MontyObject {
             Self::Set(_) => "set",
             Self::FrozenSet(_) => "frozenset",
             Self::Exception { .. } => "Exception",
+            Self::Path(_) => "Path",
             Self::Dataclass { .. } => "dataclass",
             Self::Type(_) => "type",
             Self::BuiltinFunction(_) => "builtin_function_or_method",
@@ -732,6 +737,7 @@ impl Hash for MontyObject {
             Self::Float(f) => f.to_bits().hash(state),
             Self::String(string) => string.hash(state),
             Self::Bytes(bytes) => bytes.hash(state),
+            Self::Path(path) => path.hash(state),
             Self::Type(t) => t.to_string().hash(state),
             Self::Cycle(_, _) => panic!("cycle values are not hashable"),
             _ => panic!("{} python values are not hashable", self.type_name()),
@@ -809,6 +815,7 @@ impl PartialEq for MontyObject {
                     && a_methods == b_methods
                     && a_frozen == b_frozen
             }
+            (Self::Path(a), Self::Path(b)) => a == b,
             (Self::Repr(a), Self::Repr(b)) => a == b,
             (Self::Cycle(a, _), Self::Cycle(b, _)) => a == b,
             (Self::Type(a), Self::Type(b)) => a == b,

@@ -8,7 +8,7 @@ use ::monty::MontyObject;
 use monty::MontyException;
 use num_bigint::BigInt;
 use pyo3::{
-    exceptions::PyBaseException,
+    exceptions::{PyBaseException, PyTypeError},
     prelude::*,
     sync::PyOnceLock,
     types::{PyBool, PyBytes, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple},
@@ -101,11 +101,14 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
         Ok(exc_to_monty_object(exc))
     } else if is_dataclass(obj) {
         dataclass_to_monty(obj)
+    } else if obj.is_instance(get_pure_posix_path(obj.py())?)? {
+        // Handle pathlib.PurePosixPath and thereby pathlib.PosixPath objects
+        let path_str: String = obj.str()?.extract()?;
+        Ok(MontyObject::Path(path_str))
+    } else if let Ok(name) = obj.get_type().name() {
+        Err(PyTypeError::new_err(format!("Cannot convert {name} to Monty value")))
     } else {
-        Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
-            "Cannot convert {} to Monty value",
-            obj.get_type().name()?
-        )))
+        Err(PyTypeError::new_err("Cannot convert unknown type to Monty value"))
     }
 }
 
@@ -204,6 +207,12 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &Bound<'_, Py
             frozen,
             methods: _,
         } => dataclass_to_py(py, name, *type_id, field_names, attrs, *frozen, dc_registry),
+        // Path - convert to Python pathlib.Path
+        MontyObject::Path(p) => {
+            let pure_posix_path = get_pure_posix_path(py)?;
+            let path_obj = pure_posix_path.call1((p,))?;
+            Ok(path_obj.into_any().unbind())
+        }
         // Output-only types - convert to string representation
         MontyObject::Repr(s) => Ok(PyString::new(py, s).into_any().unbind()),
         MontyObject::Cycle(_, placeholder) => Ok(PyString::new(py, placeholder).into_any().unbind()),
@@ -221,4 +230,11 @@ fn get_namedtuple(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static NAMEDTUPLE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
     NAMEDTUPLE.import(py, "collections", "namedtuple")
+}
+
+/// Cached import of `pathlib.PurePosixPath` class.
+fn get_pure_posix_path(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static PUREPOSIX: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    PUREPOSIX.import(py, "pathlib", "PurePosixPath")
 }

@@ -318,14 +318,14 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def path_iterdir(self, path: str) -> list[str]:
+    def path_iterdir(self, path: str) -> list[PurePosixPath]:
         """List the contents of a directory.
 
         Args:
             path: The path to the directory.
 
         Returns:
-            A list of entry names (not full paths) in the directory.
+            A list of full paths (as PurePosixPath) for entries in the directory.
 
         Raises:
             FileNotFoundError: If the directory does not exist.
@@ -780,8 +780,10 @@ class OSAccess(AbstractOS):
         assert _is_dir(parent_dir), f'Expected parent of a file to always be a directory, got {parent_dir}'
         del parent_dir[PurePosixPath(path).name]
 
-    def path_iterdir(self, path: str) -> list[str]:
-        return list(self._get_dir(path).keys())
+    def path_iterdir(self, path: str) -> list[PurePosixPath]:
+        # Return full paths as PurePosixPath objects (will be converted to MontyObject::Path)
+        dir_path = PurePosixPath(path)
+        return [dir_path / name for name in self._get_dir(path).keys()]
 
     def path_stat(self, path: str) -> StatResult:
         entry = self._get_entry_exists(path)

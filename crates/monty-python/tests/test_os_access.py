@@ -402,7 +402,7 @@ from pathlib import Path
 """
     result = Monty(code).run(os=fs)
     # Result may be in any order, so sort in Python
-    assert sorted(result) == snapshot(['a.txt', 'b.txt', 'subdir'])
+    assert sorted(result) == snapshot(['/test/a.txt', '/test/b.txt', '/test/subdir'])
 
 
 def test_iterdir_empty_directory_direct():
@@ -895,7 +895,7 @@ def test_os_access_direct_api():
 
     # Test path_iterdir
     contents = fs.path_iterdir('/test')
-    assert sorted(contents) == ['file.txt', 'subdir']
+    assert sorted(contents) == snapshot([PurePosixPath('/test/file.txt'), PurePosixPath('/test/subdir')])
 
     # Test path_absolute
     assert fs.path_absolute('relative') == '/relative'
@@ -915,7 +915,7 @@ from pathlib import Path
 (Path('/').is_dir(), sorted([str(p) for p in Path('/').iterdir()]))
 """
     result = Monty(code).run(os=fs)
-    assert result == snapshot((True, ['file.txt']))
+    assert result == snapshot((True, ['/file.txt']))
 
 
 def test_empty_file():

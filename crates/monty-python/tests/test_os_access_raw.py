@@ -4,6 +4,8 @@ These tests verify that AbstractFileSystem can be subclassed to provide
 a virtual filesystem that Monty code can interact with via Path methods.
 """
 
+from pathlib import PurePosixPath
+
 import pytest
 from inline_snapshot import snapshot
 
@@ -83,10 +85,10 @@ class TestOS(AbstractOS):
                 raise OSError(f'Directory not empty: {path}')
         self.directories.remove(path)
 
-    def path_iterdir(self, path: str) -> list[str]:
+    def path_iterdir(self, path: str) -> list[PurePosixPath]:
         if path not in self.directories:
             raise FileNotFoundError(f'No such directory: {path}')
-        result: list[str] = []
+        result: list[PurePosixPath] = []
         prefix = path.rstrip('/') + '/'
         seen: set[str] = set()
         for f in self.files:
@@ -96,14 +98,14 @@ class TestOS(AbstractOS):
                 child = rest.split('/')[0]
                 if child and child not in seen:
                     seen.add(child)
-                    result.append(child)
+                    result.append(PurePosixPath(child))
         for d in self.directories:
             if d.startswith(prefix) and d != path:
                 rest = d[len(prefix) :]
                 child = rest.split('/')[0]
                 if child and child not in seen:
                     seen.add(child)
-                    result.append(child)
+                    result.append(PurePosixPath(child))
         return sorted(result)
 
     def path_stat(self, path: str) -> StatResult:

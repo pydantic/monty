@@ -570,7 +570,8 @@ fn dispatch_os_call(function: OsFunction, args: &[MontyObject]) -> ExternalResul
         }
         OsFunction::Iterdir => {
             if let Some(entries) = get_virtual_dir_entries(&path) {
-                let list: Vec<MontyObject> = entries.iter().map(|e| MontyObject::String((*e).to_owned())).collect();
+                // Return Path objects, not strings
+                let list: Vec<MontyObject> = entries.iter().map(|e| MontyObject::Path((*e).to_owned())).collect();
                 MontyObject::List(list).into()
             } else {
                 MontyException::new(

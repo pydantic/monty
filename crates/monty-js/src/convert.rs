@@ -95,6 +95,7 @@ pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<JsMontyObject<
             methods,
             frozen,
         } => create_js_dataclass(name, *type_id, field_names, attrs, methods, *frozen, env)?,
+        MontyObject::Path(p) => env.create_string(p)?.into_unknown(env)?,
         MontyObject::Repr(s) | MontyObject::Cycle(_, s) => env.create_string(s)?.into_unknown(env)?,
     };
     Ok(JsMontyObject(unknown))

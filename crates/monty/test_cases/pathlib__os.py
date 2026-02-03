@@ -54,21 +54,34 @@ assert st2[6] == 12, 'stat index access for st_size'
 assert st2[0] & 0o777 == 0o644, 'stat index access for st_mode'
 
 # === iterdir() ===
-# Note: iterdir returns path strings in Monty, VirtualPath objects in CPython
 entries = list(Path('/virtual').iterdir())
-# Get basenames using string split - convert to str first for compatibility
-names = [str(e).split('/')[-1] for e in entries]
+assert len(entries) == 5, 'iterdir returns correct count'
+
+# iterdir() should return Path objects, not strings
+first_entry = entries[0]
+assert isinstance(first_entry, Path), f'iterdir should return Path objects, got {type(first_entry)}'
+
+# Path objects should have .name attribute
+names = [e.name for e in entries]
 assert 'file.txt' in names, 'iterdir contains file.txt'
 assert 'subdir' in names, 'iterdir contains subdir'
 assert 'data.bin' in names, 'iterdir contains data.bin'
-assert len(entries) == 5, 'iterdir returns correct count'
+
+# Path objects should have .parent attribute
+assert entries[0].parent == Path('/virtual'), 'iterdir entry parent is correct'
 
 # === iterdir() nested ===
 nested_entries = list(Path('/virtual/subdir').iterdir())
 assert len(nested_entries) == 2, 'iterdir nested count'
-nested_names = [str(e).split('/')[-1] for e in nested_entries]
+nested_names = [e.name for e in nested_entries]
 assert 'nested.txt' in nested_names, 'iterdir nested contains nested.txt'
 assert 'deep' in nested_names, 'iterdir nested contains deep'
+
+# === iterdir() entries can be used for further operations ===
+# Find the nested.txt entry and read it
+for entry in nested_entries:
+    if entry.name == 'nested.txt':
+        assert entry.read_text() == 'nested content', 'iterdir entry can be read'
 
 # === resolve() ===
 p = Path('/virtual/file.txt').resolve()
