@@ -14,7 +14,7 @@ use crate::{
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
     resource::ResourceTracker,
-    types::{PyTrait, Str, Tuple, Type, py_trait::AttrValue, str::string_repr_fmt},
+    types::{AttrCallResult, PyTrait, Str, Tuple, Type, str::string_repr_fmt},
     value::Value,
 };
 
@@ -1186,12 +1186,12 @@ impl SimpleException {
     ///
     /// Handles the `.args` attribute by allocating a tuple containing the message.
     /// Returns `Err(AttributeError)` for all other attributes.
-    pub fn py_getattr<'a>(
-        &'a self,
+    pub fn py_getattr(
+        &self,
         attr_id: StringId,
         heap: &mut Heap<impl ResourceTracker>,
         _interns: &Interns,
-    ) -> RunResult<AttrValue<'a>> {
+    ) -> RunResult<Option<AttrCallResult>> {
         if attr_id == StaticStrings::Args {
             // Construct tuple with 0 or 1 elements based on whether arg exists
             let elements = if let Some(arg_str) = &self.arg {
@@ -1201,9 +1201,9 @@ impl SimpleException {
                 vec![]
             };
             let tuple_id = heap.allocate(HeapData::Tuple(Tuple::new(elements)))?;
-            Ok(AttrValue::Owned(Value::Ref(tuple_id)))
+            Ok(Some(AttrCallResult::Value(Value::Ref(tuple_id))))
         } else {
-            Ok(AttrValue::AttributeError)
+            Ok(None)
         }
     }
 }

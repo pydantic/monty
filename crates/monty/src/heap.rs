@@ -17,7 +17,7 @@ use crate::{
     resource::{ResourceError, ResourceTracker},
     types::{
         AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait,
-        Range, Set, Slice, Str, Tuple, Type, py_trait::AttrValue,
+        Range, Set, Slice, Str, Tuple, Type,
     },
     value::{Attr, Value},
 };
@@ -736,12 +736,12 @@ impl PyTrait for HeapData {
         }
     }
 
-    fn py_getattr<'a>(
-        &'a self,
+    fn py_getattr(
+        &self,
         attr_id: StringId,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<AttrValue<'a>> {
+    ) -> RunResult<Option<AttrCallResult>> {
         match self {
             Self::Dataclass(dc) => dc.py_getattr(attr_id, heap, interns),
             Self::Module(m) => Ok(m.py_getattr(attr_id, heap, interns)),
@@ -750,7 +750,7 @@ impl PyTrait for HeapData {
             Self::Exception(exc) => exc.py_getattr(attr_id, heap, interns),
             Self::Path(p) => p.py_getattr(attr_id, heap, interns),
             // All other types don't support attribute access via py_getattr
-            _ => Ok(AttrValue::AttributeError),
+            _ => Ok(None),
         }
     }
 }

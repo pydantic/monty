@@ -9,7 +9,7 @@ use crate::{
     heap::{Heap, HeapId},
     intern::{Interns, StaticStrings, StringId},
     resource::ResourceTracker,
-    types::{Type, py_trait::AttrValue},
+    types::{AttrCallResult, Type},
     value::{Attr, Value},
 };
 
@@ -280,15 +280,15 @@ impl PyTrait for Dataclass {
         }
     }
 
-    fn py_getattr<'a>(
-        &'a self,
+    fn py_getattr(
+        &self,
         attr_id: StringId,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<AttrValue<'a>> {
+    ) -> RunResult<Option<AttrCallResult>> {
         let attr_name = interns.get_str(attr_id);
         match self.attrs.get_by_str(attr_name, heap, interns) {
-            Some(value) => Ok(AttrValue::Borrowed(value)),
+            Some(value) => Ok(Some(AttrCallResult::Value(value.clone_with_heap(heap)))),
             // we use name here, not `self.py_type(heap)` hence returning a Ok(AttrValue::AttributeError)
             None => Err(ExcType::attribute_error(self.name(), attr_name)),
         }

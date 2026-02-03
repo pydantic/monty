@@ -15,7 +15,7 @@ use crate::{
     intern::{Interns, StaticStrings, StringId},
     os::OsFunction,
     resource::ResourceTracker,
-    types::{AttrCallResult, PyTrait, Str, Type, py_trait::AttrValue},
+    types::{AttrCallResult, PyTrait, Str, Type},
     value::Value,
 };
 
@@ -614,15 +614,16 @@ impl PyTrait for Path {
         self.py_call_attr(heap, attr, args, interns).map(AttrCallResult::Value)
     }
 
-    fn py_getattr<'a>(
-        &'a self,
+    fn py_getattr(
+        &self,
         attr_id: StringId,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<AttrValue<'a>> {
+    ) -> RunResult<Option<AttrCallResult>> {
         // Path attributes are computed values, return Cow::Owned
         let attr_name = interns.get_str(attr_id);
-        get_path_attr(self, attr_name, heap).map(AttrValue::Owned)
+        let v = get_path_attr(self, attr_name, heap)?;
+        Ok(Some(AttrCallResult::Value(v)))
     }
 }
 

@@ -25,7 +25,7 @@ use crate::{
     heap::{Heap, HeapId},
     intern::{Interns, StringId},
     resource::ResourceTracker,
-    types::{Type, dataclass::ObjectName, py_trait::AttrValue},
+    types::{AttrCallResult, Type, dataclass::ObjectName},
     value::Value,
 };
 
@@ -234,15 +234,15 @@ impl PyTrait for NamedTuple {
         f.write_char(')')
     }
 
-    fn py_getattr<'a>(
-        &'a self,
+    fn py_getattr(
+        &self,
         attr_id: StringId,
-        _heap: &mut Heap<impl ResourceTracker>,
+        heap: &mut Heap<impl ResourceTracker>,
         _interns: &Interns,
-    ) -> RunResult<AttrValue<'a>> {
+    ) -> RunResult<Option<AttrCallResult>> {
         match self.get_by_name(attr_id) {
-            Some(value) => Ok(AttrValue::Borrowed(value)),
-            None => Ok(AttrValue::AttributeError),
+            Some(value) => Ok(Some(AttrCallResult::Value(value.clone_with_heap(heap)))),
+            None => Ok(None),
         }
     }
 }

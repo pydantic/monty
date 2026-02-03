@@ -59,22 +59,6 @@ pub enum AttrCallResult {
     ExternalCall(ExtFunctionId, ArgValues),
 }
 
-/// We can't use `Cow` since it requires the value to be Clonable, hence a new enum
-pub(crate) enum AttrValue<'a> {
-    /// An owned value, generally because the attribute access is creating a new value
-    Owned(Value),
-    /// Attribute access returns an existing value, we return a reference then clone it to avoid borrow checker issues
-    Borrowed(&'a Value),
-    /// The attribute doesn't exist.
-    AttributeError,
-    /// The attribute access needs an OS operation. VM should yield `FrameExit::OsCall` to host.
-    ///
-    /// The host executes the OS operation and resumes the VM with the result.
-    /// Used by `Path` filesystem methods like `exists()`, `read_text()`, etc.
-    #[expect(dead_code)]
-    OsCall(OsFunction, ArgValues),
-}
-
 /// Common operations for heap-allocated Python values.
 ///
 /// Implementers should provide Python-compatible semantics for all operations.
@@ -377,14 +361,14 @@ pub trait PyTrait {
     /// - Cloning stored values with proper reference counting
     /// - Allocating computed values that need heap storage
     ///
-    /// Default implementation returns `Ok(AttrValue::AttributeError)`, indicating the type doesn't support
+    /// Default implementation returns `Ok(None)`, indicating the type doesn't support
     /// attribute access and a generic `AttributeError` should be raised by the caller.
-    fn py_getattr<'a>(
-        &'a self,
+    fn py_getattr(
+        &self,
         _attr_id: StringId,
         _heap: &mut Heap<impl ResourceTracker>,
         _interns: &Interns,
-    ) -> RunResult<AttrValue<'a>> {
-        Ok(AttrValue::AttributeError)
+    ) -> RunResult<Option<AttrCallResult>> {
+        Ok(None)
     }
 }

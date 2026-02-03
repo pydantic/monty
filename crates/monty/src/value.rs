@@ -24,7 +24,6 @@ use crate::{
         AttrCallResult, LongInt, PyTrait, Str, Type,
         bytes::{bytes_repr_fmt, get_byte_at_index, get_bytes_slice},
         path,
-        py_trait::AttrValue,
         str::{allocate_char, get_char_at_index, get_str_slice, string_repr_fmt},
     },
 };
@@ -1713,21 +1712,7 @@ impl Value {
             Self::Ref(heap_id) => {
                 // Use with_entry_mut to get access to both data and heap without borrow conflicts.
                 // This allows py_getattr to allocate (for computed attributes) while we hold the data.
-                let opt_result = heap.with_entry_mut(*heap_id, |heap, data| -> RunResult<Option<AttrCallResult>> {
-                    match data.py_getattr(name_id, heap, interns)? {
-                        AttrValue::Borrowed(value) => {
-                            let value = value.clone_with_heap(heap);
-                            // Increment refcount for Ref values
-                            if let Self::Ref(ref_id) = &value {
-                                heap.inc_ref(*ref_id);
-                            }
-                            Ok(Some(AttrCallResult::Value(value)))
-                        }
-                        AttrValue::Owned(value) => Ok(Some(AttrCallResult::Value(value))),
-                        AttrValue::OsCall(os_function, args) => Ok(Some(AttrCallResult::OsCall(os_function, args))),
-                        AttrValue::AttributeError => Ok(None),
-                    }
-                })?;
+                let opt_result = heap.with_entry_mut(*heap_id, |heap, data| data.py_getattr(name_id, heap, interns))?;
                 if let Some(call_result) = opt_result {
                     return Ok(call_result);
                 }

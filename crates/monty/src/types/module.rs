@@ -6,7 +6,7 @@ use crate::{
     heap::{Heap, HeapId},
     intern::{Interns, StringId},
     resource::ResourceTracker,
-    types::{AttrCallResult, Dict, PyTrait, py_trait::AttrValue},
+    types::{AttrCallResult, Dict, PyTrait},
     value::{Attr, Value},
 };
 
@@ -101,18 +101,16 @@ impl Module {
     ///
     /// Returns a reference to the attribute value if found, or an `AttributeError`
     /// if the attribute doesn't exist.
-    pub fn py_getattr<'a>(
-        &'a self,
+    pub fn py_getattr(
+        &self,
         attr_id: StringId,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> AttrValue<'a> {
+    ) -> Option<AttrCallResult> {
         let attr_name = interns.get_str(attr_id);
-        if let Some(value) = self.attrs.get_by_str(attr_name, heap, interns) {
-            AttrValue::Borrowed(value)
-        } else {
-            AttrValue::AttributeError
-        }
+        self.attrs
+            .get_by_str(attr_name, heap, interns)
+            .map(|value| AttrCallResult::Value(value.clone_with_heap(heap)))
     }
 
     /// Calls an attribute as a function on this module.
