@@ -445,3 +445,17 @@ def test_dir_stat_helper():
     assert stat[0] == snapshot(0o040755)  # st_mode - dir_stat adds directory type bits
     assert stat[6] == snapshot(4096)  # st_size - directories have fixed size
     assert stat[8] == snapshot(1700000000.0)  # st_mtime
+
+
+def test_path_monty_to_py():
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/foo/bar/thing.txt")')
+    result = m.run()
+    assert result == PurePosixPath('/foo/bar/thing.txt')
+    assert type(result) is PurePosixPath
+
+
+def test_path_py_to_monty():
+    p = PurePosixPath('/foo/bar/thing.txt')
+    m = pydantic_monty.Monty('f"type={type(p)} {p=}"', inputs=['p'])
+    result = m.run(inputs={'p': p})
+    assert result == snapshot("type=<class 'PosixPath'> p=PosixPath('/foo/bar/thing.txt')")

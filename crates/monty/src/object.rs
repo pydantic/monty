@@ -700,7 +700,7 @@ impl MontyObject {
             Self::Set(_) => "set",
             Self::FrozenSet(_) => "frozenset",
             Self::Exception { .. } => "Exception",
-            Self::Path(_) => "Path",
+            Self::Path(_) => "PosixPath",
             Self::Dataclass { .. } => "dataclass",
             Self::Type(_) => "type",
             Self::BuiltinFunction(_) => "builtin_function_or_method",
