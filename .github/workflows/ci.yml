@@ -693,6 +693,7 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: crates/monty-js/package-lock.json
+          registry-url: 'https://registry.npmjs.org'
       - name: Install dependencies
         run: npm install
         working-directory: crates/monty-js
@@ -719,16 +720,11 @@ jobs:
         working-directory: crates/monty-js
       - name: Publish
         run: |
-          npm config set provenance true
-          echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
           if [[ "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Publishing stable release"
-            npm publish --access public
+            npm publish --provenance --access public
           else
             echo "Publishing pre-release with 'next' tag"
-            npm publish --tag next --access public
+            npm publish --provenance --tag next --access public
           fi
         working-directory: crates/monty-js
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
