@@ -106,6 +106,10 @@ make help                 Show this help (usage: make help)
 
 Use the /python-playground skill to check cpython and monty behavior.
 
+## Releasing
+
+See [RELEASING.md](RELEASING.md) for the release process.
+
 ## Exception
 
 It's important that exceptions raised/returned by this library match those raised by Python.
