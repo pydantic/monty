@@ -1,8 +1,8 @@
-//! Tests for OS function calls on Path objects.
+//! Tests for OS function calls.
 //!
-//! Verifies that Path filesystem methods yield `RunProgress::OsCall`
-//! with the correct `OsFunction` variant and arguments, and that
-//! return values are correctly used by Python code.
+//! Verifies that Path filesystem methods and os module functions yield
+//! `RunProgress::OsCall` with the correct `OsFunction` variant and arguments,
+//! and that return values are correctly used by Python code.
 
 use monty::{MontyObject, MontyRun, NoLimitTracker, OsFunction, RunProgress, StdPrint, file_stat};
 
@@ -37,6 +37,7 @@ fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
                 | OsFunction::Rmdir
                 | OsFunction::Rename => MontyObject::None,
                 OsFunction::Getenv => MontyObject::String("mock_env_value".to_owned()),
+                OsFunction::GetEnviron => MontyObject::Dict(vec![].into()),
             };
             let _ = state.run(mock_result, &mut StdPrint);
             (function, args)
@@ -308,4 +309,151 @@ info[6]  # st_size is at index 6
     assert_eq!(func, OsFunction::Stat);
     assert_eq!(args[0], MontyObject::Path("/tmp/file.txt".to_owned()));
     assert_eq!(result, MontyObject::Int(2048));
+}
+
+// =============================================================================
+// os.getenv tests
+// =============================================================================
+
+#[test]
+fn os_getenv_yields_oscall() {
+    let code = r"
+import os
+os.getenv('PATH')
+";
+    let (func, args) = run_to_oscall(code);
+    assert_eq!(func, OsFunction::Getenv);
+    // First arg is key, second is default (None if not provided)
+    assert_eq!(args[0], MontyObject::String("PATH".to_owned()));
+    assert_eq!(args[1], MontyObject::None);
+}
+
+#[test]
+fn os_getenv_with_default() {
+    let code = r"
+import os
+os.getenv('MISSING', 'fallback')
+";
+    let (func, args) = run_to_oscall(code);
+    assert_eq!(func, OsFunction::Getenv);
+    assert_eq!(args[0], MontyObject::String("MISSING".to_owned()));
+    assert_eq!(args[1], MontyObject::String("fallback".to_owned()));
+}
+
+#[test]
+fn os_getenv_result_used() {
+    let code = r"
+import os
+'HOME=' + os.getenv('HOME')
+";
+    let (func, _, result) = run_oscall_with_result(code, MontyObject::String("/home/user".to_owned()));
+    assert_eq!(func, OsFunction::Getenv);
+    assert_eq!(result, MontyObject::String("HOME=/home/user".to_owned()));
+}
+
+// =============================================================================
+// os.environ tests
+// =============================================================================
+
+#[test]
+fn os_environ_yields_oscall() {
+    let code = r"
+import os
+os.environ
+";
+    let (func, args) = run_to_oscall(code);
+    assert_eq!(func, OsFunction::GetEnviron);
+    // GetEnviron takes no arguments
+    assert!(args.is_empty(), "expected empty args, got {args:?}");
+}
+
+#[test]
+fn os_environ_result_is_dict() {
+    let code = r"
+import os
+type(os.environ).__name__
+";
+    let mock_env = MontyObject::Dict(
+        vec![
+            (
+                MontyObject::String("HOME".to_owned()),
+                MontyObject::String("/home/user".to_owned()),
+            ),
+            (
+                MontyObject::String("PATH".to_owned()),
+                MontyObject::String("/usr/bin".to_owned()),
+            ),
+        ]
+        .into(),
+    );
+    let (func, _, result) = run_oscall_with_result(code, mock_env);
+    assert_eq!(func, OsFunction::GetEnviron);
+    assert_eq!(result, MontyObject::String("dict".to_owned()));
+}
+
+#[test]
+fn os_environ_key_access() {
+    let code = r"
+import os
+os.environ['HOME']
+";
+    let mock_env = MontyObject::Dict(
+        vec![(
+            MontyObject::String("HOME".to_owned()),
+            MontyObject::String("/home/user".to_owned()),
+        )]
+        .into(),
+    );
+    let (func, _, result) = run_oscall_with_result(code, mock_env);
+    assert_eq!(func, OsFunction::GetEnviron);
+    assert_eq!(result, MontyObject::String("/home/user".to_owned()));
+}
+
+#[test]
+fn os_environ_get_method() {
+    let code = r"
+import os
+os.environ.get('MISSING', 'default')
+";
+    let mock_env = MontyObject::Dict(vec![].into());
+    let (func, _, result) = run_oscall_with_result(code, mock_env);
+    assert_eq!(func, OsFunction::GetEnviron);
+    assert_eq!(result, MontyObject::String("default".to_owned()));
+}
+
+#[test]
+fn os_environ_len() {
+    let code = r"
+import os
+len(os.environ)
+";
+    let mock_env = MontyObject::Dict(
+        vec![
+            (MontyObject::String("A".to_owned()), MontyObject::String("1".to_owned())),
+            (MontyObject::String("B".to_owned()), MontyObject::String("2".to_owned())),
+            (MontyObject::String("C".to_owned()), MontyObject::String("3".to_owned())),
+        ]
+        .into(),
+    );
+    let (func, _, result) = run_oscall_with_result(code, mock_env);
+    assert_eq!(func, OsFunction::GetEnviron);
+    assert_eq!(result, MontyObject::Int(3));
+}
+
+#[test]
+fn os_environ_in_check() {
+    let code = r"
+import os
+'HOME' in os.environ
+";
+    let mock_env = MontyObject::Dict(
+        vec![(
+            MontyObject::String("HOME".to_owned()),
+            MontyObject::String("/home/user".to_owned()),
+        )]
+        .into(),
+    );
+    let (func, _, result) = run_oscall_with_result(code, mock_env);
+    assert_eq!(func, OsFunction::GetEnviron);
+    assert_eq!(result, MontyObject::Bool(true));
 }

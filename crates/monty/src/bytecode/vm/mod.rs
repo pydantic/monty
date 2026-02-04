@@ -169,6 +169,8 @@ macro_rules! handle_call_result {
             Ok(CallResult::FramePushed) => reload_cache!($self, $cached_frame),
             Ok(CallResult::External(ext_id, args)) => {
                 let call_id = $self.allocate_call_id();
+                // Sync cached IP back to frame before snapshot for resume
+                $self.current_frame_mut().ip = $cached_frame.ip;
                 return Ok(FrameExit::ExternalCall {
                     ext_function_id: ext_id,
                     args,
@@ -177,6 +179,8 @@ macro_rules! handle_call_result {
             }
             Ok(CallResult::OsCall(func, args)) => {
                 let call_id = $self.allocate_call_id();
+                // Sync cached IP back to frame before snapshot for resume
+                $self.current_frame_mut().ip = $cached_frame.ip;
                 return Ok(FrameExit::OsCall {
                     function: func,
                     args,

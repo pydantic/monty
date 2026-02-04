@@ -21,7 +21,7 @@ use crate::{
     modules::ModuleFunctions,
     resource::{LARGE_RESULT_THRESHOLD, ResourceTracker},
     types::{
-        AttrCallResult, LongInt, PyTrait, Str, Type,
+        AttrCallResult, LongInt, Property, PyTrait, Str, Type,
         bytes::{bytes_repr_fmt, get_byte_at_index, get_bytes_slice},
         path,
         str::{allocate_char, get_char_at_index, get_str_slice, string_repr_fmt},
@@ -69,6 +69,9 @@ pub(crate) enum Value {
     /// A marker value representing special objects like sys.stdout/stderr.
     /// These exist but have minimal functionality in the sandboxed environment.
     Marker(Marker),
+    /// A property descriptor that computes its value when accessed.
+    /// When retrieved via `py_getattr`, the property's getter is invoked.
+    Property(Property),
     /// A pending external function call result.
     ///
     /// Created when the host calls `run_pending()` instead of `run(result)` for an
@@ -123,6 +126,7 @@ impl PyTrait for Value {
             Self::ModuleFunction(_) => Type::BuiltinFunction,
             Self::DefFunction(_) | Self::ExtFunction(_) => Type::Function,
             Self::Marker(m) => m.py_type(),
+            Self::Property(_) => Type::Property,
             Self::ExternalFuture(_) => Type::Coroutine,
             Self::Ref(id) => heap.get(*id).py_type(heap),
             #[cfg(feature = "ref-count-panic")]
@@ -235,6 +239,8 @@ impl PyTrait for Value {
             (Self::DefFunction(f1), Self::DefFunction(f2)) => f1 == f2,
             // Markers compare equal if they're the same variant
             (Self::Marker(m1), Self::Marker(m2)) => m1 == m2,
+            // Properties compare equal if they're the same variant
+            (Self::Property(p1), Self::Property(p2)) => p1 == p2,
 
             _ => false,
         }
@@ -310,6 +316,7 @@ impl PyTrait for Value {
             Self::Builtin(_) | Self::ModuleFunction(_) => true, // Builtins are always truthy
             Self::DefFunction(_) | Self::ExtFunction(_) => true, // Functions are always truthy
             Self::Marker(_) => true,                            // Markers are always truthy
+            Self::Property(_) => true,                          // Properties are always truthy
             Self::ExternalFuture(_) => true,                    // ExternalFutures are always truthy
             Self::InternString(string_id) => !interns.get_str(*string_id).is_empty(),
             Self::InternBytes(bytes_id) => !interns.get_bytes(*bytes_id).is_empty(),
@@ -351,6 +358,7 @@ impl PyTrait for Value {
             Self::InternString(string_id) => string_repr_fmt(interns.get_str(*string_id), f),
             Self::InternBytes(bytes_id) => bytes_repr_fmt(interns.get_bytes(*bytes_id), f),
             Self::Marker(m) => m.py_repr_fmt(f),
+            Self::Property(p) => write!(f, "<property {p:?}>"),
             Self::ExternalFuture(call_id) => write!(f, "<coroutine external_future({})>", call_id.raw()),
             Self::Ref(id) => {
                 if heap_ids.contains(id) {
@@ -1523,6 +1531,8 @@ impl Value {
             Self::ExtFunction(f_id) => ext_function_value_id(*f_id),
             // Markers get deterministic IDs based on discriminant
             Self::Marker(m) => marker_value_id(*m),
+            // Properties get deterministic IDs based on discriminant
+            Self::Property(p) => property_value_id(*p),
             // ExternalFutures get IDs based on their call_id
             Self::ExternalFuture(call_id) => external_future_value_id(*call_id),
             #[cfg(feature = "ref-count-panic")]
@@ -1613,6 +1623,8 @@ impl Value {
             Self::ExtFunction(f_id) => f_id.hash(&mut hasher),
             // Markers are hashable based on their discriminant (already included above)
             Self::Marker(m) => m.hash(&mut hasher),
+            // Properties are hashable based on their OS function discriminant
+            Self::Property(p) => p.hash(&mut hasher),
             // ExternalFutures are hashable based on their call ID
             Self::ExternalFuture(call_id) => call_id.raw().hash(&mut hasher),
             Self::InternString(_) | Self::InternBytes(_) | Self::InternLongInt(_) | Self::Ref(_) => {
@@ -1965,6 +1977,7 @@ impl Value {
             Self::InternBytes(b) => Self::InternBytes(*b),
             Self::InternLongInt(bi) => Self::InternLongInt(*bi),
             Self::Marker(m) => Self::Marker(*m),
+            Self::Property(p) => Self::Property(*p),
             Self::ExternalFuture(call_id) => Self::ExternalFuture(*call_id),
             Self::Ref(id) => Self::Ref(*id), // Caller must increment refcount!
             #[cfg(feature = "ref-count-panic")]
@@ -2181,6 +2194,8 @@ const EXTERNAL_FUTURE_ID_TAG: usize = 1usize << (usize::BITS - 11);
 const MODULE_FUNCTION_ID_TAG: usize = 1usize << (usize::BITS - 12);
 /// High-bit tag for interned LongInt `id()` values.
 const INTERN_LONG_INT_ID_TAG: usize = 1usize << (usize::BITS - 13);
+/// High-bit tag for Property value-based IDs.
+const PROPERTY_ID_TAG: usize = 1usize << (usize::BITS - 14);
 
 /// Masks for value-based ID tags (keep bits below the tag bit).
 const INT_ID_MASK: usize = INT_ID_TAG - 1;
@@ -2192,6 +2207,7 @@ const MARKER_ID_MASK: usize = MARKER_ID_TAG - 1;
 const EXTERNAL_FUTURE_ID_MASK: usize = EXTERNAL_FUTURE_ID_TAG - 1;
 const MODULE_FUNCTION_ID_MASK: usize = MODULE_FUNCTION_ID_TAG - 1;
 const INTERN_LONG_INT_ID_MASK: usize = INTERN_LONG_INT_ID_TAG - 1;
+const PROPERTY_ID_MASK: usize = PROPERTY_ID_TAG - 1;
 
 /// Enumerates singleton literal slots so we can issue stable `id()` values without heap allocation.
 #[repr(usize)]
@@ -2270,6 +2286,15 @@ fn ext_function_value_id(f_id: ExtFunctionId) -> usize {
 #[inline]
 fn marker_value_id(m: Marker) -> usize {
     MARKER_ID_TAG | ((m.0 as usize) & MARKER_ID_MASK)
+}
+
+/// Computes a deterministic ID for a property value based on its discriminant.
+#[inline]
+fn property_value_id(p: Property) -> usize {
+    let discriminant = match p {
+        Property::Os(os_fn) => os_fn as usize,
+    };
+    PROPERTY_ID_TAG | (discriminant & PROPERTY_ID_MASK)
 }
 
 /// Computes a deterministic ID for an external future based on its call ID.

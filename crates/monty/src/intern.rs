@@ -316,6 +316,8 @@ pub enum StaticStrings {
     Os,
     #[strum(serialize = "getenv")]
     Getenv,
+    #[strum(serialize = "environ")]
+    Environ,
     #[strum(serialize = "default")]
     Default,
 

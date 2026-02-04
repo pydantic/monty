@@ -1,7 +1,8 @@
 //! Implementation of the `os` module.
 //!
-//! Provides a minimal implementation of Python's `os` module with only:
-//! - `getenv(key, default=None)`: Get an environment variable
+//! Provides a minimal implementation of Python's `os` module with:
+//! - `getenv(key, default=None)`: Get a single environment variable
+//! - `environ`: Property that returns the entire environment as a dict
 //!
 //! Other os functions are not implemented. OS operations require host involvement
 //! via the `OsFunction` callback mechanism - Monty yields control to the host
@@ -15,7 +16,7 @@ use crate::{
     modules::ModuleFunctions,
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
-    types::{AttrCallResult, Module, PyTrait},
+    types::{AttrCallResult, Module, Property, PyTrait},
     value::Value,
 };
 
@@ -28,8 +29,11 @@ pub(crate) enum OsFunctions {
 
 /// Creates the `os` module and allocates it on the heap.
 ///
-/// The module contains only the `getenv` function. Other os functions
-/// are not implemented as they would require additional OS access patterns.
+/// The module provides:
+/// - `getenv(key, default=None)`: Get a single environment variable
+/// - `environ`: Property that returns the entire environment as a dict
+///
+/// Both operations yield to the host via `OsFunction` callbacks.
 ///
 /// # Returns
 /// A HeapId pointing to the newly allocated module.
@@ -39,10 +43,18 @@ pub(crate) enum OsFunctions {
 pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Os);
 
-    // os.getenv - the only function we implement
+    // os.getenv - function to get a single environment variable
     module.set_attr(
         StaticStrings::Getenv,
         Value::ModuleFunction(ModuleFunctions::Os(OsFunctions::Getenv)),
+        heap,
+        interns,
+    );
+
+    // os.environ - property that returns the entire environment as a dict
+    module.set_attr(
+        StaticStrings::Environ,
+        Value::Property(Property::Os(OsFunction::GetEnviron)),
         heap,
         interns,
     );

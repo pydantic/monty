@@ -403,8 +403,14 @@ VIRTUAL_ENV: dict[str, str] = {
     'VIRTUAL_EMPTY': '',
 }
 
-# Store the original os.getenv function
-_original_getenv = os.getenv
+# Store original os functions before monkey-patching
+# Check if already patched (happens when module is re-executed in same interpreter)
+if not hasattr(os, '_monty_original_getenv'):
+    os._monty_original_getenv = os.getenv  # pyright: ignore[reportAttributeAccessIssue]
+    os._monty_original_environ = os.environ  # pyright: ignore[reportAttributeAccessIssue]
+
+_original_getenv = os._monty_original_getenv  # pyright: ignore[reportAttributeAccessIssue,reportUnknownVariableType,reportUnknownMemberType]
+_original_environ = os._monty_original_environ  # pyright: ignore[reportAttributeAccessIssue,reportUnknownVariableType,reportUnknownMemberType]
 
 
 def _virtual_getenv(key: str, default: str | None = None) -> str | None:
@@ -417,18 +423,74 @@ def _virtual_getenv(key: str, default: str | None = None) -> str | None:
     # Check key type first to match CPython's behavior
     if not isinstance(key, str):  # pyright: ignore[reportUnnecessaryIsInstance]
         # to get the real error
-        return _original_getenv(key)
+        return _original_getenv(key)  # pyright: ignore[reportUnknownVariableType]
 
     if key.startswith('VIRTUAL_') or key in ('NONEXISTENT', 'ALSO_MISSING', 'MISSING'):
         value = VIRTUAL_ENV.get(key)
         if value is not None:
             return value
         return default
-    return _original_getenv(key, default)
+    return _original_getenv(key, default)  # pyright: ignore[reportUnknownVariableType]
 
 
 # Monkey-patch os.getenv to use virtual environment for test keys
 os.getenv = _virtual_getenv
+
+
+class VirtualEnviron:
+    """Wrapper around os.environ that provides virtual environment variables.
+
+    For keys in VIRTUAL_ENV or test-specific keys (NONEXISTENT, etc.), returns
+    virtual values. For all other keys, falls through to real os.environ.
+
+    This ensures tests using `os.environ['VIRTUAL_HOME']` work identically
+    in both Monty (virtual env) and CPython (real env + virtual overlay).
+    """
+
+    def __getitem__(self, key: str) -> str:
+        if key in VIRTUAL_ENV:
+            return VIRTUAL_ENV[key]
+        if key.startswith('VIRTUAL_') or key in ('NONEXISTENT', 'ALSO_MISSING', 'MISSING'):
+            raise KeyError(key)
+        return _original_environ[key]  # pyright: ignore[reportUnknownVariableType]
+
+    def __contains__(self, key: object) -> bool:
+        if isinstance(key, str):
+            if key in VIRTUAL_ENV:
+                return True
+            if key.startswith('VIRTUAL_') or key in ('NONEXISTENT', 'ALSO_MISSING', 'MISSING'):
+                return False
+        return key in _original_environ
+
+    def __len__(self) -> int:
+        # Return only virtual env length for tests that check len(os.environ)
+        return len(VIRTUAL_ENV)
+
+    def get(self, key: str, default: str | None = None) -> str | None:
+        # Check key type first - pass through to original environ to get proper error
+        if not isinstance(key, str):  # pyright: ignore[reportUnnecessaryIsInstance]
+            return _original_environ.get(key, default)  # pyright: ignore[reportArgumentType,reportUnknownMemberType,reportUnknownVariableType]
+        if key in VIRTUAL_ENV:
+            return VIRTUAL_ENV[key]
+        if key.startswith('VIRTUAL_') or key in ('NONEXISTENT', 'ALSO_MISSING', 'MISSING'):
+            return default
+        return _original_environ.get(key, default)  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+
+    def keys(self):
+        """Return keys from virtual environment only (for test isolation)."""
+        return VIRTUAL_ENV.keys()
+
+    def values(self):
+        """Return values from virtual environment only (for test isolation)."""
+        return VIRTUAL_ENV.values()
+
+    def items(self):
+        """Return items from virtual environment only (for test isolation)."""
+        return VIRTUAL_ENV.items()
+
+
+# Monkey-patch os.environ to use virtual environment for test keys
+os.environ = VirtualEnviron()
 
 
 # All external functions available to iter mode tests

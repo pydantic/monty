@@ -24,7 +24,7 @@ use crate::{MontyObject, intern::StaticStrings};
 /// `TryFrom<StaticStrings>` implementation to map method names to operations.
 // #[repr(u8)]
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, strum::EnumString, strum::Display, serde::Serialize, serde::Deserialize,
+    Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumString, strum::Display, serde::Serialize, serde::Deserialize,
 )]
 pub enum OsFunction {
     /// Check if a path exists
@@ -78,6 +78,9 @@ pub enum OsFunction {
     /// Get an environment variable value
     #[strum(serialize = "os.getenv")]
     Getenv,
+    /// Get the entire environment as a dictionary
+    #[strum(serialize = "os.environ")]
+    GetEnviron,
 }
 
 impl TryFrom<StaticStrings> for OsFunction {

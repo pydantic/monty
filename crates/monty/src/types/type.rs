@@ -62,6 +62,9 @@ pub enum Type {
     /// A filesystem path from `pathlib.Path` - displays as "PosixPath"
     #[strum(serialize = "PosixPath")]
     Path,
+    /// A property descriptor - displays as "property"
+    #[strum(serialize = "property")]
+    Property,
 }
 
 impl fmt::Display for Type {
@@ -94,6 +97,7 @@ impl fmt::Display for Type {
             Self::TextIOWrapper => f.write_str("_io.TextIOWrapper"),
             Self::SpecialForm => f.write_str("typing._SpecialForm"),
             Self::Path => f.write_str("PosixPath"),
+            Self::Property => f.write_str("property"),
         }
     }
 }

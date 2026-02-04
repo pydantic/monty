@@ -656,6 +656,26 @@ fn dispatch_os_call(
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
 ) -> ExternalResult {
+    // Handle GetEnviron first as it takes no path argument
+    if function == OsFunction::GetEnviron {
+        // Return the virtual environment as a dict
+        let env_dict = vec![
+            (
+                MontyObject::String("VIRTUAL_HOME".to_owned()),
+                MontyObject::String("/virtual/home".to_owned()),
+            ),
+            (
+                MontyObject::String("VIRTUAL_USER".to_owned()),
+                MontyObject::String("testuser".to_owned()),
+            ),
+            (
+                MontyObject::String("VIRTUAL_EMPTY".to_owned()),
+                MontyObject::String(String::new()),
+            ),
+        ];
+        return MontyObject::Dict(env_dict.into()).into();
+    }
+
     // Extract path from MontyObject::Path (or String for backwards compatibility)
     let path = match &args[0] {
         MontyObject::Path(p) => p.clone(),
@@ -664,6 +684,7 @@ fn dispatch_os_call(
     };
 
     match function {
+        OsFunction::GetEnviron => unreachable!("handled above"),
         OsFunction::Exists => {
             let exists = get_virtual_file(&path).is_some() || is_virtual_dir(&path);
             MontyObject::Bool(exists).into()
