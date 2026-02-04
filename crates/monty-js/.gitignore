@@ -144,3 +144,6 @@ wrapper.d.ts
 wrapper.d.ts.map
 wrapper.js.map
 .claude/settings.local.json
+plans
+prompts
+monty.wasm32-wasi.wasm
