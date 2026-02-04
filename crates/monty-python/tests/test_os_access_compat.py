@@ -65,12 +65,21 @@ class CodeRunner(ABC):
             - dict for subdirectories
         """
 
+    @abstractmethod
+    def set_environ(self, environ: dict[str, str]) -> None:
+        """Set environment variables for the test.
+
+        Args:
+            environ: Dictionary of environment variable names to values
+        """
+
 
 class MontyRunner(CodeRunner):
     """CodeRunner implementation using Monty with OSAccess virtual filesystem."""
 
     def __init__(self) -> None:
         self._files: list[MemoryFile] = []
+        self._environ: dict[str, str] = {}
         self._os_access: OSAccess | None = None
 
     def write_file(self, path: str, content: str | bytes) -> None:
@@ -79,14 +88,19 @@ class MontyRunner(CodeRunner):
         # Reset OSAccess so it gets rebuilt with new files
         self._os_access = None
 
+    def set_environ(self, environ: dict[str, str]) -> None:
+        self._environ = environ
+        # Reset OSAccess so it gets rebuilt with new environ
+        self._os_access = None
+
     def _get_os_access(self) -> OSAccess:
         if self._os_access is None:
-            self._os_access = OSAccess(self._files)
+            self._os_access = OSAccess(self._files, environ=self._environ)
         return self._os_access
 
     def run_code(self, code: str) -> Any:
-        # Prepend pathlib import - OSAccess now handles relative paths
-        wrapped_code = f'from pathlib import Path\n{code}'
+        # Prepend imports - OSAccess now handles relative paths
+        wrapped_code = f'from pathlib import Path\nimport os\n{code}'
         m = Monty(wrapped_code)
         return m.run(os=self._get_os_access())
 
@@ -119,6 +133,7 @@ class CPythonRunner(CodeRunner):
 
     def __init__(self, tmp_path: Path) -> None:
         self._root = tmp_path
+        self._environ: dict[str, str] = {}
 
     def write_file(self, path: str, content: str | bytes) -> None:
         full_path = self._root / path
@@ -128,8 +143,12 @@ class CPythonRunner(CodeRunner):
         else:
             full_path.write_text(content)
 
+    def set_environ(self, environ: dict[str, str]) -> None:
+        self._environ = environ
+
     def run_code(self, code: str) -> Any:
         import ast
+        import types
 
         # Map absolute paths (starting with /) to the temp directory
         # This matches OSAccess behavior which normalizes relative paths to /
@@ -144,7 +163,16 @@ class CPythonRunner(CodeRunner):
                 # Relative path - prepend / then map to root
                 return root / p
 
-        namespace: dict[str, Any] = {'Path': rooted_path}
+        # Create a mock os module with our environ
+        mock_os = types.SimpleNamespace()
+        mock_os.environ = self._environ
+
+        def getenv(key: str, default: str | None = None) -> str | None:
+            return self._environ.get(key, default)
+
+        mock_os.getenv = getenv
+
+        namespace: dict[str, Any] = {'Path': rooted_path, 'os': mock_os}
         exec(code, namespace)
 
         # Find the last expression result
@@ -660,3 +688,44 @@ except IsADirectoryError as e:
 result
 """)
     assert result == 'IsADirectoryError'
+
+
+# =============================================================================
+# Environment Variable Tests
+# =============================================================================
+
+
+def test_environ_key_access(runner: CodeRunner) -> None:
+    """os.environ['KEY'] returns the value for existing keys."""
+    runner.set_environ({'MY_VAR': 'my_value'})
+    result = runner.run_code("os.environ['MY_VAR']")
+    assert result == 'my_value'
+
+
+def test_environ_get_method(runner: CodeRunner) -> None:
+    """os.environ.get() returns the value for existing keys."""
+    runner.set_environ({'MY_VAR': 'my_value'})
+    result = runner.run_code("os.environ.get('MY_VAR')")
+    assert result == 'my_value'
+
+
+def test_environ_get_missing_with_default(runner: CodeRunner) -> None:
+    """os.environ.get() returns default for missing keys."""
+    runner.set_environ({})
+    result = runner.run_code("os.environ.get('MISSING', 'fallback')")
+    assert result == 'fallback'
+
+
+def test_environ_missing_key_raises_keyerror(runner: CodeRunner) -> None:
+    """os.environ['MISSING'] raises KeyError with consistent message."""
+    runner.set_environ({})
+    result = runner.run_code("""
+result = None
+try:
+    os.environ['NONEXISTENT_KEY']
+except KeyError as e:
+    result = str(e)
+result
+""")
+    # Both Monty and CPython should produce the same KeyError message format
+    assert result == "'NONEXISTENT_KEY'"

@@ -438,6 +438,127 @@ def test_os_getenv_callback_with_default():
 
 
 # =============================================================================
+# os.environ tests
+# =============================================================================
+
+
+def test_os_environ_yields_oscall():
+    """os.environ yields an OS call with correct function name."""
+    m = pydantic_monty.Monty('import os; os.environ')
+    result = m.start()
+
+    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert result.is_os_function is True
+    assert result.function_name == snapshot('os.environ')
+    assert result.args == snapshot(())
+
+
+def test_os_environ_key_access():
+    """os.environ['KEY'] works correctly after getting environ dict."""
+
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
+        if function_name == 'os.environ':
+            return {'HOME': '/home/user', 'USER': 'testuser'}
+        return None
+
+    m = pydantic_monty.Monty("import os; os.environ['HOME']")
+    result = m.run(os=os_handler)
+    assert result == snapshot('/home/user')
+
+
+def test_os_environ_key_missing_raises():
+    """os.environ['MISSING'] raises KeyError."""
+
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
+        if function_name == 'os.environ':
+            return {}
+        return None
+
+    m = pydantic_monty.Monty("import os; os.environ['MISSING']")
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run(os=os_handler)
+    assert str(exc_info.value) == snapshot('KeyError: MISSING')
+
+
+def test_os_environ_get_method():
+    """os.environ.get() works correctly."""
+
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
+        if function_name == 'os.environ':
+            return {'HOME': '/home/user'}
+        return None
+
+    m = pydantic_monty.Monty("import os; os.environ.get('HOME')")
+    result = m.run(os=os_handler)
+    assert result == snapshot('/home/user')
+
+
+def test_os_environ_get_with_default():
+    """os.environ.get() with default for missing key."""
+
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
+        if function_name == 'os.environ':
+            return {}
+        return None
+
+    m = pydantic_monty.Monty("import os; os.environ.get('MISSING', 'default')")
+    result = m.run(os=os_handler)
+    assert result == snapshot('default')
+
+
+def test_os_environ_len():
+    """len(os.environ) returns correct count."""
+
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
+        if function_name == 'os.environ':
+            return {'A': '1', 'B': '2', 'C': '3'}
+        return None
+
+    m = pydantic_monty.Monty('import os; len(os.environ)')
+    result = m.run(os=os_handler)
+    assert result == snapshot(3)
+
+
+def test_os_environ_contains():
+    """'KEY' in os.environ works correctly."""
+
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
+        if function_name == 'os.environ':
+            return {'HOME': '/home/user'}
+        return None
+
+    m = pydantic_monty.Monty("import os; ('HOME' in os.environ, 'MISSING' in os.environ)")
+    result = m.run(os=os_handler)
+    assert result == snapshot((True, False))
+
+
+def test_os_environ_keys():
+    """os.environ.keys() returns keys."""
+
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
+        if function_name == 'os.environ':
+            return {'HOME': '/home', 'USER': 'test'}
+        return None
+
+    m = pydantic_monty.Monty('import os; list(os.environ.keys())')
+    result = m.run(os=os_handler)
+    assert set(result) == snapshot({'HOME', 'USER'})
+
+
+def test_os_environ_values():
+    """os.environ.values() returns values."""
+
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
+        if function_name == 'os.environ':
+            return {'A': '1', 'B': '2'}
+        return None
+
+    m = pydantic_monty.Monty('import os; list(os.environ.values())')
+    result = m.run(os=os_handler)
+    assert set(result) == snapshot({'1', '2'})
+
+
+# =============================================================================
 # Path write operations - write_text()
 # =============================================================================
 

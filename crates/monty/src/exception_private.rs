@@ -14,7 +14,10 @@ use crate::{
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
     resource::ResourceTracker,
-    types::{AttrCallResult, PyTrait, Str, Tuple, Type, str::string_repr_fmt},
+    types::{
+        AttrCallResult, PyTrait, Str, Tuple, Type,
+        str::{StringRepr, string_repr_fmt},
+    },
     value::Value,
 };
 
@@ -328,20 +331,9 @@ impl ExcType {
     /// Creates a KeyError for a missing dict key.
     ///
     /// For string keys, uses the raw string value without extra quoting.
-    /// For other types, uses repr.
     #[must_use]
     pub(crate) fn key_error(key: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunError {
-        let key_str = match key {
-            Value::InternString(string_id) => interns.get_str(*string_id).to_owned(),
-            Value::Ref(id) => {
-                if let HeapData::Str(s) = heap.get(*id) {
-                    s.as_str().to_owned()
-                } else {
-                    key.py_repr(heap, interns).into_owned()
-                }
-            }
-            _ => key.py_repr(heap, interns).into_owned(),
-        };
+        let key_str = key.py_str(heap, interns).into_owned();
         SimpleException::new_msg(Self::KeyError, key_str).into()
     }
 
@@ -1148,6 +1140,17 @@ impl SimpleException {
     #[must_use]
     pub fn arg(&self) -> Option<&String> {
         self.arg.as_ref()
+    }
+
+    /// str() for an exception
+    #[must_use]
+    pub fn py_str(&self) -> String {
+        match (self.exc_type, &self.arg) {
+            // KeyError expecificaly uses repr of the key for str(exc)
+            (ExcType::KeyError, Some(exc)) => StringRepr(exc).to_string(),
+            (_, Some(arg)) => arg.to_owned(),
+            (_, None) => String::new(),
+        }
     }
 
     pub(crate) fn py_type(&self) -> Type {

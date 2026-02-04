@@ -172,6 +172,12 @@ class TestOS(AbstractOS):
         }
         return env.get(key, default)
 
+    def get_environ(self) -> dict[str, str]:
+        return {
+            'TEST_VAR': 'test_value',
+            'HOME': '/test/home',
+        }
+
 
 # =============================================================================
 # Basic AbstractFileSystem tests

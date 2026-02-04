@@ -957,6 +957,88 @@ import os
     assert result == snapshot(('value1', 'value2', 'value3'))
 
 
+def test_get_environ_returns_dict():
+    """os.environ returns the full environ dict."""
+    fs = OSAccess(environ={'HOME': '/home/user', 'USER': 'testuser'})
+    result = Monty('import os; os.environ').run(os=fs)
+    assert result == snapshot({'HOME': '/home/user', 'USER': 'testuser'})
+
+
+def test_get_environ_key_access():
+    """os.environ['KEY'] returns the value."""
+    fs = OSAccess(environ={'MY_VAR': 'my_value'})
+    result = Monty("import os; os.environ['MY_VAR']").run(os=fs)
+    assert result == snapshot('my_value')
+
+
+def test_get_environ_key_missing_raises():
+    """os.environ['MISSING'] raises KeyError."""
+    fs = OSAccess(environ={})
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        Monty("import os; os.environ['MISSING']").run(os=fs)
+    assert str(exc_info.value) == snapshot('KeyError: MISSING')
+
+
+def test_get_environ_get_method():
+    """os.environ.get() works correctly."""
+    fs = OSAccess(environ={'HOME': '/home/user'})
+    result = Monty("import os; os.environ.get('HOME')").run(os=fs)
+    assert result == snapshot('/home/user')
+
+
+def test_get_environ_get_missing_with_default():
+    """os.environ.get() returns default for missing key."""
+    fs = OSAccess(environ={})
+    result = Monty("import os; os.environ.get('MISSING', 'fallback')").run(os=fs)
+    assert result == snapshot('fallback')
+
+
+def test_get_environ_len():
+    """len(os.environ) returns the number of env vars."""
+    fs = OSAccess(environ={'A': '1', 'B': '2', 'C': '3'})
+    result = Monty('import os; len(os.environ)').run(os=fs)
+    assert result == snapshot(3)
+
+
+def test_get_environ_contains():
+    """'KEY' in os.environ tests membership."""
+    fs = OSAccess(environ={'PRESENT': 'value'})
+    code = """
+import os
+('PRESENT' in os.environ, 'ABSENT' in os.environ)
+"""
+    result = Monty(code).run(os=fs)
+    assert result == snapshot((True, False))
+
+
+def test_get_environ_keys():
+    """os.environ.keys() returns the keys."""
+    fs = OSAccess(environ={'X': '1', 'Y': '2'})
+    result = Monty('import os; list(os.environ.keys())').run(os=fs)
+    assert set(result) == snapshot({'X', 'Y'})
+
+
+def test_get_environ_values():
+    """os.environ.values() returns the values."""
+    fs = OSAccess(environ={'X': 'a', 'Y': 'b'})
+    result = Monty('import os; list(os.environ.values())').run(os=fs)
+    assert set(result) == snapshot({'a', 'b'})
+
+
+def test_get_environ_items():
+    """os.environ.items() returns key-value pairs."""
+    fs = OSAccess(environ={'X': '1', 'Y': '2'})
+    result = Monty('import os; list(os.environ.items())').run(os=fs)
+    assert set(result) == snapshot({('X', '1'), ('Y', '2')})
+
+
+def test_get_environ_empty():
+    """os.environ returns empty dict when no environ provided."""
+    fs = OSAccess()
+    result = Monty('import os; os.environ').run(os=fs)
+    assert result == snapshot({})
+
+
 # =============================================================================
 # MemoryFile Behavior
 # =============================================================================

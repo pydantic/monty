@@ -566,7 +566,7 @@ impl PyTrait for HeapData {
             // LongInt returns its string representation
             Self::LongInt(li) => Cow::Owned(li.to_string()),
             // Exceptions return just the message (or empty string if no message)
-            Self::Exception(e) => Cow::Owned(e.arg().cloned().unwrap_or_default()),
+            Self::Exception(e) => Cow::Owned(e.py_str()),
             // Paths return the path string without the PosixPath() wrapper
             Self::Path(p) => Cow::Owned(p.as_str().to_owned()),
             // All other types use repr

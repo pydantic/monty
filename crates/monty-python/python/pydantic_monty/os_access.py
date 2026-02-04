@@ -28,6 +28,7 @@ OsFunction = Literal[
     'Path.resolve',
     'Path.absolute',
     'os.getenv',
+    'os.environ',
 ]
 
 
@@ -169,6 +170,8 @@ class AbstractOS(ABC):
                 return self.path_absolute(*args)
             case 'os.getenv':
                 return self.getenv(*args)
+            case 'os.environ':
+                return self.get_environ()
 
     @abstractmethod
     def path_exists(self, path: PurePosixPath) -> bool:
@@ -407,6 +410,15 @@ class AbstractOS(ABC):
 
         Returns:
             The value of the environment variable, or `default` if not set.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_environ(self) -> dict[str, str]:
+        """Get the entire environment as a dictionary.
+
+        Returns:
+            A dictionary containing all environment variables.
         """
         raise NotImplementedError
 
@@ -863,6 +875,9 @@ class OSAccess(AbstractOS):
 
     def getenv(self, key: str, default: str | None = None) -> str | None:
         return self.environ.get(key, default)
+
+    def get_environ(self) -> dict[str, str]:
+        return self.environ
 
     def _get_entry(self, path: PurePosixPath) -> Tree | AbstractFile | None:
         dir = self._tree
