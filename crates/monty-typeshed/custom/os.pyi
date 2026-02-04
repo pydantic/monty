@@ -4,6 +4,7 @@ from typing import Callable, Protocol, TypeAlias, TypeVar, final, overload, runt
 from _typeshed import AnyStr_co, structseq
 
 _T = TypeVar('_T')
+environ: dict[str, str]
 
 @overload
 def getenv(key: str) -> str | None: ...

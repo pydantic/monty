@@ -423,3 +423,6 @@ assert_type(x, str | None)
 
 y = os.getenv('foobar', default=int('123'))
 assert_type(y, str | int)
+
+x2 = os.environ.get('foobar')
+assert_type(x2, str | None)

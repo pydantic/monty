@@ -3,13 +3,11 @@
 # or for the stdlib modules we (partially) implement
 
 _collections_abc: 3.3-
-_io: 3.0-
 _typeshed: 3.0-  # not present at runtime, only for type checking
 asyncio: 3.4-
 builtins: 3.0-
 collections: 3.0-
 dataclasses: 3.7-
-io: 3.0-
 os: 3.0-
 pathlib: 3.4-
 pathlib.types: 3.14-
