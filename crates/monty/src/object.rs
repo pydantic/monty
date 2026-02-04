@@ -362,7 +362,7 @@ impl MontyObject {
                             .collect(),
                     ),
                     HeapData::NamedTuple(nt) => Self::NamedTuple {
-                        type_name: nt.type_name().to_owned(),
+                        type_name: nt.name().to_owned(),
                         field_names: nt
                             .field_names()
                             .iter()

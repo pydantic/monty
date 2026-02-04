@@ -289,7 +289,7 @@ impl PyTrait for Dataclass {
         let attr_name = interns.get_str(attr_id);
         match self.attrs.get_by_str(attr_name, heap, interns) {
             Some(value) => Ok(Some(AttrCallResult::Value(value.clone_with_heap(heap)))),
-            // we use name here, not `self.py_type(heap)` hence returning a Ok(AttrValue::AttributeError)
+            // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
             None => Err(ExcType::attribute_error(self.name(), attr_name)),
         }
     }

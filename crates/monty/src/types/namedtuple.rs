@@ -87,7 +87,7 @@ impl NamedTuple {
 
     /// Returns the type name (e.g., "sys.version_info").
     #[must_use]
-    pub fn type_name(&self) -> &str {
+    pub fn name(&self) -> &str {
         self.name.as_str()
     }
 
@@ -238,11 +238,13 @@ impl PyTrait for NamedTuple {
         &self,
         attr_id: StringId,
         heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
+        interns: &Interns,
     ) -> RunResult<Option<AttrCallResult>> {
-        match self.get_by_name(attr_id) {
-            Some(value) => Ok(Some(AttrCallResult::Value(value.clone_with_heap(heap)))),
-            None => Ok(None),
+        if let Some(value) = self.get_by_name(attr_id) {
+            Ok(Some(AttrCallResult::Value(value.clone_with_heap(heap))))
+        } else {
+            // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
+            Err(ExcType::attribute_error(self.name(), interns.get_str(attr_id)))
         }
     }
 }

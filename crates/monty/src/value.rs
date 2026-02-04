@@ -1540,6 +1540,7 @@ impl Value {
         }
     }
 
+    /// Returns the Ref ID if this value is a reference, otherwise returns None.
     pub fn ref_id(&self) -> Option<HeapId> {
         match self {
             Self::Ref(id) => Some(*id),
