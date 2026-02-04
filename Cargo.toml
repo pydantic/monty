@@ -4,7 +4,7 @@ members = ["crates/monty", "crates/monty-cli", "crates/monty-python", "crates/mo
 
 [workspace.package]
 edition = "2024"
-version = "0.0.2"
+version = "0.0.3"
 rust-version = "1.90"
 license = "MIT"
 authors = ["Samuel Colvin <samuel@pydantic.dev>"]
