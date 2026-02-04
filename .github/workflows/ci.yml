@@ -675,16 +675,16 @@ jobs:
   release-js:
     name: Release to NPM
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      id-token: write
     needs:
       - check
-      # make sure python release will work before publishing to npm
       - inspect-python-assets
       - test-js-macOS-windows-binding
       - test-js-linux-binding
       - test-js-wasi
+    if: success() && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.run_release))
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v6
       - name: Setup node
@@ -720,16 +720,13 @@ jobs:
       - name: Publish
         run: |
           npm config set provenance true
-          if git log -1 --pretty=%B | grep "^[0-9]\+\.[0-9]\+\.[0-9]\+$";
-          then
-            echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
+          echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
+          if [[ "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Publishing stable release"
             npm publish --access public
-          elif git log -1 --pretty=%B | grep "^[0-9]\+\.[0-9]\+\.[0-9]\+";
-          then
-            echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
-            npm publish --tag next --access public
           else
-            echo "Not a release, skipping publish"
+            echo "Publishing pre-release with 'next' tag"
+            npm publish --tag next --access public
           fi
         working-directory: crates/monty-js
         env:
