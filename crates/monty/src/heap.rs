@@ -19,7 +19,7 @@ use crate::{
         AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait,
         Range, Set, Slice, Str, Tuple, Type,
     },
-    value::{Attr, Value},
+    value::{EitherStr, Value},
 };
 
 /// Unique identifier for values stored inside the heap arena.
@@ -669,7 +669,7 @@ impl PyTrait for HeapData {
     fn py_call_attr(
         &mut self,
         heap: &mut Heap<impl ResourceTracker>,
-        attr: &Attr,
+        attr: &EitherStr,
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
@@ -690,7 +690,7 @@ impl PyTrait for HeapData {
     fn py_call_attr_raw(
         &mut self,
         heap: &mut Heap<impl ResourceTracker>,
-        attr: &Attr,
+        attr: &EitherStr,
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<AttrCallResult> {
@@ -1157,7 +1157,7 @@ impl<T: ResourceTracker> Heap<T> {
     pub fn call_attr_raw(
         &mut self,
         id: HeapId,
-        attr: &Attr,
+        attr: &EitherStr,
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<AttrCallResult> {

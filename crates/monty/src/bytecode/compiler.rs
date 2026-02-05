@@ -29,7 +29,7 @@ use crate::{
     intern::{Interns, StringId},
     modules::BuiltinModule,
     parse::{CodeRange, ExceptHandler, Try},
-    value::{Attr, Value},
+    value::{EitherStr, Value},
 };
 
 /// Maximum number of arguments allowed in a function call.
@@ -1567,7 +1567,12 @@ impl<'a> Compiler<'a> {
     ///
     /// The object should already be on the stack. This compiles the arguments
     /// and emits a CallAttr opcode with the attribute name and arg count.
-    fn compile_method_call(&mut self, attr: &Attr, args: &ArgExprs, call_pos: CodeRange) -> Result<(), CompileError> {
+    fn compile_method_call(
+        &mut self,
+        attr: &EitherStr,
+        args: &ArgExprs,
+        call_pos: CodeRange,
+    ) -> Result<(), CompileError> {
         // Get the interned attribute name
         let name_id = attr.string_id().expect("CallAttr requires interned attr name");
 

@@ -22,7 +22,7 @@ use crate::{
         list::do_list_sort,
         str::call_str_method,
     },
-    value::{Attr, Value},
+    value::{EitherStr, Value},
 };
 
 /// Result of executing a call opcode.
@@ -238,7 +238,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// Special handling: `list.sort(key=...)` is intercepted here to allow calling
     /// builtin key functions with VM access.
     fn call_attr(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<CallResult, RunError> {
-        let attr = Attr::Interned(name_id);
+        let attr = EitherStr::Interned(name_id);
 
         match obj {
             Value::Ref(heap_id) => {

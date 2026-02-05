@@ -6,7 +6,7 @@ use crate::{
     namespace::NamespaceId,
     parse::{CodeRange, ParsedSignature, Try},
     signature::Signature,
-    value::{Attr, Marker, Value},
+    value::{EitherStr, Marker, Value},
 };
 
 /// Indicates which namespace a variable reference belongs to.
@@ -121,7 +121,7 @@ pub enum Expr {
     /// like `a.b.c.method()`.
     AttrCall {
         object: Box<ExprLoc>,
-        attr: Attr,
+        attr: EitherStr,
         /// same as above for Box
         args: Box<ArgExprs>,
     },
@@ -141,7 +141,7 @@ pub enum Expr {
     /// special attribute handling. Supports chained attribute access.
     AttrGet {
         object: Box<ExprLoc>,
-        attr: Attr,
+        attr: EitherStr,
     },
     Op {
         left: Box<ExprLoc>,
@@ -436,7 +436,7 @@ pub enum Node<F> {
     /// Supports chained attribute access on the left-hand side.
     AttrAssign {
         object: ExprLoc,
-        attr: Attr,
+        attr: EitherStr,
         target_position: CodeRange,
         value: ExprLoc,
     },

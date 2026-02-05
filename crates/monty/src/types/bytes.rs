@@ -77,7 +77,7 @@ use crate::{
     intern::{Interns, StaticStrings, StringId},
     resource::ResourceTracker,
     types::List,
-    value::{Attr, Value},
+    value::{EitherStr, Value},
 };
 
 // =============================================================================
@@ -325,7 +325,7 @@ impl PyTrait for Bytes {
     fn py_call_attr(
         &mut self,
         heap: &mut Heap<impl ResourceTracker>,
-        attr: &Attr,
+        attr: &EitherStr,
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {

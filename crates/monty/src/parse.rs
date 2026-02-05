@@ -20,7 +20,7 @@ use crate::{
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
-    value::Attr,
+    value::EitherStr,
 };
 
 /// A parameter in a function signature with optional default value.
@@ -492,7 +492,7 @@ impl<'a> Parser<'a> {
             // Attribute assignment like obj.attr = value (supports chained like a.b.c = value)
             AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => Ok(Node::AttrAssign {
                 object: self.parse_expression(*value)?,
-                attr: Attr::Interned(self.interner.intern(attr.id())),
+                attr: EitherStr::Interned(self.interner.intern(attr.id())),
                 target_position: self.convert_range(range),
                 value: self.parse_expression(rhs)?,
             }),
@@ -834,7 +834,7 @@ impl<'a> Parser<'a> {
                             position,
                             Expr::AttrCall {
                                 object,
-                                attr: Attr::Interned(self.interner.intern(attr.id())),
+                                attr: EitherStr::Interned(self.interner.intern(attr.id())),
                                 args: Box::new(args),
                             },
                         ))
@@ -910,7 +910,7 @@ impl<'a> Parser<'a> {
                     position,
                     Expr::AttrGet {
                         object,
-                        attr: Attr::Interned(self.interner.intern(attr.id())),
+                        attr: EitherStr::Interned(self.interner.intern(attr.id())),
                     },
                 ))
             }

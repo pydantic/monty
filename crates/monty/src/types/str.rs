@@ -15,7 +15,7 @@ use crate::{
     intern::{Interns, StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker},
     types::Type,
-    value::{Attr, Value},
+    value::{EitherStr, Value},
 };
 
 /// Python string value stored on the heap.
@@ -310,7 +310,7 @@ impl PyTrait for Str {
     fn py_call_attr(
         &mut self,
         heap: &mut Heap<impl ResourceTracker>,
-        attr: &Attr,
+        attr: &EitherStr,
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {

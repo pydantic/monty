@@ -20,7 +20,7 @@ use crate::{
     intern::{ExtFunctionId, Interns, StringId},
     os::OsFunction,
     resource::ResourceTracker,
-    value::{Attr, Value},
+    value::{EitherStr, Value},
 };
 
 /// Result of calling an attribute method via `py_call_attr_raw`.
@@ -268,7 +268,7 @@ pub trait PyTrait {
     fn py_call_attr(
         &mut self,
         heap: &mut Heap<impl ResourceTracker>,
-        attr: &Attr,
+        attr: &EitherStr,
         _args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
@@ -293,7 +293,7 @@ pub trait PyTrait {
     fn py_call_attr_raw(
         &mut self,
         heap: &mut Heap<impl ResourceTracker>,
-        attr: &Attr,
+        attr: &EitherStr,
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<AttrCallResult> {

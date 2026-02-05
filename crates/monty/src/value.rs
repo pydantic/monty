@@ -2021,7 +2021,7 @@ impl Value {
 }
 
 /// Interned or heap-owned string identifier.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) enum EitherStr {
     /// Interned string identifier (cheap comparisons and no allocation).
     Interned(StringId),
@@ -2045,41 +2045,13 @@ impl EitherStr {
             Self::Heap(s) => s == interns.get_str(target),
         }
     }
-}
-
-/// Attribute names for accessing fields and methods on objects.
-///
-/// Uses `StringId` for interned attribute names (parsed at compile time) and
-/// `Other(String)` for runtime-constructed names (e.g., from `getattr()`).
-///
-/// Known method names (append, get, keys, etc.) are pre-interned with stable
-/// `StringId` values - see `intern.rs` for the `ATTR_*` constants.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) enum Attr {
-    /// Interned attribute name (compile-time constant or parsed identifier).
-    ///
-    /// Compare against `ATTR_*` constants from `intern.rs` for known methods.
-    Interned(StringId),
-
-    /// Runtime-constructed attribute name (rare, e.g., from `getattr()`).
-    Other(String),
-}
-
-impl Attr {
-    /// Returns the attribute name as a string reference.
-    pub fn as_str<'a>(&'a self, interns: &'a Interns) -> &'a str {
-        match self {
-            Self::Interned(id) => interns.get_str(*id),
-            Self::Other(name) => name,
-        }
-    }
 
     /// Returns the `StringId` if this is an interned attribute.
     #[inline]
     pub fn string_id(&self) -> Option<StringId> {
         match self {
             Self::Interned(id) => Some(*id),
-            Self::Other(_) => None,
+            Self::Heap(_) => None,
         }
     }
 
@@ -2088,7 +2060,7 @@ impl Attr {
     pub fn static_string(&self) -> Option<StaticStrings> {
         match self {
             Self::Interned(id) => StaticStrings::from_string_id(*id),
-            Self::Other(_) => None,
+            Self::Heap(_) => None,
         }
     }
 }

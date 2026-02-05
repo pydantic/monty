@@ -16,7 +16,7 @@ use crate::{
     os::OsFunction,
     resource::ResourceTracker,
     types::{AttrCallResult, PyTrait, Str, Type},
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// Python `pathlib.Path` object representing a filesystem path.
@@ -437,7 +437,7 @@ impl PyTrait for Path {
     fn py_call_attr(
         &mut self,
         heap: &mut Heap<impl ResourceTracker>,
-        attr: &crate::value::Attr,
+        attr: &EitherStr,
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
@@ -534,7 +534,7 @@ impl PyTrait for Path {
     fn py_call_attr_raw(
         &mut self,
         heap: &mut Heap<impl ResourceTracker>,
-        attr: &crate::value::Attr,
+        attr: &EitherStr,
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<AttrCallResult> {

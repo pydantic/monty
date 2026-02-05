@@ -7,7 +7,7 @@ use crate::{
     intern::{Interns, StringId},
     resource::ResourceTracker,
     types::{AttrCallResult, Dict, PyTrait},
-    value::{Attr, Value},
+    value::{EitherStr, Value},
 };
 
 /// A Python module with a name and attribute dictionary.
@@ -128,13 +128,13 @@ impl Module {
     pub fn py_call_attr_raw(
         &self,
         heap: &mut Heap<impl ResourceTracker>,
-        attr: &Attr,
+        attr: &EitherStr,
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<AttrCallResult> {
         let attr_key = match attr {
-            Attr::Interned(id) => Value::InternString(*id),
-            Attr::Other(s) => {
+            EitherStr::Interned(id) => Value::InternString(*id),
+            EitherStr::Heap(s) => {
                 // Module attributes are always interned, so owned strings won't match
                 args.drop_with_heap(heap);
                 return Err(ExcType::attribute_error_module(interns.get_str(self.name), s));

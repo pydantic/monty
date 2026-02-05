@@ -526,7 +526,7 @@ pub trait PyTrait {
     fn py_call_attr_raw(
         &mut self,
         heap: &mut Heap<impl ResourceTracker>,
-        attr: &Attr,
+        attr: &EitherStr,
         args: ArgValues,
         interns: &Interns,
     ) -> Result<FrameExit, RunError> {
