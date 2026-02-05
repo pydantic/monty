@@ -1,7 +1,6 @@
 use std::{
     fmt::{self, Write},
     hash::{Hash, Hasher},
-    str::FromStr,
 };
 
 use ahash::AHashSet;
@@ -13,7 +12,7 @@ use crate::{
     builtins::{Builtins, BuiltinsFunctions},
     exception_private::{ExcType, SimpleException},
     heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings},
+    intern::Interns,
     resource::{ResourceError, ResourceTracker},
     types::{
         LongInt, NamedTuple, Path, PyTrait, Type,
@@ -24,7 +23,7 @@ use crate::{
         str::{Str, StringRepr, string_repr_fmt},
         tuple::Tuple,
     },
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// A Python value that can be passed to or returned from the interpreter.
@@ -232,15 +231,8 @@ impl MontyObject {
                     .into_iter()
                     .map(|item| item.to_value(heap, interns))
                     .collect::<Result<_, _>>()?;
-                let field_name_ids: Result<Vec<_>, _> = field_names
-                    .iter()
-                    .map(|n| {
-                        StaticStrings::from_str(n)
-                            .map(Into::into)
-                            .map_err(|_| InvalidInputError::invalid_type("unknown NamedTuple field_name"))
-                    })
-                    .collect();
-                let nt = NamedTuple::new(type_name, field_name_ids?, values);
+                let field_name_strs: Vec<EitherStr> = field_names.into_iter().map(Into::into).collect();
+                let nt = NamedTuple::new(type_name, field_name_strs, values);
                 Ok(Value::Ref(heap.allocate(HeapData::NamedTuple(nt))?))
             }
             Self::Dict(map) => {
@@ -362,11 +354,11 @@ impl MontyObject {
                             .collect(),
                     ),
                     HeapData::NamedTuple(nt) => Self::NamedTuple {
-                        type_name: nt.name().to_owned(),
+                        type_name: nt.name(interns).to_owned(),
                         field_names: nt
                             .field_names()
                             .iter()
-                            .map(|id| interns.get_str(*id).to_owned())
+                            .map(|field_name| field_name.as_str(interns).to_owned())
                             .collect(),
                         values: nt
                             .as_vec()
@@ -432,7 +424,7 @@ impl MontyObject {
                         let mut methods: Vec<String> = dc.methods().iter().cloned().collect();
                         methods.sort();
                         Self::Dataclass {
-                            name: dc.name().to_owned(),
+                            name: dc.name(interns).to_owned(),
                             type_id: dc.type_id(),
                             field_names: dc.field_names().to_vec(),
                             attrs,

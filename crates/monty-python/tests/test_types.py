@@ -444,3 +444,110 @@ def test_namedtuple_sys_version_info_tuple_comparison():
     m = pydantic_monty.Monty('import sys; (sys.version_info.major, sys.version_info.minor, sys.version_info.micro)')
     result = m.run()
     assert result == snapshot((3, 14, 0))
+
+
+# === User-defined NamedTuple input ===
+
+
+def test_namedtuple_custom_input_attribute_access():
+    """User-defined NamedTuple with custom field names can be accessed by attribute."""
+    from typing import NamedTuple
+
+    class Person(NamedTuple):
+        name: str
+        age: int
+
+    m = pydantic_monty.Monty('p.name', inputs=['p'])
+    assert m.run(inputs={'p': Person(name='Alice', age=30)}) == snapshot('Alice')
+
+    m = pydantic_monty.Monty('p.age', inputs=['p'])
+    assert m.run(inputs={'p': Person(name='Alice', age=30)}) == snapshot(30)
+
+
+def test_namedtuple_custom_input_index_access():
+    """User-defined NamedTuple supports both attribute and index access."""
+    from typing import NamedTuple
+
+    class Point(NamedTuple):
+        x: int
+        y: int
+
+    m = pydantic_monty.Monty('p[0] + p[1]', inputs=['p'])
+    assert m.run(inputs={'p': Point(x=10, y=20)}) == snapshot(30)
+
+
+def test_namedtuple_custom_input_multiple_fields():
+    """NamedTuple with multiple custom field names works correctly."""
+    from typing import NamedTuple
+
+    class Config(NamedTuple):
+        host: str
+        port: int
+        debug: bool
+        timeout: float
+
+    m = pydantic_monty.Monty("f'{c.host}:{c.port}'", inputs=['c'])
+    result = m.run(inputs={'c': Config(host='localhost', port=8080, debug=True, timeout=30.0)})
+    assert result == snapshot('localhost:8080')
+
+    m = pydantic_monty.Monty('c.debug', inputs=['c'])
+    result = m.run(inputs={'c': Config(host='localhost', port=8080, debug=True, timeout=30.0)})
+    assert result is True
+
+
+def test_namedtuple_custom_input_repr():
+    """User-defined NamedTuple has correct repr with fully-qualified type name."""
+    from typing import NamedTuple
+
+    class Item(NamedTuple):
+        name: str
+        price: float
+
+    m = pydantic_monty.Monty('repr(item)', inputs=['item'])
+    result = m.run(inputs={'item': Item(name='widget', price=9.99)})
+    # Monty uses the full qualified name (module.ClassName) for the type
+    assert result == snapshot("test_types.Item(name='widget', price=9.99)")
+
+
+def test_namedtuple_custom_input_len():
+    """User-defined NamedTuple supports len()."""
+    from typing import NamedTuple
+
+    class Triple(NamedTuple):
+        a: int
+        b: int
+        c: int
+
+    m = pydantic_monty.Monty('len(t)', inputs=['t'])
+    assert m.run(inputs={'t': Triple(a=1, b=2, c=3)}) == snapshot(3)
+
+
+def test_namedtuple_custom_input_roundtrip():
+    """User-defined NamedTuple can be passed through and returned."""
+    from typing import NamedTuple
+
+    class Pair(NamedTuple):
+        first: int
+        second: int
+
+    m = pydantic_monty.Monty('p', inputs=['p'])
+    result = m.run(inputs={'p': Pair(first=1, second=2)})
+    # Returns a namedtuple-like object (not the same Python class)
+    assert result[0] == snapshot(1)
+    assert result[1] == snapshot(2)
+    assert result.first == snapshot(1)
+    assert result.second == snapshot(2)
+
+
+def test_namedtuple_custom_missing_attr_error():
+    """Accessing non-existent attribute on custom NamedTuple raises AttributeError."""
+    from typing import NamedTuple
+
+    class Simple(NamedTuple):
+        value: int
+
+    m = pydantic_monty.Monty('s.nonexistent', inputs=['s'])
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run(inputs={'s': Simple(value=42)})
+    # Monty uses the full qualified name (module.ClassName) for the type
+    assert "AttributeError: 'test_types.Simple' object has no attribute 'nonexistent'" in str(exc_info.value)

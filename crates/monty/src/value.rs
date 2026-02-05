@@ -5,6 +5,7 @@ use std::{
     fmt::{self, Write},
     hash::{Hash, Hasher},
     mem::discriminant,
+    str::FromStr,
 };
 
 use ahash::AHashSet;
@@ -2021,12 +2022,38 @@ impl Value {
 }
 
 /// Interned or heap-owned string identifier.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+///
+/// Used when a string value can come from either the intern table (for known
+/// static strings and keywords) or from a heap-allocated Python string object.
+#[derive(Debug, Clone, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum EitherStr {
     /// Interned string identifier (cheap comparisons and no allocation).
     Interned(StringId),
     /// Heap-owned string extracted from a `str` object.
     Heap(String),
+}
+
+impl From<StringId> for EitherStr {
+    fn from(id: StringId) -> Self {
+        Self::Interned(id)
+    }
+}
+
+impl From<StaticStrings> for EitherStr {
+    fn from(s: StaticStrings) -> Self {
+        Self::Interned(s.into())
+    }
+}
+
+/// Convert String to EitherStr: use Interned for known static strings,
+/// otherwise use Heap for user-defined field names.
+impl From<String> for EitherStr {
+    fn from(s: String) -> Self {
+        match StaticStrings::from_str(&s) {
+            Ok(s) => s.into(),
+            Err(_) => Self::Heap(s),
+        }
+    }
 }
 
 impl EitherStr {
@@ -2061,6 +2088,13 @@ impl EitherStr {
         match self {
             Self::Interned(id) => StaticStrings::from_string_id(*id),
             Self::Heap(_) => None,
+        }
+    }
+
+    pub fn py_estimate_size(&self) -> usize {
+        match self {
+            Self::Interned(_) => 0,
+            Self::Heap(s) => s.capacity(),
         }
     }
 }
