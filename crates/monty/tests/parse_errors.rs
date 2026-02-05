@@ -46,10 +46,12 @@ mod not_implemented_error {
     }
 
     #[test]
-    fn unknown_imports_return_module_not_found_error() {
-        // Unknown modules (not sys, typing, os, etc.) return a ModuleNotFoundError
+    fn unknown_imports_compile_successfully_error_deferred_to_runtime() {
+        // Unknown modules (not sys, typing, os, etc.) compile successfully.
+        // The ModuleNotFoundError is deferred to runtime, allowing TYPE_CHECKING
+        // imports to work without causing compile-time errors.
         let result = MontyRun::new("import foobar".to_owned(), "test.py", vec![], vec![]);
-        assert_eq!(get_exc_type(result), ExcType::ModuleNotFoundError);
+        assert!(result.is_ok(), "unknown import should compile successfully");
     }
 
     #[test]

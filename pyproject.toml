@@ -13,6 +13,9 @@ dev = [
     "mypy>=1.19.1",
     "ruff>=0.14.7",
 ]
+examples = [
+    "duckdb>=1.0.0",
+]
 
 # https://beta.ruff.rs/docs/configuration/
 [tool.ruff]
@@ -94,6 +97,7 @@ exclude = [
     "crates/monty/test_cases/loop__break_in_if_error.py",
     "crates/monty/test_cases/loop__continue_in_if_error.py",
     "scripts/startup_performance.py",
+    "examples/sql_playground/sandbox_code.py",
 ]
 venv = ".venv"
 
