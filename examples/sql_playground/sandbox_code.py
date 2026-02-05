@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
 async def main():
     # Step 1: Query top 10 customers by total purchases
+    print('getting top customers...')
     top_customers = await query_csv(
         filepath=Path('/data/customers/customers.csv'),
         sql="""
@@ -24,6 +25,7 @@ async def main():
     # Step 2: Get their Twitter handles from the survey data
     emails = [c['Email'] for c in top_customers]
     email_list = ', '.join([f"'{e}'" for e in emails])
+    print('getting twitter handles...')
     twitter_handles = await query_csv(
         filepath=Path('/data/customers/surveys.csv'),
         sql=f"""
@@ -35,7 +37,9 @@ async def main():
 
     # Step 3: Load all tweets
     tweets = await read_json(filepath=Path('/data/tweets/tweets.json'))
-    assert isinstance(tweets, dict)
+    assert isinstance(tweets, list)
+
+    print(f'processing {len(top_customers)} customers...')
 
     # Step 4: For each customer, find their tweets and analyze sentiment
     results: list[dict[str, object]] = []
@@ -57,6 +61,7 @@ async def main():
 
         # Calculate average sentiment
         avg_sentiment = sum(sentiments) / len(sentiments)
+        print(f'{customer["First"]} {customer["Last"]} - {avg_sentiment=}')
 
         results.append(
             {

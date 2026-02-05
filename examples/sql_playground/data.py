@@ -29,12 +29,13 @@ class ExternalFunctions:
             raise ImportError('duckdb is required for query_csv. Install with: pip install duckdb') from e
 
         # Read CSV content from virtual filesystem
-        content = self.fs.path_read_text(filepath)
+        content = self.fs.path_read_bytes(filepath)
 
         # Write to a temporary file for DuckDB to read
         # (DuckDB's read_csv_auto works best with file paths)
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv') as tmp:
+        with tempfile.NamedTemporaryFile(mode='wb', suffix='.csv') as tmp:
             tmp.write(content)
+            tmp.flush()
 
             conn = duckdb.connect(':memory:')
             # Create table from CSV using DuckDB's auto-detection

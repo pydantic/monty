@@ -1,4 +1,4 @@
-"""SQL Playground Example: Customer Sentiment Analysis."""
+"""SQL Playground Example: Customer Sentiment Analysis with SQL and JSON."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ async def main():
     # Create the Monty runner with type checking enabled
     m = pydantic_monty.Monty(
         SANDBOX_CODE_PATH.read_text(),
-        script_name='sandbox_code.py',
+        script_name='sql_playground.py',
         external_functions=['query_csv', 'read_json', 'analyze_sentiment'],
         type_check=True,
         type_check_stubs=TYPE_STUBS,
