@@ -505,6 +505,8 @@ jobs:
             crates/monty-js/browser.js
             crates/monty-js/index.js
             crates/monty-js/index.d.ts
+            crates/monty-js/wrapper.js
+            crates/monty-js/wrapper.d.ts
             crates/monty-js/monty.wasi.cjs
             crates/monty-js/monty.wasi-browser.js
             crates/monty-js/wasi-worker.mjs
