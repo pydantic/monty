@@ -65,6 +65,12 @@ pub enum AttrCallResult {
     /// This is detected by `call_dataclass_attr_raw` when a public attribute name is not
     /// found in the dataclass's attrs dict.
     MethodCall(EitherStr, ArgValues),
+    /// The method returned a value that should be implicitly awaited.
+    ///
+    /// Used by `asyncio.run()` to execute a coroutine without an explicit `await`.
+    /// The VM will push the value onto the stack and execute `exec_get_awaitable`.
+    #[expect(dead_code)]
+    AwaitValue(Value),
 }
 
 /// Common operations for heap-allocated Python values.

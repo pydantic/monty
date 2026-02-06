@@ -162,6 +162,7 @@ macro_rules! jump_relative {
 /// - `External(ext_id, args)`: Return `FrameExit::ExternalCall` to yield to host
 /// - `OsCall(func, args)`: Return `FrameExit::OsCall` to yield to host
 /// - `MethodCall(name, args)`: Return `FrameExit::MethodCall` to yield to host
+/// - `AwaitValue(value)`: Push value, then implicitly await it via `exec_get_awaitable`
 /// - `Err(err)`: Handle the exception via `catch_sync!`
 macro_rules! handle_call_result {
     ($self:expr, $cached_frame:ident, $result:expr) => {
@@ -197,6 +198,25 @@ macro_rules! handle_call_result {
                     args,
                     call_id,
                 });
+            }
+            Ok(CallResult::AwaitValue(value)) => {
+                // Push the value and implicitly await it (used by asyncio.run())
+                $self.push(value);
+                $self.current_frame_mut().ip = $cached_frame.ip;
+                match $self.exec_get_awaitable() {
+                    Ok(AwaitResult::ValueReady(value)) => {
+                        $self.push(value);
+                    }
+                    Ok(AwaitResult::FramePushed) => {
+                        reload_cache!($self, $cached_frame);
+                    }
+                    Ok(AwaitResult::Yield(pending_calls)) => {
+                        return Ok(FrameExit::ResolveFutures(pending_calls));
+                    }
+                    Err(e) => {
+                        catch_sync!($self, $cached_frame, e);
+                    }
+                }
             }
             Err(err) => catch_sync!($self, $cached_frame, err),
         }

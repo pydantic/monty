@@ -47,6 +47,11 @@ pub(super) enum CallResult {
     /// of `ExtFunctionId` because method names are only known at runtime when dataclass
     /// inputs are provided.
     MethodCall(EitherStr, ArgValues),
+    /// The call returned a value that should be implicitly awaited.
+    ///
+    /// Used by `asyncio.run()` to execute a coroutine without an explicit `await`.
+    /// The VM will push the value onto the stack and execute `exec_get_awaitable`.
+    AwaitValue(Value),
 }
 
 impl From<AttrCallResult> for CallResult {
@@ -56,6 +61,7 @@ impl From<AttrCallResult> for CallResult {
             AttrCallResult::OsCall(func, args) => Self::OsCall(func, args),
             AttrCallResult::ExternalCall(ext_id, args) => Self::External(ext_id, args),
             AttrCallResult::MethodCall(name, args) => Self::MethodCall(name, args),
+            AttrCallResult::AwaitValue(v) => Self::AwaitValue(v),
         }
     }
 }
