@@ -293,6 +293,18 @@ pub enum Opcode {
     ///
     /// Used for calls with `*args` and/or `**kwargs` unpacking.
     CallFunctionExtended,
+    /// Call attribute with *args tuple and **kwargs dict. Operands: u16 name_id, u8 flags.
+    ///
+    /// Flags:
+    /// - bit 0: has kwargs dict on stack
+    ///
+    /// Stack layout (bottom to top):
+    /// - receiver object
+    /// - args tuple
+    /// - kwargs dict (if flag bit 0 set)
+    ///
+    /// Used for method calls with `*args` and/or `**kwargs` unpacking.
+    CallAttrExtended,
 
     // === Control Flow ===
     /// Unconditional relative jump. Operand: i16 offset.
@@ -398,17 +410,18 @@ impl Opcode {
         use Opcode::{
             Await, BinaryAdd, BinaryAnd, BinaryDiv, BinaryFloorDiv, BinaryLShift, BinaryMatMul, BinaryMod, BinaryMul,
             BinaryOr, BinaryPow, BinaryRShift, BinarySub, BinarySubscr, BinaryXor, BuildDict, BuildFString, BuildList,
-            BuildSet, BuildSlice, BuildTuple, CallAttr, CallAttrKw, CallBuiltinFunction, CallBuiltinType, CallFunction,
-            CallFunctionExtended, CallFunctionKw, CheckExcMatch, ClearException, CompareEq, CompareGe, CompareGt,
-            CompareIn, CompareIs, CompareIsNot, CompareLe, CompareLt, CompareModEq, CompareNe, CompareNotIn,
-            DeleteAttr, DeleteLocal, DeleteSubscr, DictMerge, DictSetItem, Dup, ForIter, FormatValue, GetIter,
-            InplaceAdd, InplaceAnd, InplaceDiv, InplaceFloorDiv, InplaceLShift, InplaceMod, InplaceMul, InplaceOr,
-            InplacePow, InplaceRShift, InplaceSub, InplaceXor, Jump, JumpIfFalse, JumpIfFalseOrPop, JumpIfTrue,
-            JumpIfTrueOrPop, ListAppend, ListExtend, ListToTuple, LoadAttr, LoadAttrImport, LoadCell, LoadConst,
-            LoadFalse, LoadGlobal, LoadLocal, LoadLocal0, LoadLocal1, LoadLocal2, LoadLocal3, LoadLocalW, LoadModule,
-            LoadNone, LoadSmallInt, LoadTrue, MakeClosure, MakeFunction, Nop, Pop, Raise, RaiseFrom, RaiseImportError,
-            Reraise, ReturnValue, Rot2, Rot3, SetAdd, StoreAttr, StoreCell, StoreGlobal, StoreLocal, StoreLocalW,
-            StoreSubscr, UnaryInvert, UnaryNeg, UnaryNot, UnaryPos, UnpackEx, UnpackSequence,
+            BuildSet, BuildSlice, BuildTuple, CallAttr, CallAttrExtended, CallAttrKw, CallBuiltinFunction,
+            CallBuiltinType, CallFunction, CallFunctionExtended, CallFunctionKw, CheckExcMatch, ClearException,
+            CompareEq, CompareGe, CompareGt, CompareIn, CompareIs, CompareIsNot, CompareLe, CompareLt, CompareModEq,
+            CompareNe, CompareNotIn, DeleteAttr, DeleteLocal, DeleteSubscr, DictMerge, DictSetItem, Dup, ForIter,
+            FormatValue, GetIter, InplaceAdd, InplaceAnd, InplaceDiv, InplaceFloorDiv, InplaceLShift, InplaceMod,
+            InplaceMul, InplaceOr, InplacePow, InplaceRShift, InplaceSub, InplaceXor, Jump, JumpIfFalse,
+            JumpIfFalseOrPop, JumpIfTrue, JumpIfTrueOrPop, ListAppend, ListExtend, ListToTuple, LoadAttr,
+            LoadAttrImport, LoadCell, LoadConst, LoadFalse, LoadGlobal, LoadLocal, LoadLocal0, LoadLocal1, LoadLocal2,
+            LoadLocal3, LoadLocalW, LoadModule, LoadNone, LoadSmallInt, LoadTrue, MakeClosure, MakeFunction, Nop, Pop,
+            Raise, RaiseFrom, RaiseImportError, Reraise, ReturnValue, Rot2, Rot3, SetAdd, StoreAttr, StoreCell,
+            StoreGlobal, StoreLocal, StoreLocalW, StoreSubscr, UnaryInvert, UnaryNeg, UnaryNot, UnaryPos, UnpackEx,
+            UnpackSequence,
         };
         Some(match self {
             // Stack operations
@@ -467,7 +480,7 @@ impl Opcode {
 
             // Function calls - depend on arg count
             CallFunction | CallBuiltinFunction | CallBuiltinType | CallFunctionKw | CallAttr | CallAttrKw
-            | CallFunctionExtended => return None,
+            | CallFunctionExtended | CallAttrExtended => return None,
 
             // Control flow - no stack effect (jumps don't push/pop)
             Jump => 0,

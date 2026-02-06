@@ -137,11 +137,23 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             }
         }
 
+        // Check if any copied items are refs (for updating contains_refs)
+        let has_refs = copied_items.iter().any(|v| matches!(v, Value::Ref(_)));
+
         // Extend the list
         if let Value::Ref(id) = &list_ref
             && let HeapData::List(list) = self.heap.get_mut(*id)
         {
+            // Update contains_refs before extending
+            if has_refs {
+                list.set_contains_refs();
+            }
             list.as_vec_mut().extend(copied_items);
+        }
+
+        // Mark potential cycle after the mutable borrow ends
+        if has_refs {
+            self.heap.mark_potential_cycle();
         }
 
         iterable.drop_with_heap(self.heap);

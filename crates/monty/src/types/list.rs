@@ -106,6 +106,15 @@ impl List {
         self.contains_refs
     }
 
+    /// Marks that the list contains heap references.
+    ///
+    /// This should be called when directly mutating the list's items vector
+    /// (via `as_vec_mut()`) with values that include `Value::Ref` variants.
+    #[inline]
+    pub fn set_contains_refs(&mut self) {
+        self.contains_refs = true;
+    }
+
     /// Appends an element to the end of the list.
     ///
     /// The caller transfers ownership of `item` to the list. The item's refcount

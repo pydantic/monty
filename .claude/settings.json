@@ -30,6 +30,7 @@
       "Bash(gh pr view:*)",
       "Bash(gh api:*)",
       "Bash(gh run view:*)",
+      "Bash(gh issue view:*)",
       "Skill(python-playground)",
       "Skill(fastmod)",
       "Bash(wc:*)",
@@ -43,7 +44,8 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:15r10nk.github.io)",
       "WebFetch(domain:docs.rs)",
-      "WebFetch(domain:pyo3.rs)"
+      "WebFetch(domain:pyo3.rs)",
+      "WebFetch(domain:napi.rs)"
     ],
     "deny": [],
     "ask": []

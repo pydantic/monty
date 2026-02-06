@@ -399,15 +399,11 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 }
             }
 
-            // Extract gather metadata - use get_mut and take task_ids to avoid allocation
-            // We take task_ids because if gather is complete, we'll be destroying it anyway
-            let (task_ids, waiter, pending_calls_empty) = if let HeapData::GatherFuture(gather) = self.heap.get_mut(gid)
-            {
-                (
-                    std::mem::take(&mut gather.task_ids),
-                    gather.waiter,
-                    gather.pending_calls.is_empty(),
-                )
+            // Extract gather metadata - clone task_ids since we need to check completion
+            // but gather might not be complete yet. We only take task_ids later when
+            // we know gather is complete and will be destroyed.
+            let (task_ids, waiter, pending_calls_empty) = if let HeapData::GatherFuture(gather) = self.heap.get(gid) {
+                (gather.task_ids.clone(), gather.waiter, gather.pending_calls.is_empty())
             } else {
                 (vec![], None, true)
             };

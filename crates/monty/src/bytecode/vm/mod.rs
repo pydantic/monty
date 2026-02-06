@@ -1215,6 +1215,17 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
 
                     handle_call_result!(self, cached_frame, self.exec_call_function_extended(has_kwargs));
                 }
+                Opcode::CallAttrExtended => {
+                    let name_idx = fetch_u16!(cached_frame);
+                    let flags = fetch_u8!(cached_frame);
+                    let name_id = StringId::from_index(name_idx);
+                    let has_kwargs = (flags & 0x01) != 0;
+
+                    // Sync IP before call (may yield to host for OS/external calls)
+                    self.current_frame_mut().ip = cached_frame.ip;
+
+                    handle_call_result!(self, cached_frame, self.exec_call_attr_extended(name_id, has_kwargs));
+                }
                 // Function Definition
                 Opcode::MakeFunction => {
                     let func_idx = fetch_u16!(cached_frame);

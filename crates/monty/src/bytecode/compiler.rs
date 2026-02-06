@@ -1614,12 +1614,16 @@ impl<'a> Compiler<'a> {
                 var_args,
                 var_kwargs,
             } => {
-                // Check if there's unpacking - we don't support that for method calls yet
+                // Check if there's unpacking - use CallAttrExtended
                 if var_args.is_some() || var_kwargs.is_some() {
-                    return Err(CompileError::new(
-                        "method calls with *args or **kwargs unpacking not yet supported".to_owned(),
+                    return self.compile_method_call_with_unpacking(
+                        name_id,
+                        args.as_ref(),
+                        var_args.as_ref(),
+                        kwargs.as_ref(),
+                        var_kwargs.as_ref(),
                         call_pos,
-                    ));
+                    );
                 }
 
                 // No unpacking - use CallAttrKw for efficiency
@@ -1663,6 +1667,79 @@ impl<'a> Compiler<'a> {
                 );
             }
         }
+        Ok(())
+    }
+
+    /// Compiles a method call with `*args` and/or `**kwargs` unpacking.
+    ///
+    /// The receiver object should already be on the stack. This builds the args tuple
+    /// and optional kwargs dict, then emits `CallAttrExtended`.
+    fn compile_method_call_with_unpacking(
+        &mut self,
+        name_id: StringId,
+        args: Option<&Vec<ExprLoc>>,
+        var_args: Option<&ExprLoc>,
+        kwargs: Option<&Vec<Kwarg>>,
+        var_kwargs: Option<&ExprLoc>,
+        call_pos: CodeRange,
+    ) -> Result<(), CompileError> {
+        // 1. Build args tuple
+        // Push regular positional args and build list
+        let pos_count = args.map_or(0, Vec::len);
+        if let Some(args) = args {
+            for arg in args {
+                self.compile_expr(arg)?;
+            }
+        }
+        self.code.emit_u16(
+            Opcode::BuildList,
+            u16::try_from(pos_count).expect("positional arg count exceeds u16"),
+        );
+
+        // Extend with *args if present
+        if let Some(var_args_expr) = var_args {
+            self.compile_expr(var_args_expr)?;
+            self.code.emit(Opcode::ListExtend);
+        }
+
+        // Convert list to tuple
+        self.code.emit(Opcode::ListToTuple);
+
+        // 2. Build kwargs dict (if we have kwargs or var_kwargs)
+        let has_kwargs = kwargs.is_some() || var_kwargs.is_some();
+        if has_kwargs {
+            // Build dict from regular kwargs
+            let kw_count = kwargs.map_or(0, Vec::len);
+            if let Some(kwargs) = kwargs {
+                for kwarg in kwargs {
+                    // Push key as interned string constant
+                    let key_const = self.code.add_const(Value::InternString(kwarg.key.name_id));
+                    self.code.emit_u16(Opcode::LoadConst, key_const);
+                    // Push value
+                    self.compile_expr(&kwarg.value)?;
+                }
+            }
+            self.code.emit_u16(
+                Opcode::BuildDict,
+                u16::try_from(kw_count).expect("keyword count exceeds u16"),
+            );
+
+            // Merge **kwargs if present
+            if let Some(var_kwargs_expr) = var_kwargs {
+                self.compile_expr(var_kwargs_expr)?;
+                // Use the method name for error messages
+                self.code.emit_u16(
+                    Opcode::DictMerge,
+                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
+                );
+            }
+        }
+
+        // 3. Call the method with CallAttrExtended
+        self.code.set_location(call_pos, None);
+        let name_idx = u16::try_from(name_id.index()).expect("name index exceeds u16");
+        let flags = u8::from(has_kwargs);
+        self.code.emit_u16_u8(Opcode::CallAttrExtended, name_idx, flags);
         Ok(())
     }
 
