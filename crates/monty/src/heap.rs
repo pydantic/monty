@@ -3,7 +3,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem::{ManuallyDrop, MaybeUninit, discriminant},
+    mem::{ManuallyDrop, discriminant},
     ptr::addr_of,
     vec,
 };
@@ -1773,8 +1773,8 @@ impl<T: ResourceTracker> DropWithHeap<T> for vec::IntoIter<Value> {
 /// reclaim the value (e.g. push it back onto the stack on success) or need mutable access
 /// to both the value and heap through [`as_parts_mut`](Self::as_parts_mut).
 pub(crate) struct HeapGuard<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> {
-    // uninitialized only during Drop implementation
-    value: MaybeUninit<V>,
+    // manually dropped because it needs to be dropped by move.
+    value: ManuallyDrop<V>,
     heap: &'a mut H,
     _tracker: std::marker::PhantomData<T>,
 }
@@ -1784,7 +1784,7 @@ impl<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> HeapGuard<'
     #[inline]
     pub fn new(value: V, heap: &'a mut H) -> Self {
         Self {
-            value: MaybeUninit::new(value),
+            value: ManuallyDrop::new(value),
             heap,
             _tracker: std::marker::PhantomData,
         }
@@ -1796,9 +1796,9 @@ impl<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> HeapGuard<'
     /// a computed result from a function that used the guard for error-path safety).
     #[inline]
     pub fn into_inner(self) -> V {
-        let this = ManuallyDrop::new(self);
-        // SAFETY: [DH] - value is initialized except during Drop, which `ManuallyDrop` prevents
-        unsafe { this.value.as_ptr().read() }
+        let mut this = ManuallyDrop::new(self);
+        // SAFETY: [DH] - `ManuallyDrop::new(self)` prevents `Drop` on self, so we can take the value out
+        unsafe { ManuallyDrop::take(&mut this.value) }
     }
 
     /// Borrows the value (immutably) and heap (mutably) out of the guard.
@@ -1807,9 +1807,7 @@ impl<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> HeapGuard<'
     /// to the guard's lifetime, so the value cannot escape.
     #[inline]
     pub fn as_parts(&mut self) -> (&V, &mut H) {
-        // SAFETY: [DH] - value is initialized except during Drop, which is not happening here
-        let value = unsafe { self.value.assume_init_mut() };
-        (value, self.heap)
+        (&self.value, self.heap)
     }
 
     /// Borrows the value (mutably) and heap (mutably) out of the guard.
@@ -1818,9 +1816,7 @@ impl<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> HeapGuard<'
     /// to be mutated in place (e.g. advancing an iterator, swapping during min/max).
     #[inline]
     pub fn as_parts_mut(&mut self) -> (&mut V, &mut H) {
-        // SAFETY: [DH] - value is initialized except during Drop, which is not happening here
-        let value = unsafe { self.value.assume_init_mut() };
-        (value, self.heap)
+        (&mut self.value, self.heap)
     }
 
     /// Consumes the guard and returns the value and heap separately, without dropping.
@@ -1829,9 +1825,9 @@ impl<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> HeapGuard<'
     /// example, to push the value back onto the VM stack via the heap owner.
     #[inline]
     pub fn into_parts(self) -> (V, &'a mut H) {
-        let this = ManuallyDrop::new(self);
+        let mut this = ManuallyDrop::new(self);
         // SAFETY: [DH] - `ManuallyDrop` prevents `Drop` on self, so we can recover the parts
-        unsafe { (this.value.as_ptr().read(), addr_of!(this.heap).read()) }
+        unsafe { (ManuallyDrop::take(&mut this.value), addr_of!(this.heap).read()) }
     }
 
     /// Borrows just the heap out of the guard
@@ -1843,8 +1839,8 @@ impl<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> HeapGuard<'
 
 impl<T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> Drop for HeapGuard<'_, T, H, V> {
     fn drop(&mut self) {
-        // SAFETY: [DH] - value is initialized until this read
-        unsafe { self.value.as_ptr().read() }.drop_with_heap(self.heap.heap_mut());
+        // SAFETY: [DH] - value is never manually dropped until this point
+        unsafe { ManuallyDrop::take(&mut self.value) }.drop_with_heap(self.heap.heap_mut());
     }
 }
 
