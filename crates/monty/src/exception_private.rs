@@ -821,6 +821,20 @@ impl ExcType {
         )
     }
 
+    /// Creates a ModuleNotFoundError for when a module cannot be found.
+    ///
+    /// Matches CPython's format: `ModuleNotFoundError: No module named 'name'`
+    /// Sets `hide_caret: true` because CPython doesn't show carets for module not found errors.
+    #[must_use]
+    pub(crate) fn module_not_found_error(module_name: &str) -> RunError {
+        let exc = SimpleException::new_msg(Self::ModuleNotFoundError, format!("No module named '{module_name}'"));
+        RunError::Exc(ExceptionRaise {
+            exc,
+            frame: None,
+            hide_caret: true, // CPython doesn't show carets for module not found errors
+        })
+    }
+
     /// Creates a NotImplementedError for an unimplemented Python feature.
     ///
     /// Used during parsing when encountering Python syntax that Monty doesn't yet support.

@@ -242,22 +242,18 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(expr)?;
                 self.code.emit(Opcode::Pop); // Discard result
             }
-
             Node::Return(expr) => {
                 self.compile_expr(expr)?;
                 self.compile_return();
             }
-
             Node::ReturnNone => {
                 self.code.emit(Opcode::LoadNone);
                 self.compile_return();
             }
-
             Node::Assign { target, object } => {
                 self.compile_expr(object)?;
                 self.compile_store(target);
             }
-
             Node::UnpackAssign {
                 targets,
                 targets_position,
@@ -288,14 +284,12 @@ impl<'a> Compiler<'a> {
                     self.compile_unpack_target(target);
                 }
             }
-
             Node::OpAssign { target, op, object } => {
                 self.compile_name(target);
                 self.compile_expr(object)?;
                 self.code.emit(operator_to_inplace_opcode(op));
                 self.compile_store(target);
             }
-
             Node::SubscriptAssign {
                 target,
                 index,
@@ -310,7 +304,6 @@ impl<'a> Compiler<'a> {
                 self.code.set_location(*target_position, None);
                 self.code.emit(Opcode::StoreSubscr);
             }
-
             Node::AttrAssign {
                 object,
                 attr,
@@ -328,28 +321,15 @@ impl<'a> Compiler<'a> {
                     u16::try_from(name_id.index()).expect("name index exceeds u16"),
                 );
             }
-
-            Node::If { test, body, or_else } => {
-                self.compile_if(test, body, or_else)?;
-            }
-
+            Node::If { test, body, or_else } => self.compile_if(test, body, or_else)?,
             Node::For {
                 target,
                 iter,
                 body,
                 or_else,
-            } => {
-                self.compile_for(target, iter, body, or_else)?;
-            }
-
-            Node::While { test, body, or_else } => {
-                self.compile_while(test, body, or_else)?;
-            }
-
-            Node::Assert { test, msg } => {
-                self.compile_assert(test, msg.as_ref())?;
-            }
-
+            } => self.compile_for(target, iter, body, or_else)?,
+            Node::While { test, body, or_else } => self.compile_while(test, body, or_else)?,
+            Node::Assert { test, msg } => self.compile_assert(test, msg.as_ref())?,
             Node::Raise(expr) => {
                 if let Some(exc) = expr {
                     self.compile_expr(exc)?;
@@ -358,35 +338,16 @@ impl<'a> Compiler<'a> {
                     self.code.emit(Opcode::Reraise);
                 }
             }
-
-            Node::FunctionDef(func_def) => {
-                self.compile_function_def(func_def)?;
-            }
-
-            Node::Try(try_block) => {
-                self.compile_try(try_block)?;
-            }
-
-            Node::Import { module_name, binding } => {
-                self.compile_import(*module_name, binding)?;
-            }
-
+            Node::FunctionDef(func_def) => self.compile_function_def(func_def)?,
+            Node::Try(try_block) => self.compile_try(try_block)?,
+            Node::Import { module_name, binding } => self.compile_import(*module_name, binding),
             Node::ImportFrom {
                 module_name,
                 names,
                 position,
-            } => {
-                self.compile_import_from(*module_name, names, *position)?;
-            }
-
-            Node::Break { position } => {
-                self.compile_break(*position)?;
-            }
-
-            Node::Continue { position } => {
-                self.compile_continue(*position)?;
-            }
-
+            } => self.compile_import_from(*module_name, names, *position),
+            Node::Break { position } => self.compile_break(*position)?,
+            Node::Continue { position } => self.compile_continue(*position)?,
             // These are handled during the prepare phase and produce no bytecode
             Node::Pass | Node::Global { .. } | Node::Nonlocal { .. } => {}
         }
@@ -557,58 +518,60 @@ impl<'a> Compiler<'a> {
     /// Compiles an import statement.
     ///
     /// Emits `LoadModule` to create the module, then stores it to the binding name.
-    fn compile_import(&mut self, module_name: StringId, binding: &Identifier) -> Result<(), CompileError> {
+    /// If the module is unknown, emits `RaiseImportError` to defer the error to runtime.
+    /// This allows imports inside `if TYPE_CHECKING:` blocks to compile successfully.
+    fn compile_import(&mut self, module_name: StringId, binding: &Identifier) {
         let position = binding.position;
-        // Look up the module by name
-        let builtin_module = BuiltinModule::from_string_id(module_name)
-            .ok_or_else(|| CompileError::new_module_not_found(self.interns.get_str(module_name), position))?;
-
-        // Emit LoadModule with the module ID
         self.code.set_location(position, None);
-        self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
 
-        // Store to the binding (respects Local/Global/Cell scope)
-        self.compile_store(binding);
-
-        Ok(())
+        // Look up the module by name
+        if let Some(builtin_module) = BuiltinModule::from_string_id(module_name) {
+            // Known module - emit LoadModule
+            self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
+            // Store to the binding (respects Local/Global/Cell scope)
+            self.compile_store(binding);
+        } else {
+            // Unknown module - defer error to runtime with RaiseImportError
+            // This allows TYPE_CHECKING imports to compile without error
+            let name_const = self.code.add_const(Value::InternString(module_name));
+            self.code.emit_u16(Opcode::RaiseImportError, name_const);
+        }
     }
 
     /// Compiles a `from module import name, ...` statement.
     ///
     /// Creates the module once, then loads each attribute and stores to the binding.
     /// Invalid attribute names will raise `AttributeError` at runtime.
-    fn compile_import_from(
-        &mut self,
-        module_name: StringId,
-        names: &[(StringId, Identifier)],
-        position: CodeRange,
-    ) -> Result<(), CompileError> {
-        let module_name_str = self.interns.get_str(module_name);
+    /// If the module is unknown, emits `RaiseImportError` to defer the error to runtime.
+    /// This allows imports inside `if TYPE_CHECKING:` blocks to compile successfully.
+    fn compile_import_from(&mut self, module_name: StringId, names: &[(StringId, Identifier)], position: CodeRange) {
+        self.code.set_location(position, None);
 
         // Look up the module
-        let builtin_module = BuiltinModule::from_string_id(module_name)
-            .ok_or_else(|| CompileError::new_module_not_found(module_name_str, position))?;
+        if let Some(builtin_module) = BuiltinModule::from_string_id(module_name) {
+            // Known module - emit LoadModule
+            self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
 
-        // Load the module once
-        self.code.set_location(position, None);
-        self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
+            // For each name to import
+            for (i, (import_name, binding)) in names.iter().enumerate() {
+                // Dup the module if this isn't the last import (last one consumes the module)
+                if i < names.len() - 1 {
+                    self.code.emit(Opcode::Dup);
+                }
 
-        // For each name to import
-        for (i, (import_name, binding)) in names.iter().enumerate() {
-            // Dup the module if this isn't the last import (last one consumes the module)
-            if i < names.len() - 1 {
-                self.code.emit(Opcode::Dup);
+                // Load the attribute from the module (raises ImportError if not found)
+                let name_idx = u16::try_from(import_name.index()).expect("name index exceeds u16");
+                self.code.emit_u16(Opcode::LoadAttrImport, name_idx);
+
+                // Store to the binding
+                self.compile_store(binding);
             }
-
-            // Load the attribute from the module (raises ImportError if not found)
-            let name_idx = u16::try_from(import_name.index()).expect("name index exceeds u16");
-            self.code.emit_u16(Opcode::LoadAttrImport, name_idx);
-
-            // Store to the binding
-            self.compile_store(binding);
+        } else {
+            // Unknown module - defer error to runtime with RaiseImportError
+            // This allows TYPE_CHECKING imports to compile without error
+            let name_const = self.code.add_const(Value::InternString(module_name));
+            self.code.emit_u16(Opcode::RaiseImportError, name_const);
         }
-
-        Ok(())
     }
 
     // ========================================================================
@@ -2737,17 +2700,6 @@ impl CompileError {
             message: message.into(),
             position,
             exc_type: ExcType::SyntaxError,
-        }
-    }
-
-    /// Creates a ModuleNotFoundError for when a module cannot be found.
-    ///
-    /// Matches CPython's format: `ModuleNotFoundError: No module named 'name'`
-    fn new_module_not_found(module_name: &str, position: CodeRange) -> Self {
-        Self {
-            message: format!("No module named '{module_name}'").into(),
-            position,
-            exc_type: ExcType::ModuleNotFoundError,
         }
     }
 

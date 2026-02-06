@@ -1387,6 +1387,18 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let module_id = fetch_u8!(cached_frame);
                     try_catch_sync!(self, cached_frame, self.load_module(module_id));
                 }
+                Opcode::RaiseImportError => {
+                    // Fetch the module name from the constant pool and raise ModuleNotFoundError
+                    let const_idx = fetch_u16!(cached_frame);
+                    let module_name = cached_frame.code.constants().get(const_idx);
+                    // The constant should be an InternString from compile_import/compile_import_from
+                    let name_str = match module_name {
+                        Value::InternString(id) => self.interns.get_str(*id),
+                        _ => "<unknown>",
+                    };
+                    let error = ExcType::module_not_found_error(name_str);
+                    catch_sync!(self, cached_frame, error);
+                }
             }
         }
     }

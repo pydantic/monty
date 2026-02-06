@@ -12,6 +12,7 @@ dev = [
     "maturin>=1.9.4,<2.0",
     "mypy>=1.19.1",
     "ruff>=0.14.7",
+    "duckdb>=1.0.0",
 ]
 
 # https://beta.ruff.rs/docs/configuration/
@@ -82,7 +83,7 @@ quote-style = "single"
 pythonVersion = "3.14"
 typeCheckingMode = "strict"
 reportUnnecessaryTypeIgnoreComment = true
-include = ["scripts", "crates/monty/test_cases", "crates/monty-python", "crates/monty-type-checking"]
+include = ["scripts", "crates/monty/test_cases", "crates/monty-python", "crates/monty-type-checking", "examples"]
 exclude = [
     "crates/monty-type-checking/tests/bad_types.py",
     "crates/monty-type-checking/tests/reveal_types.py",

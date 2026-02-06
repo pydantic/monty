@@ -367,6 +367,15 @@ pub enum Opcode {
     /// The module_id maps to `BuiltinModule` (0=sys, 1=typing).
     /// Creates the module on the heap and pushes a `Value::Ref` to it.
     LoadModule,
+    /// Raises `ModuleNotFoundError` at runtime. Operand: u16 constant index for module name.
+    ///
+    /// This opcode is emitted when the compiler encounters an import of an unknown module.
+    /// Instead of failing at compile time, the error is deferred to runtime so that
+    /// imports inside `if TYPE_CHECKING:` blocks or other non-executed code paths
+    /// don't cause errors.
+    ///
+    /// The operand is an index into the constant pool where the module name string is stored.
+    RaiseImportError,
 }
 
 impl TryFrom<u8> for Opcode {
@@ -397,9 +406,9 @@ impl Opcode {
             InplacePow, InplaceRShift, InplaceSub, InplaceXor, Jump, JumpIfFalse, JumpIfFalseOrPop, JumpIfTrue,
             JumpIfTrueOrPop, ListAppend, ListExtend, ListToTuple, LoadAttr, LoadAttrImport, LoadCell, LoadConst,
             LoadFalse, LoadGlobal, LoadLocal, LoadLocal0, LoadLocal1, LoadLocal2, LoadLocal3, LoadLocalW, LoadModule,
-            LoadNone, LoadSmallInt, LoadTrue, MakeClosure, MakeFunction, Nop, Pop, Raise, RaiseFrom, Reraise,
-            ReturnValue, Rot2, Rot3, SetAdd, StoreAttr, StoreCell, StoreGlobal, StoreLocal, StoreLocalW, StoreSubscr,
-            UnaryInvert, UnaryNeg, UnaryNot, UnaryPos, UnpackEx, UnpackSequence,
+            LoadNone, LoadSmallInt, LoadTrue, MakeClosure, MakeFunction, Nop, Pop, Raise, RaiseFrom, RaiseImportError,
+            Reraise, ReturnValue, Rot2, Rot3, SetAdd, StoreAttr, StoreCell, StoreGlobal, StoreLocal, StoreLocalW,
+            StoreSubscr, UnaryInvert, UnaryNeg, UnaryNot, UnaryPos, UnpackEx, UnpackSequence,
         };
         Some(match self {
             // Stack operations
@@ -492,7 +501,8 @@ impl Opcode {
             Nop => 0,
 
             // Module
-            LoadModule => 1, // push module
+            LoadModule => 1,       // push module
+            RaiseImportError => 0, // raises exception, no stack change before that
         })
     }
 }
@@ -515,8 +525,8 @@ mod tests {
 
     #[test]
     fn test_opcode_roundtrip() {
-        // Verify that all opcodes from 0 to LoadModule (last opcode) can be converted to u8 and back
-        for byte in 0..=Opcode::LoadModule as u8 {
+        // Verify that all opcodes from 0 to RaiseImportError (last opcode) can be converted to u8 and back
+        for byte in 0..=Opcode::RaiseImportError as u8 {
             let opcode = Opcode::try_from(byte).unwrap();
             assert_eq!(opcode as u8, byte, "opcode {opcode:?} has wrong discriminant");
         }
@@ -525,7 +535,7 @@ mod tests {
     #[test]
     fn test_invalid_opcode() {
         // Byte just after the last valid opcode should fail
-        let result = Opcode::try_from(Opcode::LoadModule as u8 + 1);
+        let result = Opcode::try_from(Opcode::RaiseImportError as u8 + 1);
         assert!(result.is_err());
         // 255 should also fail
         let result = Opcode::try_from(255u8);
