@@ -13,6 +13,7 @@ dev = [
     "mypy>=1.19.1",
     "ruff>=0.14.7",
     "duckdb>=1.0.0",
+    "httpx>=0.28.1",
 ]
 
 # https://beta.ruff.rs/docs/configuration/
