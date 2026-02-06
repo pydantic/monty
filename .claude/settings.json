@@ -45,7 +45,8 @@
       "WebFetch(domain:15r10nk.github.io)",
       "WebFetch(domain:docs.rs)",
       "WebFetch(domain:pyo3.rs)",
-      "WebFetch(domain:napi.rs)"
+      "WebFetch(domain:napi.rs)",
+      "WebFetch(domain:app.codecov.io)"
     ],
     "deny": [],
     "ask": []
