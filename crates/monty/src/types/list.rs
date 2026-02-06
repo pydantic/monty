@@ -222,12 +222,8 @@ impl PyTrait for List {
             return self.getitem_slice(&slice, heap);
         }
 
-        // Extract integer index, accepting both Int and Bool (True=1, False=0)
-        let index = match key {
-            Value::Int(i) => *i,
-            Value::Bool(b) => i64::from(*b),
-            _ => return Err(ExcType::type_error_indices(Type::List, key.py_type(heap))),
-        };
+        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
+        let index = key.as_index(heap, Type::List)?;
 
         // Convert to usize, handling negative indices (Python-style: -1 = last element)
         let len = i64::try_from(self.items.len()).expect("list length exceeds i64::MAX");
@@ -251,10 +247,26 @@ impl PyTrait for List {
         heap: &mut Heap<impl ResourceTracker>,
         _interns: &Interns,
     ) -> RunResult<()> {
-        // Extract integer index, accepting both Int and Bool (True=1, False=0)
-        let index = match key {
-            Value::Int(i) => i,
-            Value::Bool(b) => i64::from(b),
+        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
+        let index = match &key {
+            Value::Int(i) => *i,
+            Value::Bool(b) => i64::from(*b),
+            Value::Ref(heap_id) => {
+                if let HeapData::LongInt(li) = heap.get(*heap_id) {
+                    if let Some(i) = li.to_i64() {
+                        i
+                    } else {
+                        key.drop_with_heap(heap);
+                        value.drop_with_heap(heap);
+                        return Err(ExcType::index_error_int_too_large());
+                    }
+                } else {
+                    let key_type = key.py_type(heap);
+                    key.drop_with_heap(heap);
+                    value.drop_with_heap(heap);
+                    return Err(ExcType::type_error_list_assignment_indices(key_type));
+                }
+            }
             _ => {
                 let key_type = key.py_type(heap);
                 key.drop_with_heap(heap);
@@ -262,6 +274,8 @@ impl PyTrait for List {
                 return Err(ExcType::type_error_list_assignment_indices(key_type));
             }
         };
+        // Drop the key after extracting the index (Int and Bool are not ref-counted)
+        key.drop_with_heap(heap);
 
         // Normalize negative indices (Python-style: -1 = last element)
         let len = i64::try_from(self.items.len()).expect("list length exceeds i64::MAX");

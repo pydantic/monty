@@ -902,6 +902,28 @@ impl PyTrait for Value {
                 Ok(Some(Self::Ref(heap.allocate(HeapData::Bytes(result.into()))?)))
             }
 
+            // String repetition with LongInt: "ab" * bigint or bigint * "ab"
+            (Self::InternString(s), Self::Ref(id)) | (Self::Ref(id), Self::InternString(s)) => {
+                if let HeapData::LongInt(li) = heap.get(*id) {
+                    let count = longint_to_repeat_count(li)?;
+                    let result = interns.get_str(*s).repeat(count);
+                    Ok(Some(Self::Ref(heap.allocate(HeapData::Str(result.into()))?)))
+                } else {
+                    Ok(None)
+                }
+            }
+
+            // Bytes repetition with LongInt: b"ab" * bigint or bigint * b"ab"
+            (Self::InternBytes(b), Self::Ref(id)) | (Self::Ref(id), Self::InternBytes(b)) => {
+                if let HeapData::LongInt(li) = heap.get(*id) {
+                    let count = longint_to_repeat_count(li)?;
+                    let result: Vec<u8> = interns.get_bytes(*b).repeat(count);
+                    Ok(Some(Self::Ref(heap.allocate(HeapData::Bytes(result.into()))?)))
+                } else {
+                    Ok(None)
+                }
+            }
+
             _ => Ok(None),
         }
     }
@@ -1794,12 +1816,45 @@ impl Value {
         }
     }
 
+    /// Extracts an integer value from the Value.
+    ///
+    /// Accepts `Int` and `LongInt` (if it fits in i64). Returns a `TypeError` for other types
+    /// and an `OverflowError` if the `LongInt` value is too large.
     pub fn as_int(&self, heap: &Heap<impl ResourceTracker>) -> RunResult<i64> {
-        if let Self::Int(i) = self {
-            Ok(*i)
-        } else {
-            let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type(heap));
-            Err(SimpleException::new_msg(ExcType::TypeError, msg).into())
+        match self {
+            Self::Int(i) => Ok(*i),
+            Self::Ref(heap_id) => {
+                if let HeapData::LongInt(li) = heap.get(*heap_id) {
+                    li.to_i64().ok_or_else(ExcType::overflow_shift_count)
+                } else {
+                    let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type(heap));
+                    Err(SimpleException::new_msg(ExcType::TypeError, msg).into())
+                }
+            }
+            _ => {
+                let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type(heap));
+                Err(SimpleException::new_msg(ExcType::TypeError, msg).into())
+            }
+        }
+    }
+
+    /// Extracts an index value for sequence operations.
+    ///
+    /// Accepts `Int`, `Bool` (True=1, False=0), and `LongInt` (if it fits in i64).
+    /// Returns a `TypeError` for other types with the container type name included.
+    /// Returns an `IndexError` if the `LongInt` value is too large to use as an index.
+    pub fn as_index(&self, heap: &Heap<impl ResourceTracker>, container_type: Type) -> RunResult<i64> {
+        match self {
+            Self::Int(i) => Ok(*i),
+            Self::Bool(b) => Ok(i64::from(*b)),
+            Self::Ref(heap_id) => {
+                if let HeapData::LongInt(li) = heap.get(*heap_id) {
+                    li.to_i64().ok_or_else(ExcType::index_error_int_too_large)
+                } else {
+                    Err(ExcType::type_error_indices(container_type, self.py_type(heap)))
+                }
+            }
+            _ => Err(ExcType::type_error_indices(container_type, self.py_type(heap))),
         }
     }
 

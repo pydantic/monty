@@ -228,12 +228,8 @@ impl PyTrait for Str {
             return self.getitem_slice(&slice, heap);
         }
 
-        // Extract integer index, accepting both Int and Bool (True=1, False=0)
-        let index = match key {
-            Value::Int(i) => *i,
-            Value::Bool(b) => i64::from(*b),
-            _ => return Err(ExcType::type_error_indices(Type::Str, key.py_type(heap))),
-        };
+        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
+        let index = key.as_index(heap, Type::Str)?;
 
         // Use single-pass indexing to avoid Vec<char> allocation
         let c = get_char_at_index(&self.0, index).ok_or_else(ExcType::str_index_error)?;

@@ -244,12 +244,8 @@ impl PyTrait for Range {
             return self.getitem_slice(&slice, heap);
         }
 
-        // Extract integer index, accepting both Int and Bool (True=1, False=0)
-        let index = match key {
-            Value::Int(i) => *i,
-            Value::Bool(b) => i64::from(*b),
-            _ => return Err(ExcType::type_error_indices(Type::Range, key.py_type(heap))),
-        };
+        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
+        let index = key.as_index(heap, Type::Range)?;
 
         // Get range length for normalization
         let len = i64::try_from(self.len()).expect("range length exceeds i64::MAX");

@@ -142,12 +142,8 @@ impl PyTrait for Tuple {
             return Ok(Value::Ref(heap_id));
         }
 
-        // Extract integer index, accepting both Int and Bool (True=1, False=0)
-        let index = match key {
-            Value::Int(i) => *i,
-            Value::Bool(b) => i64::from(*b),
-            _ => return Err(ExcType::type_error_indices(Type::Tuple, key.py_type(heap))),
-        };
+        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
+        let index = key.as_index(heap, Type::Tuple)?;
 
         // Convert to usize, handling negative indices (Python-style: -1 = last element)
         let len = i64::try_from(self.items.len()).expect("tuple length exceeds i64::MAX");

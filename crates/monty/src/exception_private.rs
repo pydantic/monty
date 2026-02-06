@@ -860,6 +860,14 @@ impl ExcType {
         SimpleException::new_msg(Self::OverflowError, "cannot fit 'int' into an index-sized integer")
     }
 
+    /// Creates an IndexError for when an integer index is too large to fit in i64.
+    ///
+    /// Matches CPython's format: `IndexError: cannot fit 'int' into an index-sized integer`
+    #[must_use]
+    pub(crate) fn index_error_int_too_large() -> RunError {
+        SimpleException::new_msg(Self::IndexError, "cannot fit 'int' into an index-sized integer").into()
+    }
+
     /// Creates an ImportError for when a name cannot be imported from a module.
     ///
     /// Matches CPython's format for built-in modules:
