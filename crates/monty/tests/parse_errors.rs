@@ -120,4 +120,64 @@ mod syntax_error {
             "display should contain 'SyntaxError:', got: {display}"
         );
     }
+
+    #[test]
+    fn deeply_nested_tuples_exceed_limit() {
+        // Build nested tuple like ((((x,),),),) with depth > 200
+        let mut code = "x".to_string();
+        for _ in 0..250 {
+            code = format!("({code},)");
+        }
+        let result = MontyRun::new(code, "test.py", vec![], vec![]);
+        assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+    }
+
+    #[test]
+    fn deeply_nested_tuples_error_message_matches_cpython() {
+        // Build nested tuple like ((((x,),),),) with depth > 200
+        let mut code = "x".to_string();
+        for _ in 0..250 {
+            code = format!("({code},)");
+        }
+        let result = MontyRun::new(code, "test.py", vec![], vec![]);
+        let err = result.expect_err("expected parse error");
+        assert_eq!(
+            err.message(),
+            Some("too many nested parentheses"),
+            "error message should match CPython, got: {:?}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn nested_tuples_within_limit_succeed() {
+        // Build nested tuple with depth = 20, which is well under the 200 limit.
+        // We use a small value because the ruff parser uses significant stack
+        // space per nesting level in debug builds.
+        let mut code = "x".to_string();
+        for _ in 0..20 {
+            code = format!("({code},)");
+        }
+        let result = MontyRun::new(code, "test.py", vec![], vec![]);
+        assert!(result.is_ok(), "nesting within limit should succeed");
+    }
+
+    #[test]
+    fn deeply_nested_unpack_assignment_exceeds_limit() {
+        // Build nested unpack assignment like ((((x,),),),) = value with depth > 200
+        let mut target = "x".to_string();
+        for _ in 0..250 {
+            target = format!("({target},)");
+        }
+        let code = format!("{target} = (1,)");
+        let result = MontyRun::new(code.clone(), "test.py", vec![], vec![]);
+        assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+        let result = MontyRun::new(code, "test.py", vec![], vec![]);
+        let err = result.expect_err("expected parse error");
+        assert_eq!(
+            err.message(),
+            Some("too many nested parentheses"),
+            "error message should match CPython"
+        );
+    }
 }
