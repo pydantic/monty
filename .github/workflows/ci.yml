@@ -36,7 +36,7 @@ jobs:
           prefix-key: "v1-rust"
 
       - uses: astral-sh/setup-uv@v7
-      - run: uv sync --all-packages --group dev --group examples
+      - run: uv sync --all-packages --only-dev
 
       - uses: actions/cache@v5
         with:
