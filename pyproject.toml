@@ -12,8 +12,6 @@ dev = [
     "maturin>=1.9.4,<2.0",
     "mypy>=1.19.1",
     "ruff>=0.14.7",
-]
-examples = [
     "duckdb>=1.0.0",
 ]
 

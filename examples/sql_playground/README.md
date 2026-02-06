@@ -16,5 +16,5 @@ Data is from <https://github.com/mafudge/datasets>.
 ## To run
 
 ```bash
-uv run --group examples python examples/sql_playground/main.py
+uv run python examples/sql_playground/main.py
 ```

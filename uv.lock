@@ -340,12 +340,10 @@ source = { virtual = "." }
 [package.dev-dependencies]
 dev = [
     { name = "basedpyright" },
+    { name = "duckdb" },
     { name = "maturin" },
     { name = "mypy" },
     { name = "ruff" },
-]
-examples = [
-    { name = "duckdb" },
 ]
 
 [package.metadata]
@@ -353,11 +351,11 @@ examples = [
 [package.metadata.requires-dev]
 dev = [
     { name = "basedpyright", specifier = ">=1.34.0" },
+    { name = "duckdb", specifier = ">=1.0.0" },
     { name = "maturin", specifier = ">=1.9.4,<2.0" },
     { name = "mypy", specifier = ">=1.19.1" },
     { name = "ruff", specifier = ">=0.14.7" },
 ]
-examples = [{ name = "duckdb", specifier = ">=1.0.0" }]
 
 [[package]]
 name = "mypy"

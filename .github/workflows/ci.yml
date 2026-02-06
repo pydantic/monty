@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       run_release:
-        description: 'Run release jobs (for manual tag releases)'
+        description: "Run release jobs (for manual tag releases)"
         type: boolean
         default: false
 
@@ -36,7 +36,7 @@ jobs:
           prefix-key: "v1-rust"
 
       - uses: astral-sh/setup-uv@v7
-      - run: uv sync --all-packages --only-dev
+      - run: uv sync --all-packages --group dev --group examples
 
       - uses: actions/cache@v5
         with:
@@ -693,7 +693,7 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: crates/monty-js/package-lock.json
-          registry-url: 'https://registry.npmjs.org'
+          registry-url: "https://registry.npmjs.org"
       - name: Install dependencies
         run: npm install
         working-directory: crates/monty-js
