@@ -1,327 +1,271 @@
 """
 Fetch coverage diff from Codecov for a GitHub pull request.
 
-This script uses Playwright to navigate to a Codecov PR page, extract
-line-by-line coverage information, and output a text file with the coverage diff.
+This script uses Codecov's GraphQL API to fetch line-by-line coverage
+information and outputs a text file with the coverage diff.
+
+See https://x.com/samuelcolvin/status/2019838805210198289 for rationale.
 
 Usage:
-    uv run scripts/codecov_diff.py pydantic monty 107
-    uv run scripts/codecov_diff.py pydantic monty 107 --output coverage.txt
+    uv run scripts/codecov_diff.py                              # auto-detect everything
+    uv run scripts/codecov_diff.py 107                          # specify PR number
+    uv run scripts/codecov_diff.py 107 --org pydantic --repo monty
+    uv run scripts/codecov_diff.py -o coverage.txt
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import subprocess
 import sys
-import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from playwright.sync_api import Page, sync_playwright
+import httpx
 
+CODECOV_GRAPHQL_URL = 'https://api.codecov.io/graphql/gh'
 
-@dataclass
-class FileCoverage:
-    """Coverage information for a single file."""
-
-    path: str
-    missed_lines: int
-    head_coverage: str
-    patch_coverage: str
-    change: str
-    uncovered_lines: list[int]
-    partial_lines: list[int]
-
-
-def wait_for_page_load(page: Page, timeout: float = 15.0) -> None:
-    """Wait for the Codecov page to fully load."""
-    start = time.time()
-    while time.time() - start < timeout:
-        # Check if the file list is visible
-        if page.locator('text=Files changed').is_visible():
-            # Wait a bit more for the data to load
-            time.sleep(2)
-            return
-        time.sleep(0.5)
-    raise TimeoutError('Page did not load within timeout')
-
-
-def extract_file_list(page: Page) -> list[dict[str, Any]]:
-    """
-    Extract the list of files from the Codecov page.
-
-    Returns a list of dicts with file path and coverage info.
-    """
-    return page.evaluate("""() => {
-        const files = [];
-        const filePattern = /^[a-zA-Z0-9_\\/-]+\\.(rs|py|ts|js|tsx|jsx|go|java|cpp|c|h)$/;
-
-        // Find all file path elements in the file list
-        const walker = document.createTreeWalker(
-            document.body,
-            NodeFilter.SHOW_TEXT,
-            null,
-            false
-        );
-
-        const seen = new Set();
-        while (walker.nextNode()) {
-            const text = walker.currentNode.textContent.trim();
-            if (text.includes('/') && filePattern.test(text) && !seen.has(text)) {
-                seen.add(text);
-                files.push({path: text});
+# GraphQL query to get PR overview and impacted files
+PULL_QUERY = """
+query Pull($owner: String!, $repo: String!, $pullId: Int!) {
+  owner(username: $owner) {
+    repository(name: $repo) {
+      __typename
+      ... on Repository {
+        pull(id: $pullId) {
+          pullId
+          title
+          state
+          head {
+            commitid
+            coverageAnalytics {
+              totals {
+                percentCovered
+              }
             }
-        }
-        return files;
-    }""")
-
-
-def get_file_row_info(page: Page, file_path: str) -> dict[str, Any]:
-    """Get the file row info (missed lines, percentages) from the file list."""
-    return page.evaluate(
-        """(filePath) => {
-        // Find the file path text element
-        const walker = document.createTreeWalker(
-            document.body,
-            NodeFilter.SHOW_TEXT,
-            null,
-            false
-        );
-
-        while (walker.nextNode()) {
-            const text = walker.currentNode.textContent.trim();
-            if (text === filePath) {
-                // Found it - get parent row and extract info
-                let row = walker.currentNode.parentElement;
-                // Walk up to find the row container (up to 10 levels)
-                for (let i = 0; i < 10; i++) {
-                    if (!row) break;
-
-                    // Get all text content of this row element
-                    const rowText = row.innerText || '';
-
-                    // Look for patterns with percentages
-                    // The row typically contains: filename | missed | head% | patch% | change%
-                    const lines = rowText.split('\\n').map(s => s.trim()).filter(s => s);
-
-                    let missed = 0;
-                    let pcts = [];
-
-                    for (const line of lines) {
-                        // Check for standalone numbers (missed lines count)
-                        if (/^\\d+$/.test(line)) {
-                            missed = parseInt(line);
-                        }
-                        // Check for percentages
-                        if (/^[+-]?[0-9.]+%$/.test(line)) {
-                            pcts.push(line);
-                        }
+          }
+          compareWithBase {
+            __typename
+            ... on Comparison {
+              state
+              patchTotals {
+                percentCovered
+              }
+              headTotals {
+                percentCovered
+              }
+              changeCoverage
+              impactedFiles {
+                __typename
+                ... on ImpactedFiles {
+                  results {
+                    fileName
+                    headName
+                    missesCount
+                    patchCoverage {
+                      percentCovered
                     }
-
-                    // If we found at least 2 percentages, we found the row
-                    if (pcts.length >= 2) {
-                        return {
-                            missed: missed,
-                            head: pcts[0] || '',
-                            patch: pcts[1] || '',
-                            change: pcts[2] || ''
-                        };
+                    headCoverage {
+                      percentCovered
                     }
-
-                    row = row.parentElement;
+                    changeCoverage
+                  }
                 }
+              }
             }
+            ... on FirstPullRequest {
+              message
+            }
+            ... on MissingBaseCommit {
+              message
+            }
+            ... on MissingHeadCommit {
+              message
+            }
+            ... on MissingComparison {
+              message
+            }
+            ... on MissingBaseReport {
+              message
+            }
+            ... on MissingHeadReport {
+              message
+            }
+          }
         }
-        return {missed: 0, head: '', patch: '', change: ''};
-    }""",
-        file_path,
+      }
+      ... on NotFoundError {
+        message
+      }
+      ... on OwnerNotActivatedError {
+        message
+      }
+    }
+  }
+}
+"""
+
+# GraphQL query to get line-level coverage for a specific file
+FILE_COVERAGE_QUERY = """
+query ImpactedFileComparison($owner: String!, $repo: String!, $pullId: Int!, $path: String!) {
+  owner(username: $owner) {
+    repository(name: $repo) {
+      __typename
+      ... on Repository {
+        pull(id: $pullId) {
+          compareWithBase {
+            __typename
+            ... on Comparison {
+              impactedFile(path: $path) {
+                headName
+                patchCoverage {
+                  percentCovered
+                }
+                segments {
+                  __typename
+                  ... on SegmentComparisons {
+                    results {
+                      header
+                      lines {
+                        baseNumber
+                        headNumber
+                        baseCoverage
+                        headCoverage
+                        content
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def get_repo_from_gh() -> tuple[str, str] | None:
+    """Get the current repository's owner and name using gh CLI."""
+    try:
+        result = subprocess.run(
+            ['gh', 'repo', 'view', '--json', 'owner,name'],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        data = json.loads(result.stdout)
+        return data['owner']['login'], data['name']
+    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, FileNotFoundError):
+        return None
+
+
+def get_pr_from_gh() -> int | None:
+    """Get the current PR number for the current branch using gh CLI."""
+    try:
+        result = subprocess.run(
+            ['gh', 'pr', 'view', '--json', 'number'],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        data = json.loads(result.stdout)
+        return data['number']
+    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, FileNotFoundError):
+        return None
+
+
+def graphql_request(query: str, variables: dict[str, Any]) -> dict[str, Any]:
+    """Make a GraphQL request to Codecov API."""
+    with httpx.Client(timeout=30.0) as client:
+        response = client.post(
+            CODECOV_GRAPHQL_URL,
+            json={'query': query, 'variables': variables},
+            headers={'Content-Type': 'application/json'},
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+def get_pull_coverage(org: str, repo: str, pr_number: int) -> dict[str, Any] | None:
+    """Fetch PR coverage overview from Codecov."""
+    result = graphql_request(PULL_QUERY, {'owner': org, 'repo': repo, 'pullId': pr_number})
+
+    # Navigate to the pull data
+    data = result.get('data', {})
+    owner = data.get('owner', {})
+    repository = owner.get('repository', {})
+
+    if repository.get('__typename') != 'Repository':
+        print(f'Error: {repository.get("message", "Repository not found")}', file=sys.stderr)
+        return None
+
+    pull = repository.get('pull')
+    if not pull:
+        print('Error: Pull request not found', file=sys.stderr)
+        return None
+
+    return pull
+
+
+def get_file_coverage(org: str, repo: str, pr_number: int, file_path: str) -> dict[str, Any] | None:
+    """Fetch line-level coverage for a specific file."""
+    result = graphql_request(
+        FILE_COVERAGE_QUERY,
+        {'owner': org, 'repo': repo, 'pullId': pr_number, 'path': file_path},
     )
 
+    # Navigate to the file data
+    data = result.get('data', {})
+    owner = data.get('owner', {})
+    repository = owner.get('repository', {})
 
-def parse_expanded_file_coverage(page: Page, file_path: str) -> dict[str, Any]:
+    if repository.get('__typename') != 'Repository':
+        return None
+
+    pull = repository.get('pull', {})
+    compare = pull.get('compareWithBase', {})
+
+    if compare.get('__typename') != 'Comparison':
+        return None
+
+    return compare.get('impactedFile')
+
+
+def parse_line_coverage(segments: list[dict[str, Any]]) -> tuple[list[int], list[int]]:
     """
-    Parse coverage for an expanded file section.
+    Parse segments to extract uncovered and partial line numbers.
 
-    The DOM structure is:
-    - File row with path and stats
-    - Expanded section with diff hunks
-    - Each hunk has: old line nums | new line nums | code
-    - Coverage markers in new line nums column:
-      - Uncovered: <img> followed by line number
-      - Partial: "!" text followed by line number
+    Coverage values from Codecov:
+    - "H" = hit (covered)
+    - "M" = miss (uncovered)
+    - "P" = partial
+    - null = not applicable (e.g., blank line, comment)
     """
-    return page.evaluate(
-        """(filePath) => {
-        const uncovered = [];
-        const partial = [];
+    uncovered: list[int] = []
+    partial: list[int] = []
 
-        // Find all elements that could contain our file's diff
-        // The pattern we're looking for in the DOM:
-        // - A container element that has the file path in its text
-        // - Within that container, look for line number patterns
+    for segment in segments:
+        lines = segment.get('lines', [])
+        for line in lines:
+            head_num = line.get('headNumber')
+            head_cov = line.get('headCoverage')
 
-        const allElements = document.querySelectorAll('*');
+            if head_num is None:
+                continue
 
-        for (const el of allElements) {
-            const children = Array.from(el.children);
-            if (children.length < 2) continue;
+            # Convert to int since API returns strings
+            head_num = int(head_num)
 
-            for (let i = 0; i < children.length - 1; i++) {
-                const first = children[i];
-                const second = children[i + 1];
+            if head_cov == 'M':
+                uncovered.append(head_num)
+            elif head_cov == 'P':
+                partial.append(head_num)
 
-                // Check for the pattern: marker followed by line number
-                const firstText = first.textContent?.trim();
-                const secondText = second.textContent?.trim();
-
-                // Partial coverage: "!" followed by number
-                if (firstText === '!' && /^\\d+$/.test(secondText)) {
-                    const lineNum = parseInt(secondText);
-                    if (lineNum > 0 && lineNum < 100000) {
-                        partial.push(lineNum);
-                    }
-                }
-
-                // Uncovered: img/svg followed by number
-                // Check if first element is an image or contains one
-                const hasImg = first.tagName === 'IMG' ||
-                               first.tagName === 'SVG' ||
-                               first.querySelector('img, svg');
-
-                if (hasImg && /^\\d+$/.test(secondText)) {
-                    const lineNum = parseInt(secondText);
-                    if (lineNum > 0 && lineNum < 100000) {
-                        uncovered.push(lineNum);
-                    }
-                }
-            }
-        }
-
-        // Deduplicate, sort, and filter out spurious small numbers (likely from UI elements)
-        // Real line numbers in diffs are typically > 100
-        const filterLineNums = (arr) => [...new Set(arr)]
-            .filter(n => n > 50)  // Filter out spurious small numbers from UI elements
-            .sort((a, b) => a - b);
-
-        return {
-            uncovered: filterLineNums(uncovered),
-            partial: filterLineNums(partial)
-        };
-    }""",
-        file_path,
-    )
-
-
-def scrape_codecov_pr(org: str, repo: str, pr_number: int) -> str:
-    """
-    Scrape coverage diff from Codecov for a GitHub PR.
-
-    Args:
-        org: GitHub organization name
-        repo: Repository name
-        pr_number: Pull request number
-
-    Returns:
-        Formatted coverage diff as a string
-    """
-    url = f'https://app.codecov.io/gh/{org}/{repo}/pull/{pr_number}'
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-
-        print(f'Navigating to {url}...', file=sys.stderr)
-        page.goto(url)
-
-        # Wait for page to load
-        print('Waiting for page to load...', file=sys.stderr)
-        wait_for_page_load(page)
-
-        output_lines: list[str] = []
-        output_lines.append(f'# Coverage Report for {org}/{repo} PR #{pr_number}')
-        output_lines.append(f'# URL: {url}')
-        output_lines.append('')
-
-        # Get summary percentages
-        summary = page.evaluate("""() => {
-            const text = document.body.innerText;
-            const pcts = text.match(/(\\d+\\.\\d+)%/g) || [];
-            return {
-                head: pcts[0] || '',
-                patch: pcts[1] || '',
-                change: pcts[2] || ''
-            };
-        }""")
-
-        if summary.get('head'):
-            output_lines.append(f'HEAD Coverage: {summary["head"]}')
-        if summary.get('patch'):
-            output_lines.append(f'Patch Coverage: {summary["patch"]}')
-        if summary.get('change'):
-            output_lines.append(f'Change: {summary["change"]}')
-        output_lines.append('')
-
-        # Get file list
-        files = extract_file_list(page)
-        print(f'Found {len(files)} files with changes', file=sys.stderr)
-
-        # Process each file ONE AT A TIME
-        # Reload the page between files to ensure clean state
-        for i, file_info in enumerate(files):
-            file_path = file_info['path']
-            print(f'Processing {file_path}...', file=sys.stderr)
-
-            try:
-                # Reload page if not first file (to clear any expanded state)
-                if i > 0:
-                    page.goto(url)
-                    wait_for_page_load(page)
-
-                # Get file row info from the main table
-                row_info = get_file_row_info(page, file_path)
-
-                # Build output header
-                output_lines.append(f'## {file_path}')
-                if row_info.get('missed'):
-                    output_lines.append(f'   Missed: {row_info["missed"]} lines')
-                if row_info.get('patch'):
-                    output_lines.append(f'   Patch: {row_info["patch"]}')
-
-                # If file has 100% patch coverage, skip detailed parsing
-                patch_pct = row_info.get('patch', '')
-                if patch_pct == '100.00%':
-                    output_lines.append('   All changed lines covered!')
-                    output_lines.append('')
-                    continue
-
-                # Click to expand for files with issues
-                file_row = page.locator(f'text="{file_path}"').first
-                if file_row.is_visible():
-                    file_row.click()
-                    time.sleep(1.0)
-
-                    # Get coverage for THIS file only
-                    coverage = parse_expanded_file_coverage(page, file_path)
-
-                    if coverage['uncovered']:
-                        output_lines.append(f'   Uncovered lines: {format_line_ranges(coverage["uncovered"])}')
-                    if coverage['partial']:
-                        output_lines.append(f'   Partial lines: {format_line_ranges(coverage["partial"])}')
-
-                    if not coverage['uncovered'] and not coverage['partial']:
-                        output_lines.append('   (Could not parse individual line coverage)')
-                    output_lines.append('')
-
-            except Exception as e:
-                print(f'  Warning: Could not process {file_path}: {e}', file=sys.stderr)
-                output_lines.append(f'## {file_path}')
-                output_lines.append(f'   Error: {e}')
-                output_lines.append('')
-
-        browser.close()
-
-    return '\n'.join(output_lines)
+    return sorted(set(uncovered)), sorted(set(partial))
 
 
 def format_line_ranges(lines: list[int]) -> str:
@@ -352,11 +296,128 @@ def format_line_ranges(lines: list[int]) -> str:
     return ', '.join(ranges)
 
 
+def format_percentage(value: float | None) -> str:
+    """Format a percentage value."""
+    if value is None:
+        return 'N/A'
+    return f'{value:.2f}%'
+
+
+def fetch_codecov_coverage(org: str, repo: str, pr_number: int) -> str:
+    """
+    Fetch coverage data from Codecov for a GitHub PR.
+
+    Args:
+        org: GitHub organization name
+        repo: Repository name
+        pr_number: Pull request number
+
+    Returns:
+        Formatted coverage diff as a string
+    """
+    url = f'https://app.codecov.io/gh/{org}/{repo}/pull/{pr_number}'
+
+    print(f'Fetching coverage for {org}/{repo} PR #{pr_number}...', file=sys.stderr)
+
+    # Get PR overview
+    pull = get_pull_coverage(org, repo, pr_number)
+    if not pull:
+        return f'# Error: Could not fetch coverage for {org}/{repo} PR #{pr_number}\n'
+
+    output_lines: list[str] = []
+    output_lines.append(f'# Coverage Report for {org}/{repo} PR #{pr_number}')
+    output_lines.append(f'# URL: {url}')
+    output_lines.append(f'# Title: {pull.get("title", "N/A")}')
+    output_lines.append(f'# State: {pull.get("state", "N/A")}')
+    output_lines.append('')
+
+    # Get comparison data
+    compare = pull.get('compareWithBase', {})
+    if compare.get('__typename') != 'Comparison':
+        output_lines.append(f'# Note: {compare.get("message", "No comparison available")}')
+        return '\n'.join(output_lines)
+
+    # Overall coverage stats
+    head_totals = compare.get('headTotals', {})
+    patch_totals = compare.get('patchTotals', {})
+    change = compare.get('changeCoverage')
+
+    output_lines.append(f'HEAD Coverage: {format_percentage(head_totals.get("percentCovered"))}')
+    output_lines.append(f'Patch Coverage: {format_percentage(patch_totals.get("percentCovered"))}')
+    if change is not None:
+        output_lines.append(f'Change: {change:+.2f}%')
+    output_lines.append('')
+
+    # Get impacted files
+    impacted = compare.get('impactedFiles', {})
+    if impacted.get('__typename') != 'ImpactedFiles':
+        output_lines.append('# No impacted files found')
+        return '\n'.join(output_lines)
+
+    files = impacted.get('results', [])
+    print(f'Found {len(files)} files with changes', file=sys.stderr)
+
+    # Process each file
+    for file_info in files:
+        file_path = file_info.get('headName') or file_info.get('fileName')
+        if not file_path:
+            continue
+
+        print(f'  Processing {file_path}...', file=sys.stderr)
+
+        missed = file_info.get('missesCount', 0)
+        patch_cov_data = file_info.get('patchCoverage')
+        patch_cov = patch_cov_data.get('percentCovered') if patch_cov_data else None
+
+        output_lines.append(f'## {file_path}')
+        if missed:
+            output_lines.append(f'   Missed: {missed} lines')
+        if patch_cov is not None:
+            output_lines.append(f'   Patch: {patch_cov:.2f}%')
+
+        # Skip line-level fetching for 100% patch coverage
+        if patch_cov is not None and patch_cov >= 100.0:
+            output_lines.append('   All changed lines covered!')
+            output_lines.append('')
+            continue
+
+        # Fetch line-level coverage
+        file_data = get_file_coverage(org, repo, pr_number, file_path)
+        if file_data:
+            segments_data = file_data.get('segments', {})
+            if segments_data.get('__typename') == 'SegmentComparisons':
+                segments = segments_data.get('results', [])
+                uncovered, partial = parse_line_coverage(segments)
+
+                if uncovered:
+                    output_lines.append(f'   Uncovered lines: {format_line_ranges(uncovered)}')
+                if partial:
+                    output_lines.append(f'   Partial lines: {format_line_ranges(partial)}')
+
+                if not uncovered and not partial:
+                    if missed:
+                        output_lines.append('   (Coverage details not available)')
+                    else:
+                        output_lines.append('   All changed lines covered!')
+            else:
+                output_lines.append('   (Line coverage not available)')
+        else:
+            output_lines.append('   (Could not fetch line coverage)')
+
+        output_lines.append('')
+
+    return '\n'.join(output_lines)
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description='Fetch coverage diff from Codecov for a GitHub PR')
-    parser.add_argument('org', help='GitHub organization name')
-    parser.add_argument('repo', help='Repository name')
-    parser.add_argument('pr_number', type=int, help='Pull request number')
+    parser = argparse.ArgumentParser(
+        description='Fetch coverage diff from Codecov for a GitHub PR',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='If arguments are not specified, they are auto-detected using gh CLI.',
+    )
+    parser.add_argument('pr', nargs='?', type=int, help='Pull request number (auto-detected if not provided)')
+    parser.add_argument('--org', help='GitHub organization name (auto-detected if not provided)')
+    parser.add_argument('--repo', help='Repository name (auto-detected if not provided)')
     parser.add_argument(
         '--output',
         '-o',
@@ -366,7 +427,26 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    result = scrape_codecov_pr(args.org, args.repo, args.pr_number)
+    # Determine org and repo
+    org = args.org
+    repo = args.repo
+    if not org or not repo:
+        repo_info = get_repo_from_gh()
+        if repo_info:
+            org, repo = repo_info
+        else:
+            print('Error: Could not detect repository. Use --org and --repo.', file=sys.stderr)
+            sys.exit(1)
+
+    # Determine PR number
+    pr_number = args.pr
+    if not pr_number:
+        pr_number = get_pr_from_gh()
+        if not pr_number:
+            print('Error: Could not detect PR number. Provide PR number as argument.', file=sys.stderr)
+            sys.exit(1)
+
+    result = fetch_codecov_coverage(org, repo, pr_number)
 
     if args.output:
         Path(args.output).write_text(result)
