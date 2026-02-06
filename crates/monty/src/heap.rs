@@ -1706,8 +1706,22 @@ impl<T: ResourceTracker> ContainsHeap<T> for Heap<T> {
     }
 }
 
-/// This trait represents types that should be dropped with a `Heap`.
+/// Trait for types that require heap access for proper cleanup.
+///
+/// Rust's standard `Drop` trait cannot decrement heap reference counts because it has no
+/// access to the `Heap`. This trait provides an explicit drop-with-heap method so that
+/// ref-counted values (and containers of them) can properly decrement their counts when
+/// they are no longer needed.
+///
+/// **All types implementing this trait must be cleaned up on every code path** — not just
+/// the happy path, but also early returns, conditional branches, `continue`, etc. A missed
+/// call on any branch leaks reference counts. Prefer [`defer_drop!`] or [`HeapGuard`] to
+/// guarantee cleanup automatically rather than inserting manual calls in every branch.
+///
+/// Implemented for `Value`, `Option<V>`, `Vec<Value>`, `ArgValues`, iterators, and other
+/// types that hold heap references.
 pub(crate) trait DropWithHeap<T: ResourceTracker> {
+    /// Consume `self` and decrement reference counts for any heap-allocated values contained within.
     fn drop_with_heap(self, heap: &mut Heap<T>);
 }
 
@@ -1743,7 +1757,21 @@ impl<T: ResourceTracker> DropWithHeap<T> for vec::IntoIter<Value> {
     }
 }
 
-/// Guard that contains a `Value` and drops it from the heap when dropped.
+/// RAII guard that ensures a [`DropWithHeap`] value is cleaned up on every code path.
+///
+/// The guard's `Drop` impl calls [`DropWithHeap::drop_with_heap`] automatically, so
+/// cleanup happens whether the scope exits normally, via `?`, `continue`, early return,
+/// or any other branch. This eliminates the need to manually insert `drop_with_heap`
+/// calls in every branch.
+///
+/// On the normal path, the guarded value can be borrowed via [`as_parts`](Self::as_parts) /
+/// [`as_parts_mut`](Self::as_parts_mut), or reclaimed via [`into_inner`](Self::into_inner) /
+/// [`into_parts`](Self::into_parts) (which consume the guard without dropping the value).
+///
+/// Prefer the [`defer_drop!`] macro for the common case where you just need to ensure a
+/// value is dropped at scope exit. Use `HeapGuard` directly when you need to conditionally
+/// reclaim the value (e.g. push it back onto the stack on success) or need mutable access
+/// to both the value and heap through [`as_parts_mut`](Self::as_parts_mut).
 pub(crate) struct HeapGuard<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> {
     // uninitialized only during Drop implementation
     value: MaybeUninit<V>,
@@ -1763,6 +1791,9 @@ impl<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> HeapGuard<'
     }
 
     /// Consumes the guard and returns the contained value without dropping it.
+    ///
+    /// Use this when the value should survive beyond the guard's scope (e.g. returning
+    /// a computed result from a function that used the guard for error-path safety).
     #[inline]
     pub fn into_inner(self) -> V {
         let this = ManuallyDrop::new(self);
@@ -1770,7 +1801,10 @@ impl<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> HeapGuard<'
         unsafe { this.value.as_ptr().read() }
     }
 
-    /// Borrows the guard as its constituent parts
+    /// Borrows the value (immutably) and heap (mutably) out of the guard.
+    ///
+    /// This is what [`defer_drop!`] calls internally. The returned references are tied
+    /// to the guard's lifetime, so the value cannot escape.
     #[inline]
     pub fn as_parts(&mut self) -> (&V, &mut H) {
         // SAFETY: [DH] - value is initialized except during Drop, which is not happening here
@@ -1778,7 +1812,10 @@ impl<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> HeapGuard<'
         (value, self.heap)
     }
 
-    /// Borrows the guard as its constituent parts
+    /// Borrows the value (mutably) and heap (mutably) out of the guard.
+    ///
+    /// This is what [`defer_drop_mut!`] calls internally. Use this when the value needs
+    /// to be mutated in place (e.g. advancing an iterator, swapping during min/max).
     #[inline]
     pub fn as_parts_mut(&mut self) -> (&mut V, &mut H) {
         // SAFETY: [DH] - value is initialized except during Drop, which is not happening here
@@ -1786,7 +1823,10 @@ impl<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> HeapGuard<'
         (value, self.heap)
     }
 
-    /// Consumes the guard and returns the parts, so that the can be used separately
+    /// Consumes the guard and returns the value and heap separately, without dropping.
+    ///
+    /// Use this when you need to reclaim both the value *and* the heap reference — for
+    /// example, to push the value back onto the VM stack via the heap owner.
     #[inline]
     pub fn into_parts(self) -> (V, &'a mut H) {
         let this = ManuallyDrop::new(self);
@@ -1808,15 +1848,21 @@ impl<T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> Drop for HeapGu
     }
 }
 
-/// Helper macro to create a `HeapGuard` and immediately borrow the value out of it.
+/// The preferred way to ensure a [`DropWithHeap`] value is cleaned up on every code path.
 ///
-/// After this macro, both `$value` and `$heap` are reborrowed from the guard
-/// and can be used normally. The value will be automatically dropped when
-/// the guard goes out of scope.
+/// Creates a [`HeapGuard`] and immediately rebinds `$value` as `&V` and `$heap` as
+/// `&mut H` via [`HeapGuard::as_parts`]. The original owned value is moved into the
+/// guard, which will call [`DropWithHeap::drop_with_heap`] when scope exits — whether
+/// that's normal completion, early return via `?`, `continue`, or any other branch.
 ///
-/// In cases where `heap` is `self`, the macro cannot rebind `self` as a new ident,
-/// so it's recommended to first assign `let this = self;` and use `this` in the
-/// relevant function.
+/// Beyond safety, this is often much more concise than inserting `drop_with_heap` calls
+/// in every branch of complex control flow. For mutable access to the value, use
+/// [`defer_drop_mut!`].
+///
+/// # Limitation
+///
+/// The macro rebinds `$heap` as a new `let` binding, so it cannot be used when `$heap`
+/// is `self`. In `&mut self` methods, first assign `let this = self;` and pass `this`.
 #[macro_export]
 macro_rules! defer_drop {
     ($value:ident, $heap:ident) => {
@@ -1830,7 +1876,10 @@ macro_rules! defer_drop {
     };
 }
 
-/// Variant of [`defer_drop`] which provides mutable access to the borrowed value.
+/// Like [`defer_drop!`], but rebinds `$value` as `&mut V` via [`HeapGuard::as_parts_mut`].
+///
+/// Use this when the value needs to be mutated in place — for example, advancing an
+/// iterator with `for_next()`, or swapping values during a min/max comparison.
 #[macro_export]
 macro_rules! defer_drop_mut {
     ($value:ident, $heap:ident) => {
