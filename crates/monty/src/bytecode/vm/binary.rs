@@ -99,7 +99,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        match lhs.py_div(&rhs, this.heap, this.interns) {
+        match lhs.py_div(rhs, this.heap, this.interns) {
             Ok(Some(v)) => {
                 this.push(v);
                 Ok(())
@@ -166,6 +166,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// Binary power with proper refcount handling.
     ///
     /// Uses lazy type capture: only calls `py_type()` in error paths.
+    #[inline(never)]
     pub(super) fn binary_pow(&mut self) -> Result<(), RunError> {
         let this = self;
 

@@ -1922,6 +1922,7 @@ impl Value {
     /// This method MUST be called before overwriting a namespace slot or discarding
     /// a value to prevent memory leaks.
     #[cfg(not(feature = "ref-count-panic"))]
+    #[inline]
     pub fn drop_with_heap(self, heap: &mut Heap<impl ResourceTracker>) {
         if let Self::Ref(id) = self {
             heap.dec_ref(id);

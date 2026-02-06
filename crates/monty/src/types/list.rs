@@ -7,7 +7,7 @@ use crate::{
     args::ArgValues,
     builtins::Builtins,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     io::PrintWriter,
     resource::{ResourceError, ResourceTracker},

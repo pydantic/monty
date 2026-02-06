@@ -239,12 +239,10 @@ impl ArgValues {
             Self::ArgsKargs { args, .. } => args.len(),
         }
     }
+}
 
-    /// Properly drops all values in the arguments, decrementing reference counts.
-    ///
-    /// This must be called when discarding `ArgValues` that may contain `Value::Ref`
-    /// variants to maintain correct reference counts on the heap.
-    pub fn drop_with_heap(self, heap: &mut Heap<impl ResourceTracker>) {
+impl<T: ResourceTracker> DropWithHeap<T> for ArgValues {
+    fn drop_with_heap(self, heap: &mut Heap<T>) {
         match self {
             Self::Empty => {}
             Self::One(v) => v.drop_with_heap(heap),

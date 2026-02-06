@@ -73,7 +73,7 @@ use super::{MontyIter, PyTrait, Type, str::Str};
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::{Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
     resource::ResourceTracker,
     types::List,

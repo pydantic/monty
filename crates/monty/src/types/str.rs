@@ -11,7 +11,7 @@ use super::{Bytes, MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker},
     types::Type,

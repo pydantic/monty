@@ -8,6 +8,7 @@ use strum::{Display, EnumString, IntoStaticStr};
 
 use crate::{
     args::ArgValues,
+    defer_drop,
     exception_public::{MontyException, StackFrame},
     fstring::FormatError,
     heap::{Heap, HeapData},
@@ -161,38 +162,29 @@ impl ExcType {
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
+        defer_drop!(args, heap);
         let exc = match args {
             ArgValues::Empty => Ok(SimpleException::new_none(self)),
-            ArgValues::One(value) => {
-                // Borrow the value to inspect its type, then clean up with drop_with_heap
-                let result = match &value {
-                    Value::InternString(string_id) => {
-                        Ok(SimpleException::new_msg(self, interns.get_str(*string_id).to_owned()))
+            ArgValues::One(value) => match value {
+                Value::InternString(string_id) => {
+                    Ok(SimpleException::new_msg(self, interns.get_str(*string_id).to_owned()))
+                }
+                Value::Ref(heap_id) => {
+                    if let HeapData::Str(s) = heap.get(*heap_id) {
+                        Ok(SimpleException::new_msg(self, s.as_str().to_owned()))
+                    } else {
+                        Err(RunError::internal(
+                            "exceptions can only be called with zero or one string argument",
+                        ))
                     }
-                    Value::Ref(heap_id) => {
-                        if let HeapData::Str(s) = heap.get(*heap_id) {
-                            Ok(SimpleException::new_msg(self, s.as_str().to_owned()))
-                        } else {
-                            Err(RunError::internal(
-                                "exceptions can only be called with zero or one string argument",
-                            ))
-                        }
-                    }
-                    _ => Err(RunError::internal(
-                        "exceptions can only be called with zero or one string argument",
-                    )),
-                };
-                // Properly clean up the value using drop_with_heap which handles ref-count-panic
-                value.drop_with_heap(heap);
-                result
-            }
-            _ => {
-                // Clean up any args before returning error
-                args.drop_with_heap(heap);
-                Err(RunError::internal(
+                }
+                _ => Err(RunError::internal(
                     "exceptions can only be called with zero or one string argument",
-                ))
-            }
+                )),
+            },
+            _ => Err(RunError::internal(
+                "exceptions can only be called with zero or one string argument",
+            )),
         }?;
         let heap_id = heap.allocate(HeapData::Exception(exc))?;
         Ok(Value::Ref(heap_id))

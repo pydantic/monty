@@ -843,12 +843,14 @@ fn call_external_function(
 
     // Get undefined for the 'this' argument
     let mut undefined_raw = std::ptr::null_mut();
+    // SAFETY: [DH] - all arguments are valid and result is valid on success
     unsafe {
         sys::napi_get_undefined(env.raw(), &raw mut undefined_raw);
     }
 
     // Call the function using raw napi
     let mut result_raw = std::ptr::null_mut();
+    // SAFETY: [DH] - all arguments are valid and result is valid on success
     let status = unsafe {
         sys::napi_call_function(
             env.raw(),
@@ -863,14 +865,24 @@ fn call_external_function(
     if status != sys::Status::napi_ok {
         // An error occurred - get the pending exception
         let mut is_exception = false;
+        // SAFETY: [DH] - all arguments are valid
         unsafe { sys::napi_is_exception_pending(env.raw(), &raw mut is_exception) };
 
         if is_exception {
             let mut exception_raw = std::ptr::null_mut();
-            unsafe { sys::napi_get_and_clear_last_exception(env.raw(), &raw mut exception_raw) };
+            // SAFETY: [DH] - all arguments are valid and exception_raw is valid on success
+            let status = unsafe { sys::napi_get_and_clear_last_exception(env.raw(), &raw mut exception_raw) };
 
-            // Try to extract exception info
-            let exc = extract_js_exception(env, exception_raw);
+            if status != sys::Status::napi_ok {
+                // Failed to get the exception - return a generic error
+                let exc = MontyException::new(
+                    ExcType::RuntimeError,
+                    Some("External function call failed and exception could not be retrieved".to_string()),
+                );
+                return Ok(ExternalResult::Error(exc));
+            }
+            let exception_obj = Object::from_raw(env.raw(), exception_raw);
+            let exc = extract_js_exception(exception_obj);
             return Ok(ExternalResult::Error(exc));
         }
 
@@ -880,16 +892,14 @@ fn call_external_function(
     }
 
     // Convert the result back to Monty format
+    // SAFETY: [DH] - result_raw is valid on success
     let result = unsafe { Unknown::from_raw_unchecked(env.raw(), result_raw) };
     let monty_result = js_to_monty(result, *env)?;
     Ok(ExternalResult::Return(monty_result))
 }
 
 /// Extracts exception info from a JS exception object.
-fn extract_js_exception(env: &Env, exception_raw: sys::napi_value) -> MontyException {
-    // Try to get the exception as an object and extract name/message
-    let exception_obj = Object::from_raw(env.raw(), exception_raw);
-
+fn extract_js_exception(exception_obj: Object<'_>) -> MontyException {
     // Try to get the 'name' property (e.g., "ValueError")
     let name: std::result::Result<String, _> = exception_obj.get_named_property("name");
     // Try to get the 'message' property

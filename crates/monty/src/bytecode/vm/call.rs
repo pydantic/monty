@@ -10,7 +10,7 @@ use crate::{
     asyncio::Coroutine,
     builtins::{Builtins, BuiltinsFunctions},
     exception_private::{ExcType, RunError},
-    heap::{Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{ExtFunctionId, FunctionId, Interns, StaticStrings, StringId},
     io::PrintWriter,
     os::OsFunction,

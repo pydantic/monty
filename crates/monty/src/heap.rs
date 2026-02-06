@@ -1766,14 +1766,14 @@ impl<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> HeapGuard<'
     #[inline]
     pub fn into_inner(self) -> V {
         let this = ManuallyDrop::new(self);
-        // SAFETY: value is initialized except during Drop, which `ManuallyDrop` prevents
+        // SAFETY: [DH] - value is initialized except during Drop, which `ManuallyDrop` prevents
         unsafe { this.value.as_ptr().read() }
     }
 
     /// Borrows the guard as its constituent parts
     #[inline]
     pub fn as_parts(&mut self) -> (&V, &mut H) {
-        // SAFETY: value is initialized except during Drop, which is not happening here
+        // SAFETY: [DH] - value is initialized except during Drop, which is not happening here
         let value = unsafe { self.value.assume_init_mut() };
         (value, self.heap)
     }
@@ -1781,7 +1781,7 @@ impl<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> HeapGuard<'
     /// Borrows the guard as its constituent parts
     #[inline]
     pub fn as_parts_mut(&mut self) -> (&mut V, &mut H) {
-        // SAFETY: value is initialized except during Drop, which is not happening here
+        // SAFETY: [DH] - value is initialized except during Drop, which is not happening here
         let value = unsafe { self.value.assume_init_mut() };
         (value, self.heap)
     }
@@ -1790,7 +1790,7 @@ impl<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> HeapGuard<'
     #[inline]
     pub fn into_parts(self) -> (V, &'a mut H) {
         let this = ManuallyDrop::new(self);
-        // SAFETY: `ManuallyDrop` prevents `Drop` on self, so we can recover the parts
+        // SAFETY: [DH] - `ManuallyDrop` prevents `Drop` on self, so we can recover the parts
         unsafe { (this.value.as_ptr().read(), addr_of!(this.heap).read()) }
     }
 
@@ -1803,7 +1803,7 @@ impl<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> HeapGuard<'
 
 impl<T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> Drop for HeapGuard<'_, T, H, V> {
     fn drop(&mut self) {
-        // SAFETY: value is initialized until this read
+        // SAFETY: [DH] - value is initialized until this read
         unsafe { self.value.as_ptr().read() }.drop_with_heap(self.heap.heap_mut());
     }
 }
@@ -1813,23 +1813,33 @@ impl<T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> Drop for HeapGu
 /// After this macro, both `$value` and `$heap` are reborrowed from the guard
 /// and can be used normally. The value will be automatically dropped when
 /// the guard goes out of scope.
+///
+/// In cases where `heap` is `self`, the macro cannot rebind `self` as a new ident,
+/// so it's recommended to first assign `let this = self;` and use `this` in the
+/// relevant function.
 #[macro_export]
 macro_rules! defer_drop {
     ($value:ident, $heap:ident) => {
         let mut _guard = $crate::heap::HeapGuard::new($value, $heap);
+        #[allow(
+            clippy::allow_attributes,
+            reason = "the reborrowed parts may not both be used in every case, so allow unused vars to avoid warnings"
+        )]
+        #[allow(unused_variables)]
         let ($value, $heap) = _guard.as_parts();
     };
 }
 
-/// Helper macro to create a `HeapGuard` and immediately borrow the value out of it.
-///
-/// After this macro, both `$value` and `$heap` are reborrowed from the guard
-/// and can be used normally. The value will be automatically dropped when
-/// the guard goes out of scope.
+/// Variant of [`defer_drop`] which provides mutable access to the borrowed value.
 #[macro_export]
 macro_rules! defer_drop_mut {
     ($value:ident, $heap:ident) => {
         let mut _guard = $crate::heap::HeapGuard::new($value, $heap);
+        #[allow(
+            clippy::allow_attributes,
+            reason = "the reborrowed parts may not both be used in every case, so allow unused vars to avoid warnings"
+        )]
+        #[allow(unused_variables)]
         let ($value, $heap) = _guard.as_parts_mut();
     };
 }

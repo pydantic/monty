@@ -1695,6 +1695,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     }
 }
 
+// `heap` is not a public field on VM, so this implementation needs to go here rather than in `heap.rs`
 impl<T: ResourceTracker, P: PrintWriter> ContainsHeap<T> for VM<'_, T, P> {
     fn heap_mut(&mut self) -> &mut Heap<T> {
         self.heap
