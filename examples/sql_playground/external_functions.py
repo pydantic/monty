@@ -8,26 +8,29 @@ from typing import Any
 
 from pydantic_monty import OSAccess
 
+try:
+    import duckdb
+except ImportError as e:
+    raise ImportError('duckdb is required for query_csv. Install with: pip install duckdb') from e
+
 
 @dataclass
 class ExternalFunctions:
     fs: OSAccess
 
-    async def query_csv(self, filepath: PurePosixPath, sql: str) -> list[dict[str, Any]]:
+    async def query_csv(
+        self, filepath: PurePosixPath, sql: str, parameters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         """Execute SQL query on a CSV file using DuckDB.
 
         Args:
             filepath: Path to the CSV file in the virtual filesystem.
             sql: SQL query to execute. The CSV data is available as a table named 'data'.
+            parameters: Optional dictionary of parameters to bind to the SQL query.
 
         Returns:
             List of dictionaries, one per row, with column names as keys.
         """
-        try:
-            import duckdb
-        except ImportError as e:
-            raise ImportError('duckdb is required for query_csv. Install with: pip install duckdb') from e
-
         # Read CSV content from virtual filesystem
         content = self.fs.path_read_bytes(filepath)
 
@@ -38,14 +41,16 @@ class ExternalFunctions:
             tmp.flush()
 
             conn = duckdb.connect(':memory:')
-            # Create table from CSV using DuckDB's auto-detection
-            conn.execute(f"CREATE TABLE data AS SELECT * FROM read_csv_auto('{tmp.name}')")
+            # Create table from CSV
+            # NOTE! duckdb (horribly) reads locals as tables, hence `data` here that isn't used
+            data = conn.read_csv(tmp.name)
             # Execute the user's query
-            result_rel = conn.execute(sql)
-            # Get column names and rows, then convert to list of dicts
-            columns = [desc[0] for desc in result_rel.description]
-            rows = result_rel.fetchall()
-            return [dict(zip(columns, row)) for row in rows]
+            result_rel = conn.execute(sql, parameters)
+            del data
+        # Get column names and rows, then convert to list of dicts
+        columns = [desc[0] for desc in result_rel.description]
+        rows = result_rel.fetchall()
+        return [dict(zip(columns, row)) for row in rows]
 
     async def read_json(self, filepath: PurePosixPath) -> list[Any] | dict[str, Any]:
         """Read and parse a JSON file from the virtual filesystem.

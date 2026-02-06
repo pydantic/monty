@@ -85,7 +85,7 @@ quote-style = "single"
 pythonVersion = "3.14"
 typeCheckingMode = "strict"
 reportUnnecessaryTypeIgnoreComment = true
-include = ["scripts", "crates/monty/test_cases", "crates/monty-python", "crates/monty-type-checking"]
+include = ["scripts", "crates/monty/test_cases", "crates/monty-python", "crates/monty-type-checking", "examples"]
 exclude = [
     "crates/monty-type-checking/tests/bad_types.py",
     "crates/monty-type-checking/tests/reveal_types.py",
@@ -97,7 +97,6 @@ exclude = [
     "crates/monty/test_cases/loop__break_in_if_error.py",
     "crates/monty/test_cases/loop__continue_in_if_error.py",
     "scripts/startup_performance.py",
-    "examples/sql_playground/sandbox_code.py",
 ]
 venv = ".venv"
 

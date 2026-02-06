@@ -17,21 +17,24 @@ async def main():
     top_customers = await query_csv(
         filepath=Path('/data/customers/customers.csv'),
         sql="""
-            SELECT "First", "Last", "Email", "Total Purchased" as TotalPurchased
-            FROM data ORDER BY "Total Purchased" DESC LIMIT 10
+        SELECT "First", "Last", "Email", "Total Purchased" as TotalPurchased
+        FROM data
+        ORDER BY "Total Purchased"
+        DESC LIMIT 10
         """,
     )
 
     # Step 2: Get their Twitter handles from the survey data
-    emails = [c['Email'] for c in top_customers]
-    email_list = ', '.join([f"'{e}'" for e in emails])
+    emails: list[str] = [c['Email'] for c in top_customers]
     print('getting twitter handles...')
     twitter_handles = await query_csv(
-        filepath=Path('/data/customers/surveys.csv'),
-        sql=f"""
-            SELECT "Email", "Twitter Username" as Twitter
-            FROM data WHERE "Email" IN ({email_list})
+        Path('/data/customers/surveys.csv'),
+        f"""
+        SELECT "Email", "Twitter Username" as Twitter
+        FROM data
+        WHERE "Email" IN $emails
         """,
+        parameters={'emails': emails},
     )
     email_to_twitter = {row['Email']: row['Twitter'] for row in twitter_handles}
 
@@ -76,4 +79,4 @@ async def main():
 
 
 # Return the analysis results
-await main()
+await main()  # pyright: ignore

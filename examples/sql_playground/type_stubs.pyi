@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Any
 
-async def query_csv(filepath: Path, sql: str) -> list[dict[str, Any]]:
+async def query_csv(filepath: Path, sql: str, parameters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Execute SQL query on a CSV file using DuckDB."""
     ...
 
