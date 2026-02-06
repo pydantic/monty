@@ -7,10 +7,9 @@ information and outputs a text file with the coverage diff.
 See https://x.com/samuelcolvin/status/2019838805210198289 for rationale.
 
 Usage:
-    uv run scripts/codecov_diff.py                              # auto-detect everything
-    uv run scripts/codecov_diff.py 107                          # specify PR number
-    uv run scripts/codecov_diff.py 107 --org pydantic --repo monty
-    uv run scripts/codecov_diff.py -o coverage.txt
+    uv run scripts/codecov_diff.py [-h] [--org ORG] [--repo REPO] [pr-number]
+
+By default, the org, repo and PR are auto-detected using the gh CLI.
 """
 
 from __future__ import annotations
@@ -19,7 +18,6 @@ import argparse
 import json
 import subprocess
 import sys
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -303,85 +301,61 @@ def format_percentage(value: float | None) -> str:
     return f'{value:.2f}%'
 
 
-def fetch_codecov_coverage(org: str, repo: str, pr_number: int) -> str:
-    """
-    Fetch coverage data from Codecov for a GitHub PR.
-
-    Args:
-        org: GitHub organization name
-        repo: Repository name
-        pr_number: Pull request number
-
-    Returns:
-        Formatted coverage diff as a string
-    """
+def fetch_codecov_coverage(org: str, repo: str, pr_number: int) -> None:
+    """Fetch and print coverage data from Codecov for a GitHub PR."""
     url = f'https://app.codecov.io/gh/{org}/{repo}/pull/{pr_number}'
 
-    print(f'Fetching coverage for {org}/{repo} PR #{pr_number}...', file=sys.stderr)
-
-    # Get PR overview
     pull = get_pull_coverage(org, repo, pr_number)
     if not pull:
-        return f'# Error: Could not fetch coverage for {org}/{repo} PR #{pr_number}\n'
+        print(f'Error: Could not fetch coverage for {org}/{repo} PR #{pr_number}')
+        return
 
-    output_lines: list[str] = []
-    output_lines.append(f'# Coverage Report for {org}/{repo} PR #{pr_number}')
-    output_lines.append(f'# URL: {url}')
-    output_lines.append(f'# Title: {pull.get("title", "N/A")}')
-    output_lines.append(f'# State: {pull.get("state", "N/A")}')
-    output_lines.append('')
+    print(f'Coverage Report for {org}/{repo} PR #{pr_number}')
+    print(f'URL: {url}')
+    print(f'Title: {pull.get("title", "N/A")}')
+    print(f'State: {pull.get("state", "N/A")}')
+    print()
 
-    # Get comparison data
     compare = pull.get('compareWithBase', {})
     if compare.get('__typename') != 'Comparison':
-        output_lines.append(f'# Note: {compare.get("message", "No comparison available")}')
-        return '\n'.join(output_lines)
+        print(f'# Note: {compare.get("message", "No comparison available")}')
+        return
 
-    # Overall coverage stats
     head_totals = compare.get('headTotals', {})
     patch_totals = compare.get('patchTotals', {})
     change = compare.get('changeCoverage')
 
-    output_lines.append(f'HEAD Coverage: {format_percentage(head_totals.get("percentCovered"))}')
-    output_lines.append(f'Patch Coverage: {format_percentage(patch_totals.get("percentCovered"))}')
+    print(f'HEAD Coverage: {format_percentage(head_totals.get("percentCovered"))}')
+    print(f'Patch Coverage: {format_percentage(patch_totals.get("percentCovered"))}')
     if change is not None:
-        output_lines.append(f'Change: {change:+.2f}%')
-    output_lines.append('')
+        print(f'Change: {change:+.2f}%')
+    print()
 
-    # Get impacted files
     impacted = compare.get('impactedFiles', {})
     if impacted.get('__typename') != 'ImpactedFiles':
-        output_lines.append('# No impacted files found')
-        return '\n'.join(output_lines)
+        print('# No impacted files found')
+        return
 
-    files = impacted.get('results', [])
-    print(f'Found {len(files)} files with changes', file=sys.stderr)
-
-    # Process each file
-    for file_info in files:
+    for file_info in impacted.get('results', []):
         file_path = file_info.get('headName') or file_info.get('fileName')
         if not file_path:
             continue
-
-        print(f'  Processing {file_path}...', file=sys.stderr)
 
         missed = file_info.get('missesCount', 0)
         patch_cov_data = file_info.get('patchCoverage')
         patch_cov = patch_cov_data.get('percentCovered') if patch_cov_data else None
 
-        output_lines.append(f'## {file_path}')
+        print(f'## {file_path}')
         if missed:
-            output_lines.append(f'   Missed: {missed} lines')
+            print(f'   Missed: {missed} lines')
         if patch_cov is not None:
-            output_lines.append(f'   Patch: {patch_cov:.2f}%')
+            print(f'   Patch: {patch_cov:.2f}%')
 
-        # Skip line-level fetching for 100% patch coverage
         if patch_cov is not None and patch_cov >= 100.0:
-            output_lines.append('   All changed lines covered!')
-            output_lines.append('')
+            print('   All changed lines covered!')
+            print()
             continue
 
-        # Fetch line-level coverage
         file_data = get_file_coverage(org, repo, pr_number, file_path)
         if file_data:
             segments_data = file_data.get('segments', {})
@@ -390,44 +364,30 @@ def fetch_codecov_coverage(org: str, repo: str, pr_number: int) -> str:
                 uncovered, partial = parse_line_coverage(segments)
 
                 if uncovered:
-                    output_lines.append(f'   Uncovered lines: {format_line_ranges(uncovered)}')
+                    print(f'   Uncovered lines: {format_line_ranges(uncovered)}')
                 if partial:
-                    output_lines.append(f'   Partial lines: {format_line_ranges(partial)}')
+                    print(f'   Partial lines: {format_line_ranges(partial)}')
 
                 if not uncovered and not partial:
                     if missed:
-                        output_lines.append('   (Coverage details not available)')
+                        print('   (Coverage details not available)')
                     else:
-                        output_lines.append('   All changed lines covered!')
+                        print('   All changed lines covered!')
             else:
-                output_lines.append('   (Line coverage not available)')
+                print('   (Line coverage not available)')
         else:
-            output_lines.append('   (Could not fetch line coverage)')
+            print('   (Could not fetch line coverage)')
 
-        output_lines.append('')
-
-    return '\n'.join(output_lines)
+        print()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description='Fetch coverage diff from Codecov for a GitHub PR',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='If arguments are not specified, they are auto-detected using gh CLI.',
-    )
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('pr', nargs='?', type=int, help='Pull request number (auto-detected if not provided)')
     parser.add_argument('--org', help='GitHub organization name (auto-detected if not provided)')
     parser.add_argument('--repo', help='Repository name (auto-detected if not provided)')
-    parser.add_argument(
-        '--output',
-        '-o',
-        help='Output file path (default: stdout)',
-        default=None,
-    )
-
     args = parser.parse_args()
 
-    # Determine org and repo
     org = args.org
     repo = args.repo
     if not org or not repo:
@@ -438,7 +398,6 @@ def main() -> None:
             print('Error: Could not detect repository. Use --org and --repo.', file=sys.stderr)
             sys.exit(1)
 
-    # Determine PR number
     pr_number = args.pr
     if not pr_number:
         pr_number = get_pr_from_gh()
@@ -446,13 +405,7 @@ def main() -> None:
             print('Error: Could not detect PR number. Provide PR number as argument.', file=sys.stderr)
             sys.exit(1)
 
-    result = fetch_codecov_coverage(org, repo, pr_number)
-
-    if args.output:
-        Path(args.output).write_text(result)
-        print(f'Coverage diff written to {args.output}', file=sys.stderr)
-    else:
-        print(result)
+    fetch_codecov_coverage(org, repo, pr_number)
 
 
 if __name__ == '__main__':
