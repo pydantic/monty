@@ -22,7 +22,7 @@ A minimal, secure Python interpreter written in Rust for use by AI.
 
 Monty avoids the cost, latency, complexity and general faff of using a full container based sandbox for running LLM generated code.
 
-Instead, it let's you safely run Python code written by an LLM embedded in your agent, with startup times measured in single digit microseconds not hundreds of milliseconds.
+Instead, it lets you safely run Python code written by an LLM embedded in your agent, with startup times measured in single digit microseconds not hundreds of milliseconds.
 
 What Monty **can** do:
 * Run a reasonable subset of Python code - enough for your agent to express what it wants to do
