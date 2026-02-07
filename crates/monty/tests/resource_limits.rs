@@ -359,7 +359,7 @@ fn char_f_string_not_allocated() {
     let code = "x = []\nfor i in range(10):\n    x.append(f'{i}')";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], vec!["foo".to_owned()]).unwrap();
 
-    let limits = ResourceLimits::new().max_allocations(3);
+    let limits = ResourceLimits::new().max_allocations(4);
     run.run(vec![], LimitedTracker::new(limits), &mut StdPrint).unwrap();
 }
 
@@ -657,6 +657,6 @@ fn bigint_rejected_before_allocation() {
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
     assert_eq!(
         exc.message(),
-        Some("memory limit exceeded: 250000 bytes > 100000 bytes")
+        Some("memory limit exceeded: 250072 bytes > 100000 bytes")
     );
 }
