@@ -241,4 +241,16 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         let rhs_type = rhs.py_type(this.heap);
         Err(ExcType::binary_type_error("+=", lhs_type, rhs_type))
     }
+
+    /// Binary matrix multiplication (`@` operator).
+    ///
+    /// Currently not implemented - returns a `NotImplementedError`.
+    /// Matrix multiplication requires numpy-like array types which Monty doesn't support.
+    pub(super) fn binary_matmul(&mut self) -> Result<(), RunError> {
+        let rhs = self.pop();
+        let lhs = self.pop();
+        lhs.drop_with_heap(self.heap);
+        rhs.drop_with_heap(self.heap);
+        Err(ExcType::not_implemented("matrix multiplication (@) is not supported").into())
+    }
 }

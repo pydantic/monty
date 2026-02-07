@@ -811,7 +811,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::BinaryRShift => {
                     try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::RShift));
                 }
-                Opcode::BinaryMatMul => todo!("BinaryMatMul not implemented"),
+                Opcode::BinaryMatMul => try_catch_sync!(self, cached_frame, self.binary_matmul()),
                 // Comparison Operations
                 Opcode::CompareEq => self.compare_eq(),
                 Opcode::CompareNe => self.compare_ne(),
@@ -1028,7 +1028,8 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let obj = self.pop();
                     obj.drop_with_heap(self.heap);
                     index.drop_with_heap(self.heap);
-                    todo!("DeleteSubscr: py_delitem not yet implemented")
+                    let error = ExcType::not_implemented("del obj[key] is not yet supported");
+                    catch_sync!(self, cached_frame, error.into());
                 }
                 Opcode::LoadAttr => {
                     let name_idx = fetch_u16!(cached_frame);
@@ -1046,7 +1047,16 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     try_catch_sync!(self, cached_frame, self.store_attr(name_id));
                 }
                 Opcode::DeleteAttr => {
-                    todo!("DeleteAttr not implemented")
+                    // Skip past the name_idx operand (2 bytes) - the assignment is "unused"
+                    // because catch_sync! either returns or reloads the cache
+                    #[expect(unused_assignments)]
+                    {
+                        cached_frame.ip += 2;
+                    }
+                    let obj = self.pop();
+                    obj.drop_with_heap(self.heap);
+                    let error = ExcType::not_implemented("del obj.attr is not yet supported");
+                    catch_sync!(self, cached_frame, error.into());
                 }
                 // Control Flow - use cached_frame.ip directly for jumps
                 Opcode::Jump => {
@@ -1290,7 +1300,13 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     catch_sync!(self, cached_frame, error);
                 }
                 Opcode::RaiseFrom => {
-                    todo!("RaiseFrom")
+                    // `raise X from Y` - exception chaining not yet supported
+                    let exc = self.pop();
+                    let cause = self.pop();
+                    exc.drop_with_heap(self.heap);
+                    cause.drop_with_heap(self.heap);
+                    let error = ExcType::not_implemented("raise ... from ... is not yet supported");
+                    catch_sync!(self, cached_frame, error.into());
                 }
                 Opcode::Reraise => {
                     // Pop the current exception from the stack to re-raise it
