@@ -20,7 +20,7 @@
 
 A minimal, secure Python interpreter written in Rust for use by AI.
 
-Monty avoids the cost, latency, complexity and general faff of using full container based sandbox for running LLM generated code.
+Monty avoids the cost, latency, complexity and general faff of using a full container based sandbox for running LLM generated code.
 
 Instead, it let's you safely run Python code written by an LLM embedded in your agent, with startup times measured in single digit microseconds not hundreds of milliseconds.
 
@@ -54,7 +54,7 @@ For motivation on why you might want to do this, see:
 * [Code Execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) from Anthropic
 * [Smol Agents](https://github.com/huggingface/smolagents) from Hugging Face
 
-In very simple terms, the idea of all the above is that LLMs can be work faster, cheaper and more reliably if they're asked to write Python (or Javascript) code, instead of relying on traditional tool calling. Monty makes that possible without the complexity of a sandbox or risk of running code directly on the host.
+In very simple terms, the idea of all the above is that LLMs can work faster, cheaper and more reliably if they're asked to write Python (or Javascript) code, instead of relying on traditional tool calling. Monty makes that possible without the complexity of a sandbox or risk of running code directly on the host.
 
 **Note:** Monty will (soon) be used to implement `codemode` in [Pydantic AI](https://github.com/pydantic/pydantic-ai)
 
