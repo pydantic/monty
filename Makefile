@@ -194,6 +194,10 @@ type-sizes: ## Write type sizes for the crate to ./type-sizes.txt (requires nigh
 fuzz-string_input_panic: ## Run the `string_input_panic` fuzz target
 	cargo +nightly fuzz run --fuzz-dir crates/fuzz string_input_panic
 
+.PHONY: fuzz-tokens_input_panic
+fuzz-tokens_input_panic: ## Run the `tokens_input_panic` fuzz target (structured token input)
+	cargo +nightly fuzz run --fuzz-dir crates/fuzz tokens_input_panic
+
 .PHONY: main
 main: lint test-ref-count-panic test-py ## run linting and the most important tests
 
