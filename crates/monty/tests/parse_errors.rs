@@ -318,3 +318,82 @@ fn deeply_nested_attribute_access_exceed_limit() {
     let result = MontyRun::new(code, "test.py", vec![], vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
+
+#[test]
+fn deeply_nested_lambdas_exceed_limit() {
+    // Build nested lambdas like (lambda: (lambda: (lambda: ... x)))
+    let mut code = "x".to_string();
+    for _ in 0..250 {
+        code = format!("(lambda: {code})");
+    }
+    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+}
+
+#[test]
+fn deeply_nested_unary_not_exceed_limit() {
+    // Build nested not operators like not (not (not ... True))
+    let mut code = "True".to_string();
+    for _ in 0..250 {
+        code = format!("not ({code})");
+    }
+    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+}
+
+#[test]
+fn deeply_nested_unary_minus_exceed_limit() {
+    // Build nested unary minus like -(-(-... 1))
+    let mut code = "1".to_string();
+    for _ in 0..250 {
+        code = format!("-({code})");
+    }
+    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+}
+
+#[test]
+fn deeply_nested_walrus_operator_exceed_limit() {
+    // Build nested walrus operators like (a := (b := (c := ... 1)))
+    let mut code = "1".to_string();
+    for i in 0..250 {
+        code = format!("(x{i} := {code})");
+    }
+    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+}
+
+#[test]
+fn deeply_nested_await_exceed_limit() {
+    // Build nested await like await (await (await ... x))
+    // We need this in an async function context
+    let mut code = "x".to_string();
+    for _ in 0..250 {
+        code = format!("await ({code})");
+    }
+    let code = format!("async def f():\n    {code}");
+    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+}
+
+#[test]
+fn deeply_nested_boolean_and_exceed_limit() {
+    // Build nested boolean and like (True and (True and (True and ...)))
+    let mut code = "True".to_string();
+    for _ in 0..250 {
+        code = format!("(True and {code})");
+    }
+    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+}
+
+#[test]
+fn deeply_nested_boolean_or_exceed_limit() {
+    // Build nested boolean or like (False or (False or (False or ...)))
+    let mut code = "True".to_string();
+    for _ in 0..250 {
+        code = format!("(False or {code})");
+    }
+    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    assert_eq!(get_exc_type(result), ExcType::SyntaxError);
+}
