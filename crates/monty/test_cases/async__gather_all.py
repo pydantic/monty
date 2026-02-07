@@ -51,3 +51,35 @@ try:
     assert False, 'should have raised TypeError'
 except TypeError as e:
     assert str(e) == 'An asyncio.Future, a coroutine or an awaitable is required'
+
+
+# === *args unpacking with gather ===
+async def a():
+    return 'a'
+
+
+async def b():
+    return 'b'
+
+
+async def c():
+    return 'c'
+
+
+# Unpack a list of coroutines
+coros = [a(), b(), c()]
+result = await asyncio.gather(*coros)  # pyright: ignore
+assert result == ['a', 'b', 'c'], f'gather with *args unpacking: {result}'
+
+# Unpack with mixed args
+result = await asyncio.gather(a(), *[b(), c()])  # pyright: ignore
+assert result == ['a', 'b', 'c'], f'gather with mixed args and *unpacking: {result}'
+
+# Unpack empty list
+result = await asyncio.gather(*[])  # pyright: ignore
+assert result == [], f'gather with empty *args: {result}'
+
+# Unpack tuple
+coro_tuple = (a(), b())
+result = await asyncio.gather(*coro_tuple)  # pyright: ignore
+assert result == ['a', 'b'], f'gather with *tuple unpacking: {result}'

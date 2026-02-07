@@ -1,13 +1,14 @@
 use std::{cmp::Ordering, fmt::Write};
 
 use ahash::AHashSet;
+use smallvec::SmallVec;
 
 use super::{MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
     builtins::Builtins,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     io::PrintWriter,
     resource::{ResourceError, ResourceTracker},
@@ -104,6 +105,15 @@ impl List {
     #[must_use]
     pub fn contains_refs(&self) -> bool {
         self.contains_refs
+    }
+
+    /// Marks that the list contains heap references.
+    ///
+    /// This should be called when directly mutating the list's items vector
+    /// (via `as_vec_mut()`) with values that include `Value::Ref` variants.
+    #[inline]
+    pub fn set_contains_refs(&mut self) {
+        self.contains_refs = true;
     }
 
     /// Appends an element to the end of the list.
@@ -213,12 +223,8 @@ impl PyTrait for List {
             return self.getitem_slice(&slice, heap);
         }
 
-        // Extract integer index, accepting both Int and Bool (True=1, False=0)
-        let index = match key {
-            Value::Int(i) => *i,
-            Value::Bool(b) => i64::from(*b),
-            _ => return Err(ExcType::type_error_indices(Type::List, key.py_type(heap))),
-        };
+        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
+        let index = key.as_index(heap, Type::List)?;
 
         // Convert to usize, handling negative indices (Python-style: -1 = last element)
         let len = i64::try_from(self.items.len()).expect("list length exceeds i64::MAX");
@@ -242,10 +248,30 @@ impl PyTrait for List {
         heap: &mut Heap<impl ResourceTracker>,
         _interns: &Interns,
     ) -> RunResult<()> {
-        // Extract integer index, accepting both Int and Bool (True=1, False=0)
-        let index = match key {
-            Value::Int(i) => i,
-            Value::Bool(b) => i64::from(b),
+        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt.
+        // Note: The LongInt-to-i64 conversion is defensive code. In normal execution,
+        // heap-allocated LongInt values always exceed i64 range because into_value()
+        // demotes i64-fitting values to Value::Int. However, this could be reached via
+        // deserialization of crafted snapshot data.
+        let index = match &key {
+            Value::Int(i) => *i,
+            Value::Bool(b) => i64::from(*b),
+            Value::Ref(heap_id) => {
+                if let HeapData::LongInt(li) = heap.get(*heap_id) {
+                    if let Some(i) = li.to_i64() {
+                        i
+                    } else {
+                        key.drop_with_heap(heap);
+                        value.drop_with_heap(heap);
+                        return Err(ExcType::index_error_int_too_large());
+                    }
+                } else {
+                    let key_type = key.py_type(heap);
+                    key.drop_with_heap(heap);
+                    value.drop_with_heap(heap);
+                    return Err(ExcType::type_error_list_assignment_indices(key_type));
+                }
+            }
             _ => {
                 let key_type = key.py_type(heap);
                 key.drop_with_heap(heap);
@@ -253,6 +279,8 @@ impl PyTrait for List {
                 return Err(ExcType::type_error_list_assignment_indices(key_type));
             }
         };
+        // Drop the key after extracting the index (Int and Bool are not ref-counted)
+        key.drop_with_heap(heap);
 
         // Normalize negative indices (Python-style: -1 = last element)
         let len = i64::try_from(self.items.len()).expect("list length exceeds i64::MAX");
@@ -582,7 +610,7 @@ fn list_extend(
     let mut iter = MontyIter::new(iterable, heap, interns)?;
 
     // Collect all items from the iterator
-    let items = iter.collect(heap, interns)?;
+    let items: SmallVec<[_; 2]> = iter.collect(heap, interns)?;
     iter.drop_with_heap(heap);
 
     // Add each item to the list
@@ -1015,4 +1043,108 @@ pub(crate) fn get_slice_items(
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use num_bigint::BigInt;
+
+    use super::*;
+    use crate::{intern::InternerBuilder, resource::NoLimitTracker, types::LongInt};
+
+    /// Creates a minimal Interns for testing.
+    fn create_test_interns() -> crate::intern::Interns {
+        let interner = InternerBuilder::new("");
+        crate::intern::Interns::new(interner, vec![], vec![])
+    }
+
+    /// Creates a heap with a list and a LongInt index, bypassing into_value() demotion.
+    ///
+    /// This allows testing the defensive code path where a LongInt contains an i64-fitting value.
+    fn create_heap_with_list_and_longint(
+        list_items: Vec<Value>,
+        index_value: BigInt,
+    ) -> (Heap<NoLimitTracker>, HeapId, HeapId) {
+        let mut heap = Heap::new(16, NoLimitTracker);
+        let list = List::new(list_items);
+        let list_id = heap.allocate(HeapData::List(list)).unwrap();
+        let long_int = LongInt::new(index_value);
+        let index_id = heap.allocate(HeapData::LongInt(long_int)).unwrap();
+        (heap, list_id, index_id)
+    }
+
+    /// Tests py_setitem with a LongInt index that fits in i64.
+    ///
+    /// This is a defensive code path - normally unreachable because LongInt::into_value()
+    /// demotes i64-fitting values to Value::Int. However, it could be reached via
+    /// deserialization of crafted snapshot data.
+    #[test]
+    fn py_setitem_longint_fits_in_i64() {
+        let (mut heap, list_id, index_id) =
+            create_heap_with_list_and_longint(vec![Value::Int(10), Value::Int(20), Value::Int(30)], BigInt::from(1));
+        let interns = create_test_interns();
+
+        // Use heap.with_entry_mut to avoid double mutable borrow
+        let key = Value::Ref(index_id);
+        let new_value = Value::Int(99);
+        heap.inc_ref(index_id);
+
+        let result = heap.with_entry_mut(list_id, |heap, data| data.py_setitem(key, new_value, heap, &interns));
+
+        assert!(result.is_ok());
+
+        // Verify the list was updated by checking it matches expected Int value
+        let HeapData::List(list) = heap.get(list_id) else {
+            panic!("expected list");
+        };
+        assert!(matches!(list.as_vec()[1], Value::Int(99)));
+
+        // Clean up
+        Value::Ref(list_id).drop_with_heap(&mut heap);
+    }
+
+    /// Tests py_setitem with a negative LongInt index that fits in i64.
+    #[test]
+    fn py_setitem_longint_negative_fits_in_i64() {
+        let (mut heap, list_id, index_id) = create_heap_with_list_and_longint(
+            vec![Value::Int(10), Value::Int(20), Value::Int(30)],
+            BigInt::from(-1), // Last element
+        );
+        let interns = create_test_interns();
+
+        let key = Value::Ref(index_id);
+        let new_value = Value::Int(99);
+        heap.inc_ref(index_id);
+
+        let result = heap.with_entry_mut(list_id, |heap, data| data.py_setitem(key, new_value, heap, &interns));
+
+        assert!(result.is_ok());
+
+        // Verify the last element was updated
+        let HeapData::List(list) = heap.get(list_id) else {
+            panic!("expected list");
+        };
+        assert!(matches!(list.as_vec()[2], Value::Int(99)));
+
+        Value::Ref(list_id).drop_with_heap(&mut heap);
+    }
+
+    /// Tests py_setitem with i64::MAX as a LongInt index.
+    #[test]
+    fn py_setitem_longint_at_i64_max() {
+        let (mut heap, list_id, index_id) =
+            create_heap_with_list_and_longint(vec![Value::Int(10)], BigInt::from(i64::MAX));
+        let interns = create_test_interns();
+
+        let key = Value::Ref(index_id);
+        let new_value = Value::Int(99);
+        heap.inc_ref(index_id);
+
+        // This should fail with IndexError because i64::MAX is out of bounds for a 1-element list
+        let result = heap.with_entry_mut(list_id, |heap, data| data.py_setitem(key, new_value, heap, &interns));
+
+        assert!(result.is_err());
+
+        Value::Ref(list_id).drop_with_heap(&mut heap);
+    }
 }

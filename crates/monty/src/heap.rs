@@ -3,11 +3,14 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem::discriminant,
+    mem::{ManuallyDrop, discriminant},
+    ptr::addr_of,
+    vec,
 };
 
 use ahash::AHashSet;
 use num_integer::Integer;
+use smallvec::SmallVec;
 
 use crate::{
     args::ArgValues,
@@ -17,7 +20,7 @@ use crate::{
     resource::{ResourceError, ResourceTracker},
     types::{
         AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait,
-        Range, Set, Slice, Str, Tuple, Type,
+        Range, Set, Slice, Str, Tuple, Type, allocate_tuple,
     },
     value::{EitherStr, Value},
 };
@@ -853,17 +856,24 @@ pub(crate) struct Heap<T: ResourceTracker> {
     may_have_cycles: bool,
     /// Number of GC applicable allocations since the last GC.
     allocations_since_gc: u32,
+    /// Cached HeapId for the empty tuple singleton `()`.
+    ///
+    /// Lazily allocated on first use via `get_or_create_empty_tuple()`.
+    /// In Python, `() is ()` is always `True` because empty tuples are interned.
+    /// This field enables the same optimization.
+    empty_tuple_id: Option<HeapId>,
 }
 
 impl<T: ResourceTracker + serde::Serialize> serde::Serialize for Heap<T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("Heap", 5)?;
+        let mut state = serializer.serialize_struct("Heap", 6)?;
         state.serialize_field("entries", &self.entries)?;
         state.serialize_field("free_list", &self.free_list)?;
         state.serialize_field("tracker", &self.tracker)?;
         state.serialize_field("may_have_cycles", &self.may_have_cycles)?;
         state.serialize_field("allocations_since_gc", &self.allocations_since_gc)?;
+        state.serialize_field("empty_tuple_id", &self.empty_tuple_id)?;
         state.end()
     }
 }
@@ -877,6 +887,7 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
             tracker: T,
             may_have_cycles: bool,
             allocations_since_gc: u32,
+            empty_tuple_id: Option<HeapId>,
         }
         let fields = HeapFields::<T>::deserialize(deserializer)?;
         Ok(Self {
@@ -885,6 +896,7 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
             tracker: fields.tracker,
             may_have_cycles: fields.may_have_cycles,
             allocations_since_gc: fields.allocations_since_gc,
+            empty_tuple_id: fields.empty_tuple_id,
         })
     }
 }
@@ -932,6 +944,7 @@ impl<T: ResourceTracker> Heap<T> {
             tracker,
             may_have_cycles: false,
             allocations_since_gc: 0,
+            empty_tuple_id: None,
         }
     }
 
@@ -1010,6 +1023,33 @@ impl<T: ResourceTracker> Heap<T> {
         };
 
         Ok(id)
+    }
+
+    /// Returns the singleton empty tuple, creating it on first use.
+    ///
+    /// In Python, `() is ()` is always `True` because empty tuples are interned.
+    /// This method provides the same optimization by returning the same `HeapId`
+    /// for all empty tuple allocations.
+    ///
+    /// The returned `HeapId` has its reference count incremented, so the caller
+    /// owns a reference and must call `dec_ref` when done.
+    ///
+    /// # Errors
+    /// Returns `ResourceError` if allocating the empty tuple fails (only possible
+    /// on first call when resource limits are exhausted).
+    pub fn get_or_create_empty_tuple(&mut self) -> Result<HeapId, ResourceError> {
+        if let Some(id) = self.empty_tuple_id {
+            // Return existing singleton with incremented refcount
+            self.inc_ref(id);
+            Ok(id)
+        } else {
+            // First use - allocate the empty tuple singleton
+            let id = self.allocate(HeapData::Tuple(Tuple::default()))?;
+            self.empty_tuple_id = Some(id);
+            // Keep an extra reference so the singleton is never freed
+            self.inc_ref(id);
+            Ok(id)
+        }
     }
 
     /// Increments the reference count for an existing heap entry.
@@ -1242,10 +1282,19 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// This is primarily used for testing to verify that all heap entries
     /// are accounted for in reference count tests.
+    ///
+    /// Excludes the empty tuple singleton since it's an internal optimization
+    /// detail that persists even when not explicitly used by user code.
     #[must_use]
     #[cfg(feature = "ref-count-return")]
     pub fn entry_count(&self) -> usize {
-        self.entries.iter().filter(|o| o.is_some()).count()
+        let count = self.entries.iter().filter(|o| o.is_some()).count();
+        // Subtract 1 for the empty tuple singleton if it exists
+        if self.empty_tuple_id.is_some() {
+            count.saturating_sub(1)
+        } else {
+            count
+        }
     }
 
     /// Gets the value inside a cell, cloning it with proper refcount handling.
@@ -1396,9 +1445,8 @@ impl<T: ResourceTracker> Heap<T> {
             HeapData::Tuple(tuple) => {
                 if count == 0 {
                     restore_data!(self, id, data, "mult_sequence");
-                    Ok(Some(Value::Ref(
-                        self.allocate(HeapData::Tuple(Tuple::new(Vec::new())))?,
-                    )))
+                    // Use empty tuple singleton
+                    Ok(Some(Value::Ref(self.get_or_create_empty_tuple()?)))
                 } else {
                     // Copy items and track which refs need incrementing
                     let items: Vec<Value> = tuple.as_vec().iter().map(Value::copy_for_extend).collect();
@@ -1420,7 +1468,7 @@ impl<T: ResourceTracker> Heap<T> {
                     let capacity = original_len
                         .checked_mul(count)
                         .ok_or_else(ExcType::overflow_repeat_count)?;
-                    let mut result = Vec::with_capacity(capacity);
+                    let mut result = SmallVec::with_capacity(capacity);
                     for _ in 0..count {
                         for item in &items {
                             result.push(item.copy_for_extend());
@@ -1430,7 +1478,7 @@ impl<T: ResourceTracker> Heap<T> {
                     // Manually forget the items vec to avoid Drop panic
                     std::mem::forget(items);
 
-                    Ok(Some(Value::Ref(self.allocate(HeapData::Tuple(Tuple::new(result)))?)))
+                    Ok(Some(allocate_tuple(result, self)?))
                 }
             }
             _ => {
@@ -1689,4 +1737,200 @@ impl<T: ResourceTracker> Drop for Heap<T> {
             }
         }
     }
+}
+
+/// This trait represents types that contain a `Heap`; it allows for more complex structures
+/// to participate in the `HeapGuard` pattern.
+pub(crate) trait ContainsHeap<T: ResourceTracker> {
+    fn heap_mut(&mut self) -> &mut Heap<T>;
+}
+
+impl<T: ResourceTracker> ContainsHeap<T> for Heap<T> {
+    #[inline]
+    fn heap_mut(&mut self) -> &mut Self {
+        self
+    }
+}
+
+/// Trait for types that require heap access for proper cleanup.
+///
+/// Rust's standard `Drop` trait cannot decrement heap reference counts because it has no
+/// access to the `Heap`. This trait provides an explicit drop-with-heap method so that
+/// ref-counted values (and containers of them) can properly decrement their counts when
+/// they are no longer needed.
+///
+/// **All types implementing this trait must be cleaned up on every code path** — not just
+/// the happy path, but also early returns, conditional branches, `continue`, etc. A missed
+/// call on any branch leaks reference counts. Prefer [`defer_drop!`] or [`HeapGuard`] to
+/// guarantee cleanup automatically rather than inserting manual calls in every branch.
+///
+/// Implemented for `Value`, `Option<V>`, `Vec<Value>`, `ArgValues`, iterators, and other
+/// types that hold heap references.
+pub(crate) trait DropWithHeap<T: ResourceTracker> {
+    /// Consume `self` and decrement reference counts for any heap-allocated values contained within.
+    fn drop_with_heap(self, heap: &mut Heap<T>);
+}
+
+impl<T: ResourceTracker> DropWithHeap<T> for Value {
+    #[inline]
+    fn drop_with_heap(self, heap: &mut Heap<T>) {
+        Self::drop_with_heap(self, heap);
+    }
+}
+
+impl<T: ResourceTracker, U: DropWithHeap<T>> DropWithHeap<T> for Option<U> {
+    #[inline]
+    fn drop_with_heap(self, heap: &mut Heap<T>) {
+        if let Some(value) = self {
+            value.drop_with_heap(heap);
+        }
+    }
+}
+
+impl<T: ResourceTracker> DropWithHeap<T> for Vec<Value> {
+    fn drop_with_heap(self, heap: &mut Heap<T>) {
+        for value in self {
+            value.drop_with_heap(heap);
+        }
+    }
+}
+
+impl<T: ResourceTracker> DropWithHeap<T> for vec::IntoIter<Value> {
+    fn drop_with_heap(self, heap: &mut Heap<T>) {
+        for value in self {
+            value.drop_with_heap(heap);
+        }
+    }
+}
+
+/// RAII guard that ensures a [`DropWithHeap`] value is cleaned up on every code path.
+///
+/// The guard's `Drop` impl calls [`DropWithHeap::drop_with_heap`] automatically, so
+/// cleanup happens whether the scope exits normally, via `?`, `continue`, early return,
+/// or any other branch. This eliminates the need to manually insert `drop_with_heap`
+/// calls in every branch.
+///
+/// On the normal path, the guarded value can be borrowed via [`as_parts`](Self::as_parts) /
+/// [`as_parts_mut`](Self::as_parts_mut), or reclaimed via [`into_inner`](Self::into_inner) /
+/// [`into_parts`](Self::into_parts) (which consume the guard without dropping the value).
+///
+/// Prefer the [`defer_drop!`] macro for the common case where you just need to ensure a
+/// value is dropped at scope exit. Use `HeapGuard` directly when you need to conditionally
+/// reclaim the value (e.g. push it back onto the stack on success) or need mutable access
+/// to both the value and heap through [`as_parts_mut`](Self::as_parts_mut).
+pub(crate) struct HeapGuard<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> {
+    // manually dropped because it needs to be dropped by move.
+    value: ManuallyDrop<V>,
+    heap: &'a mut H,
+    _tracker: std::marker::PhantomData<T>,
+}
+
+impl<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> HeapGuard<'a, T, H, V> {
+    /// Creates a new `HeapGuard` for the given value and heap.
+    #[inline]
+    pub fn new(value: V, heap: &'a mut H) -> Self {
+        Self {
+            value: ManuallyDrop::new(value),
+            heap,
+            _tracker: std::marker::PhantomData,
+        }
+    }
+
+    /// Consumes the guard and returns the contained value without dropping it.
+    ///
+    /// Use this when the value should survive beyond the guard's scope (e.g. returning
+    /// a computed result from a function that used the guard for error-path safety).
+    #[inline]
+    pub fn into_inner(self) -> V {
+        let mut this = ManuallyDrop::new(self);
+        // SAFETY: [DH] - `ManuallyDrop::new(self)` prevents `Drop` on self, so we can take the value out
+        unsafe { ManuallyDrop::take(&mut this.value) }
+    }
+
+    /// Borrows the value (immutably) and heap (mutably) out of the guard.
+    ///
+    /// This is what [`defer_drop!`] calls internally. The returned references are tied
+    /// to the guard's lifetime, so the value cannot escape.
+    #[inline]
+    pub fn as_parts(&mut self) -> (&V, &mut H) {
+        (&self.value, self.heap)
+    }
+
+    /// Borrows the value (mutably) and heap (mutably) out of the guard.
+    ///
+    /// This is what [`defer_drop_mut!`] calls internally. Use this when the value needs
+    /// to be mutated in place (e.g. advancing an iterator, swapping during min/max).
+    #[inline]
+    pub fn as_parts_mut(&mut self) -> (&mut V, &mut H) {
+        (&mut self.value, self.heap)
+    }
+
+    /// Consumes the guard and returns the value and heap separately, without dropping.
+    ///
+    /// Use this when you need to reclaim both the value *and* the heap reference — for
+    /// example, to push the value back onto the VM stack via the heap owner.
+    #[inline]
+    pub fn into_parts(self) -> (V, &'a mut H) {
+        let mut this = ManuallyDrop::new(self);
+        // SAFETY: [DH] - `ManuallyDrop` prevents `Drop` on self, so we can recover the parts
+        unsafe { (ManuallyDrop::take(&mut this.value), addr_of!(this.heap).read()) }
+    }
+
+    /// Borrows just the heap out of the guard
+    #[inline]
+    pub fn heap(&mut self) -> &mut H {
+        self.heap
+    }
+}
+
+impl<T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> Drop for HeapGuard<'_, T, H, V> {
+    fn drop(&mut self) {
+        // SAFETY: [DH] - value is never manually dropped until this point
+        unsafe { ManuallyDrop::take(&mut self.value) }.drop_with_heap(self.heap.heap_mut());
+    }
+}
+
+/// The preferred way to ensure a [`DropWithHeap`] value is cleaned up on every code path.
+///
+/// Creates a [`HeapGuard`] and immediately rebinds `$value` as `&V` and `$heap` as
+/// `&mut H` via [`HeapGuard::as_parts`]. The original owned value is moved into the
+/// guard, which will call [`DropWithHeap::drop_with_heap`] when scope exits — whether
+/// that's normal completion, early return via `?`, `continue`, or any other branch.
+///
+/// Beyond safety, this is often much more concise than inserting `drop_with_heap` calls
+/// in every branch of complex control flow. For mutable access to the value, use
+/// [`defer_drop_mut!`].
+///
+/// # Limitation
+///
+/// The macro rebinds `$heap` as a new `let` binding, so it cannot be used when `$heap`
+/// is `self`. In `&mut self` methods, first assign `let this = self;` and pass `this`.
+#[macro_export]
+macro_rules! defer_drop {
+    ($value:ident, $heap:ident) => {
+        let mut _guard = $crate::heap::HeapGuard::new($value, $heap);
+        #[allow(
+            clippy::allow_attributes,
+            reason = "the reborrowed parts may not both be used in every case, so allow unused vars to avoid warnings"
+        )]
+        #[allow(unused_variables)]
+        let ($value, $heap) = _guard.as_parts();
+    };
+}
+
+/// Like [`defer_drop!`], but rebinds `$value` as `&mut V` via [`HeapGuard::as_parts_mut`].
+///
+/// Use this when the value needs to be mutated in place — for example, advancing an
+/// iterator with `for_next()`, or swapping values during a min/max comparison.
+#[macro_export]
+macro_rules! defer_drop_mut {
+    ($value:ident, $heap:ident) => {
+        let mut _guard = $crate::heap::HeapGuard::new($value, $heap);
+        #[allow(
+            clippy::allow_attributes,
+            reason = "the reborrowed parts may not both be used in every case, so allow unused vars to avoid warnings"
+        )]
+        #[allow(unused_variables)]
+        let ($value, $heap) = _guard.as_parts_mut();
+    };
 }

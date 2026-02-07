@@ -11,7 +11,7 @@ use crate::{
     heap::{Heap, HeapData},
     intern::{Interns, StringId},
     resource::ResourceTracker,
-    types::{Dict, Tuple},
+    types::{Dict, allocate_tuple},
     value::Value,
 };
 
@@ -333,11 +333,10 @@ impl Signature {
         }
 
         // 2. Collect excess positional args into *args tuple
-        let excess_positional: Vec<Value> = pos_iter.collect();
+        let excess_positional = pos_iter.collect();
         let var_args_value = if self.var_args.is_some() {
             // Create tuple from excess args
-            let tuple_id = heap.allocate(HeapData::Tuple(Tuple::new(excess_positional)))?;
-            Some(Value::Ref(tuple_id))
+            Some(allocate_tuple(excess_positional, heap)?)
         } else {
             None
         };

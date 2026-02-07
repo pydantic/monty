@@ -6,8 +6,9 @@ use std::{
 
 use ahash::AHashSet;
 use hashbrown::{HashTable, hash_table::Entry};
+use smallvec::smallvec;
 
-use super::{List, MontyIter, PyTrait, Tuple};
+use super::{List, MontyIter, PyTrait, allocate_tuple};
 use crate::{
     args::{ArgValues, KwargsValues},
     exception_private::{ExcType, RunResult},
@@ -649,8 +650,8 @@ impl PyTrait for Dict {
                 let items = self.items(heap);
                 let mut tuples: Vec<Value> = Vec::with_capacity(items.len());
                 for (k, v) in items {
-                    let tuple_id = heap.allocate(HeapData::Tuple(Tuple::new(vec![k, v])))?;
-                    tuples.push(Value::Ref(tuple_id));
+                    let tuple_val = allocate_tuple(smallvec![k, v], heap)?;
+                    tuples.push(tuple_val);
                 }
                 let list_id = heap.allocate(HeapData::List(List::new(tuples)))?;
                 Ok(Value::Ref(list_id))
@@ -1026,9 +1027,7 @@ fn dict_popitem(dict: &mut Dict, heap: &mut Heap<impl ResourceTracker>) -> RunRe
     }
 
     // Create tuple (key, value)
-    let tuple = Tuple::new(vec![entry.key, entry.value]);
-    let heap_id = heap.allocate(HeapData::Tuple(tuple))?;
-    Ok(Value::Ref(heap_id))
+    Ok(allocate_tuple(smallvec![entry.key, entry.value], heap)?)
 }
 
 // Custom serde implementation for Dict.

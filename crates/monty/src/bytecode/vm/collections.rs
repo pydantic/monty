@@ -1,5 +1,7 @@
 //! Collection building and unpacking helpers for the VM.
 
+use smallvec::SmallVec;
+
 use super::VM;
 use crate::{
     exception_private::{ExcType, RunError, SimpleException},
@@ -7,7 +9,7 @@ use crate::{
     intern::StringId,
     io::PrintWriter,
     resource::ResourceTracker,
-    types::{Dict, List, PyTrait, Set, Slice, Tuple, Type, slice::value_to_option_i64, str::allocate_char},
+    types::{Dict, List, PyTrait, Set, Slice, Type, allocate_tuple, slice::value_to_option_i64, str::allocate_char},
     value::Value,
 };
 
@@ -22,11 +24,13 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     }
 
     /// Builds a tuple from the top n stack values.
+    ///
+    /// Uses the empty tuple singleton when count is 0, and SmallVec
+    /// optimization for small tuples (≤2 elements).
     pub(super) fn build_tuple(&mut self, count: usize) -> Result<(), RunError> {
         let items = self.pop_n(count);
-        let tuple = Tuple::new(items);
-        let heap_id = self.heap.allocate(HeapData::Tuple(tuple))?;
-        self.push(Value::Ref(heap_id));
+        let value = allocate_tuple(items.into(), self.heap)?;
+        self.push(value);
         Ok(())
     }
 
@@ -137,11 +141,23 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             }
         }
 
+        // Check if any copied items are refs (for updating contains_refs)
+        let has_refs = copied_items.iter().any(|v| matches!(v, Value::Ref(_)));
+
         // Extend the list
         if let Value::Ref(id) = &list_ref
             && let HeapData::List(list) = self.heap.get_mut(*id)
         {
+            // Update contains_refs before extending
+            if has_refs {
+                list.set_contains_refs();
+            }
             list.as_vec_mut().extend(copied_items);
+        }
+
+        // Mark potential cycle after the mutable borrow ends
+        if has_refs {
+            self.heap.mark_potential_cycle();
         }
 
         iterable.drop_with_heap(self.heap);
@@ -156,7 +172,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         let list_ref = self.pop();
 
         // Phase 1: Copy items without refcount changes
-        let copied_items: Vec<Value> = if let Value::Ref(id) = &list_ref {
+        let copied_items: SmallVec<_> = if let Value::Ref(id) = &list_ref {
             if let HeapData::List(list) = self.heap.get(*id) {
                 list.as_vec().iter().map(Value::copy_for_extend).collect()
             } else {
@@ -175,9 +191,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
         list_ref.drop_with_heap(self.heap);
 
-        let tuple = Tuple::new(copied_items);
-        let heap_id = self.heap.allocate(HeapData::Tuple(tuple))?;
-        self.push(Value::Ref(heap_id));
+        let value = allocate_tuple(copied_items, self.heap)?;
+        self.push(value);
         Ok(())
     }
 

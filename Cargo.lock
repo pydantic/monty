@@ -1531,7 +1531,7 @@ dependencies = [
 
 [[package]]
 name = "monty"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "ahash",
  "codspeed-criterion-compat",
@@ -1551,12 +1551,13 @@ dependencies = [
  "serde",
  "serde_json",
  "similar",
+ "smallvec",
  "strum",
 ]
 
 [[package]]
 name = "monty-cli"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "monty",
  "monty_type_checking",
@@ -1564,7 +1565,7 @@ dependencies = [
 
 [[package]]
 name = "monty-js"
-version = "0.1.0"
+version = "0.0.4"
 dependencies = [
  "monty",
  "monty_type_checking",
@@ -1578,7 +1579,7 @@ dependencies = [
 
 [[package]]
 name = "monty_type_checking"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "monty_typeshed",
  "pretty_assertions",
@@ -1592,7 +1593,7 @@ dependencies = [
 
 [[package]]
 name = "monty_typeshed"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "path-slash",
  "ruff_db",
@@ -1998,7 +1999,7 @@ dependencies = [
 
 [[package]]
 name = "pydantic-monty"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "indexmap",
  "monty",
@@ -2700,6 +2701,9 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "spin"

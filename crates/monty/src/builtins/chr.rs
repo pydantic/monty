@@ -2,6 +2,7 @@
 
 use crate::{
     args::ArgValues,
+    defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::Heap,
     resource::ResourceTracker,
@@ -15,8 +16,9 @@ use crate::{
 /// The valid range for the argument is from 0 through 1,114,111 (0x10FFFF).
 pub fn builtin_chr(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("chr", heap)?;
+    defer_drop!(value, heap);
 
-    let result = match &value {
+    match value {
         Value::Int(n) => {
             if *n < 0 || *n > 0x0010_FFFF {
                 Err(SimpleException::new_msg(ExcType::ValueError, "chr() arg not in range(0x110000)").into())
@@ -40,8 +42,5 @@ pub fn builtin_chr(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
             )
             .into())
         }
-    };
-
-    value.drop_with_heap(heap);
-    result
+    }
 }

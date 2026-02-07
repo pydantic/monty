@@ -24,7 +24,7 @@ use crate::{
     asyncio::{CallId, TaskId},
     bytecode::{code::Code, op::Opcode},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{Heap, HeapData, HeapId},
+    heap::{ContainsHeap, Heap, HeapData, HeapId},
     intern::{ExtFunctionId, FunctionId, Interns, StringId},
     io::PrintWriter,
     modules::BuiltinModule,
@@ -1215,6 +1215,17 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
 
                     handle_call_result!(self, cached_frame, self.exec_call_function_extended(has_kwargs));
                 }
+                Opcode::CallAttrExtended => {
+                    let name_idx = fetch_u16!(cached_frame);
+                    let flags = fetch_u8!(cached_frame);
+                    let name_id = StringId::from_index(name_idx);
+                    let has_kwargs = (flags & 0x01) != 0;
+
+                    // Sync IP before call (may yield to host for OS/external calls)
+                    self.current_frame_mut().ip = cached_frame.ip;
+
+                    handle_call_result!(self, cached_frame, self.exec_call_attr_extended(name_id, has_kwargs));
+                }
                 // Function Definition
                 Opcode::MakeFunction => {
                     let func_idx = fetch_u16!(cached_frame);
@@ -1386,6 +1397,18 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::LoadModule => {
                     let module_id = fetch_u8!(cached_frame);
                     try_catch_sync!(self, cached_frame, self.load_module(module_id));
+                }
+                Opcode::RaiseImportError => {
+                    // Fetch the module name from the constant pool and raise ModuleNotFoundError
+                    let const_idx = fetch_u16!(cached_frame);
+                    let module_name = cached_frame.code.constants().get(const_idx);
+                    // The constant should be an InternString from compile_import/compile_import_from
+                    let name_str = match module_name {
+                        Value::InternString(id) => self.interns.get_str(*id),
+                        _ => "<unknown>",
+                    };
+                    let error = ExcType::module_not_found_error(name_str);
+                    catch_sync!(self, cached_frame, error);
                 }
             }
         }
@@ -1680,5 +1703,12 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         let value = self.pop();
         let cell_id = self.current_frame().cells[slot as usize];
         self.heap.set_cell_value(cell_id, value);
+    }
+}
+
+// `heap` is not a public field on VM, so this implementation needs to go here rather than in `heap.rs`
+impl<T: ResourceTracker, P: PrintWriter> ContainsHeap<T> for VM<'_, T, P> {
+    fn heap_mut(&mut self) -> &mut Heap<T> {
+        self.heap
     }
 }

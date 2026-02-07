@@ -10,7 +10,7 @@ use crate::{
     asyncio::Coroutine,
     builtins::{Builtins, BuiltinsFunctions},
     exception_private::{ExcType, RunError},
-    heap::{Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{ExtFunctionId, FunctionId, Interns, StaticStrings, StringId},
     io::PrintWriter,
     os::OsFunction,
@@ -204,6 +204,27 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         self.call_function_extended(callable, args_tuple, kwargs)
     }
 
+    /// Executes `CallAttrExtended` opcode.
+    ///
+    /// Handles method calls with `*args` and/or `**kwargs` unpacking.
+    pub(super) fn exec_call_attr_extended(
+        &mut self,
+        name_id: StringId,
+        has_kwargs: bool,
+    ) -> Result<CallResult, RunError> {
+        // Pop kwargs dict if present
+        let kwargs = if has_kwargs { Some(self.pop()) } else { None };
+
+        // Pop args tuple
+        let args_tuple = self.pop();
+
+        // Pop the receiver object
+        let obj = self.pop();
+
+        // Unpack and call
+        self.call_attr_extended(obj, name_id, args_tuple, kwargs)
+    }
+
     // ========================================================================
     // Internal Call Helpers
     // ========================================================================
@@ -370,7 +391,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         kwargs: Option<Value>,
     ) -> Result<CallResult, RunError> {
         // Extract positional args from tuple
-        let copied_args = self.extract_args_tuple(&callable, &args_tuple, kwargs.as_ref())?;
+        let copied_args = self.extract_args_tuple(&args_tuple);
 
         // Increment refcounts for positional args
         for arg in &copied_args {
@@ -381,7 +402,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
         // Build ArgValues from positional args and optional kwargs
         let args = if let Some(kwargs_ref) = kwargs {
-            self.build_args_with_kwargs(copied_args, kwargs_ref, &callable, &args_tuple)?
+            self.build_args_with_kwargs(copied_args, kwargs_ref)?
         } else {
             Self::build_args_positional_only(copied_args)
         };
@@ -393,49 +414,72 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         self.call_function(callable, args)
     }
 
-    /// Extracts arguments from a tuple for `CallFunctionExtended`.
-    fn extract_args_tuple(
+    /// Calls a method with unpacked args tuple and optional kwargs dict.
+    ///
+    /// Used for `obj.method(*args)` and `obj.method(**kwargs)` style calls.
+    fn call_attr_extended(
         &mut self,
-        callable: &Value,
-        args_tuple: &Value,
-        kwargs: Option<&Value>,
-    ) -> Result<Vec<Value>, RunError> {
-        if let Value::Ref(id) = args_tuple
-            && let HeapData::Tuple(tuple) = self.heap.get(*id)
-        {
-            return Ok(tuple.as_vec().iter().map(Value::copy_for_extend).collect());
+        obj: Value,
+        name_id: StringId,
+        args_tuple: Value,
+        kwargs: Option<Value>,
+    ) -> Result<CallResult, RunError> {
+        // Extract positional args from tuple
+        let copied_args = self.extract_args_tuple_for_attr(&args_tuple);
+
+        // Increment refcounts for positional args
+        for arg in &copied_args {
+            if let Value::Ref(id) = arg {
+                self.heap.inc_ref(*id);
+            }
         }
-        // Error case - clean up and return error
-        callable.clone_immediate().drop_with_heap(self.heap);
-        args_tuple.clone_immediate().drop_with_heap(self.heap);
-        if let Some(k) = kwargs {
-            k.clone_immediate().drop_with_heap(self.heap);
-        }
-        Err(RunError::internal("CallFunctionEx: expected tuple for args"))
+
+        // Build ArgValues from positional args and optional kwargs
+        let args = if let Some(kwargs_ref) = kwargs {
+            self.build_args_with_kwargs_for_attr(copied_args, kwargs_ref)?
+        } else {
+            Self::build_args_positional_only(copied_args)
+        };
+
+        // Clean up the args tuple ref (we cloned the contents)
+        args_tuple.drop_with_heap(self.heap);
+
+        // Call the method
+        self.call_attr(obj, name_id, args)
+    }
+
+    /// Extracts arguments from a tuple for `CallFunctionExtended`.
+    ///
+    /// # Panics
+    /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
+    /// the compiler always emits `ListToTuple` before `CallFunctionExtended`.
+    fn extract_args_tuple(&mut self, args_tuple: &Value) -> Vec<Value> {
+        let Value::Ref(id) = args_tuple else {
+            unreachable!("CallFunctionExtended: args_tuple must be a Ref")
+        };
+        let HeapData::Tuple(tuple) = self.heap.get(*id) else {
+            unreachable!("CallFunctionExtended: args_tuple must be a Tuple")
+        };
+        tuple.as_vec().iter().map(Value::copy_for_extend).collect()
     }
 
     /// Builds `ArgValues` with kwargs for `CallFunctionExtended`.
-    fn build_args_with_kwargs(
-        &mut self,
-        copied_args: Vec<Value>,
-        kwargs_ref: Value,
-        callable: &Value,
-        args_tuple: &Value,
-    ) -> Result<ArgValues, RunError> {
+    ///
+    /// # Panics
+    /// Panics if `kwargs_ref` is not a dict. This indicates a compiler bug since
+    /// the compiler always emits `BuildDict` before `CallFunctionExtended` with kwargs.
+    fn build_args_with_kwargs(&mut self, copied_args: Vec<Value>, kwargs_ref: Value) -> Result<ArgValues, RunError> {
         // Extract kwargs dict items
-        let copied_kwargs: Vec<(Value, Value)> = if let Value::Ref(id) = &kwargs_ref {
-            if let HeapData::Dict(dict) = self.heap.get(*id) {
-                dict.iter()
-                    .map(|(k, v)| (Value::copy_for_extend(k), Value::copy_for_extend(v)))
-                    .collect()
-            } else {
-                self.cleanup_call_ex_error(callable, args_tuple, &kwargs_ref, copied_args);
-                return Err(RunError::internal("CallFunctionEx: expected dict for kwargs"));
-            }
-        } else {
-            self.cleanup_call_ex_error(callable, args_tuple, &kwargs_ref, copied_args);
-            return Err(RunError::internal("CallFunctionEx: expected dict ref for kwargs"));
+        let Value::Ref(id) = &kwargs_ref else {
+            unreachable!("CallFunctionExtended: kwargs must be a Ref")
         };
+        let HeapData::Dict(dict) = self.heap.get(*id) else {
+            unreachable!("CallFunctionExtended: kwargs must be a Dict")
+        };
+        let copied_kwargs: Vec<(Value, Value)> = dict
+            .iter()
+            .map(|(k, v)| (Value::copy_for_extend(k), Value::copy_for_extend(v)))
+            .collect();
 
         // Increment refcounts for kwargs
         for (k, v) in &copied_kwargs {
@@ -487,20 +531,75 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         }
     }
 
-    /// Cleans up values when `CallFunctionExtended` encounters an error.
-    fn cleanup_call_ex_error(
+    /// Extracts arguments from a tuple for `CallAttrExtended`.
+    ///
+    /// # Panics
+    /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
+    /// the compiler always emits `ListToTuple` before `CallAttrExtended`.
+    fn extract_args_tuple_for_attr(&mut self, args_tuple: &Value) -> Vec<Value> {
+        let Value::Ref(id) = args_tuple else {
+            unreachable!("CallAttrExtended: args_tuple must be a Ref")
+        };
+        let HeapData::Tuple(tuple) = self.heap.get(*id) else {
+            unreachable!("CallAttrExtended: args_tuple must be a Tuple")
+        };
+        tuple.as_vec().iter().map(Value::copy_for_extend).collect()
+    }
+
+    /// Builds `ArgValues` with kwargs for `CallAttrExtended`.
+    ///
+    /// # Panics
+    /// Panics if `kwargs_ref` is not a dict. This indicates a compiler bug since
+    /// the compiler always emits `BuildDict` before `CallAttrExtended` with kwargs.
+    fn build_args_with_kwargs_for_attr(
         &mut self,
-        callable: &Value,
-        args_tuple: &Value,
-        kwargs_ref: &Value,
         copied_args: Vec<Value>,
-    ) {
-        callable.clone_immediate().drop_with_heap(self.heap);
-        args_tuple.clone_immediate().drop_with_heap(self.heap);
-        kwargs_ref.clone_immediate().drop_with_heap(self.heap);
-        for arg in copied_args {
-            arg.drop_with_heap(self.heap);
+        kwargs_ref: Value,
+    ) -> Result<ArgValues, RunError> {
+        // Extract kwargs dict items
+        let Value::Ref(id) = &kwargs_ref else {
+            unreachable!("CallAttrExtended: kwargs must be a Ref")
+        };
+        let HeapData::Dict(dict) = self.heap.get(*id) else {
+            unreachable!("CallAttrExtended: kwargs must be a Dict")
+        };
+        let copied_kwargs: Vec<(Value, Value)> = dict
+            .iter()
+            .map(|(k, v)| (Value::copy_for_extend(k), Value::copy_for_extend(v)))
+            .collect();
+
+        // Increment refcounts for kwargs
+        for (k, v) in &copied_kwargs {
+            if let Value::Ref(id) = k {
+                self.heap.inc_ref(*id);
+            }
+            if let Value::Ref(id) = v {
+                self.heap.inc_ref(*id);
+            }
         }
+
+        // Clean up the kwargs dict ref
+        kwargs_ref.drop_with_heap(self.heap);
+
+        let kwargs_values = if copied_kwargs.is_empty() {
+            KwargsValues::Empty
+        } else {
+            let kwargs_dict = Dict::from_pairs(copied_kwargs, self.heap, self.interns)?;
+            KwargsValues::Dict(kwargs_dict)
+        };
+
+        Ok(
+            if copied_args.is_empty() && matches!(kwargs_values, KwargsValues::Empty) {
+                ArgValues::Empty
+            } else if copied_args.is_empty() {
+                ArgValues::Kwargs(kwargs_values)
+            } else {
+                ArgValues::ArgsKargs {
+                    args: copied_args,
+                    kwargs: kwargs_values,
+                }
+            },
+        )
     }
 
     // ========================================================================

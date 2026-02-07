@@ -6,12 +6,13 @@ use std::fmt::Write;
 use std::{borrow::Cow, fmt};
 
 use ahash::AHashSet;
+use smallvec::smallvec;
 
 use super::{Bytes, MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -228,12 +229,8 @@ impl PyTrait for Str {
             return self.getitem_slice(&slice, heap);
         }
 
-        // Extract integer index, accepting both Int and Bool (True=1, False=0)
-        let index = match key {
-            Value::Int(i) => *i,
-            Value::Bool(b) => i64::from(*b),
-            _ => return Err(ExcType::type_error_indices(Type::Str, key.py_type(heap))),
-        };
+        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
+        let index = key.as_index(heap, Type::Str)?;
 
         // Use single-pass indexing to avoid Vec<char> allocation
         let c = get_char_at_index(&self.0, index).ok_or_else(ExcType::str_index_error)?;
@@ -1806,9 +1803,10 @@ fn str_partition(
     let sep_val = allocate_string(sep_found.to_owned(), heap)?;
     let after_val = allocate_string(after.to_owned(), heap)?;
 
-    let tuple = crate::types::Tuple::new(vec![before_val, sep_val, after_val]);
-    let heap_id = heap.allocate(HeapData::Tuple(tuple))?;
-    Ok(Value::Ref(heap_id))
+    Ok(crate::types::allocate_tuple(
+        smallvec![before_val, sep_val, after_val],
+        heap,
+    )?)
 }
 
 /// Implements Python's `str.rpartition(sep)` method.
@@ -1838,9 +1836,10 @@ fn str_rpartition(
     let sep_val = allocate_string(sep_found.to_owned(), heap)?;
     let after_val = allocate_string(after.to_owned(), heap)?;
 
-    let tuple = crate::types::Tuple::new(vec![before_val, sep_val, after_val]);
-    let heap_id = heap.allocate(HeapData::Tuple(tuple))?;
-    Ok(Value::Ref(heap_id))
+    Ok(crate::types::allocate_tuple(
+        smallvec![before_val, sep_val, after_val],
+        heap,
+    )?)
 }
 
 // =============================================================================

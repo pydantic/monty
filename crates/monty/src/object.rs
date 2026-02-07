@@ -15,13 +15,12 @@ use crate::{
     intern::Interns,
     resource::{ResourceError, ResourceTracker},
     types::{
-        LongInt, NamedTuple, Path, PyTrait, Type,
+        LongInt, NamedTuple, Path, PyTrait, Type, allocate_tuple,
         bytes::{Bytes, bytes_repr},
         dict::Dict,
         list::List,
         set::{FrozenSet, Set},
         str::{Str, StringRepr, string_repr_fmt},
-        tuple::Tuple,
     },
     value::{EitherStr, Value},
 };
@@ -216,11 +215,11 @@ impl MontyObject {
                 Ok(Value::Ref(heap.allocate(HeapData::List(List::new(values)))?))
             }
             Self::Tuple(items) => {
-                let values: Vec<Value> = items
+                let values = items
                     .into_iter()
                     .map(|item| item.to_value(heap, interns))
                     .collect::<Result<_, _>>()?;
-                Ok(Value::Ref(heap.allocate(HeapData::Tuple(Tuple::new(values)))?))
+                allocate_tuple(values, heap).map_err(InvalidInputError::Resource)
             }
             Self::NamedTuple {
                 type_name,

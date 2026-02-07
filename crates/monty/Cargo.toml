@@ -29,6 +29,7 @@ hashbrown = "0.16.1"
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 num-integer = { workspace = true }
+smallvec = { version = "1.13", features = ["serde"] }
 
 [features]
 # ref-count-return changes behavior to return information on reference counts to check they're correct

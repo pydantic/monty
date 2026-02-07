@@ -4,10 +4,12 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use smallvec::smallvec;
 use strum::{Display, EnumString, IntoStaticStr};
 
 use crate::{
     args::ArgValues,
+    defer_drop,
     exception_public::{MontyException, StackFrame},
     fstring::FormatError,
     heap::{Heap, HeapData},
@@ -15,7 +17,7 @@ use crate::{
     parse::CodeRange,
     resource::ResourceTracker,
     types::{
-        AttrCallResult, PyTrait, Str, Tuple, Type,
+        AttrCallResult, PyTrait, Str, Type, allocate_tuple,
         str::{StringRepr, string_repr_fmt},
     },
     value::Value,
@@ -161,38 +163,29 @@ impl ExcType {
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
+        defer_drop!(args, heap);
         let exc = match args {
             ArgValues::Empty => Ok(SimpleException::new_none(self)),
-            ArgValues::One(value) => {
-                // Borrow the value to inspect its type, then clean up with drop_with_heap
-                let result = match &value {
-                    Value::InternString(string_id) => {
-                        Ok(SimpleException::new_msg(self, interns.get_str(*string_id).to_owned()))
+            ArgValues::One(value) => match value {
+                Value::InternString(string_id) => {
+                    Ok(SimpleException::new_msg(self, interns.get_str(*string_id).to_owned()))
+                }
+                Value::Ref(heap_id) => {
+                    if let HeapData::Str(s) = heap.get(*heap_id) {
+                        Ok(SimpleException::new_msg(self, s.as_str().to_owned()))
+                    } else {
+                        Err(RunError::internal(
+                            "exceptions can only be called with zero or one string argument",
+                        ))
                     }
-                    Value::Ref(heap_id) => {
-                        if let HeapData::Str(s) = heap.get(*heap_id) {
-                            Ok(SimpleException::new_msg(self, s.as_str().to_owned()))
-                        } else {
-                            Err(RunError::internal(
-                                "exceptions can only be called with zero or one string argument",
-                            ))
-                        }
-                    }
-                    _ => Err(RunError::internal(
-                        "exceptions can only be called with zero or one string argument",
-                    )),
-                };
-                // Properly clean up the value using drop_with_heap which handles ref-count-panic
-                value.drop_with_heap(heap);
-                result
-            }
-            _ => {
-                // Clean up any args before returning error
-                args.drop_with_heap(heap);
-                Err(RunError::internal(
+                }
+                _ => Err(RunError::internal(
                     "exceptions can only be called with zero or one string argument",
-                ))
-            }
+                )),
+            },
+            _ => Err(RunError::internal(
+                "exceptions can only be called with zero or one string argument",
+            )),
         }?;
         let heap_id = heap.allocate(HeapData::Exception(exc))?;
         Ok(Value::Ref(heap_id))
@@ -821,6 +814,20 @@ impl ExcType {
         )
     }
 
+    /// Creates a ModuleNotFoundError for when a module cannot be found.
+    ///
+    /// Matches CPython's format: `ModuleNotFoundError: No module named 'name'`
+    /// Sets `hide_caret: true` because CPython doesn't show carets for module not found errors.
+    #[must_use]
+    pub(crate) fn module_not_found_error(module_name: &str) -> RunError {
+        let exc = SimpleException::new_msg(Self::ModuleNotFoundError, format!("No module named '{module_name}'"));
+        RunError::Exc(ExceptionRaise {
+            exc,
+            frame: None,
+            hide_caret: true, // CPython doesn't show carets for module not found errors
+        })
+    }
+
     /// Creates a NotImplementedError for an unimplemented Python feature.
     ///
     /// Used during parsing when encountering Python syntax that Monty doesn't yet support.
@@ -844,6 +851,14 @@ impl ExcType {
     #[must_use]
     pub(crate) fn overflow_repeat_count() -> SimpleException {
         SimpleException::new_msg(Self::OverflowError, "cannot fit 'int' into an index-sized integer")
+    }
+
+    /// Creates an IndexError for when an integer index is too large to fit in i64.
+    ///
+    /// Matches CPython's format: `IndexError: cannot fit 'int' into an index-sized integer`
+    #[must_use]
+    pub(crate) fn index_error_int_too_large() -> RunError {
+        SimpleException::new_msg(Self::IndexError, "cannot fit 'int' into an index-sized integer").into()
     }
 
     /// Creates an ImportError for when a name cannot be imported from a module.
@@ -1199,12 +1214,11 @@ impl SimpleException {
             // Construct tuple with 0 or 1 elements based on whether arg exists
             let elements = if let Some(arg_str) = &self.arg {
                 let str_id = heap.allocate(HeapData::Str(Str::from(arg_str.clone())))?;
-                vec![Value::Ref(str_id)]
+                smallvec![Value::Ref(str_id)]
             } else {
-                vec![]
+                smallvec![]
             };
-            let tuple_id = heap.allocate(HeapData::Tuple(Tuple::new(elements)))?;
-            Ok(Some(AttrCallResult::Value(Value::Ref(tuple_id))))
+            Ok(Some(AttrCallResult::Value(allocate_tuple(elements, heap)?)))
         } else {
             Ok(None)
         }

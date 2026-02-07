@@ -1,4 +1,7 @@
 #![doc = include_str!("../../../README.md")]
+// first to include defer_drop macro
+mod heap;
+
 mod args;
 mod asyncio;
 mod builtins;
@@ -8,7 +11,6 @@ mod exception_public;
 mod expressions;
 mod fstring;
 mod function;
-mod heap;
 mod intern;
 mod io;
 mod modules;

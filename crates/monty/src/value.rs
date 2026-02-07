@@ -902,6 +902,28 @@ impl PyTrait for Value {
                 Ok(Some(Self::Ref(heap.allocate(HeapData::Bytes(result.into()))?)))
             }
 
+            // String repetition with LongInt: "ab" * bigint or bigint * "ab"
+            (Self::InternString(s), Self::Ref(id)) | (Self::Ref(id), Self::InternString(s)) => {
+                if let HeapData::LongInt(li) = heap.get(*id) {
+                    let count = longint_to_repeat_count(li)?;
+                    let result = interns.get_str(*s).repeat(count);
+                    Ok(Some(Self::Ref(heap.allocate(HeapData::Str(result.into()))?)))
+                } else {
+                    Ok(None)
+                }
+            }
+
+            // Bytes repetition with LongInt: b"ab" * bigint or bigint * b"ab"
+            (Self::InternBytes(b), Self::Ref(id)) | (Self::Ref(id), Self::InternBytes(b)) => {
+                if let HeapData::LongInt(li) = heap.get(*id) {
+                    let count = longint_to_repeat_count(li)?;
+                    let result: Vec<u8> = interns.get_bytes(*b).repeat(count);
+                    Ok(Some(Self::Ref(heap.allocate(HeapData::Bytes(result.into()))?)))
+                } else {
+                    Ok(None)
+                }
+            }
+
             _ => Ok(None),
         }
     }
@@ -1794,12 +1816,55 @@ impl Value {
         }
     }
 
+    /// Extracts an integer value from the Value.
+    ///
+    /// Accepts `Int` and `LongInt` (if it fits in i64). Returns a `TypeError` for other types
+    /// and an `OverflowError` if the `LongInt` value is too large.
+    ///
+    /// Note: The LongInt-to-i64 conversion path is defensive code. In normal execution,
+    /// heap-allocated `LongInt` values always exceed i64 range because `LongInt::into_value()`
+    /// automatically demotes i64-fitting values to `Value::Int`. However, this path could be
+    /// reached via deserialization of crafted snapshot data.
     pub fn as_int(&self, heap: &Heap<impl ResourceTracker>) -> RunResult<i64> {
-        if let Self::Int(i) = self {
-            Ok(*i)
-        } else {
-            let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type(heap));
-            Err(SimpleException::new_msg(ExcType::TypeError, msg).into())
+        match self {
+            Self::Int(i) => Ok(*i),
+            Self::Ref(heap_id) => {
+                if let HeapData::LongInt(li) = heap.get(*heap_id) {
+                    li.to_i64().ok_or_else(ExcType::overflow_shift_count)
+                } else {
+                    let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type(heap));
+                    Err(SimpleException::new_msg(ExcType::TypeError, msg).into())
+                }
+            }
+            _ => {
+                let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type(heap));
+                Err(SimpleException::new_msg(ExcType::TypeError, msg).into())
+            }
+        }
+    }
+
+    /// Extracts an index value for sequence operations.
+    ///
+    /// Accepts `Int`, `Bool` (True=1, False=0), and `LongInt` (if it fits in i64).
+    /// Returns a `TypeError` for other types with the container type name included.
+    /// Returns an `IndexError` if the `LongInt` value is too large to use as an index.
+    ///
+    /// Note: The LongInt-to-i64 conversion path is defensive code. In normal execution,
+    /// heap-allocated `LongInt` values always exceed i64 range because `LongInt::into_value()`
+    /// automatically demotes i64-fitting values to `Value::Int`. However, this path could be
+    /// reached via deserialization of crafted snapshot data.
+    pub fn as_index(&self, heap: &Heap<impl ResourceTracker>, container_type: Type) -> RunResult<i64> {
+        match self {
+            Self::Int(i) => Ok(*i),
+            Self::Bool(b) => Ok(i64::from(*b)),
+            Self::Ref(heap_id) => {
+                if let HeapData::LongInt(li) = heap.get(*heap_id) {
+                    li.to_i64().ok_or_else(ExcType::index_error_int_too_large)
+                } else {
+                    Err(ExcType::type_error_indices(container_type, self.py_type(heap)))
+                }
+            }
+            _ => Err(ExcType::type_error_indices(container_type, self.py_type(heap))),
         }
     }
 
@@ -1922,6 +1987,7 @@ impl Value {
     /// This method MUST be called before overwriting a namespace slot or discarding
     /// a value to prevent memory leaks.
     #[cfg(not(feature = "ref-count-panic"))]
+    #[inline]
     pub fn drop_with_heap(self, heap: &mut Heap<impl ResourceTracker>) {
         if let Self::Ref(id) = self {
             heap.dec_ref(id);
@@ -2455,4 +2521,133 @@ fn bigint_pow(base: BigInt, exp: u64) -> BigInt {
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use num_bigint::BigInt;
+
+    use super::*;
+    use crate::resource::NoLimitTracker;
+
+    /// Creates a heap and directly allocates a LongInt with the given BigInt value.
+    ///
+    /// This bypasses `LongInt::into_value()` which would demote i64-fitting values.
+    /// Used to test defensive code paths that handle LongInt-as-index scenarios.
+    fn create_heap_with_longint(value: BigInt) -> (Heap<NoLimitTracker>, HeapId) {
+        let mut heap = Heap::new(16, NoLimitTracker);
+        let long_int = LongInt::new(value);
+        let heap_id = heap.allocate(HeapData::LongInt(long_int)).unwrap();
+        (heap, heap_id)
+    }
+
+    /// Tests that `as_index()` correctly handles a LongInt containing an i64-fitting value.
+    ///
+    /// This tests a defensive code path that's normally unreachable because
+    /// `LongInt::into_value()` demotes i64-fitting values to `Value::Int`.
+    /// However, this path could be reached via deserialization of crafted data.
+    #[test]
+    fn as_index_longint_fits_in_i64() {
+        let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(42));
+        let value = Value::Ref(heap_id);
+
+        let result = value.as_index(&heap, Type::List);
+        assert_eq!(result.unwrap(), 42);
+        value.drop_with_heap(&mut heap);
+    }
+
+    /// Tests that `as_index()` correctly handles a negative LongInt that fits in i64.
+    #[test]
+    fn as_index_longint_negative_fits_in_i64() {
+        let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(-100));
+        let value = Value::Ref(heap_id);
+
+        let result = value.as_index(&heap, Type::List);
+        assert_eq!(result.unwrap(), -100);
+        value.drop_with_heap(&mut heap);
+    }
+
+    /// Tests that `as_index()` returns IndexError for LongInt values too large for i64.
+    #[test]
+    fn as_index_longint_too_large() {
+        // 2^100 is way larger than i64::MAX
+        let big_value = BigInt::from(2).pow(100);
+        let (mut heap, heap_id) = create_heap_with_longint(big_value);
+        let value = Value::Ref(heap_id);
+
+        let result = value.as_index(&heap, Type::List);
+        assert!(result.is_err());
+        value.drop_with_heap(&mut heap);
+    }
+
+    /// Tests that `as_int()` correctly handles a LongInt containing an i64-fitting value.
+    ///
+    /// Similar to `as_index`, this tests a defensive code path normally unreachable.
+    #[test]
+    fn as_int_longint_fits_in_i64() {
+        let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(12345));
+        let value = Value::Ref(heap_id);
+
+        let result = value.as_int(&heap);
+        assert_eq!(result.unwrap(), 12345);
+        value.drop_with_heap(&mut heap);
+    }
+
+    /// Tests that `as_int()` returns an error for LongInt values too large for i64.
+    #[test]
+    fn as_int_longint_too_large() {
+        let big_value = BigInt::from(2).pow(100);
+        let (mut heap, heap_id) = create_heap_with_longint(big_value);
+        let value = Value::Ref(heap_id);
+
+        let result = value.as_int(&heap);
+        assert!(result.is_err());
+        value.drop_with_heap(&mut heap);
+    }
+
+    /// Tests boundary values: i64::MAX as a LongInt.
+    #[test]
+    fn as_index_longint_at_i64_max() {
+        let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(i64::MAX));
+        let value = Value::Ref(heap_id);
+
+        let result = value.as_index(&heap, Type::List);
+        assert_eq!(result.unwrap(), i64::MAX);
+        value.drop_with_heap(&mut heap);
+    }
+
+    /// Tests boundary values: i64::MIN as a LongInt.
+    #[test]
+    fn as_index_longint_at_i64_min() {
+        let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(i64::MIN));
+        let value = Value::Ref(heap_id);
+
+        let result = value.as_index(&heap, Type::List);
+        assert_eq!(result.unwrap(), i64::MIN);
+        value.drop_with_heap(&mut heap);
+    }
+
+    /// Tests boundary values: i64::MAX + 1 as a LongInt (should fail).
+    #[test]
+    fn as_index_longint_just_over_i64_max() {
+        let big_value = BigInt::from(i64::MAX) + BigInt::from(1);
+        let (mut heap, heap_id) = create_heap_with_longint(big_value);
+        let value = Value::Ref(heap_id);
+
+        let result = value.as_index(&heap, Type::List);
+        assert!(result.is_err());
+        value.drop_with_heap(&mut heap);
+    }
+
+    /// Tests boundary values: i64::MIN - 1 as a LongInt (should fail).
+    #[test]
+    fn as_index_longint_just_under_i64_min() {
+        let big_value = BigInt::from(i64::MIN) - BigInt::from(1);
+        let (mut heap, heap_id) = create_heap_with_longint(big_value);
+        let value = Value::Ref(heap_id);
+
+        let result = value.as_index(&heap, Type::List);
+        assert!(result.is_err());
+        value.drop_with_heap(&mut heap);
+    }
 }

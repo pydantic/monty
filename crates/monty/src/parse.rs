@@ -23,6 +23,17 @@ use crate::{
     value::EitherStr,
 };
 
+/// Maximum nesting depth for AST structures during parsing.
+/// Matches CPython's limit of ~200 for nested parentheses.
+/// This prevents stack overflow from deeply nested structures like `((((x,),),),)`.
+#[cfg(not(debug_assertions))]
+pub const MAX_NESTING_DEPTH: u16 = 200;
+/// In debug builds, we use a lower limit because stack frames are much larger
+/// (no inlining, debug info, etc.). The limit is set conservatively to prevent
+/// stack overflow while still catching the error before the recursion limit.
+#[cfg(debug_assertions)]
+pub const MAX_NESTING_DEPTH: u16 = 35;
+
 /// A parameter in a function signature with optional default value.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ParsedParam {
@@ -121,17 +132,13 @@ pub struct ParseResult {
 
 pub(crate) fn parse(code: &str, filename: &str) -> Result<ParseResult, ParseError> {
     let mut parser = Parser::new(code, filename);
-    match parse_module(code) {
-        Ok(parsed) => {
-            let module = parsed.into_syntax();
-            let nodes = parser.parse_statements(module.body)?;
-            Ok(ParseResult {
-                nodes,
-                interner: parser.interner,
-            })
-        }
-        Err(e) => Err(ParseError::syntax(e.to_string(), parser.convert_range(e.range()))),
-    }
+    let parsed = parse_module(code).map_err(|e| ParseError::syntax(e.to_string(), parser.convert_range(e.range())))?;
+    let module = parsed.into_syntax();
+    let nodes = parser.parse_statements(module.body)?;
+    Ok(ParseResult {
+        nodes,
+        interner: parser.interner,
+    })
 }
 
 /// Parser for converting ruff AST to Monty's intermediate ParseNode representation.
@@ -145,6 +152,10 @@ pub struct Parser<'a> {
     filename_id: StringId,
     /// String interner for names (variables, functions, etc).
     pub interner: InternerBuilder,
+    /// Remaining nesting depth budget for recursive structures.
+    /// Starts at MAX_NESTING_DEPTH and decrements on each nested level.
+    /// When it reaches zero, we return a "too many nested parentheses" error.
+    depth_remaining: u16,
 }
 
 impl<'a> Parser<'a> {
@@ -163,6 +174,7 @@ impl<'a> Parser<'a> {
             code,
             filename_id,
             interner,
+            depth_remaining: MAX_NESTING_DEPTH,
         }
     }
 
@@ -207,6 +219,13 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_statement(&mut self, statement: Stmt) -> Result<ParseNode, ParseError> {
+        self.decr_depth_remaining(|| statement.range())?;
+        let result = self.parse_statement_impl(statement);
+        self.depth_remaining += 1;
+        result
+    }
+
+    fn parse_statement_impl(&mut self, statement: Stmt) -> Result<ParseNode, ParseError> {
         match statement {
             Stmt::FunctionDef(function) => {
                 let params = &function.parameters;
@@ -530,7 +549,18 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parses an expression from the ruff AST into Monty's ExprLoc representation.
+    ///
+    /// Includes depth tracking to prevent stack overflow from deeply nested structures.
+    /// Matches CPython's limit of 200 for nested parentheses.
     fn parse_expression(&mut self, expression: AstExpr) -> Result<ExprLoc, ParseError> {
+        self.decr_depth_remaining(|| expression.range())?;
+        let result = self.parse_expression_impl(expression);
+        self.depth_remaining += 1;
+        result
+    }
+
+    fn parse_expression_impl(&mut self, expression: AstExpr) -> Result<ExprLoc, ParseError> {
         match expression {
             AstExpr::BoolOp(ast::ExprBoolOp { op, values, range, .. }) => {
                 // Handle chained boolean operations like `a and b and c` by right-folding
@@ -1052,7 +1082,15 @@ impl<'a> Parser<'a> {
     /// Parses an unpack target - either a single identifier or a nested tuple.
     ///
     /// Handles patterns like `a` (single variable), `a, b` (flat tuple), or `(a, b), c` (nested).
+    /// Includes depth tracking to prevent stack overflow from deeply nested structures.
     fn parse_unpack_target(&mut self, ast: AstExpr) -> Result<UnpackTarget, ParseError> {
+        self.decr_depth_remaining(|| ast.range())?;
+        let result = self.parse_unpack_target_impl(ast);
+        self.depth_remaining += 1;
+        result
+    }
+
+    fn parse_unpack_target_impl(&mut self, ast: AstExpr) -> Result<UnpackTarget, ParseError> {
         match ast {
             AstExpr::Name(ast::ExprName { id, range, .. }) => Ok(UnpackTarget::Name(self.identifier(&id, range))),
             AstExpr::Tuple(ast::ExprTuple { elts, range, .. }) => {
@@ -1326,6 +1364,18 @@ impl<'a> Parser<'a> {
         // Content after the last newline (file without trailing newline)
         // line_ends.len() gives the correct 0-indexed line number
         (self.line_ends.len(), line_start, None)
+    }
+
+    /// Decrements the depth remaining for nested parentheses.
+    /// Returns an error if the depth remaining goes to zero.
+    fn decr_depth_remaining(&mut self, get_range: impl FnOnce() -> TextRange) -> Result<(), ParseError> {
+        if let Some(depth_remaining) = self.depth_remaining.checked_sub(1) {
+            self.depth_remaining = depth_remaining;
+            Ok(())
+        } else {
+            let position = self.convert_range(get_range());
+            Err(ParseError::syntax("too many nested parentheses", position))
+        }
     }
 }
 

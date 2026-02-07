@@ -47,7 +47,7 @@ pub fn builtin_sorted(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, in
 
     let iterable = positional.next().unwrap();
     let mut iter = MontyIter::new(iterable, heap, interns)?;
-    let mut items = iter.collect(heap, interns)?;
+    let mut items: Vec<_> = iter.collect(heap, interns)?;
     iter.drop_with_heap(heap);
 
     // Sort using insertion sort (simple, stable, works with py_cmp)

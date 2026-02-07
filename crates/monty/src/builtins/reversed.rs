@@ -19,7 +19,7 @@ pub fn builtin_reversed(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, 
 
     // Collect all items
     let mut iter = MontyIter::new(value, heap, interns)?;
-    let mut items = iter.collect(heap, interns)?;
+    let mut items: Vec<_> = iter.collect(heap, interns)?;
     iter.drop_with_heap(heap);
 
     // Reverse in place

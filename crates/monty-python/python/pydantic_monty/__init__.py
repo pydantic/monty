@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Literal, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Literal, TypedDict, TypeVar, cast
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -55,8 +55,12 @@ async def run_monty_async(
     external_functions: dict[str, Callable[..., Any]] | None = None,
     limits: ResourceLimits | None = None,
     print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+    os: AbstractOS | None = None,
 ) -> Any:
-    """Run a Monty script with async external functions.
+    """Run a Monty script with async external functions and optional OS access.
+
+    This function provides a convenient way to run Monty code that uses both async
+    external functions and filesystem operations via OSAccess.
 
     Args:
         monty_runner: The Monty runner to use.
@@ -64,6 +68,7 @@ async def run_monty_async(
         inputs: A dictionary of inputs to use.
         limits: The resource limits to use.
         print_callback: A callback to use for printing.
+        os: Optional OS access handler for filesystem operations (e.g., OSAccess instance).
 
     Returns:
         The output of the Monty script.
@@ -91,7 +96,24 @@ async def run_monty_async(
                 if isinstance(progress, MontyComplete):
                     return progress.output
                 elif isinstance(progress, MontySnapshot):
-                    if ext_function := external_functions.get(progress.function_name):
+                    # Handle OS function calls (e.g., Path.read_text, Path.exists)
+                    if progress.is_os_function:
+                        # When is_os_function is True, function_name is always an OsFunction
+                        os_func_name = cast(OsFunction, progress.function_name)
+                        if os is None:
+                            e = NotImplementedError(
+                                f'OS function {progress.function_name} called but no os handler provided'
+                            )
+                            progress = await run_in_pool(partial(progress.resume, exception=e))
+                        else:
+                            try:
+                                result = os(os_func_name, progress.args, progress.kwargs)
+                            except Exception as exc:
+                                progress = await run_in_pool(partial(progress.resume, exception=exc))
+                            else:
+                                progress = await run_in_pool(partial(progress.resume, return_value=result))
+                    # Handle external function calls
+                    elif ext_function := external_functions.get(progress.function_name):
                         try:
                             result = ext_function(*progress.args, **progress.kwargs)
                         except Exception as exc:

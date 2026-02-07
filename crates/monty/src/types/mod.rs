@@ -38,5 +38,5 @@ pub(crate) use range::Range;
 pub(crate) use set::{FrozenSet, Set};
 pub(crate) use slice::Slice;
 pub(crate) use str::Str;
-pub(crate) use tuple::Tuple;
+pub(crate) use tuple::{Tuple, allocate_tuple};
 pub(crate) use r#type::Type;

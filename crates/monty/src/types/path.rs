@@ -7,15 +7,16 @@
 use std::fmt::Write;
 
 use ahash::AHashSet;
+use smallvec::SmallVec;
 
 use crate::{
     args::{ArgValues, KwargsValues},
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings, StringId},
     os::OsFunction,
     resource::ResourceTracker,
-    types::{AttrCallResult, PyTrait, Str, Type},
+    types::{AttrCallResult, PyTrait, Str, Type, allocate_tuple},
     value::{EitherStr, Value},
 };
 
@@ -441,56 +442,45 @@ impl PyTrait for Path {
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
+        let mut args_guard = HeapGuard::new(args, heap);
+        let (args, heap) = args_guard.as_parts();
+
         let Some(method) = attr.static_string() else {
-            args.drop_with_heap(heap);
             return Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)));
         };
 
         match method {
             // Pure methods (no I/O)
-            StaticStrings::IsAbsolute => {
-                args.drop_with_heap(heap);
-                Ok(Value::Bool(self.is_absolute()))
-            }
+            StaticStrings::IsAbsolute => Ok(Value::Bool(self.is_absolute())),
             StaticStrings::Joinpath => match args {
                 ArgValues::Empty => Err(ExcType::type_error_at_least("joinpath", 1, 0)),
                 ArgValues::One(val) => {
-                    let other = extract_path_string(&val, heap, interns);
-                    val.drop_with_heap(heap);
+                    let other = extract_path_string(val, heap, interns);
                     let result = self.joinpath(&other?);
                     Ok(Value::Ref(heap.allocate(HeapData::Path(Self::new(result)))?))
                 }
                 ArgValues::Two(a, b) => {
-                    let a_str = extract_path_string(&a, heap, interns);
-                    let b_str = extract_path_string(&b, heap, interns);
-                    a.drop_with_heap(heap);
-                    b.drop_with_heap(heap);
+                    let a_str = extract_path_string(a, heap, interns);
+                    let b_str = extract_path_string(b, heap, interns);
                     let mut result = self.joinpath(&a_str?);
                     result = Self::new(result).joinpath(&b_str?);
                     Ok(Value::Ref(heap.allocate(HeapData::Path(Self::new(result)))?))
                 }
-                ArgValues::Kwargs(kwargs) => {
-                    kwargs.drop_with_heap(heap);
-                    Err(ExcType::type_error_no_kwargs("joinpath"))
-                }
+                ArgValues::Kwargs(_) => Err(ExcType::type_error_no_kwargs("joinpath")),
                 ArgValues::ArgsKargs { args: vals, kwargs } => {
                     if !kwargs.is_empty() {
-                        for v in vals {
-                            v.drop_with_heap(heap);
-                        }
-                        kwargs.drop_with_heap(heap);
                         return Err(ExcType::type_error_no_kwargs("joinpath"));
                     }
                     let mut result = self.path.clone();
                     for val in vals {
-                        let part = extract_path_string(&val, heap, interns);
-                        val.drop_with_heap(heap);
+                        let part = extract_path_string(val, heap, interns);
                         result = Self::new(result).joinpath(&part?);
                     }
                     Ok(Value::Ref(heap.allocate(HeapData::Path(Self::new(result)))?))
                 }
             },
             StaticStrings::WithName => {
+                let (args, heap) = args_guard.into_parts();
                 let name_val = args.get_one_arg("with_name", heap)?;
                 let name = extract_path_string(&name_val, heap, interns);
                 name_val.drop_with_heap(heap);
@@ -500,6 +490,7 @@ impl PyTrait for Path {
                 Ok(Value::Ref(heap.allocate(HeapData::Path(Self::new(result)))?))
             }
             StaticStrings::WithStem => {
+                let (args, heap) = args_guard.into_parts();
                 let stem_val = args.get_one_arg("with_stem", heap)?;
                 let stem = extract_path_string(&stem_val, heap, interns);
                 stem_val.drop_with_heap(heap);
@@ -509,6 +500,7 @@ impl PyTrait for Path {
                 Ok(Value::Ref(heap.allocate(HeapData::Path(Self::new(result)))?))
             }
             StaticStrings::WithSuffix => {
+                let (args, heap) = args_guard.into_parts();
                 let suffix_val = args.get_one_arg("with_suffix", heap)?;
                 let suffix = extract_path_string(&suffix_val, heap, interns);
                 suffix_val.drop_with_heap(heap);
@@ -519,15 +511,11 @@ impl PyTrait for Path {
             }
             StaticStrings::AsPosix | StaticStrings::Fspath => {
                 // Both as_posix() and __fspath__() return the string representation
-                args.drop_with_heap(heap);
                 Ok(Value::Ref(
                     heap.allocate(HeapData::Str(Str::new(self.as_posix().to_owned())))?,
                 ))
             }
-            _ => {
-                args.drop_with_heap(heap);
-                Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)))
-            }
+            _ => Err(ExcType::attribute_error(Type::Path, attr.as_str(interns))),
         }
     }
 
@@ -596,15 +584,13 @@ impl PyTrait for Path {
                 Value::Ref(heap.allocate(HeapData::List(List::new(items)))?)
             }
             Some(StaticStrings::Parts) => {
-                use crate::types::Tuple;
-
                 let parts = self.parts();
-                let mut items = Vec::with_capacity(parts.len());
+                let mut items = SmallVec::with_capacity(parts.len());
                 for part in parts {
                     let str_id = heap.allocate(HeapData::Str(Str::new(part.to_owned())))?;
                     items.push(Value::Ref(str_id));
                 }
-                Value::Ref(heap.allocate(HeapData::Tuple(Tuple::new(items)))?)
+                allocate_tuple(items, heap)?
             }
             // Method is_absolute() returns bool - handled as property since it takes no args
             // NOTE: For method calls, we'd need to return a bound method. For now, properties only.

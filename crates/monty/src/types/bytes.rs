@@ -68,12 +68,13 @@
 use std::fmt::Write;
 
 use ahash::AHashSet;
+use smallvec::smallvec;
 
 use super::{MontyIter, PyTrait, Type, str::Str};
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::{Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
     resource::ResourceTracker,
     types::List,
@@ -287,12 +288,8 @@ impl PyTrait for Bytes {
             return Ok(Value::Ref(heap_id));
         }
 
-        // Extract integer index, accepting both Int and Bool (True=1, False=0)
-        let index = match key {
-            Value::Int(i) => *i,
-            Value::Bool(b) => i64::from(*b),
-            _ => return Err(ExcType::type_error_indices(Type::Bytes, key.py_type(heap))),
-        };
+        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
+        let index = key.as_index(heap, Type::Bytes)?;
 
         // Use helper for byte indexing
         let byte = get_byte_at_index(&self.0, index).ok_or_else(ExcType::bytes_index_error)?;
@@ -1942,9 +1939,10 @@ fn bytes_partition(
     let sep_val = allocate_bytes(sep_found.to_vec(), heap)?;
     let after_val = allocate_bytes(after.to_vec(), heap)?;
 
-    let tuple = crate::types::Tuple::new(vec![before_val, sep_val, after_val]);
-    let heap_id = heap.allocate(HeapData::Tuple(tuple))?;
-    Ok(Value::Ref(heap_id))
+    Ok(crate::types::allocate_tuple(
+        smallvec![before_val, sep_val, after_val],
+        heap,
+    )?)
 }
 
 /// Implements Python's `bytes.rpartition(sep)` method.
@@ -1973,9 +1971,10 @@ fn bytes_rpartition(
     let sep_val = allocate_bytes(sep_found.to_vec(), heap)?;
     let after_val = allocate_bytes(after.to_vec(), heap)?;
 
-    let tuple = crate::types::Tuple::new(vec![before_val, sep_val, after_val]);
-    let heap_id = heap.allocate(HeapData::Tuple(tuple))?;
-    Ok(Value::Ref(heap_id))
+    Ok(crate::types::allocate_tuple(
+        smallvec![before_val, sep_val, after_val],
+        heap,
+    )?)
 }
 
 // =============================================================================

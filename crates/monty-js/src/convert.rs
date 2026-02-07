@@ -105,6 +105,7 @@ pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<JsMontyObject<
 fn create_js_null(env: &Env) -> Result<Unknown<'_>> {
     // Use raw napi to create null
     let mut result = std::ptr::null_mut();
+    // SAFETY: [DH] - all arguments are valid and result is valid on success
     unsafe {
         let status = sys::napi_get_null(env.raw(), &raw mut result);
         if status != sys::Status::napi_ok {
@@ -117,6 +118,7 @@ fn create_js_null(env: &Env) -> Result<Unknown<'_>> {
 /// Creates a JS boolean value.
 fn create_js_bool(b: bool, env: &Env) -> Result<Unknown<'_>> {
     let mut result = std::ptr::null_mut();
+    // SAFETY: [DH] - all arguments are valid and result is valid on success
     unsafe {
         let status = sys::napi_get_boolean(env.raw(), b, &raw mut result);
         if status != sys::Status::napi_ok {
@@ -213,6 +215,7 @@ fn call_method_2_args(
 ) -> Result<()> {
     let args = [arg1, arg2];
     let mut result = std::ptr::null_mut();
+    // SAFETY: [DH] - all arguments are valid and result is valid on success
     unsafe {
         let status = sys::napi_call_function(env, this, method, 2, args.as_ptr(), &raw mut result);
         if status != sys::Status::napi_ok {

@@ -2,7 +2,9 @@
 
 use super::VM;
 use crate::{
+    defer_drop,
     exception_private::{ExcType, RunError},
+    heap::HeapGuard,
     io::PrintWriter,
     resource::ResourceTracker,
     types::PyTrait,
@@ -15,28 +17,24 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// Uses lazy type capture: only calls `py_type()` in error paths to avoid
     /// overhead on the success path (99%+ of operations).
     pub(super) fn binary_add(&mut self) -> Result<(), RunError> {
-        let rhs = self.pop();
-        let lhs = self.pop();
-        let result = lhs.py_add(&rhs, self.heap, self.interns);
-        match result {
+        let this = self;
+
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+
+        match lhs.py_add(rhs, this.heap, this.interns) {
             Ok(Some(v)) => {
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
-                self.push(v);
+                this.push(v);
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(self.heap);
-                let rhs_type = rhs.py_type(self.heap);
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
+                let lhs_type = lhs.py_type(this.heap);
+                let rhs_type = rhs.py_type(this.heap);
                 Err(ExcType::binary_type_error("+", lhs_type, rhs_type))
             }
-            Err(e) => {
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
-                Err(e.into())
-            }
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -44,28 +42,24 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Uses lazy type capture: only calls `py_type()` in error paths.
     pub(super) fn binary_sub(&mut self) -> Result<(), RunError> {
-        let rhs = self.pop();
-        let lhs = self.pop();
-        let result = lhs.py_sub(&rhs, self.heap);
-        match result {
+        let this = self;
+
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+
+        match lhs.py_sub(rhs, this.heap) {
             Ok(Some(v)) => {
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
-                self.push(v);
+                this.push(v);
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(self.heap);
-                let rhs_type = rhs.py_type(self.heap);
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
+                let lhs_type = lhs.py_type(this.heap);
+                let rhs_type = rhs.py_type(this.heap);
                 Err(ExcType::binary_type_error("-", lhs_type, rhs_type))
             }
-            Err(e) => {
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
-                Err(e.into())
-            }
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -73,28 +67,24 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Uses lazy type capture: only calls `py_type()` in error paths.
     pub(super) fn binary_mult(&mut self) -> Result<(), RunError> {
-        let rhs = self.pop();
-        let lhs = self.pop();
-        let result = lhs.py_mult(&rhs, self.heap, self.interns);
-        match result {
+        let this = self;
+
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+
+        match lhs.py_mult(rhs, this.heap, this.interns) {
             Ok(Some(v)) => {
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
-                self.push(v);
+                this.push(v);
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(self.heap);
-                let rhs_type = rhs.py_type(self.heap);
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
+                let lhs_type = lhs.py_type(this.heap);
+                let rhs_type = rhs.py_type(this.heap);
                 Err(ExcType::binary_type_error("*", lhs_type, rhs_type))
             }
-            Err(e) => {
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
-                Err(e)
-            }
+            Err(e) => Err(e),
         }
     }
 
@@ -102,28 +92,24 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Uses lazy type capture: only calls `py_type()` in error paths.
     pub(super) fn binary_div(&mut self) -> Result<(), RunError> {
-        let rhs = self.pop();
-        let lhs = self.pop();
-        let result = lhs.py_div(&rhs, self.heap, self.interns);
-        match result {
+        let this = self;
+
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+
+        match lhs.py_div(rhs, this.heap, this.interns) {
             Ok(Some(v)) => {
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
-                self.push(v);
+                this.push(v);
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(self.heap);
-                let rhs_type = rhs.py_type(self.heap);
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
+                let lhs_type = lhs.py_type(this.heap);
+                let rhs_type = rhs.py_type(this.heap);
                 Err(ExcType::binary_type_error("/", lhs_type, rhs_type))
             }
-            Err(e) => {
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
-                Err(e)
-            }
+            Err(e) => Err(e),
         }
     }
 
@@ -131,28 +117,24 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Uses lazy type capture: only calls `py_type()` in error paths.
     pub(super) fn binary_floordiv(&mut self) -> Result<(), RunError> {
-        let rhs = self.pop();
-        let lhs = self.pop();
-        let result = lhs.py_floordiv(&rhs, self.heap);
-        match result {
+        let this = self;
+
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+
+        match lhs.py_floordiv(rhs, this.heap) {
             Ok(Some(v)) => {
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
-                self.push(v);
+                this.push(v);
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(self.heap);
-                let rhs_type = rhs.py_type(self.heap);
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
+                let lhs_type = lhs.py_type(this.heap);
+                let rhs_type = rhs.py_type(this.heap);
                 Err(ExcType::binary_type_error("//", lhs_type, rhs_type))
             }
-            Err(e) => {
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
-                Err(e)
-            }
+            Err(e) => Err(e),
         }
     }
 
@@ -160,57 +142,50 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Uses lazy type capture: only calls `py_type()` in error paths.
     pub(super) fn binary_mod(&mut self) -> Result<(), RunError> {
-        let rhs = self.pop();
-        let lhs = self.pop();
-        let result = lhs.py_mod(&rhs, self.heap);
-        match result {
+        let this = self;
+
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+
+        match lhs.py_mod(rhs, this.heap) {
             Ok(Some(v)) => {
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
-                self.push(v);
+                this.push(v);
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(self.heap);
-                let rhs_type = rhs.py_type(self.heap);
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
+                let lhs_type = lhs.py_type(this.heap);
+                let rhs_type = rhs.py_type(this.heap);
                 Err(ExcType::binary_type_error("%", lhs_type, rhs_type))
             }
-            Err(e) => {
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
-                Err(e)
-            }
+            Err(e) => Err(e),
         }
     }
 
     /// Binary power with proper refcount handling.
     ///
     /// Uses lazy type capture: only calls `py_type()` in error paths.
+    #[inline(never)]
     pub(super) fn binary_pow(&mut self) -> Result<(), RunError> {
-        let rhs = self.pop();
-        let lhs = self.pop();
-        let result = lhs.py_pow(&rhs, self.heap);
-        match result {
+        let this = self;
+
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+
+        match lhs.py_pow(rhs, this.heap) {
             Ok(Some(v)) => {
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
-                self.push(v);
+                this.push(v);
                 Ok(())
             }
             Ok(None) => {
-                let lhs_type = lhs.py_type(self.heap);
-                let rhs_type = rhs.py_type(self.heap);
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
+                let lhs_type = lhs.py_type(this.heap);
+                let rhs_type = rhs.py_type(this.heap);
                 Err(ExcType::binary_type_error("** or pow()", lhs_type, rhs_type))
             }
-            Err(e) => {
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
-                Err(e)
-            }
+            Err(e) => Err(e),
         }
     }
 
@@ -218,17 +193,15 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Pops two values, performs the bitwise operation, and pushes the result.
     pub(super) fn binary_bitwise(&mut self, op: BitwiseOp) -> Result<(), RunError> {
-        let rhs = self.pop();
-        let lhs = self.pop();
+        let this = self;
 
-        // Compute result before dropping operands (may allocate LongInt for large results)
-        let result = lhs.py_bitwise(&rhs, op, self.heap);
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
 
-        // Drop operands before propagating error
-        lhs.drop_with_heap(self.heap);
-        rhs.drop_with_heap(self.heap);
-
-        self.push(result?);
+        let result = lhs.py_bitwise(rhs, op, this.heap)?;
+        this.push(result);
         Ok(())
     }
 
@@ -238,51 +211,34 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// For immutable types, we fall back to regular addition.
     ///
     /// Uses lazy type capture: only calls `py_type()` in error paths.
+    ///
+    /// Note: Cannot use `defer_drop!` for `lhs` here because on successful in-place
+    /// operation, we need to push `lhs` back onto the stack rather than drop it.
     pub(super) fn inplace_add(&mut self) -> Result<(), RunError> {
-        let rhs = self.pop();
-        let mut lhs = self.pop();
+        let this = self;
+
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        // Use HeapGuard because inplace addition will push lhs back on the stack if successful
+        let mut lhs_guard = HeapGuard::new(this.pop(), this);
+        let (lhs, this) = lhs_guard.as_parts_mut();
 
         // Try in-place operation first (for mutable types like lists)
-        // py_iadd takes owned `other` and mutates `self` in place
-        let lhs_id = lhs.ref_id();
-
-        let succeeded = match lhs.py_iadd(rhs.clone_with_heap(self.heap), self.heap, lhs_id, self.interns) {
-            Ok(s) => s,
-            Err(e) => {
-                lhs.drop_with_heap(self.heap);
-                rhs.drop_with_heap(self.heap);
-                return Err(e.into());
-            }
-        };
-
-        if succeeded {
-            // In-place operation succeeded - drop rhs and push lhs back
-            rhs.drop_with_heap(self.heap);
-            self.push(lhs);
-            Ok(())
-        } else {
-            // Fall back to regular addition
-            let result = lhs.py_add(&rhs, self.heap, self.interns);
-            match result {
-                Ok(Some(v)) => {
-                    lhs.drop_with_heap(self.heap);
-                    rhs.drop_with_heap(self.heap);
-                    self.push(v);
-                    Ok(())
-                }
-                Ok(None) => {
-                    let lhs_type = lhs.py_type(self.heap);
-                    let rhs_type = rhs.py_type(self.heap);
-                    lhs.drop_with_heap(self.heap);
-                    rhs.drop_with_heap(self.heap);
-                    Err(ExcType::binary_type_error("+=", lhs_type, rhs_type))
-                }
-                Err(e) => {
-                    lhs.drop_with_heap(self.heap);
-                    rhs.drop_with_heap(self.heap);
-                    Err(e.into())
-                }
-            }
+        if lhs.py_iadd(rhs.clone_with_heap(this.heap), this.heap, lhs.ref_id(), this.interns)? {
+            // In-place operation succeeded - push lhs back
+            let (lhs, this) = lhs_guard.into_parts();
+            this.push(lhs);
+            return Ok(());
         }
+
+        // Next try regular addition
+        if let Some(v) = lhs.py_add(rhs, this.heap, this.interns)? {
+            this.push(v);
+            return Ok(());
+        }
+
+        let lhs_type = lhs.py_type(this.heap);
+        let rhs_type = rhs.py_type(this.heap);
+        Err(ExcType::binary_type_error("+=", lhs_type, rhs_type))
     }
 }

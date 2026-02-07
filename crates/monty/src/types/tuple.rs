@@ -1,8 +1,13 @@
-/// Python tuple type, wrapping a `Vec<Value>`.
+/// Python tuple type using `SmallVec` for inline storage of small tuples.
 ///
 /// This type provides Python tuple semantics. Tuples are immutable sequences
 /// that can contain any Python object. Like lists, tuples properly handle
 /// reference counting for heap-allocated values.
+///
+/// # Optimization
+/// Uses `SmallVec<[Value; 2]>` to store up to 2 elements inline without heap
+/// allocation. This benefits common cases like 2-tuples from `enumerate()`,
+/// `dict.items()`, and function return values.
 ///
 /// # Implemented Methods
 /// - `index(value[, start[, end]])` - Find first index of value
@@ -12,6 +17,14 @@
 use std::fmt::Write;
 
 use ahash::AHashSet;
+use smallvec::SmallVec;
+
+/// Inline capacity for small tuples. Tuples with 2 or fewer elements avoid
+/// heap allocation for the items storage.
+const TUPLE_INLINE_CAPACITY: usize = 3;
+
+/// Storage type for tuple items. Uses SmallVec to inline small tuples.
+pub(crate) type TupleVec = SmallVec<[Value; TUPLE_INLINE_CAPACITY]>;
 
 use super::{
     MontyIter, PyTrait,
@@ -20,7 +33,7 @@ use super::{
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     resource::ResourceTracker,
     types::Type,
@@ -29,9 +42,9 @@ use crate::{
 
 /// Python tuple value stored on the heap.
 ///
-/// Wraps a `Vec<Value>` and provides Python-compatible tuple operations.
-/// Unlike lists, tuples are conceptually immutable (though this is not
-/// enforced at the type level for internal operations).
+/// Uses `SmallVec<[Value; 3]>` internally to avoid separate heap allocation
+/// for tuples with 3 or fewer elements. This is a significant optimization
+/// since small tuples are very common (enumerate, dict items, returns, etc.).
 ///
 /// # Reference Counting
 /// When a tuple is freed, all contained heap references have their refcounts
@@ -43,7 +56,7 @@ use crate::{
 /// tuple contains only primitive values (ints, bools, None, etc.).
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Tuple {
-    items: Vec<Value>,
+    items: TupleVec,
     /// True if any item in the tuple is a `Value::Ref`. Set at creation time
     /// since tuples are immutable.
     contains_refs: bool,
@@ -55,20 +68,20 @@ impl Tuple {
     /// Automatically computes the `contains_refs` flag by checking if any value
     /// is a `Value::Ref`. Since tuples are immutable, this flag never changes.
     ///
+    /// For tuples with 3 or fewer elements, the items are stored inline in the
+    /// SmallVec without additional heap allocation.
+    ///
     /// Note: This does NOT increment reference counts - the caller must
     /// ensure refcounts are properly managed.
     #[must_use]
-    pub fn new(vec: Vec<Value>) -> Self {
-        let contains_refs = vec.iter().any(|v| matches!(v, Value::Ref(_)));
-        Self {
-            items: vec,
-            contains_refs,
-        }
+    fn new(items: TupleVec) -> Self {
+        let contains_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
+        Self { items, contains_refs }
     }
 
-    /// Returns a reference to the underlying vector.
+    /// Returns a reference to the underlying SmallVec.
     #[must_use]
-    pub fn as_vec(&self) -> &Vec<Value> {
+    pub fn as_vec(&self) -> &TupleVec {
         &self.items
     }
 
@@ -83,35 +96,64 @@ impl Tuple {
 
     /// Creates a tuple from the `tuple()` constructor call.
     ///
-    /// - `tuple()` with no args returns an empty tuple
+    /// - `tuple()` with no args returns an empty tuple (singleton)
     /// - `tuple(iterable)` creates a tuple from any iterable (list, tuple, range, str, bytes, dict)
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
         let value = args.get_zero_one_arg("tuple", heap)?;
         match value {
             None => {
-                let heap_id = heap.allocate(HeapData::Tuple(Self::new(Vec::new())))?;
+                // Use empty tuple singleton
+                let heap_id = heap.get_or_create_empty_tuple()?;
                 Ok(Value::Ref(heap_id))
             }
             Some(v) => {
                 let mut iter = MontyIter::new(v, heap, interns)?;
                 let items = iter.collect(heap, interns)?;
                 iter.drop_with_heap(heap);
-                let heap_id = heap.allocate(HeapData::Tuple(Self::new(items)))?;
-                Ok(Value::Ref(heap_id))
+                Ok(allocate_tuple(items, heap)?)
             }
         }
     }
 }
 
-impl FromIterator<Value> for Tuple {
-    fn from_iter<I: IntoIterator<Item = Value>>(iter: I) -> Self {
-        Self::new(iter.into_iter().collect())
+impl From<Tuple> for Vec<Value> {
+    fn from(tuple: Tuple) -> Self {
+        tuple.items.into_vec()
     }
 }
 
-impl From<Tuple> for Vec<Value> {
+impl From<Tuple> for TupleVec {
     fn from(tuple: Tuple) -> Self {
         tuple.items
+    }
+}
+
+/// Allocates a tuple, using the empty tuple singleton when appropriate.
+///
+/// This is the preferred way to allocate tuples as it provides:
+/// - Empty tuple interning: `() is ()` returns `True`
+/// - SmallVec optimization for small tuples (≤3 elements)
+///
+/// # Example Usage
+/// ```ignore
+/// // Empty tuple - returns singleton
+/// let empty = allocate_tuple(Vec::new(), heap)?;
+///
+/// // Small tuple - stored inline in SmallVec
+/// let pair = allocate_tuple(vec![Value::Int(1), Value::Int(2)], heap)?;
+/// ```
+pub fn allocate_tuple(
+    items: SmallVec<[Value; TUPLE_INLINE_CAPACITY]>,
+    heap: &mut Heap<impl ResourceTracker>,
+) -> Result<Value, crate::resource::ResourceError> {
+    if items.is_empty() {
+        // Use the empty tuple singleton
+        let heap_id = heap.get_or_create_empty_tuple()?;
+        Ok(Value::Ref(heap_id))
+    } else {
+        // Allocate a new tuple (SmallVec will inline if ≤3 elements)
+        let heap_id = heap.allocate(HeapData::Tuple(Tuple::new(items)))?;
+        Ok(Value::Ref(heap_id))
     }
 }
 
@@ -138,16 +180,11 @@ impl PyTrait for Tuple {
                 .map_err(|()| ExcType::value_error_slice_step_zero())?;
 
             let items = get_slice_items(&self.items, start, stop, step, heap);
-            let heap_id = heap.allocate(HeapData::Tuple(Self::new(items)))?;
-            return Ok(Value::Ref(heap_id));
+            return Ok(allocate_tuple(items.into(), heap)?);
         }
 
-        // Extract integer index, accepting both Int and Bool (True=1, False=0)
-        let index = match key {
-            Value::Int(i) => *i,
-            Value::Bool(b) => i64::from(*b),
-            _ => return Err(ExcType::type_error_indices(Type::Tuple, key.py_type(heap))),
-        };
+        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
+        let index = key.as_index(heap, Type::Tuple)?;
 
         // Convert to usize, handling negative indices (Python-style: -1 = last element)
         let len = i64::try_from(self.items.len()).expect("tuple length exceeds i64::MAX");
@@ -183,11 +220,10 @@ impl PyTrait for Tuple {
         _interns: &Interns,
     ) -> Result<Option<Value>, crate::resource::ResourceError> {
         // Clone both tuples' contents with proper refcounting
-        let mut result: Vec<Value> = self.items.iter().map(|obj| obj.clone_with_heap(heap)).collect();
-        let other_cloned: Vec<Value> = other.items.iter().map(|obj| obj.clone_with_heap(heap)).collect();
+        let mut result: TupleVec = self.items.iter().map(|obj| obj.clone_with_heap(heap)).collect();
+        let other_cloned = other.items.iter().map(|obj| obj.clone_with_heap(heap));
         result.extend(other_cloned);
-        let id = heap.allocate(HeapData::Tuple(Self::new(result)))?;
-        Ok(Some(Value::Ref(id)))
+        Ok(Some(allocate_tuple(result, heap)?))
     }
 
     /// Pushes all heap IDs contained in this tuple onto the stack.

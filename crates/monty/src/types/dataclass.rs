@@ -5,6 +5,7 @@ use ahash::AHashSet;
 use super::{Dict, PyTrait};
 use crate::{
     args::ArgValues,
+    defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapId},
     intern::{Interns, StringId},
@@ -265,17 +266,16 @@ impl PyTrait for Dataclass {
     ) -> RunResult<Value> {
         // Get method name from the attribute
         let method_name = attr.as_str(interns);
+        defer_drop!(args, heap);
 
         if self.methods.contains(method_name) {
             // TODO: Integrate with external call system
-            // For now, drop args and return an error indicating this needs implementation
-            args.drop_with_heap(heap);
+            // For now return an error indicating this needs implementation
             Err(ExcType::attribute_error_method_not_implemented(
                 self.name(interns),
                 method_name,
             ))
         } else {
-            args.drop_with_heap(heap);
             Err(ExcType::attribute_error(Type::Dataclass, method_name))
         }
     }

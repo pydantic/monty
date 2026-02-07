@@ -6,7 +6,7 @@ use crate::{
     heap::{Heap, HeapData},
     intern::Interns,
     resource::ResourceTracker,
-    types::{List, MontyIter, Tuple},
+    types::{List, MontyIter, allocate_tuple, tuple::TupleVec},
     value::Value,
 };
 
@@ -57,7 +57,7 @@ pub fn builtin_zip(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
 
     // Zip until shortest iterator is exhausted
     'outer: loop {
-        let mut tuple_items: Vec<Value> = Vec::with_capacity(iterators.len());
+        let mut tuple_items = TupleVec::with_capacity(iterators.len());
 
         for iter in &mut iterators {
             if let Some(item) = iter.for_next(heap, interns)? {
@@ -72,8 +72,8 @@ pub fn builtin_zip(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
         }
 
         // Create tuple from collected items
-        let tuple_id = heap.allocate(HeapData::Tuple(Tuple::new(tuple_items)))?;
-        result.push(Value::Ref(tuple_id));
+        let tuple_val = allocate_tuple(tuple_items, heap)?;
+        result.push(tuple_val);
     }
 
     // Clean up iterators

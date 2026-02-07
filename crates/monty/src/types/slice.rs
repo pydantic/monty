@@ -54,7 +54,6 @@ impl Slice {
         let slice = match args {
             ArgValues::Empty => return Err(ExcType::type_error_at_least("slice", 1, 0)),
             ArgValues::One(stop_val) => {
-                // Store result before dropping to avoid refcount leak on error
                 let stop = value_to_option_i64(&stop_val);
                 stop_val.drop_with_heap(heap);
                 Self::new(None, stop?, None)

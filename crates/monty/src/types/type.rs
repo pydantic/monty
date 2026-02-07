@@ -5,6 +5,7 @@ use strum::EnumString;
 
 use crate::{
     args::ArgValues,
+    defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData},
     intern::Interns,
@@ -194,66 +195,54 @@ impl Type {
 
             // Primitive types - inline implementation
             Self::Int => {
-                let value = args.get_zero_one_arg("int", heap)?;
-                match value {
-                    None => Ok(Value::Int(0)),
-                    Some(v) => {
-                        let result = match &v {
-                            Value::Int(i) => Ok(Value::Int(*i)),
-                            Value::Float(f) => Ok(Value::Int(f64_to_i64_truncate(*f))),
-                            Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
-                            Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), heap),
-                            Value::Ref(heap_id) => {
-                                // Clone data to release the borrow on heap before mutation
-                                match heap.get(*heap_id) {
-                                    HeapData::Str(s) => {
-                                        let s = s.to_string();
-                                        parse_int_from_str(&s, heap)
-                                    }
-                                    HeapData::LongInt(li) => li.clone().into_value(heap).map_err(Into::into),
-                                    _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
-                                }
+                let Some(v) = args.get_zero_one_arg("int", heap)? else {
+                    return Ok(Value::Int(0));
+                };
+                defer_drop!(v, heap);
+                match v {
+                    Value::Int(i) => Ok(Value::Int(*i)),
+                    Value::Float(f) => Ok(Value::Int(f64_to_i64_truncate(*f))),
+                    Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
+                    Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), heap),
+                    Value::Ref(heap_id) => {
+                        // Clone data to release the borrow on heap before mutation
+                        match heap.get(*heap_id) {
+                            HeapData::Str(s) => {
+                                let s = s.to_string();
+                                parse_int_from_str(&s, heap)
                             }
+                            HeapData::LongInt(li) => li.clone().into_value(heap).map_err(Into::into),
                             _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
-                        };
-                        v.drop_with_heap(heap);
-                        result
+                        }
                     }
+                    _ => Err(ExcType::type_error_int_conversion(v.py_type(heap))),
                 }
             }
             Self::Float => {
-                let value = args.get_zero_one_arg("float", heap)?;
-                match value {
-                    None => Ok(Value::Float(0.0)),
-                    Some(v) => {
-                        let result = match &v {
-                            Value::Float(f) => Ok(Value::Float(*f)),
-                            Value::Int(i) => Ok(Value::Float(*i as f64)),
-                            Value::Bool(b) => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
-                            Value::InternString(string_id) => {
-                                Ok(Value::Float(parse_f64_from_str(interns.get_str(*string_id))?))
-                            }
-                            Value::Ref(heap_id) => match heap.get(*heap_id) {
-                                HeapData::Str(s) => Ok(Value::Float(parse_f64_from_str(s.as_str())?)),
-                                _ => Err(ExcType::type_error_float_conversion(v.py_type(heap))),
-                            },
-                            _ => Err(ExcType::type_error_float_conversion(v.py_type(heap))),
-                        };
-                        v.drop_with_heap(heap);
-                        result
+                let Some(v) = args.get_zero_one_arg("float", heap)? else {
+                    return Ok(Value::Float(0.0));
+                };
+                defer_drop!(v, heap);
+                match v {
+                    Value::Float(f) => Ok(Value::Float(*f)),
+                    Value::Int(i) => Ok(Value::Float(*i as f64)),
+                    Value::Bool(b) => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
+                    Value::InternString(string_id) => {
+                        Ok(Value::Float(parse_f64_from_str(interns.get_str(*string_id))?))
                     }
+                    Value::Ref(heap_id) => match heap.get(*heap_id) {
+                        HeapData::Str(s) => Ok(Value::Float(parse_f64_from_str(s.as_str())?)),
+                        _ => Err(ExcType::type_error_float_conversion(v.py_type(heap))),
+                    },
+                    _ => Err(ExcType::type_error_float_conversion(v.py_type(heap))),
                 }
             }
             Self::Bool => {
-                let value = args.get_zero_one_arg("bool", heap)?;
-                match value {
-                    None => Ok(Value::Bool(false)),
-                    Some(v) => {
-                        let result = v.py_bool(heap, interns);
-                        v.drop_with_heap(heap);
-                        Ok(Value::Bool(result))
-                    }
-                }
+                let Some(v) = args.get_zero_one_arg("bool", heap)? else {
+                    return Ok(Value::Bool(false));
+                };
+                defer_drop!(v, heap);
+                Ok(Value::Bool(v.py_bool(heap, interns)))
             }
 
             // Non-callable types - raise TypeError

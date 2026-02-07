@@ -232,3 +232,104 @@ async def test_run_monty_async_no_external_calls():
     m = pydantic_monty.Monty('1 + 2 + 3')
     result = await run_monty_async(m)
     assert result == snapshot(6)
+
+
+# === Tests for run_monty_async with os parameter ===
+
+
+async def test_run_monty_async_with_os():
+    """run_monty_async can use OSAccess for file operations."""
+    from pydantic_monty import MemoryFile, OSAccess
+
+    fs = OSAccess([MemoryFile('/test.txt', content='hello world')])
+
+    m = pydantic_monty.Monty(
+        """
+from pathlib import Path
+Path('/test.txt').read_text()
+        """,
+        external_functions=[],
+    )
+
+    result = await run_monty_async(m, os=fs)
+    assert result == snapshot('hello world')
+
+
+async def test_run_monty_async_os_with_external_functions():
+    """run_monty_async can combine OSAccess with external functions."""
+    from pydantic_monty import MemoryFile, OSAccess
+
+    fs = OSAccess([MemoryFile('/data.txt', content='test data')])
+
+    async def process(text: str) -> str:
+        return text.upper()
+
+    m = pydantic_monty.Monty(
+        """
+from pathlib import Path
+content = Path('/data.txt').read_text()
+await process(content)
+        """,
+        external_functions=['process'],
+    )
+
+    result = await run_monty_async(
+        m,
+        external_functions={'process': process},
+        os=fs,
+    )
+    assert result == snapshot('TEST DATA')
+
+
+async def test_run_monty_async_os_file_not_found():
+    """run_monty_async propagates OS errors correctly."""
+    from pydantic_monty import OSAccess
+
+    fs = OSAccess()
+
+    m = pydantic_monty.Monty(
+        """
+from pathlib import Path
+Path('/missing.txt').read_text()
+        """,
+    )
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        await run_monty_async(m, os=fs)
+    assert str(exc_info.value) == snapshot("FileNotFoundError: [Errno 2] No such file or directory: '/missing.txt'")
+
+
+async def test_run_monty_async_os_not_provided():
+    """run_monty_async raises error when OS function called without os handler."""
+    m = pydantic_monty.Monty(
+        """
+from pathlib import Path
+Path('/test.txt').exists()
+        """,
+    )
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        await run_monty_async(m)
+    inner = exc_info.value.exception()
+    assert isinstance(inner, RuntimeError)
+    assert 'OS function' in inner.args[0]
+    assert 'no os handler provided' in inner.args[0]
+
+
+async def test_run_monty_async_os_write_and_read():
+    """run_monty_async supports both reading and writing files."""
+    from pydantic_monty import MemoryFile, OSAccess
+
+    fs = OSAccess([MemoryFile('/file.txt', content='original')])
+
+    m = pydantic_monty.Monty(
+        """
+from pathlib import Path
+p = Path('/file.txt')
+p.write_text('updated')
+p.read_text()
+        """,
+    )
+
+    result = await run_monty_async(m, os=fs)
+    assert result == snapshot('updated')
