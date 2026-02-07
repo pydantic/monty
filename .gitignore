@@ -15,3 +15,5 @@
 /sandbox/
 /starlark-rust/
 /.playwright-mcp/
+/crates/fuzz/artifacts/
+/crates/fuzz/corpus/
