@@ -219,6 +219,13 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_statement(&mut self, statement: Stmt) -> Result<ParseNode, ParseError> {
+        self.decr_depth_remaining(|| statement.range())?;
+        let result = self.parse_statement_impl(statement);
+        self.depth_remaining += 1;
+        result
+    }
+
+    fn parse_statement_impl(&mut self, statement: Stmt) -> Result<ParseNode, ParseError> {
         match statement {
             Stmt::FunctionDef(function) => {
                 let params = &function.parameters;
@@ -547,10 +554,7 @@ impl<'a> Parser<'a> {
     /// Includes depth tracking to prevent stack overflow from deeply nested structures.
     /// Matches CPython's limit of 200 for nested parentheses.
     fn parse_expression(&mut self, expression: AstExpr) -> Result<ExprLoc, ParseError> {
-        self.depth_remaining = self
-            .depth_remaining
-            .checked_sub(1)
-            .ok_or_else(|| ParseError::syntax("too many nested parentheses", self.convert_range(expression.range())))?;
+        self.decr_depth_remaining(|| expression.range())?;
         let result = self.parse_expression_impl(expression);
         self.depth_remaining += 1;
         result
@@ -1080,10 +1084,7 @@ impl<'a> Parser<'a> {
     /// Handles patterns like `a` (single variable), `a, b` (flat tuple), or `(a, b), c` (nested).
     /// Includes depth tracking to prevent stack overflow from deeply nested structures.
     fn parse_unpack_target(&mut self, ast: AstExpr) -> Result<UnpackTarget, ParseError> {
-        self.depth_remaining = self
-            .depth_remaining
-            .checked_sub(1)
-            .ok_or_else(|| ParseError::syntax("too many nested parentheses", self.convert_range(ast.range())))?;
+        self.decr_depth_remaining(|| ast.range())?;
         let result = self.parse_unpack_target_impl(ast);
         self.depth_remaining += 1;
         result
@@ -1363,6 +1364,18 @@ impl<'a> Parser<'a> {
         // Content after the last newline (file without trailing newline)
         // line_ends.len() gives the correct 0-indexed line number
         (self.line_ends.len(), line_start, None)
+    }
+
+    /// Decrements the depth remaining for nested parentheses.
+    /// Returns an error if the depth remaining goes to zero.
+    fn decr_depth_remaining(&mut self, get_range: impl FnOnce() -> TextRange) -> Result<(), ParseError> {
+        if let Some(depth_remaining) = self.depth_remaining.checked_sub(1) {
+            self.depth_remaining = depth_remaining;
+            Ok(())
+        } else {
+            let position = self.convert_range(get_range());
+            Err(ParseError::syntax("too many nested parentheses", position))
+        }
     }
 }
 
