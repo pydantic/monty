@@ -425,28 +425,29 @@ assert list(r2) == [5, 6, 7], 'range with LongInt start/stop'
 r3 = range(0, 10, big - big + 2)
 assert list(r3) == [0, 2, 4, 6, 8], 'range with LongInt step'
 
-# === LongInt as index ===
-idx = big - big + 1  # LongInt that demotes to 1
-assert [10, 20, 30][idx] == 20, 'list indexing with LongInt'
-assert (10, 20, 30)[idx] == 20, 'tuple indexing with LongInt'
-assert 'abc'[idx] == 'b', 'string indexing with LongInt'
-assert b'abc'[idx] == ord('b'), 'bytes indexing with LongInt'
-assert range(10)[idx] == 1, 'range indexing with LongInt'
+# === Integer computed via LongInt arithmetic ===
+# These values go through BigInt arithmetic but demote to regular Int via into_value()
+idx = big - big + 1  # Results in Value::Int(1) after demotion
+assert [10, 20, 30][idx] == 20, 'list indexing with BigInt-computed int'
+assert (10, 20, 30)[idx] == 20, 'tuple indexing with BigInt-computed int'
+assert 'abc'[idx] == 'b', 'string indexing with BigInt-computed int'
+assert b'abc'[idx] == ord('b'), 'bytes indexing with BigInt-computed int'
+assert range(10)[idx] == 1, 'range indexing with BigInt-computed int'
 
-# Negative LongInt index
-neg_idx = big - big - 1  # LongInt that demotes to -1
-assert [10, 20, 30][neg_idx] == 30, 'list indexing with negative LongInt'
-assert (10, 20, 30)[neg_idx] == 30, 'tuple indexing with negative LongInt'
-assert 'abc'[neg_idx] == 'c', 'string indexing with negative LongInt'
-assert b'abc'[neg_idx] == ord('c'), 'bytes indexing with negative LongInt'
-assert range(10)[neg_idx] == 9, 'range indexing with negative LongInt'
+# Negative index computed via LongInt arithmetic
+neg_idx = big - big - 1  # Results in Value::Int(-1) after demotion
+assert [10, 20, 30][neg_idx] == 30, 'list indexing with negative BigInt-computed int'
+assert (10, 20, 30)[neg_idx] == 30, 'tuple indexing with negative BigInt-computed int'
+assert 'abc'[neg_idx] == 'c', 'string indexing with negative BigInt-computed int'
+assert b'abc'[neg_idx] == ord('c'), 'bytes indexing with negative BigInt-computed int'
+assert range(10)[neg_idx] == 9, 'range indexing with negative BigInt-computed int'
 
 # List assignment with LongInt index
 lst = [1, 2, 3]
 lst[idx] = 42
-assert lst == [1, 42, 3], 'list assignment with LongInt index'
+assert lst == [1, 42, 3], 'list assignment with BigInt-computed index'
 lst[neg_idx] = 99
-assert lst == [1, 42, 99], 'list assignment with negative LongInt index'
+assert lst == [1, 42, 99], 'list assignment with negative BigInt-computed index'
 
 # === String/bytes * LongInt ===
 count = big - big + 3

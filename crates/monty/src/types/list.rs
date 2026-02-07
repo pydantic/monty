@@ -247,7 +247,11 @@ impl PyTrait for List {
         heap: &mut Heap<impl ResourceTracker>,
         _interns: &Interns,
     ) -> RunResult<()> {
-        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
+        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt.
+        // Note: The LongInt-to-i64 conversion is defensive code. In normal execution,
+        // heap-allocated LongInt values always exceed i64 range because into_value()
+        // demotes i64-fitting values to Value::Int. However, this could be reached via
+        // deserialization of crafted snapshot data.
         let index = match &key {
             Value::Int(i) => *i,
             Value::Bool(b) => i64::from(*b),
