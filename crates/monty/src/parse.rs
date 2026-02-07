@@ -26,6 +26,14 @@ use crate::{
 /// Maximum nesting depth for AST structures during parsing.
 /// Matches CPython's limit of ~200 for nested parentheses.
 /// This prevents stack overflow from deeply nested structures like `((((x,),),),)`.
+///
+/// In debug builds, we use a lower limit because stack frames are much larger
+/// (no inlining, debug info, etc.). The limit is set conservatively to prevent
+/// stack overflow while still catching the error before the recursion limit.
+#[cfg(debug_assertions)]
+pub const MAX_NESTING_DEPTH: usize = 35;
+
+#[cfg(not(debug_assertions))]
 pub const MAX_NESTING_DEPTH: usize = 200;
 
 /// A parameter in a function signature with optional default value.
@@ -128,8 +136,6 @@ pub(crate) fn parse(code: &str, filename: &str) -> Result<ParseResult, ParseErro
     let mut parser = Parser::new(code, filename);
     let parsed = parse_module(code).map_err(|e| ParseError::syntax(e.to_string(), parser.convert_range(e.range())))?;
     let module = parsed.into_syntax();
-    // Check AST depth iteratively before recursive traversal to prevent stack overflow
-    check_ast_depth(&module.body, &parser)?;
     let nodes = parser.parse_statements(module.body)?;
     Ok(ParseResult {
         nodes,
@@ -148,6 +154,9 @@ pub struct Parser<'a> {
     filename_id: StringId,
     /// String interner for names (variables, functions, etc).
     pub interner: InternerBuilder,
+    /// Current nesting depth for recursive structures.
+    /// Used to prevent excessively deep nesting that matches CPython's limit of 200.
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -166,6 +175,7 @@ impl<'a> Parser<'a> {
             code,
             filename_id,
             interner,
+            depth: 0,
         }
     }
 
@@ -533,7 +543,25 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parses an expression from the ruff AST into Monty's ExprLoc representation.
+    ///
+    /// Includes depth tracking to prevent stack overflow from deeply nested structures.
+    /// Matches CPython's limit of 200 for nested parentheses.
     fn parse_expression(&mut self, expression: AstExpr) -> Result<ExprLoc, ParseError> {
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            self.depth -= 1;
+            return Err(ParseError::syntax(
+                "too many nested parentheses",
+                self.convert_range(expression.range()),
+            ));
+        }
+        let result = self.parse_expression_impl(expression);
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_expression_impl(&mut self, expression: AstExpr) -> Result<ExprLoc, ParseError> {
         match expression {
             AstExpr::BoolOp(ast::ExprBoolOp { op, values, range, .. }) => {
                 // Handle chained boolean operations like `a and b and c` by right-folding
@@ -1055,7 +1083,22 @@ impl<'a> Parser<'a> {
     /// Parses an unpack target - either a single identifier or a nested tuple.
     ///
     /// Handles patterns like `a` (single variable), `a, b` (flat tuple), or `(a, b), c` (nested).
+    /// Includes depth tracking to prevent stack overflow from deeply nested structures.
     fn parse_unpack_target(&mut self, ast: AstExpr) -> Result<UnpackTarget, ParseError> {
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            self.depth -= 1;
+            return Err(ParseError::syntax(
+                "too many nested parentheses",
+                self.convert_range(ast.range()),
+            ));
+        }
+        let result = self.parse_unpack_target_impl(ast);
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_unpack_target_impl(&mut self, ast: AstExpr) -> Result<UnpackTarget, ParseError> {
         match ast {
             AstExpr::Name(ast::ExprName { id, range, .. }) => Ok(UnpackTarget::Name(self.identifier(&id, range))),
             AstExpr::Tuple(ast::ExprTuple { elts, range, .. }) => {
@@ -1562,251 +1605,4 @@ fn parse_int_literal(s: &str) -> Option<BigInt> {
 
     // Default to decimal
     cleaned.parse::<BigInt>().ok()
-}
-
-/// Iteratively checks the maximum nesting depth of an AST to prevent stack overflow
-/// during recursive traversal.
-///
-/// Uses an explicit stack to traverse the AST without recursion, counting the
-/// maximum depth. Returns an error if the depth exceeds `MAX_NESTING_DEPTH`.
-fn check_ast_depth(stmts: &[Stmt], parser: &Parser<'_>) -> Result<(), ParseError> {
-    use ruff_python_ast::Expr;
-    // Stack of (expression, depth) pairs for iterative traversal
-    let mut stack: Vec<(&Expr, usize)> = Vec::new();
-
-    // Collect all top-level expressions from statements
-    for stmt in stmts {
-        collect_exprs_from_stmt(stmt, &mut stack, 1);
-    }
-
-    while let Some((expr, depth)) = stack.pop() {
-        if depth > MAX_NESTING_DEPTH {
-            let range = expr.range();
-            return Err(ParseError::syntax(
-                "too many nested parentheses",
-                parser.convert_range(range),
-            ));
-        }
-
-        // Push child expressions with incremented depth
-        match expr {
-            Expr::Tuple(t) => {
-                for elt in &t.elts {
-                    stack.push((elt, depth + 1));
-                }
-            }
-            Expr::List(l) => {
-                for elt in &l.elts {
-                    stack.push((elt, depth + 1));
-                }
-            }
-            Expr::Set(s) => {
-                for elt in &s.elts {
-                    stack.push((elt, depth + 1));
-                }
-            }
-            Expr::Dict(d) => {
-                for item in &d.items {
-                    if let Some(key) = &item.key {
-                        stack.push((key, depth + 1));
-                    }
-                    stack.push((&item.value, depth + 1));
-                }
-            }
-            Expr::Call(c) => {
-                stack.push((&c.func, depth + 1));
-                for arg in &c.arguments.args {
-                    stack.push((arg, depth + 1));
-                }
-            }
-            Expr::BinOp(b) => {
-                stack.push((&b.left, depth + 1));
-                stack.push((&b.right, depth + 1));
-            }
-            Expr::UnaryOp(u) => {
-                stack.push((&u.operand, depth + 1));
-            }
-            Expr::Compare(c) => {
-                stack.push((&c.left, depth + 1));
-                for cmp in &c.comparators {
-                    stack.push((cmp, depth + 1));
-                }
-            }
-            Expr::BoolOp(b) => {
-                for val in &b.values {
-                    stack.push((val, depth + 1));
-                }
-            }
-            Expr::Attribute(a) => {
-                stack.push((&a.value, depth + 1));
-            }
-            Expr::Subscript(s) => {
-                stack.push((&s.value, depth + 1));
-                stack.push((&s.slice, depth + 1));
-            }
-            Expr::If(i) => {
-                stack.push((&i.test, depth + 1));
-                stack.push((&i.body, depth + 1));
-                stack.push((&i.orelse, depth + 1));
-            }
-            Expr::Lambda(l) => {
-                stack.push((&l.body, depth + 1));
-            }
-            Expr::Starred(s) => {
-                stack.push((&s.value, depth + 1));
-            }
-            Expr::Named(n) => {
-                stack.push((&n.value, depth + 1));
-            }
-            Expr::Slice(s) => {
-                if let Some(lower) = &s.lower {
-                    stack.push((lower, depth + 1));
-                }
-                if let Some(upper) = &s.upper {
-                    stack.push((upper, depth + 1));
-                }
-                if let Some(step) = &s.step {
-                    stack.push((step, depth + 1));
-                }
-            }
-            Expr::ListComp(l) => {
-                stack.push((&l.elt, depth + 1));
-            }
-            Expr::SetComp(s) => {
-                stack.push((&s.elt, depth + 1));
-            }
-            Expr::DictComp(d) => {
-                stack.push((&d.key, depth + 1));
-                stack.push((&d.value, depth + 1));
-            }
-            Expr::Generator(g) => {
-                stack.push((&g.elt, depth + 1));
-            }
-            Expr::Await(a) => {
-                stack.push((&a.value, depth + 1));
-            }
-            Expr::FString(f) => {
-                for part in &f.value {
-                    if let ast::FStringPart::FString(fs) = part {
-                        for elem in &fs.elements {
-                            if let InterpolatedStringElement::Interpolation(interp) = elem {
-                                stack.push((&interp.expression, depth + 1));
-                            }
-                        }
-                    }
-                }
-            }
-            // Terminal expressions - no children to check
-            Expr::Name(_)
-            | Expr::NumberLiteral(_)
-            | Expr::StringLiteral(_)
-            | Expr::BytesLiteral(_)
-            | Expr::BooleanLiteral(_)
-            | Expr::NoneLiteral(_)
-            | Expr::EllipsisLiteral(_) => {}
-            // Other expressions we don't support but should still check depth
-            _ => {}
-        }
-    }
-
-    Ok(())
-}
-
-/// Collects expressions from a statement for depth checking.
-fn collect_exprs_from_stmt<'a>(stmt: &'a Stmt, stack: &mut Vec<(&'a AstExpr, usize)>, depth: usize) {
-    match stmt {
-        Stmt::Expr(e) => stack.push((&e.value, depth)),
-        Stmt::Assign(a) => {
-            for target in &a.targets {
-                stack.push((target, depth));
-            }
-            stack.push((&a.value, depth));
-        }
-        Stmt::AnnAssign(a) => {
-            stack.push((&a.target, depth));
-            if let Some(value) = &a.value {
-                stack.push((value, depth));
-            }
-        }
-        Stmt::AugAssign(a) => {
-            stack.push((&a.target, depth));
-            stack.push((&a.value, depth));
-        }
-        Stmt::Return(r) => {
-            if let Some(value) = &r.value {
-                stack.push((value, depth));
-            }
-        }
-        Stmt::If(i) => {
-            stack.push((&i.test, depth));
-            for stmt in &i.body {
-                collect_exprs_from_stmt(stmt, stack, depth);
-            }
-            for clause in &i.elif_else_clauses {
-                if let Some(test) = &clause.test {
-                    stack.push((test, depth));
-                }
-                for stmt in &clause.body {
-                    collect_exprs_from_stmt(stmt, stack, depth);
-                }
-            }
-        }
-        Stmt::While(w) => {
-            stack.push((&w.test, depth));
-            for stmt in &w.body {
-                collect_exprs_from_stmt(stmt, stack, depth);
-            }
-            for stmt in &w.orelse {
-                collect_exprs_from_stmt(stmt, stack, depth);
-            }
-        }
-        Stmt::For(f) => {
-            stack.push((&f.target, depth));
-            stack.push((&f.iter, depth));
-            for stmt in &f.body {
-                collect_exprs_from_stmt(stmt, stack, depth);
-            }
-            for stmt in &f.orelse {
-                collect_exprs_from_stmt(stmt, stack, depth);
-            }
-        }
-        Stmt::FunctionDef(f) => {
-            for stmt in &f.body {
-                collect_exprs_from_stmt(stmt, stack, depth);
-            }
-        }
-        Stmt::Try(t) => {
-            for stmt in &t.body {
-                collect_exprs_from_stmt(stmt, stack, depth);
-            }
-            for handler in &t.handlers {
-                let ruff_python_ast::ExceptHandler::ExceptHandler(h) = handler;
-                if let Some(exc_type) = &h.type_ {
-                    stack.push((exc_type, depth));
-                }
-                for stmt in &h.body {
-                    collect_exprs_from_stmt(stmt, stack, depth);
-                }
-            }
-            for stmt in &t.orelse {
-                collect_exprs_from_stmt(stmt, stack, depth);
-            }
-            for stmt in &t.finalbody {
-                collect_exprs_from_stmt(stmt, stack, depth);
-            }
-        }
-        Stmt::Raise(r) => {
-            if let Some(exc) = &r.exc {
-                stack.push((exc, depth));
-            }
-        }
-        Stmt::Assert(a) => {
-            stack.push((&a.test, depth));
-            if let Some(msg) = &a.msg {
-                stack.push((msg, depth));
-            }
-        }
-        // Statements without expressions to check
-        _ => {}
-    }
 }
