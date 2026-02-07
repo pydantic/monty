@@ -26,15 +26,13 @@ use crate::{
 /// Maximum nesting depth for AST structures during parsing.
 /// Matches CPython's limit of ~200 for nested parentheses.
 /// This prevents stack overflow from deeply nested structures like `((((x,),),),)`.
-///
+#[cfg(not(debug_assertions))]
+pub const MAX_NESTING_DEPTH: u16 = 200;
 /// In debug builds, we use a lower limit because stack frames are much larger
 /// (no inlining, debug info, etc.). The limit is set conservatively to prevent
 /// stack overflow while still catching the error before the recursion limit.
 #[cfg(debug_assertions)]
-pub const MAX_NESTING_DEPTH: usize = 35;
-
-#[cfg(not(debug_assertions))]
-pub const MAX_NESTING_DEPTH: usize = 200;
+pub const MAX_NESTING_DEPTH: u16 = 35;
 
 /// A parameter in a function signature with optional default value.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -154,9 +152,10 @@ pub struct Parser<'a> {
     filename_id: StringId,
     /// String interner for names (variables, functions, etc).
     pub interner: InternerBuilder,
-    /// Current nesting depth for recursive structures.
-    /// Used to prevent excessively deep nesting that matches CPython's limit of 200.
-    depth: usize,
+    /// Remaining nesting depth budget for recursive structures.
+    /// Starts at MAX_NESTING_DEPTH and decrements on each nested level.
+    /// When it reaches zero, we return a "too many nested parentheses" error.
+    depth_remaining: u16,
 }
 
 impl<'a> Parser<'a> {
@@ -175,7 +174,7 @@ impl<'a> Parser<'a> {
             code,
             filename_id,
             interner,
-            depth: 0,
+            depth_remaining: MAX_NESTING_DEPTH,
         }
     }
 
@@ -548,16 +547,12 @@ impl<'a> Parser<'a> {
     /// Includes depth tracking to prevent stack overflow from deeply nested structures.
     /// Matches CPython's limit of 200 for nested parentheses.
     fn parse_expression(&mut self, expression: AstExpr) -> Result<ExprLoc, ParseError> {
-        self.depth += 1;
-        if self.depth > MAX_NESTING_DEPTH {
-            self.depth -= 1;
-            return Err(ParseError::syntax(
-                "too many nested parentheses",
-                self.convert_range(expression.range()),
-            ));
-        }
+        self.depth_remaining = self
+            .depth_remaining
+            .checked_sub(1)
+            .ok_or_else(|| ParseError::syntax("too many nested parentheses", self.convert_range(expression.range())))?;
         let result = self.parse_expression_impl(expression);
-        self.depth -= 1;
+        self.depth_remaining += 1;
         result
     }
 
@@ -1085,16 +1080,12 @@ impl<'a> Parser<'a> {
     /// Handles patterns like `a` (single variable), `a, b` (flat tuple), or `(a, b), c` (nested).
     /// Includes depth tracking to prevent stack overflow from deeply nested structures.
     fn parse_unpack_target(&mut self, ast: AstExpr) -> Result<UnpackTarget, ParseError> {
-        self.depth += 1;
-        if self.depth > MAX_NESTING_DEPTH {
-            self.depth -= 1;
-            return Err(ParseError::syntax(
-                "too many nested parentheses",
-                self.convert_range(ast.range()),
-            ));
-        }
+        self.depth_remaining = self
+            .depth_remaining
+            .checked_sub(1)
+            .ok_or_else(|| ParseError::syntax("too many nested parentheses", self.convert_range(ast.range())))?;
         let result = self.parse_unpack_target_impl(ast);
-        self.depth -= 1;
+        self.depth_remaining += 1;
         result
     }
 
