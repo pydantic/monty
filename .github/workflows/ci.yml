@@ -153,10 +153,45 @@ jobs:
 
       - run: make dev-bench
 
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [string_input_panic, tokens_input_panic]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+      - id: cache-rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          prefix-key: "v1-rust-fuzz"
+          workspaces: "crates/fuzz -> target"
+
+      - if: steps.cache-rust.outputs.cache-hit != 'true'
+        run: cargo install cargo-fuzz
+
+      - name: Run ${{ matrix.target }} fuzzer
+        run: |
+          # cargo fuzz defaults to musl targets, which is incompatible with sanitizers
+          RUST_TARGET=$(rustc -Vv | grep host | cut -d ' ' -f 2)
+          cargo fuzz run --target=$RUST_TARGET ${{ matrix.target }} -- -max_total_time=60
+        working-directory: crates/fuzz
+
   # https://github.com/marketplace/actions/alls-green#why used for branch protection checks
   check:
     if: always()
-    needs: [lint, test-rust, test-python, bench-test]
+    needs:
+      - lint
+      - test-rust
+      - test-python
+      - bench-test
+      - fuzz
     runs-on: ubuntu-latest
     steps:
       - name: Decide whether the needed jobs succeeded or failed
