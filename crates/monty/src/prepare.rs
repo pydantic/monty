@@ -1667,7 +1667,21 @@ impl<'i> Prepare<'i> {
             );
         }
 
-        // 5. Check if exists in enclosing scope (implicit closure capture)
+        // 5. Check if name was pre-populated in name_map (from function parameters)
+        // This ensures parameters shadow both enclosing locals and global variables
+        // with the same name. Parameters are added to name_map during
+        // FunctionScope::new_function() but are NOT in assigned_names (since they're
+        // not assigned in the function body). This MUST be checked before
+        // enclosing_locals, otherwise a parameter like `def inner(x)` would be
+        // incorrectly resolved as a closure capture when an outer scope also has `x`.
+        if let Some(&id) = self.name_map.get(name_str) {
+            return (
+                Identifier::new_with_scope(ident.name_id, ident.position, id, NameScope::Local),
+                false, // Not new - was pre-populated from parameters
+            );
+        }
+
+        // 6. Check if exists in enclosing scope (implicit closure capture)
         // This handles reading variables from enclosing functions without explicit `nonlocal`
         if let Some(ref enclosing) = self.enclosing_locals
             && enclosing.contains(name_str)
@@ -1686,17 +1700,6 @@ impl<'i> Prepare<'i> {
             return (
                 Identifier::new_with_scope(ident.name_id, ident.position, slot, NameScope::Cell),
                 false, // Not a new local - it's captured from enclosing scope
-            );
-        }
-
-        // 6. Check if name was pre-populated in name_map (from function parameters)
-        // This ensures parameters shadow global variables with the same name.
-        // Parameters are added to name_map during FunctionScope::new_function() but are NOT
-        // in assigned_names (since they're not assigned in the function body).
-        if let Some(&id) = self.name_map.get(name_str) {
-            return (
-                Identifier::new_with_scope(ident.name_id, ident.position, id, NameScope::Local),
-                false, // Not new - was pre-populated from parameters
             );
         }
 
