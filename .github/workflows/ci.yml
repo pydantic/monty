@@ -180,8 +180,7 @@ jobs:
         run: |
           # cargo fuzz defaults to musl targets, which is incompatible with sanitizers
           RUST_TARGET=$(rustc -Vv | grep host | cut -d ' ' -f 2)
-          cargo fuzz run --target=$RUST_TARGET ${{ matrix.target }} -- -max_total_time=60
-        working-directory: crates/fuzz
+          cargo fuzz run --fuzz-dir crates/fuzz --target=$RUST_TARGET ${{ matrix.target }} -- -max_total_time=60
 
   # https://github.com/marketplace/actions/alls-green#why used for branch protection checks
   check:
