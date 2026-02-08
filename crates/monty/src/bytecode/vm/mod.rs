@@ -1022,15 +1022,6 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         catch_sync!(self, cached_frame, e);
                     }
                 }
-                Opcode::DeleteSubscr => {
-                    // TODO: Implement py_delitem on Value
-                    let index = self.pop();
-                    let obj = self.pop();
-                    obj.drop_with_heap(self.heap);
-                    index.drop_with_heap(self.heap);
-                    let error = ExcType::not_implemented("del obj[key] is not yet supported");
-                    catch_sync!(self, cached_frame, error.into());
-                }
                 Opcode::LoadAttr => {
                     let name_idx = fetch_u16!(cached_frame);
                     let name_id = StringId::from_index(name_idx);
@@ -1045,18 +1036,6 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let name_idx = fetch_u16!(cached_frame);
                     let name_id = StringId::from_index(name_idx);
                     try_catch_sync!(self, cached_frame, self.store_attr(name_id));
-                }
-                Opcode::DeleteAttr => {
-                    // Skip past the name_idx operand (2 bytes) - the assignment is "unused"
-                    // because catch_sync! either returns or reloads the cache
-                    #[expect(unused_assignments)]
-                    {
-                        cached_frame.ip += 2;
-                    }
-                    let obj = self.pop();
-                    obj.drop_with_heap(self.heap);
-                    let error = ExcType::not_implemented("del obj.attr is not yet supported");
-                    catch_sync!(self, cached_frame, error.into());
                 }
                 // Control Flow - use cached_frame.ip directly for jumps
                 Opcode::Jump => {
@@ -1298,15 +1277,6 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let exc = self.pop();
                     let error = self.make_exception(exc, true); // is_raise=true, hide caret
                     catch_sync!(self, cached_frame, error);
-                }
-                Opcode::RaiseFrom => {
-                    // `raise X from Y` - exception chaining not yet supported
-                    let exc = self.pop();
-                    let cause = self.pop();
-                    exc.drop_with_heap(self.heap);
-                    cause.drop_with_heap(self.heap);
-                    let error = ExcType::not_implemented("raise ... from ... is not yet supported");
-                    catch_sync!(self, cached_frame, error.into());
                 }
                 Opcode::Reraise => {
                     // Pop the current exception from the stack to re-raise it

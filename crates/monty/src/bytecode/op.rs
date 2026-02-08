@@ -231,8 +231,7 @@ pub enum Opcode {
     BinarySubscr,
     /// a[b] = c: pop value, pop index, pop obj.
     StoreSubscr,
-    /// del a[b]: pop index, pop obj.
-    DeleteSubscr,
+    // NOTE: DeleteSubscr removed - `del` statement not supported by parser
     /// Pop obj, push obj.attr. Operand: u16 name_id.
     LoadAttr,
     /// Pop module, push module.attr for `from ... import`. Operand: u16 name_id.
@@ -242,8 +241,7 @@ pub enum Opcode {
     LoadAttrImport,
     /// Pop value, pop obj, set obj.attr. Operand: u16 name_id.
     StoreAttr,
-    /// Pop obj, delete obj.attr. Operand: u16 name_id.
-    DeleteAttr,
+    // NOTE: DeleteAttr removed - `del` statement not supported by parser
 
     // === Function Calls ===
     /// Call TOS with n positional args. Operand: u8 arg_count.
@@ -334,8 +332,7 @@ pub enum Opcode {
     // Note: No SetupTry/PopExceptHandler - we use static exception_table
     /// Raise TOS as exception.
     Raise,
-    /// Raise TOS from TOS-1.
-    RaiseFrom,
+    // NOTE: RaiseFrom removed - `raise ... from ...` not supported by parser
     /// Re-raise current exception (bare `raise`).
     Reraise,
     /// Clear current_exception when exiting except block.
@@ -413,15 +410,14 @@ impl Opcode {
             BuildSet, BuildSlice, BuildTuple, CallAttr, CallAttrExtended, CallAttrKw, CallBuiltinFunction,
             CallBuiltinType, CallFunction, CallFunctionExtended, CallFunctionKw, CheckExcMatch, ClearException,
             CompareEq, CompareGe, CompareGt, CompareIn, CompareIs, CompareIsNot, CompareLe, CompareLt, CompareModEq,
-            CompareNe, CompareNotIn, DeleteAttr, DeleteLocal, DeleteSubscr, DictMerge, DictSetItem, Dup, ForIter,
-            FormatValue, GetIter, InplaceAdd, InplaceAnd, InplaceDiv, InplaceFloorDiv, InplaceLShift, InplaceMod,
-            InplaceMul, InplaceOr, InplacePow, InplaceRShift, InplaceSub, InplaceXor, Jump, JumpIfFalse,
-            JumpIfFalseOrPop, JumpIfTrue, JumpIfTrueOrPop, ListAppend, ListExtend, ListToTuple, LoadAttr,
-            LoadAttrImport, LoadCell, LoadConst, LoadFalse, LoadGlobal, LoadLocal, LoadLocal0, LoadLocal1, LoadLocal2,
-            LoadLocal3, LoadLocalW, LoadModule, LoadNone, LoadSmallInt, LoadTrue, MakeClosure, MakeFunction, Nop, Pop,
-            Raise, RaiseFrom, RaiseImportError, Reraise, ReturnValue, Rot2, Rot3, SetAdd, StoreAttr, StoreCell,
-            StoreGlobal, StoreLocal, StoreLocalW, StoreSubscr, UnaryInvert, UnaryNeg, UnaryNot, UnaryPos, UnpackEx,
-            UnpackSequence,
+            CompareNe, CompareNotIn, DeleteLocal, DictMerge, DictSetItem, Dup, ForIter, FormatValue, GetIter,
+            InplaceAdd, InplaceAnd, InplaceDiv, InplaceFloorDiv, InplaceLShift, InplaceMod, InplaceMul, InplaceOr,
+            InplacePow, InplaceRShift, InplaceSub, InplaceXor, Jump, JumpIfFalse, JumpIfFalseOrPop, JumpIfTrue,
+            JumpIfTrueOrPop, ListAppend, ListExtend, ListToTuple, LoadAttr, LoadAttrImport, LoadCell, LoadConst,
+            LoadFalse, LoadGlobal, LoadLocal, LoadLocal0, LoadLocal1, LoadLocal2, LoadLocal3, LoadLocalW, LoadModule,
+            LoadNone, LoadSmallInt, LoadTrue, MakeClosure, MakeFunction, Nop, Pop, Raise, RaiseImportError, Reraise,
+            ReturnValue, Rot2, Rot3, SetAdd, StoreAttr, StoreCell, StoreGlobal, StoreLocal, StoreLocalW, StoreSubscr,
+            UnaryInvert, UnaryNeg, UnaryNot, UnaryPos, UnpackEx, UnpackSequence,
         };
         Some(match self {
             // Stack operations
@@ -473,10 +469,8 @@ impl Opcode {
             // Subscript & Attribute
             BinarySubscr => -1,             // pop 2, push 1
             StoreSubscr => -3,              // pop 3, push 0
-            DeleteSubscr => -2,             // pop 2, push 0
             LoadAttr | LoadAttrImport => 0, // pop 1, push 1
             StoreAttr => -2,                // pop 2, push 0
-            DeleteAttr => -1,               // pop 1, push 0
 
             // Function calls - depend on arg count
             CallFunction | CallBuiltinFunction | CallBuiltinType | CallFunctionKw | CallAttr | CallAttrKw
@@ -499,7 +493,6 @@ impl Opcode {
 
             // Exception handling
             Raise => -1,         // pop exception
-            RaiseFrom => -2,     // pop exception, pop cause
             Reraise => 0,        // no stack change (reads from exception_stack)
             ClearException => 0, // clears exception_stack, no operand stack change
             CheckExcMatch => 0,  // pop exc_type, push bool (net 0, but exc stays)
