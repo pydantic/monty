@@ -66,6 +66,30 @@ pub enum Type {
     /// A property descriptor - displays as "property"
     #[strum(serialize = "property")]
     Property,
+    /// A slot/member descriptor created from `__slots__`.
+    #[strum(disabled)]
+    MemberDescriptor,
+    /// A getset descriptor for `__dict__`/`__weakref__` slots.
+    #[strum(disabled)]
+    GetSetDescriptor,
+    /// A read-only view of a class namespace (`type.__dict__`).
+    #[strum(disabled)]
+    MappingProxy,
+    /// A `weakref.ref` object (displays as `weakref.ReferenceType`).
+    #[strum(disabled)]
+    WeakRef,
+    /// A `types.GenericAlias` produced by `__class_getitem__`.
+    #[strum(disabled)]
+    GenericAlias,
+    /// A bound method object created by attribute access on instances.
+    #[strum(disabled)]
+    Method,
+    /// A user-defined class instance - displays as the class name
+    #[strum(disabled)]
+    Instance,
+    /// The Python `object` base type - all classes implicitly inherit from object
+    #[strum(serialize = "object")]
+    Object,
 }
 
 impl fmt::Display for Type {
@@ -99,6 +123,14 @@ impl fmt::Display for Type {
             Self::SpecialForm => f.write_str("typing._SpecialForm"),
             Self::Path => f.write_str("PosixPath"),
             Self::Property => f.write_str("property"),
+            Self::MemberDescriptor => f.write_str("member_descriptor"),
+            Self::GetSetDescriptor => f.write_str("getset_descriptor"),
+            Self::MappingProxy => f.write_str("mappingproxy"),
+            Self::WeakRef => f.write_str("weakref.ReferenceType"),
+            Self::GenericAlias => f.write_str("types.GenericAlias"),
+            Self::Method => f.write_str("method"),
+            Self::Instance => f.write_str("instance"),
+            Self::Object => f.write_str("object"),
         }
     }
 }
@@ -111,6 +143,9 @@ impl Type {
     #[must_use]
     pub fn is_instance_of(self, other: Self) -> bool {
         if self == other {
+            true
+        } else if other == Self::Object {
+            // Everything is an instance of object in Python
             true
         } else if self == Self::Bool && other == Self::Int {
             // bool is a subtype of int in Python

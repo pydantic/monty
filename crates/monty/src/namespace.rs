@@ -159,8 +159,13 @@ impl Namespaces {
         heap: &mut Heap<impl ResourceTracker>,
     ) -> Result<NamespaceId, ResourceError> {
         // Check recursion depth BEFORE memory allocation (fail fast)
-        // Depth excludes global namespace (stack[0]), so current depth = stack.len() - 1
-        let current_depth = self.stack.len() - 1;
+        // Depth = active namespaces only (total - freed - global).
+        // We subtract reuse_ids.len() because those slots were freed when frames were popped,
+        // and subtract 1 for the global namespace (stack[0]).
+        // Without this correction, after catching RecursionError and unwinding 1000 frames,
+        // the stack.len() stays at 1000+ (freed slots stay in the vec) and subsequent
+        // calls would immediately fail even though the actual depth is back to normal.
+        let current_depth = self.stack.len().saturating_sub(1 + self.reuse_ids.len());
         heap.tracker().check_recursion_depth(current_depth)?;
 
         // Track the memory used by this namespace's slots
@@ -196,7 +201,8 @@ impl Namespaces {
         heap: &mut Heap<impl ResourceTracker>,
     ) -> Result<NamespaceId, ResourceError> {
         // Check recursion depth BEFORE memory allocation (fail fast)
-        let current_depth = self.stack.len() - 1;
+        // Use active depth (total - freed - global) for accurate count after unwinding.
+        let current_depth = self.stack.len().saturating_sub(1 + self.reuse_ids.len());
         heap.tracker().check_recursion_depth(current_depth)?;
 
         // Track the memory used by this namespace's slots

@@ -13,7 +13,6 @@ mod enumerate;
 mod hash;
 mod hex;
 mod id;
-mod isinstance;
 mod len;
 mod min_max; // min and max share implementation
 mod next;
@@ -36,13 +35,14 @@ use strum::{Display, EnumString, FromRepr, IntoStaticStr};
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},
-    heap::Heap,
+    heap::{DropWithHeap, Heap, HeapData},
     intern::Interns,
     io::PrintWriter,
     resource::ResourceTracker,
-    types::Type,
+    types::{ClassMethod, StaticMethod, Type, UserProperty},
     value::Value,
 };
+pub(crate) mod isinstance;
 
 /// Enumerates every interpreter-native Python builtins
 ///
@@ -155,7 +155,7 @@ pub enum BuiltinsFunctions {
     // bytes - handled by Type enum
     // Callable,
     Chr,
-    // Classmethod,
+    Classmethod,
     // Compile,
     // complex - handled by Type enum
     // Delattr,
@@ -169,9 +169,9 @@ pub enum BuiltinsFunctions {
     // float - handled by Type enum
     // Format,
     // frozenset - handled by Type enum
-    // Getattr,
+    Getattr,
     // Globals,
-    // Hasattr,
+    Hasattr,
     Hash,
     // Help,
     Hex,
@@ -179,7 +179,7 @@ pub enum BuiltinsFunctions {
     // Input,
     // int - handled by Type enum
     Isinstance,
-    // Issubclass,
+    Issubclass,
     // Iter - handled by Type enum
     Len,
     // list - handled by Type enum
@@ -195,19 +195,19 @@ pub enum BuiltinsFunctions {
     Ord,
     Pow,
     Print,
-    // Property,
+    Property,
     // range - handled by Type enum
     Repr,
     Reversed,
     Round,
     // set - handled by Type enum
-    // Setattr,
+    Setattr,
     // Slice,
     Sorted,
-    // Staticmethod,
+    Staticmethod,
     // str - handled by Type enum
     Sum,
-    // Super,
+    Super,
     // tuple - handled by Type enum
     Type,
     // Vars,
@@ -239,6 +239,7 @@ impl BuiltinsFunctions {
             Self::Hex => hex::builtin_hex(heap, args),
             Self::Id => id::builtin_id(heap, args),
             Self::Isinstance => isinstance::builtin_isinstance(heap, args),
+            Self::Issubclass => isinstance::builtin_issubclass(heap, args),
             Self::Len => len::builtin_len(heap, args, interns),
             Self::Max => min_max::builtin_max(heap, args, interns),
             Self::Min => min_max::builtin_min(heap, args, interns),
@@ -252,8 +253,50 @@ impl BuiltinsFunctions {
             Self::Round => round::builtin_round(heap, args),
             Self::Sorted => sorted::builtin_sorted(heap, args, interns),
             Self::Sum => sum::builtin_sum(heap, args, interns),
-            Self::Type => type_::builtin_type(heap, args),
+            Self::Type => type_::builtin_type(heap, args, interns),
             Self::Zip => zip::builtin_zip(heap, args, interns),
+            Self::Super => {
+                // super() is handled specially in the VM (needs frame context)
+                args.drop_with_heap(heap);
+                Err(ExcType::type_error(
+                    "super() must be called from within a method".to_string(),
+                ))
+            }
+            Self::Staticmethod => builtin_staticmethod(heap, args),
+            Self::Classmethod => builtin_classmethod(heap, args),
+            Self::Property => builtin_property(heap, args),
+            Self::Getattr | Self::Setattr | Self::Hasattr => {
+                // These need mutable Interns for dynamic string interning.
+                // Handled specially in the VM's call_function dispatch.
+                args.drop_with_heap(heap);
+                Err(ExcType::type_error(
+                    "getattr/setattr/hasattr must be called via VM dispatch".to_string(),
+                ))
+            }
         }
     }
+}
+
+/// `staticmethod(func)` - wraps a function as a static method.
+fn builtin_staticmethod(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let func = args.get_one_arg("staticmethod", heap)?;
+    let sm = StaticMethod::new(func);
+    let id = heap.allocate(HeapData::StaticMethod(sm))?;
+    Ok(Value::Ref(id))
+}
+
+/// `classmethod(func)` - wraps a function as a class method.
+fn builtin_classmethod(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let func = args.get_one_arg("classmethod", heap)?;
+    let cm = ClassMethod::new(func);
+    let id = heap.allocate(HeapData::ClassMethod(cm))?;
+    Ok(Value::Ref(id))
+}
+
+/// `property(fget=None)` - creates a property descriptor.
+fn builtin_property(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let fget = args.get_zero_one_arg("property", heap)?;
+    let up = UserProperty::new(fget);
+    let id = heap.allocate(HeapData::UserProperty(up))?;
+    Ok(Value::Ref(id))
 }

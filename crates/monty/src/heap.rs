@@ -5,11 +5,13 @@ use std::{
     hash::{Hash, Hasher},
     mem::{ManuallyDrop, discriminant},
     ptr::addr_of,
+    sync::atomic::{AtomicUsize, Ordering},
     vec,
 };
 
-use ahash::AHashSet;
+use ahash::{AHashMap, AHashSet};
 use num_integer::Integer;
+use serde::ser::SerializeStruct;
 use smallvec::SmallVec;
 
 use crate::{
@@ -19,8 +21,9 @@ use crate::{
     intern::{FunctionId, Interns, StringId},
     resource::{ResourceError, ResourceTracker},
     types::{
-        AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait,
-        Range, Set, Slice, Str, Tuple, Type, allocate_tuple,
+        AttrCallResult, Bytes, ClassGetItem, ClassObject, ClassSubclasses, Dataclass, Dict, FrozenSet, FunctionGet,
+        GenericAlias, Instance, List, LongInt, MappingProxy, Module, MontyIter, NamedTuple, Path, PyTrait, Range, Set,
+        Slice, SlotDescriptor, Str, Tuple, Type, WeakRef, allocate_tuple,
     },
     value::{EitherStr, Value},
 };
@@ -127,9 +130,92 @@ pub(crate) enum HeapData {
     /// Pure methods (name, parent, etc.) are handled directly by the VM.
     /// I/O methods (exists, read_text, etc.) yield external function calls.
     Path(Path),
+    /// A Python class object created by a `class` statement.
+    ///
+    /// Contains the class name and a namespace dict with class attributes and methods.
+    /// When called, creates an Instance and invokes `__init__` if defined.
+    ClassObject(crate::types::ClassObject),
+    /// A read-only mapping proxy for a class namespace (`type.__dict__`).
+    MappingProxy(MappingProxy),
+    /// A runtime generic alias (e.g., `C[int]`).
+    GenericAlias(GenericAlias),
+    /// A built-in descriptor created for `__slots__` entries.
+    SlotDescriptor(SlotDescriptor),
+    /// A weak reference created by `weakref.ref`.
+    WeakRef(WeakRef),
+    /// A Python class instance created by calling a ClassObject.
+    ///
+    /// Contains a reference to the class (HeapId) and instance-specific attributes.
+    /// Attribute lookup checks instance attrs first, then class attrs.
+    Instance(crate::types::Instance),
+    /// A bound method object (function + bound self/cls).
+    BoundMethod(crate::types::BoundMethod),
+    /// A super() proxy for MRO-based attribute delegation.
+    ///
+    /// When `super()` is called inside a method, this proxy is created. Attribute
+    /// access on it starts searching from the next class after `current_class_id`
+    /// in the instance's MRO.
+    SuperProxy(crate::types::SuperProxy),
+    /// A `@staticmethod` wrapper - function that doesn't receive `self` or `cls`.
+    StaticMethod(crate::types::StaticMethod),
+    /// A `@classmethod` wrapper - function that receives the class as first argument.
+    ClassMethod(crate::types::ClassMethod),
+    /// A `@property` descriptor with getter/setter/deleter.
+    UserProperty(crate::types::UserProperty),
+    /// A callable returned by `property.setter`/`property.deleter` for chaining.
+    PropertyAccessor(crate::types::PropertyAccessor),
+    /// Built-in bound `__subclasses__` method for classes.
+    ClassSubclasses(ClassSubclasses),
+    /// Built-in default `__class_getitem__` for generic classes.
+    ClassGetItem(ClassGetItem),
+    /// Built-in bound `function.__get__` descriptor wrapper.
+    FunctionGet(FunctionGet),
 }
 
 impl HeapData {
+    /// Returns the variant name as a string slice for debugging.
+    #[cfg(feature = "ref-count-panic")]
+    fn variant_name(&self) -> &'static str {
+        match self {
+            Self::Str(_) => "Str",
+            Self::Bytes(_) => "Bytes",
+            Self::List(_) => "List",
+            Self::Tuple(_) => "Tuple",
+            Self::NamedTuple(_) => "NamedTuple",
+            Self::Dict(_) => "Dict",
+            Self::Set(_) => "Set",
+            Self::FrozenSet(_) => "FrozenSet",
+            Self::Closure(..) => "Closure",
+            Self::FunctionDefaults(..) => "FunctionDefaults",
+            Self::Cell(_) => "Cell",
+            Self::Range(_) => "Range",
+            Self::Slice(_) => "Slice",
+            Self::Exception(_) => "Exception",
+            Self::Dataclass(_) => "Dataclass",
+            Self::Iter(_) => "Iter",
+            Self::Module(_) => "Module",
+            Self::LongInt(_) => "LongInt",
+            Self::Path(_) => "Path",
+            Self::Coroutine(_) => "Coroutine",
+            Self::GatherFuture(_) => "GatherFuture",
+            Self::ClassObject(_) => "ClassObject",
+            Self::MappingProxy(_) => "MappingProxy",
+            Self::GenericAlias(_) => "GenericAlias",
+            Self::SlotDescriptor(_) => "SlotDescriptor",
+            Self::WeakRef(_) => "WeakRef",
+            Self::Instance(_) => "Instance",
+            Self::BoundMethod(_) => "BoundMethod",
+            Self::SuperProxy(_) => "SuperProxy",
+            Self::StaticMethod(_) => "StaticMethod",
+            Self::ClassMethod(_) => "ClassMethod",
+            Self::UserProperty(_) => "UserProperty",
+            Self::PropertyAccessor(_) => "PropertyAccessor",
+            Self::ClassSubclasses(_) => "ClassSubclasses",
+            Self::ClassGetItem(_) => "ClassGetItem",
+            Self::FunctionGet(_) => "FunctionGet",
+        }
+    }
+
     /// Returns whether this heap data type can participate in reference cycles.
     ///
     /// Only container types that can hold references to other heap objects need to be
@@ -156,6 +242,19 @@ impl HeapData {
                 | Self::Module(_)
                 | Self::Coroutine(_)
                 | Self::GatherFuture(_)
+                | Self::ClassObject(_)
+                | Self::MappingProxy(_)
+                | Self::Instance(_)
+                | Self::BoundMethod(_)
+                | Self::SuperProxy(_)
+                | Self::StaticMethod(_)
+                | Self::ClassMethod(_)
+                | Self::UserProperty(_)
+                | Self::PropertyAccessor(_)
+                | Self::GenericAlias(_)
+                | Self::ClassSubclasses(_)
+                | Self::ClassGetItem(_)
+                | Self::FunctionGet(_)
         )
     }
 
@@ -199,6 +298,23 @@ impl HeapData {
                         .iter()
                         .any(|r| r.as_ref().is_some_and(|v| matches!(v, Value::Ref(_))))
             }
+            Self::ClassObject(cls) => cls.has_refs(),
+            Self::MappingProxy(mp) => mp.has_refs(),
+            Self::Instance(inst) => inst.has_refs(),
+            Self::BoundMethod(bm) => bm.has_refs(),
+            Self::SuperProxy(sp) => sp.has_refs(),
+            Self::StaticMethod(sm) => sm.has_refs(),
+            Self::ClassMethod(cm) => cm.has_refs(),
+            Self::UserProperty(up) => up.has_refs(),
+            Self::PropertyAccessor(pa) => pa.has_refs(),
+            Self::GenericAlias(ga) => {
+                matches!(ga.origin(), Value::Ref(_))
+                    || ga.args().iter().any(|v| matches!(v, Value::Ref(_)))
+                    || ga.parameters().iter().any(|v| matches!(v, Value::Ref(_)))
+            }
+            Self::ClassSubclasses(_) => true,
+            Self::ClassGetItem(_) => true,
+            Self::FunctionGet(fg) => matches!(fg.func(), Value::Ref(_)),
             // Leaf types cannot have refs
             Self::Str(_)
             | Self::Bytes(_)
@@ -206,7 +322,9 @@ impl HeapData {
             | Self::Slice(_)
             | Self::Exception(_)
             | Self::LongInt(_)
-            | Self::Path(_) => false,
+            | Self::Path(_)
+            | Self::SlotDescriptor(_)
+            | Self::WeakRef(_) => false,
         }
     }
 
@@ -261,6 +379,21 @@ impl HeapData {
                 }
                 Some(hasher.finish())
             }
+            Self::GenericAlias(ga) => {
+                let mut hasher = DefaultHasher::new();
+                discriminant(self).hash(&mut hasher);
+                let origin_hash = ga.origin().py_hash(heap, interns)?;
+                origin_hash.hash(&mut hasher);
+                for obj in ga.args() {
+                    let h = obj.py_hash(heap, interns)?;
+                    h.hash(&mut hasher);
+                }
+                for obj in ga.parameters() {
+                    let h = obj.py_hash(heap, interns)?;
+                    h.hash(&mut hasher);
+                }
+                Some(hasher.finish())
+            }
             Self::Closure(f, _, _) | Self::FunctionDefaults(f, _) => {
                 let mut hasher = DefaultHasher::new();
                 discriminant(self).hash(&mut hasher);
@@ -294,7 +427,7 @@ impl HeapData {
                 path.as_str().hash(&mut hasher);
                 Some(hasher.finish())
             }
-            // Mutable types, exceptions, iterators, modules, and async types cannot be hashed
+            // Mutable types, exceptions, iterators, modules, classes, and async types cannot be hashed
             // (Cell is handled specially in get_or_compute_hash)
             Self::List(_)
             | Self::Dict(_)
@@ -304,9 +437,72 @@ impl HeapData {
             | Self::Iter(_)
             | Self::Module(_)
             | Self::Coroutine(_)
-            | Self::GatherFuture(_) => None,
+            | Self::GatherFuture(_)
+            | Self::ClassObject(_)
+            | Self::MappingProxy(_)
+            | Self::SlotDescriptor(_)
+            | Self::BoundMethod(_)
+            | Self::WeakRef(_)
+            | Self::ClassSubclasses(_)
+            | Self::ClassGetItem(_)
+            | Self::FunctionGet(_)
+            | Self::SuperProxy(_)
+            | Self::StaticMethod(_)
+            | Self::ClassMethod(_)
+            | Self::UserProperty(_)
+            | Self::PropertyAccessor(_) => None,
+            // Instances are handled in get_or_compute_hash (needs HeapId for identity hash)
+            Self::Instance(_) => None,
             // LongInt is immutable and hashable
             Self::LongInt(li) => Some(li.hash()),
+        }
+    }
+
+    /// Deletes an item by key from a container.
+    ///
+    /// Supports Dict (removes key-value pair) and List (removes item at index).
+    /// Returns a KeyError for Dict or IndexError for List if the key doesn't exist.
+    pub fn py_delitem(
+        &mut self,
+        key: Value,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<()> {
+        match self {
+            Self::Dict(d) => {
+                if let Some((old_key, old_value)) = d.pop(&key, heap, interns)? {
+                    old_key.drop_with_heap(heap);
+                    old_value.drop_with_heap(heap);
+                    key.drop_with_heap(heap);
+                    Ok(())
+                } else {
+                    let err = ExcType::key_error(&key, heap, interns);
+                    key.drop_with_heap(heap);
+                    Err(err)
+                }
+            }
+            #[expect(clippy::cast_possible_wrap, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+            Self::List(l) => {
+                let idx = key.as_index(heap, Type::List)?;
+                let len = l.as_vec().len() as i64;
+                let actual_idx = if idx < 0 { idx + len } else { idx };
+                if actual_idx < 0 || actual_idx >= len {
+                    key.drop_with_heap(heap);
+                    Err(ExcType::list_assignment_index_error())
+                } else {
+                    let removed = l.as_vec_mut().remove(actual_idx as usize);
+                    removed.drop_with_heap(heap);
+                    key.drop_with_heap(heap);
+                    Ok(())
+                }
+            }
+            _ => {
+                key.drop_with_heap(heap);
+                Err(ExcType::type_error(format!(
+                    "'{}' object does not support item deletion",
+                    self.py_type(heap)
+                )))
+            }
         }
     }
 }
@@ -338,6 +534,21 @@ impl PyTrait for HeapData {
             Self::Module(_) => Type::Module,
             Self::Coroutine(_) | Self::GatherFuture(_) => Type::Coroutine,
             Self::Path(p) => p.py_type(heap),
+            Self::ClassObject(cls) => cls.py_type(heap),
+            Self::MappingProxy(mp) => mp.py_type(heap),
+            Self::GenericAlias(ga) => ga.py_type(heap),
+            Self::SlotDescriptor(sd) => sd.py_type(heap),
+            Self::WeakRef(wr) => wr.py_type(heap),
+            Self::Instance(inst) => inst.py_type(heap),
+            Self::BoundMethod(bm) => bm.py_type(heap),
+            Self::SuperProxy(sp) => sp.py_type(heap),
+            Self::StaticMethod(sm) => sm.py_type(heap),
+            Self::ClassMethod(cm) => cm.py_type(heap),
+            Self::UserProperty(up) => up.py_type(heap),
+            Self::PropertyAccessor(pa) => pa.py_type(heap),
+            Self::ClassSubclasses(cs) => cs.py_type(heap),
+            Self::ClassGetItem(cg) => cg.py_type(heap),
+            Self::FunctionGet(fg) => fg.py_type(heap),
         }
     }
 
@@ -373,6 +584,21 @@ impl PyTrait for HeapData {
                     + gather.pending_calls.len() * std::mem::size_of::<crate::asyncio::CallId>()
             }
             Self::Path(p) => p.py_estimate_size(),
+            Self::ClassObject(cls) => cls.py_estimate_size(),
+            Self::MappingProxy(mp) => mp.py_estimate_size(),
+            Self::GenericAlias(ga) => ga.py_estimate_size(),
+            Self::SlotDescriptor(sd) => sd.py_estimate_size(),
+            Self::WeakRef(wr) => wr.py_estimate_size(),
+            Self::Instance(inst) => inst.py_estimate_size(),
+            Self::BoundMethod(bm) => bm.py_estimate_size(),
+            Self::SuperProxy(sp) => sp.py_estimate_size(),
+            Self::StaticMethod(sm) => sm.py_estimate_size(),
+            Self::ClassMethod(cm) => cm.py_estimate_size(),
+            Self::UserProperty(up) => up.py_estimate_size(),
+            Self::PropertyAccessor(pa) => pa.py_estimate_size(),
+            Self::ClassSubclasses(cs) => cs.py_estimate_size(),
+            Self::ClassGetItem(cg) => cg.py_estimate_size(),
+            Self::FunctionGet(fg) => fg.py_estimate_size(),
         }
     }
 
@@ -386,6 +612,7 @@ impl PyTrait for HeapData {
             Self::Dict(d) => PyTrait::py_len(d, heap, interns),
             Self::Set(s) => PyTrait::py_len(s, heap, interns),
             Self::FrozenSet(fs) => PyTrait::py_len(fs, heap, interns),
+            Self::MappingProxy(mp) => PyTrait::py_len(mp, heap, interns),
             Self::Range(r) => Some(r.len()),
             // Cells, Slices, Exceptions, Dataclasses, Iterators, LongInts, Modules, Paths, and async types don't have length
             Self::Cell(_)
@@ -399,7 +626,21 @@ impl PyTrait for HeapData {
             | Self::Module(_)
             | Self::Coroutine(_)
             | Self::GatherFuture(_)
-            | Self::Path(_) => None,
+            | Self::Path(_)
+            | Self::ClassObject(_)
+            | Self::Instance(_)
+            | Self::BoundMethod(_)
+            | Self::SuperProxy(_)
+            | Self::StaticMethod(_)
+            | Self::ClassMethod(_)
+            | Self::SlotDescriptor(_)
+            | Self::UserProperty(_)
+            | Self::PropertyAccessor(_)
+            | Self::GenericAlias(_)
+            | Self::WeakRef(_)
+            | Self::ClassSubclasses(_)
+            | Self::ClassGetItem(_)
+            | Self::FunctionGet(_) => None,
         }
     }
 
@@ -435,6 +676,16 @@ impl PyTrait for HeapData {
             (Self::Slice(a), Self::Slice(b)) => a.py_eq(b, heap, interns),
             // Path equality
             (Self::Path(a), Self::Path(b)) => a.py_eq(b, heap, interns),
+            (Self::ClassObject(a), Self::ClassObject(b)) => a.py_eq(b, heap, interns),
+            (Self::MappingProxy(a), Self::MappingProxy(b)) => a.py_eq(b, heap, interns),
+            (Self::SlotDescriptor(a), Self::SlotDescriptor(b)) => a.py_eq(b, heap, interns),
+            (Self::Instance(a), Self::Instance(b)) => a.py_eq(b, heap, interns),
+            (Self::BoundMethod(a), Self::BoundMethod(b)) => a.py_eq(b, heap, interns),
+            (Self::SuperProxy(a), Self::SuperProxy(b)) => a.py_eq(b, heap, interns),
+            (Self::StaticMethod(a), Self::StaticMethod(b)) => a.py_eq(b, heap, interns),
+            (Self::ClassMethod(a), Self::ClassMethod(b)) => a.py_eq(b, heap, interns),
+            (Self::UserProperty(a), Self::UserProperty(b)) => a.py_eq(b, heap, interns),
+            (Self::PropertyAccessor(a), Self::PropertyAccessor(b)) => a.py_eq(b, heap, interns),
             // Cells, Exceptions, Iterators, Modules, and async types compare by identity only (handled at Value level via HeapId comparison)
             (Self::Cell(_), Self::Cell(_))
             | (Self::Exception(_), Self::Exception(_))
@@ -474,6 +725,7 @@ impl PyTrait for HeapData {
             Self::Dataclass(dc) => dc.py_dec_ref_ids(stack),
             Self::Iter(iter) => iter.py_dec_ref_ids(stack),
             Self::Module(m) => m.py_dec_ref_ids(stack),
+            Self::GenericAlias(ga) => ga.py_dec_ref_ids(stack),
             Self::Coroutine(coro) => {
                 // Decrement ref count for frame cells
                 stack.extend(coro.frame_cells.iter().copied());
@@ -494,6 +746,20 @@ impl PyTrait for HeapData {
                     result.py_dec_ref_ids(stack);
                 }
             }
+            Self::ClassObject(cls) => cls.py_dec_ref_ids(stack),
+            Self::MappingProxy(mp) => mp.py_dec_ref_ids(stack),
+            Self::SlotDescriptor(sd) => sd.py_dec_ref_ids(stack),
+            Self::WeakRef(wr) => wr.py_dec_ref_ids(stack),
+            Self::Instance(inst) => inst.py_dec_ref_ids(stack),
+            Self::BoundMethod(bm) => bm.py_dec_ref_ids(stack),
+            Self::SuperProxy(sp) => sp.py_dec_ref_ids(stack),
+            Self::StaticMethod(sm) => sm.py_dec_ref_ids(stack),
+            Self::ClassMethod(cm) => cm.py_dec_ref_ids(stack),
+            Self::UserProperty(up) => up.py_dec_ref_ids(stack),
+            Self::PropertyAccessor(pa) => pa.py_dec_ref_ids(stack),
+            Self::ClassSubclasses(cs) => cs.py_dec_ref_ids(stack),
+            Self::ClassGetItem(cg) => cg.py_dec_ref_ids(stack),
+            Self::FunctionGet(fg) => fg.py_dec_ref_ids(stack),
             // Range, Slice, Exception, LongInt, and Path have no nested heap references
             Self::Range(_) | Self::Slice(_) | Self::Exception(_) | Self::LongInt(_) | Self::Path(_) => {}
         }
@@ -521,6 +787,21 @@ impl PyTrait for HeapData {
             Self::Coroutine(_) => true,    // Coroutines are always truthy
             Self::GatherFuture(_) => true, // GatherFutures are always truthy
             Self::Path(p) => p.py_bool(heap, interns),
+            Self::ClassObject(cls) => cls.py_bool(heap, interns),
+            Self::MappingProxy(mp) => mp.py_bool(heap, interns),
+            Self::GenericAlias(ga) => ga.py_bool(heap, interns),
+            Self::SlotDescriptor(sd) => sd.py_bool(heap, interns),
+            Self::WeakRef(wr) => wr.py_bool(heap, interns),
+            Self::Instance(inst) => inst.py_bool(heap, interns),
+            Self::BoundMethod(bm) => bm.py_bool(heap, interns),
+            Self::SuperProxy(sp) => sp.py_bool(heap, interns),
+            Self::StaticMethod(sm) => sm.py_bool(heap, interns),
+            Self::ClassMethod(cm) => cm.py_bool(heap, interns),
+            Self::UserProperty(up) => up.py_bool(heap, interns),
+            Self::PropertyAccessor(pa) => pa.py_bool(heap, interns),
+            Self::ClassSubclasses(cs) => cs.py_bool(heap, interns),
+            Self::ClassGetItem(cg) => cg.py_bool(heap, interns),
+            Self::FunctionGet(fg) => fg.py_bool(heap, interns),
         }
     }
 
@@ -559,6 +840,21 @@ impl PyTrait for HeapData {
             }
             Self::GatherFuture(gather) => write!(f, "<gather({})>", gather.item_count()),
             Self::Path(p) => p.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::ClassObject(cls) => cls.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::MappingProxy(mp) => mp.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::GenericAlias(ga) => ga.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::SlotDescriptor(sd) => sd.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::WeakRef(wr) => wr.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::Instance(inst) => inst.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::BoundMethod(bm) => bm.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::SuperProxy(sp) => sp.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::StaticMethod(sm) => sm.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::ClassMethod(cm) => cm.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::UserProperty(up) => up.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::PropertyAccessor(pa) => pa.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::ClassSubclasses(cs) => cs.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::ClassGetItem(cg) => cg.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::FunctionGet(fg) => fg.py_repr_fmt(f, heap, heap_ids, interns),
         }
     }
 
@@ -686,6 +982,8 @@ impl PyTrait for HeapData {
             Self::FrozenSet(fs) => fs.py_call_attr(heap, attr, args, interns),
             Self::Dataclass(dc) => dc.py_call_attr(heap, attr, args, interns),
             Self::Path(p) => p.py_call_attr(heap, attr, args, interns),
+            Self::MappingProxy(mp) => mp.py_call_attr(heap, attr, args, interns),
+            Self::Instance(inst) => inst.py_call_attr(heap, attr, args, interns),
             _ => Err(ExcType::attribute_error(self.py_type(heap), attr.as_str(interns))),
         }
     }
@@ -718,6 +1016,7 @@ impl PyTrait for HeapData {
             Self::NamedTuple(nt) => nt.py_getitem(key, heap, interns),
             Self::Dict(d) => d.py_getitem(key, heap, interns),
             Self::Range(r) => r.py_getitem(key, heap, interns),
+            Self::MappingProxy(mp) => mp.py_getitem(key, heap, interns),
             _ => Err(ExcType::type_error_not_sub(self.py_type(heap))),
         }
     }
@@ -735,6 +1034,7 @@ impl PyTrait for HeapData {
             Self::List(l) => l.py_setitem(key, value, heap, interns),
             Self::Tuple(t) => t.py_setitem(key, value, heap, interns),
             Self::Dict(d) => d.py_setitem(key, value, heap, interns),
+            Self::MappingProxy(mp) => mp.py_setitem(key, value, heap, interns),
             _ => Err(ExcType::type_error_not_sub_assignment(self.py_type(heap))),
         }
     }
@@ -752,6 +1052,17 @@ impl PyTrait for HeapData {
             Self::Slice(s) => s.py_getattr(attr_id, heap, interns),
             Self::Exception(exc) => exc.py_getattr(attr_id, heap, interns),
             Self::Path(p) => p.py_getattr(attr_id, heap, interns),
+            Self::ClassObject(cls) => cls.py_getattr(attr_id, heap, interns),
+            Self::GenericAlias(ga) => ga.py_getattr(attr_id, heap, interns),
+            Self::Instance(inst) => inst.py_getattr(attr_id, heap, interns),
+            Self::BoundMethod(bm) => bm.py_getattr(attr_id, heap, interns),
+            Self::UserProperty(up) => up.py_getattr(attr_id, heap, interns),
+            Self::MappingProxy(mp) => mp.py_getattr(attr_id, heap, interns),
+            Self::SlotDescriptor(sd) => sd.py_getattr(attr_id, heap, interns),
+            Self::WeakRef(wr) => wr.py_getattr(attr_id, heap, interns),
+            Self::ClassSubclasses(cs) => cs.py_getattr(attr_id, heap, interns),
+            Self::ClassGetItem(cg) => cg.py_getattr(attr_id, heap, interns),
+            Self::FunctionGet(fg) => fg.py_getattr(attr_id, heap, interns),
             // All other types don't support attribute access via py_getattr
             _ => Ok(None),
         }
@@ -788,7 +1099,14 @@ impl HashState {
             | HeapData::FunctionDefaults(_, _)
             | HeapData::Range(_)
             | HeapData::Slice(_)
-            | HeapData::LongInt(_) => Self::Unknown,
+            | HeapData::LongInt(_)
+            | HeapData::SlotDescriptor(_)
+            | HeapData::BoundMethod(_)
+            | HeapData::GenericAlias(_)
+            | HeapData::WeakRef(_)
+            | HeapData::ClassSubclasses(_)
+            | HeapData::ClassGetItem(_)
+            | HeapData::FunctionGet(_) => Self::Unknown,
             // Dataclass hashability depends on the mutable flag
             HeapData::Dataclass(dc) => {
                 if dc.is_frozen() {
@@ -799,7 +1117,10 @@ impl HashState {
             }
             // Path is immutable and hashable
             HeapData::Path(_) => Self::Unknown,
-            // Mutable containers, exceptions, iterators, modules, and async types are unhashable
+            // Instances start Unknown - hashability depends on __eq__/__hash__ dunders,
+            // checked lazily in get_or_compute_hash. Default: identity hash (like CPython object.__hash__).
+            HeapData::Instance(_) => Self::Unknown,
+            // Mutable containers, exceptions, iterators, modules, classes, and async types are unhashable
             HeapData::List(_)
             | HeapData::Dict(_)
             | HeapData::Set(_)
@@ -807,13 +1128,31 @@ impl HashState {
             | HeapData::Iter(_)
             | HeapData::Module(_)
             | HeapData::Coroutine(_)
-            | HeapData::GatherFuture(_) => Self::Unhashable,
+            | HeapData::GatherFuture(_)
+            | HeapData::ClassObject(_)
+            | HeapData::MappingProxy(_)
+            | HeapData::SuperProxy(_)
+            | HeapData::StaticMethod(_)
+            | HeapData::ClassMethod(_)
+            | HeapData::UserProperty(_)
+            | HeapData::PropertyAccessor(_) => Self::Unhashable,
         }
     }
 }
 
 /// A single entry inside the heap arena, storing refcount, payload, and hash metadata.
 ///
+/// Serializes an `AtomicUsize` as a plain `usize` for snapshot compatibility.
+fn serialize_atomic<S: serde::Serializer>(val: &AtomicUsize, s: S) -> Result<S::Ok, S::Error> {
+    serde::Serialize::serialize(&val.load(Ordering::Relaxed), s)
+}
+
+/// Deserializes a plain `usize` into an `AtomicUsize`.
+fn deserialize_atomic<'de, D: serde::Deserializer<'de>>(d: D) -> Result<AtomicUsize, D::Error> {
+    let v = <usize as serde::Deserialize>::deserialize(d)?;
+    Ok(AtomicUsize::new(v))
+}
+
 /// The `hash_state` field tracks whether the heap entry is hashable and, if so,
 /// caches the computed hash. Mutable types (List, Dict) start as `Unhashable` and
 /// will raise TypeError if used as dict keys.
@@ -825,7 +1164,8 @@ impl HashState {
 /// for `inc_ref`/`dec_ref` during the borrow.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct HeapValue {
-    refcount: usize,
+    #[serde(serialize_with = "serialize_atomic", deserialize_with = "deserialize_atomic")]
+    refcount: AtomicUsize,
     /// The payload data. Temporarily `None` while borrowed via `with_entry_mut`/`call_attr`.
     data: Option<HeapData>,
     /// Current hashing status / cached hash value
@@ -862,18 +1202,23 @@ pub(crate) struct Heap<T: ResourceTracker> {
     /// In Python, `() is ()` is always `True` because empty tuples are interned.
     /// This field enables the same optimization.
     empty_tuple_id: Option<HeapId>,
+    /// Monotonic class UID counter for subclass registry entries.
+    next_class_uid: u64,
+    /// Cached heap IDs for builtin class objects (`object`, `type`).
+    builtin_class_ids: AHashMap<Type, HeapId>,
 }
 
 impl<T: ResourceTracker + serde::Serialize> serde::Serialize for Heap<T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("Heap", 6)?;
+        let mut state = serializer.serialize_struct("Heap", 8)?;
         state.serialize_field("entries", &self.entries)?;
         state.serialize_field("free_list", &self.free_list)?;
         state.serialize_field("tracker", &self.tracker)?;
         state.serialize_field("may_have_cycles", &self.may_have_cycles)?;
         state.serialize_field("allocations_since_gc", &self.allocations_since_gc)?;
         state.serialize_field("empty_tuple_id", &self.empty_tuple_id)?;
+        state.serialize_field("next_class_uid", &self.next_class_uid)?;
+        state.serialize_field("builtin_class_ids", &self.builtin_class_ids)?;
         state.end()
     }
 }
@@ -888,6 +1233,10 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
             may_have_cycles: bool,
             allocations_since_gc: u32,
             empty_tuple_id: Option<HeapId>,
+            #[serde(default = "default_next_class_uid")]
+            next_class_uid: u64,
+            #[serde(default)]
+            builtin_class_ids: AHashMap<Type, HeapId>,
         }
         let fields = HeapFields::<T>::deserialize(deserializer)?;
         Ok(Self {
@@ -897,8 +1246,18 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
             may_have_cycles: fields.may_have_cycles,
             allocations_since_gc: fields.allocations_since_gc,
             empty_tuple_id: fields.empty_tuple_id,
+            next_class_uid: fields.next_class_uid,
+            builtin_class_ids: fields.builtin_class_ids,
         })
     }
+}
+
+/// Provides the default class UID counter for deserialized heaps.
+///
+/// This keeps older snapshots compatible by supplying a sane starting UID
+/// when the serialized payload predates the `next_class_uid` field.
+fn default_next_class_uid() -> u64 {
+    1
 }
 
 macro_rules! take_data {
@@ -945,6 +1304,8 @@ impl<T: ResourceTracker> Heap<T> {
             may_have_cycles: false,
             allocations_since_gc: 0,
             empty_tuple_id: None,
+            next_class_uid: 1,
+            builtin_class_ids: AHashMap::new(),
         }
     }
 
@@ -961,6 +1322,94 @@ impl<T: ResourceTracker> Heap<T> {
     /// Number of entries in the heap
     pub fn size(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Returns a fresh unique class UID for subclass registry entries.
+    pub fn next_class_uid(&mut self) -> u64 {
+        let uid = self.next_class_uid;
+        self.next_class_uid = self.next_class_uid.saturating_add(1);
+        uid
+    }
+
+    /// Returns (and caches) a heap-allocated class object for a builtin type.
+    ///
+    /// This is used to support class-level operations like `type.__subclasses__`
+    /// and metaclass bases without changing the `Value::Builtin` representation.
+    pub fn builtin_class_id(&mut self, t: Type) -> Result<HeapId, ResourceError> {
+        if let Some(id) = self.builtin_class_ids.get(&t) {
+            return Ok(*id);
+        }
+
+        let class_uid = self.next_class_uid();
+        let name = t.to_string();
+        let mut bases: Vec<HeapId> = Vec::new();
+
+        let base_type = match t {
+            Type::Object => None,
+            Type::Type => Some(Type::Object),
+            Type::Bool => Some(Type::Int),
+            _ => Some(Type::Object),
+        };
+        if let Some(base_type) = base_type {
+            let base_id = self.builtin_class_id(base_type)?;
+            bases.push(base_id);
+        }
+
+        let class_obj = ClassObject::new(
+            name,
+            class_uid,
+            Value::Builtin(crate::builtins::Builtins::Type(Type::Type)),
+            Dict::new(),
+            bases.clone(),
+            Vec::new(),
+        );
+
+        let class_id = self.allocate(HeapData::ClassObject(class_obj))?;
+
+        let mut mro = vec![class_id];
+        for &base_id in &bases {
+            mro.push(base_id);
+            if let HeapData::ClassObject(base_cls) = self.get(base_id) {
+                for &mro_id in base_cls.mro().iter().skip(1) {
+                    if !mro.contains(&mro_id) {
+                        mro.push(mro_id);
+                    }
+                }
+            }
+        }
+
+        if let HeapData::ClassObject(cls) = self.get_mut(class_id) {
+            cls.set_mro(mro);
+        }
+
+        let (instance_has_dict, instance_has_weakref) = match t {
+            Type::Type => (true, true),
+            Type::Object => (false, false),
+            _ => (false, false),
+        };
+        if let HeapData::ClassObject(cls) = self.get_mut(class_id) {
+            cls.set_instance_flags(instance_has_dict, instance_has_weakref);
+        }
+
+        for &base_id in &bases {
+            if let HeapData::ClassObject(base_cls) = self.get_mut(base_id) {
+                base_cls.register_subclass(class_id, class_uid);
+            }
+        }
+
+        self.builtin_class_ids.insert(t, class_id);
+        Ok(class_id)
+    }
+
+    /// Returns the builtin `Type` for a cached builtin class HeapId, if any.
+    ///
+    /// This allows callers to map builtin class wrappers back to their `Type`
+    /// representation (e.g., the class object for `list` -> `Type::List`).
+    #[must_use]
+    pub fn builtin_type_for_class_id(&self, class_id: HeapId) -> Option<Type> {
+        self.builtin_class_ids
+            .iter()
+            .find_map(|(t, id)| if *id == class_id { Some(*t) } else { None })
     }
 
     /// Marks that a reference cycle may exist in the heap.
@@ -1006,7 +1455,7 @@ impl<T: ResourceTracker> Heap<T> {
 
         let hash_state = HashState::for_data(&data);
         let new_entry = HeapValue {
-            refcount: 1,
+            refcount: AtomicUsize::new(1),
             data: Some(data),
             hash_state,
         };
@@ -1054,16 +1503,28 @@ impl<T: ResourceTracker> Heap<T> {
 
     /// Increments the reference count for an existing heap entry.
     ///
+    /// Uses interior mutability for the refcount, so only shared access to the heap
+    /// is required. This avoids borrow conflicts during attribute and MRO lookups.
+    ///
     /// # Panics
     /// Panics if the value ID is invalid or the value has already been freed.
-    pub fn inc_ref(&mut self, id: HeapId) {
+    pub fn inc_ref(&self, id: HeapId) {
         let value = self
             .entries
-            .get_mut(id.index())
+            .get(id.index())
             .expect("Heap::inc_ref: slot missing")
-            .as_mut()
+            .as_ref()
             .expect("Heap::inc_ref: object already freed");
-        value.refcount += 1;
+        value.refcount.fetch_add(1, Ordering::Relaxed);
+        // TEMPORARY DEBUG: trace refcount changes
+        #[cfg(feature = "ref-count-panic")]
+        if false {
+            eprintln!(
+                "[REFCOUNT DEBUG] inc_ref(HeapId({})) -> refcount={}",
+                id.index(),
+                value.refcount.load(Ordering::Relaxed)
+            );
+        }
     }
 
     /// Decrements the reference count and frees the value (plus children) once it hits zero.
@@ -1075,28 +1536,61 @@ impl<T: ResourceTracker> Heap<T> {
     /// # Panics
     /// Panics if the value ID is invalid or the value has already been freed.
     pub fn dec_ref(&mut self, id: HeapId) {
-        let slot = self.entries.get_mut(id.index()).expect("Heap::dec_ref: slot missing");
-        let entry = slot.as_mut().expect("Heap::dec_ref: object already freed");
-        if entry.refcount > 1 {
-            entry.refcount -= 1;
-        } else if let Some(value) = slot.take() {
-            // refcount == 1, free the value and add slot to free list for reuse
-            self.free_list.push(id);
-
-            // Notify tracker of freed memory
-            if let Some(ref data) = value.data {
-                self.tracker.on_free(|| data.py_estimate_size());
+        // TEMPORARY DEBUG: trace refcount changes
+        #[cfg(feature = "ref-count-panic")]
+        if false {
+            let entry = self.entries[id.index()].as_ref().expect("slot");
+            eprintln!(
+                "[REFCOUNT DEBUG] dec_ref(HeapId({})) refcount={}, type={}",
+                id.index(),
+                entry.refcount.load(Ordering::Relaxed),
+                entry.data.as_ref().map_or("None", |d| d.variant_name())
+            );
+        }
+        let value = {
+            let slot = self.entries.get_mut(id.index()).expect("Heap::dec_ref: slot missing");
+            let entry = slot.as_mut().expect("Heap::dec_ref: object already freed");
+            let count = entry.refcount.load(Ordering::Relaxed);
+            if count > 1 {
+                entry.refcount.store(count - 1, Ordering::Relaxed);
+                return;
             }
+            slot.take().expect("Heap::dec_ref: object already freed")
+        };
 
-            // Collect child IDs and mark Values as Dereferenced (when ref-count-panic enabled)
-            if let Some(mut data) = value.data {
-                let mut child_ids = Vec::new();
-                data.py_dec_ref_ids(&mut child_ids);
-                drop(data);
-                // Recursively decrement children
-                for child_id in child_ids {
-                    self.dec_ref(child_id);
-                }
+        // refcount == 1, free the value and add slot to free list for reuse
+        self.free_list.push(id);
+
+        // Notify tracker of freed memory
+        if let Some(ref data) = value.data {
+            self.tracker.on_free(|| data.py_estimate_size());
+        }
+
+        // Collect child IDs and mark Values as Dereferenced (when ref-count-panic enabled)
+        if let Some(mut data) = value.data {
+            if let HeapData::Instance(inst) = &data {
+                self.clear_instance_weakrefs(id, inst);
+            }
+            let mut child_ids = Vec::new();
+            data.py_dec_ref_ids(&mut child_ids);
+            drop(data);
+            // Recursively decrement children
+            for child_id in child_ids {
+                self.dec_ref(child_id);
+            }
+        }
+    }
+
+    /// Clears weakrefs registered on a dying instance.
+    ///
+    /// This sets each weakref's target to `None` to prevent reuse of freed heap slots
+    /// from resurrecting stale weak references.
+    fn clear_instance_weakrefs(&mut self, instance_id: HeapId, inst: &Instance) {
+        for &weakref_id in inst.weakref_ids() {
+            if let Some(HeapData::WeakRef(wr)) = self.get_mut_if_live(weakref_id)
+                && wr.target() == Some(instance_id)
+            {
+                wr.clear();
             }
         }
     }
@@ -1118,6 +1612,15 @@ impl<T: ResourceTracker> Heap<T> {
             .expect("Heap::get: data currently borrowed")
     }
 
+    /// Returns an immutable reference to heap data if the slot is live.
+    ///
+    /// Unlike `get`, this returns `None` instead of panicking when the slot is
+    /// missing, freed, or temporarily borrowed.
+    #[must_use]
+    pub fn get_if_live(&self, id: HeapId) -> Option<&HeapData> {
+        self.entries.get(id.index())?.as_ref()?.data.as_ref()
+    }
+
     /// Returns a mutable reference to the heap data stored at the given ID.
     ///
     /// # Panics
@@ -1132,6 +1635,15 @@ impl<T: ResourceTracker> Heap<T> {
             .data
             .as_mut()
             .expect("Heap::get_mut: data currently borrowed")
+    }
+
+    /// Returns a mutable reference to heap data if the slot is live.
+    ///
+    /// Unlike `get_mut`, this returns `None` instead of panicking when the slot is
+    /// missing, freed, or temporarily borrowed.
+    #[must_use]
+    pub fn get_mut_if_live(&mut self, id: HeapId) -> Option<&mut HeapData> {
+        self.entries.get_mut(id.index())?.as_mut()?.data.as_mut()
     }
 
     /// Returns or computes the hash for the heap entry at the given ID.
@@ -1165,6 +1677,69 @@ impl<T: ResourceTracker> Heap<T> {
             return Some(hash);
         }
 
+        // Handle Instance: check for __eq__ without __hash__ (unhashable), otherwise use identity hash.
+        // Proper __hash__ dunder dispatch is done at the VM level via hash() builtin.
+        if let Some(HeapData::Instance(inst)) = &entry.data {
+            let class_id = inst.class_id();
+            let has_eq = match self.get(class_id) {
+                HeapData::ClassObject(cls) => cls.mro_has_attr("__eq__", class_id, self, interns),
+                _ => false,
+            };
+            let has_hash = match self.get(class_id) {
+                HeapData::ClassObject(cls) => cls.mro_has_attr("__hash__", class_id, self, interns),
+                _ => false,
+            };
+
+            let entry = self
+                .entries
+                .get_mut(id.index())
+                .expect("Heap::get_or_compute_hash: slot missing after instance check")
+                .as_mut()
+                .expect("Heap::get_or_compute_hash: object freed during instance check");
+
+            if has_eq && !has_hash {
+                entry.hash_state = HashState::Unhashable;
+                return None;
+            }
+
+            // Default: identity-based hash (like Python's object.__hash__)
+            let mut hasher = DefaultHasher::new();
+            id.hash(&mut hasher);
+            let hash = hasher.finish();
+            entry.hash_state = HashState::Cached(hash);
+            return Some(hash);
+        }
+
+        // Slot descriptors are hashable by identity (like CPython descriptor objects).
+        if let Some(HeapData::SlotDescriptor(_)) = &entry.data {
+            let mut hasher = DefaultHasher::new();
+            id.hash(&mut hasher);
+            let hash = hasher.finish();
+            entry.hash_state = HashState::Cached(hash);
+            return Some(hash);
+        }
+
+        // Bound methods are hashable by identity (like CPython method objects).
+        if let Some(HeapData::BoundMethod(_)) = &entry.data {
+            let mut hasher = DefaultHasher::new();
+            id.hash(&mut hasher);
+            let hash = hasher.finish();
+            entry.hash_state = HashState::Cached(hash);
+            return Some(hash);
+        }
+
+        // Builtin wrapper callables and weakrefs are hashable by identity.
+        if let Some(
+            HeapData::WeakRef(_) | HeapData::ClassSubclasses(_) | HeapData::ClassGetItem(_) | HeapData::FunctionGet(_),
+        ) = &entry.data
+        {
+            let mut hasher = DefaultHasher::new();
+            id.hash(&mut hasher);
+            let hash = hasher.finish();
+            entry.hash_state = HashState::Cached(hash);
+            return Some(hash);
+        }
+
         // Compute hash lazily - need to temporarily take data to avoid borrow conflict
         let data = entry.data.take().expect("Heap::get_or_compute_hash: data borrowed");
         let hash = data.compute_hash_if_immutable(self, interns);
@@ -1182,6 +1757,35 @@ impl<T: ResourceTracker> Heap<T> {
             None => HashState::Unhashable,
         };
         hash
+    }
+
+    /// Caches a pre-computed hash value for a heap entry.
+    ///
+    /// This is used by the VM to cache the result of calling `__hash__()` on an instance
+    /// so that subsequent dict operations (which call `get_or_compute_hash`) will use the
+    /// Python-level hash rather than identity-based hash.
+    ///
+    /// # Panics
+    /// Panics if the value ID is invalid or the value has already been freed.
+    pub fn set_cached_hash(&mut self, id: HeapId, hash: u64) {
+        let entry = self
+            .entries
+            .get_mut(id.index())
+            .expect("Heap::set_cached_hash: slot missing")
+            .as_mut()
+            .expect("Heap::set_cached_hash: object already freed");
+        entry.hash_state = HashState::Cached(hash);
+    }
+
+    /// Returns true if the heap entry at the given ID has its hash already cached.
+    pub fn has_cached_hash(&self, id: HeapId) -> bool {
+        let entry = self
+            .entries
+            .get(id.index())
+            .expect("Heap::has_cached_hash: slot missing")
+            .as_ref()
+            .expect("Heap::has_cached_hash: object already freed");
+        matches!(entry.hash_state, HashState::Cached(_))
     }
 
     /// Calls an attribute on the heap entry, returning an `AttrCallResult` that may signal
@@ -1276,6 +1880,7 @@ impl<T: ResourceTracker> Heap<T> {
             .as_ref()
             .expect("Heap::get_refcount: object already freed")
             .refcount
+            .load(Ordering::Relaxed)
     }
 
     /// Returns the number of live (non-freed) values on the heap.
@@ -1285,6 +1890,21 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// Excludes the empty tuple singleton since it's an internal optimization
     /// detail that persists even when not explicitly used by user code.
+    /// TEMPORARY DEBUG: prints all remaining heap entries with refcounts.
+    #[cfg(feature = "ref-count-panic")]
+    pub fn debug_dump_remaining(&self) {
+        eprintln!("[HEAP DUMP] Remaining entries before heap drop:");
+        for (i, slot) in self.entries.iter().enumerate() {
+            if let Some(entry) = slot {
+                let type_name = entry.data.as_ref().map_or("(data taken)", |d| d.variant_name());
+                eprintln!(
+                    "  HeapId({i}): type={type_name}, refcount={}",
+                    entry.refcount.load(Ordering::Relaxed)
+                );
+            }
+        }
+    }
+
     #[must_use]
     #[cfg(feature = "ref-count-return")]
     pub fn entry_count(&self) -> usize {
@@ -1574,7 +2194,8 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
         | HeapData::Exception(_)
         | HeapData::LongInt(_)
         | HeapData::Slice(_)
-        | HeapData::Path(_) => {}
+        | HeapData::Path(_)
+        | HeapData::SlotDescriptor(_) => {}
         HeapData::List(list) => {
             // Skip iteration if no refs - major GC optimization for lists of primitives
             if !list.contains_refs() {
@@ -1719,6 +2340,115 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
                 }
             }
         }
+        HeapData::ClassObject(cls) => {
+            // Class namespace can contain references to heap values (methods, closures)
+            for (k, v) in cls.namespace() {
+                if let Value::Ref(id) = k {
+                    work_list.push(*id);
+                }
+                if let Value::Ref(id) = v {
+                    work_list.push(*id);
+                }
+            }
+            if let Value::Ref(id) = cls.metaclass() {
+                work_list.push(*id);
+            }
+            // Base classes and MRO are heap references
+            for &base_id in cls.bases() {
+                work_list.push(base_id);
+            }
+            for &mro_id in cls.mro() {
+                work_list.push(mro_id);
+            }
+        }
+        HeapData::MappingProxy(mp) => {
+            work_list.push(mp.class_id());
+        }
+        HeapData::Instance(inst) => {
+            // Instance always has class_id ref, plus attrs may have refs
+            work_list.push(inst.class_id());
+            if let Some(attrs_id) = inst.attrs_id() {
+                work_list.push(attrs_id);
+            }
+            for value in inst.slot_values() {
+                if let Value::Ref(id) = value {
+                    work_list.push(*id);
+                }
+            }
+            // Weakrefs are not strong references; do not mark them here.
+        }
+        HeapData::BoundMethod(bm) => {
+            if let Value::Ref(id) = bm.func() {
+                work_list.push(*id);
+            }
+            if let Value::Ref(id) = bm.self_arg() {
+                work_list.push(*id);
+            }
+        }
+        HeapData::SuperProxy(sp) => {
+            work_list.push(sp.instance_id());
+            work_list.push(sp.current_class_id());
+        }
+        HeapData::StaticMethod(sm) => {
+            if let Value::Ref(id) = sm.func() {
+                work_list.push(*id);
+            }
+        }
+        HeapData::ClassMethod(cm) => {
+            if let Value::Ref(id) = cm.func() {
+                work_list.push(*id);
+            }
+        }
+        HeapData::UserProperty(up) => {
+            if let Some(Value::Ref(id)) = up.fget() {
+                work_list.push(*id);
+            }
+            if let Some(Value::Ref(id)) = up.fset() {
+                work_list.push(*id);
+            }
+            if let Some(Value::Ref(id)) = up.fdel() {
+                work_list.push(*id);
+            }
+        }
+        HeapData::PropertyAccessor(pa) => {
+            let (fget, fset, fdel) = pa.parts();
+            if let Some(Value::Ref(id)) = fget {
+                work_list.push(*id);
+            }
+            if let Some(Value::Ref(id)) = fset {
+                work_list.push(*id);
+            }
+            if let Some(Value::Ref(id)) = fdel {
+                work_list.push(*id);
+            }
+        }
+        HeapData::GenericAlias(ga) => {
+            if let Value::Ref(id) = ga.origin() {
+                work_list.push(*id);
+            }
+            for value in ga.args() {
+                if let Value::Ref(id) = value {
+                    work_list.push(*id);
+                }
+            }
+            for value in ga.parameters() {
+                if let Value::Ref(id) = value {
+                    work_list.push(*id);
+                }
+            }
+        }
+        HeapData::ClassSubclasses(cs) => {
+            work_list.push(cs.class_id());
+        }
+        HeapData::ClassGetItem(cg) => {
+            work_list.push(cg.class_id());
+        }
+        HeapData::FunctionGet(fg) => {
+            if let Value::Ref(id) = fg.func() {
+                work_list.push(*id);
+            }
+        }
+        HeapData::WeakRef(_) => {}
     }
 }
 

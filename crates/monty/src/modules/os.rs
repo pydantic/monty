@@ -68,6 +68,7 @@ pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -
 /// or `AttrCallResult::Value` for functions that can be computed immediately.
 pub(super) fn call(
     heap: &mut Heap<impl ResourceTracker>,
+    _interns: &Interns,
     functions: OsFunctions,
     args: ArgValues,
 ) -> RunResult<AttrCallResult> {

@@ -131,10 +131,26 @@ reportUnusedVariable = false
 reportUnusedImport = false
 reportAssignmentType = false
 reportFunctionMemberAccess = false
+reportIncompatibleMethodOverride = false
+reportOptionalSubscript = false
 # ~bool is deprecated in Python 3.16 but valid in 3.14
 reportDeprecated = false
 # star import test intentionally uses `from sys import *`
 reportWildcardImportFromLibrary = false
+
+[[tool.pyright.executionEnvironments]]
+root = "crates/monty-python/tests"
+reportMissingImports = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportUnknownParameterType = false
+reportArgumentType = false
+reportUntypedFunctionDecorator = false
+reportCallIssue = false
+reportGeneralTypeIssues = false
+reportIncompatibleMethodOverride = false
+reportUnnecessaryTypeIgnoreComment = false
 
 [[tool.pyright.executionEnvironments]]
 root = "crates/monty-type-checking"

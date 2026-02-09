@@ -244,16 +244,48 @@ impl fmt::Display for StackFrame {
 impl StackFrame {
     pub(crate) fn from_raw(f: &RawStackFrame, interns: &Interns, source: &str) -> Self {
         let filename = interns.get_str(f.position.filename).to_string();
+        let preview_line = match f.position.preview_line_number() {
+            Some(ln) => source.lines().nth(ln as usize).map(str::to_string),
+            None => {
+                if f.hide_caret && f.position.start().line != f.position.end().line {
+                    let start_line = f.position.start().line.saturating_sub(1) as usize;
+                    let end_line = f.position.end().line.saturating_sub(1) as usize;
+                    if start_line <= end_line {
+                        let mut lines = source.lines().skip(start_line);
+                        let mut collected = Vec::new();
+                        for _ in start_line..=end_line {
+                            if let Some(line) = lines.next() {
+                                collected.push(line);
+                            } else {
+                                break;
+                            }
+                        }
+                        if collected.is_empty() {
+                            None
+                        } else {
+                            let mut iter = collected.into_iter();
+                            let mut joined = iter.next().unwrap_or_default().to_string();
+                            for line in iter {
+                                joined.push('\n');
+                                joined.push_str("    ");
+                                joined.push_str(line);
+                            }
+                            Some(joined)
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+        };
         Self {
             filename,
             start: f.position.start(),
             end: f.position.end(),
             frame_name: f.frame_name.map(|id| interns.get_str(id).to_string()),
-            preview_line: f
-                .position
-                .preview_line_number()
-                .and_then(|ln| source.lines().nth(ln as usize))
-                .map(str::to_string),
+            preview_line,
             hide_caret: f.hide_caret,
             hide_frame_name: false,
         }

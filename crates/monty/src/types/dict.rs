@@ -6,6 +6,7 @@ use std::{
 
 use ahash::AHashSet;
 use hashbrown::{HashTable, hash_table::Entry};
+use serde::ser::SerializeStruct;
 use smallvec::smallvec;
 
 use super::{List, MontyIter, PyTrait, allocate_tuple};
@@ -227,6 +228,53 @@ impl Dict {
                 }
             })
             .map(|&idx| &self.entries[idx].value)
+    }
+
+    /// Creates a shallow clone of this dict with proper refcount handling.
+    ///
+    /// Clones each key and value with `clone_with_heap` and builds a new Dict.
+    /// This is useful when a caller needs an owned `Dict` (e.g., for kwargs)
+    /// without mutating or consuming the original.
+    pub fn clone_with_heap(&self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
+        let pairs: Vec<(Value, Value)> = self
+            .iter()
+            .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)))
+            .collect();
+        Self::from_pairs(pairs, heap, interns)
+    }
+
+    /// Removes and returns a key-value pair by string key name.
+    ///
+    /// Matches both interned strings and heap-allocated strings.
+    /// Returns Some((key, value)) if found, None if not found.
+    /// Caller owns the returned key/value and must manage refcounts.
+    pub fn pop_by_str(
+        &mut self,
+        key_str: &str,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> Option<(Value, Value)> {
+        let mut hasher = DefaultHasher::new();
+        key_str.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        let entry = self.indices.find_entry(hash, |&idx| {
+            let entry_key = &self.entries[idx].key;
+            match entry_key {
+                Value::InternString(id) => interns.get_str(*id) == key_str,
+                Value::Ref(id) => matches!(heap.get(*id), HeapData::Str(s) if s.as_str() == key_str),
+                _ => false,
+            }
+        });
+
+        let Ok(entry) = entry else {
+            return None;
+        };
+
+        let idx = *entry.get();
+        entry.remove();
+        let entry = self.entries.remove(idx);
+        Some((entry.key, entry.value))
     }
 
     /// Sets a key-value pair in the dict.
@@ -1034,7 +1082,6 @@ fn dict_popitem(dict: &mut Dict, heap: &mut Heap<impl ResourceTracker>) -> RunRe
 // Serializes entries and contains_refs; rebuilds the indices hash table on deserialize.
 impl serde::Serialize for Dict {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
         let mut state = serializer.serialize_struct("Dict", 2)?;
         state.serialize_field("entries", &self.entries)?;
         state.serialize_field("contains_refs", &self.contains_refs)?;

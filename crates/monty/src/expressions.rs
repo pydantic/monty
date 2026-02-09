@@ -1,5 +1,5 @@
 use crate::{
-    args::ArgExprs,
+    args::{ArgExprs, Kwarg},
     builtins::Builtins,
     fstring::FStringPart,
     intern::{BytesId, LongIntId, StringId},
@@ -103,6 +103,12 @@ pub enum Callable {
 pub enum Expr {
     Literal(Literal),
     Builtin(Builtins),
+    /// Python's `NotImplemented` singleton constant.
+    ///
+    /// Resolved at parse time from the name `NotImplemented`. Used as a return
+    /// value from dunder methods to signal that the operation is not supported
+    /// for the given operand types.
+    NotImplemented,
     Name(Identifier),
     /// Function call expression.
     ///
@@ -417,13 +423,42 @@ pub enum Node<F> {
         targets_position: CodeRange,
         object: ExprLoc,
     },
+    /// Augmented assignment to a simple name: `x += value`
+    ///
+    /// Loads the name, performs the in-place operation, and stores back.
     OpAssign {
         target: Identifier,
         op: Operator,
         object: ExprLoc,
     },
+    /// Augmented assignment to an attribute: `obj.attr += value`
+    ///
+    /// Evaluates `obj`, loads `obj.attr`, performs the in-place operation,
+    /// and stores back with `StoreAttr`. The object expression is evaluated once.
+    OpAssignAttr {
+        object: ExprLoc,
+        attr: EitherStr,
+        op: Operator,
+        value: ExprLoc,
+        target_position: CodeRange,
+    },
+    /// Augmented assignment to a subscript: `obj[key] += value`
+    ///
+    /// Evaluates `obj` and `key`, loads `obj[key]`, performs the in-place operation,
+    /// and stores back with `StoreSubscr`. Both `obj` and `key` are evaluated once.
+    OpAssignSubscr {
+        object: ExprLoc,
+        index: ExprLoc,
+        op: Operator,
+        value: ExprLoc,
+        target_position: CodeRange,
+    },
+    /// Subscript assignment: `obj[key] = value`
+    ///
+    /// The target object can be any expression (a name, attribute access like
+    /// `self.data[key] = value`, or even a subscript like `matrix[i][j] = value`).
     SubscriptAssign {
-        target: Identifier,
+        target: ExprLoc,
         index: ExprLoc,
         value: ExprLoc,
         /// Position of the subscript expression (e.g., `lst[10]`) for traceback carets.
@@ -439,6 +474,27 @@ pub enum Node<F> {
         attr: EitherStr,
         target_position: CodeRange,
         value: ExprLoc,
+    },
+    /// Delete a local/global variable: `del x`
+    ///
+    /// After deletion, accessing the name raises `NameError` or `UnboundLocalError`.
+    DeleteName(Identifier),
+    /// Delete an attribute: `del obj.attr`
+    ///
+    /// Removes the attribute from the object. Raises `AttributeError` if the
+    /// attribute doesn't exist or can't be deleted.
+    DeleteAttr {
+        object: ExprLoc,
+        attr: EitherStr,
+        position: CodeRange,
+    },
+    /// Delete a subscript: `del obj[key]`
+    ///
+    /// Removes the item at the given key. Calls `__delitem__` on the object.
+    DeleteSubscr {
+        object: ExprLoc,
+        index: ExprLoc,
+        position: CodeRange,
     },
     For {
         /// Loop target - either a single identifier or tuple unpacking pattern.
@@ -476,6 +532,28 @@ pub enum Node<F> {
         or_else: Vec<Self>,
     },
     FunctionDef(F),
+    /// Class definition statement.
+    ///
+    /// Like `FunctionDef`, this is parameterized by the function definition type.
+    /// In parsed form (`RawClassDef`), it contains unprepared names.
+    /// In prepared form (`PreparedClassDef`), names are resolved to namespace indices.
+    ///
+    /// The class body executes at definition time (like module-level code) and creates
+    /// a class object. Methods defined in the class body are compiled as functions.
+    ClassDef(Box<ClassDef<F>>),
+    /// With statement (context manager): `with expr as var: body`
+    ///
+    /// Calls `__enter__` on the context expression, assigns the result to `var` (if present),
+    /// executes the body, then calls `__exit__` with exception info (or None, None, None).
+    /// If `__exit__` returns a truthy value, any exception raised in the body is suppressed.
+    With {
+        /// The context manager expression (e.g., `open('file')`)
+        context_expr: ExprLoc,
+        /// Optional `as` target (e.g., `f` in `with open('file') as f:`)
+        var: Option<Identifier>,
+        /// The body to execute inside the context
+        body: Vec<Self>,
+    },
     /// Global variable declaration. Only present in parsed form, consumed during prepare.
     ///
     /// Declares that the listed names refer to module-level (global) variables,
@@ -531,6 +609,13 @@ pub enum Node<F> {
 pub struct PreparedFunctionDef {
     /// The function name identifier with resolved namespace index.
     pub name: Identifier,
+    /// The binding name used to store this function in the enclosing scope.
+    ///
+    /// In class bodies, this may be a mangled name (e.g., `_Class__private`),
+    /// while `name` remains the original function name for metadata.
+    pub binding_name: Identifier,
+    /// Parsed type parameter names (PEP 695), stored as interned identifiers.
+    pub type_params: Vec<StringId>,
     /// The function signature with parameter names and default counts.
     pub signature: Signature,
     /// The prepared function body with resolved names.
@@ -542,6 +627,12 @@ pub struct PreparedFunctionDef {
     /// At definition time: look up cell HeapId from enclosing namespace at each slot.
     /// At call time: captured cells are pushed sequentially (our slots are implicit).
     pub free_var_enclosing_slots: Vec<NamespaceId>,
+    /// Names of free variables captured from enclosing scopes.
+    ///
+    /// Stored in the same order as `free_var_enclosing_slots`, used for diagnostics
+    /// and for resolving zero-arg `super()` via the `__class__` cell.
+    #[serde(default)]
+    pub free_var_names: Vec<StringId>,
     /// Number of cell variables (captured by nested functions).
     ///
     /// At call time, this many cells are created and pushed right after params.
@@ -565,6 +656,60 @@ pub struct PreparedFunctionDef {
     /// When true, calling this function creates a `Coroutine` object instead of
     /// immediately pushing a frame.
     pub is_async: bool,
+    /// Decorator expressions applied to this function.
+    ///
+    /// These are evaluated at definition time and applied bottom-to-top.
+    /// Inside class bodies, these enable `@staticmethod`, `@classmethod`, and `@property`.
+    pub decorators: Vec<ExprLoc>,
+}
+
+/// A class definition parameterized by the function definition type.
+///
+/// This struct is generic over the function definition type `F` so it can hold
+/// either `RawFunctionDef` (parsed, unprepared) or `PreparedFunctionDef` (resolved names).
+/// The class body contains `Node<F>` statements which may include `FunctionDef(F)` for methods.
+///
+/// In parsed form, `namespace_size` is 0 (not yet computed).
+/// In prepared form, `namespace_size` holds the number of local variable slots needed
+/// for the class body namespace.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ClassDef<F> {
+    /// The class name identifier.
+    pub name: Identifier,
+    /// The binding name used to store this class in the enclosing scope.
+    ///
+    /// In class bodies, this may be a mangled name (e.g., `_Outer__Inner`).
+    pub binding_name: Identifier,
+    /// Parsed type parameter names (PEP 695), stored as interned identifiers.
+    pub type_params: Vec<StringId>,
+    /// Base class expressions (for inheritance). Empty means implicit `object` base.
+    pub bases: Vec<ExprLoc>,
+    /// Keyword arguments passed to the class definition (e.g., `metaclass=...`).
+    pub keywords: Vec<Kwarg>,
+    /// Optional `**kwargs` unpacking expression for class definition.
+    ///
+    /// This mirrors function call `**kwargs` support, allowing dynamic class
+    /// keyword arguments to be merged into the class creation kwargs dict.
+    pub var_kwargs: Option<ExprLoc>,
+    /// The class body statements (assignments for class variables, function defs for methods).
+    pub body: Vec<Node<F>>,
+    /// Number of local variable slots needed for the class body namespace.
+    /// Set to 0 in parsed form, filled in during prepare phase.
+    pub namespace_size: usize,
+    /// Namespace slot reserved for the `__class__` cell, if present.
+    ///
+    /// This is used to support zero-argument `super()` and `__class__` references
+    /// inside methods by providing a closure cell owned by the class body frame.
+    #[serde(default)]
+    pub class_cell_slot: Option<NamespaceId>,
+    /// Mapping of class body local variable names (StringId) to their namespace slot indices.
+    /// Empty in parsed form, populated during prepare phase.
+    /// Used by the compiler to emit code that builds the class namespace dict.
+    pub local_names: Vec<(StringId, NamespaceId)>,
+    /// Decorator expressions applied to the class itself (e.g., `@dataclass`).
+    ///
+    /// Applied bottom-to-top after the class is created by `BuildClass`.
+    pub decorators: Vec<ExprLoc>,
 }
 
 /// Type alias for prepared AST nodes (output of prepare phase).

@@ -57,6 +57,18 @@ pub enum AttrCallResult {
     /// Currently unused - will be used when types need to call external functions from attribute methods.
     #[expect(dead_code)]
     ExternalCall(ExtFunctionId, ArgValues),
+
+    /// A property getter needs to be called. The VM should call the getter function
+    /// with the instance as the first argument, and push the result.
+    ///
+    /// Fields: (getter_function, instance_ref)
+    PropertyCall(Value, Value),
+
+    /// A custom descriptor's `__get__` method needs to be called.
+    /// The VM should call `descriptor.__get__(instance, type)` and push the result.
+    ///
+    /// Field: descriptor_instance
+    DescriptorGet(Value),
 }
 
 /// Common operations for heap-allocated Python values.

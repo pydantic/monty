@@ -2,7 +2,9 @@
 
 use super::VM;
 use crate::{
+    args::ArgValues,
     builtins::Builtins,
+    bytecode::vm::call::CallResult,
     exception_private::{ExcType, ExceptionRaise, RawStackFrame, RunError, SimpleException},
     heap::HeapData,
     intern::{StaticStrings, StringId},
@@ -128,6 +130,29 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             return Some(self.unwind_for_traceback(error));
         }
 
+        // Check if this is StopIteration from a __next__ dunder called by ForIter.
+        // ForIter sets pending_for_iter_jump when __next__ pushes a frame. If that frame
+        // raises StopIteration, we intercept it here: pop the __next__ frame, pop the
+        // iterator from the caller's stack, and jump to the end of the for-loop body.
+        // This must happen before the normal exception handler search because ForIter
+        // doesn't generate exception table entries -- it catches StopIteration internally.
+        if let Some(offset) = self.pending_for_iter_jump.take()
+            && error.is_stop_iteration()
+        {
+            // Pop the __next__ dunder frame
+            self.pop_frame();
+            // Now in the caller frame: pop the iterator from TOS
+            let iter = self.pop();
+            iter.drop_with_heap(self.heap);
+            // Jump forward by the ForIter offset (relative to caller's IP)
+            let frame = self.current_frame_mut();
+            let ip_i64 = i64::try_from(frame.ip).expect("IP exceeds i64");
+            let new_ip = ip_i64 + i64::from(offset);
+            frame.ip = usize::try_from(new_ip).expect("jump resulted in negative or overflowing IP");
+            return None; // Exception caught - continue execution after for-loop
+        }
+        // Not StopIteration - fall through to normal exception handling
+
         // Only catchable exceptions can be handled
         let exc_info = match &error {
             RunError::Exc(exc) => exc.clone(),
@@ -172,6 +197,61 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 return None; // Continue execution at handler
             }
 
+            // No handler in this frame. If this is a pending __getattribute__ call that
+            // raised AttributeError, attempt __getattr__ fallback before unwinding.
+            if let Some(pending) = self.pending_getattr_fallback.last()
+                && pending.frame_depth == self.frames.len()
+                && matches!(error, RunError::Exc(ref exc) if exc.exc.exc_type() == ExcType::AttributeError)
+            {
+                let pending = *pending;
+                let getattr_id: StringId = StaticStrings::DunderGetattr.into();
+                let getattr = match pending.kind {
+                    super::PendingGetAttrKind::Instance => self.lookup_type_dunder(pending.obj_id, getattr_id),
+                    super::PendingGetAttrKind::Class => self.lookup_metaclass_dunder(pending.obj_id, getattr_id),
+                };
+
+                if let Some(getattr) = getattr {
+                    // We will handle this AttributeError via __getattr__.
+                    let pending = self
+                        .pending_getattr_fallback
+                        .pop()
+                        .expect("pending getattr entry disappeared");
+                    exc_value.drop_with_heap(self.heap);
+
+                    // Pop the __getattribute__ frame before invoking __getattr__.
+                    self.pop_frame();
+                    self.instruction_ip = self.current_frame().ip;
+
+                    let name_val = Value::InternString(pending.name_id);
+                    let result = match pending.kind {
+                        super::PendingGetAttrKind::Instance => {
+                            self.call_dunder(pending.obj_id, getattr, ArgValues::One(name_val))
+                        }
+                        super::PendingGetAttrKind::Class => {
+                            self.call_class_dunder(pending.obj_id, getattr, ArgValues::One(name_val))
+                        }
+                    };
+
+                    // Drop the extra receiver ref now that __getattr__ has been invoked.
+                    Value::Ref(pending.obj_id).drop_with_heap(self.heap);
+
+                    return match result {
+                        Ok(CallResult::Push(value)) => {
+                            self.push(value);
+                            None
+                        }
+                        Ok(CallResult::FramePushed) => None,
+                        Ok(CallResult::External(_, _)) => Some(RunError::internal(
+                            "__getattr__ cannot perform external calls during exception handling",
+                        )),
+                        Ok(CallResult::OsCall(_, _)) => Some(RunError::internal(
+                            "__getattr__ cannot perform os calls during exception handling",
+                        )),
+                        Err(e) => self.handle_exception(e),
+                    };
+                }
+            }
+
             // No handler in this frame - pop frame and try outer
             if self.frames.len() <= 1 {
                 // No more frames - exception is unhandled
@@ -201,6 +281,11 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             // Pop this frame
             self.pop_frame();
 
+            // Clear any pending flags that were set for this frame's return handling.
+            // If a property setter was called and raised an exception, we don't want
+            // the discard_return flag to affect the next function return.
+            self.pending_discard_return = false;
+
             // Add caller frame info to traceback (if we have call position)
             if let Some(pos) = call_position {
                 let frame_name = self.current_frame_name();
@@ -211,11 +296,12 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 }
             }
 
-            // Update instruction_ip for the new frame
-            self.instruction_ip = self
-                .current_frame()
-                .call_position
-                .map_or(0, |p| p.start().line as usize);
+            // Update instruction_ip for exception handler lookup in the caller frame.
+            // Use the caller frame's bytecode IP (which was synced before the call)
+            // so find_exception_handler can locate the correct try/except block.
+            // Previously this used call_position.start().line which is a SOURCE LINE
+            // number, not a bytecode offset, causing exception handlers to be missed.
+            self.instruction_ip = self.current_frame().ip;
         }
     }
 

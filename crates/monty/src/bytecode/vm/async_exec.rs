@@ -676,6 +676,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                         function_id: sf.function_id,
                         cells: sf.cells,
                         call_position: sf.call_position,
+                        class_body_info: None,
+                        init_instance: None,
                     }
                 })
                 .collect();

@@ -37,10 +37,11 @@ fn yield_expressions_return_not_implemented_error() {
     );
 }
 
+/// Ensures basic class definitions parse without errors.
 #[test]
-fn classes_return_not_implemented_error() {
+fn classes_compile_successfully() {
     let result = MontyRun::new("class Foo: pass".to_owned(), "test.py", vec![], vec![]);
-    assert_eq!(get_exc_type(result), ExcType::NotImplementedError);
+    assert!(result.is_ok(), "class definition should compile successfully");
 }
 
 #[test]
@@ -52,10 +53,11 @@ fn unknown_imports_compile_successfully_error_deferred_to_runtime() {
     assert!(result.is_ok(), "unknown import should compile successfully");
 }
 
+/// Ensures `with` statements parse without errors, deferring execution to runtime.
 #[test]
-fn with_statement_returns_not_implemented_error() {
+fn with_statement_compiles_successfully() {
     let result = MontyRun::new("with open('f') as f: pass".to_owned(), "test.py", vec![], vec![]);
-    assert_eq!(get_exc_type(result), ExcType::NotImplementedError);
+    assert!(result.is_ok(), "with statement should compile successfully");
 }
 
 #[test]

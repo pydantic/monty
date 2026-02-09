@@ -187,6 +187,23 @@ impl CodeBuilder {
         }
     }
 
+    /// Emits an instruction with two u16 operands followed by a u8 operand.
+    ///
+    /// Used for BuildClass: func_id (u16) + name_id (u16) + base_count (u8)
+    pub fn emit_u16_u16_u8(&mut self, op: Opcode, operand1: u16, operand2: u16, operand3: u8) {
+        self.record_location();
+        self.bytecode.push(op as u8);
+        self.bytecode.extend_from_slice(&operand1.to_le_bytes());
+        self.bytecode.extend_from_slice(&operand2.to_le_bytes());
+        self.bytecode.push(operand3);
+        if op == Opcode::BuildClass {
+            // Pops base_count bases from stack, pushes 1 ClassObject
+            self.adjust_stack(1 - i16::from(operand3));
+        } else if let Some(effect) = op.stack_effect() {
+            self.adjust_stack(effect);
+        }
+    }
+
     /// Emits `CallBuiltinFunction` instruction.
     ///
     /// Operands: builtin_id (u8) + arg_count (u8)

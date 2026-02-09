@@ -16,6 +16,7 @@ use num_traits::{ToPrimitive, Zero};
 use crate::{
     asyncio::CallId,
     builtins::Builtins,
+    defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId},
     intern::{BytesId, ExtFunctionId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
@@ -46,6 +47,12 @@ pub(crate) enum Value {
     Undefined,
     Ellipsis,
     None,
+    /// Python's `NotImplemented` singleton.
+    ///
+    /// Returned by binary dunder methods (`__add__`, `__eq__`, etc.) to signal
+    /// that the operation is not supported for the given operand types. The VM
+    /// then tries the reflected operation on the other operand.
+    NotImplemented,
     Bool(bool),
     Int(i64),
     Float(f64),
@@ -118,6 +125,7 @@ impl PyTrait for Value {
             Self::Undefined => panic!("Cannot get type of undefined value"),
             Self::Ellipsis => Type::Ellipsis,
             Self::None => Type::NoneType,
+            Self::NotImplemented => Type::NoneType, // NotImplemented has its own type in CPython, but NoneType works for our purposes
             Self::Bool(_) => Type::Bool,
             Self::Int(_) | Self::InternLongInt(_) => Type::Int,
             Self::Float(_) => Type::Float,
@@ -308,7 +316,7 @@ impl PyTrait for Value {
         match self {
             Self::Undefined => false,
             Self::Ellipsis => true,
-            Self::None => false,
+            Self::None | Self::NotImplemented => false,
             Self::Bool(b) => *b,
             Self::Int(v) => *v != 0,
             Self::Float(f) => *f != 0.0,
@@ -338,6 +346,7 @@ impl PyTrait for Value {
             Self::Undefined => f.write_str("Undefined"),
             Self::Ellipsis => f.write_str("Ellipsis"),
             Self::None => f.write_str("None"),
+            Self::NotImplemented => f.write_str("NotImplemented"),
             Self::Bool(true) => f.write_str("True"),
             Self::Bool(false) => f.write_str("False"),
             Self::Int(v) => write!(f, "{v}"),
@@ -1513,6 +1522,21 @@ impl PyTrait for Value {
 }
 
 impl Value {
+    /// Deletes an item by key from a container value.
+    ///
+    /// Delegates to `HeapData::py_delitem` for heap-allocated containers.
+    pub fn py_delitem(&mut self, key: Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<()> {
+        if let Self::Ref(id) = self {
+            let id = *id;
+            heap.with_entry_mut(id, |heap, data| data.py_delitem(key, heap, interns))
+        } else {
+            key.drop_with_heap(heap);
+            Err(ExcType::type_error(format!(
+                "'{}' object does not support item deletion",
+                self.py_type(heap)
+            )))
+        }
+    }
     /// Returns a stable, unique identifier for this value.
     ///
     /// Should match Python's `id()` function conceptually.
@@ -1530,6 +1554,7 @@ impl Value {
             Self::Undefined => singleton_id(SingletonSlot::Undefined),
             Self::Ellipsis => singleton_id(SingletonSlot::Ellipsis),
             Self::None => singleton_id(SingletonSlot::None),
+            Self::NotImplemented => singleton_id(SingletonSlot::None) + 1, // Unique ID for NotImplemented
             Self::Bool(b) => {
                 if *b {
                     singleton_id(SingletonSlot::True)
@@ -1635,7 +1660,7 @@ impl Value {
         discriminant(self).hash(&mut hasher);
         match self {
             // Immediate values can be hashed directly
-            Self::Undefined | Self::Ellipsis | Self::None => {}
+            Self::Undefined | Self::Ellipsis | Self::None | Self::NotImplemented => {}
             Self::Bool(b) => b.hash(&mut hasher),
             Self::Int(i) => i.hash(&mut hasher),
             // Hash the bit representation of float for consistency
@@ -1746,25 +1771,356 @@ impl Value {
     ) -> RunResult<AttrCallResult> {
         match self {
             Self::Ref(heap_id) => {
+                if name_id == StaticStrings::DunderTypeParams {
+                    match heap.get(*heap_id) {
+                        HeapData::Closure(func_id, _, _) | HeapData::FunctionDefaults(func_id, _) => {
+                            let func = interns.get_function(*func_id);
+                            if func.type_params.is_empty() {
+                                return Err(ExcType::attribute_error(Type::Function, "__type_params__"));
+                            }
+                            let mut params: smallvec::SmallVec<[Self; 3]> = smallvec::SmallVec::new();
+                            for name_id in &func.type_params {
+                                params.push(Self::InternString(*name_id));
+                            }
+                            let tuple_val = crate::types::allocate_tuple(params, heap)?;
+                            return Ok(AttrCallResult::Value(tuple_val));
+                        }
+                        _ => {}
+                    }
+                }
+                if matches!(
+                    heap.get(*heap_id),
+                    HeapData::Closure(_, _, _) | HeapData::FunctionDefaults(_, _)
+                ) {
+                    let func_id = match heap.get(*heap_id) {
+                        HeapData::Closure(func_id, _, _) | HeapData::FunctionDefaults(func_id, _) => *func_id,
+                        _ => unreachable!(),
+                    };
+                    let func = interns.get_function(func_id);
+
+                    if name_id == StaticStrings::DunderName {
+                        return Ok(AttrCallResult::Value(Self::InternString(func.name.name_id)));
+                    }
+                    if name_id == StaticStrings::DunderQualname {
+                        let value = match &func.qualname {
+                            crate::value::EitherStr::Interned(id) => Self::InternString(*id),
+                            crate::value::EitherStr::Heap(s) => {
+                                let id = heap.allocate(HeapData::Str(Str::from(s.as_str())))?;
+                                Self::Ref(id)
+                            }
+                        };
+                        return Ok(AttrCallResult::Value(value));
+                    }
+                    if name_id == StaticStrings::DunderModule {
+                        return Ok(AttrCallResult::Value(Self::InternString(func.module_name)));
+                    }
+                    if name_id == StaticStrings::DunderDefaults || name_id == StaticStrings::DunderKwdefaults {
+                        let defaults = match heap.get(*heap_id) {
+                            HeapData::Closure(_, _, defaults) | HeapData::FunctionDefaults(_, defaults) => {
+                                defaults.iter().map(Self::copy_for_extend).collect::<Vec<_>>()
+                            }
+                            _ => unreachable!(),
+                        };
+                        for value in &defaults {
+                            if let Self::Ref(id) = value {
+                                heap.inc_ref(*id);
+                            }
+                        }
+                        if defaults.is_empty() {
+                            return Ok(AttrCallResult::Value(Self::None));
+                        }
+                        let mut items: smallvec::SmallVec<[Self; 3]> = smallvec::SmallVec::new();
+                        for value in defaults {
+                            items.push(value);
+                        }
+                        let tuple_val = crate::types::allocate_tuple(items, heap)?;
+                        return Ok(AttrCallResult::Value(tuple_val));
+                    }
+                    if name_id == StaticStrings::DunderDescGet {
+                        heap.inc_ref(*heap_id);
+                        let getter_id = heap.allocate(HeapData::FunctionGet(crate::types::FunctionGet::new(
+                            Self::Ref(*heap_id),
+                        )))?;
+                        return Ok(AttrCallResult::Value(Self::Ref(getter_id)));
+                    }
+                }
+                // Class __dict__ should return a live mappingproxy, not a copy.
+                if name_id == StaticStrings::DunderDictAttr && matches!(heap.get(*heap_id), HeapData::ClassObject(_)) {
+                    heap.inc_ref(*heap_id);
+                    let proxy_id = heap.allocate(HeapData::MappingProxy(crate::types::MappingProxy::new(*heap_id)))?;
+                    return Ok(AttrCallResult::Value(Self::Ref(proxy_id)));
+                }
+                // Class __subclasses__ should return a bound builtin method.
+                if name_id == StaticStrings::DunderSubclasses && matches!(heap.get(*heap_id), HeapData::ClassObject(_))
+                {
+                    heap.inc_ref(*heap_id);
+                    let meth_id =
+                        heap.allocate(HeapData::ClassSubclasses(crate::types::ClassSubclasses::new(*heap_id)))?;
+                    return Ok(AttrCallResult::Value(Self::Ref(meth_id)));
+                }
+                // Default __class_getitem__ for PEP 695 classes without an override.
+                if name_id == StaticStrings::DunderClassGetitem
+                    && matches!(heap.get(*heap_id), HeapData::ClassObject(_))
+                {
+                    let has_custom = match heap.get(*heap_id) {
+                        HeapData::ClassObject(cls) => cls.mro_has_attr("__class_getitem__", *heap_id, heap, interns),
+                        _ => false,
+                    };
+                    if !has_custom {
+                        let has_type_params = match heap.get(*heap_id) {
+                            HeapData::ClassObject(cls) => {
+                                cls.namespace().get_by_str("__type_params__", heap, interns).is_some()
+                            }
+                            _ => false,
+                        };
+                        if has_type_params {
+                            heap.inc_ref(*heap_id);
+                            let meth_id =
+                                heap.allocate(HeapData::ClassGetItem(crate::types::ClassGetItem::new(*heap_id)))?;
+                            return Ok(AttrCallResult::Value(Self::Ref(meth_id)));
+                        }
+                    }
+                }
+                // Check if this is an Instance - need to handle descriptors specially.
+                let is_instance = matches!(heap.get(*heap_id), HeapData::Instance(_));
+
                 // Use with_entry_mut to get access to both data and heap without borrow conflicts.
                 // This allows py_getattr to allocate (for computed attributes) while we hold the data.
                 let opt_result = heap.with_entry_mut(*heap_id, |heap, data| data.py_getattr(name_id, heap, interns))?;
                 if let Some(call_result) = opt_result {
-                    return Ok(call_result);
+                    if !is_instance {
+                        // For class objects, bind @classmethod to the class on attribute access.
+                        if matches!(heap.get(*heap_id), HeapData::ClassObject(_)) {
+                            return match call_result {
+                                AttrCallResult::Value(value) => {
+                                    if let Self::Ref(ref_id) = &value
+                                        && matches!(heap.get(*ref_id), HeapData::ClassMethod(_))
+                                    {
+                                        let class_id = *heap_id;
+                                        let func = match heap.get(*ref_id) {
+                                            HeapData::ClassMethod(cm) => cm.func().clone_with_heap(heap),
+                                            _ => unreachable!("class method type changed during lookup"),
+                                        };
+                                        value.drop_with_heap(heap);
+                                        heap.inc_ref(class_id);
+                                        let bound_id = heap.allocate(HeapData::BoundMethod(
+                                            crate::types::BoundMethod::new(func, Self::Ref(class_id)),
+                                        ))?;
+                                        Ok(AttrCallResult::Value(Self::Ref(bound_id)))
+                                    } else {
+                                        Ok(AttrCallResult::Value(value))
+                                    }
+                                }
+                                other => Ok(other),
+                            };
+                        }
+                        return Ok(call_result);
+                    }
+
+                    // For Instance results, check for descriptor types that need unwrapping.
+                    match call_result {
+                        AttrCallResult::Value(value) => {
+                            // If the attribute came from the instance dict, do not bind.
+                            let attr_name = interns.get_str(name_id);
+                            let from_instance_dict =
+                                heap.with_entry_mut(*heap_id, |heap, data| -> RunResult<bool> {
+                                    if let HeapData::Instance(inst) = data {
+                                        if let Some(dict) = inst.attrs(heap)
+                                            && dict.get_by_str(attr_name, heap, interns).is_some()
+                                        {
+                                            return Ok(true);
+                                        }
+                                        Ok(inst.slot_value(attr_name, heap).is_some())
+                                    } else {
+                                        Ok(false)
+                                    }
+                                })?;
+
+                            if from_instance_dict {
+                                if let Some(prop_value) =
+                                    Self::lookup_class_property(*heap_id, attr_name, heap, interns)
+                                {
+                                    value.drop_with_heap(heap);
+                                    return Ok(Self::call_property_value(prop_value, *heap_id, heap));
+                                }
+                                return Ok(AttrCallResult::Value(value));
+                            }
+
+                            if let Self::Ref(ref_id) = &value {
+                                match heap.get(*ref_id) {
+                                    HeapData::UserProperty(_) => {
+                                        return Ok(Self::call_property_value(value, *heap_id, heap));
+                                    }
+                                    HeapData::StaticMethod(sm) => {
+                                        // StaticMethod: return inner function directly
+                                        let func = sm.func().clone_with_heap(heap);
+                                        value.drop_with_heap(heap);
+                                        return Ok(AttrCallResult::Value(func));
+                                    }
+                                    HeapData::ClassMethod(cm) => {
+                                        // ClassMethod on instance: return a bound method with cls
+                                        let func = cm.func().clone_with_heap(heap);
+                                        value.drop_with_heap(heap);
+                                        let class_id = match heap.get(*heap_id) {
+                                            HeapData::Instance(inst) => inst.class_id(),
+                                            _ => unreachable!("type changed during lookup"),
+                                        };
+                                        heap.inc_ref(class_id);
+                                        let bound_id = heap.allocate(HeapData::BoundMethod(
+                                            crate::types::BoundMethod::new(func, Self::Ref(class_id)),
+                                        ))?;
+                                        return Ok(AttrCallResult::Value(Self::Ref(bound_id)));
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            let is_function = match &value {
+                                Self::DefFunction(_) => true,
+                                Self::Ref(id) => matches!(
+                                    heap.get(*id),
+                                    HeapData::Closure(_, _, _) | HeapData::FunctionDefaults(_, _)
+                                ),
+                                _ => false,
+                            };
+
+                            if is_function {
+                                heap.inc_ref(*heap_id);
+                                let bound_id = heap.allocate(HeapData::BoundMethod(crate::types::BoundMethod::new(
+                                    value,
+                                    Self::Ref(*heap_id),
+                                )))?;
+                                return Ok(AttrCallResult::Value(Self::Ref(bound_id)));
+                            }
+                            return Ok(AttrCallResult::Value(value));
+                        }
+                        other => return Ok(other),
+                    }
                 }
             }
             Self::Builtin(Builtins::Type(t)) => {
-                // Handle type object attributes like __name__
-                if name_id == StaticStrings::DunderName {
+                if name_id == StaticStrings::DunderClassGetitem {
+                    let class_id = heap.builtin_class_id(*t)?;
+                    heap.inc_ref(class_id);
+                    let meth_id = heap.allocate(HeapData::ClassGetItem(crate::types::ClassGetItem::new(class_id)))?;
+                    return Ok(AttrCallResult::Value(Self::Ref(meth_id)));
+                }
+                if name_id == StaticStrings::DunderModule {
+                    let str_id = heap.allocate(HeapData::Str(Str::from("builtins")))?;
+                    return Ok(AttrCallResult::Value(Self::Ref(str_id)));
+                }
+                if name_id == StaticStrings::DunderQualname {
                     let name_str = t.to_string();
                     let str_id = heap.allocate(HeapData::Str(Str::from(name_str)))?;
                     return Ok(AttrCallResult::Value(Self::Ref(str_id)));
+                }
+                if name_id == StaticStrings::DunderDictAttr {
+                    let class_id = heap.builtin_class_id(*t)?;
+                    heap.inc_ref(class_id);
+                    let proxy_id = heap.allocate(HeapData::MappingProxy(crate::types::MappingProxy::new(class_id)))?;
+                    return Ok(AttrCallResult::Value(Self::Ref(proxy_id)));
+                }
+                let class_id = heap.builtin_class_id(*t)?;
+                heap.inc_ref(class_id);
+                let class_value = Self::Ref(class_id);
+                defer_drop!(class_value, heap);
+                return class_value.py_getattr(name_id, heap, interns);
+            }
+            Self::DefFunction(f_id) => {
+                let func = interns.get_function(*f_id);
+                if name_id == StaticStrings::DunderName {
+                    return Ok(AttrCallResult::Value(Self::InternString(func.name.name_id)));
+                }
+                if name_id == StaticStrings::DunderQualname {
+                    let value = match &func.qualname {
+                        crate::value::EitherStr::Interned(id) => Self::InternString(*id),
+                        crate::value::EitherStr::Heap(s) => {
+                            let id = heap.allocate(HeapData::Str(Str::from(s.as_str())))?;
+                            Self::Ref(id)
+                        }
+                    };
+                    return Ok(AttrCallResult::Value(value));
+                }
+                if name_id == StaticStrings::DunderModule {
+                    return Ok(AttrCallResult::Value(Self::InternString(func.module_name)));
+                }
+                if name_id == StaticStrings::DunderDefaults || name_id == StaticStrings::DunderKwdefaults {
+                    return Ok(AttrCallResult::Value(Self::None));
+                }
+                if name_id == StaticStrings::DunderDescGet {
+                    let func_value = self.copy_for_extend();
+                    let getter_id = heap.allocate(HeapData::FunctionGet(crate::types::FunctionGet::new(func_value)))?;
+                    return Ok(AttrCallResult::Value(Self::Ref(getter_id)));
+                }
+                if name_id == StaticStrings::DunderTypeParams {
+                    let func = interns.get_function(*f_id);
+                    if func.type_params.is_empty() {
+                        return Err(ExcType::attribute_error(Type::Function, "__type_params__"));
+                    }
+                    let mut params: smallvec::SmallVec<[Self; 3]> = smallvec::SmallVec::new();
+                    for name_id in &func.type_params {
+                        params.push(Self::InternString(*name_id));
+                    }
+                    let tuple_val = crate::types::allocate_tuple(params, heap)?;
+                    return Ok(AttrCallResult::Value(tuple_val));
                 }
             }
             _ => {}
         }
         let type_name = self.py_type(heap);
         Err(ExcType::attribute_error(type_name, interns.get_str(name_id)))
+    }
+
+    /// Looks up a class-level property descriptor for an instance attribute.
+    ///
+    /// Returns `Some(property_value)` if the class MRO contains a `UserProperty`
+    /// for the given attribute name. The returned value is cloned with proper
+    /// refcount handling. Returns `None` if no property is defined.
+    fn lookup_class_property(
+        instance_id: HeapId,
+        attr_name: &str,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> Option<Self> {
+        let class_id = match heap.get(instance_id) {
+            HeapData::Instance(inst) => inst.class_id(),
+            _ => return None,
+        };
+
+        let HeapData::ClassObject(cls) = heap.get(class_id) else {
+            return None;
+        };
+
+        if let Some((value, _)) = cls.mro_lookup_attr(attr_name, class_id, heap, interns) {
+            if let Self::Ref(prop_id) = &value
+                && matches!(heap.get(*prop_id), HeapData::UserProperty(_))
+            {
+                return Some(value);
+            }
+            value.drop_with_heap(heap);
+        }
+
+        None
+    }
+
+    /// Converts a property descriptor into a `PropertyCall` if it has a getter.
+    ///
+    /// Falls back to returning `None` when no getter is defined, mirroring the
+    /// current property behavior in Monty.
+    fn call_property_value(value: Self, instance_id: HeapId, heap: &mut Heap<impl ResourceTracker>) -> AttrCallResult {
+        if let Self::Ref(ref_id) = &value
+            && let HeapData::UserProperty(up) = heap.get(*ref_id)
+            && let Some(getter) = up.fget()
+        {
+            let getter = getter.clone_with_heap(heap);
+            value.drop_with_heap(heap);
+            heap.inc_ref(instance_id);
+            let instance_ref = Self::Ref(instance_id);
+            return AttrCallResult::PropertyCall(getter, instance_ref);
+        }
+
+        value.drop_with_heap(heap);
+        AttrCallResult::Value(Self::None)
     }
 
     /// Sets an attribute on this value.
@@ -1786,12 +2142,48 @@ impl Value {
         if let Self::Ref(heap_id) = self {
             let heap_id = *heap_id;
             let is_dataclass = matches!(heap.get(heap_id), HeapData::Dataclass(_));
+            let is_instance = matches!(heap.get(heap_id), HeapData::Instance(_));
+            let is_class_object = matches!(heap.get(heap_id), HeapData::ClassObject(_));
 
             if is_dataclass {
                 let name_value = Self::InternString(name_id);
                 heap.with_entry_mut(heap_id, |heap, data| {
                     if let HeapData::Dataclass(dc) = data {
                         match dc.set_attr(name_value, value, heap, interns) {
+                            Ok(old_value) => {
+                                if let Some(old) = old_value {
+                                    old.drop_with_heap(heap);
+                                }
+                                Ok(())
+                            }
+                            Err(e) => Err(e),
+                        }
+                    } else {
+                        unreachable!("type changed during borrow")
+                    }
+                })
+            } else if is_instance {
+                let name_value = Self::InternString(name_id);
+                heap.with_entry_mut(heap_id, |heap, data| {
+                    if let HeapData::Instance(inst) = data {
+                        match inst.set_attr(name_value, value, heap, interns) {
+                            Ok(old_value) => {
+                                if let Some(old) = old_value {
+                                    old.drop_with_heap(heap);
+                                }
+                                Ok(())
+                            }
+                            Err(e) => Err(e),
+                        }
+                    } else {
+                        unreachable!("type changed during borrow")
+                    }
+                })
+            } else if is_class_object {
+                let name_value = Self::InternString(name_id);
+                heap.with_entry_mut(heap_id, |heap, data| {
+                    if let HeapData::ClassObject(cls) = data {
+                        match cls.set_attr(name_value, value, heap, interns) {
                             Ok(old_value) => {
                                 if let Some(old) = old_value {
                                     old.drop_with_heap(heap);
@@ -1812,6 +2204,49 @@ impl Value {
         } else {
             let type_name = self.py_type(heap);
             value.drop_with_heap(heap);
+            Err(ExcType::attribute_error_no_setattr(type_name, attr_name))
+        }
+    }
+
+    /// Deletes an attribute from an object.
+    ///
+    /// Currently supports deleting attributes from instances. Raises `AttributeError`
+    /// if the attribute doesn't exist or the object doesn't support attribute deletion.
+    pub fn py_del_attr(
+        &self,
+        name_id: StringId,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<()> {
+        let attr_name = interns.get_str(name_id);
+
+        if let Self::Ref(heap_id) = self {
+            let heap_id = *heap_id;
+            let is_instance = matches!(heap.get(heap_id), HeapData::Instance(_));
+
+            if is_instance {
+                let name_value = Self::InternString(name_id);
+                heap.with_entry_mut(heap_id, |heap, data| {
+                    if let HeapData::Instance(inst) = data {
+                        match inst.del_attr(&name_value, heap, interns) {
+                            Ok(Some((key, value))) => {
+                                key.drop_with_heap(heap);
+                                value.drop_with_heap(heap);
+                                Ok(())
+                            }
+                            Ok(None) => Err(ExcType::attribute_error("instance", attr_name)),
+                            Err(e) => Err(e),
+                        }
+                    } else {
+                        unreachable!("type changed during borrow")
+                    }
+                })
+            } else {
+                let type_name = heap.get(heap_id).py_type(heap);
+                Err(ExcType::attribute_error_no_setattr(type_name, attr_name))
+            }
+        } else {
+            let type_name = self.py_type(heap);
             Err(ExcType::attribute_error_no_setattr(type_name, attr_name))
         }
     }
@@ -1965,7 +2400,7 @@ impl Value {
     /// proper reference counting. Using `.clone()` directly will bypass reference counting
     /// and cause memory leaks or double-frees.
     #[must_use]
-    pub fn clone_with_heap(&self, heap: &mut Heap<impl ResourceTracker>) -> Self {
+    pub fn clone_with_heap(&self, heap: &Heap<impl ResourceTracker>) -> Self {
         match self {
             Self::Ref(id) => {
                 heap.inc_ref(*id);
@@ -2034,6 +2469,7 @@ impl Value {
             Self::Undefined => Self::Undefined,
             Self::Ellipsis => Self::Ellipsis,
             Self::None => Self::None,
+            Self::NotImplemented => Self::NotImplemented,
             Self::Bool(b) => Self::Bool(*b),
             Self::Int(v) => Self::Int(*v),
             Self::Float(v) => Self::Float(*v),

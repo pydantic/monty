@@ -232,6 +232,30 @@ impl ExcType {
         .into()
     }
 
+    /// Creates an AttributeError for attribute assignment/deletion on instances without `__dict__`.
+    ///
+    /// Matches CPython's format for slotted instances with no dict.
+    #[must_use]
+    pub(crate) fn attribute_error_no_dict_for_setting(class_name: &str, attr_name: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::AttributeError,
+            format!("'{class_name}' object has no attribute '{attr_name}' and no __dict__ for setting new attributes"),
+        )
+        .into()
+    }
+
+    /// Creates an AttributeError for attempts to write to `__weakref__`.
+    ///
+    /// Matches CPython's format: "attribute '__weakref__' of 'C' objects is not writable".
+    #[must_use]
+    pub(crate) fn attribute_error_weakref_not_writable(class_name: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::AttributeError,
+            format!("attribute '__weakref__' of '{class_name}' objects is not writable"),
+        )
+        .into()
+    }
+
     /// Creates an AttributeError for a missing module attribute.
     ///
     /// Matches CPython's format: `AttributeError: module 'name' has no attribute 'attr'`
@@ -1344,6 +1368,7 @@ pub struct RawStackFrame {
 }
 
 impl RawStackFrame {
+    /// Creates a new frame with a function name for traceback display.
     pub(crate) fn new(position: CodeRange, frame_name: StringId, parent: Option<&Self>) -> Self {
         Self {
             position,
@@ -1353,7 +1378,8 @@ impl RawStackFrame {
         }
     }
 
-    fn from_position(position: CodeRange) -> Self {
+    /// Creates a new nameless frame for module-level errors at the given position.
+    pub(crate) fn from_position(position: CodeRange) -> Self {
         Self {
             position,
             frame_name: None,
@@ -1435,6 +1461,14 @@ impl RunError {
 
     pub fn internal(msg: impl Into<Cow<'static, str>>) -> Self {
         Self::Internal(msg.into())
+    }
+
+    /// Returns true if this error is a StopIteration exception.
+    pub fn is_stop_iteration(&self) -> bool {
+        match self {
+            Self::Exc(exc) => exc.exc.exc_type() == ExcType::StopIteration,
+            _ => false,
+        }
     }
 }
 

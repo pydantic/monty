@@ -15,7 +15,7 @@ use crate::{
     intern::Interns,
     resource::{ResourceError, ResourceTracker},
     types::{
-        LongInt, NamedTuple, Path, PyTrait, Type, allocate_tuple,
+        Dataclass, LongInt, NamedTuple, Path, PyTrait, Type, allocate_tuple,
         bytes::{Bytes, bytes_repr},
         dict::Dict,
         list::List,
@@ -275,7 +275,6 @@ impl MontyObject {
                 methods,
                 frozen,
             } => {
-                use crate::types::Dataclass;
                 // Convert attrs to Dict
                 let pairs: Result<Vec<(Value, Value)>, InvalidInputError> = attrs
                     .into_iter()
@@ -457,6 +456,76 @@ impl MontyObject {
                         Self::Repr(format!("<gather({})>", gather.item_count()))
                     }
                     HeapData::Path(path) => Self::Path(path.as_str().to_owned()),
+                    HeapData::ClassObject(cls) => {
+                        let mut s = String::new();
+                        let mut visited_ids = ahash::AHashSet::new();
+                        let _ = cls.py_repr_fmt(&mut s, heap, &mut visited_ids, interns);
+                        Self::Repr(s)
+                    }
+                    HeapData::MappingProxy(mp) => {
+                        let mut s = String::new();
+                        let mut visited_ids = ahash::AHashSet::new();
+                        let _ = mp.py_repr_fmt(&mut s, heap, &mut visited_ids, interns);
+                        Self::Repr(s)
+                    }
+                    HeapData::Instance(inst) => {
+                        let mut s = String::new();
+                        let mut visited_ids = ahash::AHashSet::new();
+                        let _ = inst.py_repr_fmt(&mut s, heap, &mut visited_ids, interns);
+                        Self::Repr(s)
+                    }
+                    HeapData::BoundMethod(bm) => {
+                        let mut s = String::new();
+                        let mut visited_ids = ahash::AHashSet::new();
+                        let _ = bm.py_repr_fmt(&mut s, heap, &mut visited_ids, interns);
+                        Self::Repr(s)
+                    }
+                    HeapData::SlotDescriptor(sd) => {
+                        let mut s = String::new();
+                        let mut visited_ids = ahash::AHashSet::new();
+                        let _ = sd.py_repr_fmt(&mut s, heap, &mut visited_ids, interns);
+                        Self::Repr(s)
+                    }
+                    HeapData::SuperProxy(sp) => {
+                        let mut s = String::new();
+                        let mut visited_ids = ahash::AHashSet::new();
+                        let _ = sp.py_repr_fmt(&mut s, heap, &mut visited_ids, interns);
+                        Self::Repr(s)
+                    }
+                    HeapData::StaticMethod(_) => Self::Repr("<staticmethod object>".to_owned()),
+                    HeapData::ClassMethod(_) => Self::Repr("<classmethod object>".to_owned()),
+                    HeapData::UserProperty(_) => Self::Repr("<property object>".to_owned()),
+                    HeapData::PropertyAccessor(_) => Self::Repr("<property accessor>".to_owned()),
+                    HeapData::GenericAlias(ga) => {
+                        let mut s = String::new();
+                        let mut visited_ids = ahash::AHashSet::new();
+                        let _ = ga.py_repr_fmt(&mut s, heap, &mut visited_ids, interns);
+                        Self::Repr(s)
+                    }
+                    HeapData::WeakRef(wr) => {
+                        let mut s = String::new();
+                        let mut visited_ids = ahash::AHashSet::new();
+                        let _ = wr.py_repr_fmt(&mut s, heap, &mut visited_ids, interns);
+                        Self::Repr(s)
+                    }
+                    HeapData::ClassSubclasses(cs) => {
+                        let mut s = String::new();
+                        let mut visited_ids = ahash::AHashSet::new();
+                        let _ = cs.py_repr_fmt(&mut s, heap, &mut visited_ids, interns);
+                        Self::Repr(s)
+                    }
+                    HeapData::ClassGetItem(cg) => {
+                        let mut s = String::new();
+                        let mut visited_ids = ahash::AHashSet::new();
+                        let _ = cg.py_repr_fmt(&mut s, heap, &mut visited_ids, interns);
+                        Self::Repr(s)
+                    }
+                    HeapData::FunctionGet(fg) => {
+                        let mut s = String::new();
+                        let mut visited_ids = ahash::AHashSet::new();
+                        let _ = fg.py_repr_fmt(&mut s, heap, &mut visited_ids, interns);
+                        Self::Repr(s)
+                    }
                 };
 
                 // Remove from visited set after processing

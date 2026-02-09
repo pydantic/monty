@@ -16,7 +16,8 @@ use crate::{
     exception_private::ExcType,
     exception_public::{CodeLoc, MontyException},
     expressions::{
-        Callable, CmpOperator, Comprehension, Expr, ExprLoc, Identifier, Literal, Node, Operator, UnpackTarget,
+        Callable, ClassDef, CmpOperator, Comprehension, Expr, ExprLoc, Identifier, Literal, Node, Operator,
+        UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
@@ -86,12 +87,27 @@ impl ParsedSignature {
 pub struct RawFunctionDef {
     /// The function name identifier (not yet resolved to a namespace index).
     pub name: Identifier,
+    /// The binding name in the enclosing scope.
+    ///
+    /// In class bodies, this may be a mangled name (e.g., `_Class__private`)
+    /// while `name` retains the original function name for metadata like `__name__`.
+    pub binding_name: Identifier,
+    /// Parsed type parameter names for PEP 695 syntax (`def f[T]`).
+    ///
+    /// Stored as interned identifiers; resolved semantics are handled at runtime.
+    pub type_params: Vec<StringId>,
     /// The parsed function signature with parameter names and default expressions.
     pub signature: ParsedSignature,
     /// The unprepared function body (names not yet resolved).
     pub body: Vec<ParseNode>,
     /// Whether this is an async function (`async def`).
     pub is_async: bool,
+    /// Decorator expressions applied to this function (e.g., `@staticmethod`, `@property`).
+    ///
+    /// Parsed from the `decorator_list` in the ruff AST. These are evaluated
+    /// at definition time and applied bottom-to-top (last decorator applied first).
+    /// Inside class bodies, these enable `@staticmethod`, `@classmethod`, and `@property`.
+    pub decorators: Vec<ExprLoc>,
 }
 
 /// Type alias for parsed AST nodes (output of the parser).
@@ -152,6 +168,12 @@ pub struct Parser<'a> {
     filename_id: StringId,
     /// String interner for names (variables, functions, etc).
     pub interner: InternerBuilder,
+    /// Stack of enclosing class names for name mangling.
+    ///
+    /// Python mangles `__private` identifiers inside class bodies using the
+    /// current class name. Nested classes push a new name while parsing their
+    /// bodies, so names inside the nested body are mangled with the inner class.
+    class_stack: Vec<StringId>,
     /// Remaining nesting depth budget for recursive structures.
     /// Starts at MAX_NESTING_DEPTH and decrements on each nested level.
     /// When it reaches zero, we return a "too many nested parentheses" error.
@@ -174,6 +196,7 @@ impl<'a> Parser<'a> {
             code,
             filename_id,
             interner,
+            class_stack: Vec::new(),
             depth_remaining: MAX_NESTING_DEPTH,
         }
     }
@@ -229,6 +252,7 @@ impl<'a> Parser<'a> {
         match statement {
             Stmt::FunctionDef(function) => {
                 let params = &function.parameters;
+                let type_params = self.parse_type_params(function.type_params);
 
                 // Parse positional-only parameters (before /)
                 let pos_args = self.parse_params_with_defaults(&params.posonlyargs)?;
@@ -237,13 +261,19 @@ impl<'a> Parser<'a> {
                 let args = self.parse_params_with_defaults(&params.args)?;
 
                 // Parse *args
-                let var_args = params.vararg.as_ref().map(|p| self.interner.intern(&p.name.id));
+                let var_args = params
+                    .vararg
+                    .as_ref()
+                    .map(|p| self.intern_name_maybe_mangled(&p.name.id));
 
                 // Parse keyword-only parameters (after * or *args)
                 let kwargs = self.parse_params_with_defaults(&params.kwonlyargs)?;
 
                 // Parse **kwargs
-                let var_kwargs = params.kwarg.as_ref().map(|p| self.interner.intern(&p.name.id));
+                let var_kwargs = params
+                    .kwarg
+                    .as_ref()
+                    .map(|p| self.intern_name_maybe_mangled(&p.name.id));
 
                 let signature = ParsedSignature {
                     pos_args,
@@ -253,39 +283,192 @@ impl<'a> Parser<'a> {
                     var_kwargs,
                 };
 
-                let name = self.identifier(&function.name.id, function.name.range);
+                let name = self.identifier_raw(&function.name.id, function.name.range);
+                let binding_name = self.identifier(&function.name.id, function.name.range);
                 // Parse function body recursively
                 let body = self.parse_statements(function.body)?;
                 let is_async = function.is_async;
 
+                // Parse decorators (e.g., @staticmethod, @property)
+                let decorators = function
+                    .decorator_list
+                    .into_iter()
+                    .map(|d| self.parse_expression(d.expression))
+                    .collect::<Result<Vec<_>, _>>()?;
+
                 Ok(Node::FunctionDef(RawFunctionDef {
                     name,
+                    binding_name,
+                    type_params,
                     signature,
                     body,
                     is_async,
+                    decorators,
                 }))
             }
-            Stmt::ClassDef(c) => Err(ParseError::not_implemented(
-                "class definitions",
-                self.convert_range(c.range),
-            )),
+            Stmt::ClassDef(c) => {
+                let name = self.identifier_raw(&c.name.id, c.name.range);
+                let binding_name = self.identifier(&c.name.id, c.name.range);
+                let type_params = self.parse_type_params(c.type_params);
+
+                // Parse base class expressions and class keyword arguments
+                let (bases, keywords, var_kwargs) = if let Some(ref arguments) = c.arguments {
+                    let bases = arguments
+                        .args
+                        .iter()
+                        .map(|arg| self.parse_expression(arg.clone()))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let (keywords, var_kwargs) = self.parse_keywords(arguments.keywords.clone().into_vec())?;
+                    (bases, keywords, var_kwargs)
+                } else {
+                    (Vec::new(), Vec::new(), None)
+                };
+
+                // Parse class decorators (e.g., @tracker1, @tracker2)
+                let decorators = c
+                    .decorator_list
+                    .into_iter()
+                    .map(|d| self.parse_expression(d.expression))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                // Parse class body with class name on the stack for name mangling
+                self.class_stack.push(name.name_id);
+                let body = self.parse_statements(c.body)?;
+                self.class_stack.pop();
+
+                Ok(Node::ClassDef(Box::new(ClassDef {
+                    name,
+                    binding_name,
+                    type_params,
+                    bases,
+                    keywords,
+                    var_kwargs,
+                    body,
+                    namespace_size: 0,       // Will be computed during prepare phase
+                    class_cell_slot: None,   // Filled during prepare when needed
+                    local_names: Vec::new(), // Will be populated during prepare phase
+                    decorators,
+                })))
+            }
             Stmt::Return(ast::StmtReturn { value, .. }) => match value {
                 Some(value) => Ok(Node::Return(self.parse_expression(*value)?)),
                 None => Ok(Node::ReturnNone),
             },
-            Stmt::Delete(d) => Err(ParseError::not_implemented(
-                "the 'del' statement",
-                self.convert_range(d.range),
-            )),
+            Stmt::Delete(ast::StmtDelete { targets, range, .. }) => {
+                // del can have multiple targets: `del x, y, z`
+                // Each target can be a name, attribute, or subscript
+                let mut nodes = Vec::new();
+                for target in targets {
+                    match target {
+                        AstExpr::Name(ast::ExprName {
+                            id, range: name_range, ..
+                        }) => {
+                            nodes.push(Node::DeleteName(self.identifier(&id, name_range)));
+                        }
+                        AstExpr::Attribute(ast::ExprAttribute {
+                            value,
+                            attr,
+                            range: attr_range,
+                            ..
+                        }) => {
+                            nodes.push(Node::DeleteAttr {
+                                object: self.parse_expression(*value)?,
+                                attr: EitherStr::Interned(self.maybe_mangle_name(attr.id())),
+                                position: self.convert_range(attr_range),
+                            });
+                        }
+                        AstExpr::Subscript(ast::ExprSubscript {
+                            value,
+                            slice,
+                            range: sub_range,
+                            ..
+                        }) => {
+                            nodes.push(Node::DeleteSubscr {
+                                object: self.parse_expression(*value)?,
+                                index: self.parse_expression(*slice)?,
+                                position: self.convert_range(sub_range),
+                            });
+                        }
+                        other => {
+                            return Err(ParseError::syntax(
+                                format!("Invalid del target: {other:?}"),
+                                self.convert_range(range),
+                            ));
+                        }
+                    }
+                }
+                // If single target, return the single node; otherwise wrap in a sequence
+                // (we don't have a multi-node variant, so emit them individually)
+                if nodes.len() == 1 {
+                    Ok(nodes.into_iter().next().unwrap())
+                } else {
+                    // Multiple del targets: flatten into individual statements
+                    // We need to return just one node, so we'll use the first
+                    // and handle multi-target del by returning a list...
+                    // Actually, the parse_statement returns a single node.
+                    // For now, we only support single-target del.
+                    // Multi-target del (del x, y) is uncommon.
+                    // Let's handle it properly by adding support.
+                    Err(ParseError::not_implemented(
+                        "multi-target del statements (del x, y)",
+                        self.convert_range(range),
+                    ))
+                }
+            }
             Stmt::TypeAlias(t) => Err(ParseError::not_implemented("type aliases", self.convert_range(t.range))),
             Stmt::Assign(ast::StmtAssign {
                 targets, value, range, ..
             }) => self.parse_assignment(first(targets, self.convert_range(range))?, *value),
-            Stmt::AugAssign(ast::StmtAugAssign { target, op, value, .. }) => Ok(Node::OpAssign {
-                target: self.parse_identifier(*target)?,
-                op: convert_op(op),
-                object: self.parse_expression(*value)?,
-            }),
+            Stmt::AugAssign(ast::StmtAugAssign {
+                target,
+                op,
+                value,
+                range,
+                ..
+            }) => {
+                let op = convert_op(op);
+                let rhs = self.parse_expression(*value)?;
+                match *target {
+                    // Simple name: x += value
+                    AstExpr::Name(ast::ExprName {
+                        id, range: name_range, ..
+                    }) => Ok(Node::OpAssign {
+                        target: self.identifier(&id, name_range),
+                        op,
+                        object: rhs,
+                    }),
+                    // Attribute target: obj.attr += value
+                    AstExpr::Attribute(ast::ExprAttribute {
+                        value: obj,
+                        attr,
+                        range: attr_range,
+                        ..
+                    }) => Ok(Node::OpAssignAttr {
+                        object: self.parse_expression(*obj)?,
+                        attr: EitherStr::Interned(self.maybe_mangle_name(attr.id())),
+                        op,
+                        value: rhs,
+                        target_position: self.convert_range(attr_range),
+                    }),
+                    // Subscript target: obj[key] += value
+                    AstExpr::Subscript(ast::ExprSubscript {
+                        value: obj,
+                        slice,
+                        range: sub_range,
+                        ..
+                    }) => Ok(Node::OpAssignSubscr {
+                        object: self.parse_expression(*obj)?,
+                        index: self.parse_expression(*slice)?,
+                        op,
+                        value: rhs,
+                        target_position: self.convert_range(sub_range),
+                    }),
+                    other => Err(ParseError::syntax(
+                        format!("Invalid augmented assignment target: {other:?}"),
+                        self.convert_range(range),
+                    )),
+                }
+            }
             Stmt::AnnAssign(ast::StmtAnnAssign { target, value, .. }) => match value {
                 Some(value) => self.parse_assignment(*target, *value),
                 None => Ok(Node::Pass),
@@ -328,18 +511,50 @@ impl<'a> Parser<'a> {
                 let or_else = self.parse_elif_else_clauses(elif_else_clauses)?;
                 Ok(Node::If { test, body, or_else })
             }
-            Stmt::With(ast::StmtWith { is_async, range, .. }) => {
+            Stmt::With(ast::StmtWith {
+                is_async,
+                items,
+                body,
+                range,
+                ..
+            }) => {
                 if is_async {
-                    Err(ParseError::not_implemented(
+                    return Err(ParseError::not_implemented(
                         "async context managers (async with)",
                         self.convert_range(range),
-                    ))
-                } else {
-                    Err(ParseError::not_implemented(
-                        "context managers (with statements)",
-                        self.convert_range(range),
-                    ))
+                    ));
                 }
+                if items.len() != 1 {
+                    return Err(ParseError::not_implemented(
+                        "multi-item with statements",
+                        self.convert_range(range),
+                    ));
+                }
+                let item = items.into_iter().next().unwrap();
+                let context_expr = self.parse_expression(item.context_expr)?;
+                let var = match item.optional_vars {
+                    Some(v) => {
+                        // The `as` target must be a simple name
+                        match *v {
+                            AstExpr::Name(ast::ExprName {
+                                id, range: name_range, ..
+                            }) => Some(self.identifier(&id, name_range)),
+                            other => {
+                                return Err(ParseError::not_implemented(
+                                    "complex with targets (tuple unpacking in with)",
+                                    self.convert_range(other.range()),
+                                ));
+                            }
+                        }
+                    }
+                    None => None,
+                };
+                let body = self.parse_statements(body)?;
+                Ok(Node::With {
+                    context_expr,
+                    var,
+                    body,
+                })
             }
             Stmt::Match(m) => Err(ParseError::not_implemented(
                 "pattern matching (match statements)",
@@ -401,10 +616,11 @@ impl<'a> Parser<'a> {
                 let alias_node = &names[0];
                 let module_name = self.interner.intern(&alias_node.name);
                 // The binding name is the alias if present, otherwise the module name
-                let binding_name = alias_node
-                    .asname
-                    .as_ref()
-                    .map_or(module_name, |n| self.interner.intern(&n.id));
+                let binding_name = if let Some(asname) = alias_node.asname.as_ref() {
+                    self.maybe_mangle_name(asname.as_str())
+                } else {
+                    self.maybe_mangle_name(alias_node.name.as_str())
+                };
                 // Create an unresolved identifier (namespace slot will be set during prepare)
                 let binding = Identifier::new(binding_name, position);
                 Ok(Node::Import { module_name, binding })
@@ -447,7 +663,11 @@ impl<'a> Parser<'a> {
                         }
                         let name = self.interner.intern(&alias.name);
                         // The binding name is the alias if provided, otherwise the import name
-                        let binding_name = alias.asname.as_ref().map_or(name, |n| self.interner.intern(&n.id));
+                        let binding_name = if let Some(asname) = alias.asname.as_ref() {
+                            self.maybe_mangle_name(asname.as_str())
+                        } else {
+                            self.maybe_mangle_name(alias.name.as_str())
+                        };
                         // Create an unresolved identifier (namespace slot will be set during prepare)
                         let binding = Identifier::new(binding_name, position);
                         Ok((name, binding))
@@ -462,7 +682,7 @@ impl<'a> Parser<'a> {
             Stmt::Global(ast::StmtGlobal { names, range, .. }) => {
                 let names = names
                     .iter()
-                    .map(|id| self.interner.intern(&self.code[id.range]))
+                    .map(|id| self.maybe_mangle_name(&self.code[id.range]))
                     .collect();
                 Ok(Node::Global {
                     position: self.convert_range(range),
@@ -472,7 +692,7 @@ impl<'a> Parser<'a> {
             Stmt::Nonlocal(ast::StmtNonlocal { names, range, .. }) => {
                 let names = names
                     .iter()
-                    .map(|id| self.interner.intern(&self.code[id.range]))
+                    .map(|id| self.maybe_mangle_name(&self.code[id.range]))
                     .collect();
                 Ok(Node::Nonlocal {
                     position: self.convert_range(range),
@@ -499,11 +719,11 @@ impl<'a> Parser<'a> {
     /// attribute assignments (obj.attr = value), and tuple unpacking (a, b = value)
     fn parse_assignment(&mut self, lhs: AstExpr, rhs: AstExpr) -> Result<ParseNode, ParseError> {
         match lhs {
-            // Subscript assignment like dict[key] = value
+            // Subscript assignment like dict[key] = value or self.data[key] = value
             AstExpr::Subscript(ast::ExprSubscript {
                 value, slice, range, ..
             }) => Ok(Node::SubscriptAssign {
-                target: self.parse_identifier(*value)?,
+                target: self.parse_expression(*value)?,
                 index: self.parse_expression(*slice)?,
                 value: self.parse_expression(rhs)?,
                 target_position: self.convert_range(range),
@@ -511,7 +731,7 @@ impl<'a> Parser<'a> {
             // Attribute assignment like obj.attr = value (supports chained like a.b.c = value)
             AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => Ok(Node::AttrAssign {
                 object: self.parse_expression(*value)?,
-                attr: EitherStr::Interned(self.interner.intern(attr.id())),
+                attr: EitherStr::Interned(self.maybe_mangle_name(attr.id())),
                 target_position: self.convert_range(range),
                 value: self.parse_expression(rhs)?,
             }),
@@ -652,13 +872,19 @@ impl<'a> Parser<'a> {
                     let args = self.parse_params_with_defaults(&params.args)?;
 
                     // Parse *args
-                    let var_args = params.vararg.as_ref().map(|p| self.interner.intern(&p.name.id));
+                    let var_args = params
+                        .vararg
+                        .as_ref()
+                        .map(|p| self.intern_name_maybe_mangled(&p.name.id));
 
                     // Parse keyword-only parameters (after * or *args)
                     let kwargs = self.parse_params_with_defaults(&params.kwonlyargs)?;
 
                     // Parse **kwargs
-                    let var_kwargs = params.kwarg.as_ref().map(|p| self.interner.intern(&p.name.id));
+                    let var_kwargs = params
+                        .kwarg
+                        .as_ref()
+                        .map(|p| self.intern_name_maybe_mangled(&p.name.id));
 
                     ParsedSignature {
                         pos_args,
@@ -864,7 +1090,7 @@ impl<'a> Parser<'a> {
                             position,
                             Expr::AttrCall {
                                 object,
-                                attr: EitherStr::Interned(self.interner.intern(attr.id())),
+                                attr: EitherStr::Interned(self.maybe_mangle_name(attr.id())),
                                 args: Box::new(args),
                             },
                         ))
@@ -940,7 +1166,7 @@ impl<'a> Parser<'a> {
                     position,
                     Expr::AttrGet {
                         object,
-                        attr: EitherStr::Interned(self.interner.intern(attr.id())),
+                        attr: EitherStr::Interned(self.maybe_mangle_name(attr.id())),
                     },
                 ))
             }
@@ -961,8 +1187,11 @@ impl<'a> Parser<'a> {
             AstExpr::Name(ast::ExprName { id, range, .. }) => {
                 let name = id.to_string();
                 let position = self.convert_range(range);
-                // Check if the name is a builtin function or exception type
-                let expr = if let Ok(builtin) = name.parse::<Builtins>() {
+                // Check for Python builtin constants first
+                let expr = if name == "NotImplemented" {
+                    Expr::NotImplemented
+                } else if let Ok(builtin) = name.parse::<Builtins>() {
+                    // Check if the name is a builtin function or exception type
                     Expr::Builtin(builtin)
                 } else {
                     Expr::Name(self.identifier(&id, range))
@@ -1022,7 +1251,7 @@ impl<'a> Parser<'a> {
         for kwarg in keywords {
             if let Some(key) = kwarg.arg {
                 // Regular kwarg: key=value
-                let key = self.identifier(&key.id, key.range);
+                let key = self.identifier_raw(&key.id, key.range);
                 let value = self.parse_expression(kwarg.value)?;
                 kwargs.push(Kwarg { key, value });
             } else {
@@ -1048,6 +1277,20 @@ impl<'a> Parser<'a> {
                 self.convert_range(other.range()),
             )),
         }
+    }
+
+    /// Parses PEP 695 type parameters into a list of interned names.
+    ///
+    /// Type parameters are stored as names only; bounds/defaults are not evaluated yet.
+    fn parse_type_params(&mut self, type_params: Option<Box<ast::TypeParams>>) -> Vec<StringId> {
+        let Some(type_params) = type_params else {
+            return Vec::new();
+        };
+        type_params
+            .type_params
+            .iter()
+            .map(|param| self.interner.intern(param.name().id()))
+            .collect()
     }
 
     /// Parses a chain comparison expression like `a < b < c < d`.
@@ -1152,8 +1395,50 @@ impl<'a> Parser<'a> {
     }
 
     fn identifier(&mut self, id: &Name, range: TextRange) -> Identifier {
+        let string_id = self.intern_name_maybe_mangled(id);
+        Identifier::new(string_id, self.convert_range(range))
+    }
+
+    /// Builds an identifier without applying name mangling.
+    ///
+    /// This is used when we need the raw source name (e.g. for error messages
+    /// or internal labels) rather than the class-private mangled form.
+    fn identifier_raw(&mut self, id: &Name, range: TextRange) -> Identifier {
         let string_id = self.interner.intern(id);
         Identifier::new(string_id, self.convert_range(range))
+    }
+
+    /// Interns a name, applying class-private mangling when appropriate.
+    ///
+    /// This mirrors CPython's behavior for `__private` names inside class bodies.
+    fn intern_name_maybe_mangled(&mut self, id: &Name) -> StringId {
+        self.maybe_mangle_name(id.as_str())
+    }
+
+    /// Returns the interned name, with class-private mangling if applicable.
+    ///
+    /// Mangling only applies inside class bodies and only for `__name`-style
+    /// identifiers that are not dunder magic methods.
+    fn maybe_mangle_name(&mut self, name: &str) -> StringId {
+        let Some(class_name_id) = self.class_stack.last().copied() else {
+            return self.interner.intern(name);
+        };
+
+        if !is_mangling_candidate(name) {
+            return self.interner.intern(name);
+        }
+
+        let class_name = self.interner.get_str(class_name_id);
+        let stripped = class_name.trim_start_matches('_');
+        if stripped.is_empty() {
+            return self.interner.intern(name);
+        }
+
+        let mut mangled = String::with_capacity(1 + stripped.len() + name.len());
+        mangled.push('_');
+        mangled.push_str(stripped);
+        mangled.push_str(name);
+        self.interner.intern(&mangled)
     }
 
     /// Parses function parameters with optional default values.
@@ -1165,7 +1450,7 @@ impl<'a> Parser<'a> {
         params
             .iter()
             .map(|p| {
-                let name = self.interner.intern(&p.parameter.name.id);
+                let name = self.intern_name_maybe_mangled(&p.parameter.name.id);
                 let default = match &p.default {
                     Some(expr) => Some(self.parse_expression((**expr).clone())?),
                     None => None,
@@ -1496,6 +1781,24 @@ impl CodeRange {
     pub fn preview_line_number(&self) -> Option<u32> {
         self.preview_line
     }
+
+    /// Returns a new `CodeRange` with an updated end location.
+    ///
+    /// Clears the preview line when the range spans multiple lines.
+    #[must_use]
+    pub(crate) fn with_end(self, end: CodeLoc) -> Self {
+        let preview_line = if self.start.line == end.line {
+            self.preview_line
+        } else {
+            None
+        };
+        Self {
+            filename: self.filename,
+            preview_line,
+            start: self.start,
+            end,
+        }
+    }
 }
 
 /// Errors that can occur during parsing or preparation of Python code.
@@ -1579,6 +1882,21 @@ impl ParseError {
             ),
         }
     }
+}
+
+/// Returns true if the identifier should be name-mangled in a class body.
+///
+/// Python mangles names that:
+/// - start with `__`
+/// - do NOT end with `__`
+fn is_mangling_candidate(name: &str) -> bool {
+    if !name.starts_with("__") {
+        return false;
+    }
+    if name.ends_with("__") {
+        return false;
+    }
+    true
 }
 
 /// Parses an integer literal string into a `BigInt`, handling radix prefixes and underscores.

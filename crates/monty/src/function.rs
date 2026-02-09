@@ -1,6 +1,13 @@
 use std::fmt::Write;
 
-use crate::{bytecode::Code, expressions::Identifier, intern::Interns, namespace::NamespaceId, signature::Signature};
+use crate::{
+    bytecode::Code,
+    expressions::Identifier,
+    intern::{Interns, StringId},
+    namespace::NamespaceId,
+    signature::Signature,
+    value::EitherStr,
+};
 
 /// A defined function once compiled and ready for execution.
 ///
@@ -31,6 +38,14 @@ use crate::{bytecode::Code, expressions::Identifier, intern::Interns, namespace:
 pub(crate) struct Function {
     /// The function name (used for error messages and repr).
     pub name: Identifier,
+    /// Qualified name (e.g., `Outer.<locals>.inner` or `Class.method`).
+    pub qualname: EitherStr,
+    /// Module name where this function was defined.
+    pub module_name: StringId,
+    /// Type parameters declared with PEP 695 syntax (`def f[T]`).
+    ///
+    /// Stored as interned names; runtime semantics are provided via `__type_params__`.
+    pub type_params: Vec<StringId>,
     /// The function signature.
     pub signature: Signature,
     /// Size of the initial namespace (number of local variable slots).
@@ -52,6 +67,12 @@ pub(crate) struct Function {
     /// (index 0..cell_var_count), and contains `Some(param_index)` if that cell is for
     /// a parameter, or `None` otherwise.
     pub cell_param_indices: Vec<Option<usize>>,
+    /// Namespace slot reserved for the `__class__` cell in class body functions.
+    ///
+    /// This enables zero-argument `super()` and `__class__` references in methods
+    /// by providing a cell that is set to the final class object during creation.
+    #[serde(default)]
+    pub class_cell_slot: Option<NamespaceId>,
     /// Number of default parameter values.
     ///
     /// At function definition time, this many default values are evaluated and stored
@@ -85,6 +106,9 @@ impl Function {
     #[expect(clippy::too_many_arguments)]
     pub fn new(
         name: Identifier,
+        qualname: EitherStr,
+        module_name: StringId,
+        type_params: Vec<StringId>,
         signature: Signature,
         namespace_size: usize,
         free_var_enclosing_slots: Vec<NamespaceId>,
@@ -96,13 +120,49 @@ impl Function {
     ) -> Self {
         Self {
             name,
+            qualname,
+            module_name,
+            type_params,
             signature,
             namespace_size,
             free_var_enclosing_slots,
             cell_var_count,
             cell_param_indices,
+            class_cell_slot: None,
             defaults_count,
             is_async,
+            code,
+        }
+    }
+
+    /// Creates a Function for a class body.
+    ///
+    /// Class body functions have no parameters, no defaults, and are not async.
+    /// They may reserve a single `__class__` cell to support zero-arg `super()`.
+    /// They are executed by the `BuildClass` opcode to populate the class namespace.
+    pub fn new_class_body(
+        name: Identifier,
+        qualname: EitherStr,
+        module_name: StringId,
+        type_params: Vec<StringId>,
+        namespace_size: usize,
+        class_cell_slot: Option<NamespaceId>,
+        code: Code,
+    ) -> Self {
+        let cell_var_count = usize::from(class_cell_slot.is_some());
+        Self {
+            name,
+            qualname,
+            module_name,
+            type_params,
+            signature: Signature::default(),
+            namespace_size,
+            free_var_enclosing_slots: Vec::new(),
+            cell_var_count,
+            cell_param_indices: vec![None; cell_var_count],
+            class_cell_slot,
+            defaults_count: 0,
+            is_async: false,
             code,
         }
     }

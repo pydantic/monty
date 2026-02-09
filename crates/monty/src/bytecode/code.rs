@@ -150,6 +150,26 @@ impl Code {
     pub fn find_exception_handler(&self, offset: u32) -> Option<&ExceptionEntry> {
         self.exception_table.iter().find(|entry| entry.contains(offset))
     }
+
+    /// Returns the first source range whose start line is after the given line.
+    ///
+    /// Useful for locating the first executable line inside a compound statement body.
+    #[must_use]
+    pub(crate) fn first_location_after_line(&self, line: u16) -> Option<CodeRange> {
+        let mut best: Option<CodeRange> = None;
+        for entry in &self.location_table {
+            let range = entry.range();
+            if range.start().line > line {
+                let replace = best
+                    .as_ref()
+                    .is_none_or(|current| range.start().line < current.start().line);
+                if replace {
+                    best = Some(range);
+                }
+            }
+        }
+        best
+    }
 }
 
 /// TODO remove, this doesn't add any value

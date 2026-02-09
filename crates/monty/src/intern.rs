@@ -69,7 +69,7 @@ static ASCII_STRS: LazyLock<[&'static str; 128]> = LazyLock::new(|| {
 });
 
 /// Static string values which are known at compile time and don't need to be interned.
-#[repr(u8)]
+#[repr(u16)]
 #[derive(
     Debug, Clone, Copy, FromRepr, EnumString, IntoStaticStr, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
@@ -222,6 +222,13 @@ pub enum StaticStrings {
     Monty,
 
     // ==========================
+    // weakref module strings
+    #[strum(serialize = "weakref")]
+    Weakref,
+    #[strum(serialize = "ref")]
+    Ref,
+
+    // ==========================
     // os.stat_result fields
     #[strum(serialize = "StatResult")]
     OsStatResult,
@@ -309,6 +316,8 @@ pub enum StaticStrings {
     Asyncio,
     #[strum(serialize = "gather")]
     Gather,
+    #[strum(serialize = "__main__")]
+    MainModule,
 
     // ==========================
     // os module strings
@@ -326,9 +335,249 @@ pub enum StaticStrings {
     Args,
 
     // ==========================
-    // Type attributes
+    // Type / class dunder attributes
     #[strum(serialize = "__name__")]
     DunderName,
+    #[strum(serialize = "__module__")]
+    DunderModule,
+    #[strum(serialize = "__qualname__")]
+    DunderQualname,
+    #[strum(serialize = "__annotations__")]
+    DunderAnnotations,
+    #[strum(serialize = "__defaults__")]
+    DunderDefaults,
+    #[strum(serialize = "__kwdefaults__")]
+    DunderKwdefaults,
+    #[strum(serialize = "__init__")]
+    DunderInit,
+    #[strum(serialize = "__class__")]
+    DunderClass,
+    #[strum(serialize = "__bases__")]
+    DunderBases,
+    #[strum(serialize = "__mro__")]
+    DunderMro,
+    #[strum(serialize = "__subclasses__")]
+    DunderSubclasses,
+    #[strum(serialize = "__self__")]
+    DunderSelf,
+    #[strum(serialize = "__func__")]
+    DunderFunc,
+
+    // ==========================
+    // Core protocol dunders
+    #[strum(serialize = "__str__")]
+    DunderStr,
+    #[strum(serialize = "__repr__")]
+    DunderRepr,
+    #[strum(serialize = "__eq__")]
+    DunderEq,
+    #[strum(serialize = "__ne__")]
+    DunderNe,
+    #[strum(serialize = "__lt__")]
+    DunderLt,
+    #[strum(serialize = "__le__")]
+    DunderLe,
+    #[strum(serialize = "__gt__")]
+    DunderGt,
+    #[strum(serialize = "__ge__")]
+    DunderGe,
+    #[strum(serialize = "__hash__")]
+    DunderHash,
+    #[strum(serialize = "__bool__")]
+    DunderBool,
+    #[strum(serialize = "__len__")]
+    DunderLen,
+    #[strum(serialize = "__contains__")]
+    DunderContains,
+
+    // ==========================
+    // Arithmetic dunders
+    #[strum(serialize = "__add__")]
+    DunderAdd,
+    #[strum(serialize = "__radd__")]
+    DunderRadd,
+    #[strum(serialize = "__iadd__")]
+    DunderIadd,
+    #[strum(serialize = "__sub__")]
+    DunderSub,
+    #[strum(serialize = "__rsub__")]
+    DunderRsub,
+    #[strum(serialize = "__isub__")]
+    DunderIsub,
+    #[strum(serialize = "__mul__")]
+    DunderMul,
+    #[strum(serialize = "__rmul__")]
+    DunderRmul,
+    #[strum(serialize = "__imul__")]
+    DunderImul,
+    #[strum(serialize = "__truediv__")]
+    DunderTruediv,
+    #[strum(serialize = "__rtruediv__")]
+    DunderRtruediv,
+    #[strum(serialize = "__itruediv__")]
+    DunderItruediv,
+    #[strum(serialize = "__floordiv__")]
+    DunderFloordiv,
+    #[strum(serialize = "__rfloordiv__")]
+    DunderRfloordiv,
+    #[strum(serialize = "__ifloordiv__")]
+    DunderIfloordiv,
+    #[strum(serialize = "__mod__")]
+    DunderMod,
+    #[strum(serialize = "__rmod__")]
+    DunderRmod,
+    #[strum(serialize = "__imod__")]
+    DunderImod,
+    #[strum(serialize = "__pow__")]
+    DunderPow,
+    #[strum(serialize = "__rpow__")]
+    DunderRpow,
+    #[strum(serialize = "__ipow__")]
+    DunderIpow,
+    #[strum(serialize = "__neg__")]
+    DunderNeg,
+    #[strum(serialize = "__pos__")]
+    DunderPos,
+    #[strum(serialize = "__abs__")]
+    DunderAbs,
+    #[strum(serialize = "__invert__")]
+    DunderInvert,
+
+    // ==========================
+    // Bitwise dunders
+    #[strum(serialize = "__and__")]
+    DunderAnd,
+    #[strum(serialize = "__rand__")]
+    DunderRand,
+    #[strum(serialize = "__iand__")]
+    DunderIand,
+    #[strum(serialize = "__or__")]
+    DunderOr,
+    #[strum(serialize = "__ror__")]
+    DunderRor,
+    #[strum(serialize = "__ior__")]
+    DunderIor,
+    #[strum(serialize = "__xor__")]
+    DunderXor,
+    #[strum(serialize = "__rxor__")]
+    DunderRxor,
+    #[strum(serialize = "__ixor__")]
+    DunderIxor,
+    #[strum(serialize = "__lshift__")]
+    DunderLshift,
+    #[strum(serialize = "__rlshift__")]
+    DunderRlshift,
+    #[strum(serialize = "__ilshift__")]
+    DunderIlshift,
+    #[strum(serialize = "__rshift__")]
+    DunderRshift,
+    #[strum(serialize = "__rrshift__")]
+    DunderRrshift,
+    #[strum(serialize = "__irshift__")]
+    DunderIrshift,
+    #[strum(serialize = "__matmul__")]
+    DunderMatmul,
+    #[strum(serialize = "__rmatmul__")]
+    DunderRmatmul,
+    #[strum(serialize = "__imatmul__")]
+    DunderImatmul,
+
+    // ==========================
+    // Conversion dunders
+    #[strum(serialize = "__int__")]
+    DunderInt,
+    #[strum(serialize = "__float__")]
+    DunderFloat,
+    #[strum(serialize = "__index__")]
+    DunderIndex,
+
+    // ==========================
+    // Container dunders
+    #[strum(serialize = "__getitem__")]
+    DunderGetitem,
+    #[strum(serialize = "__setitem__")]
+    DunderSetitem,
+    #[strum(serialize = "__delitem__")]
+    DunderDelitem,
+
+    // ==========================
+    // Iterator dunders
+    #[strum(serialize = "__iter__")]
+    DunderIter,
+    #[strum(serialize = "__next__")]
+    DunderNext,
+
+    // ==========================
+    // Callable dunder
+    #[strum(serialize = "__call__")]
+    DunderCall,
+
+    // ==========================
+    // Context manager dunders
+    #[strum(serialize = "__enter__")]
+    DunderEnter,
+    #[strum(serialize = "__exit__")]
+    DunderExit,
+
+    // ==========================
+    // Format dunder
+    #[strum(serialize = "__format__")]
+    DunderFormat,
+
+    // ==========================
+    // Attribute access dunders
+    #[strum(serialize = "__getattr__")]
+    DunderGetattr,
+    #[strum(serialize = "__getattribute__")]
+    DunderGetattribute,
+    #[strum(serialize = "__setattr__")]
+    DunderSetattr,
+    #[strum(serialize = "__delattr__")]
+    DunderDelattr,
+
+    // ==========================
+    // Descriptor protocol dunders
+    #[strum(serialize = "__get__")]
+    DunderDescGet,
+    #[strum(serialize = "__set__")]
+    DunderDescSet,
+    #[strum(serialize = "__delete__")]
+    DunderDescDelete,
+    #[strum(serialize = "__set_name__")]
+    DunderSetName,
+
+    // ==========================
+    // Object creation / class dunders
+    #[strum(serialize = "__new__")]
+    DunderNew,
+    #[strum(serialize = "__prepare__")]
+    DunderPrepare,
+    #[strum(serialize = "__mro_entries__")]
+    DunderMroEntries,
+    #[strum(serialize = "__orig_bases__")]
+    DunderOrigBases,
+    #[strum(serialize = "__type_params__")]
+    DunderTypeParams,
+    #[strum(serialize = "__origin__")]
+    DunderOrigin,
+    #[strum(serialize = "__args__")]
+    DunderArgs,
+    #[strum(serialize = "__parameters__")]
+    DunderParameters,
+    #[strum(serialize = "__match_args__")]
+    DunderMatchArgs,
+    #[strum(serialize = "__instancecheck__")]
+    DunderInstancecheck,
+    #[strum(serialize = "__subclasscheck__")]
+    DunderSubclasscheck,
+    #[strum(serialize = "__dict__")]
+    DunderDictAttr,
+    #[strum(serialize = "__slots__")]
+    DunderSlots,
+    #[strum(serialize = "__init_subclass__")]
+    DunderInitSubclass,
+    #[strum(serialize = "__class_getitem__")]
+    DunderClassGetitem,
 
     // ==========================
     // pathlib module strings
@@ -416,7 +665,7 @@ impl StaticStrings {
     /// (e.g., it's an ASCII char or a dynamically interned string).
     pub fn from_string_id(id: StringId) -> Option<Self> {
         let enum_id = id.0.checked_sub(STATIC_STRING_ID_OFFSET)?;
-        u8::try_from(enum_id).ok().and_then(Self::from_repr)
+        u16::try_from(enum_id).ok().and_then(Self::from_repr)
     }
 }
 
@@ -606,6 +855,24 @@ impl InternerBuilder {
     #[inline]
     pub fn get_str(&self, id: StringId) -> &str {
         get_str(&self.strings, id)
+    }
+
+    /// Looks up a `StringId` by its string value.
+    ///
+    /// Returns `Some(id)` if the string was previously interned, `None` otherwise.
+    /// This is the inverse of `get_str()` for strings that have already been interned.
+    #[must_use]
+    pub fn try_get_str_id(&self, s: &str) -> Option<StringId> {
+        // Check single ASCII character
+        if s.len() == 1 {
+            return Some(StringId::from_ascii(s.as_bytes()[0]));
+        }
+        // Check known static strings
+        if let Ok(ss) = StaticStrings::from_str(s) {
+            return Some(ss.into());
+        }
+        // Check user-interned strings
+        self.string_map.get(s).copied()
     }
 }
 

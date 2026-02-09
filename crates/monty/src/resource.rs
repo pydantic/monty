@@ -97,7 +97,15 @@ impl ResourceError {
 
 impl From<ResourceError> for RunError {
     fn from(err: ResourceError) -> Self {
-        Self::UncatchableExc(err.into_exception(None))
+        // RecursionError is catchable in CPython (unlike MemoryError/TimeoutError
+        // which are also catchable in CPython but uncatchable in Monty for sandbox safety).
+        // Making RecursionError catchable is important for CPython parity:
+        // `try: f() except RecursionError: ...` must work.
+        if matches!(err, ResourceError::Recursion { .. }) {
+            Self::Exc(err.into_exception(None))
+        } else {
+            Self::UncatchableExc(err.into_exception(None))
+        }
     }
 }
 
@@ -219,6 +227,24 @@ pub struct ResourceLimits {
 
 /// Recommended maximum recursion depth if not otherwise specified.
 pub const DEFAULT_MAX_RECURSION_DEPTH: usize = 1000;
+
+/// Maximum length of the Method Resolution Order (MRO) list for any class.
+///
+/// Limits the output of C3 linearization to prevent diamond-inheritance explosions
+/// from consuming excessive memory or CPU. A limit of 2600 is generous enough for
+/// any practical class hierarchy while still preventing adversarial abuse.
+///
+/// Consumed during Phase 2's C3 linearization implementation.
+pub const MAX_MRO_LENGTH: usize = 2600;
+
+/// Maximum depth of single-path inheritance chains.
+///
+/// Prevents deep inheritance hierarchies (e.g., 10000 levels) from causing stack
+/// overflow during MRO computation or excessive memory use. A limit of 1000 matches
+/// the default recursion limit and is sufficient for any practical class hierarchy.
+///
+/// Consumed during Phase 2's C3 linearization implementation.
+pub const MAX_INHERITANCE_DEPTH: usize = 1000;
 
 impl ResourceLimits {
     /// Creates a new ResourceLimits with all limits disabled, except max recursion which is set to 1000.

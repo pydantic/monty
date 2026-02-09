@@ -1,11 +1,13 @@
 //! Public interface for running Monty code.
+#[cfg(feature = "ref-count-return")]
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
     ExcType, MontyException,
     asyncio::CallId,
     bytecode::{Code, Compiler, FrameExit, VM, VMSnapshot},
-    exception_private::RunResult,
+    exception_private::{RunError, RunResult},
     heap::Heap,
     intern::{ExtFunctionId, Interns},
     io::{PrintWriter, StdPrint},
@@ -502,8 +504,6 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
         results: Vec<(u32, ExternalResult)>,
         print: &mut impl PrintWriter,
     ) -> Result<RunProgress<T>, MontyException> {
-        use crate::exception_private::RunError;
-
         // Destructure self to avoid partial move issues
         let Self {
             executor,
@@ -786,10 +786,22 @@ impl Executor {
 
         // Create and run VM
         let mut vm = VM::new(&mut heap, &mut namespaces, &self.interns, print);
-        let frame_exit_result = vm.run_module(&self.module_code);
+        let frame_exit_result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| vm.run_module(&self.module_code)));
 
         // Clean up VM state before it goes out of scope
         vm.cleanup();
+
+        let frame_exit_result = match frame_exit_result {
+            Ok(result) => result,
+            Err(panic) => {
+                #[cfg(feature = "ref-count-panic")]
+                namespaces.drop_global_with_heap(&mut heap);
+                #[cfg(feature = "ref-count-panic")]
+                heap.debug_dump_remaining();
+                std::panic::resume_unwind(panic);
+            }
+        };
 
         if heap.size() > heap_capacity {
             self.heap_capacity.store(heap.size(), Ordering::Relaxed);
@@ -798,6 +810,10 @@ impl Executor {
         // Clean up the global namespace before returning (only needed with ref-count-panic)
         #[cfg(feature = "ref-count-panic")]
         namespaces.drop_global_with_heap(&mut heap);
+
+        // TEMPORARY DEBUG: dump remaining heap entries before heap is dropped
+        #[cfg(feature = "ref-count-panic")]
+        heap.debug_dump_remaining();
 
         frame_exit_to_object(frame_exit_result, &mut heap, &self.interns)
             .map_err(|e| e.into_python_exception(&self.interns, &self.code))
@@ -818,8 +834,6 @@ impl Executor {
     /// Only available when the `ref-count-return` feature is enabled.
     #[cfg(feature = "ref-count-return")]
     fn run_ref_counts(&self, inputs: Vec<MontyObject>) -> Result<RefCountOutput, MontyException> {
-        use std::collections::HashSet;
-
         let mut heap = Heap::new(self.namespace_size, NoLimitTracker);
         let mut namespaces = self.prepare_namespaces(inputs, &mut heap)?;
 
