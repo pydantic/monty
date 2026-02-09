@@ -944,7 +944,7 @@ impl<T: ResourceTracker> Heap<T> {
         let empty_tuple = this
             .allocate(HeapData::Tuple(Tuple::default()))
             .expect("Failed to allocate empty tuple singleton");
-        assert_eq!(empty_tuple, EMPTY_TUPLE_ID);
+        debug_assert_eq!(empty_tuple, EMPTY_TUPLE_ID);
         this
     }
 
