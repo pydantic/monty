@@ -660,3 +660,162 @@ fn bigint_rejected_before_allocation() {
         Some("memory limit exceeded: 250000 bytes > 100000 bytes")
     );
 }
+
+// === String/Bytes large result pre-check tests ===
+// These tests verify that string/bytes multiplication operations that would produce
+// very large results are rejected before the computation begins.
+
+/// Test that large string multiplication is rejected before allocation.
+#[test]
+fn string_mult_memory_limit() {
+    // 'x' * 1000000 = 1MB string
+    let code = "'x' * 1000000";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000); // 100KB limit
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_err(), "large string mult should be rejected");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
+    );
+}
+
+/// Test that large bytes multiplication is rejected before allocation.
+#[test]
+fn bytes_mult_memory_limit() {
+    // b'x' * 1000000 = 1MB bytes
+    let code = "b'x' * 1000000";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000); // 100KB limit
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_err(), "large bytes mult should be rejected");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
+    );
+}
+
+/// Test that small string multiplication works within limits.
+#[test]
+fn string_mult_within_limit() {
+    // 'abc' * 100 = 300 bytes, well within 100KB limit
+    let code = "'abc' * 100 == 'abc' * 100";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_ok(), "small string mult should succeed");
+    assert_eq!(result.unwrap(), MontyObject::Bool(true));
+}
+
+/// Test that small bytes multiplication works within limits.
+#[test]
+fn bytes_mult_within_limit() {
+    // b'abc' * 100 = 300 bytes, well within 100KB limit
+    let code = "b'abc' * 100 == b'abc' * 100";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_ok(), "small bytes mult should succeed");
+    assert_eq!(result.unwrap(), MontyObject::Bool(true));
+}
+
+/// Test that string multiplication is rejected before allocation via check_large_result.
+#[test]
+fn string_mult_rejected_before_allocation() {
+    // 'x' * 200000 = 200KB string
+    // Set limit to 100KB - the pre-check should reject before allocating
+    let code = "'x' * 200000";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000); // 100KB limit
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_err(), "should be rejected before allocation");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    // The exact size may include some overhead, but should be around 200KB
+    assert!(
+        exc.message()
+            .is_some_and(|m| m.contains("memory limit exceeded") && m.contains("> 100000 bytes")),
+        "expected memory limit error with ~200KB size, got: {:?}",
+        exc.message()
+    );
+}
+
+/// Test that large list multiplication is rejected before allocation.
+#[test]
+fn list_mult_memory_limit() {
+    // [1] * 10000 = 10,000 Values = ~160KB (at 16 bytes per Value)
+    let code = "[1] * 10000";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000); // 100KB limit
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_err(), "large list mult should be rejected");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
+    );
+}
+
+/// Test that large tuple multiplication is rejected before allocation.
+#[test]
+fn tuple_mult_memory_limit() {
+    // (1,) * 10000 = 10,000 Values = ~160KB (at 16 bytes per Value)
+    let code = "(1,) * 10000";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000); // 100KB limit
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_err(), "large tuple mult should be rejected");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
+    );
+}
+
+/// Test that small list multiplication works within limits.
+#[test]
+fn list_mult_within_limit() {
+    // [1, 2, 3] * 20 = 60 Values, well within 100KB limit
+    let code = "[1, 2, 3] * 20 == [1, 2, 3] * 20";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_ok(), "small list mult should succeed");
+    assert_eq!(result.unwrap(), MontyObject::Bool(true));
+}
+
+/// Test that small tuple multiplication works within limits.
+#[test]
+fn tuple_mult_within_limit() {
+    // (1, 2, 3) * 20 = 60 Values, well within 100KB limit
+    let code = "(1, 2, 3) * 20 == (1, 2, 3) * 20";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_ok(), "small tuple mult should succeed");
+    assert_eq!(result.unwrap(), MontyObject::Bool(true));
+}

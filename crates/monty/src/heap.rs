@@ -3,7 +3,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem::{ManuallyDrop, discriminant},
+    mem::{ManuallyDrop, discriminant, size_of},
     ptr::addr_of,
     vec,
 };
@@ -17,7 +17,7 @@ use crate::{
     asyncio::{Coroutine, GatherFuture, GatherItem},
     exception_private::{ExcType, RunResult, SimpleException},
     intern::{FunctionId, Interns, StringId},
-    resource::{ResourceError, ResourceTracker},
+    resource::{LARGE_RESULT_THRESHOLD, ResourceError, ResourceTracker},
     types::{
         AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait,
         Range, Set, Slice, Str, Tuple, Type, allocate_tuple,
@@ -1394,11 +1394,21 @@ impl<T: ResourceTracker> Heap<T> {
 
         match &data {
             HeapData::Str(s) => {
+                let estimated_size = s.len().saturating_mul(count);
+                if estimated_size > LARGE_RESULT_THRESHOLD {
+                    self.tracker.check_large_result(estimated_size)?;
+                }
+
                 let repeated = s.as_str().repeat(count);
                 restore_data!(self, id, data, "mult_sequence");
                 Ok(Some(Value::Ref(self.allocate(HeapData::Str(repeated.into()))?)))
             }
             HeapData::Bytes(b) => {
+                let estimated_size = b.len().saturating_mul(count);
+                if estimated_size > LARGE_RESULT_THRESHOLD {
+                    self.tracker.check_large_result(estimated_size)?;
+                }
+
                 let repeated = b.as_slice().repeat(count);
                 restore_data!(self, id, data, "mult_sequence");
                 Ok(Some(Value::Ref(self.allocate(HeapData::Bytes(repeated.into()))?)))
@@ -1408,6 +1418,12 @@ impl<T: ResourceTracker> Heap<T> {
                     restore_data!(self, id, data, "mult_sequence");
                     Ok(Some(Value::Ref(self.allocate(HeapData::List(List::new(Vec::new())))?)))
                 } else {
+                    // Pre-check memory limit for large results
+                    let estimated_size = list.len().saturating_mul(count).saturating_mul(size_of::<Value>());
+                    if estimated_size > LARGE_RESULT_THRESHOLD {
+                        self.tracker.check_large_result(estimated_size)?;
+                    }
+
                     // Copy items and track which refs need incrementing
                     let items: Vec<Value> = list.as_vec().iter().map(Value::copy_for_extend).collect();
                     let ref_ids: Vec<HeapId> = items.iter().filter_map(Value::ref_id).collect();
@@ -1448,6 +1464,16 @@ impl<T: ResourceTracker> Heap<T> {
                     // Use empty tuple singleton
                     Ok(Some(Value::Ref(self.get_or_create_empty_tuple()?)))
                 } else {
+                    // Pre-check memory limit for large results
+                    let estimated_size = tuple
+                        .as_vec()
+                        .len()
+                        .saturating_mul(count)
+                        .saturating_mul(size_of::<Value>());
+                    if estimated_size > LARGE_RESULT_THRESHOLD {
+                        self.tracker.check_large_result(estimated_size)?;
+                    }
+
                     // Copy items and track which refs need incrementing
                     let items: Vec<Value> = tuple.as_vec().iter().map(Value::copy_for_extend).collect();
                     let ref_ids: Vec<HeapId> = items.iter().filter_map(Value::ref_id).collect();
