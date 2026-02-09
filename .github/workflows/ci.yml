@@ -178,7 +178,7 @@ jobs:
           args: --out dist
           rust-toolchain: stable
           working-directory: crates/monty-python
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: pypi_files-sdist
           path: crates/monty-python/dist
@@ -240,7 +240,7 @@ jobs:
           docker-options: -e CI
           working-directory: crates/monty-python
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: pypi_files-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux || 'manylinux' }}
           path: crates/monty-python/dist
@@ -306,7 +306,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: pypi_files-linux-${{ matrix.target }}-*
           merge-multiple: true
@@ -352,7 +352,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: pypi_files-${{ matrix.os }}-*
           merge-multiple: true
