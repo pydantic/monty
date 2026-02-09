@@ -37,6 +37,9 @@ impl HeapId {
     }
 }
 
+/// The empty tuple is a singleton which is allocated at startup.
+const EMPTY_TUPLE_ID: HeapId = HeapId(0);
+
 /// HeapData captures every runtime value that must live in the arena.
 ///
 /// Each variant wraps a type that implements `AbstractValue`, providing
@@ -856,12 +859,6 @@ pub(crate) struct Heap<T: ResourceTracker> {
     may_have_cycles: bool,
     /// Number of GC applicable allocations since the last GC.
     allocations_since_gc: u32,
-    /// Cached HeapId for the empty tuple singleton `()`.
-    ///
-    /// Lazily allocated on first use via `get_or_create_empty_tuple()`.
-    /// In Python, `() is ()` is always `True` because empty tuples are interned.
-    /// This field enables the same optimization.
-    empty_tuple_id: Option<HeapId>,
 }
 
 impl<T: ResourceTracker + serde::Serialize> serde::Serialize for Heap<T> {
@@ -873,7 +870,6 @@ impl<T: ResourceTracker + serde::Serialize> serde::Serialize for Heap<T> {
         state.serialize_field("tracker", &self.tracker)?;
         state.serialize_field("may_have_cycles", &self.may_have_cycles)?;
         state.serialize_field("allocations_since_gc", &self.allocations_since_gc)?;
-        state.serialize_field("empty_tuple_id", &self.empty_tuple_id)?;
         state.end()
     }
 }
@@ -887,7 +883,6 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
             tracker: T,
             may_have_cycles: bool,
             allocations_since_gc: u32,
-            empty_tuple_id: Option<HeapId>,
         }
         let fields = HeapFields::<T>::deserialize(deserializer)?;
         Ok(Self {
@@ -896,7 +891,6 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
             tracker: fields.tracker,
             may_have_cycles: fields.may_have_cycles,
             allocations_since_gc: fields.allocations_since_gc,
-            empty_tuple_id: fields.empty_tuple_id,
         })
     }
 }
@@ -938,14 +932,20 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// Use this to create heaps with custom resource limits or GC scheduling.
     pub fn new(capacity: usize, tracker: T) -> Self {
-        Self {
+        let mut this = Self {
             entries: Vec::with_capacity(capacity),
             free_list: Vec::new(),
             tracker,
             may_have_cycles: false,
             allocations_since_gc: 0,
-            empty_tuple_id: None,
-        }
+        };
+        // TBC: should the empty tuple contribute to the resource limits?
+        // If not, can just place it in `entries` directly without going through `allocate()`.
+        let empty_tuple = this
+            .allocate(HeapData::Tuple(Tuple::default()))
+            .expect("Failed to allocate empty tuple singleton");
+        debug_assert_eq!(empty_tuple, EMPTY_TUPLE_ID);
+        this
     }
 
     /// Returns a reference to the resource tracker.
@@ -1025,31 +1025,18 @@ impl<T: ResourceTracker> Heap<T> {
         Ok(id)
     }
 
-    /// Returns the singleton empty tuple, creating it on first use.
+    /// Returns the singleton empty tuple.
     ///
     /// In Python, `() is ()` is always `True` because empty tuples are interned.
     /// This method provides the same optimization by returning the same `HeapId`
     /// for all empty tuple allocations.
     ///
-    /// The returned `HeapId` has its reference count incremented, so the caller
+    /// The returned `Value` has its reference count incremented, so the caller
     /// owns a reference and must call `dec_ref` when done.
-    ///
-    /// # Errors
-    /// Returns `ResourceError` if allocating the empty tuple fails (only possible
-    /// on first call when resource limits are exhausted).
-    pub fn get_or_create_empty_tuple(&mut self) -> Result<HeapId, ResourceError> {
-        if let Some(id) = self.empty_tuple_id {
-            // Return existing singleton with incremented refcount
-            self.inc_ref(id);
-            Ok(id)
-        } else {
-            // First use - allocate the empty tuple singleton
-            let id = self.allocate(HeapData::Tuple(Tuple::default()))?;
-            self.empty_tuple_id = Some(id);
-            // Keep an extra reference so the singleton is never freed
-            self.inc_ref(id);
-            Ok(id)
-        }
+    pub fn get_empty_tuple(&mut self) -> Value {
+        // Return existing singleton with incremented refcount
+        self.inc_ref(EMPTY_TUPLE_ID);
+        Value::Ref(EMPTY_TUPLE_ID)
     }
 
     /// Increments the reference count for an existing heap entry.
@@ -1288,13 +1275,8 @@ impl<T: ResourceTracker> Heap<T> {
     #[must_use]
     #[cfg(feature = "ref-count-return")]
     pub fn entry_count(&self) -> usize {
-        let count = self.entries.iter().filter(|o| o.is_some()).count();
-        // Subtract 1 for the empty tuple singleton if it exists
-        if self.empty_tuple_id.is_some() {
-            count.saturating_sub(1)
-        } else {
-            count
-        }
+        // 1.. to skip index 0 which is the empty tuple singleton
+        self.entries[1..].iter().filter(|o| o.is_some()).count()
     }
 
     /// Gets the value inside a cell, cloning it with proper refcount handling.
@@ -1446,7 +1428,7 @@ impl<T: ResourceTracker> Heap<T> {
                 if count == 0 {
                     restore_data!(self, id, data, "mult_sequence");
                     // Use empty tuple singleton
-                    Ok(Some(Value::Ref(self.get_or_create_empty_tuple()?)))
+                    Ok(Some(self.get_empty_tuple()))
                 } else {
                     // Copy items and track which refs need incrementing
                     let items: Vec<Value> = tuple.as_vec().iter().map(Value::copy_for_extend).collect();

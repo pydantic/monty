@@ -96,7 +96,7 @@ fn json_output_cycle_list() {
     // The cyclic reference becomes MontyObject::Cycle
     assert_eq!(
         serde_json::to_string(&result).unwrap(),
-        r#"{"List":[{"Cycle":[0,"[...]"]}]}"#
+        r#"{"List":[{"Cycle":[1,"[...]"]}]}"#
     );
 }
 
@@ -107,7 +107,7 @@ fn json_output_cycle_dict() {
     let result = ex.run_no_limits(vec![]).unwrap();
     assert_eq!(
         serde_json::to_string(&result).unwrap(),
-        r#"{"Dict":[[{"String":"self"},{"Cycle":[0,"{...}"]}]]}"#
+        r#"{"Dict":[[{"String":"self"},{"Cycle":[1,"{...}"]}]]}"#
     );
 }
 
