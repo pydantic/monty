@@ -376,3 +376,4 @@ Running Python directly via `exec()` (~0.1ms) or subprocess (~30ms).
 - **Setup complexity**: None
 - **File mounting**: Direct filesystem access (that's the problem)
 - **Snapshotting**: Possible with durable execution solutions like Temporal
+Contribution by Manya
