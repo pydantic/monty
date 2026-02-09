@@ -178,9 +178,10 @@ jobs:
 
       - name: Run ${{ matrix.target }} fuzzer
         run: |
-          # cargo fuzz defaults to musl targets, which is incompatible with sanitizers
-          RUST_TARGET=$(rustc -Vv | grep host | cut -d ' ' -f 2)
-          cargo fuzz run --fuzz-dir crates/fuzz --target=$RUST_TARGET ${{ matrix.target }} -- -max_total_time=60
+          # Use --sanitizer none to avoid ASAN/SanitizerCoverage linking issues on CI
+          # (undefined __sancov_gen_.* symbols). For short CI runs, we're mainly
+          # catching panics, not memory bugs.
+          cargo fuzz run --fuzz-dir crates/fuzz --sanitizer none ${{ matrix.target }} -- -max_total_time=60
 
   # https://github.com/marketplace/actions/alls-green#why used for branch protection checks
   check:
