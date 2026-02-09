@@ -103,8 +103,7 @@ impl Tuple {
         match value {
             None => {
                 // Use empty tuple singleton
-                let heap_id = heap.get_or_create_empty_tuple()?;
-                Ok(Value::Ref(heap_id))
+                Ok(heap.get_empty_tuple())
             }
             Some(v) => {
                 let mut iter = MontyIter::new(v, heap, interns)?;
@@ -147,9 +146,7 @@ pub fn allocate_tuple(
     heap: &mut Heap<impl ResourceTracker>,
 ) -> Result<Value, crate::resource::ResourceError> {
     if items.is_empty() {
-        // Use the empty tuple singleton
-        let heap_id = heap.get_or_create_empty_tuple()?;
-        Ok(Value::Ref(heap_id))
+        Ok(heap.get_empty_tuple())
     } else {
         // Allocate a new tuple (SmallVec will inline if ≤3 elements)
         let heap_id = heap.allocate(HeapData::Tuple(Tuple::new(items)))?;
