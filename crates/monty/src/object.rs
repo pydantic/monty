@@ -13,7 +13,7 @@ use crate::{
     exception_private::{ExcType, SimpleException},
     heap::{Heap, HeapData, HeapId},
     intern::Interns,
-    resource::{ResourceError, ResourceTracker},
+    resource::{DepthGuard, ResourceError, ResourceTracker},
     types::{
         LongInt, NamedTuple, Path, PyTrait, Type, allocate_tuple,
         bytes::{Bytes, bytes_repr},
@@ -298,7 +298,8 @@ impl MontyObject {
 
     fn from_value(object: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Self {
         let mut visited = AHashSet::new();
-        Self::from_value_inner(object, heap, &mut visited, interns)
+        let mut guard = DepthGuard::default();
+        Self::from_value_inner(object, heap, &mut visited, &mut guard, interns)
     }
 
     /// Internal helper for converting Value to MontyObject with cycle detection.
@@ -306,10 +307,31 @@ impl MontyObject {
     /// The `visited` set tracks HeapIds we're currently processing. When we encounter
     /// a HeapId already in the set, we've found a cycle and return `MontyObject::Cycle`
     /// with an appropriate placeholder string.
+    ///
+    /// The `guard` tracks recursion depth to prevent stack overflow on deeply nested structures.
     fn from_value_inner(
         object: &Value,
         heap: &Heap<impl ResourceTracker>,
         visited: &mut AHashSet<HeapId>,
+        guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Self {
+        // Check depth limit before processing
+        if guard.increase().is_err() {
+            return Self::Repr("<deeply nested>".to_owned());
+        }
+
+        let result = Self::from_value_inner_impl(object, heap, visited, guard, interns);
+        guard.decrease();
+        result
+    }
+
+    /// Implementation of from_value_inner without depth tracking boilerplate.
+    fn from_value_inner_impl(
+        object: &Value,
+        heap: &Heap<impl ResourceTracker>,
+        visited: &mut AHashSet<HeapId>,
+        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> Self {
         match object {
@@ -342,14 +364,14 @@ impl MontyObject {
                     HeapData::List(list) => Self::List(
                         list.as_vec()
                             .iter()
-                            .map(|obj| Self::from_value_inner(obj, heap, visited, interns))
+                            .map(|obj| Self::from_value_inner(obj, heap, visited, guard, interns))
                             .collect(),
                     ),
                     HeapData::Tuple(tuple) => Self::Tuple(
                         tuple
                             .as_vec()
                             .iter()
-                            .map(|obj| Self::from_value_inner(obj, heap, visited, interns))
+                            .map(|obj| Self::from_value_inner(obj, heap, visited, guard, interns))
                             .collect(),
                     ),
                     HeapData::NamedTuple(nt) => Self::NamedTuple {
@@ -362,15 +384,15 @@ impl MontyObject {
                         values: nt
                             .as_vec()
                             .iter()
-                            .map(|obj| Self::from_value_inner(obj, heap, visited, interns))
+                            .map(|obj| Self::from_value_inner(obj, heap, visited, guard, interns))
                             .collect(),
                     },
                     HeapData::Dict(dict) => Self::Dict(DictPairs(
                         dict.into_iter()
                             .map(|(k, v)| {
                                 (
-                                    Self::from_value_inner(k, heap, visited, interns),
-                                    Self::from_value_inner(v, heap, visited, interns),
+                                    Self::from_value_inner(k, heap, visited, guard, interns),
+                                    Self::from_value_inner(v, heap, visited, guard, interns),
                                 )
                             })
                             .collect(),
@@ -378,28 +400,28 @@ impl MontyObject {
                     HeapData::Set(set) => Self::Set(
                         set.storage()
                             .iter()
-                            .map(|obj| Self::from_value_inner(obj, heap, visited, interns))
+                            .map(|obj| Self::from_value_inner(obj, heap, visited, guard, interns))
                             .collect(),
                     ),
                     HeapData::FrozenSet(frozenset) => Self::FrozenSet(
                         frozenset
                             .storage()
                             .iter()
-                            .map(|obj| Self::from_value_inner(obj, heap, visited, interns))
+                            .map(|obj| Self::from_value_inner(obj, heap, visited, guard, interns))
                             .collect(),
                     ),
                     // Cells are internal closure implementation details
                     HeapData::Cell(inner) => {
                         // Show the cell's contents
-                        Self::from_value_inner(inner, heap, visited, interns)
+                        Self::from_value_inner(inner, heap, visited, guard, interns)
                     }
                     HeapData::Closure(..) | HeapData::FunctionDefaults(..) => {
-                        Self::Repr(object.py_repr(heap, interns).into_owned())
+                        Self::Repr(object.py_repr(heap, guard, interns).into_owned())
                     }
                     HeapData::Range(range) => {
                         // Represent Range as a repr string since MontyObject doesn't have a Range variant
                         let mut s = String::new();
-                        let _ = range.py_repr_fmt(&mut s, heap, visited, interns);
+                        let _ = range.py_repr_fmt(&mut s, heap, visited, guard, interns);
                         Self::Repr(s)
                     }
                     HeapData::Exception(exc) => Self::Exception {
@@ -413,8 +435,8 @@ impl MontyObject {
                                 .into_iter()
                                 .map(|(k, v)| {
                                     (
-                                        Self::from_value_inner(k, heap, visited, interns),
-                                        Self::from_value_inner(v, heap, visited, interns),
+                                        Self::from_value_inner(k, heap, visited, guard, interns),
+                                        Self::from_value_inner(v, heap, visited, guard, interns),
                                     )
                                 })
                                 .collect(),
@@ -443,7 +465,7 @@ impl MontyObject {
                     HeapData::Slice(slice) => {
                         // Represent Slice as a repr string since MontyObject doesn't have a Slice variant
                         let mut s = String::new();
-                        let _ = slice.py_repr_fmt(&mut s, heap, visited, interns);
+                        let _ = slice.py_repr_fmt(&mut s, heap, visited, guard, interns);
                         Self::Repr(s)
                     }
                     HeapData::Coroutine(coro) => {
@@ -468,7 +490,7 @@ impl MontyObject {
             Value::Builtin(Builtins::Function(f)) => Self::BuiltinFunction(*f),
             #[cfg(feature = "ref-count-panic")]
             Value::Dereferenced => panic!("Dereferenced found while converting to MontyObject"),
-            _ => Self::Repr(object.py_repr(heap, interns).into_owned()),
+            _ => Self::Repr(object.py_repr(heap, guard, interns).into_owned()),
         }
     }
 

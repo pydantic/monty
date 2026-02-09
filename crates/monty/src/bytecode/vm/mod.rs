@@ -813,12 +813,12 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 }
                 Opcode::BinaryMatMul => try_catch_sync!(self, cached_frame, self.binary_matmul()),
                 // Comparison Operations
-                Opcode::CompareEq => self.compare_eq(),
-                Opcode::CompareNe => self.compare_ne(),
-                Opcode::CompareLt => self.compare_ord(Ordering::is_lt),
-                Opcode::CompareLe => self.compare_ord(Ordering::is_le),
-                Opcode::CompareGt => self.compare_ord(Ordering::is_gt),
-                Opcode::CompareGe => self.compare_ord(Ordering::is_ge),
+                Opcode::CompareEq => try_catch_sync!(self, cached_frame, self.compare_eq()),
+                Opcode::CompareNe => try_catch_sync!(self, cached_frame, self.compare_ne()),
+                Opcode::CompareLt => try_catch_sync!(self, cached_frame, self.compare_ord(Ordering::is_lt)),
+                Opcode::CompareLe => try_catch_sync!(self, cached_frame, self.compare_ord(Ordering::is_le)),
+                Opcode::CompareGt => try_catch_sync!(self, cached_frame, self.compare_ord(Ordering::is_gt)),
+                Opcode::CompareGe => try_catch_sync!(self, cached_frame, self.compare_ord(Ordering::is_ge)),
                 Opcode::CompareIs => self.compare_is(false),
                 Opcode::CompareIsNot => self.compare_is(true),
                 Opcode::CompareIn => try_catch_sync!(self, cached_frame, self.compare_in(false)),

@@ -8,7 +8,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapGuard},
     intern::Interns,
-    resource::ResourceTracker,
+    resource::{DepthGuard, ResourceTracker},
     types::{MontyIter, PyTrait},
     value::Value,
 };
@@ -81,11 +81,12 @@ fn builtin_min_max(
 
         let mut result_guard = HeapGuard::new(result, heap);
         let (result, heap) = result_guard.as_parts_mut();
+        let mut guard = DepthGuard::default();
 
         while let Some(item) = iter.for_next(heap, interns)? {
             defer_drop_mut!(item, heap);
 
-            let Some(ordering) = result.py_cmp(item, heap, interns) else {
+            let Some(ordering) = result.py_cmp(item, heap, &mut guard, interns)? else {
                 return Err(ord_not_supported(result, item, heap));
             };
 
@@ -99,11 +100,12 @@ fn builtin_min_max(
         // Multiple arguments: compare them directly
         let mut result_guard = HeapGuard::new(first_arg, heap);
         let (result, heap) = result_guard.as_parts_mut();
+        let mut guard = DepthGuard::default();
 
         for item in positional {
             defer_drop_mut!(item, heap);
 
-            let Some(ordering) = result.py_cmp(item, heap, interns) else {
+            let Some(ordering) = result.py_cmp(item, heap, &mut guard, interns)? else {
                 return Err(ord_not_supported(result, item, heap));
             };
 

@@ -76,7 +76,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
-    resource::ResourceTracker,
+    resource::{DepthGuard, ResourceError, ResourceTracker},
     types::List,
     value::{EitherStr, Value},
 };
@@ -296,8 +296,14 @@ impl PyTrait for Bytes {
         Ok(Value::Int(i64::from(byte)))
     }
 
-    fn py_eq(&self, other: &Self, _heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
-        self.0 == other.0
+    fn py_eq(
+        &self,
+        other: &Self,
+        _heap: &mut Heap<impl ResourceTracker>,
+        _guard: &mut DepthGuard,
+        _interns: &Interns,
+    ) -> Result<bool, ResourceError> {
+        Ok(self.0 == other.0)
     }
 
     /// Bytes don't contain nested heap references.
@@ -314,6 +320,7 @@ impl PyTrait for Bytes {
         f: &mut impl Write,
         _heap: &Heap<impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
+        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> std::fmt::Result {
         bytes_repr_fmt(&self.0, f)

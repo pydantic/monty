@@ -14,7 +14,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
-    resource::{ResourceError, ResourceTracker},
+    resource::{DepthGuard, ResourceError, ResourceTracker},
     types::Type,
     value::{EitherStr, Value},
 };
@@ -53,7 +53,8 @@ impl Str {
         match value {
             None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
             Some(v) => {
-                let s = v.py_str(heap, interns).into_owned();
+                let mut guard = DepthGuard::default();
+                let s = v.py_str(heap, &mut guard, interns).into_owned();
                 v.drop_with_heap(heap);
                 allocate_string(s, heap)
             }
@@ -237,8 +238,14 @@ impl PyTrait for Str {
         Ok(allocate_char(c, heap)?)
     }
 
-    fn py_eq(&self, other: &Self, _heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
-        self.0 == other.0
+    fn py_eq(
+        &self,
+        other: &Self,
+        _heap: &mut Heap<impl ResourceTracker>,
+        _guard: &mut DepthGuard,
+        _interns: &Interns,
+    ) -> Result<bool, ResourceError> {
+        Ok(self.0 == other.0)
     }
 
     /// Interns don't contain nested heap references.
@@ -255,12 +262,18 @@ impl PyTrait for Str {
         f: &mut impl Write,
         _heap: &Heap<impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
+        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> fmt::Result {
         string_repr_fmt(&self.0, f)
     }
 
-    fn py_str(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Cow<'static, str> {
+    fn py_str(
+        &self,
+        _heap: &Heap<impl ResourceTracker>,
+        _guard: &mut DepthGuard,
+        _interns: &Interns,
+    ) -> Cow<'static, str> {
         self.0.clone().into()
     }
 

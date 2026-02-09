@@ -5,7 +5,7 @@ use crate::{
     exception_private::{ExcType, RunError, SimpleException},
     fstring::{ParsedFormatSpec, ascii_escape, decode_format_spec, format_string, format_with_spec},
     io::PrintWriter,
-    resource::ResourceTracker,
+    resource::{DepthGuard, ResourceTracker},
     types::{PyTrait, str::allocate_string},
     value::Value,
 };
@@ -15,10 +15,11 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     pub(super) fn build_fstring(&mut self, count: usize) -> Result<(), RunError> {
         let parts = self.pop_n(count);
         let mut result = String::new();
+        let mut guard = DepthGuard::default();
 
         for part in parts {
             // Each part should be a string (interned or heap-allocated)
-            let part_str = part.py_str(self.heap, self.interns);
+            let part_str = part.py_str(self.heap, &mut guard, self.interns);
             result.push_str(&part_str);
             part.drop_with_heap(self.heap);
         }
@@ -73,25 +74,26 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
             // Format based on value type and conversion flag
             // Use a helper closure to handle errors with proper cleanup
+            let mut guard = DepthGuard::default();
             let format_result: Result<String, RunError> = match conversion {
                 // No conversion - format original value
-                0 => format_with_spec(&value, &spec, self.heap, self.interns),
+                0 => format_with_spec(&value, &spec, self.heap, &mut guard, self.interns),
                 // !s - convert to str, format as string
                 1 => {
-                    let s = value.py_str(self.heap, self.interns);
+                    let s = value.py_str(self.heap, &mut guard, self.interns);
                     format_string(&s, &spec).map_err(Into::into)
                 }
                 // !r - convert to repr, format as string
                 2 => {
-                    let s = value.py_repr(self.heap, self.interns);
+                    let s = value.py_repr(self.heap, &mut guard, self.interns);
                     format_string(&s, &spec).map_err(Into::into)
                 }
                 // !a - convert to ascii, format as string
                 3 => {
-                    let s = ascii_escape(&value.py_repr(self.heap, self.interns));
+                    let s = ascii_escape(&value.py_repr(self.heap, &mut guard, self.interns));
                     format_string(&s, &spec).map_err(Into::into)
                 }
-                _ => format_with_spec(&value, &spec, self.heap, self.interns),
+                _ => format_with_spec(&value, &spec, self.heap, &mut guard, self.interns),
             };
 
             // Handle format errors with proper cleanup
@@ -108,12 +110,13 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             }
         } else {
             // No format spec - just convert based on conversion flag
+            let mut guard = DepthGuard::default();
             match conversion {
-                0 => value.py_str(self.heap, self.interns).into_owned(),
-                1 => value.py_str(self.heap, self.interns).into_owned(),
-                2 => value.py_repr(self.heap, self.interns).into_owned(),
-                3 => ascii_escape(&value.py_repr(self.heap, self.interns)),
-                _ => value.py_str(self.heap, self.interns).into_owned(),
+                0 => value.py_str(self.heap, &mut guard, self.interns).into_owned(),
+                1 => value.py_str(self.heap, &mut guard, self.interns).into_owned(),
+                2 => value.py_repr(self.heap, &mut guard, self.interns).into_owned(),
+                3 => ascii_escape(&value.py_repr(self.heap, &mut guard, self.interns)),
+                _ => value.py_str(self.heap, &mut guard, self.interns).into_owned(),
             }
         };
 
@@ -137,7 +140,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             }
             _ => {
                 // Dynamic format spec - parse the string
-                let spec_str = spec_value.py_str(self.heap, self.interns);
+                let mut guard = DepthGuard::default();
+                let spec_str = spec_value.py_str(self.heap, &mut guard, self.interns);
                 spec_str.parse::<ParsedFormatSpec>().map_err(|invalid| {
                     // Only fetch type in error path
                     let value_type = value_for_error.py_type(self.heap);

@@ -9,7 +9,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
-    resource::ResourceTracker,
+    resource::{DepthGuard, ResourceError, ResourceTracker},
     types::Type,
     value::{EitherStr, Value},
 };
@@ -125,10 +125,13 @@ impl SetStorage {
             return Err(err);
         };
 
-        // Check if value already exists
-        let existing = self
-            .indices
-            .find(hash, |&idx| value.py_eq(&self.entries[idx].value, heap, interns));
+        // Check if value already exists. Create a local guard for equality comparisons.
+        let mut guard = DepthGuard::default();
+        let existing = self.indices.find(hash, |&idx| {
+            value
+                .py_eq(&self.entries[idx].value, heap, &mut guard, interns)
+                .unwrap_or(false)
+        });
 
         if existing.is_some() {
             // Value already in set, drop the new value
@@ -152,9 +155,15 @@ impl SetStorage {
             .py_hash(heap, interns)
             .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(heap)))?;
 
+        // Create a local guard for equality comparisons.
+        let mut guard = DepthGuard::default();
         let entry = self.indices.entry(
             hash,
-            |&idx| value.py_eq(&self.entries[idx].value, heap, interns),
+            |&idx| {
+                value
+                    .py_eq(&self.entries[idx].value, heap, &mut guard, interns)
+                    .unwrap_or(false)
+            },
             |&idx| self.entries[idx].hash,
         );
 
@@ -235,9 +244,17 @@ impl SetStorage {
             .py_hash(heap, interns)
             .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(heap)))?;
 
+        // Create a guard for value equality comparisons. Set values are typically
+        // shallow (strings, ints, tuples of primitives), so recursion errors
+        // are unlikely. If one occurs, treat it as "not equal".
+        let mut guard = DepthGuard::default();
         Ok(self
             .indices
-            .find(hash, |&idx| value.py_eq(&self.entries[idx].value, heap, interns))
+            .find(hash, |&idx| {
+                value
+                    .py_eq(&self.entries[idx].value, heap, &mut guard, interns)
+                    .unwrap_or(false)
+            })
             .is_some())
     }
 
@@ -265,19 +282,27 @@ impl SetStorage {
     }
 
     /// Compares two sets for equality.
-    fn eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool {
+    fn eq(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Result<bool, ResourceError> {
         if self.len() != other.len() {
-            return false;
+            return Ok(false);
         }
 
+        guard.increase()?;
         // Check that every element in self is in other
         for entry in &self.entries {
-            match other.contains(&entry.value, heap, interns) {
-                Ok(true) => {}
-                _ => return false,
+            if !matches!(other.contains(&entry.value, heap, interns), Ok(true)) {
+                guard.decrease();
+                return Ok(false);
             }
         }
-        true
+        guard.decrease();
+        Ok(true)
     }
 
     /// Returns true if this set is a subset of other.
@@ -399,11 +424,17 @@ impl SetStorage {
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
+        guard: &mut DepthGuard,
         interns: &Interns,
         type_name: &str,
     ) -> std::fmt::Result {
         if self.is_empty() {
             return write!(f, "{type_name}()");
+        }
+
+        // Check depth limit before recursing
+        if guard.increase().is_err() {
+            return f.write_str("{...}");
         }
 
         // frozenset needs type prefix: frozenset({...}), but set doesn't: {...}
@@ -419,13 +450,15 @@ impl SetStorage {
                 f.write_str(", ")?;
             }
             first = false;
-            entry.value.py_repr_fmt(f, heap, heap_ids, interns)?;
+            entry.value.py_repr_fmt(f, heap, heap_ids, guard, interns)?;
         }
         f.write_char('}')?;
 
         if needs_prefix {
             f.write_char(')')?;
         }
+
+        guard.decrease();
         Ok(())
     }
 
@@ -591,8 +624,14 @@ impl PyTrait for Set {
         Some(self.len())
     }
 
-    fn py_eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool {
-        self.0.eq(&other.0, heap, interns)
+    fn py_eq(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Result<bool, ResourceError> {
+        self.0.eq(&other.0, heap, guard, interns)
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
@@ -608,9 +647,10 @@ impl PyTrait for Set {
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
+        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result {
-        self.0.repr_fmt(f, heap, heap_ids, interns, "set")
+        self.0.repr_fmt(f, heap, heap_ids, guard, interns, "set")
     }
 
     fn py_call_attr(
@@ -1094,8 +1134,14 @@ impl PyTrait for FrozenSet {
         Some(self.len())
     }
 
-    fn py_eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool {
-        self.0.eq(&other.0, heap, interns)
+    fn py_eq(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Result<bool, ResourceError> {
+        self.0.eq(&other.0, heap, guard, interns)
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
@@ -1111,9 +1157,10 @@ impl PyTrait for FrozenSet {
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
+        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result {
-        self.0.repr_fmt(f, heap, heap_ids, interns, "frozenset")
+        self.0.repr_fmt(f, heap, heap_ids, guard, interns, "frozenset")
     }
 
     fn py_call_attr(

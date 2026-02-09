@@ -13,7 +13,7 @@ use crate::{
     expressions::ExprLoc,
     heap::Heap,
     intern::{Interns, StringId},
-    resource::ResourceTracker,
+    resource::{DepthGuard, ResourceTracker},
     types::{PyTrait, Type},
     value::Value,
 };
@@ -261,6 +261,7 @@ pub fn format_with_spec(
     value: &Value,
     spec: &ParsedFormatSpec,
     heap: &Heap<impl ResourceTracker>,
+    guard: &mut DepthGuard,
     interns: &Interns,
 ) -> Result<String, RunError> {
     let value_type = value.py_type(heap);
@@ -290,7 +291,7 @@ pub fn format_with_spec(
 
         // String formatting (including InternString and heap strings)
         (_, None | Some('s')) if value_type == Type::Str => {
-            let s = value.py_str(heap, interns);
+            let s = value.py_str(heap, guard, interns);
             Ok(format_string(&s, spec)?)
         }
 
@@ -299,7 +300,7 @@ pub fn format_with_spec(
 
         // No type specifier: convert to string and format
         (_, None) => {
-            let s = value.py_str(heap, interns);
+            let s = value.py_str(heap, guard, interns);
             Ok(format_string(&s, spec)?)
         }
 

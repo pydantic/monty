@@ -9,7 +9,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapId},
     intern::{Interns, StringId},
-    resource::ResourceTracker,
+    resource::{DepthGuard, ResourceError, ResourceTracker},
     types::{AttrCallResult, Type},
     value::{EitherStr, Value},
 };
@@ -207,9 +207,15 @@ impl PyTrait for Dataclass {
         None
     }
 
-    fn py_eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool {
+    fn py_eq(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Result<bool, ResourceError> {
         // Dataclasses are equal if they have the same name and equal attrs
-        self.name == other.name && self.attrs.py_eq(&other.attrs, heap, interns)
+        Ok(self.name != other.name && self.attrs.py_eq(&other.attrs, heap, guard, interns)?)
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
@@ -227,8 +233,14 @@ impl PyTrait for Dataclass {
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
+        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result {
+        // Check depth limit before recursing
+        if guard.increase().is_err() {
+            return f.write_str("...");
+        }
+
         // Format: ClassName(field1=value1, field2=value2, ...)
         // Only declared fields are shown, not dynamically added attributes
         f.write_str(self.name(interns))?;
@@ -247,14 +259,16 @@ impl PyTrait for Dataclass {
 
             // Look up value in attrs
             if let Some(value) = self.attrs.get_by_str(field_name, heap, interns) {
-                value.py_repr_fmt(f, heap, heap_ids, interns)?;
+                value.py_repr_fmt(f, heap, heap_ids, guard, interns)?;
             } else {
                 // Field not found - shouldn't happen for well-formed dataclasses
                 f.write_str("<?>")?;
             }
         }
 
-        f.write_char(')')
+        f.write_char(')')?;
+        guard.decrease();
+        Ok(())
     }
 
     fn py_call_attr(

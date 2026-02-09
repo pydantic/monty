@@ -19,7 +19,7 @@ use crate::{
     heap::{Heap, HeapId},
     intern::{ExtFunctionId, Interns, StringId},
     os::OsFunction,
-    resource::ResourceTracker,
+    resource::{DepthGuard, ResourceTracker},
     value::{EitherStr, Value},
 };
 
@@ -93,7 +93,18 @@ pub trait PyTrait {
     /// computation for dict key lookups.
     ///
     /// The `interns` parameter provides access to interned string content.
-    fn py_eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool;
+    /// The `guard` parameter tracks recursion depth to prevent stack overflow
+    /// on deeply nested structures.
+    ///
+    /// Returns `Ok(true)` if equal, `Ok(false)` if not equal, or
+    /// `Err(ResourceError::Recursion)` if maximum depth is exceeded.
+    fn py_eq(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Result<bool, ResourceError>;
 
     /// Python comparison (`<`, `>`, etc.).
     ///
@@ -102,8 +113,19 @@ pub trait PyTrait {
     /// computation for dict key lookups.
     ///
     /// The `interns` parameter provides access to interned string content.
-    fn py_cmp(&self, _other: &Self, _heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> Option<Ordering> {
-        None
+    /// The `guard` parameter tracks recursion depth to prevent stack overflow
+    /// on deeply nested structures.
+    ///
+    /// Returns `Ok(Some(Ordering))` for comparable values, `Ok(None)` if not comparable,
+    /// or `Err(ResourceError::Recursion)` if maximum depth is exceeded.
+    fn py_cmp(
+        &self,
+        _other: &Self,
+        _heap: &mut Heap<impl ResourceTracker>,
+        _guard: &mut DepthGuard,
+        _interns: &Interns,
+    ) -> Result<Option<Ordering>, ResourceError> {
+        Ok(None)
     }
 
     /// Pushes any contained `HeapId`s onto the stack for reference counting.
@@ -135,29 +157,45 @@ pub trait PyTrait {
     /// * `f` - The formatter to write to
     /// * `heap` - The heap for resolving value references
     /// * `heap_ids` - Set of heap IDs currently being repr'd (for cycle detection)
+    /// * `guard` - Recursion depth tracker to prevent stack overflow on deeply nested structures
     /// * `interns` - The interned strings table for looking up string/bytes literals
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
+        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result;
 
     /// Returns the Python `repr()` string for this value.
     ///
     /// Convenience wrapper around `py_repr_fmt` that returns an owned string.
-    fn py_repr(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Cow<'static, str> {
+    /// Creates a new `DepthGuard` internally to track recursion depth.
+    fn py_repr(
+        &self,
+        heap: &Heap<impl ResourceTracker>,
+        guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Cow<'static, str> {
         let mut s = String::new();
         let mut heap_ids = AHashSet::new();
         // Unwrap is safe: writing to String never fails
-        self.py_repr_fmt(&mut s, heap, &mut heap_ids, interns).unwrap();
+        self.py_repr_fmt(&mut s, heap, &mut heap_ids, guard, interns).unwrap();
         Cow::Owned(s)
     }
 
     /// Returns the Python `str()` string for this value.
-    fn py_str(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Cow<'static, str> {
-        self.py_repr(heap, interns)
+    ///
+    /// The `guard` parameter tracks recursion depth to prevent stack overflow
+    /// on deeply nested structures.
+    fn py_str(
+        &self,
+        heap: &Heap<impl ResourceTracker>,
+        guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Cow<'static, str> {
+        self.py_repr(heap, guard, interns)
     }
 
     /// Python addition (`__add__`).

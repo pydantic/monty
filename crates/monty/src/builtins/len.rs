@@ -6,7 +6,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     heap::Heap,
     intern::Interns,
-    resource::ResourceTracker,
+    resource::{DepthGuard, ResourceTracker},
     types::PyTrait,
     value::Value,
 };
@@ -17,12 +17,17 @@ use crate::{
 pub fn builtin_len(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
     let value = args.get_one_arg("len", heap)?;
     defer_drop!(value, heap);
-    match value.py_len(heap, interns) {
-        Some(len) => Ok(Value::Int(i64::try_from(len).expect("len exceeds i64::MAX"))),
-        None => Err(SimpleException::new_msg(
+    if let Some(len) = value.py_len(heap, interns) {
+        Ok(Value::Int(i64::try_from(len).expect("len exceeds i64::MAX")))
+    } else {
+        let mut guard = DepthGuard::default();
+        Err(SimpleException::new_msg(
             ExcType::TypeError,
-            format!("object of type {} has no len()", value.py_repr(heap, interns)),
+            format!(
+                "object of type {} has no len()",
+                value.py_repr(heap, &mut guard, interns)
+            ),
         )
-        .into()),
+        .into())
     }
 }

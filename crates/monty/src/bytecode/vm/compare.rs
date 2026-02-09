@@ -4,43 +4,51 @@ use super::VM;
 use crate::{
     exception_private::{ExcType, RunError},
     io::PrintWriter,
-    resource::ResourceTracker,
+    resource::{DepthGuard, ResourceTracker},
     types::{LongInt, PyTrait},
     value::Value,
 };
 
 impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// Equality comparison.
-    pub(super) fn compare_eq(&mut self) {
+    pub(super) fn compare_eq(&mut self) -> Result<(), RunError> {
         let rhs = self.pop();
         let lhs = self.pop();
-        let result = lhs.py_eq(&rhs, self.heap, self.interns);
+        let mut guard = DepthGuard::default();
+        let result = lhs.py_eq(&rhs, self.heap, &mut guard, self.interns)?;
         lhs.drop_with_heap(self.heap);
         rhs.drop_with_heap(self.heap);
         self.push(Value::Bool(result));
+        Ok(())
     }
 
     /// Inequality comparison.
-    pub(super) fn compare_ne(&mut self) {
+    pub(super) fn compare_ne(&mut self) -> Result<(), RunError> {
         let rhs = self.pop();
         let lhs = self.pop();
-        let result = !lhs.py_eq(&rhs, self.heap, self.interns);
+        let mut guard = DepthGuard::default();
+        let result = !lhs.py_eq(&rhs, self.heap, &mut guard, self.interns)?;
         lhs.drop_with_heap(self.heap);
         rhs.drop_with_heap(self.heap);
         self.push(Value::Bool(result));
+        Ok(())
     }
 
     /// Ordering comparison with a predicate.
-    pub(super) fn compare_ord<F>(&mut self, check: F)
+    pub(super) fn compare_ord<F>(&mut self, check: F) -> Result<(), RunError>
     where
         F: FnOnce(std::cmp::Ordering) -> bool,
     {
         let rhs = self.pop();
         let lhs = self.pop();
-        let result = lhs.py_cmp(&rhs, self.heap, self.interns).is_some_and(check);
+        let mut guard = DepthGuard::default();
+        let result = lhs
+            .py_cmp(&rhs, self.heap, &mut guard, self.interns)?
+            .is_some_and(check);
         lhs.drop_with_heap(self.heap);
         rhs.drop_with_heap(self.heap);
         self.push(Value::Bool(result));
+        Ok(())
     }
 
     /// Identity comparison (is/is not).
@@ -119,7 +127,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                         (k.copy_for_extend(), false)
                     };
 
-                    let is_equal = v.py_eq(&k_value, self.heap, self.interns);
+                    let mut guard = DepthGuard::default();
+                    let is_equal = v.py_eq(&k_value, self.heap, &mut guard, self.interns)?;
                     v.drop_with_heap(self.heap);
                     if k_needs_drop {
                         k_value.drop_with_heap(self.heap);

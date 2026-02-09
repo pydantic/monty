@@ -7,7 +7,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapData},
     intern::Interns,
-    resource::ResourceTracker,
+    resource::{DepthGuard, ResourceTracker},
     types::{List, MontyIter, PyTrait},
     value::Value,
 };
@@ -52,10 +52,11 @@ pub fn builtin_sorted(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, in
 
     // Sort using insertion sort (simple, stable, works with py_cmp)
     // For small lists this is fine; for large lists we'd want a better algorithm
+    let mut guard = DepthGuard::default();
     for i in 1..items.len() {
         let mut j = i;
         while j > 0 {
-            match items[j - 1].py_cmp(&items[j], heap, interns) {
+            match items[j - 1].py_cmp(&items[j], heap, &mut guard, interns)? {
                 Some(Ordering::Greater) => {
                     items.swap(j - 1, j);
                     j -= 1;

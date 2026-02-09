@@ -20,7 +20,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId},
     intern::{BytesId, ExtFunctionId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
-    resource::{ResourceTracker, check_lshift_size, check_pow_size, check_repeat_size},
+    resource::{DepthGuard, ResourceError, ResourceTracker, check_lshift_size, check_pow_size, check_repeat_size},
     types::{
         AttrCallResult, LongInt, Property, PyTrait, Str, Type,
         bytes::{bytes_repr_fmt, get_byte_at_index, get_bytes_slice},
@@ -154,121 +154,136 @@ impl PyTrait for Value {
         }
     }
 
-    fn py_eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool {
+    fn py_eq(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Result<bool, ResourceError> {
         match (self, other) {
-            (Self::Undefined, _) => false,
-            (_, Self::Undefined) => false,
-            (Self::Int(v1), Self::Int(v2)) => v1 == v2,
-            (Self::Bool(v1), Self::Bool(v2)) => v1 == v2,
-            (Self::Bool(v1), Self::Int(v2)) => i64::from(*v1) == *v2,
-            (Self::Int(v1), Self::Bool(v2)) => *v1 == i64::from(*v2),
-            (Self::Float(v1), Self::Float(v2)) => v1 == v2,
-            (Self::Int(v1), Self::Float(v2)) => (*v1 as f64) == *v2,
-            (Self::Float(v1), Self::Int(v2)) => *v1 == (*v2 as f64),
-            (Self::Bool(v1), Self::Float(v2)) => (i64::from(*v1) as f64) == *v2,
-            (Self::Float(v1), Self::Bool(v2)) => *v1 == (i64::from(*v2) as f64),
-            (Self::None, Self::None) => true,
+            (Self::Undefined, _) => Ok(false),
+            (_, Self::Undefined) => Ok(false),
+            (Self::Int(v1), Self::Int(v2)) => Ok(v1 == v2),
+            (Self::Bool(v1), Self::Bool(v2)) => Ok(v1 == v2),
+            (Self::Bool(v1), Self::Int(v2)) => Ok(i64::from(*v1) == *v2),
+            (Self::Int(v1), Self::Bool(v2)) => Ok(*v1 == i64::from(*v2)),
+            (Self::Float(v1), Self::Float(v2)) => Ok(v1 == v2),
+            (Self::Int(v1), Self::Float(v2)) => Ok((*v1 as f64) == *v2),
+            (Self::Float(v1), Self::Int(v2)) => Ok(*v1 == (*v2 as f64)),
+            (Self::Bool(v1), Self::Float(v2)) => Ok((i64::from(*v1) as f64) == *v2),
+            (Self::Float(v1), Self::Bool(v2)) => Ok(*v1 == (i64::from(*v2) as f64)),
+            (Self::None, Self::None) => Ok(true),
 
             // Int == LongInt comparison
             (Self::Int(a), Self::Ref(id)) => {
                 if let HeapData::LongInt(li) = heap.get(*id) {
-                    BigInt::from(*a) == *li.inner()
+                    Ok(BigInt::from(*a) == *li.inner())
                 } else {
-                    false
+                    Ok(false)
                 }
             }
             // LongInt == Int comparison
             (Self::Ref(id), Self::Int(b)) => {
                 if let HeapData::LongInt(li) = heap.get(*id) {
-                    *li.inner() == BigInt::from(*b)
+                    Ok(*li.inner() == BigInt::from(*b))
                 } else {
-                    false
+                    Ok(false)
                 }
             }
 
             // For interned interns, compare by StringId first (fast path for same interned string)
-            (Self::InternString(s1), Self::InternString(s2)) => s1 == s2,
+            (Self::InternString(s1), Self::InternString(s2)) => Ok(s1 == s2),
             // for strings we need to account for the fact they might be either interned or not
             (Self::InternString(string_id), Self::Ref(id2)) => {
                 if let HeapData::Str(s2) = heap.get(*id2) {
-                    interns.get_str(*string_id) == s2.as_str()
+                    Ok(interns.get_str(*string_id) == s2.as_str())
                 } else {
-                    false
+                    Ok(false)
                 }
             }
             (Self::Ref(id1), Self::InternString(string_id)) => {
                 if let HeapData::Str(s1) = heap.get(*id1) {
-                    s1.as_str() == interns.get_str(*string_id)
+                    Ok(s1.as_str() == interns.get_str(*string_id))
                 } else {
-                    false
+                    Ok(false)
                 }
             }
 
             // For interned bytes, compare by content (bytes are not deduplicated unlike interns)
             (Self::InternBytes(b1), Self::InternBytes(b2)) => {
                 // Fast path: same BytesId means same content
-                b1 == b2 || interns.get_bytes(*b1) == interns.get_bytes(*b2)
+                Ok(b1 == b2 || interns.get_bytes(*b1) == interns.get_bytes(*b2))
             }
             // same for bytes
             (Self::InternBytes(bytes_id), Self::Ref(id2)) => {
                 if let HeapData::Bytes(b2) = heap.get(*id2) {
-                    interns.get_bytes(*bytes_id) == b2.as_slice()
+                    Ok(interns.get_bytes(*bytes_id) == b2.as_slice())
                 } else {
-                    false
+                    Ok(false)
                 }
             }
             (Self::Ref(id1), Self::InternBytes(bytes_id)) => {
                 if let HeapData::Bytes(b1) = heap.get(*id1) {
-                    b1.as_slice() == interns.get_bytes(*bytes_id)
+                    Ok(b1.as_slice() == interns.get_bytes(*bytes_id))
                 } else {
-                    false
+                    Ok(false)
                 }
             }
 
             (Self::Ref(id1), Self::Ref(id2)) => {
                 if *id1 == *id2 {
-                    return true;
+                    return Ok(true);
                 }
                 // Need to use with_two for proper borrow management
-                heap.with_two(*id1, *id2, |heap, left, right| left.py_eq(right, heap, interns))
+                heap.with_two(*id1, *id2, |heap, left, right| left.py_eq(right, heap, guard, interns))
             }
 
             // Builtins equality - just check the enums are equal
-            (Self::Builtin(b1), Self::Builtin(b2)) => b1 == b2,
+            (Self::Builtin(b1), Self::Builtin(b2)) => Ok(b1 == b2),
             // Module functions equality
-            (Self::ModuleFunction(mf1), Self::ModuleFunction(mf2)) => mf1 == mf2,
-            (Self::DefFunction(f1), Self::DefFunction(f2)) => f1 == f2,
+            (Self::ModuleFunction(mf1), Self::ModuleFunction(mf2)) => Ok(mf1 == mf2),
+            (Self::DefFunction(f1), Self::DefFunction(f2)) => Ok(f1 == f2),
             // Markers compare equal if they're the same variant
-            (Self::Marker(m1), Self::Marker(m2)) => m1 == m2,
+            (Self::Marker(m1), Self::Marker(m2)) => Ok(m1 == m2),
             // Properties compare equal if they're the same variant
-            (Self::Property(p1), Self::Property(p2)) => p1 == p2,
+            (Self::Property(p1), Self::Property(p2)) => Ok(p1 == p2),
 
-            _ => false,
+            _ => Ok(false),
         }
     }
 
-    fn py_cmp(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Option<Ordering> {
+    fn py_cmp(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        _guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Result<Option<Ordering>, ResourceError> {
+        // py_cmp currently only handles non-recursive types (numbers, strings, bytes)
+        // so we don't need to recurse through the guard. The guard parameter exists
+        // for API consistency with py_eq.
         match (self, other) {
-            (Self::Int(s), Self::Int(o)) => s.partial_cmp(o),
-            (Self::Float(s), Self::Float(o)) => s.partial_cmp(o),
-            (Self::Int(s), Self::Float(o)) => (*s as f64).partial_cmp(o),
-            (Self::Float(s), Self::Int(o)) => s.partial_cmp(&(*o as f64)),
-            (Self::Bool(s), _) => Self::Int(i64::from(*s)).py_cmp(other, heap, interns),
-            (_, Self::Bool(s)) => self.py_cmp(&Self::Int(i64::from(*s)), heap, interns),
+            (Self::Int(s), Self::Int(o)) => Ok(s.partial_cmp(o)),
+            (Self::Float(s), Self::Float(o)) => Ok(s.partial_cmp(o)),
+            (Self::Int(s), Self::Float(o)) => Ok((*s as f64).partial_cmp(o)),
+            (Self::Float(s), Self::Int(o)) => Ok(s.partial_cmp(&(*o as f64))),
+            (Self::Bool(s), _) => Ok(Self::Int(i64::from(*s)).py_cmp_nonrecursive(other, heap, interns)),
+            (_, Self::Bool(s)) => Ok(self.py_cmp_nonrecursive(&Self::Int(i64::from(*s)), heap, interns)),
             // Int vs LongInt comparison
             (Self::Int(a), Self::Ref(id)) => {
                 if let HeapData::LongInt(li) = heap.get(*id) {
-                    BigInt::from(*a).partial_cmp(li.inner())
+                    Ok(BigInt::from(*a).partial_cmp(li.inner()))
                 } else {
-                    None
+                    Ok(None)
                 }
             }
             // LongInt vs Int comparison
             (Self::Ref(id), Self::Int(b)) => {
                 if let HeapData::LongInt(li) = heap.get(*id) {
-                    li.inner().partial_cmp(&BigInt::from(*b))
+                    Ok(li.inner().partial_cmp(&BigInt::from(*b)))
                 } else {
-                    None
+                    Ok(None)
                 }
             }
             // LongInt vs LongInt comparison
@@ -276,22 +291,24 @@ impl PyTrait for Value {
                 let is_longint1 = matches!(heap.get(*id1), HeapData::LongInt(_));
                 let is_longint2 = matches!(heap.get(*id2), HeapData::LongInt(_));
                 if is_longint1 && is_longint2 {
-                    heap.with_two(*id1, *id2, |_heap, left, right| {
+                    Ok(heap.with_two(*id1, *id2, |_heap, left, right| {
                         if let (HeapData::LongInt(a), HeapData::LongInt(b)) = (left, right) {
                             a.inner().partial_cmp(b.inner())
                         } else {
                             None
                         }
-                    })
+                    }))
                 } else {
-                    None
+                    Ok(None)
                 }
             }
-            (Self::InternString(s1), Self::InternString(s2)) => interns.get_str(*s1).partial_cmp(interns.get_str(*s2)),
-            (Self::InternBytes(b1), Self::InternBytes(b2)) => {
-                interns.get_bytes(*b1).partial_cmp(interns.get_bytes(*b2))
+            (Self::InternString(s1), Self::InternString(s2)) => {
+                Ok(interns.get_str(*s1).partial_cmp(interns.get_str(*s2)))
             }
-            _ => None,
+            (Self::InternBytes(b1), Self::InternBytes(b2)) => {
+                Ok(interns.get_bytes(*b1).partial_cmp(interns.get_bytes(*b2)))
+            }
+            _ => Ok(None),
         }
     }
 
@@ -332,6 +349,7 @@ impl PyTrait for Value {
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
+        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result {
         match self {
@@ -373,7 +391,7 @@ impl PyTrait for Value {
                     }
                 } else {
                     heap_ids.insert(*id);
-                    let result = heap.get(*id).py_repr_fmt(f, heap, heap_ids, interns);
+                    let result = heap.get(*id).py_repr_fmt(f, heap, heap_ids, guard, interns);
                     heap_ids.remove(id);
                     result
                 }
@@ -383,11 +401,16 @@ impl PyTrait for Value {
         }
     }
 
-    fn py_str(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Cow<'static, str> {
+    fn py_str(
+        &self,
+        heap: &Heap<impl ResourceTracker>,
+        guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Cow<'static, str> {
         match self {
             Self::InternString(string_id) => interns.get_str(*string_id).to_owned().into(),
-            Self::Ref(id) => heap.get(*id).py_str(heap, interns),
-            _ => self.py_repr(heap, interns),
+            Self::Ref(id) => heap.get(*id).py_str(heap, guard, interns),
+            _ => self.py_repr(heap, guard, interns),
         }
     }
 
@@ -1439,6 +1462,62 @@ impl PyTrait for Value {
 }
 
 impl Value {
+    /// Non-recursive helper for `py_cmp` to avoid infinite recursion when
+    /// converting booleans to integers. Does not take a guard parameter.
+    ///
+    /// This is used internally by `py_cmp` when comparing bool values, which
+    /// need to be promoted to integers for comparison.
+    fn py_cmp_nonrecursive(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> Option<Ordering> {
+        match (self, other) {
+            (Self::Int(s), Self::Int(o)) => s.partial_cmp(o),
+            (Self::Float(s), Self::Float(o)) => s.partial_cmp(o),
+            (Self::Int(s), Self::Float(o)) => (*s as f64).partial_cmp(o),
+            (Self::Float(s), Self::Int(o)) => s.partial_cmp(&(*o as f64)),
+            // Int vs LongInt comparison
+            (Self::Int(a), Self::Ref(id)) => {
+                if let HeapData::LongInt(li) = heap.get(*id) {
+                    BigInt::from(*a).partial_cmp(li.inner())
+                } else {
+                    None
+                }
+            }
+            // LongInt vs Int comparison
+            (Self::Ref(id), Self::Int(b)) => {
+                if let HeapData::LongInt(li) = heap.get(*id) {
+                    li.inner().partial_cmp(&BigInt::from(*b))
+                } else {
+                    None
+                }
+            }
+            // LongInt vs LongInt comparison
+            (Self::Ref(id1), Self::Ref(id2)) => {
+                let is_longint1 = matches!(heap.get(*id1), HeapData::LongInt(_));
+                let is_longint2 = matches!(heap.get(*id2), HeapData::LongInt(_));
+                if is_longint1 && is_longint2 {
+                    heap.with_two(*id1, *id2, |_heap, left, right| {
+                        if let (HeapData::LongInt(a), HeapData::LongInt(b)) = (left, right) {
+                            a.inner().partial_cmp(b.inner())
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                }
+            }
+            (Self::InternString(s1), Self::InternString(s2)) => interns.get_str(*s1).partial_cmp(interns.get_str(*s2)),
+            (Self::InternBytes(b1), Self::InternBytes(b2)) => {
+                interns.get_bytes(*b1).partial_cmp(interns.get_bytes(*b2))
+            }
+            _ => None,
+        }
+    }
+
     /// Returns a stable, unique identifier for this value.
     ///
     /// Should match Python's `id()` function conceptually.
@@ -1606,8 +1685,22 @@ impl Value {
                 // This allows iterating over container elements while calling py_eq
                 // (which needs &mut Heap for comparing nested heap values).
                 heap.with_entry_mut(*heap_id, |heap, data| match data {
-                    HeapData::List(el) => Ok(el.as_vec().iter().any(|i| item.py_eq(i, heap, interns))),
-                    HeapData::Tuple(el) => Ok(el.as_vec().iter().any(|i| item.py_eq(i, heap, interns))),
+                    HeapData::List(el) => {
+                        // Create a local DepthGuard for py_eq calls inside the iterator.
+                        // We use unwrap_or(false) for recursion errors since any() can't propagate Results.
+                        let mut guard = DepthGuard::default();
+                        Ok(el
+                            .as_vec()
+                            .iter()
+                            .any(|i| item.py_eq(i, heap, &mut guard, interns).unwrap_or(false)))
+                    }
+                    HeapData::Tuple(el) => {
+                        let mut guard = DepthGuard::default();
+                        Ok(el
+                            .as_vec()
+                            .iter()
+                            .any(|i| item.py_eq(i, heap, &mut guard, interns).unwrap_or(false)))
+                    }
                     HeapData::Dict(dict) => dict.get(item, heap, interns).map(|m| m.is_some()),
                     HeapData::Set(set) => set.contains(item, heap, interns),
                     HeapData::FrozenSet(fset) => fset.contains(item, heap, interns),

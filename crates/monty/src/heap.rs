@@ -17,7 +17,7 @@ use crate::{
     asyncio::{Coroutine, GatherFuture, GatherItem},
     exception_private::{ExcType, RunResult, SimpleException},
     intern::{FunctionId, Interns, StringId},
-    resource::{ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
+    resource::{DepthGuard, ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
     types::{
         AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait,
         Range, Set, Slice, Str, Tuple, Type, allocate_tuple,
@@ -406,46 +406,59 @@ impl PyTrait for HeapData {
         }
     }
 
-    fn py_eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool {
+    fn py_eq(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Result<bool, ResourceError> {
         match (self, other) {
-            (Self::Str(a), Self::Str(b)) => a.py_eq(b, heap, interns),
-            (Self::Bytes(a), Self::Bytes(b)) => a.py_eq(b, heap, interns),
-            (Self::List(a), Self::List(b)) => a.py_eq(b, heap, interns),
-            (Self::Tuple(a), Self::Tuple(b)) => a.py_eq(b, heap, interns),
-            (Self::NamedTuple(a), Self::NamedTuple(b)) => a.py_eq(b, heap, interns),
+            (Self::Str(a), Self::Str(b)) => a.py_eq(b, heap, guard, interns),
+            (Self::Bytes(a), Self::Bytes(b)) => a.py_eq(b, heap, guard, interns),
+            (Self::List(a), Self::List(b)) => a.py_eq(b, heap, guard, interns),
+            (Self::Tuple(a), Self::Tuple(b)) => a.py_eq(b, heap, guard, interns),
+            (Self::NamedTuple(a), Self::NamedTuple(b)) => a.py_eq(b, heap, guard, interns),
             // NamedTuple can compare with Tuple by elements (matching CPython behavior)
             (Self::NamedTuple(nt), Self::Tuple(t)) | (Self::Tuple(t), Self::NamedTuple(nt)) => {
                 let nt_items = nt.as_vec();
                 let t_items = t.as_vec();
                 if nt_items.len() != t_items.len() {
-                    return false;
+                    return Ok(false);
                 }
-                nt_items
-                    .iter()
-                    .zip(t_items.iter())
-                    .all(|(a, b)| a.py_eq(b, heap, interns))
+                guard.increase()?;
+                for (a, b) in nt_items.iter().zip(t_items.iter()) {
+                    if !a.py_eq(b, heap, guard, interns)? {
+                        guard.decrease();
+                        return Ok(false);
+                    }
+                }
+                guard.decrease();
+                Ok(true)
             }
-            (Self::Dict(a), Self::Dict(b)) => a.py_eq(b, heap, interns),
-            (Self::Set(a), Self::Set(b)) => a.py_eq(b, heap, interns),
-            (Self::FrozenSet(a), Self::FrozenSet(b)) => a.py_eq(b, heap, interns),
-            (Self::Closure(a_id, a_cells, _), Self::Closure(b_id, b_cells, _)) => *a_id == *b_id && a_cells == b_cells,
-            (Self::FunctionDefaults(a_id, _), Self::FunctionDefaults(b_id, _)) => *a_id == *b_id,
-            (Self::Range(a), Self::Range(b)) => a.py_eq(b, heap, interns),
-            (Self::Dataclass(a), Self::Dataclass(b)) => a.py_eq(b, heap, interns),
+            (Self::Dict(a), Self::Dict(b)) => a.py_eq(b, heap, guard, interns),
+            (Self::Set(a), Self::Set(b)) => a.py_eq(b, heap, guard, interns),
+            (Self::FrozenSet(a), Self::FrozenSet(b)) => a.py_eq(b, heap, guard, interns),
+            (Self::Closure(a_id, a_cells, _), Self::Closure(b_id, b_cells, _)) => {
+                Ok(*a_id == *b_id && a_cells == b_cells)
+            }
+            (Self::FunctionDefaults(a_id, _), Self::FunctionDefaults(b_id, _)) => Ok(*a_id == *b_id),
+            (Self::Range(a), Self::Range(b)) => a.py_eq(b, heap, guard, interns),
+            (Self::Dataclass(a), Self::Dataclass(b)) => a.py_eq(b, heap, guard, interns),
             // LongInt equality
-            (Self::LongInt(a), Self::LongInt(b)) => a == b,
+            (Self::LongInt(a), Self::LongInt(b)) => Ok(a == b),
             // Slice equality
-            (Self::Slice(a), Self::Slice(b)) => a.py_eq(b, heap, interns),
+            (Self::Slice(a), Self::Slice(b)) => a.py_eq(b, heap, guard, interns),
             // Path equality
-            (Self::Path(a), Self::Path(b)) => a.py_eq(b, heap, interns),
+            (Self::Path(a), Self::Path(b)) => a.py_eq(b, heap, guard, interns),
             // Cells, Exceptions, Iterators, Modules, and async types compare by identity only (handled at Value level via HeapId comparison)
             (Self::Cell(_), Self::Cell(_))
             | (Self::Exception(_), Self::Exception(_))
             | (Self::Iter(_), Self::Iter(_))
             | (Self::Module(_), Self::Module(_))
             | (Self::Coroutine(_), Self::Coroutine(_))
-            | (Self::GatherFuture(_), Self::GatherFuture(_)) => false,
-            _ => false, // Different types are never equal
+            | (Self::GatherFuture(_), Self::GatherFuture(_)) => Ok(false),
+            _ => Ok(false), // Different types are never equal
         }
     }
 
@@ -532,26 +545,27 @@ impl PyTrait for HeapData {
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
+        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result {
         match self {
-            Self::Str(s) => s.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::Bytes(b) => b.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::List(l) => l.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::Tuple(t) => t.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::NamedTuple(nt) => nt.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::Dict(d) => d.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::Set(s) => s.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::FrozenSet(fs) => fs.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::Str(s) => s.py_repr_fmt(f, heap, heap_ids, guard, interns),
+            Self::Bytes(b) => b.py_repr_fmt(f, heap, heap_ids, guard, interns),
+            Self::List(l) => l.py_repr_fmt(f, heap, heap_ids, guard, interns),
+            Self::Tuple(t) => t.py_repr_fmt(f, heap, heap_ids, guard, interns),
+            Self::NamedTuple(nt) => nt.py_repr_fmt(f, heap, heap_ids, guard, interns),
+            Self::Dict(d) => d.py_repr_fmt(f, heap, heap_ids, guard, interns),
+            Self::Set(s) => s.py_repr_fmt(f, heap, heap_ids, guard, interns),
+            Self::FrozenSet(fs) => fs.py_repr_fmt(f, heap, heap_ids, guard, interns),
             Self::Closure(f_id, _, _) | Self::FunctionDefaults(f_id, _) => {
                 interns.get_function(*f_id).py_repr_fmt(f, interns, 0)
             }
             // Cell repr shows the contained value's type
             Self::Cell(v) => write!(f, "<cell: {} object>", v.py_type(heap)),
-            Self::Range(r) => r.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::Slice(s) => s.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::Range(r) => r.py_repr_fmt(f, heap, heap_ids, guard, interns),
+            Self::Slice(s) => s.py_repr_fmt(f, heap, heap_ids, guard, interns),
             Self::Exception(e) => e.py_repr_fmt(f),
-            Self::Dataclass(dc) => dc.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::Dataclass(dc) => dc.py_repr_fmt(f, heap, heap_ids, guard, interns),
             Self::Iter(_) => write!(f, "<iterator>"),
             Self::LongInt(li) => write!(f, "{li}"),
             Self::Module(m) => write!(f, "<module '{}'>", interns.get_str(m.name())),
@@ -561,14 +575,19 @@ impl PyTrait for HeapData {
                 write!(f, "<coroutine object {name}>")
             }
             Self::GatherFuture(gather) => write!(f, "<gather({})>", gather.item_count()),
-            Self::Path(p) => p.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::Path(p) => p.py_repr_fmt(f, heap, heap_ids, guard, interns),
         }
     }
 
-    fn py_str(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Cow<'static, str> {
+    fn py_str(
+        &self,
+        heap: &Heap<impl ResourceTracker>,
+        guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Cow<'static, str> {
         match self {
             // Strings return their value directly without quotes
-            Self::Str(s) => s.py_str(heap, interns),
+            Self::Str(s) => s.py_str(heap, guard, interns),
             // LongInt returns its string representation
             Self::LongInt(li) => Cow::Owned(li.to_string()),
             // Exceptions return just the message (or empty string if no message)
@@ -576,7 +595,7 @@ impl PyTrait for HeapData {
             // Paths return the path string without the PosixPath() wrapper
             Self::Path(p) => Cow::Owned(p.as_str().to_owned()),
             // All other types use repr
-            _ => self.py_repr(heap, interns),
+            _ => self.py_repr(heap, guard, interns),
         }
     }
 
