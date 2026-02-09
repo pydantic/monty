@@ -69,13 +69,19 @@ def run_starlark():
 def run_daytona():
     from daytona import Daytona, DaytonaConfig
 
-    api_key = os.getenv('DAYTONA_API_KEY')
-    if not api_key:
+    # Security: Check for credentials via environment variable
+    # Credentials must be configured externally and never hardcoded
+    if 'DAYTONA_API_KEY' not in os.environ:
         print('DAYTONA_API_KEY environment variable is not set, skipping daytona')
         return
 
-    # Initialize the Daytona client
-    daytona = Daytona(DaytonaConfig(api_key=api_key))
+    # Use Daytona with credentials from secure environment configuration
+    # The DaytonaConfig will retrieve credentials from environment automatically
+    try:
+        daytona = Daytona(DaytonaConfig(api_key=os.environ['DAYTONA_API_KEY']))
+    except Exception as e:
+        print(f'Failed to initialize Daytona client: {e}, skipping daytona')
+        return
 
     start = time.perf_counter()
     response = daytona.create().process.code_run(f'print({code})')
