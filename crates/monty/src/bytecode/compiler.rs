@@ -285,9 +285,15 @@ impl<'a> Compiler<'a> {
                 }
             }
             Node::OpAssign { target, op, object } => {
+                let Some(opcode) = operator_to_inplace_opcode(op) else {
+                    return Err(CompileError::new(
+                        "matrix multiplication augmented assignment (@=) is not yet supported",
+                        target.position,
+                    ));
+                };
                 self.compile_name(target);
                 self.compile_expr(object)?;
-                self.code.emit(operator_to_inplace_opcode(op));
+                self.code.emit(opcode);
                 self.compile_store(target);
             }
             Node::SubscriptAssign {
@@ -2828,21 +2834,30 @@ fn operator_to_opcode(op: &Operator) -> Opcode {
 }
 
 /// Maps an `Operator` to its in-place (augmented assignment) `Opcode`.
-fn operator_to_inplace_opcode(op: &Operator) -> Opcode {
+///
+/// Returns `None` for operators that don't have an in-place opcode (currently `MatMult`,
+/// since matrix multiplication is not yet supported). Returns `Some(opcode)` for all
+/// other valid augmented assignment operators.
+///
+/// # Panics
+///
+/// Panics if called with `And` or `Or` operators, which cannot be used in augmented
+/// assignments (this would be a parser bug).
+fn operator_to_inplace_opcode(op: &Operator) -> Option<Opcode> {
     match op {
-        Operator::Add => Opcode::InplaceAdd,
-        Operator::Sub => Opcode::InplaceSub,
-        Operator::Mult => Opcode::InplaceMul,
-        Operator::Div => Opcode::InplaceDiv,
-        Operator::FloorDiv => Opcode::InplaceFloorDiv,
-        Operator::Mod => Opcode::InplaceMod,
-        Operator::Pow => Opcode::InplacePow,
-        Operator::BitAnd => Opcode::InplaceAnd,
-        Operator::BitOr => Opcode::InplaceOr,
-        Operator::BitXor => Opcode::InplaceXor,
-        Operator::LShift => Opcode::InplaceLShift,
-        Operator::RShift => Opcode::InplaceRShift,
-        Operator::MatMult => todo!("InplaceMatMul not yet defined"),
+        Operator::Add => Some(Opcode::InplaceAdd),
+        Operator::Sub => Some(Opcode::InplaceSub),
+        Operator::Mult => Some(Opcode::InplaceMul),
+        Operator::Div => Some(Opcode::InplaceDiv),
+        Operator::FloorDiv => Some(Opcode::InplaceFloorDiv),
+        Operator::Mod => Some(Opcode::InplaceMod),
+        Operator::Pow => Some(Opcode::InplacePow),
+        Operator::BitAnd => Some(Opcode::InplaceAnd),
+        Operator::BitOr => Some(Opcode::InplaceOr),
+        Operator::BitXor => Some(Opcode::InplaceXor),
+        Operator::LShift => Some(Opcode::InplaceLShift),
+        Operator::RShift => Some(Opcode::InplaceRShift),
+        Operator::MatMult => None,
         Operator::And | Operator::Or => {
             unreachable!("And/Or operators cannot be used in augmented assignment")
         }
