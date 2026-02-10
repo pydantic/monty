@@ -73,6 +73,7 @@ use smallvec::smallvec;
 use super::{MontyIter, PyTrait, Type, str::Str};
 use crate::{
     args::ArgValues,
+    defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
@@ -741,76 +742,31 @@ fn parse_bytes_prefix_suffix_args(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<(PrefixSuffixArg, usize, usize)> {
-    let mut pos_iter = args.into_pos_only(method, heap)?;
-    let prefix_value = pos_iter
-        .next()
-        .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
-    let start_value = pos_iter.next();
-    let end_value = pos_iter.next();
+    let pos = args.into_pos_only(method, heap)?;
+    defer_drop!(pos, heap);
 
-    // Check no extra arguments - must drop the 4th arg consumed by .next()
-    if let Some(fourth) = pos_iter.next() {
-        fourth.drop_with_heap(heap);
-        for v in pos_iter {
-            v.drop_with_heap(heap);
+    let (prefix, start, end) = match pos.as_slice() {
+        [prefix_value] => {
+            let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, heap, interns)?;
+            (prefix, 0, len)
         }
-        prefix_value.drop_with_heap(heap);
-        if let Some(v) = start_value {
-            v.drop_with_heap(heap);
+        [prefix_value, start_value] => {
+            let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, heap, interns)?;
+            let start = normalize_bytes_index(start_value.as_int(heap)?, len);
+            (prefix, start, len)
         }
-        if let Some(v) = end_value {
-            v.drop_with_heap(heap);
+        [prefix_value, start_value, end_value] => {
+            let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, heap, interns)?;
+            let start = normalize_bytes_index(start_value.as_int(heap)?, len);
+            let end = normalize_bytes_index(end_value.as_int(heap)?, len);
+            (prefix, start, end)
         }
-        return Err(ExcType::type_error_at_most(method, 3, 4));
-    }
-
-    // Extract prefix/suffix bytes (only bytes allowed, not str)
-    // Use method-specific error message matching CPython
-    let prefix = match extract_bytes_for_prefix_suffix(&prefix_value, method, heap, interns) {
-        Ok(b) => b,
-        Err(e) => {
-            prefix_value.drop_with_heap(heap);
-            if let Some(v) = start_value {
-                v.drop_with_heap(heap);
-            }
-            if let Some(v) = end_value {
-                v.drop_with_heap(heap);
-            }
-            return Err(e);
-        }
-    };
-    prefix_value.drop_with_heap(heap);
-
-    // Extract start (default 0)
-    let start = if let Some(v) = start_value {
-        let result = v.as_int(heap);
-        v.drop_with_heap(heap);
-        match result {
-            Ok(i) => normalize_bytes_index(i, len),
-            Err(e) => {
-                if let Some(ev) = end_value {
-                    ev.drop_with_heap(heap);
-                }
-                return Err(e);
-            }
-        }
-    } else {
-        0
-    };
-
-    // Extract end (default len)
-    let end = if let Some(v) = end_value {
-        let result = v.as_int(heap);
-        v.drop_with_heap(heap);
-        normalize_bytes_index(result?, len)
-    } else {
-        len
+        [] => return Err(ExcType::type_error_at_least(method, 1, 0)),
+        _ => return Err(ExcType::type_error_at_most(method, 3, pos.len())),
     };
 
     // Ensure start <= end to prevent slice panics
-    let end = end.max(start);
-
-    Ok((prefix, start, end))
+    Ok((prefix, start, end.max(start)))
 }
 
 /// Extracts bytes (or tuple of bytes) for startswith/endswith methods.
@@ -910,75 +866,31 @@ fn parse_bytes_sub_args(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<(Vec<u8>, usize, usize)> {
-    let mut pos_iter = args.into_pos_only(method, heap)?;
-    let sub_value = pos_iter
-        .next()
-        .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
-    let start_value = pos_iter.next();
-    let end_value = pos_iter.next();
+    let pos = args.into_pos_only(method, heap)?;
+    defer_drop!(pos, heap);
 
-    // Check no extra arguments - must drop the 4th arg consumed by .next()
-    if let Some(fourth) = pos_iter.next() {
-        fourth.drop_with_heap(heap);
-        for v in pos_iter {
-            v.drop_with_heap(heap);
+    let (sub, start, end) = match pos.as_slice() {
+        [sub_value] => {
+            let sub = extract_bytes_only(sub_value, heap, interns)?;
+            (sub, 0, len)
         }
-        sub_value.drop_with_heap(heap);
-        if let Some(v) = start_value {
-            v.drop_with_heap(heap);
+        [sub_value, start_value] => {
+            let sub = extract_bytes_only(sub_value, heap, interns)?;
+            let start = normalize_bytes_index(start_value.as_int(heap)?, len);
+            (sub, start, len)
         }
-        if let Some(v) = end_value {
-            v.drop_with_heap(heap);
+        [sub_value, start_value, end_value] => {
+            let sub = extract_bytes_only(sub_value, heap, interns)?;
+            let start = normalize_bytes_index(start_value.as_int(heap)?, len);
+            let end = normalize_bytes_index(end_value.as_int(heap)?, len);
+            (sub, start, end)
         }
-        return Err(ExcType::type_error_at_most(method, 3, 4));
-    }
-
-    // Extract sub bytes (only bytes allowed, not str)
-    let sub = match extract_bytes_only(&sub_value, heap, interns) {
-        Ok(b) => b,
-        Err(e) => {
-            sub_value.drop_with_heap(heap);
-            if let Some(v) = start_value {
-                v.drop_with_heap(heap);
-            }
-            if let Some(v) = end_value {
-                v.drop_with_heap(heap);
-            }
-            return Err(e);
-        }
-    };
-    sub_value.drop_with_heap(heap);
-
-    // Extract start (default 0)
-    let start = if let Some(v) = start_value {
-        let result = v.as_int(heap);
-        v.drop_with_heap(heap);
-        match result {
-            Ok(i) => normalize_bytes_index(i, len),
-            Err(e) => {
-                if let Some(ev) = end_value {
-                    ev.drop_with_heap(heap);
-                }
-                return Err(e);
-            }
-        }
-    } else {
-        0
-    };
-
-    // Extract end (default len)
-    let end = if let Some(v) = end_value {
-        let result = v.as_int(heap);
-        v.drop_with_heap(heap);
-        normalize_bytes_index(result?, len)
-    } else {
-        len
+        [] => return Err(ExcType::type_error_at_least(method, 1, 0)),
+        _ => return Err(ExcType::type_error_at_most(method, 3, pos.len())),
     };
 
     // Ensure start <= end to prevent slice panics (Python treats start > end as empty slice)
-    let end = end.max(start);
-
-    Ok((sub, start, end))
+    Ok((sub, start, end.max(start)))
 }
 
 /// Normalizes a Python-style bytes index to a valid index in range [0, len].
@@ -2287,60 +2199,35 @@ fn parse_bytes_justify_args(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<(usize, u8)> {
-    let mut pos_iter = args.into_pos_only(method, heap)?;
-    let width_value = pos_iter
-        .next()
-        .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
-    let fillbyte_value = pos_iter.next();
+    let pos = args.into_pos_only(method, heap)?;
+    defer_drop!(pos, heap);
 
-    // Check no extra arguments
-    if pos_iter.len() != 0 {
-        for v in pos_iter {
-            v.drop_with_heap(heap);
-        }
-        width_value.drop_with_heap(heap);
-        if let Some(v) = fillbyte_value {
-            v.drop_with_heap(heap);
-        }
-        return Err(ExcType::type_error_at_most(method, 2, 3));
-    }
-
-    // Drop before propagating error to avoid refcount leak
-    let result = width_value.as_int(heap);
-    width_value.drop_with_heap(heap);
-    let width_i64 = match result {
-        Ok(w) => w,
-        Err(e) => {
-            if let Some(v) = fillbyte_value {
-                v.drop_with_heap(heap);
-            }
-            return Err(e);
-        }
+    let extract_width = |v: &Value| -> RunResult<usize> {
+        let w = v.as_int(heap)?;
+        Ok(if w < 0 {
+            0
+        } else {
+            usize::try_from(w).unwrap_or(usize::MAX)
+        })
     };
 
-    let width = if width_i64 < 0 {
-        0
-    } else {
-        usize::try_from(width_i64).unwrap_or(usize::MAX)
-    };
-
-    let fillbyte = if let Some(v) = fillbyte_value {
-        // Drop before propagating error to avoid refcount leak
-        let result = extract_bytes_only(&v, heap, interns);
-        v.drop_with_heap(heap);
-        let fill_bytes = result?;
+    let extract_fill = |v: &Value| -> RunResult<u8> {
+        let fill_bytes = extract_bytes_only(v, heap, interns)?;
         if fill_bytes.len() != 1 {
             return Err(ExcType::type_error(format!(
                 "{method}() argument 2 must be a byte string of length 1, not bytes of length {}",
                 fill_bytes.len()
             )));
         }
-        fill_bytes[0]
-    } else {
-        b' '
+        Ok(fill_bytes[0])
     };
 
-    Ok((width, fillbyte))
+    match pos.as_slice() {
+        [width_value] => Ok((extract_width(width_value)?, b' ')),
+        [width_value, fillbyte_value] => Ok((extract_width(width_value)?, extract_fill(fillbyte_value)?)),
+        [] => Err(ExcType::type_error_at_least(method, 1, 0)),
+        _ => Err(ExcType::type_error_at_most(method, 2, pos.len())),
+    }
 }
 
 /// Implements Python's `bytes.zfill(width)` method.
@@ -2505,14 +2392,14 @@ fn bytes_hex(
 
                 result.extend(&hex_chars[..first_chunk_len]);
                 for chunk in hex_chars[first_chunk_len..].chunks(chars_per_group) {
-                    result.push_str(&sep);
+                    result.push(sep);
                     result.extend(chunk);
                 }
             } else {
                 // Negative: count from left, so partial group is at the END
                 for (i, chunk) in hex_chars.chunks(chars_per_group).enumerate() {
                     if i > 0 {
-                        result.push_str(&sep);
+                        result.push(sep);
                     }
                     result.extend(chunk);
                 }
@@ -2531,120 +2418,40 @@ fn parse_bytes_hex_args(
     args: ArgValues,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
-) -> RunResult<(Option<String>, i64)> {
-    let mut pos_iter = args.into_pos_only("bytes.hex", heap)?;
-    let sep_value = pos_iter.next();
-    let bytes_per_sep_value = pos_iter.next();
+) -> RunResult<(Option<char>, i64)> {
+    let pos = args.into_pos_only("bytes.hex", heap)?;
+    defer_drop!(pos, heap);
 
-    // Check no extra arguments
-    if pos_iter.len() != 0 {
-        for v in pos_iter {
-            v.drop_with_heap(heap);
-        }
-        if let Some(v) = sep_value {
-            v.drop_with_heap(heap);
-        }
-        if let Some(v) = bytes_per_sep_value {
-            v.drop_with_heap(heap);
-        }
-        return Err(ExcType::type_error_at_most("bytes.hex", 2, 3));
-    }
-
-    let sep = if let Some(v) = sep_value {
-        let sep_str = match &v {
-            Value::InternString(id) => {
-                let s = interns.get_str(*id);
-                // Must be single ASCII character
-                if s.len() != 1 || !s.is_ascii() {
-                    v.drop_with_heap(heap);
-                    if let Some(bv) = bytes_per_sep_value {
-                        bv.drop_with_heap(heap);
-                    }
-                    return Err(
-                        SimpleException::new_msg(ExcType::ValueError, "sep must be a single ASCII character").into(),
-                    );
-                }
-                s.to_owned()
-            }
-            Value::Ref(heap_id) => {
-                if let HeapData::Str(s) = heap.get(*heap_id) {
-                    let st = s.as_str();
-                    if st.len() != 1 || !st.is_ascii() {
-                        v.drop_with_heap(heap);
-                        if let Some(bv) = bytes_per_sep_value {
-                            bv.drop_with_heap(heap);
-                        }
-                        return Err(SimpleException::new_msg(
-                            ExcType::ValueError,
-                            "sep must be a single ASCII character",
-                        )
-                        .into());
-                    }
-                    st.to_owned()
-                } else if let HeapData::Bytes(b) = heap.get(*heap_id) {
-                    // Also accept single-byte bytes as separator
-                    if b.len() != 1 {
-                        v.drop_with_heap(heap);
-                        if let Some(bv) = bytes_per_sep_value {
-                            bv.drop_with_heap(heap);
-                        }
-                        return Err(SimpleException::new_msg(
-                            ExcType::ValueError,
-                            "sep must be a single ASCII character",
-                        )
-                        .into());
-                    }
-                    (b.as_slice()[0] as char).to_string()
-                } else {
-                    v.drop_with_heap(heap);
-                    if let Some(bv) = bytes_per_sep_value {
-                        bv.drop_with_heap(heap);
-                    }
-                    return Err(ExcType::type_error("sep must be str or bytes"));
-                }
-            }
-            Value::InternBytes(id) => {
-                let b = interns.get_bytes(*id);
-                if b.len() != 1 {
-                    v.drop_with_heap(heap);
-                    if let Some(bv) = bytes_per_sep_value {
-                        bv.drop_with_heap(heap);
-                    }
-                    return Err(
-                        SimpleException::new_msg(ExcType::ValueError, "sep must be a single ASCII character").into(),
-                    );
-                }
-                (b[0] as char).to_string()
-            }
-            _ => {
-                v.drop_with_heap(heap);
-                if let Some(bv) = bytes_per_sep_value {
-                    bv.drop_with_heap(heap);
-                }
-                return Err(ExcType::type_error("sep must be str or bytes"));
-            }
-        };
-        v.drop_with_heap(heap);
-        Some(sep_str)
-    } else {
-        None
+    let (sep_value, bps_value) = match pos.as_slice() {
+        [] => return Ok((None, 1)),
+        [sep_value] => (sep_value, None),
+        [sep_value, bps_value] => (sep_value, Some(bps_value)),
+        other => return Err(ExcType::type_error_at_most("bytes.hex", 2, other.len())),
     };
 
-    let bytes_per_sep = if let Some(v) = bytes_per_sep_value {
-        if sep.is_none() {
-            v.drop_with_heap(heap);
-            return Err(ExcType::type_error(
-                "bytes.hex() requires sep when bytes_per_sep is given",
-            ));
-        }
-        let result = v.as_int(heap)?;
-        v.drop_with_heap(heap);
-        result
+    let sep_bytes = match sep_value {
+        Value::InternString(id) => interns.get_str(*id).as_bytes(),
+        Value::InternBytes(id) => interns.get_bytes(*id),
+        Value::Ref(heap_id) => match heap.get(*heap_id) {
+            HeapData::Str(s) => s.as_bytes(),
+            HeapData::Bytes(b) => b.as_slice(),
+            _ => return Err(ExcType::type_error("sep must be str or bytes")),
+        },
+        _ => return Err(ExcType::type_error("sep must be str or bytes")),
+    };
+
+    let sep = match sep_bytes {
+        [b] if b.is_ascii() => *b as char,
+        _ => return Err(SimpleException::new_msg(ExcType::ValueError, "sep must be a single ASCII character").into()),
+    };
+
+    let bytes_per_sep = if let Some(bps_value) = bps_value {
+        bps_value.as_int(heap)?
     } else {
         1
     };
 
-    Ok((sep, bytes_per_sep))
+    Ok((Some(sep), bytes_per_sep))
 }
 
 // =============================================================================

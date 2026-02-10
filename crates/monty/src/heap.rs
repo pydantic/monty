@@ -1921,6 +1921,14 @@ impl<T: ResourceTracker> DropWithHeap<T> for vec::IntoIter<Value> {
     }
 }
 
+impl<T: ResourceTracker, const N: usize> DropWithHeap<T> for [Value; N] {
+    fn drop_with_heap(self, heap: &mut Heap<T>) {
+        for value in self {
+            value.drop_with_heap(heap);
+        }
+    }
+}
+
 /// RAII guard that ensures a [`DropWithHeap`] value is cleaned up on every code path.
 ///
 /// The guard's `Drop` impl calls [`DropWithHeap::drop_with_heap`] automatically, so

@@ -5,7 +5,7 @@ use num_traits::{Signed, ToPrimitive, Zero};
 
 use crate::{
     args::ArgValues,
-    defer_drop_mut,
+    defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapData},
     resource::{ResourceTracker, check_pow_size},
@@ -20,70 +20,66 @@ use crate::{
 pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     // pow() accepts 2 or 3 arguments
     let positional = args.into_pos_only("pow", heap)?;
-    defer_drop_mut!(positional, heap);
+    defer_drop!(positional, heap);
 
-    let (base, exp, modulo) = match positional.len() {
-        2 => (positional.next().unwrap(), positional.next().unwrap(), None),
-        3 => (
-            positional.next().unwrap(),
-            positional.next().unwrap(),
-            Some(positional.next().unwrap()),
-        ),
-        n => {
-            for v in positional {
-                v.drop_with_heap(heap);
-            }
-            return Err(SimpleException::new_msg(
-                ExcType::TypeError,
-                format!("pow expected 2 or 3 arguments, got {n}"),
-            )
-            .into());
+    match positional.as_slice() {
+        [base, exp] => {
+            let base = normalize_bool(base);
+            let exp = normalize_bool(exp);
+            two_arg_pow(base, exp, heap)
         }
-    };
-
-    let base = super::round::normalize_bool_to_int(base);
-    let exp = super::round::normalize_bool_to_int(exp);
-    let modulo = modulo.map(super::round::normalize_bool_to_int);
-
-    let result = if let Some(m) = &modulo {
-        // Three-argument pow: modular exponentiation
-        match (&base, &exp, &m) {
-            (Value::Int(b), Value::Int(e), Value::Int(m_val)) => {
-                if *m_val == 0 {
-                    Err(SimpleException::new_msg(ExcType::ValueError, "pow() 3rd argument cannot be 0").into())
-                } else if *e < 0 {
-                    Err(SimpleException::new_msg(
-                        ExcType::ValueError,
-                        "pow() 2nd argument cannot be negative when 3rd argument specified",
-                    )
-                    .into())
-                } else {
-                    // Use modular exponentiation
-                    let result = mod_pow(
-                        *b,
-                        u64::try_from(*e).expect("pow exponent >= 0 but failed u64 conversion"),
-                        *m_val,
-                    );
-                    Ok(Value::Int(result))
+        [base, exp, m] => {
+            let base = normalize_bool(base);
+            let exp = normalize_bool(exp);
+            let m = normalize_bool(m);
+            // Three-argument pow: modular exponentiation
+            match (base, exp, m) {
+                (Value::Int(b), Value::Int(e), Value::Int(m_val)) => {
+                    if *m_val == 0 {
+                        Err(SimpleException::new_msg(ExcType::ValueError, "pow() 3rd argument cannot be 0").into())
+                    } else if *e < 0 {
+                        Err(SimpleException::new_msg(
+                            ExcType::ValueError,
+                            "pow() 2nd argument cannot be negative when 3rd argument specified",
+                        )
+                        .into())
+                    } else {
+                        // Use modular exponentiation
+                        let result = mod_pow(
+                            *b,
+                            u64::try_from(*e).expect("pow exponent >= 0 but failed u64 conversion"),
+                            *m_val,
+                        );
+                        Ok(Value::Int(result))
+                    }
                 }
+                _ => Err(SimpleException::new_msg(
+                    ExcType::TypeError,
+                    "pow() 3rd argument not allowed unless all arguments are integers",
+                )
+                .into()),
             }
-            _ => Err(SimpleException::new_msg(
-                ExcType::TypeError,
-                "pow() 3rd argument not allowed unless all arguments are integers",
-            )
-            .into()),
         }
-    } else {
-        // Two-argument pow
-        Ok(two_arg_pow(&base, &exp, heap)?)
-    };
-
-    base.drop_with_heap(heap);
-    exp.drop_with_heap(heap);
-    if let Some(m) = modulo {
-        m.drop_with_heap(heap);
+        args => Err(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("pow expected 2 or 3 arguments, got {}", args.len()),
+        )
+        .into()),
     }
-    result
+}
+
+/// Normalizes a `Bool` to its `Int` equivalent by reference.
+///
+/// Returns `&Value::Int(0)` or `&Value::Int(1)` for bools (using static storage),
+/// and the original reference unchanged for all other types.
+fn normalize_bool(value: &Value) -> &Value {
+    static FALSE_INT: Value = Value::Int(0);
+    static TRUE_INT: Value = Value::Int(1);
+    match value {
+        Value::Bool(false) => &FALSE_INT,
+        Value::Bool(true) => &TRUE_INT,
+        other => other,
+    }
 }
 
 /// Computes (base^exp) % modulo using binary exponentiation.

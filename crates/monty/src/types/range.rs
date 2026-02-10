@@ -9,7 +9,7 @@ use ahash::AHashSet;
 
 use crate::{
     args::ArgValues,
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::Interns,
@@ -118,44 +118,32 @@ impl Range {
     /// - `range(start, stop, step)` - range with custom step
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
         let pos_args = args.into_pos_only("range", heap)?;
-        defer_drop_mut!(pos_args, heap);
+        defer_drop!(pos_args, heap);
 
-        let Some(first_arg) = pos_args.next() else {
-            return Err(ExcType::type_error_at_least("range", 1, 0));
+        let range = match pos_args.as_slice() {
+            [] => return Err(ExcType::type_error_at_least("range", 1, 0)),
+            [first_arg] => {
+                let stop = first_arg.as_int(heap)?;
+                Self::from_stop(stop)
+            }
+            [first_arg, second_arg] => {
+                let start = first_arg.as_int(heap)?;
+                let stop = second_arg.as_int(heap)?;
+                Self::from_start_stop(start, stop)
+            }
+            [first_arg, second_arg, third_arg] => {
+                let start = first_arg.as_int(heap)?;
+                let stop = second_arg.as_int(heap)?;
+                let step = third_arg.as_int(heap)?;
+                if step == 0 {
+                    return Err(ExcType::value_error_range_step_zero());
+                }
+                Self::new(start, stop, step)
+            }
+            _ => return Err(ExcType::type_error_at_most("range", 3, pos_args.len())),
         };
-        defer_drop!(first_arg, heap);
 
-        let Some(second_arg) = pos_args.next() else {
-            // Only one argument, treat as stop
-            let stop = first_arg.as_int(heap)?;
-            return Ok(Value::Ref(heap.allocate(HeapData::Range(Self::from_stop(stop)))?));
-        };
-        defer_drop!(second_arg, heap);
-
-        let Some(third_arg) = pos_args.next() else {
-            // Two arguments, treat as start and stop
-            let start = first_arg.as_int(heap)?;
-            let stop = second_arg.as_int(heap)?;
-            return Ok(Value::Ref(
-                heap.allocate(HeapData::Range(Self::from_start_stop(start, stop)))?,
-            ));
-        };
-        defer_drop!(third_arg, heap);
-
-        if pos_args.len() > 0 {
-            return Err(ExcType::type_error_at_most("range", 3, 3 + pos_args.len()));
-        }
-
-        let start = first_arg.as_int(heap)?;
-        let stop = second_arg.as_int(heap)?;
-        let step = third_arg.as_int(heap)?;
-        if step == 0 {
-            return Err(ExcType::value_error_range_step_zero());
-        }
-
-        Ok(Value::Ref(
-            heap.allocate(HeapData::Range(Self::new(start, stop, step)))?,
-        ))
+        Ok(Value::Ref(heap.allocate(HeapData::Range(range))?))
     }
 
     /// Handles slice-based indexing for ranges.

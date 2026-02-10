@@ -11,6 +11,7 @@ use smallvec::smallvec;
 use super::{List, MontyIter, PyTrait, allocate_tuple};
 use crate::{
     args::{ArgValues, KwargsValues},
+    defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
@@ -783,29 +784,20 @@ fn dict_update(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
-    let (pos, kwargs) = args.into_parts();
+    let (pos_iter, kwargs) = args.into_parts();
+    defer_drop_mut!(pos_iter, heap);
 
-    let mut pos_iter = pos;
-    let other = pos_iter.next();
-
-    // Check no extra positional arguments
-    if let Some(extra) = pos_iter.next() {
-        extra.drop_with_heap(heap);
-        for v in pos_iter {
-            v.drop_with_heap(heap);
-        }
-        if let Some(v) = other {
-            v.drop_with_heap(heap);
-        }
-        kwargs.drop_with_heap(heap);
-        return Err(ExcType::type_error_at_most("dict.update", 1, 2));
-    }
-
-    // Process positional argument if present
-    let Some(other_value) = other else {
+    let Some(other_value) = pos_iter.next() else {
         // No positional argument - just process kwargs
         return dict_update_from_kwargs(dict, kwargs, heap, interns);
     };
+
+    // Check no extra positional arguments
+    if pos_iter.len() != 0 {
+        other_value.drop_with_heap(heap);
+        kwargs.drop_with_heap(heap);
+        return Err(ExcType::type_error_at_most("dict.update", 1, 2));
+    }
 
     // Check if it's a dict first
     if let Value::Ref(id) = &other_value {

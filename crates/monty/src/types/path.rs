@@ -10,8 +10,8 @@ use ahash::AHashSet;
 use smallvec::SmallVec;
 
 use crate::{
-    args::{ArgPosIter, ArgValues, KwargsValues},
-    defer_drop, defer_drop_mut,
+    args::{ArgValues, KwargsValues},
+    defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
@@ -262,17 +262,22 @@ impl Path {
     /// - If an absolute path appears, it replaces everything before it.
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
         let pos_args = args.into_pos_only("Path", heap)?;
-        defer_drop_mut!(pos_args, heap);
+        defer_drop!(pos_args, heap);
 
-        let Some(first_arg) = pos_args.next() else {
-            // No arguments, return Path('.')
-            return Ok(Value::Ref(heap.allocate(HeapData::Path(Self::new(".".to_owned())))?));
+        let path = match pos_args.as_slice() {
+            [] => {
+                // No arguments, return Path('.')
+                Self::new(".".to_owned())
+            }
+            [single] => {
+                // Single argument, just convert to Path
+                Self::new(extract_path_string(single, heap, interns)?.to_owned())
+            }
+            [first_arg, rest @ ..] => {
+                let base = Self::new(extract_path_string(first_arg, heap, interns)?.to_owned());
+                fold_joinpath(base, rest, heap, interns)?
+            }
         };
-        defer_drop!(first_arg, heap);
-
-        let base = Self::new(extract_path_string(first_arg, heap, interns)?.to_owned());
-        let path = fold_joinpath(base, pos_args, heap, interns)?;
-
         Ok(Value::Ref(heap.allocate(HeapData::Path(path))?))
     }
 }
@@ -302,12 +307,11 @@ fn extract_path_string<'a>(
 
 fn fold_joinpath(
     mut path: Path,
-    parts: &mut ArgPosIter,
+    parts: &[Value],
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Path> {
     for part in parts {
-        defer_drop!(part, heap);
         path = Path::new(path.joinpath(extract_path_string(part, heap, interns)?));
     }
     Ok(path)
@@ -451,8 +455,8 @@ impl PyTrait for Path {
             }
             StaticStrings::Joinpath => {
                 let pos_args = args.into_pos_only("joinpath", heap)?;
-                defer_drop_mut!(pos_args, heap);
-                let path = fold_joinpath(self.clone(), pos_args, heap, interns)?;
+                defer_drop!(pos_args, heap);
+                let path = fold_joinpath(self.clone(), pos_args.as_slice(), heap, interns)?;
                 Ok(Value::Ref(heap.allocate(HeapData::Path(path))?))
             }
             StaticStrings::WithName => {

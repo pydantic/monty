@@ -11,6 +11,7 @@ use smallvec::smallvec;
 use super::{Bytes, MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
+    defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
@@ -1078,63 +1079,29 @@ fn parse_search_args(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<(String, usize, usize)> {
-    let mut pos_iter = args.into_pos_only(method, heap)?;
-    let sub_value = pos_iter
-        .next()
-        .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
-    let start_value = pos_iter.next();
-    let end_value = pos_iter.next();
+    let pos = args.into_pos_only(method, heap)?;
+    defer_drop!(pos, heap);
 
-    // Check no extra arguments
-    if pos_iter.len() != 0 {
-        // Drop remaining values
-        for v in pos_iter {
-            v.drop_with_heap(heap);
-        }
-        sub_value.drop_with_heap(heap);
-        if let Some(v) = start_value {
-            v.drop_with_heap(heap);
-        }
-        if let Some(v) = end_value {
-            v.drop_with_heap(heap);
-        }
-        return Err(ExcType::type_error_at_most(method, 3, 4));
-    }
-
-    // Extract substring
-    let sub = extract_string_arg(&sub_value, heap, interns)?;
-    sub_value.drop_with_heap(heap);
-
-    // Extract start (default 0, None means default)
     let str_len = s.chars().count();
-    let start = if let Some(v) = start_value {
-        if matches!(v, Value::None) {
-            v.drop_with_heap(heap);
-            0
-        } else {
-            let result = extract_int_arg(&v, heap)?;
-            v.drop_with_heap(heap);
-            normalize_index(result, str_len)
+    match pos.as_slice() {
+        [sub_value] => {
+            let sub = extract_string_arg(sub_value, heap, interns)?;
+            Ok((sub, 0, str_len))
         }
-    } else {
-        0
-    };
-
-    // Extract end (default len, None means default)
-    let end = if let Some(v) = end_value {
-        if matches!(v, Value::None) {
-            v.drop_with_heap(heap);
-            str_len
-        } else {
-            let result = extract_int_arg(&v, heap)?;
-            v.drop_with_heap(heap);
-            normalize_index(result, str_len)
+        [sub_value, start_value] => {
+            let sub = extract_string_arg(sub_value, heap, interns)?;
+            let start = optional_index(start_value, 0, str_len, heap)?;
+            Ok((sub, start, str_len))
         }
-    } else {
-        str_len
-    };
-
-    Ok((sub, start, end))
+        [sub_value, start_value, end_value] => {
+            let sub = extract_string_arg(sub_value, heap, interns)?;
+            let start = optional_index(start_value, 0, str_len, heap)?;
+            let end = optional_index(end_value, str_len, str_len, heap)?;
+            Ok((sub, start, end))
+        }
+        [] => Err(ExcType::type_error_at_least(method, 1, 0)),
+        _ => Err(ExcType::type_error_at_most(method, 3, pos.len())),
+    }
 }
 
 /// Parses arguments for startswith/endswith methods.
@@ -1148,63 +1115,29 @@ fn parse_prefix_suffix_args(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<(Vec<String>, usize, usize)> {
-    let mut pos_iter = args.into_pos_only(method, heap)?;
-    let prefix_value = pos_iter
-        .next()
-        .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
-    let start_value = pos_iter.next();
-    let end_value = pos_iter.next();
+    let pos = args.into_pos_only(method, heap)?;
+    defer_drop!(pos, heap);
 
-    // Check no extra arguments
-    if pos_iter.len() != 0 {
-        // Drop remaining values
-        for v in pos_iter {
-            v.drop_with_heap(heap);
-        }
-        prefix_value.drop_with_heap(heap);
-        if let Some(v) = start_value {
-            v.drop_with_heap(heap);
-        }
-        if let Some(v) = end_value {
-            v.drop_with_heap(heap);
-        }
-        return Err(ExcType::type_error_at_most(method, 3, 4));
-    }
-
-    // Extract prefix/suffix - can be a string or tuple of strings
-    let prefixes = extract_str_or_tuple_of_str(&prefix_value, heap, interns)?;
-    prefix_value.drop_with_heap(heap);
-
-    // Extract start (default 0, None means default)
     let str_len = s.chars().count();
-    let start = if let Some(v) = start_value {
-        if matches!(v, Value::None) {
-            v.drop_with_heap(heap);
-            0
-        } else {
-            let result = extract_int_arg(&v, heap)?;
-            v.drop_with_heap(heap);
-            normalize_index(result, str_len)
+    match pos.as_slice() {
+        [prefix_value] => {
+            let prefixes = extract_str_or_tuple_of_str(prefix_value, heap, interns)?;
+            Ok((prefixes, 0, str_len))
         }
-    } else {
-        0
-    };
-
-    // Extract end (default len, None means default)
-    let end = if let Some(v) = end_value {
-        if matches!(v, Value::None) {
-            v.drop_with_heap(heap);
-            str_len
-        } else {
-            let result = extract_int_arg(&v, heap)?;
-            v.drop_with_heap(heap);
-            normalize_index(result, str_len)
+        [prefix_value, start_value] => {
+            let prefixes = extract_str_or_tuple_of_str(prefix_value, heap, interns)?;
+            let start = optional_index(start_value, 0, str_len, heap)?;
+            Ok((prefixes, start, str_len))
         }
-    } else {
-        str_len
-    };
-
-    Ok((prefixes, start, end))
+        [prefix_value, start_value, end_value] => {
+            let prefixes = extract_str_or_tuple_of_str(prefix_value, heap, interns)?;
+            let start = optional_index(start_value, 0, str_len, heap)?;
+            let end = optional_index(end_value, str_len, str_len, heap)?;
+            Ok((prefixes, start, end))
+        }
+        [] => Err(ExcType::type_error_at_least(method, 1, 0)),
+        _ => Err(ExcType::type_error_at_most(method, 3, pos.len())),
+    }
 }
 
 /// Extracts a string or tuple of strings from a Value.
@@ -1277,6 +1210,23 @@ fn normalize_index(index: i64, len: usize) -> usize {
         // Safe cast: we've checked index is non-negative
         // For values > usize::MAX, saturate to len
         usize::try_from(index).unwrap_or(len).min(len)
+    }
+}
+
+/// Extracts an optional index from a `Value`, treating `None` as `default`.
+///
+/// Used by argument parsers where `None` means "use the default index" and
+/// any other value is interpreted as an integer and normalized against `str_len`.
+fn optional_index(
+    value: &Value,
+    default: usize,
+    str_len: usize,
+    heap: &Heap<impl ResourceTracker>,
+) -> RunResult<usize> {
+    if matches!(value, Value::None) {
+        Ok(default)
+    } else {
+        Ok(normalize_index(extract_int_arg(value, heap)?, str_len))
     }
 }
 
@@ -2029,46 +1979,32 @@ fn parse_justify_args(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<(usize, char)> {
-    let mut pos_iter = args.into_pos_only(method, heap)?;
-    let width_value = pos_iter
-        .next()
-        .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
-    let fillchar_value = pos_iter.next();
+    let pos = args.into_pos_only(method, heap)?;
+    defer_drop!(pos, heap);
 
-    // Check no extra arguments
-    if pos_iter.len() != 0 {
-        for v in pos_iter {
-            v.drop_with_heap(heap);
-        }
-        width_value.drop_with_heap(heap);
-        if let Some(v) = fillchar_value {
-            v.drop_with_heap(heap);
-        }
-        return Err(ExcType::type_error_at_most(method, 2, 3));
-    }
-
-    let width_i64 = extract_int_arg(&width_value, heap)?;
-    width_value.drop_with_heap(heap);
-
-    // Safe cast: treat negative as 0, saturate large positive values
-    let width = if width_i64 < 0 {
-        0
-    } else {
-        usize::try_from(width_i64).unwrap_or(usize::MAX)
+    let extract_width = |v: &Value| -> RunResult<usize> {
+        let w = extract_int_arg(v, heap)?;
+        Ok(if w < 0 {
+            0
+        } else {
+            usize::try_from(w).unwrap_or(usize::MAX)
+        })
     };
 
-    let fillchar = if let Some(v) = fillchar_value {
-        let fill_str = extract_string_arg(&v, heap, interns)?;
-        v.drop_with_heap(heap);
+    let extract_fill = |v: &Value| -> RunResult<char> {
+        let fill_str = extract_string_arg(v, heap, interns)?;
         if fill_str.chars().count() != 1 {
             return Err(ExcType::type_error_fillchar_must_be_single_char());
         }
-        fill_str.chars().next().unwrap()
-    } else {
-        ' '
+        Ok(fill_str.chars().next().unwrap())
     };
 
-    Ok((width, fillchar))
+    match pos.as_slice() {
+        [width_value] => Ok((extract_width(width_value)?, ' ')),
+        [width_value, fillchar_value] => Ok((extract_width(width_value)?, extract_fill(fillchar_value)?)),
+        [] => Err(ExcType::type_error_at_least(method, 1, 0)),
+        _ => Err(ExcType::type_error_at_most(method, 2, pos.len())),
+    }
 }
 
 /// Implements Python's `str.zfill(width)` method.

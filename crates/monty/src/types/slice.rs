@@ -9,7 +9,7 @@ use ahash::AHashSet;
 
 use crate::{
     args::ArgValues,
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
@@ -53,42 +53,29 @@ impl Slice {
     /// Each argument can be None to indicate "use default".
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
         let pos_args = args.into_pos_only("slice", heap)?;
-        defer_drop_mut!(pos_args, heap);
+        defer_drop!(pos_args, heap);
 
-        let Some(first_arg) = pos_args.next() else {
-            return Err(ExcType::type_error_at_least("slice", 1, 0));
+        let slice = match pos_args.as_slice() {
+            [] => return Err(ExcType::type_error_at_least("slice", 1, 0)),
+            [first_arg] => {
+                let stop = value_to_option_i64(first_arg)?;
+                Self::new(None, stop, None)
+            }
+            [first_arg, second_arg] => {
+                let start = value_to_option_i64(first_arg)?;
+                let stop = value_to_option_i64(second_arg)?;
+                Self::new(start, stop, None)
+            }
+            [first_arg, second_arg, third_arg] => {
+                let start = value_to_option_i64(first_arg)?;
+                let stop = value_to_option_i64(second_arg)?;
+                let step = value_to_option_i64(third_arg)?;
+                Self::new(start, stop, step)
+            }
+            _ => return Err(ExcType::type_error_at_most("slice", 3, pos_args.len())),
         };
-        defer_drop!(first_arg, heap);
 
-        let Some(second_arg) = pos_args.next() else {
-            // Only one argument, treat as stop
-            let stop = value_to_option_i64(first_arg)?;
-            return Ok(Value::Ref(heap.allocate(HeapData::Slice(Self::new(None, stop, None)))?));
-        };
-        defer_drop!(second_arg, heap);
-
-        let Some(third_arg) = pos_args.next() else {
-            // Two arguments, treat as start and stop
-            let start = value_to_option_i64(first_arg)?;
-            let stop = value_to_option_i64(second_arg)?;
-            return Ok(Value::Ref(
-                heap.allocate(HeapData::Slice(Self::new(start, stop, None)))?,
-            ));
-        };
-        defer_drop!(third_arg, heap);
-
-        if pos_args.len() > 0 {
-            return Err(ExcType::type_error_at_most("slice", 3, 3 + pos_args.len()));
-        }
-
-        // Store results before dropping to avoid refcount leak on error
-        let start = value_to_option_i64(first_arg)?;
-        let stop = value_to_option_i64(second_arg)?;
-        let step = value_to_option_i64(third_arg)?;
-
-        Ok(Value::Ref(
-            heap.allocate(HeapData::Slice(Self::new(start, stop, step)))?,
-        ))
+        Ok(Value::Ref(heap.allocate(HeapData::Slice(slice))?))
     }
 
     /// Computes concrete indices for a sequence of the given length.
