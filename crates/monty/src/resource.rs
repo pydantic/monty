@@ -16,6 +16,20 @@ use crate::{
 /// the allocation check can catch them.
 pub const LARGE_RESULT_THRESHOLD: usize = 100_000;
 
+/// Pre-checks that a repeat/multiplication operation won't exceed resource limits
+/// before the allocation actually happens.
+///
+/// This prevents DoS via expressions like `'x' * 999_999_999` or `b'ab' * huge_int`
+/// by estimating the result size and checking against the resource tracker. Only
+/// performs the check when the estimated size exceeds `LARGE_RESULT_THRESHOLD`.
+pub fn check_repeat_size(item_len: usize, count: usize, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
+    let estimated_size = item_len.saturating_mul(count);
+    if estimated_size > LARGE_RESULT_THRESHOLD {
+        tracker.check_large_result(estimated_size)?;
+    }
+    Ok(())
+}
+
 /// Error returned when a resource limit is exceeded during execution.
 ///
 /// This allows the sandbox to enforce strict limits on allocation count,

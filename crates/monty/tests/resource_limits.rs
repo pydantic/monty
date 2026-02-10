@@ -806,6 +806,48 @@ fn list_mult_within_limit() {
     assert_eq!(result.unwrap(), MontyObject::Bool(true));
 }
 
+/// Test that `int * bytes` (int on left) is also rejected by the pre-check.
+///
+/// This catches a bug where interned bytes/strings bypassed the `mult_sequence`
+/// pre-check because `py_mult` handled `InternBytes * Int` inline without
+/// checking resource limits.
+#[test]
+fn int_times_bytes_memory_limit() {
+    // int on left side: 1000000 * b'x' = 1MB
+    let code = "1000000 * b'x'";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000); // 100KB limit
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_err(), "int * bytes should be rejected");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
+    );
+}
+
+/// Test that `int * str` (int on left) is also rejected by the pre-check.
+#[test]
+fn int_times_string_memory_limit() {
+    // int on left side: 1000000 * 'x' = 1MB
+    let code = "1000000 * 'x'";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000); // 100KB limit
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_err(), "int * str should be rejected");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
+    );
+}
+
 /// Test that small tuple multiplication works within limits.
 #[test]
 fn tuple_mult_within_limit() {

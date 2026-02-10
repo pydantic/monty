@@ -20,7 +20,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId},
     intern::{BytesId, ExtFunctionId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
-    resource::{LARGE_RESULT_THRESHOLD, ResourceTracker},
+    resource::{LARGE_RESULT_THRESHOLD, ResourceTracker, check_repeat_size},
     types::{
         AttrCallResult, LongInt, Property, PyTrait, Str, Type,
         bytes::{bytes_repr_fmt, get_byte_at_index, get_bytes_slice},
@@ -891,14 +891,18 @@ impl PyTrait for Value {
             // String repetition: "ab" * 3 or 3 * "ab"
             (Self::InternString(s), Self::Int(n)) | (Self::Int(n), Self::InternString(s)) => {
                 let count = i64_to_repeat_count(*n)?;
-                let result = interns.get_str(*s).repeat(count);
+                let str_ref = interns.get_str(*s);
+                check_repeat_size(str_ref.len(), count, heap.tracker())?;
+                let result = str_ref.repeat(count);
                 Ok(Some(Self::Ref(heap.allocate(HeapData::Str(result.into()))?)))
             }
 
             // Bytes repetition: b"ab" * 3 or 3 * b"ab"
             (Self::InternBytes(b), Self::Int(n)) | (Self::Int(n), Self::InternBytes(b)) => {
                 let count = i64_to_repeat_count(*n)?;
-                let result: Vec<u8> = interns.get_bytes(*b).repeat(count);
+                let bytes_ref = interns.get_bytes(*b);
+                check_repeat_size(bytes_ref.len(), count, heap.tracker())?;
+                let result: Vec<u8> = bytes_ref.repeat(count);
                 Ok(Some(Self::Ref(heap.allocate(HeapData::Bytes(result.into()))?)))
             }
 
@@ -906,7 +910,9 @@ impl PyTrait for Value {
             (Self::InternString(s), Self::Ref(id)) | (Self::Ref(id), Self::InternString(s)) => {
                 if let HeapData::LongInt(li) = heap.get(*id) {
                     let count = longint_to_repeat_count(li)?;
-                    let result = interns.get_str(*s).repeat(count);
+                    let str_ref = interns.get_str(*s);
+                    check_repeat_size(str_ref.len(), count, heap.tracker())?;
+                    let result = str_ref.repeat(count);
                     Ok(Some(Self::Ref(heap.allocate(HeapData::Str(result.into()))?)))
                 } else {
                     Ok(None)
@@ -917,7 +923,9 @@ impl PyTrait for Value {
             (Self::InternBytes(b), Self::Ref(id)) | (Self::Ref(id), Self::InternBytes(b)) => {
                 if let HeapData::LongInt(li) = heap.get(*id) {
                     let count = longint_to_repeat_count(li)?;
-                    let result: Vec<u8> = interns.get_bytes(*b).repeat(count);
+                    let bytes_ref = interns.get_bytes(*b);
+                    check_repeat_size(bytes_ref.len(), count, heap.tracker())?;
+                    let result: Vec<u8> = bytes_ref.repeat(count);
                     Ok(Some(Self::Ref(heap.allocate(HeapData::Bytes(result.into()))?)))
                 } else {
                     Ok(None)
