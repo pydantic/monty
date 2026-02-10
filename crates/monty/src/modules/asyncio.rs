@@ -9,6 +9,7 @@
 use crate::{
     args::ArgValues,
     asyncio::{GatherFuture, GatherItem},
+    defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
@@ -80,15 +81,10 @@ pub(super) fn call(
 /// Returns `TypeError` if any argument is not awaitable.
 pub(crate) fn gather(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (pos_args, kwargs) = args.into_parts();
+    defer_drop_mut!(pos_args, heap);
 
-    // gather() doesn't accept keyword arguments
-    if !kwargs.is_empty() {
-        kwargs.drop_with_heap(heap);
-        for arg in pos_args {
-            arg.drop_with_heap(heap);
-        }
-        return Err(ExcType::type_error("gather() takes no keyword arguments"));
-    }
+    // TODO: support keyword arguments (e.g. return_exceptions)
+    kwargs.not_supported_yet("gather", heap)?;
 
     // Validate all positional args are awaitable and collect them
     let mut items = Vec::new();
