@@ -20,7 +20,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId},
     intern::{BytesId, ExtFunctionId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
-    resource::{ResourceTracker, check_lshift_size, check_mult_size, check_pow_size, check_repeat_size},
+    resource::{ResourceTracker, check_lshift_size, check_pow_size, check_repeat_size},
     types::{
         AttrCallResult, LongInt, Property, PyTrait, Str, Type,
         bytes::{bytes_repr_fmt, get_byte_at_index, get_bytes_slice},
@@ -774,78 +774,12 @@ impl PyTrait for Value {
                     Ok(Some(li.into_value(heap)?))
                 }
             }
-            // Int * LongInt
-            (Self::Int(a), Self::Ref(id)) => {
-                if let HeapData::LongInt(li) = heap.get(*id) {
-                    // Check size before computing to prevent DoS
-                    check_mult_size(i64_bits(*a), li.bits(), heap.tracker())?;
-                    let result = LongInt::from(*a) * LongInt::new(li.inner().clone());
-                    Ok(Some(result.into_value(heap)?))
-                } else {
-                    // Check for sequence repetition
-                    let count = i64_to_repeat_count(*a)?;
-                    heap.mult_sequence(*id, count)
-                }
-            }
-            // LongInt * Int
-            (Self::Ref(id), Self::Int(b)) => {
-                if let HeapData::LongInt(li) = heap.get(*id) {
-                    // Check size before computing to prevent DoS
-                    check_mult_size(li.bits(), i64_bits(*b), heap.tracker())?;
-                    let result = LongInt::new(li.inner().clone()) * LongInt::from(*b);
-                    Ok(Some(result.into_value(heap)?))
-                } else {
-                    // Check for sequence repetition
-                    let count = i64_to_repeat_count(*b)?;
-                    heap.mult_sequence(*id, count)
-                }
-            }
-            // LongInt * LongInt or sequence * LongInt
-            (Self::Ref(id1), Self::Ref(id2)) => {
-                let is_longint1 = matches!(heap.get(*id1), HeapData::LongInt(_));
-                let is_longint2 = matches!(heap.get(*id2), HeapData::LongInt(_));
-                if is_longint1 && is_longint2 {
-                    // LongInt * LongInt - get bits for size check
-                    let a_bits = if let HeapData::LongInt(li) = heap.get(*id1) {
-                        li.bits()
-                    } else {
-                        0
-                    };
-                    let b_bits = if let HeapData::LongInt(li) = heap.get(*id2) {
-                        li.bits()
-                    } else {
-                        0
-                    };
-                    // Check size before computing to prevent DoS
-                    check_mult_size(a_bits, b_bits, heap.tracker())?;
-                    Ok(heap.with_two(*id1, *id2, |heap, left, right| {
-                        if let (HeapData::LongInt(a), HeapData::LongInt(b)) = (left, right) {
-                            let result = LongInt::new(a.inner() * b.inner());
-                            result.into_value(heap).map(Some)
-                        } else {
-                            Ok(None)
-                        }
-                    })?)
-                } else if is_longint2 {
-                    // sequence * LongInt - get the repeat count from LongInt
-                    let count = if let HeapData::LongInt(li) = heap.get(*id2) {
-                        longint_to_repeat_count(li)?
-                    } else {
-                        return Ok(None);
-                    };
-                    heap.mult_sequence(*id1, count)
-                } else if is_longint1 {
-                    // LongInt * sequence - get the repeat count from LongInt
-                    let count = if let HeapData::LongInt(li) = heap.get(*id1) {
-                        longint_to_repeat_count(li)?
-                    } else {
-                        return Ok(None);
-                    };
-                    heap.mult_sequence(*id2, count)
-                } else {
-                    Ok(None)
-                }
-            }
+            // Int * Ref (LongInt or sequence)
+            (Self::Int(a), Self::Ref(id)) => heap.mult_ref_by_i64(*id, *a),
+            // Ref * Int (LongInt or sequence)
+            (Self::Ref(id), Self::Int(b)) => heap.mult_ref_by_i64(*id, *b),
+            // Ref * Ref (LongInt * LongInt, sequence * LongInt, etc.)
+            (Self::Ref(id1), Self::Ref(id2)) => heap.mult_heap_values(*id1, *id2),
             (Self::Float(a), Self::Float(b)) => Ok(Some(Self::Float(a * b))),
             (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 * b))),
             (Self::Float(a), Self::Int(b)) => Ok(Some(Self::Float(a * *b as f64))),
