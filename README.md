@@ -301,14 +301,15 @@ I'll try to run through the most obvious alternatives, and why there aren't righ
 
 NOTE: all these technologies are impressive and have widespread uses, this commentary on their limitations for our use case should not be seen as a criticism. Most of these solutions were not conceived with the goal of providing an LLM sandbox, which is why they're not necessary great at it.
 
-| Tech               | Language completeness | Security     | Start latency  | Cost     | Setup complexity | File mounting  | Snapshotting |
-|--------------------|-----------------------|--------------|----------------|----------|------------------|----------------|--------------|
-| Monty              | partial               | strict       | 0.06ms         | free     | easy             | easy           | easy         |
-| Docker             | full                  | good         | 195ms          | free     | intermediate     | easy           | intermediate |
-| Pyodide            | full                  | poor         | 2800ms         | free     | intermediate     | easy           | hard         |
-| starlark-rust      | very limited          | good         | 1.7ms          | free     | easy             | not available? | impossible?  |
-| sandboxing service | full                  | strict       | 1033ms         | not free | intermediate     | hard           | intermediate |
-| YOLO Python        | full                  | non-existent | 0.1ms / 30ms   | free     | easy             | easy / scary   | hard         |
+| Tech               | Language completeness | Security     | Start latency  | FOSS       | Setup complexity | File mounting  | Snapshotting |
+|--------------------|-----------------------|--------------|----------------|------------|------------------|----------------|--------------|
+| Monty              | partial               | strict       | 0.06ms         | free / OSS | easy             | easy           | easy         |
+| Docker             | full                  | good         | 195ms          | free / OSS | intermediate     | easy           | intermediate |
+| Pyodide            | full                  | poor         | 2800ms         | free / OSS | intermediate     | easy           | hard         |
+| starlark-rust      | very limited          | good         | 1.7ms          | free / OSS | easy             | not available? | impossible?  |
+| WASI / Wasmer      | partial, almost full  | strict       | 66ms           | free *     | intermediate     | easy           | intermediate |
+| sandboxing service | full                  | strict       | 1033ms         | not free   | intermediate     | hard           | intermediate |
+| YOLO Python        | full                  | non-existent | 0.1ms / 30ms   | free / OSS | easy             | easy / scary   | hard         |
 
 See [./scripts/startup_performance.py](scripts/startup_performance.py) for the script used to calculate the startup performance numbers.
 
@@ -352,6 +353,18 @@ See [starlark-rust](https://github.com/facebook/starlark-rust).
 - **File mounting**: No file handling by design AFAIK?
 - **Snapshotting**: Impossible AFAIK?
 
+### WASI / Wasmer
+
+Running Python in WebAssembly via [Wasmer](https://wasmer.io/).
+
+- **Language completeness**: Full CPython, pure Python external packages work via mounting, external packages with C bindings don't work
+- **Security**: In principle WebAssembly should provide strong sandboxing guarantees.
+- **Start latency**: The [wasmer](https://pypi.org/project/wasmer/) python package hasn't been updated for 3 years and I couldn't find docs on calling Python in wasmer from Python, so I called it via subprocess. Start latency was 66ms.
+- **Setup complexity**: wasmer download is 100mb, the "python/python" package is 50mb.
+- **FOSS**: I marked this as "free *" since the cost is zero but not everything seems to be open source. As of 2026-02-10 the [`python/python` wasmer package](https://wasmer.io/python/python) package has no readme, no license, no source link and no indication of how it's built, the recently uploaded versions show size as "0B" although the download is ~50MB - the build process for the Python binary is not clear and transparent. _(If I'm wrong here, please create an issue to correct correct me)_
+- **File mounting**: Supported
+- **Snapshotting**: Supported via journaling
+
 ### sandboxing service
 
 Services like [Daytona](https://daytona.io), [E2B](https://e2b.dev), [Modal](https://modal.com).
@@ -361,7 +374,7 @@ There are similar challenges, more setup complexity but lower network latency fo
 - **Language completeness**: Full CPython with any library
 - **Security**: Professionally managed container isolation
 - **Start latency**: Network round-trip and container startup time. I got ~1s cold start time with Daytona EU from London, Daytona advertise sub 90ms latency, presumably that's for an existing container, not clear if it includes network latency
-- **Cost**: Pay per execution or compute time
+- **FOSS**: Pay per execution or compute time, some implementations are open source
 - **Setup complexity**: API integration, auth tokens - fine for startups but generally a non-start for enterprises
 - **File mounting**: Upload/download via API calls
 - **Snapshotting**: Possible with durable execution solutions like Temporal, also the services offer some solutions for this, I think based con docker containers

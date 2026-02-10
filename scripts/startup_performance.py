@@ -84,6 +84,20 @@ def run_daytona():
     print(f'Daytona cold start time: {(diff * 1000):.3f} milliseconds')
 
 
+def run_wasmer():
+    # requires wasmer to be installed, see https://docs.wasmer.io/install
+    start = time.perf_counter()
+    result = subprocess.run(
+        ['wasmer', 'run', 'python/python', '--', '-c', f'print({code})'],
+        capture_output=True,
+        text=True,
+    )
+    diff = time.perf_counter() - start
+    output = result.stdout.strip()
+    assert output == '2', f'Unexpected result: {output!r}'
+    print(f'Wasmer cold start time: {(diff * 1000):.3f} milliseconds')
+
+
 def run_subprocess_python():
     start = time.perf_counter()
     result = subprocess.run(
@@ -111,5 +125,6 @@ if __name__ == '__main__':
     run_docker()
     run_starlark()
     run_daytona()
+    run_wasmer()
     run_subprocess_python()
     run_exec_python()
