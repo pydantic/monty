@@ -208,7 +208,7 @@ impl PyTrait for Tuple {
         if self.items.len() != other.items.len() {
             return Ok(false);
         }
-        guard.increase()?;
+        guard.increase_err()?;
         let result = self.py_eq_inner(other, heap, guard, interns);
         guard.decrease();
         result

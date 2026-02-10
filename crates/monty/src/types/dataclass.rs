@@ -237,7 +237,7 @@ impl PyTrait for Dataclass {
         interns: &Interns,
     ) -> std::fmt::Result {
         // Check depth limit before recursing
-        if guard.increase().is_err() {
+        if !guard.increase() {
             return f.write_str("...");
         }
 

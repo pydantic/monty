@@ -426,7 +426,7 @@ impl PyTrait for HeapData {
                 if nt_items.len() != t_items.len() {
                     return Ok(false);
                 }
-                guard.increase()?;
+                guard.increase_err()?;
                 for (a, b) in nt_items.iter().zip(t_items.iter()) {
                     if !a.py_eq(b, heap, guard, interns)? {
                         guard.decrease();

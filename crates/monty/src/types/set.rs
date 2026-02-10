@@ -293,7 +293,7 @@ impl SetStorage {
             return Ok(false);
         }
 
-        guard.increase()?;
+        guard.increase_err()?;
         // Check that every element in self is in other
         for entry in &self.entries {
             if !matches!(other.contains(&entry.value, heap, interns), Ok(true)) {
@@ -433,7 +433,7 @@ impl SetStorage {
         }
 
         // Check depth limit before recursing
-        if guard.increase().is_err() {
+        if !guard.increase() {
             return f.write_str("{...}");
         }
 

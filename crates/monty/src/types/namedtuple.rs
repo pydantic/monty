@@ -191,7 +191,7 @@ impl PyTrait for NamedTuple {
         if self.items.len() != other.items.len() {
             return Ok(false);
         }
-        guard.increase()?;
+        guard.increase_err()?;
         for (i1, i2) in self.items.iter().zip(&other.items) {
             if !i1.py_eq(i2, heap, guard, interns)? {
                 guard.decrease();
@@ -233,7 +233,7 @@ impl PyTrait for NamedTuple {
         interns: &Interns,
     ) -> std::fmt::Result {
         // Check depth limit before recursing
-        if guard.increase().is_err() {
+        if !guard.increase() {
             return f.write_str("...");
         }
 

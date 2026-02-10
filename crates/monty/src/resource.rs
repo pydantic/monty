@@ -107,13 +107,23 @@ pub const MAX_DATA_RECURSION_DEPTH: u16 = 500;
 ///
 /// ```ignore
 /// let mut guard = DepthGuard::default();
-/// guard.increase()?;  // Returns Err(ResourceError::Recursion) if limit exceeded
+/// guard.increase_err()?;  // Returns Err(ResourceError::Recursion) if limit exceeded
 /// // ... recursive operation ...
 /// guard.decrease();
 /// ```
 ///
+/// For `py_repr_fmt` and similar contexts where exceeding the limit should
+/// produce a truncated representation rather than an error, use `increase()`
+/// which returns a `bool`:
+///
+/// ```ignore
+/// if !guard.increase() {
+///     return f.write_str("...");
+/// }
+/// ```
+///
 /// The guard tracks remaining depth rather than current depth, making the
-/// `increase()` check a simple decrement-and-check operation.
+/// check a simple decrement-and-check operation.
 #[derive(Debug, Clone)]
 pub struct DepthGuard {
     /// Remaining depth before limit is exceeded.
@@ -121,16 +131,33 @@ pub struct DepthGuard {
 }
 
 impl DepthGuard {
-    /// Increases recursion depth, returning error if limit exceeded.
+    /// Increases recursion depth, returning `true` if within limits, `false` if exceeded.
     ///
-    /// MUST call `decrease()` on every return path after calling this.
-    /// For complex control flow with multiple exit points, use the `*_inner` pattern
-    /// where the outer function handles `increase()/decrease()` and delegates to
-    /// an inner function for the actual implementation.
+    /// When this returns `true`, you MUST call `decrease()` on every return path.
+    /// When it returns `false`, the depth was not incremented, so `decrease()` must NOT be called.
+    ///
+    /// Use this in contexts like `py_repr_fmt` where exceeding the limit should
+    /// produce a truncated representation (e.g. `...`) rather than an error.
     #[inline]
-    pub fn increase(&mut self) -> Result<(), ResourceError> {
+    pub fn increase(&mut self) -> bool {
         if let Some(decr) = self.depth_remaining.checked_sub(1) {
             self.depth_remaining = decr;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Increases recursion depth, returning `Err(ResourceError::Recursion)` if
+    /// the limit is exceeded.
+    ///
+    /// MUST call `decrease()` on every return path after a successful call.
+    /// For complex control flow with multiple exit points, use the `*_inner` pattern
+    /// where the outer function handles `increase_err()/decrease()` and delegates to
+    /// an inner function for the actual implementation.
+    #[inline]
+    pub fn increase_err(&mut self) -> Result<(), ResourceError> {
+        if self.increase() {
             Ok(())
         } else {
             Err(ResourceError::Recursion {
@@ -140,7 +167,7 @@ impl DepthGuard {
         }
     }
 
-    /// Decreases recursion depth (must be called after `increase()`).
+    /// Decreases recursion depth (must be called after a successful `increase()` or `increase_err()`).
     ///
     /// This restores the guard's remaining depth after exiting a level of recursion.
     #[inline]

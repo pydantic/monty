@@ -317,7 +317,7 @@ impl MontyObject {
         interns: &Interns,
     ) -> Self {
         // Check depth limit before processing
-        if guard.increase().is_err() {
+        if !guard.increase() {
             return Self::Repr("<deeply nested>".to_owned());
         }
 

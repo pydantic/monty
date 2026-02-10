@@ -335,7 +335,7 @@ impl PyTrait for List {
         if self.items.len() != other.items.len() {
             return Ok(false);
         }
-        guard.increase()?;
+        guard.increase_err()?;
         let result = self.py_eq_inner(other, heap, guard, interns);
         guard.decrease();
         result
@@ -1040,7 +1040,7 @@ pub(crate) fn repr_sequence_fmt(
     interns: &Interns,
 ) -> std::fmt::Result {
     // Check depth limit before recursing
-    if guard.increase().is_err() {
+    if !guard.increase() {
         return f.write_str("...");
     }
 

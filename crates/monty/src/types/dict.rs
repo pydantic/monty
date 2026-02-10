@@ -526,7 +526,7 @@ impl PyTrait for Dict {
             return Ok(false);
         }
 
-        guard.increase()?;
+        guard.increase_err()?;
         // Check that all keys in self exist in other with equal values
         for entry in &self.entries {
             if let Ok(Some(other_v)) = other.get(&entry.key, heap, interns) {
@@ -579,7 +579,7 @@ impl PyTrait for Dict {
         }
 
         // Check depth limit before recursing
-        if guard.increase().is_err() {
+        if !guard.increase() {
             return f.write_str("{...}");
         }
 
