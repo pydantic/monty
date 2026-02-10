@@ -215,7 +215,7 @@ impl PyTrait for Dataclass {
         interns: &Interns,
     ) -> Result<bool, ResourceError> {
         // Dataclasses are equal if they have the same name and equal attrs
-        Ok(self.name != other.name && self.attrs.py_eq(&other.attrs, heap, guard, interns)?)
+        Ok(self.name == other.name && self.attrs.py_eq(&other.attrs, heap, guard, interns)?)
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
