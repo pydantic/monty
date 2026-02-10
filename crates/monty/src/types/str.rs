@@ -521,12 +521,13 @@ fn str_join(
     let mut index = 0usize;
 
     while let Some(item) = iter.for_next(heap, interns)? {
+        defer_drop!(item, heap);
         if index > 0 {
             result.push_str(separator);
         }
 
         // Check item is a string and extract its content
-        match &item {
+        match item {
             Value::InternString(id) => {
                 result.push_str(interns.get_str(*id));
             }
@@ -535,7 +536,6 @@ fn str_join(
                     result.push_str(s.as_str());
                 } else {
                     let t = item.py_type(heap);
-                    item.drop_with_heap(heap);
                     return Err(ExcType::type_error_join_item(index, t));
                 }
             }
@@ -544,7 +544,6 @@ fn str_join(
                 return Err(ExcType::type_error_join_item(index, t));
             }
         }
-        item.drop_with_heap(heap);
         index += 1;
     }
 
