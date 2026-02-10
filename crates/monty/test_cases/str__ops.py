@@ -132,3 +132,8 @@ assert s[i] == 'b', 'getitem with variable index'
 s = 'abc'
 assert s[False] == 'a', 'str getitem with False'
 assert s[True] == 'b', 'str getitem with True'
+
+# Sorting and comparisons
+assert 'a' < 'b', 'str < str'
+assert sorted('cba') == ['a', 'b', 'c'], 'sorted string'
+assert sorted(['b', 'c', 'a']) == ['a', 'b', 'c'], 'sorted list of strings'
