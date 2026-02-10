@@ -1498,7 +1498,7 @@ fn parse_bytes_split_args(
     let maxsplit_value = pos_iter.next();
 
     // Check no extra positional arguments
-    if pos_iter.next().is_some() {
+    if pos_iter.len() != 0 {
         for v in pos_iter {
             v.drop_with_heap(heap);
         }
@@ -1854,7 +1854,7 @@ fn parse_bytes_splitlines_args(
     let keepends_value = pos_iter.next();
 
     // Check no extra positional arguments
-    if pos_iter.next().is_some() {
+    if pos_iter.len() != 0 {
         for v in pos_iter {
             v.drop_with_heap(heap);
         }
@@ -2019,7 +2019,7 @@ fn parse_bytes_replace_args(
     let count_value = pos_iter.next();
 
     // Check no extra positional arguments
-    if pos_iter.next().is_some() {
+    if pos_iter.len() != 0 {
         for v in pos_iter {
             v.drop_with_heap(heap);
         }
@@ -2294,7 +2294,7 @@ fn parse_bytes_justify_args(
     let fillbyte_value = pos_iter.next();
 
     // Check no extra arguments
-    if pos_iter.next().is_some() {
+    if pos_iter.len() != 0 {
         for v in pos_iter {
             v.drop_with_heap(heap);
         }
@@ -2537,7 +2537,7 @@ fn parse_bytes_hex_args(
     let bytes_per_sep_value = pos_iter.next();
 
     // Check no extra arguments
-    if pos_iter.next().is_some() {
+    if pos_iter.len() != 0 {
         for v in pos_iter {
             v.drop_with_heap(heap);
         }

@@ -1086,7 +1086,7 @@ fn parse_search_args(
     let end_value = pos_iter.next();
 
     // Check no extra arguments
-    if pos_iter.next().is_some() {
+    if pos_iter.len() != 0 {
         // Drop remaining values
         for v in pos_iter {
             v.drop_with_heap(heap);
@@ -1156,7 +1156,7 @@ fn parse_prefix_suffix_args(
     let end_value = pos_iter.next();
 
     // Check no extra arguments
-    if pos_iter.next().is_some() {
+    if pos_iter.len() != 0 {
         // Drop remaining values
         for v in pos_iter {
             v.drop_with_heap(heap);
@@ -1509,7 +1509,7 @@ fn parse_split_args(
     let maxsplit_value = pos_iter.next();
 
     // Check no extra positional arguments
-    if pos_iter.next().is_some() {
+    if pos_iter.len() != 0 {
         for v in pos_iter {
             v.drop_with_heap(heap);
         }
@@ -1713,7 +1713,7 @@ fn parse_splitlines_args(args: ArgValues, heap: &mut Heap<impl ResourceTracker>,
     let keepends_value = pos_iter.next();
 
     // Check no extra positional arguments
-    if pos_iter.next().is_some() {
+    if pos_iter.len() != 0 {
         for v in pos_iter {
             v.drop_with_heap(heap);
         }
@@ -1889,7 +1889,7 @@ fn parse_replace_args(
     let count_value = pos_iter.next();
 
     // Check no extra positional arguments
-    if pos_iter.next().is_some() {
+    if pos_iter.len() != 0 {
         for v in pos_iter {
             v.drop_with_heap(heap);
         }
@@ -2036,7 +2036,7 @@ fn parse_justify_args(
     let fillchar_value = pos_iter.next();
 
     // Check no extra arguments
-    if pos_iter.next().is_some() {
+    if pos_iter.len() != 0 {
         for v in pos_iter {
             v.drop_with_heap(heap);
         }
