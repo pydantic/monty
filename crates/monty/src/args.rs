@@ -197,8 +197,8 @@ impl ArgValues {
     pub fn into_parts(self) -> (ArgPosIter, KwargsValues) {
         match self {
             Self::Empty => (ArgPosIter::Empty, KwargsValues::Empty),
-            Self::One(v) => (ArgPosIter::One(Some(v)), KwargsValues::Empty),
-            Self::Two(v1, v2) => (ArgPosIter::Two(Some(v1), Some(v2)), KwargsValues::Empty),
+            Self::One(v) => (ArgPosIter::One(v), KwargsValues::Empty),
+            Self::Two(v1, v2) => (ArgPosIter::Two([v1, v2]), KwargsValues::Empty),
             Self::Kwargs(kwargs) => (ArgPosIter::Empty, kwargs),
             Self::ArgsKargs { args, kwargs } => (ArgPosIter::Vec(args.into_iter()), kwargs),
         }
@@ -208,8 +208,8 @@ impl ArgValues {
     pub fn into_pos_only(self, method_name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<ArgPosIter> {
         match self {
             Self::Empty => Ok(ArgPosIter::Empty),
-            Self::One(v) => Ok(ArgPosIter::One(Some(v))),
-            Self::Two(v1, v2) => Ok(ArgPosIter::Two(Some(v1), Some(v2))),
+            Self::One(v) => Ok(ArgPosIter::One(v)),
+            Self::Two(v1, v2) => Ok(ArgPosIter::Two([v1, v2])),
             Self::Kwargs(kwargs) => {
                 if kwargs.is_empty() {
                     Ok(ArgPosIter::Empty)
@@ -305,9 +305,21 @@ impl<T: ResourceTracker> DropWithHeap<T> for ArgValues {
 /// the caller is responsible for either using it or calling `drop_with_heap()` on it.
 pub(crate) enum ArgPosIter {
     Empty,
-    One(Option<Value>),
-    Two(Option<Value>, Option<Value>),
+    One(Value),
+    Two([Value; 2]),
     Vec(IntoIter<Value>),
+}
+
+impl ArgPosIter {
+    /// Returns a slice of the remaining positional arguments without consuming them.
+    pub fn as_slice(&self) -> &[Value] {
+        match self {
+            Self::Empty => &[],
+            Self::One(v) => std::slice::from_ref(v),
+            Self::Two(array) => array.as_slice(),
+            Self::Vec(iter) => iter.as_slice(),
+        }
+    }
 }
 
 impl Iterator for ArgPosIter {
@@ -317,8 +329,19 @@ impl Iterator for ArgPosIter {
     fn next(&mut self) -> Option<Value> {
         match self {
             Self::Empty => None,
-            Self::One(v) => v.take(),
-            Self::Two(v1, v2) => v1.take().or_else(|| v2.take()),
+            Self::One(_) => {
+                let Self::One(v) = std::mem::replace(self, Self::Empty) else {
+                    unreachable!()
+                };
+                Some(v)
+            }
+            Self::Two(_) => {
+                let Self::Two([v1, v2]) = std::mem::replace(self, Self::Empty) else {
+                    unreachable!()
+                };
+                *self = Self::One(v2);
+                Some(v1)
+            }
             Self::Vec(iter) => iter.next(),
         }
     }
@@ -327,14 +350,8 @@ impl Iterator for ArgPosIter {
     fn size_hint(&self) -> (usize, Option<usize>) {
         match self {
             Self::Empty => (0, Some(0)),
-            Self::One(v) => {
-                let n = usize::from(v.is_some());
-                (n, Some(n))
-            }
-            Self::Two(v1, v2) => {
-                let n = usize::from(v1.is_some()) + usize::from(v2.is_some());
-                (n, Some(n))
-            }
+            Self::One(_) => (1, Some(1)),
+            Self::Two(_) => (2, Some(2)),
             Self::Vec(iter) => iter.size_hint(),
         }
     }
@@ -346,11 +363,8 @@ impl<T: ResourceTracker> DropWithHeap<T> for ArgPosIter {
     fn drop_with_heap(self, heap: &mut Heap<T>) {
         match self {
             Self::Empty => {}
-            Self::One(v) => v.drop_with_heap(heap),
-            Self::Two(v1, v2) => {
-                v1.drop_with_heap(heap);
-                v2.drop_with_heap(heap);
-            }
+            Self::One(v1) => v1.drop_with_heap(heap),
+            Self::Two(v12) => v12.drop_with_heap(heap),
             Self::Vec(iter) => iter.drop_with_heap(heap),
         }
     }

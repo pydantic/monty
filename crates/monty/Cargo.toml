@@ -41,7 +41,7 @@ ref-count-return = []
 ref-count-panic = []
 
 [dev-dependencies]
-pyo3 = { version = "0.27.2", features = ["auto-initialize"] }
+pyo3 = { version = "0.28", features = ["auto-initialize"] }
 # Use codspeed-criterion-compat for CI benchmarks, real criterion for local flamegraphs
 codspeed-criterion-compat = "4.2.1"
 criterion = "0.5"

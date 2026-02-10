@@ -11,7 +11,7 @@ use smallvec::smallvec;
 use super::{List, MontyIter, PyTrait, allocate_tuple};
 use crate::{
     args::{ArgValues, KwargsValues},
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings},
@@ -770,172 +770,101 @@ fn dict_update(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
-    let (pos, kwargs) = args.into_parts();
+    let (pos_iter, kwargs) = args.into_parts();
+    defer_drop_mut!(pos_iter, heap);
     let mut kwargs_guard = HeapGuard::new(kwargs, heap);
 
-    let mut pos_iter = pos;
-    let other = pos_iter.next();
-
-    // Check no extra positional arguments
-    if let Some(extra) = pos_iter.next() {
-        extra.drop_with_heap(kwargs_guard.heap());
-        for v in pos_iter {
-            v.drop_with_heap(kwargs_guard.heap());
-        }
-        if let Some(v) = other {
-            v.drop_with_heap(kwargs_guard.heap());
-        }
-        return Err(ExcType::type_error_at_most("dict.update", 1, 2));
-    }
-
-    // Process positional argument if present
-    let Some(other_value) = other else {
+    let Some(other_value) = pos_iter.next() else {
         // No positional argument - just process kwargs
         let (kwargs, heap) = kwargs_guard.into_parts();
         return dict_update_from_kwargs(dict, kwargs, heap, interns);
     };
+    let mut other_value_guard = HeapGuard::new(other_value, kwargs_guard.heap());
+    let (other_value, heap) = other_value_guard.as_parts();
+
+    // Check no extra positional arguments
+    if pos_iter.len() != 0 {
+        return Err(ExcType::type_error_at_most("dict.update", 1, 2));
+    }
 
     // Check if it's a dict first
-    if let Value::Ref(id) = &other_value {
-        let heap = kwargs_guard.heap();
-        let is_dict = matches!(heap.get(*id), HeapData::Dict(_));
-        if is_dict {
-            // Get key-value pairs from the source dict
-            let pairs: Vec<(Value, Value)> = {
-                let HeapData::Dict(src_dict) = heap.get(*id) else {
-                    unreachable!()
-                };
-                src_dict
-                    .iter()
-                    .map(|(k, v)| (k.copy_for_extend(), v.copy_for_extend()))
-                    .collect()
-            };
+    if let Value::Ref(id) = other_value
+        && let HeapData::Dict(src_dict) = heap.get(*id)
+    {
+        // Get key-value pairs from the source dict
+        let pairs: Vec<(Value, Value)> = {
+            src_dict
+                .iter()
+                .map(|(k, v)| (k.copy_for_extend(), v.copy_for_extend()))
+                .collect()
+        };
 
-            // Increment refcounts after releasing the borrow
-            for (k, v) in &pairs {
-                if let Value::Ref(key_id) = k {
-                    heap.inc_ref(*key_id);
-                }
-                if let Value::Ref(val_id) = v {
-                    heap.inc_ref(*val_id);
-                }
+        // Increment refcounts after releasing the borrow
+        for (k, v) in &pairs {
+            if let Value::Ref(key_id) = k {
+                heap.inc_ref(*key_id);
             }
-
-            // Now set each pair
-            for (key, value) in pairs {
-                if let Some(old_value) = dict.set(key, value, heap, interns)? {
-                    old_value.drop_with_heap(heap);
-                }
+            if let Value::Ref(val_id) = v {
+                heap.inc_ref(*val_id);
             }
-
-            other_value.drop_with_heap(heap);
-            // Process kwargs after the dict update
-            let (kwargs, heap) = kwargs_guard.into_parts();
-            return dict_update_from_kwargs(dict, kwargs, heap, interns);
         }
+
+        // Now set each pair
+        for (key, value) in pairs {
+            if let Some(old_value) = dict.set(key, value, heap, interns)? {
+                old_value.drop_with_heap(heap);
+            }
+        }
+
+        // Process kwargs after the dict update
+        drop(other_value_guard);
+        let (kwargs, heap) = kwargs_guard.into_parts();
+        return dict_update_from_kwargs(dict, kwargs, heap, interns);
     }
 
     // Try as an iterable of pairs
+    let other_value = other_value_guard.into_inner();
     let heap = kwargs_guard.heap();
-    let mut iter = MontyIter::new(other_value, heap, interns)?;
+    let iter = MontyIter::new(other_value, heap, interns)?;
+    let mut iter_guard = HeapGuard::new(iter, heap);
+    let (iter, heap) = iter_guard.as_parts_mut();
 
-    loop {
-        let item = match iter.for_next(heap, interns) {
-            Ok(Some(i)) => i,
-            Ok(None) => break,
-            Err(e) => {
-                iter.drop_with_heap(heap);
-                return Err(e);
-            }
-        };
-
+    while let Some(item) = iter.for_next(heap, interns)? {
         // Each item should be a pair (iterable of 2 elements)
-        let mut pair_iter = match MontyIter::new(item, heap, interns) {
-            Ok(pi) => pi,
-            Err(e) => {
-                iter.drop_with_heap(heap);
-                return Err(e);
-            }
-        };
+        let pair_iter = MontyIter::new(item, heap, interns)?;
+        defer_drop_mut!(pair_iter, heap);
 
-        let key = match pair_iter.for_next(heap, interns) {
-            Ok(Some(k)) => k,
-            Ok(None) => {
-                pair_iter.drop_with_heap(heap);
-                iter.drop_with_heap(heap);
-                return Err(ExcType::type_error(
-                    "dictionary update sequence element has length 0; 2 is required",
-                ));
-            }
-            Err(e) => {
-                pair_iter.drop_with_heap(heap);
-                iter.drop_with_heap(heap);
-                return Err(e);
-            }
+        let Some(key) = pair_iter.for_next(heap, interns)? else {
+            return Err(ExcType::type_error(
+                "dictionary update sequence element has length 0; 2 is required",
+            ));
         };
+        let mut key_guard = HeapGuard::new(key, heap);
 
-        let value = match pair_iter.for_next(heap, interns) {
-            Ok(Some(v)) => v,
-            Ok(None) => {
-                key.drop_with_heap(heap);
-                pair_iter.drop_with_heap(heap);
-                iter.drop_with_heap(heap);
-                return Err(ExcType::type_error(
-                    "dictionary update sequence element has length 1; 2 is required",
-                ));
-            }
-            Err(e) => {
-                key.drop_with_heap(heap);
-                pair_iter.drop_with_heap(heap);
-                iter.drop_with_heap(heap);
-                return Err(e);
-            }
+        let Some(value) = pair_iter.for_next(key_guard.heap(), interns)? else {
+            return Err(ExcType::type_error(
+                "dictionary update sequence element has length 1; 2 is required",
+            ));
         };
+        let mut value_guard = HeapGuard::new(value, key_guard.heap());
 
-        // Check for extra elements - must drop the first extra element too!
-        match pair_iter.for_next(heap, interns) {
-            Ok(Some(first_extra)) => {
-                first_extra.drop_with_heap(heap);
-                key.drop_with_heap(heap);
-                value.drop_with_heap(heap);
-                // Drain remaining elements
-                loop {
-                    match pair_iter.for_next(heap, interns) {
-                        Ok(Some(extra)) => extra.drop_with_heap(heap),
-                        Ok(None) => break,
-                        Err(_) => break, // Error while draining - just stop
-                    }
-                }
-                pair_iter.drop_with_heap(heap);
-                iter.drop_with_heap(heap);
-                return Err(ExcType::type_error(
-                    "dictionary update sequence element has length > 2; 2 is required",
-                ));
-            }
-            Ok(None) => {}
-            Err(e) => {
-                key.drop_with_heap(heap);
-                value.drop_with_heap(heap);
-                pair_iter.drop_with_heap(heap);
-                iter.drop_with_heap(heap);
-                return Err(e);
-            }
+        if let Some(extra) = pair_iter.for_next(value_guard.heap(), interns)? {
+            extra.drop_with_heap(value_guard.heap());
+            return Err(ExcType::type_error(
+                "dictionary update sequence element has length > 2; 2 is required",
+            ));
         }
-        pair_iter.drop_with_heap(heap);
 
-        // Note: key and value are consumed by dict.set
-        match dict.set(key, value, heap, interns) {
-            Ok(Some(old_value)) => old_value.drop_with_heap(heap),
-            Ok(None) => {}
-            Err(e) => {
-                iter.drop_with_heap(heap);
-                return Err(e);
-            }
+        let value = value_guard.into_inner();
+        let key = key_guard.into_inner();
+
+        if let Some(old_value) = dict.set(key, value, heap, interns)? {
+            old_value.drop_with_heap(heap);
         }
     }
 
-    iter.drop_with_heap(heap);
     // Process kwargs after the iterable update
+    drop(iter_guard);
     let (kwargs, heap) = kwargs_guard.into_parts();
     dict_update_from_kwargs(dict, kwargs, heap, interns)
 }

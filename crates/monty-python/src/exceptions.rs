@@ -28,7 +28,7 @@ use crate::dataclass::get_frozen_instance_error;
 ///
 /// This is the parent class for both `MontySyntaxError` and `MontyRuntimeError`.
 /// Catching `MontyError` will catch any exception raised by Monty.
-#[pyclass(extends=exceptions::PyException, module="pydantic_monty", subclass)]
+#[pyclass(extends=exceptions::PyException, module="pydantic_monty", subclass, skip_from_py_object)]
 #[derive(Clone)]
 pub struct MontyError {
     /// The underlying Monty exception.
@@ -98,7 +98,7 @@ impl MontyError {
 /// Raised when Python code has syntax errors or cannot be parsed by Monty.
 ///
 /// Inherits from `MontyError`. The inner exception is always a `SyntaxError`.
-#[pyclass(extends=MontyError, module="pydantic_monty")]
+#[pyclass(extends=MontyError, module="pydantic_monty", skip_from_py_object)]
 #[derive(Clone)]
 pub struct MontySyntaxError;
 
@@ -293,7 +293,7 @@ impl MontyRuntimeError {
 ///
 /// Contains all the information needed to display a traceback line:
 /// the file location, function name, and optional source code preview.
-#[pyclass(name = "Frame", module = "pydantic_monty", frozen)]
+#[pyclass(name = "Frame", module = "pydantic_monty", frozen, skip_from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyFrame {
     /// The filename where the code is located.
