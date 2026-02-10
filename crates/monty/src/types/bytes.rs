@@ -1668,7 +1668,7 @@ fn parse_bytes_splitlines_args(
     defer_drop_mut!(keepends_value, heap);
 
     // Check no extra positional arguments
-    if pos_iter.len() > 0 {
+    if pos_iter.len() != 0 {
         return Err(ExcType::type_error_at_most("bytes.splitlines", 1, 2));
     }
 
