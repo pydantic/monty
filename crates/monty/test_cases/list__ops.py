@@ -350,3 +350,22 @@ assert lst == ['X', 'y', 'z'], 'setitem with False'
 lst = ['x', 'y', 'z']
 lst[True] = 'Y'
 assert lst == ['x', 'Y', 'z'], 'setitem with True'
+
+# === list.remove() with nested elements ===
+x = [1, 2]
+lst = [x, [3, 4], x]
+lst.remove([1, 2])
+assert lst == [[3, 4], [1, 2]], 'remove nested list element'
+
+# === list.index() with nested elements ===
+lst = [[3], [1, 2], [4]]
+assert lst.index([1, 2]) == 1, 'index with nested list'
+
+lst = [[1], [2], [1]]
+assert lst.index([1]) == 0, 'index nested finds first'
+
+# === list.count() with nested elements ===
+lst = [[1, 2], [3], [1, 2], 4, [1, 2]]
+assert lst.count([1, 2]) == 3, 'count nested list elements'
+assert lst.count([3]) == 1, 'count single nested occurrence'
+assert lst.count([99]) == 0, 'count nested not found'

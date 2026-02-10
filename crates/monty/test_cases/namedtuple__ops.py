@@ -26,3 +26,10 @@ assert vi != 42, 'namedtuple not equal to int'
 assert vi != 'hello', 'namedtuple not equal to str'
 assert vi != None, 'namedtuple not equal to None'
 assert vi != [3, 14], 'namedtuple not equal to list'
+
+# === repr ===
+r = repr(vi)
+assert 'sys.version_info(' in r, 'namedtuple repr has type name'
+assert 'major=' in r, 'namedtuple repr has field names'
+assert 'minor=' in r, 'namedtuple repr has minor field'
+assert r.endswith(')'), 'namedtuple repr ends with paren'

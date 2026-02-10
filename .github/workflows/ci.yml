@@ -160,7 +160,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [string_input_panic, tokens_input_panic]
+        target:
+          - tokens_input_panic
+          # disable until https://github.com/astral-sh/ruff/issues/23198 is fixed
+          # - string_input_panic
 
     steps:
       - uses: actions/checkout@v6
