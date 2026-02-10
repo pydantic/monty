@@ -340,7 +340,7 @@ pub fn call_bytes_method(
     interns: &Interns,
 ) -> RunResult<Value> {
     let Some(method) = StaticStrings::from_string_id(method_id) else {
-        defer_drop!(args, heap);
+        args.drop_with_heap(heap);
         return Err(ExcType::attribute_error(Type::Bytes, interns.get_str(method_id)));
     };
     call_bytes_method_impl(bytes, method, args, heap, interns)

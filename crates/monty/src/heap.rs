@@ -1859,11 +1859,13 @@ impl<T: ResourceTracker> Drop for Heap<T> {
 
 /// This trait represents types that contain a `Heap`; it allows for more complex structures
 /// to participate in the `HeapGuard` pattern.
-pub(crate) trait ContainsHeap<T: ResourceTracker> {
-    fn heap_mut(&mut self) -> &mut Heap<T>;
+pub(crate) trait ContainsHeap {
+    type ResourceTracker: ResourceTracker;
+    fn heap_mut(&mut self) -> &mut Heap<Self::ResourceTracker>;
 }
 
-impl<T: ResourceTracker> ContainsHeap<T> for Heap<T> {
+impl<T: ResourceTracker> ContainsHeap for Heap<T> {
+    type ResourceTracker = T;
     #[inline]
     fn heap_mut(&mut self) -> &mut Self {
         self
@@ -1884,48 +1886,56 @@ impl<T: ResourceTracker> ContainsHeap<T> for Heap<T> {
 ///
 /// Implemented for `Value`, `Option<V>`, `Vec<Value>`, `ArgValues`, iterators, and other
 /// types that hold heap references.
-pub(crate) trait DropWithHeap<T: ResourceTracker> {
+pub(crate) trait DropWithHeap {
     /// Consume `self` and decrement reference counts for any heap-allocated values contained within.
-    fn drop_with_heap(self, heap: &mut Heap<T>);
+    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>);
 }
 
-impl<T: ResourceTracker> DropWithHeap<T> for Value {
+impl DropWithHeap for Value {
     #[inline]
-    fn drop_with_heap(self, heap: &mut Heap<T>) {
+    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
         Self::drop_with_heap(self, heap);
     }
 }
 
-impl<T: ResourceTracker, U: DropWithHeap<T>> DropWithHeap<T> for Option<U> {
+impl<U: DropWithHeap> DropWithHeap for Option<U> {
     #[inline]
-    fn drop_with_heap(self, heap: &mut Heap<T>) {
+    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
         if let Some(value) = self {
             value.drop_with_heap(heap);
         }
     }
 }
 
-impl<T: ResourceTracker> DropWithHeap<T> for Vec<Value> {
-    fn drop_with_heap(self, heap: &mut Heap<T>) {
+impl<U: DropWithHeap> DropWithHeap for Vec<U> {
+    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
         for value in self {
             value.drop_with_heap(heap);
         }
     }
 }
 
-impl<T: ResourceTracker> DropWithHeap<T> for vec::IntoIter<Value> {
-    fn drop_with_heap(self, heap: &mut Heap<T>) {
+impl<U: DropWithHeap> DropWithHeap for vec::IntoIter<U> {
+    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
         for value in self {
             value.drop_with_heap(heap);
         }
     }
 }
 
-impl<T: ResourceTracker, const N: usize> DropWithHeap<T> for [Value; N] {
-    fn drop_with_heap(self, heap: &mut Heap<T>) {
+impl<const N: usize> DropWithHeap for [Value; N] {
+    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
         for value in self {
             value.drop_with_heap(heap);
         }
+    }
+}
+
+impl<U: DropWithHeap, V: DropWithHeap> DropWithHeap for (U, V) {
+    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
+        let (left, right) = self;
+        left.drop_with_heap(heap);
+        right.drop_with_heap(heap);
     }
 }
 
@@ -1944,21 +1954,19 @@ impl<T: ResourceTracker, const N: usize> DropWithHeap<T> for [Value; N] {
 /// value is dropped at scope exit. Use `HeapGuard` directly when you need to conditionally
 /// reclaim the value (e.g. push it back onto the stack on success) or need mutable access
 /// to both the value and heap through [`as_parts_mut`](Self::as_parts_mut).
-pub(crate) struct HeapGuard<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> {
+pub(crate) struct HeapGuard<'a, H: ContainsHeap, V: DropWithHeap> {
     // manually dropped because it needs to be dropped by move.
     value: ManuallyDrop<V>,
     heap: &'a mut H,
-    _tracker: std::marker::PhantomData<T>,
 }
 
-impl<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> HeapGuard<'a, T, H, V> {
+impl<'a, H: ContainsHeap, V: DropWithHeap> HeapGuard<'a, H, V> {
     /// Creates a new `HeapGuard` for the given value and heap.
     #[inline]
     pub fn new(value: V, heap: &'a mut H) -> Self {
         Self {
             value: ManuallyDrop::new(value),
             heap,
-            _tracker: std::marker::PhantomData,
         }
     }
 
@@ -2009,7 +2017,7 @@ impl<'a, T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> HeapGuard<'
     }
 }
 
-impl<T: ResourceTracker, H: ContainsHeap<T>, V: DropWithHeap<T>> Drop for HeapGuard<'_, T, H, V> {
+impl<H: ContainsHeap, V: DropWithHeap> Drop for HeapGuard<'_, H, V> {
     fn drop(&mut self) {
         // SAFETY: [DH] - value is never manually dropped until this point
         unsafe { ManuallyDrop::take(&mut self.value) }.drop_with_heap(self.heap.heap_mut());
