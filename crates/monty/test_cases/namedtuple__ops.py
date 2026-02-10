@@ -29,7 +29,6 @@ assert vi != [3, 14], 'namedtuple not equal to list'
 
 # === repr ===
 r = repr(vi)
-assert 'sys.version_info(' in r, 'namedtuple repr has type name'
-assert 'major=' in r, 'namedtuple repr has field names'
-assert 'minor=' in r, 'namedtuple repr has minor field'
-assert r.endswith(')'), 'namedtuple repr ends with paren'
+assert r.startswith('sys.version_info(major='), f'namedtuple repr starts with type name, {r!r}'
+assert ', minor=' in r, f'namedtuple repr has minor field, {r!r}'
+assert r.endswith(')'), f'namedtuple repr ends with paren, {r!r}'
