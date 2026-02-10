@@ -257,7 +257,7 @@ impl PyTrait for Value {
         &self,
         other: &Self,
         heap: &mut Heap<impl ResourceTracker>,
-        _guard: &mut DepthGuard,
+        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> Result<Option<Ordering>, ResourceError> {
         // py_cmp currently only handles non-recursive types (numbers, strings, bytes)
@@ -268,8 +268,10 @@ impl PyTrait for Value {
             (Self::Float(s), Self::Float(o)) => Ok(s.partial_cmp(o)),
             (Self::Int(s), Self::Float(o)) => Ok((*s as f64).partial_cmp(o)),
             (Self::Float(s), Self::Int(o)) => Ok(s.partial_cmp(&(*o as f64))),
-            (Self::Bool(s), _) => Ok(Self::Int(i64::from(*s)).py_cmp_nonrecursive(other, heap, interns)),
-            (_, Self::Bool(s)) => Ok(self.py_cmp_nonrecursive(&Self::Int(i64::from(*s)), heap, interns)),
+            // Bool promotion: convert to Int and re-dispatch. Recursion is bounded
+            // to at most 2 levels (Bool→Int, then Int matches directly above).
+            (Self::Bool(s), _) => Self::Int(i64::from(*s)).py_cmp(other, heap, guard, interns),
+            (_, Self::Bool(s)) => self.py_cmp(&Self::Int(i64::from(*s)), heap, guard, interns),
             // Int vs LongInt comparison
             (Self::Int(a), Self::Ref(id)) => {
                 if let HeapData::LongInt(li) = heap.get(*id) {
@@ -1462,62 +1464,6 @@ impl PyTrait for Value {
 }
 
 impl Value {
-    /// Non-recursive helper for `py_cmp` to avoid infinite recursion when
-    /// converting booleans to integers. Does not take a guard parameter.
-    ///
-    /// This is used internally by `py_cmp` when comparing bool values, which
-    /// need to be promoted to integers for comparison.
-    fn py_cmp_nonrecursive(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> Option<Ordering> {
-        match (self, other) {
-            (Self::Int(s), Self::Int(o)) => s.partial_cmp(o),
-            (Self::Float(s), Self::Float(o)) => s.partial_cmp(o),
-            (Self::Int(s), Self::Float(o)) => (*s as f64).partial_cmp(o),
-            (Self::Float(s), Self::Int(o)) => s.partial_cmp(&(*o as f64)),
-            // Int vs LongInt comparison
-            (Self::Int(a), Self::Ref(id)) => {
-                if let HeapData::LongInt(li) = heap.get(*id) {
-                    BigInt::from(*a).partial_cmp(li.inner())
-                } else {
-                    None
-                }
-            }
-            // LongInt vs Int comparison
-            (Self::Ref(id), Self::Int(b)) => {
-                if let HeapData::LongInt(li) = heap.get(*id) {
-                    li.inner().partial_cmp(&BigInt::from(*b))
-                } else {
-                    None
-                }
-            }
-            // LongInt vs LongInt comparison
-            (Self::Ref(id1), Self::Ref(id2)) => {
-                let is_longint1 = matches!(heap.get(*id1), HeapData::LongInt(_));
-                let is_longint2 = matches!(heap.get(*id2), HeapData::LongInt(_));
-                if is_longint1 && is_longint2 {
-                    heap.with_two(*id1, *id2, |_heap, left, right| {
-                        if let (HeapData::LongInt(a), HeapData::LongInt(b)) = (left, right) {
-                            a.inner().partial_cmp(b.inner())
-                        } else {
-                            None
-                        }
-                    })
-                } else {
-                    None
-                }
-            }
-            (Self::InternString(s1), Self::InternString(s2)) => interns.get_str(*s1).partial_cmp(interns.get_str(*s2)),
-            (Self::InternBytes(b1), Self::InternBytes(b2)) => {
-                interns.get_bytes(*b1).partial_cmp(interns.get_bytes(*b2))
-            }
-            _ => None,
-        }
-    }
-
     /// Returns a stable, unique identifier for this value.
     ///
     /// Should match Python's `id()` function conceptually.
