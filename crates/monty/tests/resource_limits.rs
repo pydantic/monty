@@ -518,6 +518,28 @@ fn bigint_pow_memory_limit() {
     );
 }
 
+/// Test that pow with huge exponents is rejected even when the size estimate overflows u64.
+///
+/// This catches a bug where `estimate_pow_bytes` returned `None` on u64 overflow,
+/// and the `if let Some(estimated)` pattern silently skipped the check.
+#[test]
+fn pow_overflowing_estimate_rejected() {
+    // base ~63 bits, exp ~62 bits: estimated result bits = 63 * 3962939411543162624 overflows u64
+    let code = "-7234189268083315611 ** 3962939411543162624";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(1_000_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_err(), "pow with overflowing estimate should be rejected");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
+    );
+}
+
 /// Test that large left shift operations are rejected by memory limits.
 #[test]
 fn bigint_lshift_memory_limit() {
@@ -840,6 +862,45 @@ fn int_times_string_memory_limit() {
     let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
 
     assert!(result.is_err(), "int * str should be rejected");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
+    );
+}
+
+/// Test that `bigint * bytes` (LongInt on left) is rejected by the pre-check.
+#[test]
+fn longint_times_bytes_memory_limit() {
+    // i64::MAX + 1 = 9223372036854775808, which is a LongInt but fits in usize on 64-bit.
+    // Multiplied by 1-byte bytes literal, this would be ~9.2 exabytes.
+    let code = "9223372036854775808 * b'x'";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_err(), "bigint * bytes should be rejected");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
+    );
+}
+
+/// Test that `bigint * str` (LongInt on left) is rejected by the pre-check.
+#[test]
+fn longint_times_string_memory_limit() {
+    // i64::MAX + 1 = 9223372036854775808, which is a LongInt but fits in usize on 64-bit.
+    let code = "9223372036854775808 * 'x'";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_err(), "bigint * str should be rejected");
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
     assert!(

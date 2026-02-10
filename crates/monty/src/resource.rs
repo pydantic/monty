@@ -16,18 +16,66 @@ use crate::{
 /// the allocation check can catch them.
 pub const LARGE_RESULT_THRESHOLD: usize = 100_000;
 
-/// Pre-checks that a repeat/multiplication operation won't exceed resource limits
-/// before the allocation actually happens.
+/// Pre-checks that a sequence repeat won't exceed resource limits before allocating.
 ///
 /// This prevents DoS via expressions like `'x' * 999_999_999` or `b'ab' * huge_int`
-/// by estimating the result size and checking against the resource tracker. Only
-/// performs the check when the estimated size exceeds `LARGE_RESULT_THRESHOLD`.
+/// by estimating the result size and checking against the resource tracker.
 pub fn check_repeat_size(item_len: usize, count: usize, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
-    let estimated_size = item_len.saturating_mul(count);
-    if estimated_size > LARGE_RESULT_THRESHOLD {
-        tracker.check_large_result(estimated_size)?;
+    check_estimated_size(item_len.saturating_mul(count), tracker)
+}
+
+/// Pre-checks that `base ** exponent` won't exceed resource limits before computing.
+///
+/// The result of `base ** exp` has approximately `base_bits * exp` bits.
+/// For bases with 0 or 1 significant bits (0, 1, -1), the result is always
+/// small regardless of exponent, so the check is skipped.
+pub fn check_pow_size(base_bits: u64, exponent: u64, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
+    // 0**n = 0, 1**n = 1, (-1)**n = ±1 — always small
+    if base_bits <= 1 {
+        return Ok(());
+    }
+    check_estimated_size(estimate_bits_to_bytes(base_bits.saturating_mul(exponent)), tracker)
+}
+
+/// Pre-checks that an integer multiplication won't exceed resource limits.
+///
+/// The result of multiplying two numbers has at most `a_bits + b_bits` bits.
+pub fn check_mult_size(a_bits: u64, b_bits: u64, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
+    check_estimated_size(estimate_bits_to_bytes(a_bits.saturating_add(b_bits)), tracker)
+}
+
+/// Pre-checks that a left shift won't exceed resource limits.
+///
+/// The result of `value << shift` has approximately `value_bits + shift` bits.
+/// For zero values the result is always zero, so the check is skipped.
+pub fn check_lshift_size(
+    value_bits: u64,
+    shift_amount: u64,
+    tracker: &impl ResourceTracker,
+) -> Result<(), ResourceError> {
+    if value_bits == 0 {
+        return Ok(());
+    }
+    check_estimated_size(estimate_bits_to_bytes(value_bits.saturating_add(shift_amount)), tracker)
+}
+
+/// Checks an estimated result size against the resource tracker.
+///
+/// Only calls the tracker when the estimate exceeds `LARGE_RESULT_THRESHOLD`
+/// to avoid overhead on small operations.
+fn check_estimated_size(estimated_bytes: usize, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
+    if estimated_bytes > LARGE_RESULT_THRESHOLD {
+        tracker.check_large_result(estimated_bytes)?;
     }
     Ok(())
+}
+
+/// Converts an estimated bit count to bytes, saturating to `usize::MAX` on overflow.
+///
+/// Overflow means the result is astronomically large, so saturating ensures
+/// the resource limit check always triggers rather than being silently skipped.
+fn estimate_bits_to_bytes(bits: u64) -> usize {
+    usize::try_from(bits.saturating_add(7) / 8).unwrap_or(usize::MAX)
 }
 
 /// Error returned when a resource limit is exceeded during execution.
