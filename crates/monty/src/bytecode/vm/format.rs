@@ -4,13 +4,12 @@ use super::VM;
 use crate::{
     exception_private::{ExcType, RunError, SimpleException},
     fstring::{ParsedFormatSpec, ascii_escape, decode_format_spec, format_string, format_with_spec},
-    io::PrintWriter,
     resource::{DepthGuard, ResourceTracker},
     types::{PyTrait, str::allocate_string},
     value::Value,
 };
 
-impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
+impl<T: ResourceTracker> VM<'_, T> {
     /// Builds an f-string by concatenating n string parts from the stack.
     pub(super) fn build_fstring(&mut self, count: usize) -> Result<(), RunError> {
         let parts = self.pop_n(count);

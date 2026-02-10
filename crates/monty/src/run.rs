@@ -86,7 +86,7 @@ impl MontyRun {
         &self,
         inputs: Vec<MontyObject>,
         resource_tracker: impl ResourceTracker,
-        print: &mut impl PrintWriter,
+        print: &mut dyn PrintWriter,
     ) -> Result<MontyObject, MontyException> {
         self.executor.run(inputs, resource_tracker, print)
     }
@@ -147,7 +147,7 @@ impl MontyRun {
         self,
         inputs: Vec<MontyObject>,
         resource_tracker: T,
-        print: &mut impl PrintWriter,
+        print: &mut dyn PrintWriter,
     ) -> Result<RunProgress<T>, MontyException> {
         let executor = self.executor;
 
@@ -375,7 +375,7 @@ impl<T: ResourceTracker> Snapshot<T> {
     pub fn run(
         mut self,
         result: impl Into<ExternalResult>,
-        print: &mut impl PrintWriter,
+        print: &mut dyn PrintWriter,
     ) -> Result<RunProgress<T>, MontyException> {
         let ext_result = result.into();
 
@@ -434,7 +434,7 @@ impl<T: ResourceTracker> Snapshot<T> {
     ///
     /// # Panics
     /// Panics if the VM reaches an inconsistent state (indicating a bug in the interpreter).
-    pub fn run_pending(self, print: &mut impl PrintWriter) -> Result<RunProgress<T>, MontyException> {
+    pub fn run_pending(self, print: &mut dyn PrintWriter) -> Result<RunProgress<T>, MontyException> {
         self.run(MontyFuture, print)
     }
 }
@@ -500,7 +500,7 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
     pub fn resume(
         self,
         results: Vec<(u32, ExternalResult)>,
-        print: &mut impl PrintWriter,
+        print: &mut dyn PrintWriter,
     ) -> Result<RunProgress<T>, MontyException> {
         use crate::exception_private::RunError;
 
@@ -778,7 +778,7 @@ impl Executor {
         &self,
         inputs: Vec<MontyObject>,
         resource_tracker: impl ResourceTracker,
-        print: &mut impl PrintWriter,
+        print: &mut dyn PrintWriter,
     ) -> Result<MontyObject, MontyException> {
         let heap_capacity = self.heap_capacity.load(Ordering::Relaxed);
         let mut heap = Heap::new(heap_capacity, resource_tracker);

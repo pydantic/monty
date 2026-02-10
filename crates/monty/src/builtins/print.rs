@@ -24,7 +24,7 @@ pub fn builtin_print(
     heap: &mut Heap<impl ResourceTracker>,
     args: ArgValues,
     interns: &Interns,
-    print: &mut impl PrintWriter,
+    print: &mut dyn PrintWriter,
 ) -> RunResult<Value> {
     // Split into positional args and kwargs
     let (positional, kwargs) = args.into_parts();

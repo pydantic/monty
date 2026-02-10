@@ -12,7 +12,6 @@ use crate::{
     exception_private::{ExcType, RunError},
     heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{ExtFunctionId, FunctionId, Interns, StaticStrings, StringId},
-    io::PrintWriter,
     os::OsFunction,
     resource::ResourceTracker,
     types::{
@@ -53,7 +52,7 @@ impl From<AttrCallResult> for CallResult {
     }
 }
 
-impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
+impl<T: ResourceTracker> VM<'_, T> {
     // ========================================================================
     // Call Opcode Executors
     // ========================================================================

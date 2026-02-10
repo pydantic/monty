@@ -7,13 +7,12 @@ use crate::{
     exception_private::{ExcType, RunError, SimpleException},
     heap::HeapData,
     intern::StringId,
-    io::PrintWriter,
     resource::ResourceTracker,
     types::{Dict, List, PyTrait, Set, Slice, Type, allocate_tuple, slice::value_to_option_i64, str::allocate_char},
     value::Value,
 };
 
-impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
+impl<T: ResourceTracker> VM<'_, T> {
     /// Builds a list from the top n stack values.
     pub(super) fn build_list(&mut self, count: usize) -> Result<(), RunError> {
         let items = self.pop_n(count);

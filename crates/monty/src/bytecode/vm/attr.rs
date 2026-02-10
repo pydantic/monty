@@ -5,11 +5,10 @@ use crate::{
     bytecode::vm::CallResult,
     exception_private::{ExcType, RunError},
     intern::StringId,
-    io::PrintWriter,
     resource::ResourceTracker,
 };
 
-impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
+impl<T: ResourceTracker> VM<'_, T> {
     /// Loads an attribute from an object and pushes it onto the stack.
     ///
     /// Returns an AttributeError if the attribute doesn't exist.
