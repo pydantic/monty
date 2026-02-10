@@ -6,8 +6,9 @@ use hashbrown::HashTable;
 use super::{MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings},
     resource::{DepthGuard, ResourceError, ResourceTracker},
     types::Type,
@@ -591,12 +592,12 @@ impl Set {
     ///
     /// Unlike list/tuple which can just collect into a Vec, sets need to add
     /// each element individually to handle duplicates and compute hashes.
-    fn from_iterator(mut iter: MontyIter, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
+    fn from_iterator(iter: MontyIter, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
+        defer_drop_mut!(iter, heap);
         let mut set = Self::with_capacity(iter.size_hint(heap));
         while let Some(item) = iter.for_next(heap, interns)? {
             set.add(item, heap, interns)?;
         }
-        iter.drop_with_heap(heap);
         Ok(set)
     }
 
@@ -664,87 +665,97 @@ impl PyTrait for Set {
             return Err(ExcType::attribute_error(Type::Set, attr.as_str(interns)));
         };
 
+        let args_guard = HeapGuard::new(args, heap);
         match method {
             StaticStrings::Add => {
+                let (args, heap) = args_guard.into_parts();
                 let value = args.get_one_arg("set.add", heap)?;
                 self.add(value, heap, interns)?;
                 Ok(Value::None)
             }
             StaticStrings::Remove => {
+                let (args, heap) = args_guard.into_parts();
                 let value = args.get_one_arg("set.remove", heap)?;
-                let result = self.remove(&value, heap, interns);
-                value.drop_with_heap(heap);
-                result?;
+                defer_drop!(value, heap);
+                self.remove(value, heap, interns)?;
                 Ok(Value::None)
             }
             StaticStrings::Discard => {
+                let (args, heap) = args_guard.into_parts();
                 let value = args.get_one_arg("set.discard", heap)?;
-                let result = self.discard(&value, heap, interns);
-                value.drop_with_heap(heap);
-                result?;
+                defer_drop!(value, heap);
+                self.discard(value, heap, interns)?;
                 Ok(Value::None)
             }
             StaticStrings::Pop => {
+                let (args, heap) = args_guard.into_parts();
                 args.check_zero_args("set.pop", heap)?;
                 self.pop()
             }
             StaticStrings::Clear => {
+                let (args, heap) = args_guard.into_parts();
                 args.check_zero_args("set.clear", heap)?;
                 self.clear(heap);
                 Ok(Value::None)
             }
             StaticStrings::Copy => {
+                let (args, heap) = args_guard.into_parts();
                 args.check_zero_args("set.copy", heap)?;
                 let copy = self.copy(heap);
                 let heap_id = heap.allocate(HeapData::Set(copy))?;
                 Ok(Value::Ref(heap_id))
             }
             StaticStrings::Update => {
+                let (args, heap) = args_guard.into_parts();
                 let other = args.get_one_arg("set.update", heap)?;
                 self.update_from_value(other, heap, interns)?;
                 Ok(Value::None)
             }
             StaticStrings::Union => {
+                let (args, heap) = args_guard.into_parts();
                 let other = args.get_one_arg("set.union", heap)?;
                 let result = self.union_from_value(other, heap, interns)?;
                 let heap_id = heap.allocate(HeapData::Set(result))?;
                 Ok(Value::Ref(heap_id))
             }
             StaticStrings::Intersection => {
+                let (args, heap) = args_guard.into_parts();
                 let other = args.get_one_arg("set.intersection", heap)?;
                 let result = self.intersection_from_value(other, heap, interns)?;
                 let heap_id = heap.allocate(HeapData::Set(result))?;
                 Ok(Value::Ref(heap_id))
             }
             StaticStrings::Difference => {
+                let (args, heap) = args_guard.into_parts();
                 let other = args.get_one_arg("set.difference", heap)?;
                 let result = self.difference_from_value(other, heap, interns)?;
                 let heap_id = heap.allocate(HeapData::Set(result))?;
                 Ok(Value::Ref(heap_id))
             }
             StaticStrings::SymmetricDifference => {
+                let (args, heap) = args_guard.into_parts();
                 let other = args.get_one_arg("set.symmetric_difference", heap)?;
                 let result = self.symmetric_difference_from_value(other, heap, interns)?;
                 let heap_id = heap.allocate(HeapData::Set(result))?;
                 Ok(Value::Ref(heap_id))
             }
             StaticStrings::Issubset => {
+                let (args, heap) = args_guard.into_parts();
                 let other = args.get_one_arg("set.issubset", heap)?;
-                let result = self.issubset_from_value(&other, heap, interns);
-                other.drop_with_heap(heap);
-                Ok(Value::Bool(result?))
+                defer_drop!(other, heap);
+                Ok(Value::Bool(self.issubset_from_value(other, heap, interns)?))
             }
             StaticStrings::Issuperset => {
+                let (args, heap) = args_guard.into_parts();
                 let other = args.get_one_arg("set.issuperset", heap)?;
-                let result = self.issuperset_from_value(&other, heap, interns);
-                other.drop_with_heap(heap);
-                Ok(Value::Bool(result?))
+                defer_drop!(other, heap);
+                Ok(Value::Bool(self.issuperset_from_value(other, heap, interns)?))
             }
             StaticStrings::Isdisjoint => {
+                let (args, heap) = args_guard.into_parts();
                 let other = args.get_one_arg("set.isdisjoint", heap)?;
-                let result = self.isdisjoint_from_value(&other, heap, interns);
-                other.drop_with_heap(heap);
-                Ok(Value::Bool(result?))
+                defer_drop!(other, heap);
+                Ok(Value::Bool(self.isdisjoint_from_value(other, heap, interns)?))
             }
             _ => Err(ExcType::attribute_error(Type::Set, attr.as_str(interns))),
         }
@@ -1174,14 +1185,17 @@ impl PyTrait for FrozenSet {
             return Err(ExcType::attribute_error(Type::FrozenSet, attr.as_str(interns)));
         };
 
+        let args_guard = HeapGuard::new(args, heap);
         match method {
             StaticStrings::Copy => {
+                let (args, heap) = args_guard.into_parts();
                 args.check_zero_args("frozenset.copy", heap)?;
                 let copy = self.copy(heap);
                 let heap_id = heap.allocate(HeapData::FrozenSet(copy))?;
                 Ok(Value::Ref(heap_id))
             }
             StaticStrings::Union => {
+                let (args, heap) = args_guard.into_parts();
                 let other = args.get_one_arg("frozenset.union", heap)?;
                 let other_storage = Set::get_storage_from_value(other, heap, interns)?;
                 let result = self.union(&other_storage, heap, interns)?;
@@ -1192,6 +1206,7 @@ impl PyTrait for FrozenSet {
                 Ok(Value::Ref(heap_id))
             }
             StaticStrings::Intersection => {
+                let (args, heap) = args_guard.into_parts();
                 let other = args.get_one_arg("frozenset.intersection", heap)?;
                 let other_storage = Set::get_storage_from_value(other, heap, interns)?;
                 let result = self.intersection(&other_storage, heap, interns)?;
@@ -1202,6 +1217,7 @@ impl PyTrait for FrozenSet {
                 Ok(Value::Ref(heap_id))
             }
             StaticStrings::Difference => {
+                let (args, heap) = args_guard.into_parts();
                 let other = args.get_one_arg("frozenset.difference", heap)?;
                 let other_storage = Set::get_storage_from_value(other, heap, interns)?;
                 let result = self.difference(&other_storage, heap, interns)?;
@@ -1212,6 +1228,7 @@ impl PyTrait for FrozenSet {
                 Ok(Value::Ref(heap_id))
             }
             StaticStrings::SymmetricDifference => {
+                let (args, heap) = args_guard.into_parts();
                 let other = args.get_one_arg("frozenset.symmetric_difference", heap)?;
                 let other_storage = Set::get_storage_from_value(other, heap, interns)?;
                 let result = self.symmetric_difference(&other_storage, heap, interns)?;
@@ -1222,22 +1239,22 @@ impl PyTrait for FrozenSet {
                 Ok(Value::Ref(heap_id))
             }
             StaticStrings::Issubset => {
+                let (args, heap) = args_guard.into_parts();
                 let other = args.get_one_arg("frozenset.issubset", heap)?;
-                let result = self.issubset_from_value(&other, heap, interns);
-                other.drop_with_heap(heap);
-                Ok(Value::Bool(result?))
+                defer_drop!(other, heap);
+                Ok(Value::Bool(self.issubset_from_value(other, heap, interns)?))
             }
             StaticStrings::Issuperset => {
+                let (args, heap) = args_guard.into_parts();
                 let other = args.get_one_arg("frozenset.issuperset", heap)?;
-                let result = self.issuperset_from_value(&other, heap, interns);
-                other.drop_with_heap(heap);
-                Ok(Value::Bool(result?))
+                defer_drop!(other, heap);
+                Ok(Value::Bool(self.issuperset_from_value(other, heap, interns)?))
             }
             StaticStrings::Isdisjoint => {
+                let (args, heap) = args_guard.into_parts();
                 let other = args.get_one_arg("frozenset.isdisjoint", heap)?;
-                let result = self.isdisjoint_from_value(&other, heap, interns);
-                other.drop_with_heap(heap);
-                Ok(Value::Bool(result?))
+                defer_drop!(other, heap);
+                Ok(Value::Bool(self.isdisjoint_from_value(other, heap, interns)?))
             }
             _ => Err(ExcType::attribute_error(Type::FrozenSet, attr.as_str(interns))),
         }

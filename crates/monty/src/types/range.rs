@@ -10,7 +10,7 @@ use ahash::AHashSet;
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::Interns,
     resource::{DepthGuard, ResourceError, ResourceTracker},
     types::{PyTrait, Type},

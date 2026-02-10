@@ -8,7 +8,7 @@ use crate::{
     args::{ArgValues, KwargsValues},
     exception_private::{ExcType, RunResult, SimpleException},
     expressions::Identifier,
-    heap::{Heap, HeapData},
+    heap::{DropWithHeap, Heap, HeapData},
     intern::{Interns, StringId},
     resource::ResourceTracker,
     types::{Dict, allocate_tuple},

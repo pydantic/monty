@@ -374,9 +374,11 @@ impl KwargsValues {
                 .collect(),
         }
     }
+}
 
+impl<T: ResourceTracker> DropWithHeap<T> for KwargsValues {
     /// Properly drops all values in the arguments, decrementing reference counts.
-    pub fn drop_with_heap(self, heap: &mut Heap<impl ResourceTracker>) {
+    fn drop_with_heap(self, heap: &mut Heap<T>) {
         match self {
             Self::Empty => {}
             Self::Inline(kvs) => {

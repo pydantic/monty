@@ -12,7 +12,7 @@ use smallvec::SmallVec;
 use crate::{
     args::{ArgValues, KwargsValues},
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapGuard, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings, StringId},
     os::OsFunction,
     resource::{DepthGuard, ResourceError, ResourceTracker},

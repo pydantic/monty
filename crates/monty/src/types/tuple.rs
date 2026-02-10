@@ -32,9 +32,9 @@ use super::{
 };
 use crate::{
     args::ArgValues,
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings},
     resource::{DepthGuard, ResourceError, ResourceTracker},
     types::Type,
@@ -107,9 +107,9 @@ impl Tuple {
                 Ok(heap.get_empty_tuple())
             }
             Some(v) => {
-                let mut iter = MontyIter::new(v, heap, interns)?;
+                let iter = MontyIter::new(v, heap, interns)?;
+                defer_drop_mut!(iter, heap);
                 let items = iter.collect(heap, interns)?;
-                iter.drop_with_heap(heap);
                 Ok(allocate_tuple(items, heap)?)
             }
         }
@@ -259,13 +259,17 @@ impl PyTrait for Tuple {
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
+        let args_guard = HeapGuard::new(args, heap);
         match attr.static_string() {
-            Some(StaticStrings::Index) => tuple_index(self, args, heap, interns),
-            Some(StaticStrings::Count) => tuple_count(self, args, heap, interns),
-            _ => {
-                args.drop_with_heap(heap);
-                Err(ExcType::attribute_error(Type::Tuple, attr.as_str(interns)))
+            Some(StaticStrings::Index) => {
+                let (args, heap) = args_guard.into_parts();
+                tuple_index(self, args, heap, interns)
             }
+            Some(StaticStrings::Count) => {
+                let (args, heap) = args_guard.into_parts();
+                tuple_count(self, args, heap, interns)
+            }
+            _ => Err(ExcType::attribute_error(Type::Tuple, attr.as_str(interns))),
         }
     }
 
@@ -296,18 +300,17 @@ fn tuple_index(
     interns: &Interns,
 ) -> RunResult<Value> {
     let (value, start, end) = parse_tuple_index_args("tuple.index", tuple.as_slice().len(), args, heap)?;
+    defer_drop!(value, heap);
 
     let mut guard = DepthGuard::default();
     // Search for the value in the specified range
     for (i, item) in tuple.as_slice()[start..end].iter().enumerate() {
         if value.py_eq(item, heap, &mut guard, interns)? {
-            value.drop_with_heap(heap);
             let idx = i64::try_from(start + i).expect("index exceeds i64::MAX");
             return Ok(Value::Int(idx));
         }
     }
 
-    value.drop_with_heap(heap);
     Err(ExcType::value_error_not_in_tuple())
 }
 
@@ -355,16 +358,19 @@ fn parse_tuple_index_args(
     let value = pos_iter
         .next()
         .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
+    // Guard value so it's cleaned up on any early-return error path;
+    // reclaimed via into_inner() on success
+    let mut value_guard = HeapGuard::new(value, heap);
     let start_value = pos_iter.next();
     let end_value = pos_iter.next();
 
     // Check no extra arguments - must drop the 4th arg consumed by .next()
     if let Some(fourth) = pos_iter.next() {
+        let heap = value_guard.heap();
         fourth.drop_with_heap(heap);
         for v in pos_iter {
             v.drop_with_heap(heap);
         }
-        value.drop_with_heap(heap);
         if let Some(v) = start_value {
             v.drop_with_heap(heap);
         }
@@ -376,33 +382,20 @@ fn parse_tuple_index_args(
 
     // Extract start (default 0)
     let start = if let Some(v) = start_value {
+        let heap = value_guard.heap();
         let result = v.as_int(heap);
         v.drop_with_heap(heap);
-        match result {
-            Ok(i) => normalize_tuple_index(i, len),
-            Err(e) => {
-                value.drop_with_heap(heap);
-                if let Some(ev) = end_value {
-                    ev.drop_with_heap(heap);
-                }
-                return Err(e);
-            }
-        }
+        normalize_tuple_index(result?, len)
     } else {
         0
     };
 
     // Extract end (default len)
     let end = if let Some(v) = end_value {
+        let heap = value_guard.heap();
         let result = v.as_int(heap);
         v.drop_with_heap(heap);
-        match result {
-            Ok(i) => normalize_tuple_index(i, len),
-            Err(e) => {
-                value.drop_with_heap(heap);
-                return Err(e);
-            }
-        }
+        normalize_tuple_index(result?, len)
     } else {
         len
     };
@@ -410,7 +403,7 @@ fn parse_tuple_index_args(
     // Ensure start <= end to prevent slice panics (Python treats start > end as empty slice)
     let end = end.max(start);
 
-    Ok((value, start, end))
+    Ok((value_guard.into_inner(), start, end))
 }
 
 /// Normalizes a Python-style tuple index to a valid index in range [0, len].

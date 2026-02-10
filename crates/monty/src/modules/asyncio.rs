@@ -10,7 +10,7 @@ use crate::{
     args::ArgValues,
     asyncio::{GatherFuture, GatherItem},
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
