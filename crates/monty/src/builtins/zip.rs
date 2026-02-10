@@ -2,7 +2,8 @@
 
 use crate::{
     args::ArgValues,
-    exception_private::{ExcType, RunResult, SimpleException},
+    defer_drop_mut,
+    exception_private::RunResult,
     heap::{Heap, HeapData},
     intern::Interns,
     resource::ResourceTracker,
@@ -17,20 +18,10 @@ use crate::{
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
 pub fn builtin_zip(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
     let (positional, kwargs) = args.into_parts();
+    defer_drop_mut!(positional, heap);
 
-    // Check for unsupported kwargs (strict not yet implemented)
-    if !kwargs.is_empty() {
-        for (k, v) in kwargs {
-            k.drop_with_heap(heap);
-            v.drop_with_heap(heap);
-        }
-        for v in positional {
-            v.drop_with_heap(heap);
-        }
-        return Err(
-            SimpleException::new_msg(ExcType::TypeError, "zip() does not support keyword arguments yet").into(),
-        );
-    }
+    // TODO: support kwargs (strict)
+    kwargs.not_supported_yet("zip", heap)?;
 
     if positional.len() == 0 {
         // zip() with no arguments returns empty list

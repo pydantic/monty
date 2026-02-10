@@ -5,6 +5,7 @@ use num_traits::{Signed, ToPrimitive, Zero};
 
 use crate::{
     args::ArgValues,
+    defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapData},
     resource::{ResourceTracker, check_pow_size},
@@ -18,17 +19,8 @@ use crate::{
 /// Handles negative exponents by returning a float.
 pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     // pow() accepts 2 or 3 arguments
-    let (mut positional, kwargs) = args.into_parts();
-    if !kwargs.is_empty() {
-        for (k, v) in kwargs {
-            k.drop_with_heap(heap);
-            v.drop_with_heap(heap);
-        }
-        for v in positional {
-            v.drop_with_heap(heap);
-        }
-        return Err(SimpleException::new_msg(ExcType::TypeError, "pow() takes no keyword arguments").into());
-    }
+    let positional = args.into_pos_only("pow", heap)?;
+    defer_drop_mut!(positional, heap);
 
     let (base, exp, modulo) = match positional.len() {
         2 => (positional.next().unwrap(), positional.next().unwrap(), None),

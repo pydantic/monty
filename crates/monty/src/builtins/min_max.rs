@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 
 use crate::{
     args::ArgValues,
-    defer_drop, defer_drop_mut,
+    defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapGuard},
     intern::Interns,
@@ -45,17 +45,9 @@ fn builtin_min_max(
     let func_name = if is_min { "min" } else { "max" };
     let (positional, kwargs) = args.into_parts();
     defer_drop_mut!(positional, heap);
-    let kwargs = kwargs.into_iter();
-    defer_drop!(kwargs, heap);
 
-    // Check for unsupported kwargs (key, default not yet implemented)
-    if kwargs.len() > 0 {
-        return Err(SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("{func_name}() does not support keyword arguments yet"),
-        )
-        .into());
-    }
+    // TODO: support kwargs (key, default)
+    kwargs.not_supported_yet(func_name, heap)?;
 
     let Some(first_arg) = positional.next() else {
         return Err(SimpleException::new_msg(

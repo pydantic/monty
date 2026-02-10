@@ -718,13 +718,8 @@ fn parse_bytes_prefix_suffix_args(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<(PrefixSuffixArg, usize, usize)> {
-    let (pos_iter, kwargs) = args.into_parts();
+    let pos_iter = args.into_pos_only(method, heap)?;
     defer_drop_mut!(pos_iter, heap);
-    defer_drop!(kwargs, heap);
-
-    if !kwargs.is_empty() {
-        return Err(ExcType::type_error_no_kwargs(method));
-    }
 
     if pos_iter.len() > 3 {
         return Err(ExcType::type_error_at_most(method, 3, pos_iter.len()));
@@ -863,12 +858,8 @@ fn parse_bytes_sub_args(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<(Vec<u8>, usize, usize)> {
-    let (pos_iter, kwargs) = args.into_parts();
+    let pos_iter = args.into_pos_only(method, heap)?;
     defer_drop_mut!(pos_iter, heap);
-    defer_drop!(kwargs, heap);
-    if !kwargs.is_empty() {
-        return Err(ExcType::type_error_no_kwargs(method));
-    }
 
     if pos_iter.len() > 3 {
         return Err(ExcType::type_error_at_most(method, 3, pos_iter.len()));
@@ -2026,12 +2017,8 @@ fn parse_bytes_justify_args(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<(usize, u8)> {
-    let (pos_iter, kwargs) = args.into_parts();
+    let pos_iter = args.into_pos_only(method, heap)?;
     defer_drop_mut!(pos_iter, heap);
-    defer_drop!(kwargs, heap);
-    if !kwargs.is_empty() {
-        return Err(ExcType::type_error_no_kwargs(method));
-    }
 
     if pos_iter.len() > 2 {
         return Err(ExcType::type_error_at_most(method, 2, pos_iter.len()));
@@ -2239,12 +2226,8 @@ fn parse_bytes_hex_args(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<(Option<String>, i64)> {
-    let (pos_iter, kwargs) = args.into_parts();
+    let pos_iter = args.into_pos_only("bytes.hex", heap)?;
     defer_drop_mut!(pos_iter, heap);
-    defer_drop!(kwargs, heap);
-    if !kwargs.is_empty() {
-        return Err(ExcType::type_error_no_kwargs("bytes.hex"));
-    }
 
     let sep_value = pos_iter.next();
     defer_drop!(sep_value, heap);

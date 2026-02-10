@@ -1064,13 +1064,7 @@ fn parse_search_args(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<(String, usize, usize)> {
-    let (pos, kwargs) = args.into_parts();
-    if !kwargs.is_empty() {
-        kwargs.drop_with_heap(heap);
-        return Err(ExcType::type_error_no_kwargs(method));
-    }
-
-    let mut pos_iter = pos;
+    let mut pos_iter = args.into_pos_only(method, heap)?;
     let sub_value = pos_iter
         .next()
         .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
@@ -1139,13 +1133,7 @@ fn parse_prefix_suffix_args(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<(Vec<String>, usize, usize)> {
-    let (pos, kwargs) = args.into_parts();
-    if !kwargs.is_empty() {
-        kwargs.drop_with_heap(heap);
-        return Err(ExcType::type_error_no_kwargs(method));
-    }
-
-    let mut pos_iter = pos;
+    let mut pos_iter = args.into_pos_only(method, heap)?;
     let prefix_value = pos_iter
         .next()
         .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
@@ -2025,13 +2013,7 @@ fn parse_justify_args(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<(usize, char)> {
-    let (pos, kwargs) = args.into_parts();
-    if !kwargs.is_empty() {
-        kwargs.drop_with_heap(heap);
-        return Err(ExcType::type_error_no_kwargs(method));
-    }
-
-    let mut pos_iter = pos;
+    let mut pos_iter = args.into_pos_only(method, heap)?;
     let width_value = pos_iter
         .next()
         .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
