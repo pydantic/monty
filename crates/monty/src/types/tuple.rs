@@ -32,7 +32,7 @@ use super::{
 };
 use crate::{
     args::ArgValues,
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings},
@@ -107,9 +107,7 @@ impl Tuple {
                 Ok(heap.get_empty_tuple())
             }
             Some(v) => {
-                let iter = MontyIter::new(v, heap, interns)?;
-                defer_drop_mut!(iter, heap);
-                let items = iter.collect(heap, interns)?;
+                let items = MontyIter::new(v, heap, interns)?.collect(heap, interns)?;
                 Ok(allocate_tuple(items, heap)?)
             }
         }

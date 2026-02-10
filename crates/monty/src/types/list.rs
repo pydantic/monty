@@ -172,9 +172,7 @@ impl List {
                 Ok(Value::Ref(heap_id))
             }
             Some(v) => {
-                let mut iter = MontyIter::new(v, heap, interns)?;
-                let items = iter.collect(heap, interns)?;
-                iter.drop_with_heap(heap);
+                let items = MontyIter::new(v, heap, interns)?.collect(heap, interns)?;
                 let heap_id = heap.allocate(HeapData::List(Self::new(items)))?;
                 Ok(Value::Ref(heap_id))
             }
@@ -613,13 +611,7 @@ fn list_extend(
     interns: &Interns,
 ) -> RunResult<Value> {
     let iterable = args.get_one_arg("list.extend", heap)?;
-
-    // Create iterator for the iterable
-    let mut iter = MontyIter::new(iterable, heap, interns)?;
-
-    // Collect all items from the iterator
-    let items: SmallVec<[_; 2]> = iter.collect(heap, interns)?;
-    iter.drop_with_heap(heap);
+    let items: SmallVec<[_; 2]> = MontyIter::new(iterable, heap, interns)?.collect(heap, interns)?;
 
     // Add each item to the list
     for item in items {

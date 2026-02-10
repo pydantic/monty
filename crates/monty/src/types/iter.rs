@@ -33,7 +33,7 @@
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{BytesId, Interns, StringId},
     resource::ResourceTracker,
     types::{PyTrait, Range, str::allocate_char},
@@ -364,11 +364,13 @@ impl MontyIter {
     ///
     /// Pre-allocates capacity based on `size_hint()` for better performance.
     pub fn collect<T: FromIterator<Value>>(
-        &mut self,
+        self,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<T> {
-        HeapedMontyIter(self, heap, interns).collect()
+        let mut guard = HeapGuard::new(self, heap);
+        let (this, heap) = guard.as_parts_mut();
+        HeapedMontyIter(this, heap, interns).collect()
     }
 }
 
