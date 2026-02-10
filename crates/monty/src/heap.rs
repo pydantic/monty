@@ -1523,7 +1523,7 @@ impl<T: ResourceTracker> Heap<T> {
                 } else {
                     // Pre-check memory limit for large results
                     check_repeat_size(
-                        tuple.as_vec().len().saturating_mul(size_of::<Value>()),
+                        tuple.as_slice().len().saturating_mul(size_of::<Value>()),
                         count,
                         &self.tracker,
                     )?;
