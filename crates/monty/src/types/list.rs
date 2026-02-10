@@ -694,13 +694,7 @@ fn parse_index_count_args(
     args: ArgValues,
     heap: &mut Heap<impl ResourceTracker>,
 ) -> RunResult<(Value, usize, usize)> {
-    let (pos, kwargs) = args.into_parts();
-    if !kwargs.is_empty() {
-        kwargs.drop_with_heap(heap);
-        return Err(ExcType::type_error_no_kwargs(method));
-    }
-
-    let mut pos_iter = pos;
+    let mut pos_iter = args.into_pos_only(method, heap)?;
     let value = pos_iter
         .next()
         .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;

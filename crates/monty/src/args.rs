@@ -2,7 +2,7 @@ use std::vec::IntoIter;
 
 use crate::{
     MontyObject, ResourceTracker, defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, RunError, RunResult},
     expressions::{ExprLoc, Identifier},
     heap::{DropWithHeap, Heap, HeapGuard},
     intern::{Interns, StringId},
@@ -202,6 +202,40 @@ impl ArgValues {
             Self::Kwargs(kwargs) => (ArgPosIter::Empty, kwargs),
             Self::ArgsKargs { args, kwargs } => (ArgPosIter::Vec(args.into_iter()), kwargs),
         }
+    }
+
+    /// Variant of [`into_parts()`](Self::into_parts) that accepts no kwargs, returning an error if any are present.
+    pub fn into_pos_only(self, method_name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<ArgPosIter> {
+        match self {
+            Self::Empty => Ok(ArgPosIter::Empty),
+            Self::One(v) => Ok(ArgPosIter::One(Some(v))),
+            Self::Two(v1, v2) => Ok(ArgPosIter::Two(Some(v1), Some(v2))),
+            Self::Kwargs(kwargs) => {
+                if kwargs.is_empty() {
+                    Ok(ArgPosIter::Empty)
+                } else {
+                    Err(Self::unexpected_kwargs_error(kwargs, method_name, heap))
+                }
+            }
+            Self::ArgsKargs { args, kwargs } => {
+                if kwargs.is_empty() {
+                    Ok(ArgPosIter::Vec(args.into_iter()))
+                } else {
+                    args.drop_with_heap(heap);
+                    Err(Self::unexpected_kwargs_error(kwargs, method_name, heap))
+                }
+            }
+        }
+    }
+
+    #[cold]
+    fn unexpected_kwargs_error(
+        kwargs: KwargsValues,
+        method_name: &str,
+        heap: &mut Heap<impl ResourceTracker>,
+    ) -> RunError {
+        kwargs.drop_with_heap(heap);
+        ExcType::type_error_no_kwargs(method_name)
     }
 
     /// Converts the arguments into a Vec of MontyObjects.

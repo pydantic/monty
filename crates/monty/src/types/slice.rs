@@ -9,6 +9,7 @@ use ahash::AHashSet;
 
 use crate::{
     args::ArgValues,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
@@ -51,55 +52,43 @@ impl Slice {
     ///
     /// Each argument can be None to indicate "use default".
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let slice = match args {
-            ArgValues::Empty => return Err(ExcType::type_error_at_least("slice", 1, 0)),
-            ArgValues::One(stop_val) => {
-                let stop = value_to_option_i64(&stop_val);
-                stop_val.drop_with_heap(heap);
-                Self::new(None, stop?, None)
-            }
-            ArgValues::Two(start_val, stop_val) => {
-                // Store results before dropping to avoid refcount leak on error
-                let start = value_to_option_i64(&start_val);
-                let stop = value_to_option_i64(&stop_val);
-                start_val.drop_with_heap(heap);
-                stop_val.drop_with_heap(heap);
-                Self::new(start?, stop?, None)
-            }
-            ArgValues::ArgsKargs { args, kwargs } if kwargs.is_empty() && args.len() == 3 => {
-                let mut iter = args.into_iter();
-                let start_val = iter.next().unwrap();
-                let stop_val = iter.next().unwrap();
-                let step_val = iter.next().unwrap();
+        let pos_args = args.into_pos_only("slice", heap)?;
+        defer_drop_mut!(pos_args, heap);
 
-                // Store results before dropping to avoid refcount leak on error
-                let start = value_to_option_i64(&start_val);
-                let stop = value_to_option_i64(&stop_val);
-                let step = value_to_option_i64(&step_val);
-                start_val.drop_with_heap(heap);
-                stop_val.drop_with_heap(heap);
-                step_val.drop_with_heap(heap);
-
-                Self::new(start?, stop?, step?)
-            }
-            ArgValues::Kwargs(kwargs) => {
-                kwargs.drop_with_heap(heap);
-                return Err(ExcType::type_error_no_kwargs("slice"));
-            }
-            ArgValues::ArgsKargs { args, kwargs } => {
-                let arg_count = args.len();
-                for v in args {
-                    v.drop_with_heap(heap);
-                }
-                if !kwargs.is_empty() {
-                    kwargs.drop_with_heap(heap);
-                    return Err(ExcType::type_error_no_kwargs("slice"));
-                }
-                return Err(ExcType::type_error_at_most("slice", 3, arg_count));
-            }
+        let Some(first_arg) = pos_args.next() else {
+            return Err(ExcType::type_error_at_least("slice", 1, 0));
         };
+        defer_drop!(first_arg, heap);
 
-        Ok(Value::Ref(heap.allocate(HeapData::Slice(slice))?))
+        let Some(second_arg) = pos_args.next() else {
+            // Only one argument, treat as stop
+            let stop = value_to_option_i64(first_arg)?;
+            return Ok(Value::Ref(heap.allocate(HeapData::Slice(Self::new(None, stop, None)))?));
+        };
+        defer_drop!(second_arg, heap);
+
+        let Some(third_arg) = pos_args.next() else {
+            // Two arguments, treat as start and stop
+            let start = value_to_option_i64(first_arg)?;
+            let stop = value_to_option_i64(second_arg)?;
+            return Ok(Value::Ref(
+                heap.allocate(HeapData::Slice(Self::new(start, stop, None)))?,
+            ));
+        };
+        defer_drop!(third_arg, heap);
+
+        if pos_args.len() > 0 {
+            return Err(ExcType::type_error_at_most("range", 3, 3 + pos_args.len()));
+        }
+
+        // Store results before dropping to avoid refcount leak on error
+        let start = value_to_option_i64(first_arg)?;
+        let stop = value_to_option_i64(second_arg)?;
+        let step = value_to_option_i64(third_arg)?;
+
+        Ok(Value::Ref(
+            heap.allocate(HeapData::Slice(Self::new(start, stop, step)))?,
+        ))
     }
 
     /// Computes concrete indices for a sequence of the given length.

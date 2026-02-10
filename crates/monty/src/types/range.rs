@@ -9,6 +9,7 @@ use ahash::AHashSet;
 
 use crate::{
     args::ArgValues,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::Interns,
@@ -116,57 +117,45 @@ impl Range {
     /// - `range(start, stop)` - range from start to stop
     /// - `range(start, stop, step)` - range with custom step
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let range = match args {
-            ArgValues::Empty => return Err(ExcType::type_error_at_least("range", 1, 0)),
-            ArgValues::One(stop_val) => {
-                let result = stop_val.as_int(heap);
-                stop_val.drop_with_heap(heap);
-                Self::from_stop(result?)
-            }
-            ArgValues::Two(start_val, stop_val) => {
-                let start = start_val.as_int(heap);
-                let stop = stop_val.as_int(heap);
-                start_val.drop_with_heap(heap);
-                stop_val.drop_with_heap(heap);
-                Self::from_start_stop(start?, stop?)
-            }
-            ArgValues::ArgsKargs { args, kwargs } if kwargs.is_empty() && args.len() == 3 => {
-                let mut iter = args.into_iter();
-                let start_val = iter.next().unwrap();
-                let stop_val = iter.next().unwrap();
-                let step_val = iter.next().unwrap();
+        let pos_args = args.into_pos_only("range", heap)?;
+        defer_drop_mut!(pos_args, heap);
 
-                let start = start_val.as_int(heap);
-                let stop = stop_val.as_int(heap);
-                let step = step_val.as_int(heap);
-                start_val.drop_with_heap(heap);
-                stop_val.drop_with_heap(heap);
-                step_val.drop_with_heap(heap);
-
-                let step = step?;
-                if step == 0 {
-                    return Err(ExcType::value_error_range_step_zero());
-                }
-                Self::new(start?, stop?, step)
-            }
-            ArgValues::Kwargs(kwargs) => {
-                kwargs.drop_with_heap(heap);
-                return Err(ExcType::type_error_no_kwargs("range"));
-            }
-            ArgValues::ArgsKargs { args, kwargs } => {
-                let arg_count = args.len();
-                for v in args {
-                    v.drop_with_heap(heap);
-                }
-                if !kwargs.is_empty() {
-                    kwargs.drop_with_heap(heap);
-                    return Err(ExcType::type_error_no_kwargs("range"));
-                }
-                return Err(ExcType::type_error_at_most("range", 3, arg_count));
-            }
+        let Some(first_arg) = pos_args.next() else {
+            return Err(ExcType::type_error_at_least("range", 1, 0));
         };
+        defer_drop!(first_arg, heap);
 
-        Ok(Value::Ref(heap.allocate(HeapData::Range(range))?))
+        let Some(second_arg) = pos_args.next() else {
+            // Only one argument, treat as stop
+            let stop = first_arg.as_int(heap)?;
+            return Ok(Value::Ref(heap.allocate(HeapData::Range(Self::from_stop(stop)))?));
+        };
+        defer_drop!(second_arg, heap);
+
+        let Some(third_arg) = pos_args.next() else {
+            // Two arguments, treat as start and stop
+            let start = first_arg.as_int(heap)?;
+            let stop = second_arg.as_int(heap)?;
+            return Ok(Value::Ref(
+                heap.allocate(HeapData::Range(Self::from_start_stop(start, stop)))?,
+            ));
+        };
+        defer_drop!(third_arg, heap);
+
+        if pos_args.len() > 0 {
+            return Err(ExcType::type_error_at_most("range", 3, 3 + pos_args.len()));
+        }
+
+        let start = first_arg.as_int(heap)?;
+        let stop = second_arg.as_int(heap)?;
+        let step = third_arg.as_int(heap)?;
+        if step == 0 {
+            return Err(ExcType::value_error_range_step_zero());
+        }
+
+        Ok(Value::Ref(
+            heap.allocate(HeapData::Range(Self::new(start, stop, step)))?,
+        ))
     }
 
     /// Handles slice-based indexing for ranges.

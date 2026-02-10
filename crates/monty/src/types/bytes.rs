@@ -741,13 +741,7 @@ fn parse_bytes_prefix_suffix_args(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<(PrefixSuffixArg, usize, usize)> {
-    let (pos, kwargs) = args.into_parts();
-    if !kwargs.is_empty() {
-        kwargs.drop_with_heap(heap);
-        return Err(ExcType::type_error_no_kwargs(method));
-    }
-
-    let mut pos_iter = pos;
+    let mut pos_iter = args.into_pos_only(method, heap)?;
     let prefix_value = pos_iter
         .next()
         .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
@@ -916,13 +910,7 @@ fn parse_bytes_sub_args(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<(Vec<u8>, usize, usize)> {
-    let (pos, kwargs) = args.into_parts();
-    if !kwargs.is_empty() {
-        kwargs.drop_with_heap(heap);
-        return Err(ExcType::type_error_no_kwargs(method));
-    }
-
-    let mut pos_iter = pos;
+    let mut pos_iter = args.into_pos_only(method, heap)?;
     let sub_value = pos_iter
         .next()
         .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
@@ -2299,13 +2287,7 @@ fn parse_bytes_justify_args(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<(usize, u8)> {
-    let (pos, kwargs) = args.into_parts();
-    if !kwargs.is_empty() {
-        kwargs.drop_with_heap(heap);
-        return Err(ExcType::type_error_no_kwargs(method));
-    }
-
-    let mut pos_iter = pos;
+    let mut pos_iter = args.into_pos_only(method, heap)?;
     let width_value = pos_iter
         .next()
         .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
@@ -2550,13 +2532,7 @@ fn parse_bytes_hex_args(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<(Option<String>, i64)> {
-    let (pos, kwargs) = args.into_parts();
-    if !kwargs.is_empty() {
-        kwargs.drop_with_heap(heap);
-        return Err(ExcType::type_error_no_kwargs("bytes.hex"));
-    }
-
-    let mut pos_iter = pos;
+    let mut pos_iter = args.into_pos_only("bytes.hex", heap)?;
     let sep_value = pos_iter.next();
     let bytes_per_sep_value = pos_iter.next();
 
