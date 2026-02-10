@@ -540,6 +540,27 @@ fn pow_overflowing_estimate_rejected() {
     );
 }
 
+/// Test that pow with a large base and moderate exponent is rejected by memory limits.
+///
+/// `-7234408281351689115 ** 65327` has a 63-bit base, so the result is ~63*65327 ≈ 4M bits ≈ 514KB.
+/// With a 100KB memory limit the pre-check should reject this before computing.
+#[test]
+fn pow_large_base_moderate_exp_rejected() {
+    let code = "-7234408281351689115 ** 65327";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_err(), "large pow should exceed memory limit");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
+    );
+}
+
 /// Test that large left shift operations are rejected by memory limits.
 #[test]
 fn bigint_lshift_memory_limit() {
