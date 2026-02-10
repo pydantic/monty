@@ -32,6 +32,7 @@ use super::{
 };
 use crate::{
     args::ArgValues,
+    defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
@@ -81,7 +82,7 @@ impl Tuple {
 
     /// Returns a reference to the underlying SmallVec.
     #[must_use]
-    pub fn as_vec(&self) -> &TupleVec {
+    pub fn as_slice(&self) -> &[Value] {
         &self.items
     }
 
@@ -209,9 +210,15 @@ impl PyTrait for Tuple {
             return Ok(false);
         }
         guard.increase_err()?;
-        let result = self.py_eq_inner(other, heap, guard, interns);
+
+        for (i1, i2) in self.items.iter().zip(&other.items) {
+            if !i1.py_eq(i2, heap, guard, interns)? {
+                guard.decrease();
+                return Ok(false);
+            }
+        }
         guard.decrease();
-        result
+        Ok(true)
     }
 
     fn py_add(
@@ -278,26 +285,6 @@ impl PyTrait for Tuple {
     }
 }
 
-impl Tuple {
-    /// Inner implementation of `py_eq` for element-wise comparison.
-    ///
-    /// Separated from `py_eq` to simplify depth guard handling.
-    fn py_eq_inner(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
-        guard: &mut DepthGuard,
-        interns: &Interns,
-    ) -> Result<bool, ResourceError> {
-        for (i1, i2) in self.items.iter().zip(&other.items) {
-            if !i1.py_eq(i2, heap, guard, interns)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-}
-
 /// Implements Python's `tuple.index(value[, start[, end]])` method.
 ///
 /// Returns the index of the first occurrence of value.
@@ -308,11 +295,11 @@ fn tuple_index(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
-    let (value, start, end) = parse_tuple_index_args("tuple.index", tuple.as_vec().len(), args, heap)?;
+    let (value, start, end) = parse_tuple_index_args("tuple.index", tuple.as_slice().len(), args, heap)?;
 
     let mut guard = DepthGuard::default();
     // Search for the value in the specified range
-    for (i, item) in tuple.as_vec()[start..end].iter().enumerate() {
+    for (i, item) in tuple.as_slice()[start..end].iter().enumerate() {
         if value.py_eq(item, heap, &mut guard, interns)? {
             value.drop_with_heap(heap);
             let idx = i64::try_from(start + i).expect("index exceeds i64::MAX");
@@ -334,22 +321,16 @@ fn tuple_count(
     interns: &Interns,
 ) -> RunResult<Value> {
     let value = args.get_one_arg("tuple.count", heap)?;
+    defer_drop!(value, heap);
 
     let mut guard = DepthGuard::default();
     let mut count = 0usize;
-    for item in tuple.as_vec() {
-        // py_eq now returns Result, so we need to handle the error
-        match value.py_eq(item, heap, &mut guard, interns) {
-            Ok(true) => count += 1,
-            Ok(false) => {}
-            Err(e) => {
-                value.drop_with_heap(heap);
-                return Err(e.into());
-            }
+    for item in tuple.as_slice() {
+        if value.py_eq(item, heap, &mut guard, interns)? {
+            count += 1;
         }
     }
 
-    value.drop_with_heap(heap);
     let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
     Ok(Value::Int(count_i64))
 }

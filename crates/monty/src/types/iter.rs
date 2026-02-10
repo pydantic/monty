@@ -477,9 +477,9 @@ fn get_heap_item(
             if index >= list.len() {
                 return Ok(None);
             }
-            Ok(Some(list.as_vec()[index].copy_for_extend()))
+            Ok(Some(list.as_slice()[index].copy_for_extend()))
         }
-        HeapData::Tuple(tuple) => Ok(Some(tuple.as_vec()[index].copy_for_extend())),
+        HeapData::Tuple(tuple) => Ok(Some(tuple.as_slice()[index].copy_for_extend())),
         HeapData::NamedTuple(namedtuple) => Ok(Some(namedtuple.as_vec()[index].copy_for_extend())),
         HeapData::Dict(dict) => {
             // Check for dict mutation
@@ -711,7 +711,7 @@ impl IterValue {
             // Tuple/NamedTuple/Bytes/FrozenSet: captured len, no mutation check
             HeapData::Tuple(tuple) => Some(Self::HeapRef {
                 heap_id,
-                len: Some(tuple.as_vec().len()),
+                len: Some(tuple.as_slice().len()),
                 checks_mutation: false,
             }),
             HeapData::NamedTuple(namedtuple) => Some(Self::HeapRef {

@@ -77,7 +77,7 @@ impl List {
 
     /// Returns a reference to the underlying vector.
     #[must_use]
-    pub fn as_vec(&self) -> &Vec<Value> {
+    pub fn as_slice(&self) -> &[Value] {
         &self.items
     }
 
@@ -191,25 +191,6 @@ impl List {
         let items = get_slice_items(&self.items, start, stop, step, heap);
         let heap_id = heap.allocate(HeapData::List(Self::new(items)))?;
         Ok(Value::Ref(heap_id))
-    }
-
-    /// Inner implementation of `py_eq` for element-wise comparison.
-    ///
-    /// Separated from `py_eq` to simplify depth guard handling - the outer method
-    /// handles `increase()/decrease()`, this method does the actual comparison.
-    fn py_eq_inner(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
-        guard: &mut DepthGuard,
-        interns: &Interns,
-    ) -> Result<bool, ResourceError> {
-        for (i1, i2) in self.items.iter().zip(&other.items) {
-            if !i1.py_eq(i2, heap, guard, interns)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
     }
 }
 
@@ -336,9 +317,15 @@ impl PyTrait for List {
             return Ok(false);
         }
         guard.increase_err()?;
-        let result = self.py_eq_inner(other, heap, guard, interns);
+
+        for (i1, i2) in self.items.iter().zip(&other.items) {
+            if !i1.py_eq(i2, heap, guard, interns)? {
+                guard.decrease();
+                return Ok(false);
+            }
+        }
         guard.decrease();
-        result
+        Ok(true)
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
@@ -1161,7 +1148,7 @@ mod tests {
         let HeapData::List(list) = heap.get(list_id) else {
             panic!("expected list");
         };
-        assert!(matches!(list.as_vec()[1], Value::Int(99)));
+        assert!(matches!(list.as_slice()[1], Value::Int(99)));
 
         // Clean up
         Value::Ref(list_id).drop_with_heap(&mut heap);
@@ -1188,7 +1175,7 @@ mod tests {
         let HeapData::List(list) = heap.get(list_id) else {
             panic!("expected list");
         };
-        assert!(matches!(list.as_vec()[2], Value::Int(99)));
+        assert!(matches!(list.as_slice()[2], Value::Int(99)));
 
         Value::Ref(list_id).drop_with_heap(&mut heap);
     }

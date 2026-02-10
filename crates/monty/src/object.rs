@@ -362,14 +362,14 @@ impl MontyObject {
                     HeapData::Str(s) => Self::String(s.as_str().to_owned()),
                     HeapData::Bytes(b) => Self::Bytes(b.as_slice().to_owned()),
                     HeapData::List(list) => Self::List(
-                        list.as_vec()
+                        list.as_slice()
                             .iter()
                             .map(|obj| Self::from_value_inner(obj, heap, visited, guard, interns))
                             .collect(),
                     ),
                     HeapData::Tuple(tuple) => Self::Tuple(
                         tuple
-                            .as_vec()
+                            .as_slice()
                             .iter()
                             .map(|obj| Self::from_value_inner(obj, heap, visited, guard, interns))
                             .collect(),

@@ -97,31 +97,6 @@ pub const MAX_DATA_RECURSION_DEPTH: u16 = 500;
 
 /// Tracks recursion depth for container operations (repr, eq, cmp, hash).
 ///
-/// Passed separately from Heap to avoid borrow conflicts during recursive
-/// traversal of heap data. Create one at the entry point of an operation
-/// and pass it through all recursive calls.
-///
-/// # Usage
-///
-/// Create a `DepthGuard` at the entry point of a recursive operation:
-///
-/// ```ignore
-/// let mut guard = DepthGuard::default();
-/// guard.increase_err()?;  // Returns Err(ResourceError::Recursion) if limit exceeded
-/// // ... recursive operation ...
-/// guard.decrease();
-/// ```
-///
-/// For `py_repr_fmt` and similar contexts where exceeding the limit should
-/// produce a truncated representation rather than an error, use `increase()`
-/// which returns a `bool`:
-///
-/// ```ignore
-/// if !guard.increase() {
-///     return f.write_str("...");
-/// }
-/// ```
-///
 /// The guard tracks remaining depth rather than current depth, making the
 /// check a simple decrement-and-check operation.
 #[derive(Debug, Clone)]

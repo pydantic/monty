@@ -460,7 +460,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         let HeapData::Tuple(tuple) = self.heap.get(*id) else {
             unreachable!("CallFunctionExtended: args_tuple must be a Tuple")
         };
-        tuple.as_vec().iter().map(Value::copy_for_extend).collect()
+        tuple.as_slice().iter().map(Value::copy_for_extend).collect()
     }
 
     /// Builds `ArgValues` with kwargs for `CallFunctionExtended`.
@@ -543,7 +543,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         let HeapData::Tuple(tuple) = self.heap.get(*id) else {
             unreachable!("CallAttrExtended: args_tuple must be a Tuple")
         };
-        tuple.as_vec().iter().map(Value::copy_for_extend).collect()
+        tuple.as_slice().iter().map(Value::copy_for_extend).collect()
     }
 
     /// Builds `ArgValues` with kwargs for `CallAttrExtended`.

@@ -844,7 +844,7 @@ fn extract_bytes_for_prefix_suffix(
             ))),
             HeapData::Tuple(tuple) => {
                 // Extract each element as bytes
-                let items = tuple.as_vec();
+                let items = tuple.as_slice();
                 let mut prefixes = Vec::with_capacity(items.len());
                 for (i, item) in items.iter().enumerate() {
                     if let Ok(b) = extract_single_bytes_for_prefix_suffix(item, heap, interns) {

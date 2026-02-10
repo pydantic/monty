@@ -1233,7 +1233,7 @@ fn extract_str_or_tuple_of_str(
         Value::Ref(heap_id) => match heap.get(*heap_id) {
             HeapData::Str(s) => Ok(vec![s.as_str().to_owned()]),
             HeapData::Tuple(tuple) => {
-                let items = tuple.as_vec();
+                let items = tuple.as_slice();
                 let mut strings = Vec::with_capacity(items.len());
                 for item in items {
                     let s = extract_string_arg(item, heap, interns)?;

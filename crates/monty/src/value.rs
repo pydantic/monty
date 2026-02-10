@@ -1631,21 +1631,23 @@ impl Value {
                 // This allows iterating over container elements while calling py_eq
                 // (which needs &mut Heap for comparing nested heap values).
                 heap.with_entry_mut(*heap_id, |heap, data| match data {
-                    HeapData::List(el) => {
-                        // Create a local DepthGuard for py_eq calls inside the iterator.
-                        // We use unwrap_or(false) for recursion errors since any() can't propagate Results.
+                    HeapData::List(list) => {
                         let mut guard = DepthGuard::default();
-                        Ok(el
-                            .as_vec()
-                            .iter()
-                            .any(|i| item.py_eq(i, heap, &mut guard, interns).unwrap_or(false)))
+                        for el in list.as_slice() {
+                            if item.py_eq(el, heap, &mut guard, interns)? {
+                                return Ok(true);
+                            }
+                        }
+                        Ok(false)
                     }
-                    HeapData::Tuple(el) => {
+                    HeapData::Tuple(tuple) => {
                         let mut guard = DepthGuard::default();
-                        Ok(el
-                            .as_vec()
-                            .iter()
-                            .any(|i| item.py_eq(i, heap, &mut guard, interns).unwrap_or(false)))
+                        for el in tuple.as_slice() {
+                            if item.py_eq(el, heap, &mut guard, interns)? {
+                                return Ok(true);
+                            }
+                        }
+                        Ok(false)
                     }
                     HeapData::Dict(dict) => dict.get(item, heap, interns).map(|m| m.is_some()),
                     HeapData::Set(set) => set.contains(item, heap, interns),

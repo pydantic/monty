@@ -274,7 +274,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             // Tuple of exception types
             Value::Ref(id) => {
                 if let HeapData::Tuple(tuple) = self.heap.get(*id) {
-                    for v in tuple.as_vec() {
+                    for v in tuple.as_slice() {
                         if self.check_exc_match_inner(exc_type_enum, v)? {
                             return Ok(true);
                         }

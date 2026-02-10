@@ -97,8 +97,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         // Phase 1: Copy items without refcount changes
         let copied_items: Vec<Value> = match &iterable {
             Value::Ref(id) => match self.heap.get(*id) {
-                HeapData::List(list) => list.as_vec().iter().map(Value::copy_for_extend).collect(),
-                HeapData::Tuple(tuple) => tuple.as_vec().iter().map(Value::copy_for_extend).collect(),
+                HeapData::List(list) => list.as_slice().iter().map(Value::copy_for_extend).collect(),
+                HeapData::Tuple(tuple) => tuple.as_slice().iter().map(Value::copy_for_extend).collect(),
                 HeapData::Set(set) => set.storage().iter().map(Value::copy_for_extend).collect(),
                 HeapData::Dict(dict) => dict.iter().map(|(k, _)| Value::copy_for_extend(k)).collect(),
                 HeapData::Str(s) => {
@@ -174,7 +174,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         // Phase 1: Copy items without refcount changes
         let copied_items: SmallVec<_> = if let Value::Ref(id) = &list_ref {
             if let HeapData::List(list) = self.heap.get(*id) {
-                list.as_vec().iter().map(Value::copy_for_extend).collect()
+                list.as_slice().iter().map(Value::copy_for_extend).collect()
             } else {
                 return Err(RunError::internal("ListToTuple: expected list"));
             }
@@ -440,15 +440,15 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                         value.drop_with_heap(self.heap);
                         return Err(unpack_size_error(count, list_len));
                     }
-                    list.as_vec().iter().map(Value::copy_for_extend).collect()
+                    list.as_slice().iter().map(Value::copy_for_extend).collect()
                 }
                 HeapData::Tuple(tuple) => {
-                    let tuple_len = tuple.as_vec().len();
+                    let tuple_len = tuple.as_slice().len();
                     if tuple_len != count {
                         value.drop_with_heap(self.heap);
                         return Err(unpack_size_error(count, tuple_len));
                     }
-                    tuple.as_vec().iter().map(Value::copy_for_extend).collect()
+                    tuple.as_slice().iter().map(Value::copy_for_extend).collect()
                 }
                 HeapData::Str(s) => {
                     let str_len = s.as_str().chars().count();
@@ -541,15 +541,15 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                         value.drop_with_heap(self.heap);
                         return Err(unpack_ex_too_few_error(min_items, list_len));
                     }
-                    list.as_vec().iter().map(Value::copy_for_extend).collect()
+                    list.as_slice().iter().map(Value::copy_for_extend).collect()
                 }
                 HeapData::Tuple(tuple) => {
-                    let tuple_len = tuple.as_vec().len();
+                    let tuple_len = tuple.as_slice().len();
                     if tuple_len < min_items {
                         value.drop_with_heap(self.heap);
                         return Err(unpack_ex_too_few_error(min_items, tuple_len));
                     }
-                    tuple.as_vec().iter().map(Value::copy_for_extend).collect()
+                    tuple.as_slice().iter().map(Value::copy_for_extend).collect()
                 }
                 HeapData::Str(s) => {
                     // Collect chars once to avoid double iteration over UTF-8 data

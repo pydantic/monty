@@ -248,7 +248,7 @@ impl HeapData {
                 let mut hasher = DefaultHasher::new();
                 discriminant(self).hash(&mut hasher);
                 // Tuple is hashable only if all elements are hashable
-                for obj in t.as_vec() {
+                for obj in t.as_slice() {
                     let h = obj.py_hash(heap, interns)?;
                     h.hash(&mut hasher);
                 }
@@ -422,7 +422,7 @@ impl PyTrait for HeapData {
             // NamedTuple can compare with Tuple by elements (matching CPython behavior)
             (Self::NamedTuple(nt), Self::Tuple(t)) | (Self::Tuple(t), Self::NamedTuple(nt)) => {
                 let nt_items = nt.as_vec();
-                let t_items = t.as_vec();
+                let t_items = t.as_slice();
                 if nt_items.len() != t_items.len() {
                     return Ok(false);
                 }
@@ -1354,7 +1354,7 @@ impl<T: ResourceTracker> Heap<T> {
 
         if let HeapData::List(list) = &source_data {
             // Copy items and track which refs need incrementing
-            let items: Vec<Value> = list.as_vec().iter().map(Value::copy_for_extend).collect();
+            let items: Vec<Value> = list.as_slice().iter().map(Value::copy_for_extend).collect();
             let ref_ids: Vec<HeapId> = items.iter().filter_map(Value::ref_id).collect();
 
             // Restore source data before mutating heap (inc_ref needs it)
@@ -1482,7 +1482,7 @@ impl<T: ResourceTracker> Heap<T> {
                     check_repeat_size(list.len().saturating_mul(size_of::<Value>()), count, &self.tracker)?;
 
                     // Copy items and track which refs need incrementing
-                    let items: Vec<Value> = list.as_vec().iter().map(Value::copy_for_extend).collect();
+                    let items: Vec<Value> = list.as_slice().iter().map(Value::copy_for_extend).collect();
                     let ref_ids: Vec<HeapId> = items.iter().filter_map(Value::ref_id).collect();
                     let original_len = items.len();
 
@@ -1529,7 +1529,7 @@ impl<T: ResourceTracker> Heap<T> {
                     )?;
 
                     // Copy items and track which refs need incrementing
-                    let items: Vec<Value> = tuple.as_vec().iter().map(Value::copy_for_extend).collect();
+                    let items: Vec<Value> = tuple.as_slice().iter().map(Value::copy_for_extend).collect();
                     let ref_ids: Vec<HeapId> = items.iter().filter_map(Value::ref_id).collect();
                     let original_len = items.len();
 
@@ -1698,7 +1698,7 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
             if !list.contains_refs() {
                 return;
             }
-            for value in list.as_vec() {
+            for value in list.as_slice() {
                 if let Value::Ref(id) = value {
                     work_list.push(*id);
                 }
@@ -1709,7 +1709,7 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
             if !tuple.contains_refs() {
                 return;
             }
-            for value in tuple.as_vec() {
+            for value in tuple.as_slice() {
                 if let Value::Ref(id) = value {
                     work_list.push(*id);
                 }
