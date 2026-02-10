@@ -78,7 +78,7 @@ impl Slice {
         defer_drop!(third_arg, heap);
 
         if pos_args.len() > 0 {
-            return Err(ExcType::type_error_at_most("range", 3, 3 + pos_args.len()));
+            return Err(ExcType::type_error_at_most("slice", 3, 3 + pos_args.len()));
         }
 
         // Store results before dropping to avoid refcount leak on error
