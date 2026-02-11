@@ -1,6 +1,6 @@
 import type { ExecutionContext } from 'ava'
 import test from 'ava'
-import { Monty, type ResourceLimits } from '../wrapper'
+import { Monty, type ResourceLimits, MontySnapshot, MontyComplete } from '../wrapper'
 
 // =============================================================================
 // Print tests
@@ -169,4 +169,59 @@ for i in range(3):
     m.run({ printCallback: callback })
   })
   t.assert(thrown?.message === 'Exception: Error: Print error in loop')
+})
+
+test('with snapshot', (t) => {
+  const m = new Monty('print("snapshot")')
+  const { output, callback } = makePrintCollector(t)
+  const result = m.start({
+    printCallback: callback,
+  })
+  t.true(result instanceof MontyComplete)
+  t.true((result as MontyComplete).output === null)
+  t.true(output.join('') === 'snapshot\n')
+})
+
+test('with snapshot resume', (t) => {
+  const code = `
+print("hello")
+print(func())
+`
+  const m = new Monty(code, { externalFunctions: ['func'] })
+  const { output, callback } = makePrintCollector(t)
+  const progress = m.start({
+    printCallback: callback,
+  })
+  t.true(progress instanceof MontySnapshot)
+  const snapshot = progress as MontySnapshot
+  const result = snapshot.resume({
+    returnValue: 'world',
+  })
+  t.true(result instanceof MontyComplete)
+  t.true((result as MontyComplete).output === null)
+  t.true(output.join('') === 'hello\nworld\n')
+})
+
+test('with snapshot dump load', (t) => {
+  const m = new Monty('print(func())', {
+    externalFunctions: ['func'],
+  })
+  const { output, callback } = makePrintCollector(t)
+
+  const progress = m.start({
+    printCallback: callback,
+  })
+  t.true(progress instanceof MontySnapshot)
+  const snapshot = progress as MontySnapshot
+  const data = snapshot.dump()
+
+  const progress2 = MontySnapshot.load(data, {
+    printCallback: callback,
+  })
+  const result = progress2.resume({
+    returnValue: 42,
+  })
+  t.true(result instanceof MontyComplete)
+  t.true((result as MontyComplete).output === null)
+  t.true(output.join('') === '42\n')
 })
