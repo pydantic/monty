@@ -1580,6 +1580,7 @@ dependencies = [
 name = "monty-cli"
 version = "0.0.4"
 dependencies = [
+ "clap",
  "monty",
  "monty_type_checking",
 ]
