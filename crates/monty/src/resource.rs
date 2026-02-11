@@ -59,6 +59,14 @@ pub fn check_lshift_size(
     check_estimated_size(estimate_bits_to_bytes(value_bits.saturating_add(shift_amount)), tracker)
 }
 
+/// Pre-checks that an integer division overflow promotion won't exceed resource limits.
+///
+/// Division results are bounded by the dividend size, but we still check for consistency
+/// with other BigInt promotion paths.
+pub fn check_div_size(dividend_bits: u64, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
+    check_estimated_size(estimate_bits_to_bytes(dividend_bits), tracker)
+}
+
 /// Checks an estimated result size against the resource tracker.
 ///
 /// Only calls the tracker when the estimate exceeds `LARGE_RESULT_THRESHOLD`
