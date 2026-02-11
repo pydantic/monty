@@ -211,7 +211,7 @@ impl Monty {
                     writer,
                 );
             }
-            
+
             return self.run_with_external_functions(
                 env,
                 input_values,
