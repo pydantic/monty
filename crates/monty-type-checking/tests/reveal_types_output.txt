@@ -10,10 +10,10 @@ reveal_types.py:18:13: info[revealed-type] Revealed type: `list[Unknown | int]`
 reveal_types.py:19:13: info[revealed-type] Revealed type: `tuple[Literal[1], Literal[2]]`
 reveal_types.py:20:13: info[revealed-type] Revealed type: `dict[Unknown | int, Unknown | int]`
 reveal_types.py:21:13: info[revealed-type] Revealed type: `set[Unknown | int]`
-reveal_types.py:22:13: info[revealed-type] Revealed type: `frozenset[Unknown | int]`
+reveal_types.py:22:13: info[revealed-type] Revealed type: `frozenset[int]`
 reveal_types.py:23:13: info[revealed-type] Revealed type: `range`
-reveal_types.py:26:13: info[revealed-type] Revealed type: `enumerate[Unknown | int]`
-reveal_types.py:27:13: info[revealed-type] Revealed type: `reversed[Unknown | int]`
+reveal_types.py:26:13: info[revealed-type] Revealed type: `enumerate[int]`
+reveal_types.py:27:13: info[revealed-type] Revealed type: `reversed[int]`
 reveal_types.py:28:13: info[revealed-type] Revealed type: `zip[Unknown]`
 reveal_types.py:31:13: info[revealed-type] Revealed type: `slice[Any, Any, Any]`
 reveal_types.py:34:13: info[revealed-type] Revealed type: `BaseException`
