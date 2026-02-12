@@ -943,3 +943,134 @@ fn tuple_mult_within_limit() {
     assert!(result.is_ok(), "small tuple mult should succeed");
     assert_eq!(result.unwrap(), MontyObject::Bool(true));
 }
+
+// === Timeout enforcement in builtin iteration loops ===
+// These tests verify that `max_duration_secs` is enforced inside Rust-side loops
+// within builtin functions. Previously, builtins like sum(), sorted(), min(), max()
+// ran Rust loops entirely within a single bytecode instruction, bypassing the VM's
+// per-instruction timeout check. The fix adds `heap.check_time()` calls inside
+// `MontyIter::for_next()` and other non-iterator loops.
+
+/// Helper: runs code with a short time limit and asserts it produces a TimeoutError promptly.
+fn assert_timeout_in_builtin(code: &str, label: &str) {
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_duration(Duration::from_millis(100));
+    let start = std::time::Instant::now();
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+    let elapsed = start.elapsed();
+
+    assert!(result.is_err(), "{label}: should exceed time limit");
+    let exc = result.unwrap_err();
+    assert_eq!(
+        exc.exc_type(),
+        ExcType::TimeoutError,
+        "{label}: expected TimeoutError, got: {exc}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "{label}: should terminate promptly, took {elapsed:?}"
+    );
+}
+
+/// Test that `sum(range(huge))` respects the time limit.
+///
+/// `sum()` iterates via `for_next()` which now calls `heap.check_time()`.
+#[test]
+fn timeout_in_sum_builtin() {
+    assert_timeout_in_builtin("sum(range(10**18))", "sum(range(10**18))");
+}
+
+/// Test that `list(range(huge))` respects the time limit.
+///
+/// The `list()` constructor collects via `MontyIter::collect()` -> `for_next()`.
+#[test]
+fn timeout_in_list_constructor() {
+    assert_timeout_in_builtin("list(range(10**18))", "list(range(10**18))");
+}
+
+/// Test that `sorted(range(huge))` respects the time limit.
+///
+/// `sorted()` first collects items via `for_next()`, then sorts. The collection
+/// phase alone should trigger the timeout for very large ranges.
+#[test]
+fn timeout_in_sorted_builtin() {
+    assert_timeout_in_builtin("sorted(range(10**18))", "sorted(range(10**18))");
+}
+
+/// Test that `min(range(huge))` respects the time limit.
+///
+/// `min()` with a single iterable argument iterates via `for_next()`.
+#[test]
+fn timeout_in_min_builtin() {
+    assert_timeout_in_builtin("min(range(10**18))", "min(range(10**18))");
+}
+
+/// Test that `max(range(huge))` respects the time limit.
+///
+/// `max()` with a single iterable argument iterates via `for_next()`.
+#[test]
+fn timeout_in_max_builtin() {
+    assert_timeout_in_builtin("max(range(10**18))", "max(range(10**18))");
+}
+
+/// Test that `all(range(huge))` respects the time limit.
+///
+/// `all()` iterates via `for_next()` and only short-circuits on falsy values.
+/// `range(1, 10**18)` produces only truthy values so it keeps iterating.
+#[test]
+fn timeout_in_all_builtin() {
+    assert_timeout_in_builtin("all(range(1, 10**18))", "all(range(1, 10**18))");
+}
+
+/// Test that `enumerate(range(huge))` iteration respects the time limit.
+///
+/// `enumerate()` creates tuples on each iteration via `for_next()`.
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_in_any_builtin() {
+    // range(0, 1) repeated via a for loop calling any on each chunk isn't ideal,
+    // but we can test with a large range starting from 0 where only first element is falsy
+    // Actually, any(range(10**18)) will return True immediately because range starts at 0
+    // which is falsy, but 1 is truthy. So any() returns True after checking 0, 1.
+    // Instead, we need a different approach - just use the for_next timeout via enumerate.
+    assert_timeout_in_builtin("list(enumerate(range(10**18)))", "enumerate(range(10**18))");
+}
+
+/// Test that `tuple(range(huge))` respects the time limit.
+///
+/// The `tuple()` constructor collects via `MontyIter::collect()` -> `for_next()`.
+#[test]
+fn timeout_in_tuple_constructor() {
+    assert_timeout_in_builtin("tuple(range(10**18))", "tuple(range(10**18))");
+}
+
+/// Test that `' '.join(...)` iteration respects the time limit.
+///
+/// `str.join()` collects items from the iterable via `for_next()`.
+#[test]
+fn timeout_in_str_join() {
+    assert_timeout_in_builtin("' '.join(str(i) for i in range(10**18))", "str.join with generator");
+}
+
+/// Test that the insertion sort inner loop in `sorted()` respects the time limit.
+///
+/// Uses reverse-sorted data to trigger worst-case O(n^2) insertion sort behavior.
+/// The sort comparison loop has an explicit `heap.check_time()` call.
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_in_sorted_comparison_loop() {
+    // Build a reverse-sorted list, then sort it. Insertion sort on reverse-sorted
+    // data is O(n^2). With 50k elements that's 2.5 billion comparisons.
+    let code = r"
+x = list(range(50000, 0, -1))
+sorted(x)
+";
+    assert_timeout_in_builtin(code, "sorted(reversed list)");
+}

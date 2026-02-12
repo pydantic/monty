@@ -226,3 +226,32 @@ def test_small_operations_within_limit():
     limits = pydantic_monty.ResourceLimits(max_memory=1_000_000)
     result = m.run(limits=limits)
     assert result > 0
+
+
+@pytest.mark.parametrize(
+    'code',
+    [
+        'sum(range(10**18))',
+        'list(range(10**18))',
+        'sorted(range(10**18))',
+        'min(range(10**18))',
+        'max(range(10**18))',
+    ],
+    ids=['sum', 'list', 'sorted', 'min', 'max'],
+)
+def test_timeout_enforced_in_builtin_loops(code: str):
+    """Timeout must be enforced inside Rust-side builtin iteration loops.
+
+    Previously, builtins like sum(), sorted(), min(), max() ran Rust-side loops
+    entirely within a single bytecode instruction, bypassing the VM's
+    per-instruction timeout check.
+    """
+    m = pydantic_monty.Monty(code)
+    limits = pydantic_monty.ResourceLimits(max_duration_secs=0.1)
+    start = time.monotonic()
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run(limits=limits)
+    elapsed = time.monotonic() - start
+    assert isinstance(exc_info.value.exception(), TimeoutError)
+    # Should terminate promptly - well under 2 seconds
+    assert elapsed < 2.0

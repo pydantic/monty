@@ -187,7 +187,7 @@ impl List {
             .indices(self.items.len())
             .map_err(|()| ExcType::value_error_slice_step_zero())?;
 
-        let items = get_slice_items(&self.items, start, stop, step, heap);
+        let items = get_slice_items(&self.items, start, stop, step, heap)?;
         let heap_id = heap.allocate(HeapData::List(Self::new(items)))?;
         Ok(Value::Ref(heap_id))
     }
@@ -565,6 +565,7 @@ fn list_remove(
     let mut found_idx = None;
     let mut guard = DepthGuard::default();
     for (i, item) in list.items.iter().enumerate() {
+        heap.check_time()?;
         if value.py_eq(item, heap, &mut guard, interns)? {
             found_idx = Some(i);
             break;
@@ -653,6 +654,7 @@ fn list_index(
     // Search for the value in the specified range
     let mut guard = DepthGuard::default();
     for (i, item) in list.items[start..end].iter().enumerate() {
+        heap.check_time()?;
         if value.py_eq(item, heap, &mut guard, interns)? {
             let idx = i64::try_from(start + i).expect("index exceeds i64::MAX");
             return Ok(Value::Int(idx));
@@ -674,14 +676,14 @@ fn list_count(
     let value = args.get_one_arg("list.count", heap)?;
     defer_drop!(value, heap);
 
-    // Use a local DepthGuard for py_eq calls.
-    // We use unwrap_or(false) for recursion errors since filter() can't propagate Results.
     let mut guard = DepthGuard::default();
-    let count = list
-        .items
-        .iter()
-        .filter(|item| value.py_eq(item, heap, &mut guard, interns).unwrap_or(false))
-        .count();
+    let mut count: usize = 0;
+    for item in &list.items {
+        heap.check_time()?;
+        if value.py_eq(item, heap, &mut guard, interns)? {
+            count += 1;
+        }
+    }
 
     let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
     Ok(Value::Int(count_i64))
@@ -802,6 +804,10 @@ pub(crate) fn do_list_sort(
             if sort_error.is_some() {
                 return Ordering::Equal;
             }
+            if let Err(e) = heap.check_time() {
+                sort_error = Some(e.into());
+                return Ordering::Equal;
+            }
             match keys[a].py_cmp(&keys[b], heap, &mut guard.borrow_mut(), interns) {
                 Ok(Some(ord)) => {
                     if reverse {
@@ -827,6 +833,10 @@ pub(crate) fn do_list_sort(
     } else {
         indices.sort_by(|&a, &b| {
             if sort_error.is_some() {
+                return Ordering::Equal;
+            }
+            if let Err(e) = heap.check_time() {
+                sort_error = Some(e.into());
                 return Ordering::Equal;
             }
             match items[a].py_cmp(&items[b], heap, &mut guard.borrow_mut(), interns) {
@@ -977,6 +987,7 @@ pub(crate) fn repr_sequence_fmt(
 /// iterates backward from start down to (but not including) stop.
 ///
 /// Returns a new Vec of cloned values with proper refcount increments.
+/// Checks the time limit on each iteration to enforce timeouts during slicing.
 ///
 /// Note: step must be non-zero (callers should validate this via `slice.indices()`).
 pub(crate) fn get_slice_items(
@@ -985,7 +996,7 @@ pub(crate) fn get_slice_items(
     stop: usize,
     step: i64,
     heap: &mut Heap<impl ResourceTracker>,
-) -> Vec<Value> {
+) -> RunResult<Vec<Value>> {
     let mut result = Vec::new();
 
     // try_from succeeds for non-negative step; step==0 rejected upstream by slice.indices()
@@ -993,6 +1004,7 @@ pub(crate) fn get_slice_items(
         // Positive step: iterate forward
         let mut i = start;
         while i < stop && i < items.len() {
+            heap.check_time()?;
             result.push(items[i].clone_with_heap(heap));
             i += step_usize;
         }
@@ -1013,12 +1025,13 @@ pub(crate) fn get_slice_items(
             if i_usize >= items.len() || i <= stop_i64 {
                 break;
             }
+            heap.check_time()?;
             result.push(items[i_usize].clone_with_heap(heap));
             i -= step_abs_i64;
         }
     }
 
-    result
+    Ok(result)
 }
 
 #[cfg(test)]

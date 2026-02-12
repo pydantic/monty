@@ -269,6 +269,11 @@ impl MontyIter {
     /// Returns `Err` if allocation fails (for string character iteration) or if
     /// a dict/set changes size during iteration (RuntimeError).
     pub fn for_next(&mut self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Option<Value>> {
+        // Check timeout on every iteration step. For NoLimitTracker this is
+        // inlined as a no-op. For LimitTracker it ensures that Rust-side loops
+        // (sum, sorted, min, max, etc.) cannot bypass the VM's per-instruction
+        // timeout check by running entirely within a single bytecode instruction.
+        heap.check_time()?;
         match &mut self.iter_value {
             IterValue::Range { next, step, len } => {
                 if self.index >= *len {

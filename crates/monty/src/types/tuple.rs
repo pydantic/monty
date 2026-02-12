@@ -175,7 +175,7 @@ impl PyTrait for Tuple {
                 .indices(self.items.len())
                 .map_err(|()| ExcType::value_error_slice_step_zero())?;
 
-            let items = get_slice_items(&self.items, start, stop, step, heap);
+            let items = get_slice_items(&self.items, start, stop, step, heap)?;
             return Ok(allocate_tuple(items.into(), heap)?);
         }
 
