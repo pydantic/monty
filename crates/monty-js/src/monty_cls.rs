@@ -774,9 +774,9 @@ impl MontyComplete {
 type JsPrintCallback<'env> = Function<'env, FnArgs<(&'static str, String)>, ()>;
 type JsPrintCallbackRef = FunctionRef<FnArgs<(&'static str, String)>, ()>;
 
-/// A `PrintWriter` implementation that calls a Python callback for each print output.
+/// A `PrintWriter` implementation that calls a javascript callback for each print output.
 ///
-/// This structure internally holds a `JsFunction`.
+/// This structure internally holds a `napi::Function`.
 pub struct CallbackStringPrint<'env>(JsPrintCallback<'env>);
 
 impl<'env> CallbackStringPrint<'env> {
