@@ -102,7 +102,7 @@ pub struct RunOptions<'env> {
     /// Resource limits configuration.
     pub limits: Option<JsResourceLimits>,
     /// Optional print callback function.
-    pub print_callback: Option<JsCallbackFunction<'env>>,
+    pub print_callback: Option<JsPrintCallback<'env>>,
     /// Dict of external function callbacks.
     /// Keys are function names, values are callable functions.
     pub external_functions: Option<Object<'env>>,
@@ -116,7 +116,7 @@ pub struct StartOptions<'env> {
     /// Resource limits configuration.
     pub limits: Option<JsResourceLimits>,
     /// Optional print callback function.
-    pub print_callback: Option<JsCallbackFunction<'env>>,
+    pub print_callback: Option<JsPrintCallback<'env>>,
 }
 
 #[napi]
@@ -538,7 +538,7 @@ pub struct MontySnapshot {
     /// The keyword arguments passed to the function (stored as MontyObject pairs for serialization).
     kwargs: Vec<(MontyObject, MontyObject)>,
     /// Optional print callback function.
-    print_callback: Option<JsCallbackFunctionRef>,
+    print_callback: Option<JsPrintCallbackRef>,
 }
 
 /// Options for resuming execution.
@@ -564,7 +564,7 @@ pub struct ExceptionInput {
 #[napi(object)]
 pub struct SnapshotLoadOptions<'env> {
     /// Optional print callback function.
-    pub print_callback: Option<JsCallbackFunction<'env>>,
+    pub print_callback: Option<JsPrintCallback<'env>>,
     // Future: could add dataclass-like registry support
 }
 
@@ -771,24 +771,24 @@ impl MontyComplete {
 }
 
 // Function type for JS callback used in `CallbackStringPrint`.
-type JsCallbackFunction<'env> = Function<'env, FnArgs<(&'static str, String)>, ()>;
-type JsCallbackFunctionRef = FunctionRef<FnArgs<(&'static str, String)>, ()>;
+type JsPrintCallback<'env> = Function<'env, FnArgs<(&'static str, String)>, ()>;
+type JsPrintCallbackRef = FunctionRef<FnArgs<(&'static str, String)>, ()>;
 
 /// A `PrintWriter` implementation that calls a Python callback for each print output.
 ///
 /// This structure internally holds a `JsFunction`.
-pub struct CallbackStringPrint<'env>(JsCallbackFunction<'env>);
+pub struct CallbackStringPrint<'env>(JsPrintCallback<'env>);
 
 impl<'env> CallbackStringPrint<'env> {
     /// Creates a new `CallbackStringPrint` from a `JsFunction`.
-    pub fn new_js(env: &'env Env, func: &JsCallbackFunction<'env>) -> napi::Result<Self> {
+    pub fn new_js(env: &'env Env, func: &JsPrintCallback<'env>) -> napi::Result<Self> {
         Ok(Self(func.create_ref()?.borrow_back(env)?))
     }
 
     /// Creates a new printer from a function reference.
     ///
     /// This will re-borrow the function reference for use in printing.
-    pub fn new_js_ref(env: &'env Env, func: &JsCallbackFunctionRef) -> napi::Result<Self> {
+    pub fn new_js_ref(env: &'env Env, func: &JsPrintCallbackRef) -> napi::Result<Self> {
         Ok(Self(func.borrow_back(env)?))
     }
 }
@@ -819,7 +819,7 @@ impl PrintWriter for CallbackStringPrint<'_> {
 /// Panics if the progress is `ResolveFutures` - async futures are not yet supported in the JS bindings.
 fn progress_to_result<T>(
     progress: RunProgress<T>,
-    print_callback: Option<JsCallbackFunctionRef>,
+    print_callback: Option<JsPrintCallbackRef>,
     script_name: String,
 ) -> Either3<MontySnapshot, MontyComplete, JsMontyException>
 where
