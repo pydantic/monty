@@ -12,8 +12,9 @@ use crate::{
     args::ArgValues,
     asyncio::{CallId, CoroutineState, GatherItem, TaskId},
     bytecode::vm::scheduler::{PendingCallData, Scheduler, SerializedTaskFrame, TaskState},
+    defer_drop,
     exception_private::{ExcType, RunError, SimpleException},
-    heap::{HeapData, HeapId},
+    heap::{HeapData, HeapGuard, HeapId},
     intern::FunctionId,
     io::PrintWriter,
     resource::ResourceTracker,
@@ -71,35 +72,32 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     pub(super) fn exec_get_awaitable(&mut self) -> Result<AwaitResult, RunError> {
         let awaitable = self.pop();
 
+        let mut awaitable_guard = HeapGuard::new(awaitable, self);
+        let (awaitable, this) = awaitable_guard.as_parts();
+
         match awaitable {
             Value::Ref(heap_id) => {
-                // Check what kind of heap object this is and dispatch to handler
-                // We check the type first, then call the handler with just the heap_id
-                // to avoid borrow conflicts between heap access and &mut self
-                let heap_data_type = match self.heap.get(heap_id) {
+                let heap_id = *heap_id;
+                let heap_data_type = match this.heap.get(heap_id) {
                     HeapData::Coroutine(_) => Some(AwaitableType::Coroutine),
                     HeapData::GatherFuture(_) => Some(AwaitableType::GatherFuture),
                     _ => None,
                 };
 
                 match heap_data_type {
-                    Some(AwaitableType::Coroutine) => self.await_coroutine(heap_id, awaitable),
-                    Some(AwaitableType::GatherFuture) => self.await_gather_future(heap_id, awaitable),
-                    None => {
-                        // Not an awaitable type
-                        let type_name = awaitable.py_type(self.heap);
-                        awaitable.drop_with_heap(self.heap);
-                        Err(ExcType::object_not_awaitable(type_name))
+                    Some(AwaitableType::Coroutine) => {
+                        let (awaitable, this) = awaitable_guard.into_parts();
+                        this.await_coroutine(heap_id, awaitable)
                     }
+                    Some(AwaitableType::GatherFuture) => {
+                        let (awaitable, this) = awaitable_guard.into_parts();
+                        this.await_gather_future(heap_id, awaitable)
+                    }
+                    None => Err(ExcType::object_not_awaitable(awaitable.py_type(this.heap))),
                 }
             }
-            Value::ExternalFuture(call_id) => self.await_external_future(call_id),
-            _ => {
-                // Not an awaitable type
-                let type_name = awaitable.py_type(self.heap);
-                awaitable.drop_with_heap(self.heap);
-                Err(ExcType::object_not_awaitable(type_name))
-            }
+            &Value::ExternalFuture(call_id) => this.await_external_future(call_id),
+            _ => Err(ExcType::object_not_awaitable(awaitable.py_type(this.heap))),
         }
     }
 
@@ -108,13 +106,15 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// Validates the coroutine is in `New` state, extracts its captured namespace
     /// and cells, marks it as `Running`, and pushes a frame to execute the coroutine body.
     fn await_coroutine(&mut self, heap_id: HeapId, awaitable: Value) -> Result<AwaitResult, RunError> {
-        let HeapData::Coroutine(coro) = self.heap.get(heap_id) else {
+        let this = self;
+        defer_drop!(awaitable, this);
+
+        let HeapData::Coroutine(coro) = this.heap.get(heap_id) else {
             unreachable!("await_coroutine called with non-coroutine heap_id")
         };
 
         // Check if coroutine can be awaited (must be New)
         if coro.state != CoroutineState::New {
-            awaitable.drop_with_heap(self.heap);
             return Err(
                 SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited coroutine").into(),
             );
@@ -128,23 +128,20 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         // Increment refcounts for copied values
         for value in &namespace_values {
             if let Value::Ref(id) = value {
-                self.heap.inc_ref(*id);
+                this.heap.inc_ref(*id);
             }
         }
         for &cell_id in &frame_cells {
-            self.heap.inc_ref(cell_id);
+            this.heap.inc_ref(cell_id);
         }
 
         // Mark coroutine as Running
-        if let HeapData::Coroutine(coro_mut) = self.heap.get_mut(heap_id) {
+        if let HeapData::Coroutine(coro_mut) = this.heap.get_mut(heap_id) {
             coro_mut.state = CoroutineState::Running;
         }
 
-        // Create namespace and push frame
-        self.start_coroutine_frame(func_id, namespace_values, frame_cells)?;
-
-        // Drop the coroutine reference (we've extracted what we need)
-        awaitable.drop_with_heap(self.heap);
+        // Create namespace and push frame (guard drops awaitable at scope exit)
+        this.start_coroutine_frame(func_id, namespace_values, frame_cells)?;
 
         Ok(AwaitResult::FramePushed)
     }
@@ -157,30 +154,31 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// If all items are already resolved, returns immediately. Otherwise blocks
     /// the current task and switches to a ready task or yields to the host.
-    #[cfg_attr(not(feature = "ref-count-panic"), expect(unused_mut))]
-    fn await_gather_future(&mut self, heap_id: HeapId, mut awaitable: Value) -> Result<AwaitResult, RunError> {
-        let HeapData::GatherFuture(gather) = self.heap.get(heap_id) else {
+    fn await_gather_future(&mut self, heap_id: HeapId, awaitable: Value) -> Result<AwaitResult, RunError> {
+        let this = self;
+        let mut awaitable_guard = HeapGuard::new(awaitable, this);
+        let (_, this) = awaitable_guard.as_parts();
+
+        let HeapData::GatherFuture(gather) = this.heap.get(heap_id) else {
             unreachable!("await_gather_future called with non-gather heap_id")
         };
 
         // Check if already being waited on (double-await)
         if gather.waiter.is_some() {
-            awaitable.drop_with_heap(self.heap);
             return Err(SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited gather").into());
         }
 
         // If no items to gather, return empty list immediately
         if gather.item_count() == 0 {
-            awaitable.drop_with_heap(self.heap);
-            let list_id = self.heap.allocate(HeapData::List(List::new(vec![])))?;
+            let list_id = this.heap.allocate(HeapData::List(List::new(vec![])))?;
             return Ok(AwaitResult::ValueReady(Value::Ref(list_id)));
         }
 
         // Set waiter and clone items to process
         // Note: We clone instead of mem::take because GatherItem::Coroutine holds HeapIds
         // that need to stay in gather.items for proper ref counting when the gather is dropped.
-        let current_task = self.get_or_create_scheduler().current_task_id();
-        let items: Vec<GatherItem> = if let HeapData::GatherFuture(gather_mut) = self.heap.get_mut(heap_id) {
+        let current_task = this.get_or_create_scheduler().current_task_id();
+        let items: Vec<GatherItem> = if let HeapData::GatherFuture(gather_mut) = this.heap.get_mut(heap_id) {
             gather_mut.waiter = current_task;
             gather_mut.items.clone()
         } else {
@@ -195,38 +193,38 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             match item {
                 GatherItem::Coroutine(coro_id) => {
                     // Spawn as task with the item index as result index
-                    let task_id = self.scheduler_mut().spawn(*coro_id, Some(heap_id), Some(idx));
+                    let task_id = this.scheduler_mut().spawn(*coro_id, Some(heap_id), Some(idx));
                     task_ids.push(task_id);
                 }
                 GatherItem::ExternalFuture(call_id) => {
                     // Check if already resolved
-                    let scheduler = self.get_or_create_scheduler();
+                    let scheduler = this.get_or_create_scheduler();
                     scheduler.mark_consumed(*call_id);
 
-                    if let Some(value) = self.scheduler_mut().take_resolved(*call_id) {
+                    if let Some(value) = this.scheduler_mut().take_resolved(*call_id) {
                         // Already resolved - store result immediately
-                        if let HeapData::GatherFuture(gather_mut) = self.heap.get_mut(heap_id) {
+                        if let HeapData::GatherFuture(gather_mut) = this.heap.get_mut(heap_id) {
                             gather_mut.results[idx] = Some(value);
                         }
                     } else {
                         // Not resolved yet - track it
                         pending_calls.push(*call_id);
                         // Register gather as waiting on this call
-                        self.scheduler_mut().register_gather_for_call(*call_id, heap_id, idx);
+                        this.scheduler_mut().register_gather_for_call(*call_id, heap_id, idx);
                     }
                 }
             }
         }
 
         // Store task IDs and pending calls in the gather
-        if let HeapData::GatherFuture(gather_mut) = self.heap.get_mut(heap_id) {
+        if let HeapData::GatherFuture(gather_mut) = this.heap.get_mut(heap_id) {
             gather_mut.task_ids = task_ids;
             gather_mut.pending_calls.clone_from(&pending_calls);
         }
 
         // Check if all items are already complete (only external futures, all resolved)
         let all_complete = {
-            if let HeapData::GatherFuture(gather) = self.heap.get(heap_id) {
+            if let HeapData::GatherFuture(gather) = this.heap.get(heap_id) {
                 gather.task_ids.is_empty() && gather.pending_calls.is_empty()
             } else {
                 false
@@ -237,7 +235,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             // All external futures were already resolved - return results immediately
             // Steal results using mem::take - avoids refcount dance since we're dropping
             // the GatherFuture anyway via awaitable.drop_with_heap below
-            let results: Vec<Value> = if let HeapData::GatherFuture(gather) = self.heap.get_mut(heap_id) {
+            let results: Vec<Value> = if let HeapData::GatherFuture(gather) = this.heap.get_mut(heap_id) {
                 std::mem::take(&mut gather.results)
                     .into_iter()
                     .map(|r| r.expect("all results should be filled"))
@@ -246,22 +244,25 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 vec![]
             };
 
-            awaitable.drop_with_heap(self.heap);
-            let list_id = self.heap.allocate(HeapData::List(List::new(results)))?;
+            let list_id = this.heap.allocate(HeapData::List(List::new(results)))?;
             return Ok(AwaitResult::ValueReady(Value::Ref(list_id)));
         }
 
         // Block current task on this gather
-        self.scheduler_mut().block_current_on_gather(heap_id);
+        this.scheduler_mut().block_current_on_gather(heap_id);
 
         // Consume the awaitable without decrementing refcount - the GatherFuture
         // must stay alive for result collection. It will be dec_ref'd when
         // the gather completes (in handle_task_completion).
-        #[cfg(feature = "ref-count-panic")]
-        awaitable.dec_ref_forget();
+        let (awaitable, this) = awaitable_guard.into_parts();
+        #[cfg_attr(
+            not(feature = "ref-count-panic"),
+            expect(clippy::forget_non_drop, reason = "has Drop with ref-count-panic feature")
+        )]
+        std::mem::forget(awaitable);
 
         // Switch to next ready task (spawned tasks) or yield for external futures
-        self.switch_or_yield()
+        this.switch_or_yield()
     }
 
     /// Awaits an external future by blocking until it's resolved.
@@ -382,10 +383,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         }
 
         // Mark task as completed and store result in task state
-        self.scheduler_mut().complete_task(task_id, result.copy_for_extend());
-        if let Value::Ref(id) = &result {
-            self.heap.inc_ref(*id);
-        }
+        let task_result = result.clone_with_heap(self.heap);
+        self.scheduler_mut().complete_task(task_id, task_result);
 
         // If task belongs to a gather, store result and check if gather is complete
         if let Some(gid) = gather_id {
@@ -393,10 +392,9 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             if let Some(idx) = gather_result_idx
                 && let HeapData::GatherFuture(gather) = self.heap.get_mut(gid)
             {
-                gather.results[idx] = Some(result.copy_for_extend());
-                if let Value::Ref(id) = &result {
-                    self.heap.inc_ref(*id);
-                }
+                gather.results[idx] = Some(result);
+            } else {
+                result.drop_with_heap(self.heap);
             }
 
             // Extract gather metadata - clone task_ids since we need to check completion
@@ -428,8 +426,6 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                     // Get the error from the failed task
                     let task = self.scheduler_mut().get_task_mut(failed_tid);
                     if let TaskState::Failed(err) = std::mem::replace(&mut task.state, TaskState::Ready) {
-                        // Clean up resources before propagating error
-                        result.drop_with_heap(self.heap);
                         self.heap.dec_ref(gid);
 
                         // Switch to waiter so error is raised in its context
@@ -459,9 +455,6 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 // Create result list
                 let list_id = self.heap.allocate(HeapData::List(List::new(results)))?;
 
-                // Clean up gather - drop the original result since we copied it
-                result.drop_with_heap(self.heap);
-
                 // Release the GatherFuture - this will cascade to release coroutines
                 self.heap.dec_ref(gid);
 
@@ -485,10 +478,10 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 // No waiter (shouldn't happen but handle gracefully)
                 return Ok(AwaitResult::ValueReady(Value::Ref(list_id)));
             }
+        } else {
+            // Drop the result (it's stored in the task state now)
+            result.drop_with_heap(self.heap);
         }
-
-        // Drop the result (it's stored in the task state now)
-        result.drop_with_heap(self.heap);
 
         // Gather not complete or no gather - switch to next task
         // Clear current task's state since it's done

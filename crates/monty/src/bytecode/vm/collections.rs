@@ -4,8 +4,9 @@ use smallvec::SmallVec;
 
 use super::VM;
 use crate::{
+    defer_drop,
     exception_private::{ExcType, RunError, SimpleException},
-    heap::HeapData,
+    heap::{HeapData, HeapGuard},
     intern::StringId,
     io::PrintWriter,
     resource::ResourceTracker,
@@ -65,23 +66,22 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// Stack: [start, stop, step] -> [slice]
     /// Each value can be None (for default) or an integer.
     pub(super) fn build_slice(&mut self) -> Result<(), RunError> {
-        let step_val = self.pop();
-        let stop_val = self.pop();
-        let start_val = self.pop();
+        let this = self;
 
-        // Store results before dropping to avoid refcount leak on error
-        let start = value_to_option_i64(&start_val);
-        let stop = value_to_option_i64(&stop_val);
-        let step = value_to_option_i64(&step_val);
+        let step_val = this.pop();
+        defer_drop!(step_val, this);
+        let stop_val = this.pop();
+        defer_drop!(stop_val, this);
+        let start_val = this.pop();
+        defer_drop!(start_val, this);
 
-        // Drop the values after extracting their integer content
-        start_val.drop_with_heap(self.heap);
-        stop_val.drop_with_heap(self.heap);
-        step_val.drop_with_heap(self.heap);
+        let start = value_to_option_i64(start_val)?;
+        let stop = value_to_option_i64(stop_val)?;
+        let step = value_to_option_i64(step_val)?;
 
-        let slice = Slice::new(start?, stop?, step?);
-        let heap_id = self.heap.allocate(HeapData::Slice(slice))?;
-        self.push(Value::Ref(heap_id));
+        let slice = Slice::new(start, stop, step);
+        let heap_id = this.heap.allocate(HeapData::Slice(slice))?;
+        this.push(Value::Ref(heap_id));
         Ok(())
     }
 
@@ -89,14 +89,22 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Stack: [list, iterable] -> [list]
     /// Pops the iterable, extends the list in place, leaves list on stack.
+    ///
+    /// Uses `HeapGuard` for `list_ref` because it is pushed back on success,
+    /// and `defer_drop!` for `iterable` because it is always dropped.
     pub(super) fn list_extend(&mut self) -> Result<(), RunError> {
-        let iterable = self.pop();
-        let list_ref = self.pop();
+        let this = self;
+
+        let iterable = this.pop();
+        defer_drop!(iterable, this);
+        // HeapGuard for list_ref: pushed back on success via into_parts, dropped on error
+        let mut list_ref_guard = HeapGuard::new(this.pop(), this);
+        let (list_ref, this) = list_ref_guard.as_parts();
 
         // Two-phase approach to avoid borrow conflicts:
         // Phase 1: Copy items without refcount changes
-        let copied_items: Vec<Value> = match &iterable {
-            Value::Ref(id) => match self.heap.get(*id) {
+        let copied_items: Vec<Value> = match iterable {
+            Value::Ref(id) => match this.heap.get(*id) {
                 HeapData::List(list) => list.as_slice().iter().map(Value::copy_for_extend).collect(),
                 HeapData::Tuple(tuple) => tuple.as_slice().iter().map(Value::copy_for_extend).collect(),
                 HeapData::Set(set) => set.storage().iter().map(Value::copy_for_extend).collect(),
@@ -106,30 +114,26 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                     let chars: Vec<char> = s.as_str().chars().collect();
                     let mut items = Vec::with_capacity(chars.len());
                     for c in chars {
-                        items.push(allocate_char(c, self.heap)?);
+                        items.push(allocate_char(c, this.heap)?);
                     }
                     items
                 }
                 _ => {
-                    let type_ = iterable.py_type(self.heap);
-                    iterable.drop_with_heap(self.heap);
-                    list_ref.drop_with_heap(self.heap);
+                    let type_ = iterable.py_type(this.heap);
                     return Err(ExcType::type_error_not_iterable(type_));
                 }
             },
             Value::InternString(id) => {
-                let s = self.interns.get_str(*id);
+                let s = this.interns.get_str(*id);
                 let chars: Vec<char> = s.chars().collect();
                 let mut items = Vec::with_capacity(chars.len());
                 for c in chars {
-                    items.push(allocate_char(c, self.heap)?);
+                    items.push(allocate_char(c, this.heap)?);
                 }
                 items
             }
             _ => {
-                let type_ = iterable.py_type(self.heap);
-                iterable.drop_with_heap(self.heap);
-                list_ref.drop_with_heap(self.heap);
+                let type_ = iterable.py_type(this.heap);
                 return Err(ExcType::type_error_not_iterable(type_));
             }
         };
@@ -137,7 +141,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         // Phase 2: Increment refcounts now that the borrow has ended
         for item in &copied_items {
             if let Value::Ref(id) = item {
-                self.heap.inc_ref(*id);
+                this.heap.inc_ref(*id);
             }
         }
 
@@ -145,8 +149,8 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         let has_refs = copied_items.iter().any(|v| matches!(v, Value::Ref(_)));
 
         // Extend the list
-        if let Value::Ref(id) = &list_ref
-            && let HeapData::List(list) = self.heap.get_mut(*id)
+        if let Value::Ref(id) = list_ref
+            && let HeapData::List(list) = this.heap.get_mut(*id)
         {
             // Update contains_refs before extending
             if has_refs {
@@ -157,11 +161,12 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
         // Mark potential cycle after the mutable borrow ends
         if has_refs {
-            self.heap.mark_potential_cycle();
+            this.heap.mark_potential_cycle();
         }
 
-        iterable.drop_with_heap(self.heap);
-        self.push(list_ref);
+        // Push list_ref back on the stack (don't drop it)
+        let (list_ref, this) = list_ref_guard.into_parts();
+        this.push(list_ref);
         Ok(())
     }
 
@@ -169,11 +174,14 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Stack: [list] -> [tuple]
     pub(super) fn list_to_tuple(&mut self) -> Result<(), RunError> {
-        let list_ref = self.pop();
+        let this = self;
+
+        let list_ref = this.pop();
+        defer_drop!(list_ref, this);
 
         // Phase 1: Copy items without refcount changes
-        let copied_items: SmallVec<_> = if let Value::Ref(id) = &list_ref {
-            if let HeapData::List(list) = self.heap.get(*id) {
+        let copied_items: SmallVec<_> = if let Value::Ref(id) = list_ref {
+            if let HeapData::List(list) = this.heap.get(*id) {
                 list.as_slice().iter().map(Value::copy_for_extend).collect()
             } else {
                 return Err(RunError::internal("ListToTuple: expected list"));
@@ -185,14 +193,13 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         // Phase 2: Increment refcounts now that the borrow has ended
         for item in &copied_items {
             if let Value::Ref(id) = item {
-                self.heap.inc_ref(*id);
+                this.heap.inc_ref(*id);
             }
         }
 
-        list_ref.drop_with_heap(self.heap);
-
-        let value = allocate_tuple(copied_items, self.heap)?;
-        self.push(value);
+        // list_ref is dropped by the guard at scope exit; allocate the tuple
+        let value = allocate_tuple(copied_items, this.heap)?;
+        this.push(value);
         Ok(())
     }
 
@@ -200,54 +207,56 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Stack: [dict, mapping] -> [dict]
     /// Validates that mapping is a dict and that keys are strings.
+    ///
+    /// Uses `defer_drop!` for `mapping` (always dropped) and `HeapGuard` for
+    /// `dict_ref` (pushed back on success, dropped on error).
     pub(super) fn dict_merge(&mut self, func_name_id: u16) -> Result<(), RunError> {
-        let mapping = self.pop();
-        let dict_ref = self.pop();
+        let this = self;
+
+        let mapping = this.pop();
+        defer_drop!(mapping, this);
+        // HeapGuard for dict_ref: pushed back on success via into_parts, dropped on error
+        let mut dict_ref_guard = HeapGuard::new(this.pop(), this);
+        let (dict_ref, this) = dict_ref_guard.as_parts();
 
         // Get function name for error messages
         let func_name = if func_name_id == 0xFFFF {
             "<unknown>".to_string()
         } else {
-            self.interns.get_str(StringId::from_index(func_name_id)).to_string()
+            this.interns.get_str(StringId::from_index(func_name_id)).to_string()
         };
 
         // Two-phase approach: copy items first, then inc refcounts
         // Phase 1: Copy key-value pairs without refcount changes
         // Check that mapping is a dict (Ref pointing to Dict)
-        let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = &mapping {
-            if let HeapData::Dict(dict) = self.heap.get(*id) {
+        let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
+            if let HeapData::Dict(dict) = this.heap.get(*id) {
                 dict.iter()
                     .map(|(k, v)| (Value::copy_for_extend(k), Value::copy_for_extend(v)))
                     .collect()
             } else {
-                let type_name = mapping.py_type(self.heap).to_string();
-                mapping.drop_with_heap(self.heap);
-                dict_ref.drop_with_heap(self.heap);
+                let type_name = mapping.py_type(this.heap).to_string();
                 return Err(ExcType::type_error_kwargs_not_mapping(&func_name, &type_name));
             }
         } else {
-            let type_name = mapping.py_type(self.heap).to_string();
-            mapping.drop_with_heap(self.heap);
-            dict_ref.drop_with_heap(self.heap);
+            let type_name = mapping.py_type(this.heap).to_string();
             return Err(ExcType::type_error_kwargs_not_mapping(&func_name, &type_name));
         };
 
         // Phase 2: Increment refcounts now that the borrow has ended
         for (key, value) in &copied_items {
             if let Value::Ref(id) = key {
-                self.heap.inc_ref(*id);
+                this.heap.inc_ref(*id);
             }
             if let Value::Ref(id) = value {
-                self.heap.inc_ref(*id);
+                this.heap.inc_ref(*id);
             }
         }
 
         // Merge into the dict, validating string keys
-        let dict_id = if let Value::Ref(id) = &dict_ref {
+        let dict_id = if let Value::Ref(id) = dict_ref {
             *id
         } else {
-            mapping.drop_with_heap(self.heap);
-            dict_ref.drop_with_heap(self.heap);
             return Err(RunError::internal("DictMerge: expected dict ref"));
         };
 
@@ -255,22 +264,20 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             // Validate key is a string (InternString or heap-allocated Str)
             let is_string = match &key {
                 Value::InternString(_) => true,
-                Value::Ref(id) => matches!(self.heap.get(*id), HeapData::Str(_)),
+                Value::Ref(id) => matches!(this.heap.get(*id), HeapData::Str(_)),
                 _ => false,
             };
             if !is_string {
-                key.drop_with_heap(self.heap);
-                value.drop_with_heap(self.heap);
-                mapping.drop_with_heap(self.heap);
-                dict_ref.drop_with_heap(self.heap);
+                key.drop_with_heap(this.heap);
+                value.drop_with_heap(this.heap);
                 return Err(ExcType::type_error_kwargs_nonstring_key());
             }
 
             // Get the string key for error messages (needed before moving key into closure)
             let key_str = match &key {
-                Value::InternString(id) => self.interns.get_str(*id).to_string(),
+                Value::InternString(id) => this.interns.get_str(*id).to_string(),
                 Value::Ref(id) => {
-                    if let HeapData::Str(s) = self.heap.get(*id) {
+                    if let HeapData::Str(s) = this.heap.get(*id) {
                         s.as_str().to_string()
                     } else {
                         "<unknown>".to_string()
@@ -280,9 +287,9 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             };
 
             // Use with_entry_mut to avoid borrow conflict: takes data out temporarily
-            let result = self.heap.with_entry_mut(dict_id, |heap, data| {
+            let result = this.heap.with_entry_mut(dict_id, |heap, data| {
                 if let HeapData::Dict(dict) = data {
-                    dict.set(key, value, heap, self.interns)
+                    dict.set(key, value, heap, this.interns)
                 } else {
                     Err(RunError::internal("DictMerge: entry is not a Dict"))
                 }
@@ -290,15 +297,14 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
             // If set returned Some, the key already existed (duplicate kwarg)
             if let Some(old_value) = result? {
-                old_value.drop_with_heap(self.heap);
-                mapping.drop_with_heap(self.heap);
-                dict_ref.drop_with_heap(self.heap);
+                old_value.drop_with_heap(this.heap);
                 return Err(ExcType::type_error_multiple_values(&func_name, &key_str));
             }
         }
 
-        mapping.drop_with_heap(self.heap);
-        self.push(dict_ref);
+        // Push dict_ref back on the stack (don't drop it)
+        let (dict_ref, this) = dict_ref_guard.into_parts();
+        this.push(dict_ref);
         Ok(())
     }
 

@@ -2,6 +2,7 @@
 
 use super::VM;
 use crate::{
+    defer_drop,
     exception_private::{ExcType, RunError, SimpleException},
     fstring::{ParsedFormatSpec, ascii_escape, decode_format_spec, format_string, format_with_spec},
     io::PrintWriter,
@@ -46,84 +47,57 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// - !r conversion: convert to repr first, then format as string
     /// - !a conversion: convert to ascii repr first, then format as string
     pub(super) fn format_value(&mut self, flags: u8) -> Result<(), RunError> {
+        let this = self;
         let conversion = flags & 0x03;
         let has_format_spec = (flags & 0x04) != 0;
 
         // Pop format spec if present (pushed before value, so popped after)
-        let format_spec = if has_format_spec {
-            let spec_value = self.pop();
-            Some(spec_value)
-        } else {
-            None
-        };
+        let format_spec = if has_format_spec { Some(this.pop()) } else { None };
 
-        let value = self.pop();
+        let value = this.pop();
+        defer_drop!(value, this);
 
         // Format with spec applied to original value type, or convert and format as string
         let formatted = if let Some(spec_value) = format_spec {
-            // Get the parsed format spec
-            let spec = match self.get_format_spec(&spec_value, &value) {
-                Ok(s) => s,
-                Err(e) => {
-                    // Clean up both values before returning error
-                    spec_value.drop_with_heap(self.heap);
-                    value.drop_with_heap(self.heap);
-                    return Err(e);
-                }
-            };
+            defer_drop!(spec_value, this);
 
-            // Format based on value type and conversion flag
-            // Use a helper closure to handle errors with proper cleanup
+            let spec = this.get_format_spec(spec_value, value)?;
+
             let mut guard = DepthGuard::default();
-            let format_result: Result<String, RunError> = match conversion {
+            match conversion {
                 // No conversion - format original value
-                0 => format_with_spec(&value, &spec, self.heap, &mut guard, self.interns),
+                0 => format_with_spec(value, &spec, this.heap, &mut guard, this.interns)?,
                 // !s - convert to str, format as string
                 1 => {
-                    let s = value.py_str(self.heap, &mut guard, self.interns);
-                    format_string(&s, &spec).map_err(Into::into)
+                    let s = value.py_str(this.heap, &mut guard, this.interns);
+                    format_string(&s, &spec)?
                 }
                 // !r - convert to repr, format as string
                 2 => {
-                    let s = value.py_repr(self.heap, &mut guard, self.interns);
-                    format_string(&s, &spec).map_err(Into::into)
+                    let s = value.py_repr(this.heap, &mut guard, this.interns);
+                    format_string(&s, &spec)?
                 }
                 // !a - convert to ascii, format as string
                 3 => {
-                    let s = ascii_escape(&value.py_repr(self.heap, &mut guard, self.interns));
-                    format_string(&s, &spec).map_err(Into::into)
+                    let s = ascii_escape(&value.py_repr(this.heap, &mut guard, this.interns));
+                    format_string(&s, &spec)?
                 }
-                _ => format_with_spec(&value, &spec, self.heap, &mut guard, self.interns),
-            };
-
-            // Handle format errors with proper cleanup
-            match format_result {
-                Ok(result) => {
-                    spec_value.drop_with_heap(self.heap);
-                    result
-                }
-                Err(e) => {
-                    spec_value.drop_with_heap(self.heap);
-                    value.drop_with_heap(self.heap);
-                    return Err(e);
-                }
+                _ => format_with_spec(value, &spec, this.heap, &mut guard, this.interns)?,
             }
         } else {
             // No format spec - just convert based on conversion flag
             let mut guard = DepthGuard::default();
             match conversion {
-                0 => value.py_str(self.heap, &mut guard, self.interns).into_owned(),
-                1 => value.py_str(self.heap, &mut guard, self.interns).into_owned(),
-                2 => value.py_repr(self.heap, &mut guard, self.interns).into_owned(),
-                3 => ascii_escape(&value.py_repr(self.heap, &mut guard, self.interns)),
-                _ => value.py_str(self.heap, &mut guard, self.interns).into_owned(),
+                0 => value.py_str(this.heap, &mut guard, this.interns).into_owned(),
+                1 => value.py_str(this.heap, &mut guard, this.interns).into_owned(),
+                2 => value.py_repr(this.heap, &mut guard, this.interns).into_owned(),
+                3 => ascii_escape(&value.py_repr(this.heap, &mut guard, this.interns)),
+                _ => value.py_str(this.heap, &mut guard, this.interns).into_owned(),
             }
         };
 
-        value.drop_with_heap(self.heap);
-
-        let value = allocate_string(formatted, self.heap)?;
-        self.push(value);
+        let result = allocate_string(formatted, this.heap)?;
+        this.push(result);
         Ok(())
     }
 

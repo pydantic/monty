@@ -3,8 +3,9 @@
 use super::VM;
 use crate::{
     builtins::Builtins,
+    defer_drop,
     exception_private::{ExcType, ExceptionRaise, RawStackFrame, RunError, SimpleException},
-    heap::HeapData,
+    heap::{HeapData, HeapGuard},
     intern::{StaticStrings, StringId},
     io::PrintWriter,
     resource::ResourceTracker,
@@ -68,18 +69,17 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// Takes ownership of the exception value and drops it properly.
     /// The `is_raise` flag indicates if this is from a `raise` statement (hide caret).
     pub(super) fn make_exception(&mut self, exc_value: Value, is_raise: bool) -> RunError {
-        let simple_exc = match &exc_value {
+        let this = self;
+        defer_drop!(exc_value, this);
+
+        let simple_exc = match exc_value {
             // Exception instance on heap
             Value::Ref(heap_id) => {
-                if let HeapData::Exception(exc) = self.heap.get(*heap_id) {
-                    // Clone the exception
-                    let exc_clone = exc.clone();
-                    // Drop the value with proper heap cleanup
-                    exc_value.drop_with_heap(self.heap);
-                    exc_clone
+                if let HeapData::Exception(exc) = this.heap.get(*heap_id) {
+                    // Clone the exception (guard handles cleanup at scope exit)
+                    exc.clone()
                 } else {
                     // Not an exception type
-                    exc_value.drop_with_heap(self.heap);
                     SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException")
                 }
             }
@@ -87,17 +87,14 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             // Instantiate with no message
             Value::Builtin(Builtins::ExcType(exc_type)) => SimpleException::new_none(*exc_type),
             // Invalid exception value
-            _ => {
-                exc_value.drop_with_heap(self.heap);
-                SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException")
-            }
+            _ => SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException"),
         };
 
         // Create frame with appropriate hide_caret setting
         let frame = if is_raise {
-            RawStackFrame::from_raise(self.current_position(), self.current_frame_name())
+            RawStackFrame::from_raise(this.current_position(), this.current_frame_name())
         } else {
-            self.make_stack_frame()
+            this.make_stack_frame()
         };
 
         RunError::Exc(ExceptionRaise {
@@ -141,10 +138,15 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             Err(e) => return Some(e),
         };
 
+        // Use HeapGuard because exc_value is conditionally consumed (pushed onto
+        // exception_stack when handler found) or dropped (when no handler found)
+        let mut exc_guard = HeapGuard::new(exc_value, self);
+
         // Search for handler in current and outer frames
         loop {
-            let frame = self.current_frame();
-            let ip = u32::try_from(self.instruction_ip).expect("instruction IP exceeds u32");
+            let (exc_value, this) = exc_guard.as_parts();
+            let frame = this.current_frame();
+            let ip = u32::try_from(this.instruction_ip).expect("instruction IP exceeds u32");
 
             // Search exception table for a handler covering this IP
             if let Some(entry) = frame.code.find_exception_handler(ip) {
@@ -153,32 +155,38 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 let target_stack_depth = frame.stack_base + entry.stack_depth() as usize;
 
                 // Unwind stack to target depth (drop excess values)
-                while self.stack.len() > target_stack_depth {
-                    let value = self.stack.pop().unwrap();
-                    value.drop_with_heap(self.heap);
+                while this.stack.len() > target_stack_depth {
+                    let value = this.stack.pop().unwrap();
+                    value.drop_with_heap(this.heap);
                 }
 
                 // Push exception value onto stack (handler expects it)
-                let exc_for_stack = exc_value.clone_with_heap(self.heap);
-                self.push(exc_for_stack);
+                let exc_for_stack = exc_value.clone_with_heap(this.heap);
+                this.push(exc_for_stack);
+
+                // Reclaim exc_value from guard - it's being pushed onto exception_stack
+                let (exc_value, this) = exc_guard.into_parts();
 
                 // Push exception onto the exception_stack for bare raise
                 // This allows nested except handlers to restore outer exception context
-                self.exception_stack.push(exc_value);
+                this.exception_stack.push(exc_value);
 
                 // Jump to handler
-                self.current_frame_mut().ip = handler_offset;
+                this.current_frame_mut().ip = handler_offset;
 
                 return None; // Continue execution at handler
             }
 
             // No handler in this frame - pop frame and try outer
-            if self.frames.len() <= 1 {
+            if this.frames.len() <= 1 {
                 // No more frames - exception is unhandled
-                exc_value.drop_with_heap(self.heap);
+                let is_spawned = this.is_spawned_task();
+
+                // Drop exc_value before potentially switching tasks
+                drop(exc_guard);
 
                 // For spawned tasks, fail the task instead of propagating
-                if self.is_spawned_task() {
+                if is_spawned {
                     match self.handle_task_failure(error) {
                         Ok(()) => {
                             // Switched to next task - continue execution
@@ -196,14 +204,14 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
             // Get the call site position before popping frame
             // This is where the caller invoked the function that's failing
-            let call_position = self.current_frame().call_position;
+            let call_position = this.current_frame().call_position;
 
             // Pop this frame
-            self.pop_frame();
+            this.pop_frame();
 
             // Add caller frame info to traceback (if we have call position)
             if let Some(pos) = call_position {
-                let frame_name = self.current_frame_name();
+                let frame_name = this.current_frame_name();
                 match &mut error {
                     RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name),
                     RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name),
@@ -212,7 +220,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             }
 
             // Update instruction_ip for the new frame
-            self.instruction_ip = self
+            this.instruction_ip = this
                 .current_frame()
                 .call_position
                 .map_or(0, |p| p.start().line as usize);

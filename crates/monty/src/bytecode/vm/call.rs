@@ -9,8 +9,9 @@ use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::Coroutine,
     builtins::{Builtins, BuiltinsFunctions},
+    defer_drop,
     exception_private::{ExcType, RunError},
-    heap::{DropWithHeap, Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{ExtFunctionId, FunctionId, Interns, StaticStrings, StringId},
     io::PrintWriter,
     os::OsFunction,
@@ -259,41 +260,41 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// Special handling: `list.sort(key=...)` is intercepted here to allow calling
     /// builtin key functions with VM access.
     fn call_attr(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<CallResult, RunError> {
+        let this = self;
         let attr = EitherStr::Interned(name_id);
 
         match obj {
             Value::Ref(heap_id) => {
+                defer_drop!(obj, this);
                 // Check for list.sort - needs special handling for key functions
-                if name_id == StaticStrings::Sort && matches!(self.heap.get(heap_id), HeapData::List(_)) {
-                    let result = do_list_sort(heap_id, args, self.heap, self.interns, self.print_writer);
-                    obj.drop_with_heap(self.heap);
+                if name_id == StaticStrings::Sort && matches!(this.heap.get(heap_id), HeapData::List(_)) {
+                    let result = do_list_sort(heap_id, args, this.heap, this.interns, this.print_writer);
                     return result.map(|()| CallResult::Push(Value::None));
                 }
                 // Call the method on the heap object using call_attr_raw to support OS/external calls
-                let result = self.heap.call_attr_raw(heap_id, &attr, args, self.interns);
-                obj.drop_with_heap(self.heap);
+                let result = this.heap.call_attr_raw(heap_id, &attr, args, this.interns);
                 // Convert AttrCallResult to CallResult
                 result.map(Into::into)
             }
             Value::InternString(string_id) => {
                 // Call string method on interned string literal using the unified dispatcher
-                let s = self.interns.get_str(string_id);
-                call_str_method(s, name_id, args, self.heap, self.interns).map(CallResult::Push)
+                let s = this.interns.get_str(string_id);
+                call_str_method(s, name_id, args, this.heap, this.interns).map(CallResult::Push)
             }
             Value::InternBytes(bytes_id) => {
                 // Call bytes method on interned bytes literal using the unified dispatcher
-                let b = self.interns.get_bytes(bytes_id);
-                call_bytes_method(b, name_id, args, self.heap, self.interns).map(CallResult::Push)
+                let b = this.interns.get_bytes(bytes_id);
+                call_bytes_method(b, name_id, args, this.heap, this.interns).map(CallResult::Push)
             }
             Value::Builtin(Builtins::Type(t)) => {
                 // Handle classmethods on type objects like dict.fromkeys()
-                call_type_method(t, name_id, args, self.heap, self.interns).map(CallResult::Push)
+                call_type_method(t, name_id, args, this.heap, this.interns).map(CallResult::Push)
             }
             _ => {
                 // Non-heap values without method support
-                let type_name = obj.py_type(self.heap);
-                args.drop_with_heap(self.heap);
-                Err(ExcType::attribute_error(type_name, self.interns.get_str(name_id)))
+                let type_name = obj.py_type(this.heap);
+                args.drop_with_heap(this.heap);
+                Err(ExcType::attribute_error(type_name, this.interns.get_str(name_id)))
             }
         }
     }
@@ -346,8 +347,11 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         callable: Value,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
+        let this = self;
+        defer_drop!(callable, this);
+
         // Phase 1: Copy data (func_id, cells, defaults) without refcount changes
-        let (func_id, cells, defaults) = match self.heap.get(heap_id) {
+        let (func_id, cells, defaults) = match this.heap.get(heap_id) {
             HeapData::Closure(fid, cells, defaults) => {
                 let cloned_cells = cells.clone();
                 let cloned_defaults: Vec<Value> = defaults.iter().map(Value::copy_for_extend).collect();
@@ -358,27 +362,23 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 (*fid, Vec::new(), cloned_defaults)
             }
             _ => {
-                callable.drop_with_heap(self.heap);
-                args.drop_with_heap(self.heap);
+                args.drop_with_heap(this.heap);
                 return Err(ExcType::type_error("object is not callable"));
             }
         };
 
         // Phase 2: Increment refcounts now that the heap borrow has ended
         for &cell_id in &cells {
-            self.heap.inc_ref(cell_id);
+            this.heap.inc_ref(cell_id);
         }
         for default in &defaults {
             if let Value::Ref(id) = default {
-                self.heap.inc_ref(*id);
+                this.heap.inc_ref(*id);
             }
         }
 
-        // Drop the callable ref (cloned data has its own refcounts)
-        callable.drop_with_heap(self.heap);
-
-        // Call the defined function
-        self.call_def_function(func_id, &cells, defaults, args)
+        // Call the defined function (callable guard drops at scope exit)
+        this.call_def_function(func_id, &cells, defaults, args)
     }
 
     /// Calls a function with unpacked args tuple and optional kwargs dict.
@@ -390,28 +390,28 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         args_tuple: Value,
         kwargs: Option<Value>,
     ) -> Result<CallResult, RunError> {
+        let this = self;
+        defer_drop!(args_tuple, this);
+
         // Extract positional args from tuple
-        let copied_args = self.extract_args_tuple(&args_tuple);
+        let copied_args = this.extract_args_tuple(args_tuple);
 
         // Increment refcounts for positional args
         for arg in &copied_args {
             if let Value::Ref(id) = arg {
-                self.heap.inc_ref(*id);
+                this.heap.inc_ref(*id);
             }
         }
 
         // Build ArgValues from positional args and optional kwargs
         let args = if let Some(kwargs_ref) = kwargs {
-            self.build_args_with_kwargs(copied_args, kwargs_ref)?
+            this.build_args_with_kwargs(copied_args, kwargs_ref)?
         } else {
             Self::build_args_positional_only(copied_args)
         };
 
-        // Clean up the args tuple ref (we cloned the contents)
-        args_tuple.drop_with_heap(self.heap);
-
-        // Call the function
-        self.call_function(callable, args)
+        // Call the function (args_tuple guard drops at scope exit)
+        this.call_function(callable, args)
     }
 
     /// Calls a method with unpacked args tuple and optional kwargs dict.
@@ -424,28 +424,28 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         args_tuple: Value,
         kwargs: Option<Value>,
     ) -> Result<CallResult, RunError> {
+        let this = self;
+        defer_drop!(args_tuple, this);
+
         // Extract positional args from tuple
-        let copied_args = self.extract_args_tuple_for_attr(&args_tuple);
+        let copied_args = this.extract_args_tuple_for_attr(args_tuple);
 
         // Increment refcounts for positional args
         for arg in &copied_args {
             if let Value::Ref(id) = arg {
-                self.heap.inc_ref(*id);
+                this.heap.inc_ref(*id);
             }
         }
 
         // Build ArgValues from positional args and optional kwargs
         let args = if let Some(kwargs_ref) = kwargs {
-            self.build_args_with_kwargs_for_attr(copied_args, kwargs_ref)?
+            this.build_args_with_kwargs_for_attr(copied_args, kwargs_ref)?
         } else {
             Self::build_args_positional_only(copied_args)
         };
 
-        // Clean up the args tuple ref (we cloned the contents)
-        args_tuple.drop_with_heap(self.heap);
-
-        // Call the method
-        self.call_attr(obj, name_id, args)
+        // Call the method (args_tuple guard drops at scope exit)
+        this.call_attr(obj, name_id, args)
     }
 
     /// Extracts arguments from a tuple for `CallFunctionExtended`.
@@ -469,11 +469,14 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// Panics if `kwargs_ref` is not a dict. This indicates a compiler bug since
     /// the compiler always emits `BuildDict` before `CallFunctionExtended` with kwargs.
     fn build_args_with_kwargs(&mut self, copied_args: Vec<Value>, kwargs_ref: Value) -> Result<ArgValues, RunError> {
+        let this = self;
+        defer_drop!(kwargs_ref, this);
+
         // Extract kwargs dict items
-        let Value::Ref(id) = &kwargs_ref else {
+        let Value::Ref(id) = kwargs_ref else {
             unreachable!("CallFunctionExtended: kwargs must be a Ref")
         };
-        let HeapData::Dict(dict) = self.heap.get(*id) else {
+        let HeapData::Dict(dict) = this.heap.get(*id) else {
             unreachable!("CallFunctionExtended: kwargs must be a Dict")
         };
         let copied_kwargs: Vec<(Value, Value)> = dict
@@ -484,20 +487,17 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         // Increment refcounts for kwargs
         for (k, v) in &copied_kwargs {
             if let Value::Ref(id) = k {
-                self.heap.inc_ref(*id);
+                this.heap.inc_ref(*id);
             }
             if let Value::Ref(id) = v {
-                self.heap.inc_ref(*id);
+                this.heap.inc_ref(*id);
             }
         }
-
-        // Clean up the kwargs dict ref
-        kwargs_ref.drop_with_heap(self.heap);
 
         let kwargs_values = if copied_kwargs.is_empty() {
             KwargsValues::Empty
         } else {
-            let kwargs_dict = Dict::from_pairs(copied_kwargs, self.heap, self.interns)?;
+            let kwargs_dict = Dict::from_pairs(copied_kwargs, this.heap, this.interns)?;
             KwargsValues::Dict(kwargs_dict)
         };
 
@@ -556,11 +556,14 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         copied_args: Vec<Value>,
         kwargs_ref: Value,
     ) -> Result<ArgValues, RunError> {
+        let this = self;
+        defer_drop!(kwargs_ref, this);
+
         // Extract kwargs dict items
-        let Value::Ref(id) = &kwargs_ref else {
+        let Value::Ref(id) = kwargs_ref else {
             unreachable!("CallAttrExtended: kwargs must be a Ref")
         };
-        let HeapData::Dict(dict) = self.heap.get(*id) else {
+        let HeapData::Dict(dict) = this.heap.get(*id) else {
             unreachable!("CallAttrExtended: kwargs must be a Dict")
         };
         let copied_kwargs: Vec<(Value, Value)> = dict
@@ -571,20 +574,17 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         // Increment refcounts for kwargs
         for (k, v) in &copied_kwargs {
             if let Value::Ref(id) = k {
-                self.heap.inc_ref(*id);
+                this.heap.inc_ref(*id);
             }
             if let Value::Ref(id) = v {
-                self.heap.inc_ref(*id);
+                this.heap.inc_ref(*id);
             }
         }
-
-        // Clean up the kwargs dict ref
-        kwargs_ref.drop_with_heap(self.heap);
 
         let kwargs_values = if copied_kwargs.is_empty() {
             KwargsValues::Empty
         } else {
-            let kwargs_dict = Dict::from_pairs(copied_kwargs, self.heap, self.interns)?;
+            let kwargs_dict = Dict::from_pairs(copied_kwargs, this.heap, this.interns)?;
             KwargsValues::Dict(kwargs_dict)
         };
 
@@ -645,33 +645,18 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         defaults: Vec<Value>,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
-        let func = self.interns.get_function(func_id);
+        let this = self;
+        defer_drop!(defaults, this);
+        let func = this.interns.get_function(func_id);
 
         // 1. Create namespace vector (not registered with Namespaces)
-        let mut namespace = Vec::with_capacity(func.namespace_size);
+        let namespace = Vec::with_capacity(func.namespace_size);
+        let mut namespace_guard = HeapGuard::new(namespace, this);
+        let (namespace, this) = namespace_guard.as_parts_mut();
 
         // 2. Bind arguments to parameters
-        {
-            let bind_result = func
-                .signature
-                .bind(args, &defaults, self.heap, self.interns, func.name, &mut namespace);
-
-            if let Err(e) = bind_result {
-                // Clean up namespace values on error
-                for value in namespace {
-                    value.drop_with_heap(self.heap);
-                }
-                for default in defaults {
-                    default.drop_with_heap(self.heap);
-                }
-                return Err(e);
-            }
-        }
-
-        // Clean up defaults - they were copied into the namespace by bind()
-        for default in defaults {
-            default.drop_with_heap(self.heap);
-        }
+        func.signature
+            .bind(args, defaults, this.heap, this.interns, func.name, namespace)?;
 
         // Track created cell HeapIds for the coroutine
         let mut frame_cells: Vec<HeapId> = Vec::with_capacity(func.cell_var_count + cells.len());
@@ -682,11 +667,11 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             for (i, maybe_param_idx) in func.cell_param_indices.iter().enumerate() {
                 let cell_slot = param_count + i;
                 let cell_value = if let Some(param_idx) = maybe_param_idx {
-                    namespace[*param_idx].clone_with_heap(self.heap)
+                    namespace[*param_idx].clone_with_heap(this.heap)
                 } else {
                     Value::Undefined
                 };
-                let cell_id = self.heap.allocate(HeapData::Cell(cell_value))?;
+                let cell_id = this.heap.allocate(HeapData::Cell(cell_value))?;
                 frame_cells.push(cell_id);
                 namespace.resize_with(cell_slot, || Value::Undefined);
                 namespace.push(Value::Ref(cell_id));
@@ -695,7 +680,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             // 4. Copy captured cells (free vars) into namespace
             let free_var_start = param_count + func.cell_var_count;
             for (i, &cell_id) in cells.iter().enumerate() {
-                self.heap.inc_ref(cell_id);
+                this.heap.inc_ref(cell_id);
                 frame_cells.push(cell_id);
                 let slot = free_var_start + i;
                 namespace.resize_with(slot, || Value::Undefined);
@@ -707,8 +692,9 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         }
 
         // 6. Create Coroutine on heap
+        let (namespace, this) = namespace_guard.into_parts();
         let coroutine = Coroutine::new(func_id, namespace, frame_cells);
-        let coroutine_id = self.heap.allocate(HeapData::Coroutine(coroutine))?;
+        let coroutine_id = this.heap.allocate(HeapData::Coroutine(coroutine))?;
 
         Ok(CallResult::Push(Value::Ref(coroutine_id)))
     }

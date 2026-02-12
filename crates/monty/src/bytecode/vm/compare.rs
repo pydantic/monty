@@ -2,6 +2,7 @@
 
 use super::VM;
 use crate::{
+    defer_drop,
     exception_private::{ExcType, RunError},
     io::PrintWriter,
     resource::{DepthGuard, ResourceTracker},
@@ -12,25 +13,31 @@ use crate::{
 impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// Equality comparison.
     pub(super) fn compare_eq(&mut self) -> Result<(), RunError> {
-        let rhs = self.pop();
-        let lhs = self.pop();
+        let this = self;
+
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+
         let mut guard = DepthGuard::default();
-        let result = lhs.py_eq(&rhs, self.heap, &mut guard, self.interns)?;
-        lhs.drop_with_heap(self.heap);
-        rhs.drop_with_heap(self.heap);
-        self.push(Value::Bool(result));
+        let result = lhs.py_eq(rhs, this.heap, &mut guard, this.interns)?;
+        this.push(Value::Bool(result));
         Ok(())
     }
 
     /// Inequality comparison.
     pub(super) fn compare_ne(&mut self) -> Result<(), RunError> {
-        let rhs = self.pop();
-        let lhs = self.pop();
+        let this = self;
+
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+
         let mut guard = DepthGuard::default();
-        let result = !lhs.py_eq(&rhs, self.heap, &mut guard, self.interns)?;
-        lhs.drop_with_heap(self.heap);
-        rhs.drop_with_heap(self.heap);
-        self.push(Value::Bool(result));
+        let result = !lhs.py_eq(rhs, this.heap, &mut guard, this.interns)?;
+        this.push(Value::Bool(result));
         Ok(())
     }
 
@@ -39,15 +46,16 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     where
         F: FnOnce(std::cmp::Ordering) -> bool,
     {
-        let rhs = self.pop();
-        let lhs = self.pop();
+        let this = self;
+
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+
         let mut guard = DepthGuard::default();
-        let result = lhs
-            .py_cmp(&rhs, self.heap, &mut guard, self.interns)?
-            .is_some_and(check);
-        lhs.drop_with_heap(self.heap);
-        rhs.drop_with_heap(self.heap);
-        self.push(Value::Bool(result));
+        let result = lhs.py_cmp(rhs, this.heap, &mut guard, this.interns)?.is_some_and(check);
+        this.push(Value::Bool(result));
         Ok(())
     }
 
@@ -61,28 +69,28 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// - HeapId for heap-allocated values (Ref)
     /// - Value-based hashing for immediate types (Int, Float, Function, etc.)
     pub(super) fn compare_is(&mut self, negate: bool) {
-        let rhs = self.pop();
-        let lhs = self.pop();
+        let this = self;
 
-        let result = lhs.is(&rhs);
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
 
-        lhs.drop_with_heap(self.heap);
-        rhs.drop_with_heap(self.heap);
-        self.push(Value::Bool(if negate { !result } else { result }));
+        let result = lhs.is(rhs);
+        this.push(Value::Bool(if negate { !result } else { result }));
     }
 
     /// Membership test (in/not in).
     pub(super) fn compare_in(&mut self, negate: bool) -> Result<(), RunError> {
-        let container = self.pop(); // container (rhs)
-        let item = self.pop(); // item to find (lhs)
+        let this = self;
 
-        let result = container.py_contains(&item, self.heap, self.interns);
+        let container = this.pop(); // container (rhs)
+        defer_drop!(container, this);
+        let item = this.pop(); // item to find (lhs)
+        defer_drop!(item, this);
 
-        item.drop_with_heap(self.heap);
-        container.drop_with_heap(self.heap);
-
-        let contained = result?;
-        self.push(Value::Bool(if negate { !contained } else { contained }));
+        let contained = container.py_contains(item, this.heap, this.interns)?;
+        this.push(Value::Bool(if negate { !contained } else { contained }));
         Ok(())
     }
 
@@ -95,45 +103,46 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     /// Uses a fast path for Int/Float types via `py_mod_eq`, and falls back to
     /// computing `py_mod` then comparing with `py_eq` for other types (e.g., LongInt).
     pub(super) fn compare_mod_eq(&mut self, k: &Value) -> Result<(), RunError> {
-        let rhs = self.pop(); // divisor (b)
-        let lhs = self.pop(); // dividend (a)
+        let this = self;
+
+        let rhs = this.pop(); // divisor (b)
+        defer_drop!(rhs, this);
+        let lhs = this.pop(); // dividend (a)
+        defer_drop!(lhs, this);
 
         // Try fast path for Int/Float types
         let mod_result = match k {
-            Value::Int(k_val) => lhs.py_mod_eq(&rhs, *k_val),
+            Value::Int(k_val) => lhs.py_mod_eq(rhs, *k_val),
             _ => None,
         };
 
         if let Some(is_equal) = mod_result {
             // Fast path succeeded
-            lhs.drop_with_heap(self.heap);
-            rhs.drop_with_heap(self.heap);
-            self.push(Value::Bool(is_equal));
+            this.push(Value::Bool(is_equal));
             Ok(())
         } else {
             // Fallback: compute py_mod then compare with py_eq
             // This handles LongInt and other Ref types
-            let mod_value = lhs.py_mod(&rhs, self.heap);
-            lhs.drop_with_heap(self.heap);
-            rhs.drop_with_heap(self.heap);
+            let mod_value = lhs.py_mod(rhs, this.heap);
 
             match mod_value {
                 Ok(Some(v)) => {
+                    defer_drop!(v, this);
+
                     // Handle InternLongInt by converting to heap LongInt for comparison
                     let (k_value, k_needs_drop) = if let Value::InternLongInt(id) = k {
-                        let bi = self.interns.get_long_int(*id).clone();
-                        (LongInt::new(bi).into_value(self.heap)?, true)
+                        let bi = this.interns.get_long_int(*id).clone();
+                        (LongInt::new(bi).into_value(this.heap)?, true)
                     } else {
                         (k.copy_for_extend(), false)
                     };
 
                     let mut guard = DepthGuard::default();
-                    let is_equal = v.py_eq(&k_value, self.heap, &mut guard, self.interns)?;
-                    v.drop_with_heap(self.heap);
+                    let is_equal = v.py_eq(&k_value, this.heap, &mut guard, this.interns)?;
                     if k_needs_drop {
-                        k_value.drop_with_heap(self.heap);
+                        k_value.drop_with_heap(this.heap);
                     }
-                    self.push(Value::Bool(is_equal));
+                    this.push(Value::Bool(is_equal));
                     Ok(())
                 }
                 Ok(None) => Err(ExcType::type_error("unsupported operand type(s) for %")),
