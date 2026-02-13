@@ -60,11 +60,11 @@ pub(crate) struct RePattern {
     /// Python regex flags bitmask (IGNORECASE=2, MULTILINE=8, DOTALL=16).
     flags: u8,
     /// The compiled Rust regex for `search` / `findall` / `sub` (unanchored).
-    compiled: Regex,
+    compiled: Box<Regex>,
     /// Compiled regex anchored at start for `match` operations.
-    compiled_match: Regex,
+    compiled_match: Box<Regex>,
     /// Compiled regex anchored at both ends for `fullmatch` operations.
-    compiled_fullmatch: Regex,
+    compiled_fullmatch: Box<Regex>,
 }
 
 impl RePattern {
@@ -84,9 +84,9 @@ impl RePattern {
         Ok(Self {
             pattern,
             flags,
-            compiled,
-            compiled_match,
-            compiled_fullmatch,
+            compiled: Box::new(compiled),
+            compiled_match: Box::new(compiled_match),
+            compiled_fullmatch: Box::new(compiled_fullmatch),
         })
     }
 
@@ -235,7 +235,7 @@ impl PyTrait for RePattern {
     ) -> std::fmt::Result {
         write!(f, "re.compile(")?;
         string_repr_fmt(&self.pattern, f)?;
-        if self.flags != 0{
+        if self.flags != 0 {
             let mut flag_parts = smallvec::SmallVec::<[&'static str; 3]>::new();
             if self.flags & IGNORECASE != 0 {
                 flag_parts.push("re.IGNORECASE");
