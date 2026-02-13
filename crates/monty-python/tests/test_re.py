@@ -19,6 +19,16 @@ matches = pattern.findall('There are 24 hours in a day and 365 days in a year.')
     output = m.run()
     assert output is None
 
+def test_re_compile_repr():
+    code = r"""
+import re
+pattern = re.compile(r'\d+', re.IGNORECASE | re.DOTALL)
+pattern
+"""
+    m = pydantic_monty.Monty(code)
+    output = m.run()
+    assert output == r"re.compile('\\d+', re.IGNORECASE|re.DOTALL)"
+
 
 def test_re_match_repr():
     code = """
@@ -66,10 +76,7 @@ error_message
 """
     m = pydantic_monty.Monty(code)
     output = m.run()
-    error = """regex parse error:
-    [
-    ^
-error: unclosed character class"""
+    error = "Parsing error at position 1: Invalid character class"
     assert error in output
 
 

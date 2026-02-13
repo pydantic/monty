@@ -271,24 +271,15 @@ fn extract_pattern_and_flags(
     func_name: &str,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
-) -> RunResult<(String, u32)> {
+) -> RunResult<(String, u8)> {
     let (pattern_val, flags_val) = args.get_one_two_args(func_name, heap)?;
     defer_drop!(pattern_val, heap);
 
     let pattern = value_to_str(pattern_val, heap, interns)?.into_owned();
 
     let flags = match flags_val {
-        Some(Value::Int(n)) if n >= 0 => {
-            #[expect(
-                clippy::cast_sign_loss,
-                clippy::cast_possible_truncation,
-                reason = "checked non-negative above; flags fit in u32"
-            )]
-            let f = n as u32;
-            f
-        }
-        Some(Value::Int(_)) => {
-            return Err(ExcType::type_error("flags must be a non-negative integer"));
+        Some(Value::Int(n)) => {
+            u8::try_from(n).map_err(|_| ExcType::type_error("flags must be a non-negative integer"))?
         }
         Some(other) => {
             let t = other.py_type(heap);

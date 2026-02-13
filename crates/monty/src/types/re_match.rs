@@ -73,7 +73,7 @@ impl ReMatch {
     /// * `caps` - The successful capture result from the regex engine
     /// * `input` - The full input string that was searched
     /// * `pattern` - The original pattern string (for repr)
-    pub fn from_captures(caps: &regex::Captures<'_>, input: &str, pattern: &str) -> Self {
+    pub fn from_captures(caps: &fancy_regex::Captures<'_>, input: &str, pattern: &str) -> Self {
         let full = caps.get(0).expect("group 0 always exists on a successful match");
         let full_match = full.as_str().to_owned();
         let start = byte_to_char_offset(input, full.start());
@@ -83,8 +83,8 @@ impl ReMatch {
         let mut groups = Vec::with_capacity(group_count);
         let mut group_spans = Vec::with_capacity(group_count);
 
-        for i in 1..caps.len() {
-            if let Some(m) = caps.get(i) {
+        for cap in caps.iter().skip(1) {
+            if let Some(m) = cap {
                 groups.push(Some(m.as_str().to_owned()));
                 group_spans.push(Some((
                     byte_to_char_offset(input, m.start()),

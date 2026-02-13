@@ -773,7 +773,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "833306ca7eec4d95844e65f0d7502db43888c5c1006c6c517e8cf51a27d15431"
 dependencies = [
  "camino",
- "fancy-regex",
+ "fancy-regex 0.14.0",
  "libtest-mimic",
  "walkdir",
 ]
@@ -933,6 +933,17 @@ name = "fancy-regex"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e24cb5a94bcae1e5408b0effca5cd7172ea3c5755049c5f3af4cd283a165298"
+dependencies = [
+ "bit-set",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
+name = "fancy-regex"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72cf461f865c862bb7dc573f643dd6a2b6842f7c30b07882b56bd148cc2761b8"
 dependencies = [
  "bit-set",
  "regex-automata",
@@ -1573,6 +1584,7 @@ dependencies = [
  "codspeed-criterion-compat",
  "criterion",
  "datatest-stable",
+ "fancy-regex 0.17.0",
  "hashbrown 0.16.1",
  "indexmap",
  "num-bigint",
@@ -1581,7 +1593,6 @@ dependencies = [
  "postcard",
  "pprof",
  "pyo3",
- "regex",
  "ruff_python_ast",
  "ruff_python_parser",
  "ruff_text_size",

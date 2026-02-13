@@ -16,7 +16,7 @@
 use std::{borrow::Cow, fmt::Write};
 
 use ahash::AHashSet;
-use regex::Regex;
+use fancy_regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use smallvec::SmallVec;
 
@@ -27,16 +27,16 @@ use crate::{
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
     resource::{DepthGuard, ResourceError, ResourceTracker},
-    types::{List, PyTrait, ReMatch, Str, Type, allocate_tuple},
+    types::{List, PyTrait, ReMatch, Str, Type, allocate_tuple, str::string_repr_fmt},
     value::{EitherStr, Value},
 };
 
 /// Python regex flag: case-insensitive matching.
-const IGNORECASE: u32 = 2;
+const IGNORECASE: u8 = 2;
 /// Python regex flag: `^` and `$` match at line boundaries.
-const MULTILINE: u32 = 8;
+const MULTILINE: u8 = 8;
 /// Python regex flag: `.` matches newlines.
-const DOTALL: u32 = 16;
+const DOTALL: u8 = 16;
 
 /// A compiled regular expression pattern.
 ///
@@ -58,7 +58,7 @@ pub(crate) struct RePattern {
     /// The original Python regex pattern string.
     pattern: String,
     /// Python regex flags bitmask (IGNORECASE=2, MULTILINE=8, DOTALL=16).
-    flags: u32,
+    flags: u8,
     /// The compiled Rust regex for `search` / `findall` / `sub` (unanchored).
     compiled: Regex,
     /// Compiled regex anchored at start for `match` operations.
@@ -77,7 +77,7 @@ impl RePattern {
     ///
     /// Returns `re.PatternError` if the pattern is invalid or uses features not supported
     /// by the Rust regex engine.
-    pub fn compile(pattern: String, flags: u32) -> RunResult<Self> {
+    pub fn compile(pattern: String, flags: u8) -> RunResult<Self> {
         let compiled = compile_regex(&pattern, flags)?;
         let compiled_match = compile_regex(&anchor_start(&pattern), flags)?;
         let compiled_fullmatch = compile_regex(&anchor_full(&pattern), flags)?;
@@ -95,11 +95,12 @@ impl RePattern {
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
     pub fn search(&self, text: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
         match self.compiled.captures(text) {
-            Some(caps) => {
+            Ok(Some(caps)) => {
                 let m = ReMatch::from_captures(&caps, text, &self.pattern);
                 Ok(Value::Ref(heap.allocate(HeapData::ReMatch(m))?))
             }
-            None => Ok(Value::None),
+            Ok(None) => Ok(Value::None),
+            Err(err) => Err(ExcType::re_pattern_error(err)),
         }
     }
 
@@ -109,11 +110,12 @@ impl RePattern {
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
     pub fn match_start(&self, text: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
         match self.compiled_match.captures(text) {
-            Some(caps) => {
+            Ok(Some(caps)) => {
                 let m = ReMatch::from_captures(&caps, text, &self.pattern);
                 Ok(Value::Ref(heap.allocate(HeapData::ReMatch(m))?))
             }
-            None => Ok(Value::None),
+            Ok(None) => Ok(Value::None),
+            Err(err) => Err(ExcType::re_pattern_error(err)),
         }
     }
 
@@ -122,11 +124,12 @@ impl RePattern {
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
     pub fn fullmatch(&self, text: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
         match self.compiled_fullmatch.captures(text) {
-            Some(caps) => {
+            Ok(Some(caps)) => {
                 let m = ReMatch::from_captures(&caps, text, &self.pattern);
                 Ok(Value::Ref(heap.allocate(HeapData::ReMatch(m))?))
             }
-            None => Ok(Value::None),
+            Ok(None) => Ok(Value::None),
+            Err(err) => Err(ExcType::re_pattern_error(err)),
         }
     }
 
@@ -140,39 +143,35 @@ impl RePattern {
         let cap_count = self.compiled.captures_len();
         let mut results = Vec::new();
 
-        if cap_count <= 1 {
+        match cap_count {
             // No capture groups — return list of full match strings
-            for m in self.compiled.find_iter(text) {
-                let s = Str::new(m.as_str().to_owned());
-                results.push(Value::Ref(heap.allocate(HeapData::Str(s))?));
-            }
-        } else if cap_count == 2 {
-            // One capture group — return list of the group's strings
-            for caps in self.compiled.captures_iter(text) {
-                let val = if let Some(m) = caps.get(1) {
-                    let s = Str::new(m.as_str().to_owned());
-                    Value::Ref(heap.allocate(HeapData::Str(s))?)
-                } else {
-                    let s = Str::new(String::new());
-                    Value::Ref(heap.allocate(HeapData::Str(s))?)
-                };
-                results.push(val);
-            }
-        } else {
-            // Multiple capture groups — return list of tuples
-            for caps in self.compiled.captures_iter(text) {
-                let mut elements: SmallVec<[Value; 3]> = SmallVec::with_capacity(cap_count - 1);
-                for i in 1..cap_count {
-                    let val = if let Some(m) = caps.get(i) {
-                        let s = Str::new(m.as_str().to_owned());
-                        Value::Ref(heap.allocate(HeapData::Str(s))?)
-                    } else {
-                        let s = Str::new(String::new());
-                        Value::Ref(heap.allocate(HeapData::Str(s))?)
-                    };
-                    elements.push(val);
+            0 | 1 => {
+                for m in self.compiled.find_iter(text) {
+                    let s = Str::new(m.map_err(ExcType::re_pattern_error)?.as_str().to_owned());
+                    results.push(Value::Ref(heap.allocate(HeapData::Str(s))?));
                 }
-                results.push(allocate_tuple(elements, heap)?);
+            }
+            // One capture group — return list of the group's strings
+            2 => {
+                for caps in self.compiled.captures_iter(text) {
+                    let caps = caps.map_err(ExcType::re_pattern_error)?;
+                    let val = caps.get(1).map(|m| m.as_str().to_owned()).unwrap_or_default();
+                    let s = Str::new(val);
+                    results.push(Value::Ref(heap.allocate(HeapData::Str(s))?));
+                }
+            }
+            // Multiple capture groups — return list of tuples
+            _ => {
+                for caps in self.compiled.captures_iter(text) {
+                    let caps = caps.map_err(ExcType::re_pattern_error)?;
+                    let mut elements: SmallVec<[Value; 3]> = SmallVec::with_capacity(cap_count - 1);
+                    for cap in caps.iter().skip(1) {
+                        let val = cap.map(|m| m.as_str().to_owned()).unwrap_or_default();
+                        let s = Str::new(val);
+                        elements.push(Value::Ref(heap.allocate(HeapData::Str(s))?));
+                    }
+                    results.push(allocate_tuple(elements, heap)?);
+                }
             }
         }
 
@@ -234,11 +233,10 @@ impl PyTrait for RePattern {
         _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> std::fmt::Result {
-        let escaped = escape_for_repr(&self.pattern);
-        if self.flags == 0 {
-            write!(f, "re.compile('{escaped}')")
-        } else {
-            let mut flag_parts = Vec::new();
+        write!(f, "re.compile(")?;
+        string_repr_fmt(&self.pattern, f)?;
+        if self.flags != 0{
+            let mut flag_parts = smallvec::SmallVec::<[&'static str; 3]>::new();
             if self.flags & IGNORECASE != 0 {
                 flag_parts.push("re.IGNORECASE");
             }
@@ -248,8 +246,9 @@ impl PyTrait for RePattern {
             if self.flags & DOTALL != 0 {
                 flag_parts.push("re.DOTALL");
             }
-            write!(f, "re.compile('{escaped}', {})", flag_parts.join("|"))
+            write!(f, ", {}", flag_parts.join("|"))?;
         }
+        write!(f, ")")
     }
 
     fn py_estimate_size(&self) -> usize {
@@ -374,7 +373,7 @@ fn call_pattern_sub(
 ///
 /// Returns `re.PatternError(...)` if the pattern is invalid or uses features not supported
 /// by the Rust regex engine (backreferences, lookahead, etc.).
-pub(crate) fn compile_regex(pattern: &str, flags: u32) -> RunResult<Regex> {
+pub(crate) fn compile_regex(pattern: &str, flags: u8) -> RunResult<Regex> {
     let mut prefix = String::new();
     if flags & IGNORECASE != 0 {
         prefix.push_str("(?i)");
@@ -393,23 +392,6 @@ pub(crate) fn compile_regex(pattern: &str, flags: u32) -> RunResult<Regex> {
     };
 
     Regex::new(&full_pattern).map_err(ExcType::re_pattern_error)
-}
-
-/// Escapes a string for inclusion in a `repr()` single-quoted string literal.
-///
-/// Doubles backslashes and escapes single quotes so the output is valid
-/// Python source when wrapped in single quotes. Matches CPython's behavior
-/// for `repr(re.compile(r'\d+'))` → `re.compile('\\d+')`.
-fn escape_for_repr(s: &str) -> String {
-    let mut escaped = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' => escaped.push_str("\\\\"),
-            '\'' => escaped.push_str("\\'"),
-            _ => escaped.push(c),
-        }
-    }
-    escaped
 }
 
 /// Wraps a pattern to anchor at the start of the string (for `re.match()`).
@@ -500,7 +482,7 @@ impl Serialize for RePattern {
 
 impl<'de> Deserialize<'de> for RePattern {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let (pattern, flags): (String, u32) = Deserialize::deserialize(deserializer)?;
+        let (pattern, flags): (String, u8) = Deserialize::deserialize(deserializer)?;
         Self::compile(pattern, flags).map_err(|e| serde::de::Error::custom(format!("{e:?}")))
     }
 }
