@@ -13,8 +13,7 @@
 //! (`(?=...)`, `(?!...)`), or atomic groups. Attempting to compile patterns using these
 //! features raises `re.PatternError`.
 
-use std::borrow::Cow;
-use std::fmt::Write;
+use std::{borrow::Cow, fmt::Write};
 
 use ahash::AHashSet;
 use regex::Regex;
@@ -49,9 +48,9 @@ const DOTALL: u32 = 16;
 ///
 /// Custom serde serializes only the pattern string and flags, recompiling the
 /// regex on deserialization. This supports Monty's snapshot/restore feature.
-/// 
+///
 /// # Serialization Behavior
-/// 
+///
 /// When serialized, only the original pattern string and flags are stored.
 /// Upon deserialization, the regex is recompiled.
 #[derive(Debug)]

@@ -8,11 +8,9 @@
 //! All data is stored as owned values (no heap references), so reference counting
 //! is trivial — `py_dec_ref_ids` is a no-op.
 
-use std::cmp::Ordering;
-use std::fmt::Write;
+use std::{cmp::Ordering, fmt::Write};
 
 use ahash::AHashSet;
-
 use smallvec::smallvec;
 
 use crate::{
@@ -40,9 +38,9 @@ use crate::{
 /// Positions are returned as Unicode character offsets (not byte offsets) to
 /// match CPython's behavior. The conversion from byte offsets (used internally
 /// by the Rust `regex` crate) happens at construction time in `from_captures`.
-/// 
+///
 /// # Group Indexing
-/// 
+///
 /// Currently, only non-named groups are supported. Group 0 is the full match,
 /// groups 1..N are capture groups. Named groups are not yet implemented.
 /// If a group index other tnan integers is requested, an `TypeError` is raised.

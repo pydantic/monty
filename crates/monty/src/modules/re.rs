@@ -36,8 +36,7 @@ use crate::{
     intern::{Interns, StaticStrings},
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
-    types::re_pattern::value_to_str,
-    types::{AttrCallResult, Module, PyTrait, RePattern},
+    types::{AttrCallResult, Module, PyTrait, RePattern, re_pattern::value_to_str},
     value::Value,
 };
 
