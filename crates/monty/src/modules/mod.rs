@@ -19,6 +19,7 @@ use crate::{
 pub(crate) mod asyncio;
 pub(crate) mod os;
 pub(crate) mod pathlib;
+pub(crate) mod re;
 pub(crate) mod sys;
 pub(crate) mod typing;
 
@@ -36,6 +37,8 @@ pub(crate) enum BuiltinModule {
     Pathlib,
     /// The `os` module providing operating system interface (only `getenv()` implemented).
     Os,
+    /// The `re` module providing regular expression matching.
+    Re,
 }
 
 impl BuiltinModule {
@@ -47,6 +50,7 @@ impl BuiltinModule {
             StaticStrings::Asyncio => Some(Self::Asyncio),
             StaticStrings::Pathlib => Some(Self::Pathlib),
             StaticStrings::Os => Some(Self::Os),
+            StaticStrings::Re => Some(Self::Re),
             _ => None,
         }
     }
@@ -65,6 +69,7 @@ impl BuiltinModule {
             Self::Asyncio => asyncio::create_module(heap, interns),
             Self::Pathlib => pathlib::create_module(heap, interns),
             Self::Os => os::create_module(heap, interns),
+            Self::Re => re::create_module(heap, interns),
         }
     }
 }
@@ -74,6 +79,7 @@ impl BuiltinModule {
 pub(crate) enum ModuleFunctions {
     Asyncio(asyncio::AsyncioFunctions),
     Os(os::OsFunctions),
+    Re(re::ReFunctions),
 }
 
 impl fmt::Display for ModuleFunctions {
@@ -81,6 +87,7 @@ impl fmt::Display for ModuleFunctions {
         match self {
             Self::Asyncio(func) => write!(f, "{func}"),
             Self::Os(func) => write!(f, "{func}"),
+            Self::Re(func) => write!(f, "{func}"),
         }
     }
 }
@@ -90,10 +97,18 @@ impl ModuleFunctions {
     ///
     /// Returns `AttrCallResult` to support both immediate values and OS calls that
     /// require host involvement (e.g., `os.getenv()` needs the host to provide environment variables).
-    pub fn call(self, heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<AttrCallResult> {
+    /// The `interns` parameter is needed by modules that must extract string values from
+    /// `Value::InternString` arguments (e.g., the `re` module).
+    pub fn call(
+        self,
+        heap: &mut Heap<impl ResourceTracker>,
+        args: ArgValues,
+        interns: &Interns,
+    ) -> RunResult<AttrCallResult> {
         match self {
             Self::Asyncio(functions) => asyncio::call(heap, functions, args),
             Self::Os(functions) => os::call(heap, functions, args),
+            Self::Re(functions) => re::call(heap, functions, args, interns),
         }
     }
 

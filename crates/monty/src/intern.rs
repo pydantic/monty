@@ -407,6 +407,55 @@ pub enum StaticStrings {
     Start,
     Stop,
     Step,
+
+    // ==========================
+    // module strings
+    // ==========================
+
+    // re module strings
+    /// Module name for `import re`.
+    #[strum(serialize = "re")]
+    Re,
+    /// `re.compile()` function
+    Compile,
+    /// `re.match()` / `pattern.match()` method
+    #[strum(serialize = "match")]
+    Match,
+    /// `re.search()` / `pattern.search()` method
+    Search,
+    /// `re.fullmatch()` / `pattern.fullmatch()` method
+    Fullmatch,
+    /// `re.findall()` / `pattern.findall()` method
+    Findall,
+    /// `re.sub()` / `pattern.sub()` method
+    Sub,
+    /// `match.group()` method
+    Group,
+    /// `match.groups()` method
+    Groups,
+    /// `match.span()` method
+    Span,
+    /// `match.end()` method
+    End,
+    /// `pattern.pattern`
+    #[strum(serialize = "pattern")]
+    PatternAttr,
+    /// `match.string`
+    #[strum(serialize = "string")]
+    StringAttr,
+    /// `pattern.flags`
+    Flags,
+    /// `re.IGNORECASE` flag
+    #[strum(serialize = "IGNORECASE")]
+    Ignorecase,
+    /// `re.MULTILINE` flag
+    #[strum(serialize = "MULTILINE")]
+    MultilineFlag,
+    /// `re.DOTALL` flag
+    #[strum(serialize = "DOTALL")]
+    DotallFlag,
+    /// `re.PatternError` exception
+    PatternError,
 }
 
 impl StaticStrings {

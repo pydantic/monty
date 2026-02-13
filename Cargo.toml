@@ -55,6 +55,8 @@ salsa = { git = "https://github.com/salsa-rs/salsa.git", rev = "53421c2fff87426f
 num-bigint = { version = "0.4", features = ["serde"] }
 num-traits = "0.2"
 num-integer = "0.1"
+# regex
+regex = "1.12.3"
 # others
 indexmap = { version = "2.9", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }

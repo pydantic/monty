@@ -752,7 +752,7 @@ impl IterValue {
             // Range: copy values for iteration
             HeapData::Range(range) => Some(Self::from_range(range)),
             // Closures, FunctionDefaults, Cells, Exceptions, Dataclasses, Iterators, LongInts, Slices, Modules,
-            // Paths, and async types are not iterable
+            // Paths, RePatterns, ReMatches, and async types are not iterable
             HeapData::Closure(_, _, _)
             | HeapData::FunctionDefaults(_, _)
             | HeapData::Cell(_)
@@ -763,6 +763,8 @@ impl IterValue {
             | HeapData::Slice(_)
             | HeapData::Module(_)
             | HeapData::Path(_)
+            | HeapData::RePattern(_)
+            | HeapData::ReMatch(_)
             | HeapData::Coroutine(_)
             | HeapData::GatherFuture(_) => None,
         }

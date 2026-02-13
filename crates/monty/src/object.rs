@@ -474,6 +474,9 @@ impl MontyObject {
                         Self::Repr(format!("<gather({})>", gather.item_count()))
                     }
                     HeapData::Path(path) => Self::Path(path.as_str().to_owned()),
+                    HeapData::RePattern(_) | HeapData::ReMatch(_) => {
+                        Self::Repr(object.py_repr(heap, guard, interns).into_owned())
+                    }
                 };
 
                 // Remove from visited set after processing

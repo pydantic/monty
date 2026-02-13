@@ -21,7 +21,7 @@ use crate::{
     resource::{DepthGuard, ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
     types::{
         AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait,
-        Range, Set, Slice, Str, Tuple, Type, allocate_tuple,
+        Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, allocate_tuple,
     },
     value::{EitherStr, Value},
 };
@@ -131,6 +131,16 @@ pub(crate) enum HeapData {
     /// Pure methods (name, parent, etc.) are handled directly by the VM.
     /// I/O methods (exists, read_text, etc.) yield external function calls.
     Path(Path),
+    /// A compiled regex pattern from `re.compile()`.
+    ///
+    /// Contains the original pattern string, flags, and compiled regex engine.
+    /// Leaf type: no heap references, not GC-tracked.
+    RePattern(RePattern),
+    /// A regex match result from a successful regex operation.
+    ///
+    /// Contains the matched text, capture groups, positions, and input string.
+    /// Leaf type: no heap references, not GC-tracked.
+    ReMatch(ReMatch),
 }
 
 impl HeapData {
@@ -210,7 +220,9 @@ impl HeapData {
             | Self::Slice(_)
             | Self::Exception(_)
             | Self::LongInt(_)
-            | Self::Path(_) => false,
+            | Self::Path(_)
+            | Self::RePattern(_)
+            | Self::ReMatch(_) => false,
         }
     }
 
@@ -298,7 +310,7 @@ impl HeapData {
                 path.as_str().hash(&mut hasher);
                 Some(hasher.finish())
             }
-            // Mutable types, exceptions, iterators, modules, and async types cannot be hashed
+            // Mutable types, exceptions, iterators, modules, regex types, and async types cannot be hashed
             // (Cell is handled specially in get_or_compute_hash)
             Self::List(_)
             | Self::Dict(_)
@@ -308,7 +320,9 @@ impl HeapData {
             | Self::Iter(_)
             | Self::Module(_)
             | Self::Coroutine(_)
-            | Self::GatherFuture(_) => None,
+            | Self::GatherFuture(_)
+            | Self::RePattern(_)
+            | Self::ReMatch(_) => None,
             // LongInt is immutable and hashable
             Self::LongInt(li) => Some(li.hash()),
         }
@@ -342,6 +356,8 @@ impl PyTrait for HeapData {
             Self::Module(_) => Type::Module,
             Self::Coroutine(_) | Self::GatherFuture(_) => Type::Coroutine,
             Self::Path(p) => p.py_type(heap),
+            Self::RePattern(p) => p.py_type(heap),
+            Self::ReMatch(m) => m.py_type(heap),
         }
     }
 
@@ -377,6 +393,8 @@ impl PyTrait for HeapData {
                     + gather.pending_calls.len() * std::mem::size_of::<crate::asyncio::CallId>()
             }
             Self::Path(p) => p.py_estimate_size(),
+            Self::RePattern(p) => p.py_estimate_size(),
+            Self::ReMatch(m) => m.py_estimate_size(),
         }
     }
 
@@ -403,7 +421,9 @@ impl PyTrait for HeapData {
             | Self::Module(_)
             | Self::Coroutine(_)
             | Self::GatherFuture(_)
-            | Self::Path(_) => None,
+            | Self::Path(_)
+            | Self::RePattern(_)
+            | Self::ReMatch(_) => None,
         }
     }
 
@@ -452,6 +472,10 @@ impl PyTrait for HeapData {
             (Self::Slice(a), Self::Slice(b)) => a.py_eq(b, heap, guard, interns),
             // Path equality
             (Self::Path(a), Self::Path(b)) => a.py_eq(b, heap, guard, interns),
+            // RePattern equality
+            (Self::RePattern(a), Self::RePattern(b)) => a.py_eq(b, heap, guard, interns),
+            // ReMatch equality
+            (Self::ReMatch(a), Self::ReMatch(b)) => a.py_eq(b, heap, guard, interns),
             // Cells, Exceptions, Iterators, Modules, and async types compare by identity only (handled at Value level via HeapId comparison)
             (Self::Cell(_), Self::Cell(_))
             | (Self::Exception(_), Self::Exception(_))
@@ -511,8 +535,14 @@ impl PyTrait for HeapData {
                     result.py_dec_ref_ids(stack);
                 }
             }
-            // Range, Slice, Exception, LongInt, and Path have no nested heap references
-            Self::Range(_) | Self::Slice(_) | Self::Exception(_) | Self::LongInt(_) | Self::Path(_) => {}
+            // Range, Slice, Exception, LongInt, Path, RePattern, and ReMatch have no nested heap references
+            Self::Range(_)
+            | Self::Slice(_)
+            | Self::Exception(_)
+            | Self::LongInt(_)
+            | Self::Path(_)
+            | Self::RePattern(_)
+            | Self::ReMatch(_) => {}
         }
     }
 
@@ -538,6 +568,8 @@ impl PyTrait for HeapData {
             Self::Coroutine(_) => true,    // Coroutines are always truthy
             Self::GatherFuture(_) => true, // GatherFutures are always truthy
             Self::Path(p) => p.py_bool(heap, interns),
+            Self::RePattern(_) => true, // RePattern objects are always truthy
+            Self::ReMatch(_) => true,   // ReMatch objects are always truthy
         }
     }
 
@@ -577,6 +609,8 @@ impl PyTrait for HeapData {
             }
             Self::GatherFuture(gather) => write!(f, "<gather({})>", gather.item_count()),
             Self::Path(p) => p.py_repr_fmt(f, heap, heap_ids, guard, interns),
+            Self::RePattern(p) => p.py_repr_fmt(f, heap, heap_ids, guard, interns),
+            Self::ReMatch(m) => m.py_repr_fmt(f, heap, heap_ids, guard, interns),
         }
     }
 
@@ -709,6 +743,8 @@ impl PyTrait for HeapData {
             Self::FrozenSet(fs) => fs.py_call_attr(heap, attr, args, interns),
             Self::Dataclass(dc) => dc.py_call_attr(heap, attr, args, interns),
             Self::Path(p) => p.py_call_attr(heap, attr, args, interns),
+            Self::RePattern(p) => p.py_call_attr(heap, attr, args, interns),
+            Self::ReMatch(m) => m.py_call_attr(heap, attr, args, interns),
             _ => Err(ExcType::attribute_error(self.py_type(heap), attr.as_str(interns))),
         }
     }
@@ -779,6 +815,8 @@ impl PyTrait for HeapData {
             Self::Slice(s) => s.py_getattr(attr_id, heap, interns),
             Self::Exception(exc) => exc.py_getattr(attr_id, heap, interns),
             Self::Path(p) => p.py_getattr(attr_id, heap, interns),
+            Self::RePattern(p) => p.py_getattr(attr_id, heap, interns),
+            Self::ReMatch(m) => m.py_getattr(attr_id, heap, interns),
             // All other types don't support attribute access via py_getattr
             _ => Ok(None),
         }
@@ -826,7 +864,7 @@ impl HashState {
             }
             // Path is immutable and hashable
             HeapData::Path(_) => Self::Unknown,
-            // Mutable containers, exceptions, iterators, modules, and async types are unhashable
+            // Mutable containers, exceptions, iterators, modules, regex types, and async types are unhashable
             HeapData::List(_)
             | HeapData::Dict(_)
             | HeapData::Set(_)
@@ -834,7 +872,9 @@ impl HashState {
             | HeapData::Iter(_)
             | HeapData::Module(_)
             | HeapData::Coroutine(_)
-            | HeapData::GatherFuture(_) => Self::Unhashable,
+            | HeapData::GatherFuture(_)
+            | HeapData::RePattern(_)
+            | HeapData::ReMatch(_) => Self::Unhashable,
         }
     }
 }
@@ -1718,7 +1758,9 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
         | HeapData::Exception(_)
         | HeapData::LongInt(_)
         | HeapData::Slice(_)
-        | HeapData::Path(_) => {}
+        | HeapData::Path(_)
+        | HeapData::RePattern(_)
+        | HeapData::ReMatch(_) => {}
         HeapData::List(list) => {
             // Skip iteration if no refs - major GC optimization for lists of primitives
             if !list.contains_refs() {
