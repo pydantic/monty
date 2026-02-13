@@ -758,7 +758,7 @@ impl ExcType {
         SimpleException::new_msg(Self::IndexError, "range object index out of range").into()
     }
 
-    /// Crates an IndexError for `re.Match` group index out of range.
+    /// Creates an IndexError for `re.Match` group index out of range.
     ///
     /// Matches CPython's format: `IndexError('no such group')`
     #[must_use]
