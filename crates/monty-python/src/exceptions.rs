@@ -413,7 +413,6 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
                 return PyErr::from_value(re_pattern_error.call1((msg,)).unwrap());
             }
             // `re.PatternError` inherits from `Exception`, so fallback to that
-            crate::re::get_re_pattern_error(py).unwrap();
             exceptions::PyException::new_err(msg)
         }
     }
