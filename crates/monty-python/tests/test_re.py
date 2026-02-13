@@ -1,3 +1,4 @@
+import re
 from inline_snapshot import snapshot
 
 import pydantic_monty
@@ -122,3 +123,20 @@ matches
     result = progress2.resume(return_value=None)
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(['Test', '123'])
+
+
+def test_re_error_upcast():
+    code = """
+import re
+re.compile(r'[')
+"""
+    m = pydantic_monty.Monty(code)
+    try:
+        m.run()
+        assert False, "Expected an exception to be raised"
+    except pydantic_monty.MontyRuntimeError as e:
+        error_message = str(e)
+        assert True, "Expected an exception to be raised"
+        assert type(e.exception()) == re.PatternError
+        assert "Parsing error at position 1: Invalid character class" in error_message
+    

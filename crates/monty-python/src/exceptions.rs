@@ -408,12 +408,14 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
         ExcType::FileExistsError => exceptions::PyFileExistsError::new_err(msg),
         ExcType::IsADirectoryError => exceptions::PyIsADirectoryError::new_err(msg),
         ExcType::NotADirectoryError => exceptions::PyNotADirectoryError::new_err(msg),
-        // TODO: the error should be `re.PatternError` instead of RuntimeError,
-        //       but since the error class is not natively supported by PyO3,
-        //       we map it to RuntimeError for now.
-        //       To fetch for `re.PatternError`, we would need to run
-        //       py.import("re")?.getattr("PatternError")?.downcast()?,call1((msg,))?
-        ExcType::RePatternError => exceptions::PyRuntimeError::new_err(msg),
+        ExcType::RePatternError => {
+            if let Ok(re_pattern_error) = crate::re::get_re_pattern_error(py) {
+                return PyErr::from_value(re_pattern_error.call1((msg,)).unwrap());
+            }
+            // `re.PatternError` inherits from `Exception`, so fallback to that
+            crate::re::get_re_pattern_error(py).unwrap();
+            exceptions::PyException::new_err(msg)
+        }
     }
 }
 
