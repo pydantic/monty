@@ -170,3 +170,28 @@ assert result == ['Hello', 'hello', 'HELLO'], 'Combined IGNORECASE | MULTILINE f
 m = re.search(r'\d+', '42')
 assert m is not None, 'search with no groups finds match'
 assert m.groups() == (), 'groups() with no capture groups returns empty tuple'
+
+# === Empty pattern ===
+m = re.search(r'', 'abc')
+assert m is not None, 'search with empty pattern finds match'
+assert m.start() == 0 and m.end() == 0, 'empty pattern matches at start of string'
+
+# === Zero-length matches ===
+m = re.search(r'a*', 'bc')
+assert m is not None, 'search with zero-length match finds match'
+assert m.group() == '', 'zero-length match returns empty string'
+
+# === Object identity of compiled patterns ===
+p1 = re.compile(r'\d+')
+p2 = re.compile(r'\d+')
+assert p1 is not p2, 'separately compiled patterns are distinct objects'
+assert p1 == p2, 'separately compiled patterns with same pattern are equal'
+match1 = p1.search('123')
+match2 = p2.search('123')
+assert match1 != match2, 'matches from different pattern objects are distinct'
+
+# === Backreferences ===
+m = re.search(r'(\w+)\s+\1', 'hello hello')
+assert m is not None, 'backreference finds repeated word'
+assert m.group(0) == 'hello hello', 'backreference full match'
+assert m.group(1) == 'hello', 'backreference group'
