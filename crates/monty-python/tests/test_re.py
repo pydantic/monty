@@ -1,4 +1,5 @@
 import re
+
 from inline_snapshot import snapshot
 
 import pydantic_monty
@@ -19,6 +20,7 @@ matches = pattern.findall('There are 24 hours in a day and 365 days in a year.')
     m = pydantic_monty.Monty(code)
     output = m.run()
     assert output is None
+
 
 def test_re_compile_repr():
     code = r"""
@@ -77,7 +79,7 @@ error_message
 """
     m = pydantic_monty.Monty(code)
     output = m.run()
-    error = "Parsing error at position 1: Invalid character class"
+    error = 'Parsing error at position 1: Invalid character class'
     assert error in output
 
 
@@ -133,10 +135,9 @@ re.compile(r'[')
     m = pydantic_monty.Monty(code)
     try:
         m.run()
-        assert False, "Expected an exception to be raised"
+        assert False, 'Expected an exception to be raised'
     except pydantic_monty.MontyRuntimeError as e:
         error_message = str(e)
-        assert True, "Expected an exception to be raised"
-        assert type(e.exception()) == re.PatternError
-        assert "Parsing error at position 1: Invalid character class" in error_message
-    
+        assert True, 'Expected an exception to be raised'
+        assert type(e.exception()) is re.PatternError
+        assert 'Parsing error at position 1: Invalid character class' in error_message
