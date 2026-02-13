@@ -575,12 +575,16 @@ fn pow_intermediate_allocation_multiplier() {
     let limits = ResourceLimits::new().max_memory(200_000);
     let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
 
-    assert!(result.is_err(), "pow should be rejected due to intermediate allocation overhead");
+    assert!(
+        result.is_err(),
+        "pow should be rejected due to intermediate allocation overhead"
+    );
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
+    // 2 bits * 500000 = 125KB final, × 4 = 500072 bytes (includes base memory offset)
+    assert_eq!(
+        exc.message(),
+        Some("memory limit exceeded: 500072 bytes > 200000 bytes")
     );
 }
 
@@ -616,12 +620,16 @@ fn pow_fuzzer_oom_chained_exponentiation() {
     let limits = ResourceLimits::new().max_memory(1_024 * 1_024);
     let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
 
-    assert!(result.is_err(), "fuzzer OOM pattern should be rejected by 4× multiplier");
+    assert!(
+        result.is_err(),
+        "fuzzer OOM pattern should be rejected by 4× multiplier"
+    );
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
-        "expected memory limit error, got: {exc}"
+    // 2 bits * 3661666 = 915KB final, × 4 = 3661740 bytes
+    assert_eq!(
+        exc.message(),
+        Some("memory limit exceeded: 3661740 bytes > 1048576 bytes")
     );
 }
 
@@ -640,6 +648,12 @@ fn pow_fuzzer_oom_full_input() {
     assert!(result.is_err(), "full fuzzer OOM input should be rejected");
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    // 3**3661666 is evaluated first (right-associative). Base 3 = 2 bits,
+    // so estimate = 2 * 3661666 bits = 915KB. With 4× multiplier: 3661740 bytes > 1MB.
+    assert_eq!(
+        exc.message(),
+        Some("memory limit exceeded: 3661740 bytes > 1048576 bytes")
+    );
 }
 
 /// Test that large left shift operations are rejected by memory limits.
