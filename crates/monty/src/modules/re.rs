@@ -41,11 +41,11 @@ use crate::{
 };
 
 /// Python regex flag: case-insensitive matching.
-const IGNORECASE: u32 = 2;
+const IGNORECASE: u8 = 2;
 /// Python regex flag: `^` and `$` match at line boundaries.
-const MULTILINE: u32 = 8;
+const MULTILINE: u8 = 8;
 /// Python regex flag: `.` matches newlines.
-const DOTALL: u32 = 16;
+const DOTALL: u8 = 16;
 
 /// Functions exposed by the `re` module.
 ///
