@@ -59,12 +59,8 @@ pub(crate) struct RePattern {
     pattern: String,
     /// Python regex flags bitmask (IGNORECASE=2, MULTILINE=8, DOTALL=16).
     flags: u8,
-    /// The compiled Rust regex for `search` / `findall` / `sub` (unanchored).
-    compiled: Box<Regex>,
-    /// Compiled regex anchored at start for `match` operations.
-    compiled_match: Box<Regex>,
-    /// Compiled regex anchored at both ends for `fullmatch` operations.
-    compiled_fullmatch: Box<Regex>,
+    /// The compiled Rust regex, unanchored.
+    compiled: Regex,
 }
 
 impl RePattern {
@@ -79,14 +75,10 @@ impl RePattern {
     /// by the Rust regex engine.
     pub fn compile(pattern: String, flags: u8) -> RunResult<Self> {
         let compiled = compile_regex(&pattern, flags)?;
-        let compiled_match = compile_regex(&anchor_start(&pattern), flags)?;
-        let compiled_fullmatch = compile_regex(&anchor_full(&pattern), flags)?;
         Ok(Self {
             pattern,
             flags,
-            compiled: Box::new(compiled),
-            compiled_match: Box::new(compiled_match),
-            compiled_fullmatch: Box::new(compiled_fullmatch),
+            compiled,
         })
     }
 
@@ -109,10 +101,16 @@ impl RePattern {
     /// Equivalent to `re.match(pattern, string)`. Only matches at position 0.
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
     pub fn match_start(&self, text: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-        match self.compiled_match.captures(text) {
+        match self.compiled.captures(text) {
             Ok(Some(caps)) => {
-                let m = ReMatch::from_captures(&caps, text, &self.pattern);
-                Ok(Value::Ref(heap.allocate(HeapData::ReMatch(m))?))
+                // Check if the match starts at position 0
+                if let Some(m) = caps.get(0)
+                    && m.start() == 0
+                {
+                    let match_obj = ReMatch::from_captures(&caps, text, &self.pattern);
+                    return Ok(Value::Ref(heap.allocate(HeapData::ReMatch(match_obj))?));
+                }
+                Ok(Value::None)
             }
             Ok(None) => Ok(Value::None),
             Err(err) => Err(ExcType::re_pattern_error(err)),
@@ -123,10 +121,17 @@ impl RePattern {
     ///
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
     pub fn fullmatch(&self, text: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-        match self.compiled_fullmatch.captures(text) {
+        match self.compiled.captures(text) {
             Ok(Some(caps)) => {
-                let m = ReMatch::from_captures(&caps, text, &self.pattern);
-                Ok(Value::Ref(heap.allocate(HeapData::ReMatch(m))?))
+                // Check if the match spans the entire string
+                if let Some(m) = caps.get(0)
+                    && m.start() == 0
+                    && m.end() == text.len()
+                {
+                    let match_obj = ReMatch::from_captures(&caps, text, &self.pattern);
+                    return Ok(Value::Ref(heap.allocate(HeapData::ReMatch(match_obj))?));
+                }
+                Ok(Value::None)
             }
             Ok(None) => Ok(Value::None),
             Err(err) => Err(ExcType::re_pattern_error(err)),
@@ -392,22 +397,6 @@ pub(crate) fn compile_regex(pattern: &str, flags: u8) -> RunResult<Regex> {
     };
 
     Regex::new(&full_pattern).map_err(ExcType::re_pattern_error)
-}
-
-/// Wraps a pattern to anchor at the start of the string (for `re.match()`).
-///
-/// Prepends `\A(?:...)` so the pattern only matches at position 0.
-/// The non-capturing group `(?:...)` prevents altering the group numbering
-/// of the original pattern.
-fn anchor_start(pattern: &str) -> String {
-    format!("\\A(?:{pattern})")
-}
-
-/// Wraps a pattern to anchor at both ends (for `re.fullmatch()`).
-///
-/// Wraps as `\A(?:...)\z` so the pattern must match the entire string.
-fn anchor_full(pattern: &str) -> String {
-    format!("\\A(?:{pattern})\\z")
 }
 
 /// Translates Python-style replacement backreferences to Rust regex syntax.
