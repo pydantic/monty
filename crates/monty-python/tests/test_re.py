@@ -1,4 +1,5 @@
 import re
+import sys
 
 from inline_snapshot import snapshot
 
@@ -139,5 +140,8 @@ re.compile(r'[')
     except pydantic_monty.MontyRuntimeError as e:
         error_message = str(e)
         assert True, 'Expected an exception to be raised'
-        assert type(e.exception()) is re.PatternError
+        if sys.version_info >= (3, 13):
+            assert type(e.exception()) is re.PatternError
+        else:
+            assert type(e.exception()) is re.error
         assert 'Parsing error at position 1: Invalid character class' in error_message
