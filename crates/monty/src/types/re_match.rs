@@ -137,7 +137,6 @@ impl ReMatch {
 
     /// Returns a tuple of all capture group strings.
     ///
-    /// Matches CPython's `match.groups()` — returns a tuple of group 1..N values.
     /// Unmatched optional groups appear as `None`.
     fn get_groups(&self, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
         let mut elements = smallvec![];
@@ -156,7 +155,6 @@ impl ReMatch {
     /// Returns the start character position for a given group.
     ///
     /// Group 0 is the full match. Returns -1 for unmatched optional groups
-    /// (matching CPython behavior).
     #[expect(clippy::cast_possible_wrap, reason = "positions are always small enough for i64")]
     fn get_start(&self, n: i64) -> RunResult<Value> {
         match n.cmp(&0) {
@@ -178,7 +176,6 @@ impl ReMatch {
     /// Returns the end character position for a given group.
     ///
     /// Group 0 is the full match. Returns -1 for unmatched optional groups
-    /// (matching CPython behavior).
     #[expect(clippy::cast_possible_wrap, reason = "positions are always small enough for i64")]
     fn get_end(&self, n: i64) -> RunResult<Value> {
         match n.cmp(&0) {
@@ -200,7 +197,6 @@ impl ReMatch {
     /// Returns a `(start, end)` tuple for a given group.
     ///
     /// Group 0 is the full match. Returns `(-1, -1)` for unmatched optional groups
-    /// (matching CPython behavior).
     #[expect(clippy::cast_possible_wrap, reason = "positions are always small enough for i64")]
     fn get_span(&self, n: i64, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
         match n.cmp(&0) {
@@ -240,7 +236,7 @@ impl PyTrait for ReMatch {
         _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> Result<bool, ResourceError> {
-        // Match objects are not comparable in CPython (identity-based only)
+        // Match objects are not comparable
         Ok(false)
     }
 
@@ -249,7 +245,7 @@ impl PyTrait for ReMatch {
     }
 
     fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
-        // Match objects are always truthy (matching CPython).
+        // Match objects are always truthy
         true
     }
 
@@ -345,9 +341,8 @@ fn extract_optional_group_arg(
         None => Ok(default),
         Some(Value::Int(n)) => Ok(n),
         Some(other) => {
-            let type_name = other.py_type(heap);
             other.drop_with_heap(heap);
-            Err(ExcType::type_error(format!("expected int, not {type_name}")))
+            Err(ExcType::re_match_group_index_error())
         }
     }
 }
