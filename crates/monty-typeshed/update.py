@@ -94,9 +94,8 @@ ALLOWED_CLASSES = {
     'StopIteration',
 }
 
-# Dependency modules that builtins.pyi imports from.
-# These are copied without filtering.
-DEPENDENCY_FILES = [
+# Files to copy without filtering
+COPY_FILES = [
     # Core type system
     'typing.pyi',
     'typing_extensions.pyi',
@@ -107,14 +106,17 @@ DEPENDENCY_FILES = [
     'dataclasses.pyi',
     # used by dataclasses
     'enum.pyi',
-]
-
-
-# Dependency directories (copied recursively)
-DEPENDENCY_DIRS = [
-    'collections',
-    '_typeshed',
-    'pathlib',
+    # ==============================
+    # all all collections dir
+    'collections/__init__.pyi',
+    'collections/abc.pyi',
+    # ==============================
+    # Take only `__init__.pyi` from _typeshed dir
+    '_typeshed/__init__.pyi',
+    # ==============================
+    # all of pathlib dir
+    'pathlib/__init__.pyi',
+    'pathlib/types.pyi',
 ]
 # content for typeshed's `VERSIONS` file
 VERSIONS = """\
@@ -137,32 +139,27 @@ typing_extensions: 3.7-
 types: 3.0-
 """
 
-SCRIPT_DIR = Path(__file__).parent
-VENDOR_DIR = SCRIPT_DIR / 'vendor' / 'typeshed'
+CRATE_DIR = Path(__file__).parent
+REPO_ROOT = CRATE_DIR.parent.parent
+VENDOR_DIR = CRATE_DIR / 'vendor' / 'typeshed'
 STDLIB_DIR = VENDOR_DIR / 'stdlib'
-CUSTOM_DIR = SCRIPT_DIR / 'custom'
-TYPESHED_REPO_DIR = SCRIPT_DIR / 'typeshed-repo'
+CUSTOM_DIR = CRATE_DIR / 'custom'
+TYPESHED_REPO_DIR = CRATE_DIR / 'typeshed-repo'
 
 TYPESHED_REPO_URL = 'git@github.com:python/typeshed.git'
 
 
-def clone_or_update_typeshed() -> tuple[Path, str]:
+def clone_or_update_typeshed() -> str:
     """Clone or update the typeshed repository and return the path and HEAD commit hash.
 
     If the repository already exists at TYPESHED_REPO_DIR, performs a git pull.
     Otherwise, clones the repository to that location.
 
     Returns:
-        Tuple of (repo_path, commit_hash).
+        commit_hash
     """
     if TYPESHED_REPO_DIR.exists():
         print(f'{TYPESHED_REPO_DIR} exists, not pulling')
-        # subprocess.run(
-        #     ['git', 'pull'],
-        #     cwd=TYPESHED_REPO_DIR,
-        #     check=True,
-        #     capture_output=True,
-        # )
     else:
         print(f'Cloning typeshed to {TYPESHED_REPO_DIR}...')
         subprocess.run(
@@ -178,9 +175,7 @@ def clone_or_update_typeshed() -> tuple[Path, str]:
         capture_output=True,
         text=True,
     )
-    commit = result.stdout.strip()
-
-    return TYPESHED_REPO_DIR, commit
+    return result.stdout.strip()
 
 
 def filter_statements(nodes: list[ast.stmt]) -> list[ast.stmt]:
@@ -263,36 +258,6 @@ def filter_builtins(source: str) -> str:
     return ast.unparse(tree)
 
 
-def copy_dependencies(src_stdlib: Path, dest_stdlib: Path) -> None:
-    """Copy dependency modules from typeshed stdlib to vendor directory.
-
-    Args:
-        src_stdlib: Path to the source stdlib directory in cloned typeshed.
-        dest_stdlib: Path to the destination stdlib directory in vendor.
-    """
-    # Copy individual files
-    for filename in DEPENDENCY_FILES:
-        src_file = src_stdlib / filename
-        if src_file.exists():
-            dest_file = dest_stdlib / filename
-            shutil.copy2(src_file, dest_file)
-            print(f'Copied {filename}')
-        else:
-            print(f'Warning: {filename} not found in typeshed')
-
-    # Copy directories recursively
-    for dirname in DEPENDENCY_DIRS:
-        src_dir = src_stdlib / dirname
-        if src_dir.exists():
-            dest_dir = dest_stdlib / dirname
-            if dest_dir.exists():
-                shutil.rmtree(dest_dir)
-            shutil.copytree(src_dir, dest_dir)
-            print(f'Copied {dirname}/')
-        else:
-            print(f'Warning: {dirname}/ not found in typeshed')
-
-
 def main() -> int:
     """Main entry point."""
     # Clean up any stale files from previous runs
@@ -301,42 +266,48 @@ def main() -> int:
         shutil.rmtree(VENDOR_DIR)
 
     # Clone or update typeshed
-    repo_path, commit = clone_or_update_typeshed()
-    print(f'At commit {commit}')
+    commit = clone_or_update_typeshed()
+    print(f'At python/typeshed commit {commit}')
 
     # Read source file
-    builtins_path = repo_path / 'stdlib' / 'builtins.pyi'
+    src_stdlib = TYPESHED_REPO_DIR / 'stdlib'
+    builtins_path = src_stdlib / 'builtins.pyi'
     source = builtins_path.read_text()
-    print(f'Read {len(source)} bytes from builtins.pyi')
 
     # Filter
     filtered = filter_builtins(source)
-    print(f'Filtered to {len(filtered)} bytes')
-
-    # Copy VERSIONS file
-    src_stdlib = repo_path / 'stdlib'
 
     # Write output files
     STDLIB_DIR.mkdir(parents=True, exist_ok=True)
+
     (STDLIB_DIR / 'builtins.pyi').write_text(filtered)
+    print(f'Wrote {(STDLIB_DIR / "builtins.pyi").relative_to(REPO_ROOT)}')
+
     (STDLIB_DIR / 'VERSIONS').write_text(VERSIONS)
-
-    # Copy dependency modules
-    copy_dependencies(src_stdlib, STDLIB_DIR)
-
-    # copy pyi files from CUSTOM_DIR into STDLIB_DIR
-    for file in CUSTOM_DIR.glob('*.pyi'):
-        shutil.copy2(file, STDLIB_DIR)
+    print(f'Wrote {(STDLIB_DIR / "VERSIONS").relative_to(REPO_ROOT)}')
 
     (VENDOR_DIR / 'source_commit.txt').write_text(commit + '\n')
+    print(f'Wrote {(VENDOR_DIR / "source_commit.txt").relative_to(REPO_ROOT)}')
 
-    print(f'Updated to commit {commit}')
-    print(f'Wrote {STDLIB_DIR / "builtins.pyi"}')
-    print(f'Wrote {STDLIB_DIR / "VERSIONS"}')
-    print(f'Wrote {VENDOR_DIR / "source_commit.txt"}')
+    for file_path in COPY_FILES:
+        src_file = src_stdlib / file_path
+        if src_file.exists():
+            dest_file = STDLIB_DIR / file_path
+            dest_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_file, dest_file)
+        else:
+            raise ValueError(f'{file_path} not found in typeshed')
+    print(f'Copied {len(COPY_FILES)} stdlib typeshed files')
+
+    # copy pyi files from CUSTOM_DIR into STDLIB_DIR
+    custom_count = 0
+    for file in CUSTOM_DIR.glob('*.pyi'):
+        shutil.copy2(file, STDLIB_DIR)
+        custom_count += 1
+    print(f'Copied {custom_count} custom typeshed files')
 
     return 0
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    exit(main())
