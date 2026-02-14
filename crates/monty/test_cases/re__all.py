@@ -194,3 +194,17 @@ m = re.search(r'(\w+)\s+\1', 'hello hello')
 assert m is not None, 'backreference finds repeated word'
 assert m.group(0) == 'hello hello', 'backreference full match'
 assert m.group(1) == 'hello', 'backreference group'
+
+# === Invalid group index ===
+m = re.search(r'(\w+)', 'hello')
+assert m is not None, 'search with group finds match'
+try:
+    m.group(2)
+    assert False, 'Accessing invalid group index should raise IndexError'
+except IndexError:
+    pass
+try:
+    m.group('foo')
+    assert False, 'Accessing group with non-integer index should raise IndexError'
+except IndexError:
+    pass
