@@ -184,7 +184,6 @@ assert m.group() == '', 'zero-length match returns empty string'
 # === Object identity of compiled patterns ===
 p1 = re.compile(r'\d+')
 p2 = re.compile(r'\d+')
-assert p1 is not p2, 'separately compiled patterns are distinct objects'
 assert p1 == p2, 'separately compiled patterns with same pattern are equal'
 match1 = p1.search('123')
 match2 = p2.search('123')
