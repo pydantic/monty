@@ -81,6 +81,20 @@ assert 'abd' > 'abc', 'str gt'
 assert 'abc' >= 'abc', 'str ge'
 assert 'a' < 'b', 'single char lt'
 
+# === Heap-allocated string ordering (from split) ===
+parts = 'banana,apple'.split(',')
+assert parts[1] < parts[0], 'heap str lt'
+assert parts[0] > parts[1], 'heap str gt'
+assert parts[0] >= parts[0], 'heap str ge self'
+assert parts[0] <= parts[0], 'heap str le self'
+
+# === Cross-type string ordering (interned vs heap) ===
+heap_str = 'banana,apple'.split(',')[0]
+assert heap_str > 'apple', 'heap str gt interned'
+assert 'cherry' > heap_str, 'interned gt heap str'
+assert heap_str >= 'banana', 'heap str ge interned eq'
+assert 'banana' <= heap_str, 'interned le heap str eq'
+
 # === Containment: not in list ===
 assert 999 not in [1, 2, 3], 'not in list'
 assert 0 not in [1, 2, 3], 'zero not in list'

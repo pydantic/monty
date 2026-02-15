@@ -37,15 +37,15 @@ lto = false
 
 [workspace.dependencies]
 # ruff, ty and related crates
-ruff_python_parser = { git = "https://github.com/astral-sh/ruff.git", package = "ruff_python_parser", tag = "0.15.0" }
-ruff_python_ast = { git = "https://github.com/astral-sh/ruff.git", package = "ruff_python_ast", tag = "0.15.0" }
-ruff_text_size = { git = "https://github.com/astral-sh/ruff.git", package = "ruff_text_size", tag = "0.15.0" }
-ruff_db = { git = "https://github.com/astral-sh/ruff.git", package = "ruff_db", tag = "0.15.0", features = ["serde"] }
-ty_python_semantic = { git = "https://github.com/astral-sh/ruff.git", package = "ty_python_semantic", tag = "0.15.0" }
-ty_module_resolver = { git = "https://github.com/astral-sh/ruff.git", package = "ty_module_resolver", tag = "0.15.0" }
-ty_vendored = { git = "https://github.com/astral-sh/ruff.git", package = "ty_vendored", tag = "0.15.0" }
+ruff_python_parser = { git = "https://github.com/astral-sh/ruff.git", package = "ruff_python_parser", rev = "6ded4bed1651e30b34dd04cdaa50c763036abb0d" }
+ruff_python_ast = { git = "https://github.com/astral-sh/ruff.git", package = "ruff_python_ast", rev = "6ded4bed1651e30b34dd04cdaa50c763036abb0d" }
+ruff_text_size = { git = "https://github.com/astral-sh/ruff.git", package = "ruff_text_size", rev = "6ded4bed1651e30b34dd04cdaa50c763036abb0d" }
+ruff_db = { git = "https://github.com/astral-sh/ruff.git", package = "ruff_db", rev = "6ded4bed1651e30b34dd04cdaa50c763036abb0d", features = ["serde"] }
+ty_python_semantic = { git = "https://github.com/astral-sh/ruff.git", package = "ty_python_semantic", rev = "6ded4bed1651e30b34dd04cdaa50c763036abb0d" }
+ty_module_resolver = { git = "https://github.com/astral-sh/ruff.git", package = "ty_module_resolver", rev = "6ded4bed1651e30b34dd04cdaa50c763036abb0d" }
+ty_vendored = { git = "https://github.com/astral-sh/ruff.git", package = "ty_vendored", rev = "6ded4bed1651e30b34dd04cdaa50c763036abb0d" }
 # salsa version matches current main of ruff
-salsa = { git = "https://github.com/salsa-rs/salsa.git", rev = "e9b9ddd4bec50ac777e9353bbb8f1180e5669d89", default-features = false, features = [
+salsa = { git = "https://github.com/salsa-rs/salsa.git", rev = "53421c2fff87426fa0bb51cab06632b87646de13", default-features = false, features = [
     "compact_str",
     "macros",
     "salsa_unstable",

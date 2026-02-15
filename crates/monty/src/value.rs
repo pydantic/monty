@@ -291,24 +291,32 @@ impl PyTrait for Value {
                     Ok(None)
                 }
             }
-            // LongInt vs LongInt comparison
+            // Ref vs Ref comparison: handles LongInt and Str
             (Self::Ref(id1), Self::Ref(id2)) => {
-                let is_longint1 = matches!(heap.get(*id1), HeapData::LongInt(_));
-                let is_longint2 = matches!(heap.get(*id2), HeapData::LongInt(_));
-                if is_longint1 && is_longint2 {
-                    Ok(heap.with_two(*id1, *id2, |_heap, left, right| {
-                        if let (HeapData::LongInt(a), HeapData::LongInt(b)) = (left, right) {
-                            a.inner().partial_cmp(b.inner())
-                        } else {
-                            None
-                        }
-                    }))
+                Ok(heap.with_two(*id1, *id2, |_heap, left, right| match (left, right) {
+                    (HeapData::LongInt(a), HeapData::LongInt(b)) => a.inner().partial_cmp(b.inner()),
+                    (HeapData::Str(a), HeapData::Str(b)) => a.as_str().partial_cmp(b.as_str()),
+                    _ => None,
+                }))
+            }
+            // Interned string comparisons
+            (Self::InternString(s1), Self::InternString(s2)) => {
+                Ok(interns.get_str(*s1).partial_cmp(interns.get_str(*s2)))
+            }
+            // Cross-type string comparisons: interned vs heap-allocated
+            (Self::InternString(s1), Self::Ref(id2)) => {
+                if let HeapData::Str(s2) = heap.get(*id2) {
+                    Ok(interns.get_str(*s1).partial_cmp(s2.as_str()))
                 } else {
                     Ok(None)
                 }
             }
-            (Self::InternString(s1), Self::InternString(s2)) => {
-                Ok(interns.get_str(*s1).partial_cmp(interns.get_str(*s2)))
+            (Self::Ref(id1), Self::InternString(s2)) => {
+                if let HeapData::Str(s1) = heap.get(*id1) {
+                    Ok(s1.as_str().partial_cmp(interns.get_str(*s2)))
+                } else {
+                    Ok(None)
+                }
             }
             (Self::InternBytes(b1), Self::InternBytes(b2)) => {
                 Ok(interns.get_bytes(*b1).partial_cmp(interns.get_bytes(*b2)))
