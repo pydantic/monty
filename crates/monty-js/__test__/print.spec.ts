@@ -120,7 +120,8 @@ test('raises error', (t) => {
   const thrown = t.throws(() => {
     m.run({ printCallback: callback })
   })
-  t.is(thrown?.message, 'Exception: Error: Custom print error')
+  // the error is slightly different with WASI, it doesn't include "Error: "
+  t.regex(thrown?.message, /Exception: (:?Error: )?Custom print error/)
 })
 
 test('raises in function', (t) => {
@@ -136,7 +137,8 @@ greet("Alice")
   const thrown = t.throws(() => {
     m.run({ printCallback: callback })
   })
-  t.is(thrown?.message, 'Exception: Error: Print error in function')
+  // the error is slightly different with WASI, it doesn't include "Error: "
+  t.regex(thrown?.message, /Exception: (:?Error: )?Print error in function/)
 })
 
 test('raises in nested function', (t) => {
@@ -154,7 +156,8 @@ outer()
   const thrown = t.throws(() => {
     m.run({ printCallback: callback })
   })
-  t.is(thrown?.message, 'Exception: Error: Print error in nested function')
+  // the error is slightly different with WASI, it doesn't include "Error: "
+  t.regex(thrown?.message, /Exception: (:?Error: )?Print error in nested function/)
 })
 
 test('raises in loop', (t) => {
@@ -168,7 +171,8 @@ for i in range(3):
   const thrown = t.throws(() => {
     m.run({ printCallback: callback })
   })
-  t.is(thrown?.message, 'Exception: Error: Print error in loop')
+  // the error is slightly different with WASI, it doesn't include "Error: "
+  t.regex(thrown?.message, /Exception: (:?Error: )?Print error in loop/)
 })
 
 test('with snapshot', (t) => {
