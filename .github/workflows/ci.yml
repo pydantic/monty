@@ -670,11 +670,14 @@ jobs:
       - run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
         if: ${{ contains(matrix.target, 'armv7') }}
       - name: Test bindings
-        uses: addnab/docker-run-action@v3
-        with:
-          image: ${{ steps.docker.outputs.IMAGE }}
-          options: "-v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }}/crates/monty-js --platform ${{ steps.docker.outputs.PLATFORM }}"
-          run: npm test
+        run: >
+          docker run
+          --rm
+          -v ${{ github.workspace }}:${{ github.workspace }}
+          -w ${{ github.workspace }}/crates/monty-js
+          --platform ${{ steps.docker.outputs.PLATFORM }}
+          ${{ steps.docker.outputs.IMAGE }}
+          npm test
 
   test-js-wasi:
     name: Test WASI target
