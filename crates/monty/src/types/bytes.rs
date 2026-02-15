@@ -1309,6 +1309,7 @@ fn bytes_split(
 
     let mut list_items = Vec::with_capacity(parts.len());
     for part in parts {
+        heap.check_time()?;
         list_items.push(allocate_bytes(part.to_vec(), heap)?);
     }
 
@@ -1352,6 +1353,7 @@ fn bytes_rsplit(
 
     let mut list_items = Vec::with_capacity(parts.len());
     for part in parts {
+        heap.check_time()?;
         list_items.push(allocate_bytes(part.to_vec(), heap)?);
     }
 
@@ -1593,6 +1595,8 @@ fn bytes_splitlines(
     let len = bytes.len();
 
     while start < len {
+        heap.check_time()?;
+
         let mut end = start;
         let mut line_end = start;
 
@@ -1765,10 +1769,10 @@ fn bytes_replace(
     let (old, new, count) = parse_bytes_replace_args("bytes.replace", args, heap, interns)?;
 
     let result = if count < 0 {
-        bytes_replace_all(bytes, &old, &new)
+        bytes_replace_all(bytes, &old, &new, heap)?
     } else {
         let n = usize::try_from(count).unwrap_or(usize::MAX);
-        bytes_replace_n(bytes, &old, &new, n)
+        bytes_replace_n(bytes, &old, &new, n, heap)?
     };
 
     allocate_bytes(result, heap)
@@ -1844,36 +1848,56 @@ fn parse_bytes_replace_args(
 }
 
 /// Replaces all occurrences of `old` with `new` in bytes.
-fn bytes_replace_all(bytes: &[u8], old: &[u8], new: &[u8]) -> Vec<u8> {
+///
+/// Checks the time limit periodically to enforce `max_duration` during
+/// potentially long replacement operations on large byte sequences.
+fn bytes_replace_all(
+    bytes: &[u8],
+    old: &[u8],
+    new: &[u8],
+    heap: &mut Heap<impl ResourceTracker>,
+) -> Result<Vec<u8>, ResourceError> {
     if old.is_empty() {
         // Empty pattern: insert new before each byte and at the end
         let mut result = Vec::with_capacity(bytes.len() + new.len() * (bytes.len() + 1));
         for &b in bytes {
+            heap.check_time()?;
             result.extend_from_slice(new);
             result.push(b);
         }
         result.extend_from_slice(new);
-        result
+        Ok(result)
     } else {
         let mut result = Vec::new();
         let mut start = 0;
         while let Some(pos) = find_subsequence(&bytes[start..], old) {
+            heap.check_time()?;
             result.extend_from_slice(&bytes[start..start + pos]);
             result.extend_from_slice(new);
             start = start + pos + old.len();
         }
         result.extend_from_slice(&bytes[start..]);
-        result
+        Ok(result)
     }
 }
 
 /// Replaces at most n occurrences of `old` with `new` in bytes.
-fn bytes_replace_n(bytes: &[u8], old: &[u8], new: &[u8], n: usize) -> Vec<u8> {
+///
+/// Checks the time limit periodically to enforce `max_duration` during
+/// potentially long replacement operations on large byte sequences.
+fn bytes_replace_n(
+    bytes: &[u8],
+    old: &[u8],
+    new: &[u8],
+    n: usize,
+    heap: &mut Heap<impl ResourceTracker>,
+) -> Result<Vec<u8>, ResourceError> {
     if old.is_empty() {
         // Empty pattern: insert new before each byte (up to n times)
         let mut result = Vec::new();
         let mut count = 0;
         for &b in bytes {
+            heap.check_time()?;
             if count < n {
                 result.extend_from_slice(new);
                 count += 1;
@@ -1883,12 +1907,13 @@ fn bytes_replace_n(bytes: &[u8], old: &[u8], new: &[u8], n: usize) -> Vec<u8> {
         if count < n {
             result.extend_from_slice(new);
         }
-        result
+        Ok(result)
     } else {
         let mut result = Vec::new();
         let mut start = 0;
         let mut count = 0;
         while count < n {
+            heap.check_time()?;
             if let Some(pos) = find_subsequence(&bytes[start..], old) {
                 result.extend_from_slice(&bytes[start..start + pos]);
                 result.extend_from_slice(new);
@@ -1899,7 +1924,7 @@ fn bytes_replace_n(bytes: &[u8], old: &[u8], new: &[u8], n: usize) -> Vec<u8> {
             }
         }
         result.extend_from_slice(&bytes[start..]);
-        result
+        Ok(result)
     }
 }
 

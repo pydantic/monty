@@ -1373,6 +1373,7 @@ fn str_split(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, in
     // Convert to list of strings (using interned empty string when applicable)
     let mut list_items = Vec::with_capacity(parts.len());
     for part in parts {
+        heap.check_time()?;
         list_items.push(allocate_string(part.to_owned(), heap)?);
     }
 
@@ -1419,6 +1420,7 @@ fn str_rsplit(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, i
     // Convert to list of strings (using interned empty string when applicable)
     let mut list_items = Vec::with_capacity(parts.len());
     for part in parts {
+        heap.check_time()?;
         list_items.push(allocate_string(part.to_owned(), heap)?);
     }
 
@@ -1598,6 +1600,8 @@ fn str_splitlines(
     let len = bytes.len();
 
     while start < len {
+        heap.check_time()?;
+
         // Find the next line ending
         let mut end = start;
         let mut line_end = start;

@@ -210,6 +210,7 @@ impl PyTrait for Tuple {
         guard.increase_err()?;
 
         for (i1, i2) in self.items.iter().zip(&other.items) {
+            heap.check_time()?;
             if !i1.py_eq(i2, heap, guard, interns)? {
                 guard.decrease();
                 return Ok(false);

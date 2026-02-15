@@ -1517,6 +1517,7 @@ impl<T: ResourceTracker> Heap<T> {
                         .ok_or_else(ExcType::overflow_repeat_count)?;
                     let mut result = Vec::with_capacity(capacity);
                     for _ in 0..count {
+                        self.check_time()?;
                         for item in &items {
                             result.push(item.copy_for_extend());
                         }
@@ -1564,6 +1565,7 @@ impl<T: ResourceTracker> Heap<T> {
                         .ok_or_else(ExcType::overflow_repeat_count)?;
                     let mut result = SmallVec::with_capacity(capacity);
                     for _ in 0..count {
+                        self.check_time()?;
                         for item in &items {
                             result.push(item.copy_for_extend());
                         }

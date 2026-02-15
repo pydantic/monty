@@ -1074,3 +1074,98 @@ sorted(x)
 ";
     assert_timeout_in_builtin(code, "sorted(reversed list)");
 }
+
+/// Test that `[1] * 10_000_000` (list repetition) respects the time limit.
+///
+/// The `mult_sequence()` copy loop now calls `heap.check_time()` on each
+/// repetition to prevent large sequence multiplications from bypassing timeout.
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_in_list_repetition() {
+    assert_timeout_in_builtin("[1, 2, 3] * 10_000_000", "list repetition");
+}
+
+/// Test that `(1,) * 10_000_000` (tuple repetition) respects the time limit.
+///
+/// Same as list repetition but for tuples — both paths in `mult_sequence()`
+/// now check the time limit.
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_in_tuple_repetition() {
+    assert_timeout_in_builtin("(1, 2, 3) * 10_000_000", "tuple repetition");
+}
+
+/// Test that comparing two large equal lists respects the time limit.
+///
+/// `List::py_eq()` iterates element-wise comparing pairs. With large equal lists,
+/// it must compare every element before returning True.
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_in_list_equality() {
+    let code = r"
+a = list(range(10_000_000))
+b = list(range(10_000_000))
+a == b
+";
+    assert_timeout_in_builtin(code, "list equality");
+}
+
+/// Test that comparing two large equal dicts respects the time limit.
+///
+/// `Dict::py_eq()` iterates all entries checking keys and values. With large equal
+/// dicts, it must check every entry before returning True.
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_in_dict_equality() {
+    let code = r"
+a = {i: i for i in range(10_000_000)}
+b = {i: i for i in range(10_000_000)}
+a == b
+";
+    assert_timeout_in_builtin(code, "dict equality");
+}
+
+/// Test that `str.splitlines()` on a large string respects the time limit.
+///
+/// `str_splitlines()` scans the entire string for line endings in a while loop
+/// that now calls `heap.check_time()` on each iteration.
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_in_str_splitlines() {
+    let code = r"
+s = 'a\n' * 5_000_000
+s.splitlines()
+";
+    assert_timeout_in_builtin(code, "str.splitlines()");
+}
+
+/// Test that `bytes.splitlines()` on large bytes respects the time limit.
+///
+/// `bytes_splitlines()` scans bytes for line endings and now checks the time limit.
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_in_bytes_splitlines() {
+    let code = r"
+s = b'a\n' * 5_000_000
+s.splitlines()
+";
+    assert_timeout_in_builtin(code, "bytes.splitlines()");
+}

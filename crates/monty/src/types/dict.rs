@@ -468,6 +468,7 @@ impl PyTrait for Dict {
         guard.increase_err()?;
         // Check that all keys in self exist in other with equal values
         for entry in &self.entries {
+            heap.check_time()?;
             if let Ok(Some(other_v)) = other.get(&entry.key, heap, interns) {
                 if !entry.value.py_eq(other_v, heap, guard, interns)? {
                     guard.decrease();
