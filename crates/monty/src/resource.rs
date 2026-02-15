@@ -280,7 +280,11 @@ pub trait ResourceTracker: fmt::Debug {
     ///
     /// Returns `Ok(())` if within time limit, or `Err(ResourceError::Time)`
     /// if the limit is exceeded.
-    fn check_time(&mut self) -> Result<(), ResourceError>;
+    ///
+    /// Takes `&self` rather than `&mut self` because checking elapsed time is a
+    /// read-only operation. This allows time checks in contexts that only have
+    /// an immutable heap reference, such as `py_repr_fmt`.
+    fn check_time(&self) -> Result<(), ResourceError>;
 
     /// Called before pushing a new call frame to check recursion depth.
     ///
@@ -321,7 +325,7 @@ impl ResourceTracker for NoLimitTracker {
     fn on_free(&mut self, _: impl FnOnce() -> usize) {}
 
     #[inline]
-    fn check_time(&mut self) -> Result<(), ResourceError> {
+    fn check_time(&self) -> Result<(), ResourceError> {
         Ok(())
     }
 
@@ -470,6 +474,16 @@ impl LimitedTracker {
     pub fn elapsed(&self) -> Duration {
         self.start_time.elapsed()
     }
+
+    /// Sets the maximum execution duration and resets the start time to now.
+    ///
+    /// This is useful when resuming execution after an external function call
+    /// where you want to enforce a different (typically shorter) time limit
+    /// for the resumed phase without counting the time spent in the host.
+    pub fn set_max_duration(&mut self, duration: Duration) {
+        self.limits.max_duration = Some(duration);
+        self.start_time = Instant::now();
+    }
 }
 
 impl ResourceTracker for LimitedTracker {
@@ -507,7 +521,7 @@ impl ResourceTracker for LimitedTracker {
         self.current_memory = self.current_memory.saturating_sub(get_size());
     }
 
-    fn check_time(&mut self) -> Result<(), ResourceError> {
+    fn check_time(&self) -> Result<(), ResourceError> {
         if let Some(max) = self.limits.max_duration {
             let elapsed = self.start_time.elapsed();
             if elapsed > max {

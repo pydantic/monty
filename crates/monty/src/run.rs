@@ -361,6 +361,14 @@ impl From<MontyFuture> for ExternalResult {
 }
 
 impl<T: ResourceTracker> Snapshot<T> {
+    /// Returns a mutable reference to the resource tracker.
+    ///
+    /// This allows modifying resource limits between execution phases,
+    /// e.g., setting a time limit before resuming after an external function call.
+    pub fn tracker_mut(&mut self) -> &mut T {
+        self.heap.tracker_mut()
+    }
+
     /// Continues execution with the return value or exception from the external function.
     ///
     /// Consumes self and returns the next execution progress.

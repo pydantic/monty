@@ -2,7 +2,7 @@
 ///
 /// These tests verify that the `ResourceTracker` system correctly enforces
 /// allocation limits, time limits, and triggers garbage collection.
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use monty::{ExcType, LimitedTracker, MontyObject, MontyRun, ResourceLimits, StdPrint};
 
@@ -1168,4 +1168,107 @@ s = b'a\n' * 5_000_000
 s.splitlines()
 ";
     assert_timeout_in_builtin(code, "bytes.splitlines()");
+}
+
+// === Timeout truncation in repr ===
+// These tests verify that `repr()` on large containers respects the time limit
+// and terminates promptly instead of hanging indefinitely. The repr methods
+// (`repr_sequence_fmt`, `Dict::py_repr_fmt`, `SetInner::repr_fmt`) call
+// `heap.check_time()` on each iteration and write `...[timeout]` when the
+// time limit is exceeded, returning normally instead of propagating an error.
+//
+// Each test uses the external function "interrupt" pattern: the large object is
+// built with NO time limit, then execution pauses at `interrupt()`. A short time
+// limit is set before resuming, so only the `repr()` call is timed.
+
+/// Helper: builds a large object without time limit, then runs `repr()` on it
+/// with a short time limit and asserts it produces a TimeoutError promptly.
+///
+/// The code must call `interrupt()` between object construction and `repr()`.
+fn assert_repr_timeout(code: &str, label: &str) {
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], vec!["interrupt".to_owned()]).unwrap();
+
+    // Phase 1: build the large object with no time limit
+    let limits = ResourceLimits::new();
+    let (name, _args, _kwargs, _call_id, mut state) = run
+        .start(vec![], LimitedTracker::new(limits), &mut StdPrint)
+        .unwrap()
+        .into_function_call()
+        .expect("interrupt call");
+    assert_eq!(name, "interrupt");
+
+    // Phase 2: set a short time limit and resume — repr() should timeout
+    state.tracker_mut().set_max_duration(Duration::from_millis(10));
+
+    let start = Instant::now();
+    let result = state.run(MontyObject::None, &mut StdPrint);
+    let elapsed = start.elapsed();
+
+    let exc = result.unwrap_err();
+    assert_eq!(
+        exc.exc_type(),
+        ExcType::TimeoutError,
+        "{label}: expected TimeoutError, got: {exc}"
+    );
+    let msg = exc.message().unwrap();
+    assert!(msg.starts_with("time limit exceeded:"));
+    assert!(msg.ends_with("ms > 10ms"));
+    assert!(
+        elapsed < Duration::from_millis(200),
+        "{label}: should terminate promptly, took {elapsed:?}"
+    );
+}
+
+/// Test that `repr(large_list)` respects the time limit.
+///
+/// Uses a list of 500K long strings so that repr formatting is slow
+/// (each element requires quoting/escaping a 10K-char string).
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_truncation_in_list_repr() {
+    let code = r"
+x = ['abcdefghij'] * 100_000
+interrupt()
+repr(x)
+";
+    assert_repr_timeout(code, "list repr");
+}
+
+/// Test that `repr(large_dict)` respects the time limit.
+///
+/// Uses a dict with 500K entries where values are long strings,
+/// making repr formatting slow.
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_truncation_in_dict_repr() {
+    let code = r"
+x = {i: 'abcdefghij' for i in range(100_000)}
+interrupt()
+repr(x)
+";
+    assert_repr_timeout(code, "dict repr");
+}
+
+/// Test that `repr(large_set)` respects the time limit.
+///
+/// Uses a set of 100K long unique strings so that repr formatting
+/// is slow (each element requires quoting/escaping a 100+ char string).
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_truncation_in_set_repr() {
+    let code = r"
+x = {str(i) for i in range(100_000)}
+interrupt()
+repr(x)
+";
+    assert_repr_timeout(code, "set repr");
 }

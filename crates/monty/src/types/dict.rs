@@ -527,6 +527,10 @@ impl PyTrait for Dict {
         let mut first = true;
         for entry in &self.entries {
             if !first {
+                if heap.check_time().is_err() {
+                    f.write_str(", ...[timeout]")?;
+                    break;
+                }
                 f.write_str(", ")?;
             }
             first = false;

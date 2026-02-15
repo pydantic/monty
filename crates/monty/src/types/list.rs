@@ -972,6 +972,10 @@ pub(crate) fn repr_sequence_fmt(
     if let Some(first) = iter.next() {
         first.py_repr_fmt(f, heap, heap_ids, guard, interns)?;
         for item in iter {
+            if heap.check_time().is_err() {
+                f.write_str(", ...[timeout]")?;
+                break;
+            }
             f.write_str(", ")?;
             item.py_repr_fmt(f, heap, heap_ids, guard, interns)?;
         }

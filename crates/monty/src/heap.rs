@@ -987,7 +987,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// that execute within a single bytecode instruction and would otherwise
     /// bypass the VM's per-instruction timeout check.
     #[inline]
-    pub fn check_time(&mut self) -> Result<(), ResourceError> {
+    pub fn check_time(&self) -> Result<(), ResourceError> {
         self.tracker.check_time()
     }
 
