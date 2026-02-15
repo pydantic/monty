@@ -29,12 +29,21 @@ pub fn check_repeat_size(item_len: usize, count: usize, tracker: &impl ResourceT
 /// The result of `base ** exp` has approximately `base_bits * exp` bits.
 /// For bases with 0 or 1 significant bits (0, 1, -1), the result is always
 /// small regardless of exponent, so the check is skipped.
+///
+/// The estimate includes a 4× safety multiplier because `BigInt::pow` uses repeated squaring,
+/// which allocates intermediate values on the Rust heap (not tracked by the resource tracker).
+/// At peak, old/new base and old/new accumulator coexist simultaneously during each
+/// multiplication step, requiring roughly 4× the final result size in memory.
 pub fn check_pow_size(base_bits: u64, exponent: u64, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
     // 0**n = 0, 1**n = 1, (-1)**n = ±1 — always small
     if base_bits <= 1 {
         return Ok(());
     }
-    check_estimated_size(estimate_bits_to_bytes(base_bits.saturating_mul(exponent)), tracker)
+    let result_bytes = estimate_bits_to_bytes(base_bits.saturating_mul(exponent));
+    // Repeated squaring needs ~4× result size in peak memory (old/new base + old/new accumulator
+    // coexist during each multiplication step), and these are Rust heap allocations not tracked
+    // by the resource tracker.
+    check_estimated_size(result_bytes.saturating_mul(4), tracker)
 }
 
 /// Pre-checks that an integer multiplication won't exceed resource limits.

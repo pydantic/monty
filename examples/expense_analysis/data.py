@@ -106,7 +106,7 @@ async def get_expenses(user_id: int, quarter: str, category: str) -> dict[str, A
         Dictionary with expense items.
     """
     items = expenses.get(user_id, [])
-    return {'user_id': user_id, 'quarter': quarter, 'category': category, 'items': items}
+    return {'user_id': user_id, 'quarter': quarter, 'category': category, 'expenses': items}
 
 
 async def get_custom_budget(user_id: int) -> dict[str, Any] | None:
@@ -118,4 +118,7 @@ async def get_custom_budget(user_id: int) -> dict[str, Any] | None:
     Returns:
         Custom budget info or None if no custom budget.
     """
-    custom_budgets.get(user_id)
+    budget_info = custom_budgets.get(user_id)
+    if budget_info:
+        return {'user_id': user_id, 'budget': budget_info['amount'], 'reason': budget_info['reason']}
+    return None

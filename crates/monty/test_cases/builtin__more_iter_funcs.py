@@ -43,6 +43,16 @@ assert sorted([5]) == [5], 'sorted single element'
 # sorted with strings
 assert sorted(['c', 'a', 'b']) == ['a', 'b', 'c'], 'sorted strings'
 
+# sorted with heap-allocated strings (from split)
+assert sorted('banana,apple,cherry'.split(',')) == ['apple', 'banana', 'cherry'], 'sorted split strings'
+
+# sorted with multi-char string literals (heap-allocated)
+assert sorted(['banana', 'apple', 'cherry']) == ['apple', 'banana', 'cherry'], 'sorted multi-char strings'
+
+# min/max with heap-allocated strings
+assert min('banana,apple,cherry'.split(',')) == 'apple', 'min of split strings'
+assert max('banana,apple,cherry'.split(',')) == 'cherry', 'max of split strings'
+
 # sorted with negative numbers
 assert sorted([-3, 1, -2, 2]) == [-3, -2, 1, 2], 'sorted with negatives'
 

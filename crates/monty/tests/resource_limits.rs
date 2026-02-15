@@ -561,6 +561,101 @@ fn pow_large_base_moderate_exp_rejected() {
     );
 }
 
+/// Test that the 4× safety multiplier for pow intermediate allocations catches
+/// cases where the final result fits but repeated-squaring intermediates don't.
+///
+/// `2 ** 500000`: final result = 2 * 500000 bits = 125KB. Without multiplier this
+/// passes a 200KB limit. With 4× multiplier: 500KB > 200KB → rejected.
+#[test]
+fn pow_intermediate_allocation_multiplier() {
+    let code = "2 ** 500000";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    // 200KB limit: final result (125KB) fits, but 4× estimate (500KB) exceeds it
+    let limits = ResourceLimits::new().max_memory(200_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(
+        result.is_err(),
+        "pow should be rejected due to intermediate allocation overhead"
+    );
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    // 2 bits * 500000 = 125KB final, × 4 = 500072 bytes (includes base memory offset)
+    assert_eq!(
+        exc.message(),
+        Some("memory limit exceeded: 500072 bytes > 200000 bytes")
+    );
+}
+
+/// Test that pow still succeeds when the 4× estimate is within the limit.
+///
+/// `2 ** 100000`: final result = 2 * 100000 bits ≈ 25KB. With 4× multiplier: ~100KB.
+/// A 1MB limit should comfortably allow this.
+#[test]
+fn pow_within_limit_with_multiplier() {
+    let code = "x = 2 ** 100000\nx > 0";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(1_000_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_ok(), "pow with 4× estimate under limit should succeed");
+    assert_eq!(result.unwrap(), MontyObject::Bool(true));
+}
+
+/// Test the exact fuzzer OOM pattern: right-associative chained exponentiation.
+///
+/// `3 ** 3661666` is the first sub-expression of the fuzzer input
+/// `1666**3**366**3**3661666`. Since `**` is right-associative, `3**3661666`
+/// is computed first. Base 3 has 2 bits, so: 2 * 3661666 = 7323332 bits ≈ 915KB.
+/// With 4× multiplier: 3660KB > 1MB fuzz limit → rejected.
+#[test]
+fn pow_fuzzer_oom_chained_exponentiation() {
+    // This is the subexpression that caused the fuzzer OOM
+    let code = "3 ** 3661666";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    // 1MB limit (matching the fuzzer's resource limit)
+    let limits = ResourceLimits::new().max_memory(1_024 * 1_024);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(
+        result.is_err(),
+        "fuzzer OOM pattern should be rejected by 4× multiplier"
+    );
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    // 2 bits * 3661666 = 915KB final, × 4 = 3661740 bytes
+    assert_eq!(
+        exc.message(),
+        Some("memory limit exceeded: 3661740 bytes > 1048576 bytes")
+    );
+}
+
+/// Test the full fuzzer input that originally caused OOM.
+///
+/// The input `1666**3**366**3**3661666` should be rejected before any large
+/// intermediate allocation occurs.
+#[test]
+fn pow_fuzzer_oom_full_input() {
+    let code = "1666**3**366**3**3661666";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(1_024 * 1_024);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_err(), "full fuzzer OOM input should be rejected");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    // 3**3661666 is evaluated first (right-associative). Base 3 = 2 bits,
+    // so estimate = 2 * 3661666 bits = 915KB. With 4× multiplier: 3661740 bytes > 1MB.
+    assert_eq!(
+        exc.message(),
+        Some("memory limit exceeded: 3661740 bytes > 1048576 bytes")
+    );
+}
+
 /// Test that large left shift operations are rejected by memory limits.
 #[test]
 fn bigint_lshift_memory_limit() {
@@ -688,6 +783,7 @@ fn bigint_builtin_pow_memory_limit() {
 #[test]
 fn bigint_rejected_before_allocation() {
     // 2**1000000: base 2 has 2 bits, so estimate = 2 * 1000000 bits = 250KB
+    // With 4× safety multiplier for intermediate allocations = 1000KB
     // Set limit to 100KB - the pre-check should reject before allocating
     let code = "2 ** 1000000";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
@@ -700,7 +796,7 @@ fn bigint_rejected_before_allocation() {
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
     assert_eq!(
         exc.message(),
-        Some("memory limit exceeded: 250072 bytes > 100000 bytes")
+        Some("memory limit exceeded: 1000072 bytes > 100000 bytes")
     );
 }
 

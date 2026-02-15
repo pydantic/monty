@@ -10,7 +10,7 @@ function makePrintCollector(t: ExecutionContext) {
   const output: string[] = []
 
   const callback = (stream: string, text: string) => {
-    t.assert(stream === 'stdout')
+    t.is(stream, 'stdout')
     output.push(text)
   }
 
@@ -21,49 +21,49 @@ test('basic', (t) => {
   const m = new Monty('print("hello")')
   const { output, callback } = makePrintCollector(t)
   m.run({ printCallback: callback })
-  t.true(output.join('') === 'hello\n')
+  t.is(output.join(''), 'hello\n')
 })
 
 test('multiple', (t) => {
   const m = new Monty('print("hello")\nprint("world")')
   const { output, callback } = makePrintCollector(t)
   m.run({ printCallback: callback })
-  t.true(output.join('') === 'hello\nworld\n')
+  t.is(output.join(''), 'hello\nworld\n')
 })
 
 test('with values', (t) => {
   const m = new Monty('print("The answer is", 42)')
   const { output, callback } = makePrintCollector(t)
   m.run({ printCallback: callback })
-  t.true(output.join('') === 'The answer is 42\n')
+  t.is(output.join(''), 'The answer is 42\n')
 })
 
 test('with step', (t) => {
   const m = new Monty('print(1, 2, 3, sep="-")')
   const { output, callback } = makePrintCollector(t)
   m.run({ printCallback: callback })
-  t.true(output.join('') === '1-2-3\n')
+  t.is(output.join(''), '1-2-3\n')
 })
 
 test('with end', (t) => {
   const m = new Monty('print("hello", end="!")')
   const { output, callback } = makePrintCollector(t)
   m.run({ printCallback: callback })
-  t.true(output.join('') === 'hello!')
+  t.is(output.join(''), 'hello!')
 })
 
 test('returns none', (t) => {
   const m = new Monty('result = print("hello")')
   const { callback } = makePrintCollector(t)
   const result = m.run({ printCallback: callback })
-  t.assert(result === null)
+  t.is(result, null)
 })
 
 test('empty', (t) => {
   const m = new Monty('print()')
   const { output, callback } = makePrintCollector(t)
   m.run({ printCallback: callback })
-  t.true(output.join('') === '\n')
+  t.is(output.join(''), '\n')
 })
 
 test('with limits', (t) => {
@@ -73,14 +73,14 @@ test('with limits', (t) => {
     maxDurationSecs: 5.0,
   }
   m.run({ printCallback: callback, limits })
-  t.true(output.join('') === 'with limits\n')
+  t.is(output.join(''), 'with limits\n')
 })
 
 test('with inputs', (t) => {
   const m = new Monty('print("Input value is", x)', { inputs: ['x'] })
   const { output, callback } = makePrintCollector(t)
   m.run({ inputs: { x: 99 }, printCallback: callback })
-  t.true(output.join('') === 'Input value is 99\n')
+  t.is(output.join(''), 'Input value is 99\n')
 })
 
 test('print in loop', (t) => {
@@ -91,14 +91,14 @@ for i in range(3):
   const m = new Monty(code)
   const { output, callback } = makePrintCollector(t)
   m.run({ printCallback: callback })
-  t.true(output.join('') === 'Count 0\nCount 1\nCount 2\n')
+  t.is(output.join(''), 'Count 0\nCount 1\nCount 2\n')
 })
 
 test('print mixed types', (t) => {
   const m = new Monty('print("Value:", 3.14, True, None, [1, 2, 3])')
   const { output, callback } = makePrintCollector(t)
   m.run({ printCallback: callback })
-  t.true(output.join('') === 'Value: 3.14 True None [1, 2, 3]\n')
+  t.is(output.join(''), 'Value: 3.14 True None [1, 2, 3]\n')
 })
 
 function makeErrorCallback(error: Error, t: ExecutionContext) {
@@ -106,7 +106,7 @@ function makeErrorCallback(error: Error, t: ExecutionContext) {
 
   const callback = (stream: string, text: string) => {
     const _ignore = text
-    t.assert(stream === 'stdout')
+    t.is(stream, 'stdout')
     throw error
   }
 
@@ -120,7 +120,8 @@ test('raises error', (t) => {
   const thrown = t.throws(() => {
     m.run({ printCallback: callback })
   })
-  t.assert(thrown?.message === 'Exception: Error: Custom print error')
+  // the error is slightly different with WASI, it doesn't include "Error: "
+  t.regex(thrown?.message, /Exception: (:?Error: )?Custom print error/)
 })
 
 test('raises in function', (t) => {
@@ -136,7 +137,8 @@ greet("Alice")
   const thrown = t.throws(() => {
     m.run({ printCallback: callback })
   })
-  t.assert(thrown?.message === 'Exception: Error: Print error in function')
+  // the error is slightly different with WASI, it doesn't include "Error: "
+  t.regex(thrown?.message, /Exception: (:?Error: )?Print error in function/)
 })
 
 test('raises in nested function', (t) => {
@@ -154,7 +156,8 @@ outer()
   const thrown = t.throws(() => {
     m.run({ printCallback: callback })
   })
-  t.assert(thrown?.message === 'Exception: Error: Print error in nested function')
+  // the error is slightly different with WASI, it doesn't include "Error: "
+  t.regex(thrown?.message, /Exception: (:?Error: )?Print error in nested function/)
 })
 
 test('raises in loop', (t) => {
@@ -168,7 +171,8 @@ for i in range(3):
   const thrown = t.throws(() => {
     m.run({ printCallback: callback })
   })
-  t.assert(thrown?.message === 'Exception: Error: Print error in loop')
+  // the error is slightly different with WASI, it doesn't include "Error: "
+  t.regex(thrown?.message, /Exception: (:?Error: )?Print error in loop/)
 })
 
 test('with snapshot', (t) => {
@@ -178,8 +182,8 @@ test('with snapshot', (t) => {
     printCallback: callback,
   })
   t.true(result instanceof MontyComplete)
-  t.true((result as MontyComplete).output === null)
-  t.true(output.join('') === 'snapshot\n')
+  t.is((result as MontyComplete).output, null)
+  t.is(output.join(''), 'snapshot\n')
 })
 
 test('with snapshot resume', (t) => {
@@ -198,8 +202,8 @@ print(func())
     returnValue: 'world',
   })
   t.true(result instanceof MontyComplete)
-  t.true((result as MontyComplete).output === null)
-  t.true(output.join('') === 'hello\nworld\n')
+  t.is((result as MontyComplete).output, null)
+  t.is(output.join(''), 'hello\nworld\n')
 })
 
 test('with snapshot dump load', (t) => {
@@ -222,6 +226,6 @@ test('with snapshot dump load', (t) => {
     returnValue: 42,
   })
   t.true(result instanceof MontyComplete)
-  t.true((result as MontyComplete).output === null)
-  t.true(output.join('') === '42\n')
+  t.is((result as MontyComplete).output, null)
+  t.is(output.join(''), '42\n')
 })
