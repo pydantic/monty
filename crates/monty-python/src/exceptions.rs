@@ -19,6 +19,7 @@ use pyo3::{
     PyClassInitializer, PyTypeCheck,
     exceptions::{self},
     prelude::*,
+    sync::PyOnceLock,
     types::{PyDict, PyList, PyString},
 };
 
@@ -409,7 +410,7 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
         ExcType::IsADirectoryError => exceptions::PyIsADirectoryError::new_err(msg),
         ExcType::NotADirectoryError => exceptions::PyNotADirectoryError::new_err(msg),
         ExcType::RePatternError => {
-            if let Ok(re_pattern_error) = crate::re::get_re_pattern_error(py) {
+            if let Ok(re_pattern_error) = get_re_pattern_error(py) {
                 return PyErr::from_value(re_pattern_error.call1((msg,)).unwrap());
             }
             exceptions::PyRuntimeError::new_err(msg)
@@ -539,5 +540,15 @@ fn is_frozen_instance_error(exc: &Bound<'_, exceptions::PyBaseException>) -> boo
         exc.is_instance(frozen_error_cls).unwrap_or(false)
     } else {
         false
+    }
+}
+
+fn get_re_pattern_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static RE_PATTERN_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    if cfg!(Py_3_13) {
+        RE_PATTERN_ERROR.import(py, "re", "PatternError")
+    } else {
+        RE_PATTERN_ERROR.import(py, "re", "error")
     }
 }

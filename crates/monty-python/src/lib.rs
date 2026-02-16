@@ -10,7 +10,6 @@ mod exceptions;
 mod external;
 mod limits;
 mod monty_cls;
-mod re;
 
 use std::sync::OnceLock;
 
