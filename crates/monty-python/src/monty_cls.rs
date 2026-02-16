@@ -14,6 +14,7 @@ use pyo3::{
     prelude::*,
     types::{PyBytes, PyDict, PyList, PyTuple, PyType},
 };
+use send_wrapper::SendWrapper;
 
 use crate::{
     convert::{monty_to_py, py_to_monty},
@@ -189,7 +190,8 @@ impl PyMonty {
         macro_rules! start_impl {
             ($tracker:expr) => {{
                 let runner = self.runner.clone();
-                py.detach(|| runner.start(input_values, $tracker, &mut print_writer))
+                let print_writer = SendWrapper::new(&mut print_writer);
+                py.detach(|| runner.start(input_values, $tracker, print_writer.take()))
                     .map_err(|e| MontyError::new_err(py, e))?
             }};
         }
@@ -341,6 +343,9 @@ impl PyMonty {
         mut print_output: PrintWriter<'_>,
     ) -> PyResult<Py<PyAny>> {
         let dataclass_registry = self.dataclass_registry.bind(py);
+        // wrap print_output in SendWrapper so that it can be accessed inside the py.detach calls despite
+        // no `Send` bound - py.detach() is overly restrictive to prevent `Bound` types going inside
+        let mut print_output = SendWrapper::new(&mut print_output);
         if self.external_function_names.is_empty() && os.is_none() {
             let runner = &self.runner;
             return match py.detach(|| runner.run(input_values, tracker, &mut print_output)) {
@@ -710,14 +715,17 @@ impl PyMontySnapshot {
         let snapshot = std::mem::replace(&mut self.snapshot, EitherSnapshot::Done);
 
         // Build print writer before detaching - clone_ref needs py token
-        let mut print_cb = self
-            .print_callback
-            .as_ref()
-            .map(|cb| CallbackStringPrint::from_py(cb.clone_ref(py)));
-        let mut print_writer = match print_cb {
-            Some(ref mut cb) => PrintWriter::Callback(cb),
+        let mut print_cb;
+        let print_writer = match &self.print_callback {
+            Some(cb) => {
+                print_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
+                PrintWriter::Callback(&mut print_cb)
+            }
             None => PrintWriter::Stdout,
         };
+        // wrap print_writer in SendWrapper so that it can be accessed inside the py.detach calls despite
+        // no `Send` bound - py.detach() is overly restrictive to prevent `Bound` types going inside
+        let mut print_writer = SendWrapper::new(print_writer);
 
         let progress = match snapshot {
             EitherSnapshot::NoLimit(snapshot) => {
@@ -917,14 +925,15 @@ impl PyMontyFutureSnapshot {
         let snapshot = std::mem::replace(&mut self.snapshot, EitherFutureSnapshot::Done);
 
         // Build print writer before detaching - clone_ref needs py token
-        let mut print_cb = self
-            .print_callback
-            .as_ref()
-            .map(|cb| CallbackStringPrint::from_py(cb.clone_ref(py)));
-        let mut print_writer = match print_cb {
-            Some(ref mut cb) => PrintWriter::Callback(cb),
+        let mut print_cb;
+        let print_writer = match &self.print_callback {
+            Some(cb) => {
+                print_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
+                PrintWriter::Callback(&mut print_cb)
+            }
             None => PrintWriter::Stdout,
         };
+        let mut print_writer = SendWrapper::new(print_writer);
 
         let progress = match snapshot {
             EitherFutureSnapshot::NoLimit(snapshot) => {

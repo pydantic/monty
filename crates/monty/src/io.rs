@@ -21,7 +21,7 @@ pub enum PrintWriter<'a> {
     /// Collect all output into a string.
     Collect(String),
     /// Delegate to a custom callback.
-    Callback(&'a mut (dyn PrintWriterCallback + Send)),
+    Callback(&'a mut dyn PrintWriterCallback),
 }
 
 impl PrintWriter<'_> {

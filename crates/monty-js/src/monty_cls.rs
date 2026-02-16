@@ -82,6 +82,7 @@ pub struct Monty {
 
 /// Options for creating a new Monty instance.
 #[napi(object)]
+#[derive(Default)]
 pub struct MontyOptions {
     /// Name used in tracebacks and error messages. Default: 'main.py'
     pub script_name: Option<String>,
@@ -97,6 +98,7 @@ pub struct MontyOptions {
 
 /// Options for running code.
 #[napi(object)]
+#[derive(Default)]
 pub struct RunOptions<'env> {
     pub inputs: Option<Object<'env>>,
     /// Resource limits configuration.
@@ -110,6 +112,7 @@ pub struct RunOptions<'env> {
 
 /// Options for starting execution.
 #[napi(object)]
+#[derive(Default)]
 pub struct StartOptions<'env> {
     /// Dict of input variable values.
     pub inputs: Option<Object<'env>>,
@@ -134,13 +137,7 @@ impl Monty {
         code: String,
         options: Option<MontyOptions>,
     ) -> Result<Either3<Self, JsMontyException, MontyTypingError>> {
-        let options = options.unwrap_or(MontyOptions {
-            script_name: None,
-            inputs: None,
-            external_functions: None,
-            type_check: None,
-            type_check_prefix_code: None,
-        });
+        let options = options.unwrap_or_default();
 
         let script_name = options.script_name.unwrap_or_else(|| "main.py".to_string());
         let input_names = options.inputs.unwrap_or_default();
@@ -190,18 +187,17 @@ impl Monty {
         env: &'env Env,
         options: Option<RunOptions<'env>>,
     ) -> Result<Either<JsMontyObject<'env>, JsMontyException>> {
-        // Extract input values
-        let input_values = self.extract_input_values(options.as_ref().and_then(|opts| opts.inputs), *env)?;
+        let options = options.unwrap_or_default();
+        let input_values = self.extract_input_values(options.inputs, *env)?;
 
-        let external_functions = options.as_ref().and_then(|opts| opts.external_functions);
+        let external_functions = options.external_functions;
 
-        let mut print_cb = options
-            .as_ref()
-            .and_then(|t| t.print_callback.as_ref())
-            .map(|t| CallbackStringPrint::new_js(env, t))
-            .transpose()?;
-        let mut print_writer = match print_cb {
-            Some(ref mut cb) => PrintWriter::Callback(cb),
+        let mut print_cb;
+        let mut print_writer = match &options.print_callback {
+            Some(func) => {
+                print_cb = CallbackStringPrint::new_js(env, func)?;
+                PrintWriter::Callback(&mut print_cb)
+            }
             None => PrintWriter::Stdout,
         };
 
@@ -210,13 +206,13 @@ impl Monty {
             return self.run_with_external_functions(
                 env,
                 input_values,
-                options.as_ref().and_then(|opts| opts.limits),
+                options.limits,
                 external_functions,
                 print_writer,
             );
         }
 
-        let result = if let Some(limits) = options.as_ref().and_then(|opts| opts.limits) {
+        let result = if let Some(limits) = options.limits {
             let tracker = LimitedTracker::new(limits.into());
             self.runner.run(input_values, tracker, &mut print_writer)
         } else {
@@ -312,25 +308,25 @@ impl Monty {
         env: &'env Env,
         options: Option<StartOptions<'env>>,
     ) -> Result<Either3<MontySnapshot, MontyComplete, JsMontyException>> {
-        // Extract input values
-        let input_values = self.extract_input_values(options.as_ref().and_then(|opts| opts.inputs), *env)?;
+        let options = options.unwrap_or_default();
+        let input_values = self.extract_input_values(options.inputs, *env)?;
 
         // Clone the runner since start() consumes it - allows reuse of the parsed code
         let runner = self.runner.clone();
 
         // Build print writer and capture the callback ref for the snapshot
-        let print_callback_func = options.as_ref().and_then(|t| t.print_callback.as_ref());
-        let mut print_cb = print_callback_func
-            .map(|t| CallbackStringPrint::new_js(env, t))
-            .transpose()?;
-        let mut print_writer = match print_cb {
-            Some(ref mut cb) => PrintWriter::Callback(cb),
+        let mut print_cb;
+        let mut print_writer = match &options.print_callback {
+            Some(func) => {
+                print_cb = CallbackStringPrint::new_js(env, func)?;
+                PrintWriter::Callback(&mut print_cb)
+            }
             None => PrintWriter::Stdout,
         };
-        let print_callback_ref = print_callback_func.map(Function::create_ref).transpose()?;
+        let print_callback_ref = options.print_callback.as_ref().map(Function::create_ref).transpose()?;
 
         // Start execution with appropriate tracker
-        if let Some(limits) = options.as_ref().and_then(|opts| opts.limits) {
+        if let Some(limits) = options.limits {
             let tracker = LimitedTracker::new(limits.into());
             let progress = match runner.start(input_values, tracker, &mut print_writer) {
                 Ok(p) => p,
@@ -624,12 +620,12 @@ impl MontySnapshot {
         let print_callback = std::mem::take(&mut self.print_callback);
 
         // Build print writer from the callback ref
-        let mut print_cb = print_callback
-            .as_ref()
-            .map(|func| CallbackStringPrint::new_js_ref(env, func))
-            .transpose()?;
-        let mut print_writer = match print_cb {
-            Some(ref mut cb) => PrintWriter::Callback(cb),
+        let mut print_cb;
+        let mut print_writer = match &print_callback {
+            Some(func) => {
+                print_cb = CallbackStringPrint::new_js_ref(env, func)?;
+                PrintWriter::Callback(&mut print_cb)
+            }
             None => PrintWriter::Stdout,
         };
 
@@ -763,12 +759,6 @@ impl<'env> CallbackStringPrint<'env> {
         Ok(Self(func.borrow_back(env)?))
     }
 }
-
-/// SAFETY: napi-rs is single-threaded — `CallbackStringPrint` never actually crosses
-/// thread boundaries. The `Send` bound is required by `PrintWriter::Callback` for
-/// Python binding compatibility (which releases the GIL), but JS execution is
-/// always on the main thread.
-unsafe impl Send for CallbackStringPrint<'_> {}
 
 impl PrintWriterCallback for CallbackStringPrint<'_> {
     fn stdout_write(&mut self, output: Cow<'_, str>) -> std::result::Result<(), MontyException> {
