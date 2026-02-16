@@ -201,10 +201,10 @@ assert m is not None, 'search with group finds match'
 try:
     m.group(2)
     assert False, 'Accessing invalid group index should raise IndexError'
-except IndexError:
-    pass
+except IndexError as e:
+    assert str(e) == 'no such group'
 try:
     m.group('foo')
     assert False, 'Accessing group with non-integer index should raise IndexError'
-except IndexError:
-    pass
+except IndexError as e:
+    assert str(e) == 'no such group'
