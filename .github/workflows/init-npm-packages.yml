@@ -22,6 +22,14 @@ jobs:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
 
+      - name: Install dependencies
+        run: npm install
+        working-directory: crates/monty-js
+
+      - name: Create npm dirs
+        run: npm run create-npm-dirs
+        working-directory: crates/monty-js
+
       - name: Check and create missing platform packages
         working-directory: crates/monty-js
         env:
