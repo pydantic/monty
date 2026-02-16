@@ -275,8 +275,8 @@ impl ArgValues {
     }
 }
 
-impl<T: ResourceTracker> DropWithHeap<T> for ArgValues {
-    fn drop_with_heap(self, heap: &mut Heap<T>) {
+impl DropWithHeap for ArgValues {
+    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
         match self {
             Self::Empty => {}
             Self::One(v) => v.drop_with_heap(heap),
@@ -359,8 +359,8 @@ impl Iterator for ArgPosIter {
 
 impl ExactSizeIterator for ArgPosIter {}
 
-impl<T: ResourceTracker> DropWithHeap<T> for ArgPosIter {
-    fn drop_with_heap(self, heap: &mut Heap<T>) {
+impl DropWithHeap for ArgPosIter {
+    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
         match self {
             Self::Empty => {}
             Self::One(v1) => v1.drop_with_heap(heap),
@@ -436,9 +436,11 @@ impl KwargsValues {
             .into())
         }
     }
+}
 
+impl DropWithHeap for KwargsValues {
     /// Properly drops all values in the arguments, decrementing reference counts.
-    pub fn drop_with_heap(self, heap: &mut Heap<impl ResourceTracker>) {
+    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
         match self {
             Self::Empty => {}
             Self::Inline(kvs) => {
@@ -502,8 +504,8 @@ impl Iterator for KwargsValuesIter {
 
 impl ExactSizeIterator for KwargsValuesIter {}
 
-impl<T: ResourceTracker> DropWithHeap<T> for KwargsValuesIter {
-    fn drop_with_heap(self, heap: &mut Heap<T>) {
+impl DropWithHeap for KwargsValuesIter {
+    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
         match self {
             Self::Empty => {}
             Self::Inline(iter) => {

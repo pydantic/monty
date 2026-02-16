@@ -1,5 +1,6 @@
 use std::{
     fmt,
+    sync::atomic::{AtomicU16, Ordering},
     time::{Duration, Instant},
 };
 
@@ -29,12 +30,21 @@ pub fn check_repeat_size(item_len: usize, count: usize, tracker: &impl ResourceT
 /// The result of `base ** exp` has approximately `base_bits * exp` bits.
 /// For bases with 0 or 1 significant bits (0, 1, -1), the result is always
 /// small regardless of exponent, so the check is skipped.
+///
+/// The estimate includes a 4× safety multiplier because `BigInt::pow` uses repeated squaring,
+/// which allocates intermediate values on the Rust heap (not tracked by the resource tracker).
+/// At peak, old/new base and old/new accumulator coexist simultaneously during each
+/// multiplication step, requiring roughly 4× the final result size in memory.
 pub fn check_pow_size(base_bits: u64, exponent: u64, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
     // 0**n = 0, 1**n = 1, (-1)**n = ±1 — always small
     if base_bits <= 1 {
         return Ok(());
     }
-    check_estimated_size(estimate_bits_to_bytes(base_bits.saturating_mul(exponent)), tracker)
+    let result_bytes = estimate_bits_to_bytes(base_bits.saturating_mul(exponent));
+    // Repeated squaring needs ~4× result size in peak memory (old/new base + old/new accumulator
+    // coexist during each multiplication step), and these are Rust heap allocations not tracked
+    // by the resource tracker.
+    check_estimated_size(result_bytes.saturating_mul(4), tracker)
 }
 
 /// Pre-checks that an integer multiplication won't exceed resource limits.
@@ -57,6 +67,14 @@ pub fn check_lshift_size(
         return Ok(());
     }
     check_estimated_size(estimate_bits_to_bytes(value_bits.saturating_add(shift_amount)), tracker)
+}
+
+/// Pre-checks that an integer division overflow promotion won't exceed resource limits.
+///
+/// Division results are bounded by the dividend size, but we still check for consistency
+/// with other BigInt promotion paths.
+pub fn check_div_size(dividend_bits: u64, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
+    check_estimated_size(estimate_bits_to_bytes(dividend_bits), tracker)
 }
 
 /// Checks an estimated result size against the resource tracker.
@@ -272,7 +290,11 @@ pub trait ResourceTracker: fmt::Debug {
     ///
     /// Returns `Ok(())` if within time limit, or `Err(ResourceError::Time)`
     /// if the limit is exceeded.
-    fn check_time(&mut self) -> Result<(), ResourceError>;
+    ///
+    /// Takes `&self` rather than `&mut self` because checking elapsed time is a
+    /// read-only operation. This allows time checks in contexts that only have
+    /// an immutable heap reference, such as `py_repr_fmt`.
+    fn check_time(&self) -> Result<(), ResourceError>;
 
     /// Called before pushing a new call frame to check recursion depth.
     ///
@@ -313,7 +335,7 @@ impl ResourceTracker for NoLimitTracker {
     fn on_free(&mut self, _: impl FnOnce() -> usize) {}
 
     #[inline]
-    fn check_time(&mut self) -> Result<(), ResourceError> {
+    fn check_time(&self) -> Result<(), ResourceError> {
         Ok(())
     }
 
@@ -409,6 +431,14 @@ impl ResourceLimits {
     }
 }
 
+/// How often to actually check `Instant::elapsed()` in `check_time`.
+///
+/// Calling `Instant::elapsed()` on every `check_time` invocation adds measurable
+/// overhead in tight loops (the VM calls `check_time` on every instruction).
+/// By only checking every N calls, we reduce this overhead while still catching
+/// timeouts promptly.
+const TIME_CHECK_INTERVAL: u16 = 10;
+
 /// A resource tracker that enforces configurable limits.
 ///
 /// Tracks allocation count, memory usage, and execution time, returning
@@ -428,6 +458,11 @@ pub struct LimitedTracker {
     allocation_count: usize,
     /// Current approximate memory usage in bytes.
     current_memory: usize,
+    /// Counter for rate-limiting `Instant::elapsed()` calls in `check_time`.
+    ///
+    /// Uses `AtomicU16` for interior mutability since `check_time` takes `&self`
+    /// and `LimitedTracker` must be `Sync` (it ends up inside PyO3 pyclass types).
+    check_counter: AtomicU16,
 }
 
 impl LimitedTracker {
@@ -442,6 +477,7 @@ impl LimitedTracker {
             start_time: Instant::now(),
             allocation_count: 0,
             current_memory: 0,
+            check_counter: AtomicU16::new(0),
         }
     }
 
@@ -461,6 +497,16 @@ impl LimitedTracker {
     #[must_use]
     pub fn elapsed(&self) -> Duration {
         self.start_time.elapsed()
+    }
+
+    /// Sets the maximum execution duration and resets the start time to now.
+    ///
+    /// This is useful when resuming execution after an external function call
+    /// where you want to enforce a different (typically shorter) time limit
+    /// for the resumed phase without counting the time spent in the host.
+    pub fn set_max_duration(&mut self, duration: Duration) {
+        self.limits.max_duration = Some(duration);
+        self.start_time = Instant::now();
     }
 }
 
@@ -499,11 +545,21 @@ impl ResourceTracker for LimitedTracker {
         self.current_memory = self.current_memory.saturating_sub(get_size());
     }
 
-    fn check_time(&mut self) -> Result<(), ResourceError> {
+    fn check_time(&self) -> Result<(), ResourceError> {
         if let Some(max) = self.limits.max_duration {
-            let elapsed = self.start_time.elapsed();
-            if elapsed > max {
-                return Err(ResourceError::Time { limit: max, elapsed });
+            let count = self.check_counter.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+            if count.is_multiple_of(TIME_CHECK_INTERVAL) {
+                // Only call Instant::elapsed() every TIME_CHECK_INTERVAL calls
+                let elapsed = self.start_time.elapsed();
+                if elapsed > max {
+                    // Reset counter so the very next check_time call also triggers
+                    // an elapsed check. This is important because some callers
+                    // (e.g. repr_sequence_fmt) catch the error and return normally,
+                    // and we need the VM loop's next check_time to re-detect timeout.
+                    self.check_counter
+                        .store(TIME_CHECK_INTERVAL.wrapping_sub(1), Ordering::Relaxed);
+                    return Err(ResourceError::Time { limit: max, elapsed });
+                }
             }
         }
         Ok(())

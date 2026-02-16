@@ -674,7 +674,7 @@ impl<'a, T: ResourceTracker> VM<'a, T> {
         loop {
             // Check time limit and trigger GC if needed at each instruction.
             // For NoLimitTracker, these are inlined no-ops that compile away.
-            self.heap.tracker_mut().check_time()?;
+            self.heap.check_time()?;
 
             if self.heap.should_gc() {
                 // Sync IP before GC for safety
@@ -1693,7 +1693,8 @@ impl<'a, T: ResourceTracker> VM<'a, T> {
 }
 
 // `heap` is not a public field on VM, so this implementation needs to go here rather than in `heap.rs`
-impl<T: ResourceTracker> ContainsHeap<T> for VM<'_, T> {
+impl<T: ResourceTracker> ContainsHeap for VM<'_, T> {
+    type ResourceTracker = T;
     fn heap_mut(&mut self) -> &mut Heap<T> {
         self.heap
     }

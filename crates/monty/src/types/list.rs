@@ -9,7 +9,7 @@ use crate::{
     builtins::Builtins,
     defer_drop,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings},
     io::PrintWriter,
     resource::{DepthGuard, ResourceError, ResourceTracker},
@@ -172,9 +172,7 @@ impl List {
                 Ok(Value::Ref(heap_id))
             }
             Some(v) => {
-                let mut iter = MontyIter::new(v, heap, interns)?;
-                let items = iter.collect(heap, interns)?;
-                iter.drop_with_heap(heap);
+                let items = MontyIter::new(v, heap, interns)?.collect(heap, interns)?;
                 let heap_id = heap.allocate(HeapData::List(Self::new(items)))?;
                 Ok(Value::Ref(heap_id))
             }
@@ -189,7 +187,7 @@ impl List {
             .indices(self.items.len())
             .map_err(|()| ExcType::value_error_slice_step_zero())?;
 
-        let items = get_slice_items(&self.items, start, stop, step, heap);
+        let items = get_slice_items(&self.items, start, stop, step, heap)?;
         let heap_id = heap.allocate(HeapData::List(Self::new(items)))?;
         Ok(Value::Ref(heap_id))
     }
@@ -320,6 +318,7 @@ impl PyTrait for List {
         guard.increase_err()?;
 
         for (i1, i2) in self.items.iter().zip(&other.items) {
+            heap.check_time()?;
             if !i1.py_eq(i2, heap, guard, interns)? {
                 guard.decrease();
                 return Ok(false);
@@ -428,11 +427,12 @@ impl PyTrait for List {
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
+        let args_guard = HeapGuard::new(args, heap);
         let Some(method) = attr.static_string() else {
-            args.drop_with_heap(heap);
             return Err(ExcType::attribute_error(Type::List, attr.as_str(interns)));
         };
 
+        let (args, heap) = args_guard.into_parts();
         call_list_method(self, method, args, heap, interns)
     }
 }
@@ -491,19 +491,13 @@ fn call_list_method(
 /// Implements Python's `list.insert(index, item)` method.
 fn list_insert(list: &mut List, args: ArgValues, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
     let (index_obj, item) = args.get_two_args("insert", heap)?;
+    defer_drop!(index_obj, heap);
+    let mut item_guard = HeapGuard::new(item, heap);
+    let heap = item_guard.heap();
     // Python's insert() handles negative indices by adding len
     // If still negative after adding len, clamps to 0
     // If >= len, appends to end
-    let index_result = index_obj.as_int(heap);
-    // Drop index_obj before propagating error - it could be a Ref (e.g., dict)
-    index_obj.drop_with_heap(heap);
-    let index_i64 = match index_result {
-        Ok(i) => i,
-        Err(e) => {
-            item.drop_with_heap(heap);
-            return Err(e);
-        }
-    };
+    let index_i64 = index_obj.as_int(heap)?;
     let len = list.items.len();
     let len_i64 = i64::try_from(len).expect("list length exceeds i64::MAX");
     let index = if index_i64 < 0 {
@@ -514,6 +508,7 @@ fn list_insert(list: &mut List, args: ArgValues, heap: &mut Heap<impl ResourceTr
         // Positive index: clamp to len if too large
         usize::try_from(index_i64).unwrap_or(len)
     };
+    let (item, heap) = item_guard.into_parts();
     list.insert(heap, index, item);
     Ok(Value::None)
 }
@@ -565,18 +560,18 @@ fn list_remove(
     interns: &Interns,
 ) -> RunResult<Value> {
     let value = args.get_one_arg("list.remove", heap)?;
+    defer_drop!(value, heap);
 
     // Find the first matching element
     let mut found_idx = None;
     let mut guard = DepthGuard::default();
     for (i, item) in list.items.iter().enumerate() {
+        heap.check_time()?;
         if value.py_eq(item, heap, &mut guard, interns)? {
             found_idx = Some(i);
             break;
         }
     }
-
-    value.drop_with_heap(heap);
 
     match found_idx {
         Some(idx) => {
@@ -618,13 +613,7 @@ fn list_extend(
     interns: &Interns,
 ) -> RunResult<Value> {
     let iterable = args.get_one_arg("list.extend", heap)?;
-
-    // Create iterator for the iterable
-    let mut iter = MontyIter::new(iterable, heap, interns)?;
-
-    // Collect all items from the iterator
-    let items: SmallVec<[_; 2]> = iter.collect(heap, interns)?;
-    iter.drop_with_heap(heap);
+    let items: SmallVec<[_; 2]> = MontyIter::new(iterable, heap, interns)?.collect(heap, interns)?;
 
     // Add each item to the list
     for item in items {
@@ -666,6 +655,7 @@ fn list_index(
     // Search for the value in the specified range
     let mut guard = DepthGuard::default();
     for (i, item) in list.items[start..end].iter().enumerate() {
+        heap.check_time()?;
         if value.py_eq(item, heap, &mut guard, interns)? {
             let idx = i64::try_from(start + i).expect("index exceeds i64::MAX");
             return Ok(Value::Int(idx));
@@ -685,17 +675,17 @@ fn list_count(
     interns: &Interns,
 ) -> RunResult<Value> {
     let value = args.get_one_arg("list.count", heap)?;
+    defer_drop!(value, heap);
 
-    // Use a local DepthGuard for py_eq calls.
-    // We use unwrap_or(false) for recursion errors since filter() can't propagate Results.
     let mut guard = DepthGuard::default();
-    let count = list
-        .items
-        .iter()
-        .filter(|item| value.py_eq(item, heap, &mut guard, interns).unwrap_or(false))
-        .count();
+    let mut count: usize = 0;
+    for item in &list.items {
+        heap.check_time()?;
+        if value.py_eq(item, heap, &mut guard, interns)? {
+            count += 1;
+        }
+    }
 
-    value.drop_with_heap(heap);
     let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
     Ok(Value::Int(count_i64))
 }
@@ -815,6 +805,10 @@ pub(crate) fn do_list_sort(
             if sort_error.is_some() {
                 return Ordering::Equal;
             }
+            if let Err(e) = heap.check_time() {
+                sort_error = Some(e.into());
+                return Ordering::Equal;
+            }
             match keys[a].py_cmp(&keys[b], heap, &mut guard.borrow_mut(), interns) {
                 Ok(Some(ord)) => {
                     if reverse {
@@ -840,6 +834,10 @@ pub(crate) fn do_list_sort(
     } else {
         indices.sort_by(|&a, &b| {
             if sort_error.is_some() {
+                return Ordering::Equal;
+            }
+            if let Err(e) = heap.check_time() {
+                sort_error = Some(e.into());
                 return Ordering::Equal;
             }
             match items[a].py_cmp(&items[b], heap, &mut guard.borrow_mut(), interns) {
@@ -974,6 +972,10 @@ pub(crate) fn repr_sequence_fmt(
     if let Some(first) = iter.next() {
         first.py_repr_fmt(f, heap, heap_ids, guard, interns)?;
         for item in iter {
+            if heap.check_time().is_err() {
+                f.write_str(", ...[timeout]")?;
+                break;
+            }
             f.write_str(", ")?;
             item.py_repr_fmt(f, heap, heap_ids, guard, interns)?;
         }
@@ -990,6 +992,7 @@ pub(crate) fn repr_sequence_fmt(
 /// iterates backward from start down to (but not including) stop.
 ///
 /// Returns a new Vec of cloned values with proper refcount increments.
+/// Checks the time limit on each iteration to enforce timeouts during slicing.
 ///
 /// Note: step must be non-zero (callers should validate this via `slice.indices()`).
 pub(crate) fn get_slice_items(
@@ -998,7 +1001,7 @@ pub(crate) fn get_slice_items(
     stop: usize,
     step: i64,
     heap: &mut Heap<impl ResourceTracker>,
-) -> Vec<Value> {
+) -> RunResult<Vec<Value>> {
     let mut result = Vec::new();
 
     // try_from succeeds for non-negative step; step==0 rejected upstream by slice.indices()
@@ -1006,6 +1009,7 @@ pub(crate) fn get_slice_items(
         // Positive step: iterate forward
         let mut i = start;
         while i < stop && i < items.len() {
+            heap.check_time()?;
             result.push(items[i].clone_with_heap(heap));
             i += step_usize;
         }
@@ -1026,12 +1030,13 @@ pub(crate) fn get_slice_items(
             if i_usize >= items.len() || i <= stop_i64 {
                 break;
             }
+            heap.check_time()?;
             result.push(items[i_usize].clone_with_heap(heap));
             i -= step_abs_i64;
         }
     }
 
-    result
+    Ok(result)
 }
 
 #[cfg(test)]

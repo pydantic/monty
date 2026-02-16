@@ -33,7 +33,7 @@
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{BytesId, Interns, StringId},
     resource::ResourceTracker,
     types::{PyTrait, Range, str::allocate_char},
@@ -269,6 +269,11 @@ impl MontyIter {
     /// Returns `Err` if allocation fails (for string character iteration) or if
     /// a dict/set changes size during iteration (RuntimeError).
     pub fn for_next(&mut self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Option<Value>> {
+        // Check timeout on every iteration step. For NoLimitTracker this is
+        // inlined as a no-op. For LimitTracker it ensures that Rust-side loops
+        // (sum, sorted, min, max, etc.) cannot bypass the VM's per-instruction
+        // timeout check by running entirely within a single bytecode instruction.
+        heap.check_time()?;
         match &mut self.iter_value {
             IterValue::Range { next, step, len } => {
                 if self.index >= *len {
@@ -364,11 +369,13 @@ impl MontyIter {
     ///
     /// Pre-allocates capacity based on `size_hint()` for better performance.
     pub fn collect<T: FromIterator<Value>>(
-        &mut self,
+        self,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<T> {
-        HeapedMontyIter(self, heap, interns).collect()
+        let mut guard = HeapGuard::new(self, heap);
+        let (this, heap) = guard.as_parts_mut();
+        HeapedMontyIter(this, heap, interns).collect()
     }
 }
 
@@ -762,9 +769,9 @@ impl IterValue {
     }
 }
 
-impl<T: ResourceTracker> DropWithHeap<T> for MontyIter {
+impl DropWithHeap for MontyIter {
     #[inline]
-    fn drop_with_heap(self, heap: &mut Heap<T>) {
+    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
         Self::drop_with_heap(self, heap);
     }
 }

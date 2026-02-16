@@ -1,6 +1,6 @@
 {
   "name": "@pydantic/monty",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "type": "module",
   "description": "Sandboxed Python interpreter for JavaScript/TypeScript",
   "main": "wrapper.js",
@@ -31,6 +31,7 @@
       "x86_64-apple-darwin",
       "x86_64-unknown-linux-gnu",
       "aarch64-apple-darwin",
+      "aarch64-unknown-linux-gnu",
       "wasm32-wasip1-threads"
     ],
     "dtsHeaderFile": "./index-header.d.ts"

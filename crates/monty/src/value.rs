@@ -20,7 +20,10 @@ use crate::{
     heap::{Heap, HeapData, HeapId},
     intern::{BytesId, ExtFunctionId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
-    resource::{DepthGuard, ResourceError, ResourceTracker, check_lshift_size, check_pow_size, check_repeat_size},
+    resource::{
+        DepthGuard, ResourceError, ResourceTracker, check_div_size, check_lshift_size, check_pow_size,
+        check_repeat_size,
+    },
     types::{
         AttrCallResult, LongInt, Property, PyTrait, Str, Type,
         bytes::{bytes_repr_fmt, get_byte_at_index, get_bytes_slice},
@@ -288,24 +291,32 @@ impl PyTrait for Value {
                     Ok(None)
                 }
             }
-            // LongInt vs LongInt comparison
+            // Ref vs Ref comparison: handles LongInt and Str
             (Self::Ref(id1), Self::Ref(id2)) => {
-                let is_longint1 = matches!(heap.get(*id1), HeapData::LongInt(_));
-                let is_longint2 = matches!(heap.get(*id2), HeapData::LongInt(_));
-                if is_longint1 && is_longint2 {
-                    Ok(heap.with_two(*id1, *id2, |_heap, left, right| {
-                        if let (HeapData::LongInt(a), HeapData::LongInt(b)) = (left, right) {
-                            a.inner().partial_cmp(b.inner())
-                        } else {
-                            None
-                        }
-                    }))
+                Ok(heap.with_two(*id1, *id2, |_heap, left, right| match (left, right) {
+                    (HeapData::LongInt(a), HeapData::LongInt(b)) => a.inner().partial_cmp(b.inner()),
+                    (HeapData::Str(a), HeapData::Str(b)) => a.as_str().partial_cmp(b.as_str()),
+                    _ => None,
+                }))
+            }
+            // Interned string comparisons
+            (Self::InternString(s1), Self::InternString(s2)) => {
+                Ok(interns.get_str(*s1).partial_cmp(interns.get_str(*s2)))
+            }
+            // Cross-type string comparisons: interned vs heap-allocated
+            (Self::InternString(s1), Self::Ref(id2)) => {
+                if let HeapData::Str(s2) = heap.get(*id2) {
+                    Ok(interns.get_str(*s1).partial_cmp(s2.as_str()))
                 } else {
                     Ok(None)
                 }
             }
-            (Self::InternString(s1), Self::InternString(s2)) => {
-                Ok(interns.get_str(*s1).partial_cmp(interns.get_str(*s2)))
+            (Self::Ref(id1), Self::InternString(s2)) => {
+                if let HeapData::Str(s1) = heap.get(*id1) {
+                    Ok(s1.as_str().partial_cmp(interns.get_str(*s2)))
+                } else {
+                    Ok(None)
+                }
             }
             (Self::InternBytes(b1), Self::InternBytes(b2)) => {
                 Ok(interns.get_bytes(*b1).partial_cmp(interns.get_bytes(*b2)))
@@ -593,13 +604,13 @@ impl PyTrait for Value {
             (Self::Int(a), Self::Int(b)) => {
                 if *b == 0 {
                     Err(ExcType::zero_division().into())
-                } else {
+                } else if let Some(r) = a.checked_rem(*b) {
                     // Python modulo: result has the same sign as divisor (b)
-                    // Standard remainder (%) in Rust has same sign as dividend (a)
-                    // We need to adjust when signs differ and remainder is non-zero
-                    let r = *a % *b;
                     let result = if r != 0 && (*a < 0) != (*b < 0) { r + *b } else { r };
                     Ok(Some(Self::Int(result)))
+                } else {
+                    // Overflow - i64::MIN % -1 is 0
+                    Ok(Some(Self::Int(0)))
                 }
             }
             // Int % LongInt
@@ -679,10 +690,14 @@ impl PyTrait for Value {
     fn py_mod_eq(&self, other: &Self, right_value: i64) -> Option<bool> {
         match (self, other) {
             (Self::Int(v1), Self::Int(v2)) => {
-                // Use Python's modulo semantics (result has same sign as divisor)
-                let r = *v1 % *v2;
-                let result = if r != 0 && (*v1 < 0) != (*v2 < 0) { r + *v2 } else { r };
-                Some(result == right_value)
+                if let Some(r) = v1.checked_rem(*v2) {
+                    // Python modulo: result has same sign as divisor
+                    let result = if r != 0 && (*v1 < 0) != (*v2 < 0) { r + *v2 } else { r };
+                    Some(result == right_value)
+                } else {
+                    // checked_rem returns None for overflow (i64::MIN % -1) or zero division
+                    (*v2 != 0).then_some(0 == right_value)
+                }
             }
             (Self::Float(v1), Self::Float(v2)) => Some(v1 % v2 == right_value as f64),
             (Self::Float(v1), Self::Int(v2)) => Some(v1 % (*v2 as f64) == right_value as f64),
@@ -1049,14 +1064,13 @@ impl PyTrait for Value {
             (Self::Int(a), Self::Int(b)) => {
                 if *b == 0 {
                     Err(ExcType::zero_division().into())
+                } else if let Some((d, _)) = floor_divmod(*a, *b) {
+                    Ok(Some(Self::Int(d)))
                 } else {
-                    // Python floor division rounds toward negative infinity
-                    // div_euclid doesn't match Python semantics, so compute manually
-                    let d = a / b;
-                    let r = a % b;
-                    // If there's a remainder and signs differ, round down (toward -∞)
-                    let result = if r != 0 && (*a < 0) != (*b < 0) { d - 1 } else { d };
-                    Ok(Some(Self::Int(result)))
+                    // Overflow - promote to LongInt
+                    check_div_size(i64_bits(*a), heap.tracker())?;
+                    let bi = BigInt::from(*a).div_floor(&BigInt::from(*b));
+                    Ok(Some(LongInt::new(bi).into_value(heap)?))
                 }
             }
             // Int // LongInt
@@ -2257,6 +2271,24 @@ enum SingletonSlot {
 #[inline]
 const fn singleton_id(slot: SingletonSlot) -> usize {
     SINGLETON_ID_TAG | ((slot as usize) & SINGLETON_ID_MASK)
+}
+
+/// Computes Python-style floor division and modulo.
+///
+/// Python's division rounds toward negative infinity (floor division),
+/// and the remainder has the same sign as the divisor.
+/// This differs from Rust's truncating division.
+///
+/// Returns `None` on overflow (i64::MIN / -1 doesn't fit in i64).
+pub(crate) fn floor_divmod(a: i64, b: i64) -> Option<(i64, i64)> {
+    let quot = a.checked_div(b)?;
+    let rem = a.checked_rem(b)?;
+
+    if rem != 0 && (rem < 0) != (b < 0) {
+        Some((quot - 1, rem + b))
+    } else {
+        Some((quot, rem))
+    }
 }
 
 /// Converts a heap `HeapId` into its tagged `id()` value, ensuring it never collides with other spaces.

@@ -2,23 +2,23 @@
 // These wrap the native Rust classes to provide instanceof support.
 
 import type {
-  MontyOptions,
-  RunOptions,
-  ResourceLimits,
-  Frame,
   ExceptionInfo,
-  StartOptions,
-  ResumeOptions,
   ExceptionInput,
-  SnapshotLoadOptions,
+  Frame,
   JsMontyObject,
+  MontyOptions,
+  ResourceLimits,
+  ResumeOptions,
+  RunOptions,
+  SnapshotLoadOptions,
+  StartOptions,
 } from './index.js'
 
 import {
   Monty as NativeMonty,
-  MontySnapshot as NativeMontySnapshot,
   MontyComplete as NativeMontyComplete,
   MontyException as NativeMontyException,
+  MontySnapshot as NativeMontySnapshot,
   MontyTypingError as NativeMontyTypingError,
 } from './index.js'
 
@@ -499,7 +499,10 @@ export interface RunMontyAsyncOptions {
 export async function runMontyAsync(montyRunner: Monty, options: RunMontyAsyncOptions = {}): Promise<JsMontyObject> {
   const { inputs, externalFunctions = {}, limits } = options
 
-  let progress: MontySnapshot | MontyComplete = montyRunner.start({ inputs, limits })
+  let progress: MontySnapshot | MontyComplete = montyRunner.start({
+    inputs,
+    limits,
+  })
 
   while (progress instanceof MontySnapshot) {
     const snapshot = progress

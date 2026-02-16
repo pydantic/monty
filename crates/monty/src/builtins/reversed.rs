@@ -18,9 +18,7 @@ pub fn builtin_reversed(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, 
     let value = args.get_one_arg("reversed", heap)?;
 
     // Collect all items
-    let mut iter = MontyIter::new(value, heap, interns)?;
-    let mut items: Vec<_> = iter.collect(heap, interns)?;
-    iter.drop_with_heap(heap);
+    let mut items: Vec<_> = MontyIter::new(value, heap, interns)?.collect(heap, interns)?;
 
     // Reverse in place
     items.reverse();

@@ -34,7 +34,7 @@ use crate::{
     args::ArgValues,
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapId},
+    heap::{Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings},
     resource::{DepthGuard, ResourceError, ResourceTracker},
     types::Type,
@@ -107,9 +107,7 @@ impl Tuple {
                 Ok(heap.get_empty_tuple())
             }
             Some(v) => {
-                let mut iter = MontyIter::new(v, heap, interns)?;
-                let items = iter.collect(heap, interns)?;
-                iter.drop_with_heap(heap);
+                let items = MontyIter::new(v, heap, interns)?.collect(heap, interns)?;
                 Ok(allocate_tuple(items, heap)?)
             }
         }
@@ -177,7 +175,7 @@ impl PyTrait for Tuple {
                 .indices(self.items.len())
                 .map_err(|()| ExcType::value_error_slice_step_zero())?;
 
-            let items = get_slice_items(&self.items, start, stop, step, heap);
+            let items = get_slice_items(&self.items, start, stop, step, heap)?;
             return Ok(allocate_tuple(items.into(), heap)?);
         }
 
@@ -212,6 +210,7 @@ impl PyTrait for Tuple {
         guard.increase_err()?;
 
         for (i1, i2) in self.items.iter().zip(&other.items) {
+            heap.check_time()?;
             if !i1.py_eq(i2, heap, guard, interns)? {
                 guard.decrease();
                 return Ok(false);
@@ -259,13 +258,17 @@ impl PyTrait for Tuple {
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
+        let args_guard = HeapGuard::new(args, heap);
         match attr.static_string() {
-            Some(StaticStrings::Index) => tuple_index(self, args, heap, interns),
-            Some(StaticStrings::Count) => tuple_count(self, args, heap, interns),
-            _ => {
-                args.drop_with_heap(heap);
-                Err(ExcType::attribute_error(Type::Tuple, attr.as_str(interns)))
+            Some(StaticStrings::Index) => {
+                let (args, heap) = args_guard.into_parts();
+                tuple_index(self, args, heap, interns)
             }
+            Some(StaticStrings::Count) => {
+                let (args, heap) = args_guard.into_parts();
+                tuple_count(self, args, heap, interns)
+            }
+            _ => Err(ExcType::attribute_error(Type::Tuple, attr.as_str(interns))),
         }
     }
 

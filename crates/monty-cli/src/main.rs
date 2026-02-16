@@ -1,16 +1,25 @@
-use std::{env, fs, process::ExitCode, time::Instant};
+use std::{fs, process::ExitCode, time::Instant};
 
+use clap::Parser;
 use monty::{MontyObject, MontyRun, NoLimitTracker, RunProgress, StdPrint};
 // disabled due to format failing on https://github.com/pydantic/monty/pull/75 where CI and local wanted imports ordered differently
 // TODO re-enabled soon!
 #[rustfmt::skip]
 use monty_type_checking::{SourceFile, type_check};
 
+/// Monty — a sandboxed Python interpreter written in Rust.
+#[derive(Parser)]
+#[command(version)]
+struct Cli {
+    /// Python file to execute.
+    file: String,
+}
+
 const EXT_FUNCTIONS: bool = false;
 
 fn main() -> ExitCode {
-    let args: Vec<String> = env::args().collect();
-    let file_path = if args.len() > 1 { &args[1] } else { "example.py" };
+    let cli = Cli::parse();
+    let file_path = &cli.file;
     let code = match read_file(file_path) {
         Ok(code) => code,
         Err(err) => {

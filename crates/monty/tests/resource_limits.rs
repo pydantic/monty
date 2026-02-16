@@ -2,7 +2,7 @@
 ///
 /// These tests verify that the `ResourceTracker` system correctly enforces
 /// allocation limits, time limits, and triggers garbage collection.
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use monty::{ExcType, LimitedTracker, MontyObject, MontyRun, ResourceLimits, StdPrint};
 
@@ -561,6 +561,101 @@ fn pow_large_base_moderate_exp_rejected() {
     );
 }
 
+/// Test that the 4× safety multiplier for pow intermediate allocations catches
+/// cases where the final result fits but repeated-squaring intermediates don't.
+///
+/// `2 ** 500000`: final result = 2 * 500000 bits = 125KB. Without multiplier this
+/// passes a 200KB limit. With 4× multiplier: 500KB > 200KB → rejected.
+#[test]
+fn pow_intermediate_allocation_multiplier() {
+    let code = "2 ** 500000";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    // 200KB limit: final result (125KB) fits, but 4× estimate (500KB) exceeds it
+    let limits = ResourceLimits::new().max_memory(200_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(
+        result.is_err(),
+        "pow should be rejected due to intermediate allocation overhead"
+    );
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    // 2 bits * 500000 = 125KB final, × 4 = 500072 bytes (includes base memory offset)
+    assert_eq!(
+        exc.message(),
+        Some("memory limit exceeded: 500072 bytes > 200000 bytes")
+    );
+}
+
+/// Test that pow still succeeds when the 4× estimate is within the limit.
+///
+/// `2 ** 100000`: final result = 2 * 100000 bits ≈ 25KB. With 4× multiplier: ~100KB.
+/// A 1MB limit should comfortably allow this.
+#[test]
+fn pow_within_limit_with_multiplier() {
+    let code = "x = 2 ** 100000\nx > 0";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(1_000_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_ok(), "pow with 4× estimate under limit should succeed");
+    assert_eq!(result.unwrap(), MontyObject::Bool(true));
+}
+
+/// Test the exact fuzzer OOM pattern: right-associative chained exponentiation.
+///
+/// `3 ** 3661666` is the first sub-expression of the fuzzer input
+/// `1666**3**366**3**3661666`. Since `**` is right-associative, `3**3661666`
+/// is computed first. Base 3 has 2 bits, so: 2 * 3661666 = 7323332 bits ≈ 915KB.
+/// With 4× multiplier: 3660KB > 1MB fuzz limit → rejected.
+#[test]
+fn pow_fuzzer_oom_chained_exponentiation() {
+    // This is the subexpression that caused the fuzzer OOM
+    let code = "3 ** 3661666";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    // 1MB limit (matching the fuzzer's resource limit)
+    let limits = ResourceLimits::new().max_memory(1_024 * 1_024);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(
+        result.is_err(),
+        "fuzzer OOM pattern should be rejected by 4× multiplier"
+    );
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    // 2 bits * 3661666 = 915KB final, × 4 = 3661740 bytes
+    assert_eq!(
+        exc.message(),
+        Some("memory limit exceeded: 3661740 bytes > 1048576 bytes")
+    );
+}
+
+/// Test the full fuzzer input that originally caused OOM.
+///
+/// The input `1666**3**366**3**3661666` should be rejected before any large
+/// intermediate allocation occurs.
+#[test]
+fn pow_fuzzer_oom_full_input() {
+    let code = "1666**3**366**3**3661666";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(1_024 * 1_024);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+
+    assert!(result.is_err(), "full fuzzer OOM input should be rejected");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    // 3**3661666 is evaluated first (right-associative). Base 3 = 2 bits,
+    // so estimate = 2 * 3661666 bits = 915KB. With 4× multiplier: 3661740 bytes > 1MB.
+    assert_eq!(
+        exc.message(),
+        Some("memory limit exceeded: 3661740 bytes > 1048576 bytes")
+    );
+}
+
 /// Test that large left shift operations are rejected by memory limits.
 #[test]
 fn bigint_lshift_memory_limit() {
@@ -688,6 +783,7 @@ fn bigint_builtin_pow_memory_limit() {
 #[test]
 fn bigint_rejected_before_allocation() {
     // 2**1000000: base 2 has 2 bits, so estimate = 2 * 1000000 bits = 250KB
+    // With 4× safety multiplier for intermediate allocations = 1000KB
     // Set limit to 100KB - the pre-check should reject before allocating
     let code = "2 ** 1000000";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
@@ -700,7 +796,7 @@ fn bigint_rejected_before_allocation() {
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
     assert_eq!(
         exc.message(),
-        Some("memory limit exceeded: 250072 bytes > 100000 bytes")
+        Some("memory limit exceeded: 1000072 bytes > 100000 bytes")
     );
 }
 
@@ -942,4 +1038,333 @@ fn tuple_mult_within_limit() {
 
     assert!(result.is_ok(), "small tuple mult should succeed");
     assert_eq!(result.unwrap(), MontyObject::Bool(true));
+}
+
+// === Timeout enforcement in builtin iteration loops ===
+// These tests verify that `max_duration_secs` is enforced inside Rust-side loops
+// within builtin functions. Previously, builtins like sum(), sorted(), min(), max()
+// ran Rust loops entirely within a single bytecode instruction, bypassing the VM's
+// per-instruction timeout check. The fix adds `heap.check_time()` calls inside
+// `MontyIter::for_next()` and other non-iterator loops.
+
+/// Helper: runs code with a short time limit and asserts it produces a TimeoutError promptly.
+fn assert_timeout_in_builtin(code: &str, label: &str) {
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_duration(Duration::from_millis(100));
+    let start = std::time::Instant::now();
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+    let elapsed = start.elapsed();
+
+    assert!(result.is_err(), "{label}: should exceed time limit");
+    let exc = result.unwrap_err();
+    assert_eq!(
+        exc.exc_type(),
+        ExcType::TimeoutError,
+        "{label}: expected TimeoutError, got: {exc}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "{label}: should terminate promptly, took {elapsed:?}"
+    );
+}
+
+/// Test that `sum(range(huge))` respects the time limit.
+///
+/// `sum()` iterates via `for_next()` which now calls `heap.check_time()`.
+#[test]
+fn timeout_in_sum_builtin() {
+    assert_timeout_in_builtin("sum(range(10**18))", "sum(range(10**18))");
+}
+
+/// Test that `list(range(huge))` respects the time limit.
+///
+/// The `list()` constructor collects via `MontyIter::collect()` -> `for_next()`.
+#[test]
+fn timeout_in_list_constructor() {
+    assert_timeout_in_builtin("list(range(10**18))", "list(range(10**18))");
+}
+
+/// Test that `sorted(range(huge))` respects the time limit.
+///
+/// `sorted()` first collects items via `for_next()`, then sorts. The collection
+/// phase alone should trigger the timeout for very large ranges.
+#[test]
+fn timeout_in_sorted_builtin() {
+    assert_timeout_in_builtin("sorted(range(10**18))", "sorted(range(10**18))");
+}
+
+/// Test that `min(range(huge))` respects the time limit.
+///
+/// `min()` with a single iterable argument iterates via `for_next()`.
+#[test]
+fn timeout_in_min_builtin() {
+    assert_timeout_in_builtin("min(range(10**18))", "min(range(10**18))");
+}
+
+/// Test that `max(range(huge))` respects the time limit.
+///
+/// `max()` with a single iterable argument iterates via `for_next()`.
+#[test]
+fn timeout_in_max_builtin() {
+    assert_timeout_in_builtin("max(range(10**18))", "max(range(10**18))");
+}
+
+/// Test that `all(range(huge))` respects the time limit.
+///
+/// `all()` iterates via `for_next()` and only short-circuits on falsy values.
+/// `range(1, 10**18)` produces only truthy values so it keeps iterating.
+#[test]
+fn timeout_in_all_builtin() {
+    assert_timeout_in_builtin("all(range(1, 10**18))", "all(range(1, 10**18))");
+}
+
+/// Test that `enumerate(range(huge))` iteration respects the time limit.
+///
+/// `enumerate()` creates tuples on each iteration via `for_next()`.
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_in_any_builtin() {
+    // range(0, 1) repeated via a for loop calling any on each chunk isn't ideal,
+    // but we can test with a large range starting from 0 where only first element is falsy
+    // Actually, any(range(10**18)) will return True immediately because range starts at 0
+    // which is falsy, but 1 is truthy. So any() returns True after checking 0, 1.
+    // Instead, we need a different approach - just use the for_next timeout via enumerate.
+    assert_timeout_in_builtin("list(enumerate(range(10**18)))", "enumerate(range(10**18))");
+}
+
+/// Test that `tuple(range(huge))` respects the time limit.
+///
+/// The `tuple()` constructor collects via `MontyIter::collect()` -> `for_next()`.
+#[test]
+fn timeout_in_tuple_constructor() {
+    assert_timeout_in_builtin("tuple(range(10**18))", "tuple(range(10**18))");
+}
+
+/// Test that `' '.join(...)` iteration respects the time limit.
+///
+/// `str.join()` collects items from the iterable via `for_next()`.
+#[test]
+fn timeout_in_str_join() {
+    assert_timeout_in_builtin("' '.join(str(i) for i in range(10**18))", "str.join with generator");
+}
+
+/// Test that the insertion sort inner loop in `sorted()` respects the time limit.
+///
+/// Uses reverse-sorted data to trigger worst-case O(n^2) insertion sort behavior.
+/// The sort comparison loop has an explicit `heap.check_time()` call.
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_in_sorted_comparison_loop() {
+    // Build a reverse-sorted list, then sort it. Insertion sort on reverse-sorted
+    // data is O(n^2). With 50k elements that's 2.5 billion comparisons.
+    let code = r"
+x = list(range(50000, 0, -1))
+sorted(x)
+";
+    assert_timeout_in_builtin(code, "sorted(reversed list)");
+}
+
+/// Test that `[1] * 10_000_000` (list repetition) respects the time limit.
+///
+/// The `mult_sequence()` copy loop now calls `heap.check_time()` on each
+/// repetition to prevent large sequence multiplications from bypassing timeout.
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_in_list_repetition() {
+    assert_timeout_in_builtin("[1, 2, 3] * 10_000_000", "list repetition");
+}
+
+/// Test that `(1,) * 10_000_000` (tuple repetition) respects the time limit.
+///
+/// Same as list repetition but for tuples — both paths in `mult_sequence()`
+/// now check the time limit.
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_in_tuple_repetition() {
+    assert_timeout_in_builtin("(1, 2, 3) * 10_000_000", "tuple repetition");
+}
+
+/// Test that comparing two large equal lists respects the time limit.
+///
+/// `List::py_eq()` iterates element-wise comparing pairs. With large equal lists,
+/// it must compare every element before returning True.
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_in_list_equality() {
+    let code = r"
+a = list(range(10_000_000))
+b = list(range(10_000_000))
+a == b
+";
+    assert_timeout_in_builtin(code, "list equality");
+}
+
+/// Test that comparing two large equal dicts respects the time limit.
+///
+/// `Dict::py_eq()` iterates all entries checking keys and values. With large equal
+/// dicts, it must check every entry before returning True.
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_in_dict_equality() {
+    let code = r"
+a = {i: i for i in range(10_000_000)}
+b = {i: i for i in range(10_000_000)}
+a == b
+";
+    assert_timeout_in_builtin(code, "dict equality");
+}
+
+/// Test that `str.splitlines()` on a large string respects the time limit.
+///
+/// `str_splitlines()` scans the entire string for line endings in a while loop
+/// that now calls `heap.check_time()` on each iteration.
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_in_str_splitlines() {
+    let code = r"
+s = 'a\n' * 5_000_000
+s.splitlines()
+";
+    assert_timeout_in_builtin(code, "str.splitlines()");
+}
+
+/// Test that `bytes.splitlines()` on large bytes respects the time limit.
+///
+/// `bytes_splitlines()` scans bytes for line endings and now checks the time limit.
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_in_bytes_splitlines() {
+    let code = r"
+s = b'a\n' * 5_000_000
+s.splitlines()
+";
+    assert_timeout_in_builtin(code, "bytes.splitlines()");
+}
+
+// === Timeout truncation in repr ===
+// These tests verify that `repr()` on large containers respects the time limit
+// and terminates promptly instead of hanging indefinitely. The repr methods
+// (`repr_sequence_fmt`, `Dict::py_repr_fmt`, `SetInner::repr_fmt`) call
+// `heap.check_time()` on each iteration and write `...[timeout]` when the
+// time limit is exceeded, returning normally instead of propagating an error.
+//
+// Each test uses the external function "interrupt" pattern: the large object is
+// built with NO time limit, then execution pauses at `interrupt()`. A short time
+// limit is set before resuming, so only the `repr()` call is timed.
+
+/// Helper: builds a large object without time limit, then runs `repr()` on it
+/// with a short time limit and asserts it produces a TimeoutError promptly.
+///
+/// The code must call `interrupt()` between object construction and `repr()`.
+fn assert_repr_timeout(code: &str, label: &str) {
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], vec!["interrupt".to_owned()]).unwrap();
+
+    // Phase 1: build the large object with no time limit
+    let limits = ResourceLimits::new();
+    let (name, _args, _kwargs, _call_id, mut state) = run
+        .start(vec![], LimitedTracker::new(limits), &mut StdPrint)
+        .unwrap()
+        .into_function_call()
+        .expect("interrupt call");
+    assert_eq!(name, "interrupt");
+
+    // Phase 2: set a short time limit and resume — repr() should timeout
+    state.tracker_mut().set_max_duration(Duration::from_millis(10));
+
+    let start = Instant::now();
+    let result = state.run(MontyObject::None, &mut StdPrint);
+    let elapsed = start.elapsed();
+
+    let exc = result.unwrap_err();
+    assert_eq!(
+        exc.exc_type(),
+        ExcType::TimeoutError,
+        "{label}: expected TimeoutError, got: {exc}"
+    );
+    let msg = exc.message().unwrap();
+    assert!(msg.starts_with("time limit exceeded:"));
+    assert!(msg.ends_with("ms > 10ms"));
+    assert!(
+        elapsed < Duration::from_millis(200),
+        "{label}: should terminate promptly, took {elapsed:?}"
+    );
+}
+
+/// Test that `repr(large_list)` respects the time limit.
+///
+/// Uses a list of 100K short strings so that repr formatting is slow enough
+/// to trigger the timeout.
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_truncation_in_list_repr() {
+    let code = r"
+x = ['abcdefghij'] * 100_000
+interrupt()
+repr(x)
+";
+    assert_repr_timeout(code, "list repr");
+}
+
+/// Test that `repr(large_dict)` respects the time limit.
+///
+/// Uses a dict with 100K entries where values are short strings,
+/// making repr formatting slow enough to trigger the timeout.
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_truncation_in_dict_repr() {
+    let code = r"
+x = {i: 'abcdefghij' for i in range(100_000)}
+interrupt()
+repr(x)
+";
+    assert_repr_timeout(code, "dict repr");
+}
+
+/// Test that `repr(large_set)` respects the time limit.
+///
+/// Uses a set of 100K unique strings so that repr formatting is slow enough
+/// to trigger the timeout.
+#[test]
+#[cfg_attr(
+    feature = "ref-count-panic",
+    ignore = "resource exhaustion doesn't guarantee heap state consistency"
+)]
+fn timeout_truncation_in_set_repr() {
+    let code = r"
+x = {str(i) for i in range(100_000)}
+interrupt()
+repr(x)
+";
+    assert_repr_timeout(code, "set repr");
 }

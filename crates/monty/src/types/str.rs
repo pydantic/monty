@@ -11,9 +11,9 @@ use smallvec::smallvec;
 use super::{Bytes, MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings, StringId},
     resource::{DepthGuard, ResourceError, ResourceTracker},
     types::Type,
@@ -54,9 +54,9 @@ impl Str {
         match value {
             None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
             Some(v) => {
+                defer_drop!(v, heap);
                 let mut guard = DepthGuard::default();
                 let s = v.py_str(heap, &mut guard, interns).into_owned();
-                v.drop_with_heap(heap);
                 allocate_string(s, heap)
             }
         }
@@ -325,11 +325,12 @@ impl PyTrait for Str {
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
+        let args_guard = HeapGuard::new(args, heap);
         let Some(method) = attr.static_string() else {
-            args.drop_with_heap(heap);
             return Err(ExcType::attribute_error(Type::Str, attr.as_str(interns)));
         };
 
+        let (args, heap) = args_guard.into_parts();
         call_str_method_impl(&self.0, method, args, heap, interns)
     }
 }
@@ -345,10 +346,11 @@ pub fn call_str_method(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
+    let args_guard = HeapGuard::new(args, heap);
     let Some(method) = StaticStrings::from_string_id(method_id) else {
-        args.drop_with_heap(heap);
         return Err(ExcType::attribute_error(Type::Str, interns.get_str(method_id)));
     };
+    let (args, heap) = args_guard.into_parts();
     call_str_method_impl(s, method, args, heap, interns)
 }
 
@@ -509,59 +511,41 @@ fn str_join(
     interns: &Interns,
 ) -> RunResult<Value> {
     // Create MontyIter from the iterable, with join-specific error message
-    let Ok(mut iter) = MontyIter::new(iterable, heap, interns) else {
+    let Ok(iter) = MontyIter::new(iterable, heap, interns) else {
         return Err(ExcType::type_error_join_not_iterable());
     };
+    defer_drop_mut!(iter, heap);
 
     // Build result string, tracking index for error messages
     let mut result = String::new();
     let mut index = 0usize;
 
-    // Use explicit match to properly drop iter on for_next errors (e.g., dict/set size change
-    // during iteration, or allocation failure). The `?` operator would leak the iterator.
-    loop {
-        let item = match iter.for_next(heap, interns) {
-            Ok(Some(item)) => item,
-            Ok(None) => break,
-            Err(e) => {
-                iter.drop_with_heap(heap);
-                return Err(e);
-            }
-        };
-
+    while let Some(item) = iter.for_next(heap, interns)? {
+        defer_drop!(item, heap);
         if index > 0 {
             result.push_str(separator);
         }
 
         // Check item is a string and extract its content
-        match &item {
+        match item {
             Value::InternString(id) => {
                 result.push_str(interns.get_str(*id));
-                item.drop_with_heap(heap); // No-op for InternString but consistent
             }
             Value::Ref(heap_id) => {
                 if let HeapData::Str(s) = heap.get(*heap_id) {
                     result.push_str(s.as_str());
-                    item.drop_with_heap(heap);
                 } else {
                     let t = item.py_type(heap);
-                    item.drop_with_heap(heap);
-                    iter.drop_with_heap(heap);
                     return Err(ExcType::type_error_join_item(index, t));
                 }
             }
             _ => {
                 let t = item.py_type(heap);
-                item.drop_with_heap(heap);
-                iter.drop_with_heap(heap);
                 return Err(ExcType::type_error_join_item(index, t));
             }
         }
-
         index += 1;
     }
-
-    iter.drop_with_heap(heap);
 
     // Allocate result (uses interned empty string if result is empty)
     allocate_string(result, heap)
@@ -1307,8 +1291,8 @@ fn parse_strip_arg(
         None => Ok(None),
         Some(Value::None) => Ok(None), // Explicit None means default whitespace
         Some(v) => {
-            let result = extract_string_arg(&v, heap, interns)?;
-            v.drop_with_heap(heap);
+            defer_drop!(v, heap);
+            let result = extract_string_arg(v, heap, interns)?;
             Ok(Some(result))
         }
     }
@@ -1325,8 +1309,8 @@ fn str_removeprefix(
     interns: &Interns,
 ) -> RunResult<Value> {
     let prefix_value = args.get_one_arg("str.removeprefix", heap)?;
-    let prefix = extract_string_arg(&prefix_value, heap, interns)?;
-    prefix_value.drop_with_heap(heap);
+    defer_drop!(prefix_value, heap);
+    let prefix = extract_string_arg(prefix_value, heap, interns)?;
 
     let result = s.strip_prefix(&prefix).unwrap_or(s).to_owned();
     allocate_string(result, heap)
@@ -1343,8 +1327,8 @@ fn str_removesuffix(
     interns: &Interns,
 ) -> RunResult<Value> {
     let suffix_value = args.get_one_arg("str.removesuffix", heap)?;
-    let suffix = extract_string_arg(&suffix_value, heap, interns)?;
-    suffix_value.drop_with_heap(heap);
+    defer_drop!(suffix_value, heap);
+    let suffix = extract_string_arg(suffix_value, heap, interns)?;
 
     let result = s.strip_suffix(&suffix).unwrap_or(s).to_owned();
     allocate_string(result, heap)
@@ -1389,6 +1373,7 @@ fn str_split(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, in
     // Convert to list of strings (using interned empty string when applicable)
     let mut list_items = Vec::with_capacity(parts.len());
     for part in parts {
+        heap.check_time()?;
         list_items.push(allocate_string(part.to_owned(), heap)?);
     }
 
@@ -1435,6 +1420,7 @@ fn str_rsplit(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, i
     // Convert to list of strings (using interned empty string when applicable)
     let mut list_items = Vec::with_capacity(parts.len());
     for part in parts {
+        heap.check_time()?;
         list_items.push(allocate_string(part.to_owned(), heap)?);
     }
 
@@ -1614,6 +1600,8 @@ fn str_splitlines(
     let len = bytes.len();
 
     while start < len {
+        heap.check_time()?;
+
         // Find the next line ending
         let mut end = start;
         let mut line_end = start;
@@ -1738,8 +1726,8 @@ fn str_partition(
     interns: &Interns,
 ) -> RunResult<Value> {
     let sep_value = args.get_one_arg("str.partition", heap)?;
-    let sep = extract_string_arg(&sep_value, heap, interns)?;
-    sep_value.drop_with_heap(heap);
+    defer_drop!(sep_value, heap);
+    let sep = extract_string_arg(sep_value, heap, interns)?;
 
     if sep.is_empty() {
         return Err(ExcType::value_error_empty_separator());
@@ -1771,8 +1759,8 @@ fn str_rpartition(
     interns: &Interns,
 ) -> RunResult<Value> {
     let sep_value = args.get_one_arg("str.rpartition", heap)?;
-    let sep = extract_string_arg(&sep_value, heap, interns)?;
-    sep_value.drop_with_heap(heap);
+    defer_drop!(sep_value, heap);
+    let sep = extract_string_arg(sep_value, heap, interns)?;
 
     if sep.is_empty() {
         return Err(ExcType::value_error_empty_separator());
@@ -2013,8 +2001,8 @@ fn parse_justify_args(
 /// string of length width. A sign prefix is handled correctly.
 fn str_zfill(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
     let width_value = args.get_one_arg("str.zfill", heap)?;
-    let width_i64 = extract_int_arg(&width_value, heap)?;
-    width_value.drop_with_heap(heap);
+    defer_drop!(width_value, heap);
+    let width_i64 = extract_int_arg(width_value, heap)?;
 
     // Safe cast: treat negative as 0, saturate large positive values
     let width = if width_i64 < 0 {
@@ -2087,17 +2075,15 @@ fn parse_encode_args(
     let (first, second) = args.get_zero_one_two_args("str.encode", heap)?;
 
     let encoding = if let Some(v) = first {
-        let s = extract_string_arg(&v, heap, interns)?;
-        v.drop_with_heap(heap);
-        s
+        defer_drop!(v, heap);
+        extract_string_arg(v, heap, interns)?
     } else {
         "utf-8".to_owned()
     };
 
     let errors = if let Some(v) = second {
-        let s = extract_string_arg(&v, heap, interns)?;
-        v.drop_with_heap(heap);
-        s
+        defer_drop!(v, heap);
+        extract_string_arg(v, heap, interns)?
     } else {
         "strict".to_owned()
     };
