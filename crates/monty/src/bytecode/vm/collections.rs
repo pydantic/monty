@@ -12,7 +12,7 @@ use crate::{
     value::Value,
 };
 
-impl<T: ResourceTracker> VM<'_, T> {
+impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Builds a list from the top n stack values.
     pub(super) fn build_list(&mut self, count: usize) -> Result<(), RunError> {
         let items = self.pop_n(count);

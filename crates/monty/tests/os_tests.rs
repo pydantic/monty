@@ -4,7 +4,7 @@
 //! `RunProgress::OsCall` with the correct `OsFunction` variant and arguments,
 //! and that return values are correctly used by Python code.
 
-use monty::{MontyObject, MontyRun, NoLimitTracker, OsFunction, RunProgress, StdPrint, file_stat};
+use monty::{MontyObject, MontyRun, NoLimitTracker, OsFunction, PrintWriter, RunProgress, file_stat};
 
 /// Helper to run code and extract the OsCall progress.
 ///
@@ -13,7 +13,7 @@ use monty::{MontyObject, MontyRun, NoLimitTracker, OsFunction, RunProgress, StdP
 /// The state is resumed with a mock result to properly clean up ref counts.
 fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     match progress {
         RunProgress::OsCall {
@@ -39,7 +39,7 @@ fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
                 OsFunction::Getenv => MontyObject::String("mock_env_value".to_owned()),
                 OsFunction::GetEnviron => MontyObject::Dict(vec![].into()),
             };
-            let _ = state.run(mock_result, &mut StdPrint);
+            let _ = state.run(mock_result, &mut PrintWriter::Stdout);
             (function, args)
         }
         _ => panic!("expected OsCall, got {progress:?}"),
@@ -49,13 +49,13 @@ fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
 /// Helper to run code, provide an OS call result, and get the final value.
 fn run_oscall_with_result(code: &str, mock_result: MontyObject) -> (OsFunction, Vec<MontyObject>, MontyObject) {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     match progress {
         RunProgress::OsCall {
             function, args, state, ..
         } => {
-            let resumed = state.run(mock_result, &mut StdPrint).unwrap();
+            let resumed = state.run(mock_result, &mut PrintWriter::Stdout).unwrap();
             let final_result = resumed.into_complete().expect("expected Complete after resume");
             (function, args, final_result)
         }

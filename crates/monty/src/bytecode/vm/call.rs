@@ -52,7 +52,7 @@ impl From<AttrCallResult> for CallResult {
     }
 }
 
-impl<T: ResourceTracker> VM<'_, T> {
+impl<T: ResourceTracker> VM<'_, '_, T> {
     // ========================================================================
     // Call Opcode Executors
     // ========================================================================

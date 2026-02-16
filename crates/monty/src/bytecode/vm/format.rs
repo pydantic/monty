@@ -9,7 +9,7 @@ use crate::{
     value::Value,
 };
 
-impl<T: ResourceTracker> VM<'_, T> {
+impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Builds an f-string by concatenating n string parts from the stack.
     pub(super) fn build_fstring(&mut self, count: usize) -> Result<(), RunError> {
         let parts = self.pop_n(count);

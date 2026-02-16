@@ -1,7 +1,7 @@
 use std::{fs, process::ExitCode, time::Instant};
 
 use clap::Parser;
-use monty::{MontyObject, MontyRun, NoLimitTracker, RunProgress, StdPrint};
+use monty::{MontyObject, MontyRun, NoLimitTracker, PrintWriter, RunProgress};
 // disabled due to format failing on https://github.com/pydantic/monty/pull/75 where CI and local wanted imports ordered differently
 // TODO re-enabled soon!
 #[rustfmt::skip]
@@ -51,7 +51,7 @@ fn main() -> ExitCode {
 
     if EXT_FUNCTIONS {
         let start = Instant::now();
-        let mut progress = match runner.start(inputs, NoLimitTracker, &mut StdPrint) {
+        let mut progress = match runner.start(inputs, NoLimitTracker, &mut PrintWriter::Stdout) {
             Ok(p) => p,
             Err(err) => {
                 let elapsed = start.elapsed();
@@ -95,7 +95,7 @@ fn main() -> ExitCode {
                     };
 
                     // Resume execution with the return value
-                    match state.run(return_value, &mut StdPrint) {
+                    match state.run(return_value, &mut PrintWriter::Stdout) {
                         Ok(p) => progress = p,
                         Err(err) => {
                             let elapsed = start.elapsed();

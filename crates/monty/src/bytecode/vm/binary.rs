@@ -10,7 +10,7 @@ use crate::{
     value::BitwiseOp,
 };
 
-impl<T: ResourceTracker> VM<'_, T> {
+impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Binary addition with proper refcount handling.
     ///
     /// Uses lazy type capture: only calls `py_type()` in error paths to avoid

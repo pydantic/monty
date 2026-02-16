@@ -20,7 +20,7 @@ use crate::{
     value::Value,
 };
 
-impl<T: ResourceTracker> VM<'_, T> {
+impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Gets or creates the scheduler for async operations.
     ///
     /// The scheduler is created lazily on first use to avoid allocations for
