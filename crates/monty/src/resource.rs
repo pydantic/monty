@@ -1,5 +1,6 @@
 use std::{
     fmt,
+    sync::atomic::{AtomicU16, Ordering},
     time::{Duration, Instant},
 };
 
@@ -430,6 +431,14 @@ impl ResourceLimits {
     }
 }
 
+/// How often to actually check `Instant::elapsed()` in `check_time`.
+///
+/// Calling `Instant::elapsed()` on every `check_time` invocation adds measurable
+/// overhead in tight loops (the VM calls `check_time` on every instruction).
+/// By only checking every N calls, we reduce this overhead while still catching
+/// timeouts promptly.
+const TIME_CHECK_INTERVAL: u16 = 10;
+
 /// A resource tracker that enforces configurable limits.
 ///
 /// Tracks allocation count, memory usage, and execution time, returning
@@ -449,6 +458,11 @@ pub struct LimitedTracker {
     allocation_count: usize,
     /// Current approximate memory usage in bytes.
     current_memory: usize,
+    /// Counter for rate-limiting `Instant::elapsed()` calls in `check_time`.
+    ///
+    /// Uses `AtomicU16` for interior mutability since `check_time` takes `&self`
+    /// and `LimitedTracker` must be `Sync` (it ends up inside PyO3 pyclass types).
+    check_counter: AtomicU16,
 }
 
 impl LimitedTracker {
@@ -463,6 +477,7 @@ impl LimitedTracker {
             start_time: Instant::now(),
             allocation_count: 0,
             current_memory: 0,
+            check_counter: AtomicU16::new(0),
         }
     }
 
@@ -532,9 +547,19 @@ impl ResourceTracker for LimitedTracker {
 
     fn check_time(&self) -> Result<(), ResourceError> {
         if let Some(max) = self.limits.max_duration {
-            let elapsed = self.start_time.elapsed();
-            if elapsed > max {
-                return Err(ResourceError::Time { limit: max, elapsed });
+            let count = self.check_counter.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+            if count.is_multiple_of(TIME_CHECK_INTERVAL) {
+                // Only call Instant::elapsed() every TIME_CHECK_INTERVAL calls
+                let elapsed = self.start_time.elapsed();
+                if elapsed > max {
+                    // Reset counter so the very next check_time call also triggers
+                    // an elapsed check. This is important because some callers
+                    // (e.g. repr_sequence_fmt) catch the error and return normally,
+                    // and we need the VM loop's next check_time to re-detect timeout.
+                    self.check_counter
+                        .store(TIME_CHECK_INTERVAL.wrapping_sub(1), Ordering::Relaxed);
+                    return Err(ResourceError::Time { limit: max, elapsed });
+                }
             }
         }
         Ok(())

@@ -1317,8 +1317,8 @@ fn assert_repr_timeout(code: &str, label: &str) {
 
 /// Test that `repr(large_list)` respects the time limit.
 ///
-/// Uses a list of 500K long strings so that repr formatting is slow
-/// (each element requires quoting/escaping a 10K-char string).
+/// Uses a list of 100K short strings so that repr formatting is slow enough
+/// to trigger the timeout.
 #[test]
 #[cfg_attr(
     feature = "ref-count-panic",
@@ -1335,8 +1335,8 @@ repr(x)
 
 /// Test that `repr(large_dict)` respects the time limit.
 ///
-/// Uses a dict with 500K entries where values are long strings,
-/// making repr formatting slow.
+/// Uses a dict with 100K entries where values are short strings,
+/// making repr formatting slow enough to trigger the timeout.
 #[test]
 #[cfg_attr(
     feature = "ref-count-panic",
@@ -1353,8 +1353,8 @@ repr(x)
 
 /// Test that `repr(large_set)` respects the time limit.
 ///
-/// Uses a set of 100K long unique strings so that repr formatting
-/// is slow (each element requires quoting/escaping a 100+ char string).
+/// Uses a set of 100K unique strings so that repr formatting is slow enough
+/// to trigger the timeout.
 #[test]
 #[cfg_attr(
     feature = "ref-count-panic",
