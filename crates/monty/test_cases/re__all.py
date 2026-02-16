@@ -2,6 +2,12 @@
 
 import re
 
+# === Constant ===
+assert re.NOFLAG == 0, 're.NOFLAG == 0'
+assert re.I == re.IGNORECASE == 2, 're.I == re.IGNORECASE == 2'
+assert re.M == re.MULTILINE == 8, 're.M == re.MULTILINE == 8'
+assert re.S == re.DOTALL == 16, 're.S == re.DOTALL == 16'
+
 # === re.search() basic ===
 m = re.search('hello', 'say hello world')
 assert m is not None, 're.search finds a match'

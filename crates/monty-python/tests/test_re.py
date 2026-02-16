@@ -1,6 +1,7 @@
 import re
 import sys
 
+import pytest
 from inline_snapshot import snapshot
 
 import pydantic_monty
@@ -21,6 +22,23 @@ matches = pattern.findall('There are 24 hours in a day and 365 days in a year.')
     m = pydantic_monty.Monty(code)
     output = m.run()
     assert output is None
+
+
+@pytest.mark.parametrize(
+    'flags,target',
+    [
+        (['re.NOFLAG'], re.NOFLAG),
+        (['re.I', 're.IGNORECASE'], re.IGNORECASE),
+        (['re.M', 're.MULTILINE'], re.MULTILINE),
+        (['re.S', 're.DOTALL'], re.DOTALL),
+    ],
+    ids=str,
+)
+def test_re_constant(flags: list[str], target: int):
+    code = f'import re; ({",".join(flags)},)'
+    m = pydantic_monty.Monty(code)
+    output = m.run()
+    assert all(map(lambda orig: orig == target, output))
 
 
 def test_re_compile_repr():

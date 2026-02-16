@@ -414,12 +414,10 @@ pub enum StaticStrings {
 
     // re module strings
     /// Module name for `import re`.
-    #[strum(serialize = "re")]
     Re,
     /// `re.compile()` function
     Compile,
     /// `re.match()` / `pattern.match()` method
-    #[strum(serialize = "match")]
     Match,
     /// `re.search()` / `pattern.search()` method
     Search,
@@ -448,12 +446,24 @@ pub enum StaticStrings {
     /// `re.IGNORECASE` flag
     #[strum(serialize = "IGNORECASE")]
     Ignorecase,
+    /// `re.I` flag, alias
+    #[strum(serialize = "I")]
+    I,
     /// `re.MULTILINE` flag
     #[strum(serialize = "MULTILINE")]
     MultilineFlag,
+    /// `re.M` flag, alias
+    #[strum(serialize = "M")]
+    M,
     /// `re.DOTALL` flag
     #[strum(serialize = "DOTALL")]
     DotallFlag,
+    /// `re.S` flag, alias
+    #[strum(serialize = "S")]
+    S,
+    /// `re.NOFLAG` flag
+    #[strum(serialize = "NOFLAG")]
+    NoFlag,
     /// `re.PatternError` exception
     PatternError,
 }

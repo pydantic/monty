@@ -1,8 +1,7 @@
 //! Implementation of the `re` module.
 //!
-//! Provides regular expression matching operations modeled after Python's `re` module.
-//! Uses the Rust `regex` crate, which guarantees linear-time matching (DFA-based),
-//! preventing catastrophic backtracking (ReDoS) attacks — critical for sandbox security.
+//! Provides regular expression matching operations.
+//! Uses the Rust `fancy-regex` crate.
 //!
 //! # Supported module-level functions
 //!
@@ -15,16 +14,11 @@
 //!
 //! # Module attributes
 //!
+//! - `re.NOFLAG` - no flag (value: 0)
 //! - `re.IGNORECASE` / `re.I` — case-insensitive matching (value: 2)
 //! - `re.MULTILINE` / `re.M` — `^`/`$` match at line boundaries (value: 8)
 //! - `re.DOTALL` / `re.S` — `.` matches newlines (value: 16)
 //! - `re.PatternError` — exception type for invalid patterns
-//!
-//! # Unsupported Python regex features
-//!
-//! The Rust `regex` crate does not support backreferences (`\1`), lookahead/lookbehind
-//! (`(?=...)`, `(?!...)`), or atomic groups. Attempting to compile patterns using these
-//! features raises `re.PatternError`.
 
 use std::borrow::Cow;
 
@@ -40,12 +34,14 @@ use crate::{
     value::Value,
 };
 
+/// Python regex flag: no flag being applyied.
+pub(crate) const NOFLAG: u8 = 0;
 /// Python regex flag: case-insensitive matching.
-const IGNORECASE: u8 = 2;
+pub(crate) const IGNORECASE: u8 = 2;
 /// Python regex flag: `^` and `$` match at line boundaries.
-const MULTILINE: u8 = 8;
+pub(crate) const MULTILINE: u8 = 8;
 /// Python regex flag: `.` matches newlines.
-const DOTALL: u8 = 16;
+pub(crate) const DOTALL: u8 = 16;
 
 /// Functions exposed by the `re` module.
 ///
@@ -60,7 +56,6 @@ pub(crate) enum ReFunctions {
     /// `re.search(pattern, string)` — find first match anywhere in the string.
     Search,
     /// `re.match(pattern, string)` — match anchored at the start.
-    #[strum(serialize = "match")]
     Match,
     /// `re.fullmatch(pattern, string)` — match the entire string.
     Fullmatch,
@@ -122,19 +117,23 @@ pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -
     );
 
     // Flag constants
+    module.set_attr(StaticStrings::NoFlag, Value::Int(i64::from(NOFLAG)), heap, interns);
     module.set_attr(
         StaticStrings::Ignorecase,
         Value::Int(i64::from(IGNORECASE)),
         heap,
         interns,
     );
+    module.set_attr(StaticStrings::I, Value::Int(i64::from(IGNORECASE)), heap, interns);
     module.set_attr(
         StaticStrings::MultilineFlag,
         Value::Int(i64::from(MULTILINE)),
         heap,
         interns,
     );
+    module.set_attr(StaticStrings::M, Value::Int(i64::from(MULTILINE)), heap, interns);
     module.set_attr(StaticStrings::DotallFlag, Value::Int(i64::from(DOTALL)), heap, interns);
+    module.set_attr(StaticStrings::S, Value::Int(i64::from(DOTALL)), heap, interns);
 
     heap.allocate(HeapData::Module(module))
 }

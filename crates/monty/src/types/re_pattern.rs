@@ -26,17 +26,11 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
+    modules::re::{DOTALL, IGNORECASE, MULTILINE},
     resource::{DepthGuard, ResourceError, ResourceTracker},
     types::{List, PyTrait, ReMatch, Str, Type, allocate_tuple, str::string_repr_fmt},
     value::{EitherStr, Value},
 };
-
-/// Python regex flag: case-insensitive matching.
-const IGNORECASE: u8 = 2;
-/// Python regex flag: `^` and `$` match at line boundaries.
-const MULTILINE: u8 = 8;
-/// Python regex flag: `.` matches newlines.
-const DOTALL: u8 = 16;
 
 /// A compiled regular expression pattern.
 ///
