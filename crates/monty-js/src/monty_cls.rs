@@ -339,14 +339,14 @@ impl Monty {
                 Ok(progress_to_result(
                     progress,
                     Some(func.create_ref()?),
-                    self.script_name().clone(),
+                    self.script_name(),
                 ))
             } else {
                 let progress = match runner.start(input_values, tracker, &mut StdPrint) {
                     Ok(p) => p,
                     Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
                 };
-                Ok(progress_to_result(progress, None, self.script_name().clone()))
+                Ok(progress_to_result(progress, None, self.script_name()))
             }
         } else {
             let tracker = NoLimitTracker;
@@ -359,14 +359,14 @@ impl Monty {
                 Ok(progress_to_result(
                     progress,
                     Some(func.create_ref()?),
-                    self.script_name().clone(),
+                    self.script_name(),
                 ))
             } else {
                 let progress = match runner.start(input_values, tracker, &mut StdPrint) {
                     Ok(p) => p,
                     Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
                 };
-                Ok(progress_to_result(progress, None, self.script_name().clone()))
+                Ok(progress_to_result(progress, None, self.script_name()))
             }
         }
     }

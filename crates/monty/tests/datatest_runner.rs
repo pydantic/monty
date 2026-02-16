@@ -1810,17 +1810,15 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
     let (code, expectation, config) = parse_fixture(&content);
     let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
 
-    // Clone data for the closure since it needs 'static lifetime
+    // Move data into the closure since it needs 'static lifetime
     let path_owned = path.to_owned();
-    let code_owned = code.clone();
-    let expectation_owned = expectation.clone();
     let iter_mode = config.iter_mode;
 
     let result = run_with_timeout(TEST_TIMEOUT, move || {
         if iter_mode {
-            try_run_iter_test(&path_owned, &code_owned, &expectation_owned)
+            try_run_iter_test(&path_owned, &code, &expectation)
         } else {
-            try_run_test(&path_owned, &code_owned, &expectation_owned)
+            try_run_test(&path_owned, &code, &expectation)
         }
     });
 
