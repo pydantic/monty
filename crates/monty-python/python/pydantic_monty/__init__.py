@@ -12,6 +12,7 @@ from ._monty import (
     MontyComplete,
     MontyError,
     MontyFutureSnapshot,
+    MontyRepl,
     MontyRuntimeError,
     MontySnapshot,
     MontySyntaxError,
@@ -28,6 +29,7 @@ __all__ = (
     # _monty
     '__version__',
     'Monty',
+    'MontyRepl',
     'MontyComplete',
     'MontySnapshot',
     'MontyFutureSnapshot',

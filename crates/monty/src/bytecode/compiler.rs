@@ -181,7 +181,22 @@ impl<'a> Compiler<'a> {
         interns: &Interns,
         num_locals: u16,
     ) -> Result<CompileResult, CompileError> {
+        Self::compile_module_with_functions(nodes, interns, num_locals, Vec::new())
+    }
+
+    /// Compiles module-level code while preserving an existing function table prefix.
+    ///
+    /// This is used by incremental REPL compilation so previously created
+    /// `FunctionId`s remain stable: new function IDs are allocated after
+    /// `existing_functions.len()`.
+    pub fn compile_module_with_functions(
+        nodes: &[PreparedNode],
+        interns: &Interns,
+        num_locals: u16,
+        existing_functions: Vec<Function>,
+    ) -> Result<CompileResult, CompileError> {
         let mut compiler = Compiler::new(interns, Vec::new());
+        compiler.functions = existing_functions;
         compiler.compile_block(nodes)?;
 
         // Module returns None if no explicit return

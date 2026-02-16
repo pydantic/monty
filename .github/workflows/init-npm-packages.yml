@@ -1,0 +1,82 @@
+name: Initialize NPM Platform Packages
+
+# Creates placeholder packages on npm for any new napi platform targets.
+# npm requires packages to exist before OIDC/provenance publishing can work,
+# so this must be run once per new target before the first release that includes it.
+#
+# After running, configure Trusted Publishing on npmjs.com for each new package:
+#   Package Settings > Trusted Publisher > GitHub Actions > pydantic/monty
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  init-packages:
+    name: Initialize missing platform packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: npm install
+        working-directory: crates/monty-js
+
+      - name: Create npm dirs
+        run: npm run create-npm-dirs
+        working-directory: crates/monty-js
+
+      - name: Check and create missing platform packages
+        working-directory: crates/monty-js
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          created=()
+          for pkg_dir in npm/*/; do
+            name=$(node -p "require('./${pkg_dir}package.json').name")
+
+            if npm view "$name" version > /dev/null 2>&1; then
+              echo "✓ $name already exists"
+              continue
+            fi
+
+            echo "Creating placeholder for $name..."
+            tmp=$(mktemp -d)
+            node -e "
+              const pkg = require('./${pkg_dir}package.json');
+              const placeholder = {
+                name: pkg.name,
+                version: '0.0.0',
+                description: 'Placeholder for OIDC trusted publishing setup — this version contains no code.',
+                license: pkg.license,
+                repository: pkg.repository,
+                publishConfig: pkg.publishConfig,
+                os: pkg.os,
+                cpu: pkg.cpu,
+              };
+              if (pkg.libc) placeholder.libc = pkg.libc;
+              require('fs').writeFileSync('${tmp}/package.json', JSON.stringify(placeholder, null, 2));
+            "
+            (cd "$tmp" && npm publish --access public)
+            rm -rf "$tmp"
+            created+=("$name")
+            echo "✓ Created $name@0.0.0"
+          done
+
+          echo ""
+          if [ ${#created[@]} -eq 0 ]; then
+            echo "All platform packages already exist on npm."
+          else
+            echo "Created ${#created[@]} new package(s):"
+            for name in "${created[@]}"; do
+              echo "  - $name"
+              echo "    Configure Trusted Publishing: https://www.npmjs.com/package/${name}/access"
+            done
+            echo ""
+            echo "⚠ You must configure Trusted Publishing for each new package on npmjs.com"
+            echo "  before the next release will succeed with OIDC/provenance."
+          fi

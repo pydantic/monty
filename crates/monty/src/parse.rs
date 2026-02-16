@@ -131,7 +131,19 @@ pub struct ParseResult {
 }
 
 pub(crate) fn parse(code: &str, filename: &str) -> Result<ParseResult, ParseError> {
-    let mut parser = Parser::new(code, filename);
+    parse_with_interner(code, filename, InternerBuilder::new(code))
+}
+
+/// Parses code using a caller-provided interner seed.
+///
+/// This enables incremental compilation flows (e.g. REPL) where existing
+/// interned IDs must remain stable across parse invocations.
+pub(crate) fn parse_with_interner(
+    code: &str,
+    filename: &str,
+    interner: InternerBuilder,
+) -> Result<ParseResult, ParseError> {
+    let mut parser = Parser::new(code, filename, interner);
     let parsed = parse_module(code).map_err(|e| ParseError::syntax(e.to_string(), parser.convert_range(e.range())))?;
     let module = parsed.into_syntax();
     let nodes = parser.parse_statements(module.body)?;
@@ -159,7 +171,7 @@ pub struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn new(code: &'a str, filename: &'a str) -> Self {
+    fn new(code: &'a str, filename: &'a str, mut interner: InternerBuilder) -> Self {
         // Position of each line in the source code, to convert indexes to line number and column number
         let mut line_ends = vec![];
         for (i, c) in code.chars().enumerate() {
@@ -167,7 +179,6 @@ impl<'a> Parser<'a> {
                 line_ends.push(i);
             }
         }
-        let mut interner = InternerBuilder::new(code);
         let filename_id = interner.intern(filename);
         Self {
             line_ends,

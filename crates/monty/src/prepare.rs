@@ -26,9 +26,10 @@ pub struct PrepareResult {
     /// Number of items in the namespace (at module level, this IS the global namespace)
     pub namespace_size: usize,
     /// Maps variable names to their indices in the namespace.
-    /// Used for ref-count testing to look up variables by name.
-    /// Only available when the `ref-count-return` feature is enabled.
-    #[cfg(feature = "ref-count-return")]
+    ///
+    /// This map is used by:
+    /// - ref-count tests for looking up variables by name
+    /// - REPL incremental compilation to preserve stable global slot IDs across snippets
     pub name_map: AHashMap<String, NamespaceId>,
     /// The prepared AST nodes with all names resolved to namespace indices.
     /// Function definitions are inline as `PreparedFunctionDef` variants.
@@ -63,7 +64,35 @@ pub(crate) fn prepare(
 
     Ok(PrepareResult {
         namespace_size: p.namespace_size,
-        #[cfg(feature = "ref-count-return")]
+        name_map: p.name_map,
+        nodes: prepared_nodes,
+        interner,
+    })
+}
+
+/// Prepares parsed nodes for REPL-style incremental compilation using an existing global namespace map.
+///
+/// Existing bindings keep their original namespace slots; any new names are appended with new slots.
+/// This ensures snippets can be compiled independently while sharing one persistent global namespace.
+pub(crate) fn prepare_with_existing_names(
+    parse_result: ParseResult,
+    existing_name_map: AHashMap<String, NamespaceId>,
+) -> Result<PrepareResult, ParseError> {
+    let ParseResult { nodes, interner } = parse_result;
+    let mut p = Prepare::new_module_with_name_map(existing_name_map, &interner);
+    let mut prepared_nodes = p.prepare_nodes(nodes)?;
+
+    // In the root frame, the last expression is implicitly returned to match REPL behavior.
+    if let Some(Node::Expr(expr_loc)) = prepared_nodes.last()
+        && !expr_loc.expr.is_none()
+    {
+        let new_expr_loc = expr_loc.clone();
+        prepared_nodes.pop();
+        prepared_nodes.push(Node::Return(new_expr_loc));
+    }
+
+    Ok(PrepareResult {
+        namespace_size: p.namespace_size,
         name_map: p.name_map,
         nodes: prepared_nodes,
         interner,
@@ -139,6 +168,31 @@ impl<'i> Prepare<'i> {
             name_map.insert(name, NamespaceId::new(external_functions.len() + index));
         }
         let namespace_size = name_map.len();
+        Self {
+            interner,
+            name_map,
+            namespace_size,
+            is_module_scope: true,
+            global_names: AHashSet::new(),
+            assigned_names: AHashSet::new(),
+            names_assigned_in_order: AHashSet::new(),
+            global_name_map: None,
+            enclosing_locals: None,
+            free_var_map: AHashMap::new(),
+            cell_var_map: AHashMap::new(),
+        }
+    }
+
+    /// Creates a module-scope Prepare instance from an existing global name map.
+    ///
+    /// Used by incremental REPL compilation to keep stable slot assignments across snippets.
+    fn new_module_with_name_map(name_map: AHashMap<String, NamespaceId>, interner: &'i InternerBuilder) -> Self {
+        let namespace_size = name_map
+            .values()
+            .map(|id| id.index())
+            .max()
+            .map_or(0, |max_idx| max_idx + 1);
+
         Self {
             interner,
             name_map,

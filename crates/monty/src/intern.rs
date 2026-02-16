@@ -563,6 +563,30 @@ impl InternerBuilder {
         }
     }
 
+    /// Creates a builder pre-seeded from an existing [`Interns`] table.
+    ///
+    /// This is used by REPL incremental compilation: previously compiled interned
+    /// values keep stable IDs, and newly interned values are appended.
+    pub(crate) fn from_interns(interns: &Interns, code: &str) -> Self {
+        let mut builder = Self::new(code);
+        builder.strings.clone_from(&interns.strings);
+        builder.bytes.clone_from(&interns.bytes);
+        builder.long_ints.clone_from(&interns.long_ints);
+
+        builder.string_map = builder
+            .strings
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let id = StringId(
+                    u32::try_from(INTERN_STRING_ID_OFFSET + index).expect("StringId overflow while seeding interner"),
+                );
+                (value.clone(), id)
+            })
+            .collect();
+        builder
+    }
+
     /// Interns a string, returning its `StringId`.
     ///
     /// * If the string is ascii, return the pre-interned string id
@@ -707,5 +731,12 @@ impl Interns {
     /// compiled from `PreparedFunctionDef` nodes.
     pub fn set_functions(&mut self, functions: Vec<Function>) {
         self.functions = functions;
+    }
+
+    /// Returns a clone of the compiled function table.
+    ///
+    /// Used by REPL incremental compilation to preserve existing function IDs.
+    pub(crate) fn functions_clone(&self) -> Vec<Function> {
+        self.functions.clone()
     }
 }
