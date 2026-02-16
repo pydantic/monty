@@ -24,14 +24,18 @@ matches = pattern.findall('There are 24 hours in a day and 365 days in a year.')
     assert output is None
 
 
+supported_flags = [
+    (['re.I', 're.IGNORECASE'], re.IGNORECASE),
+    (['re.M', 're.MULTILINE'], re.MULTILINE),
+    (['re.S', 're.DOTALL'], re.DOTALL),
+]
+if sys.version_info >= (3, 11):
+    supported_flags.append((['re.NOFLAG'], re.NOFLAG))
+
+
 @pytest.mark.parametrize(
     'flags,target',
-    [
-        (['re.NOFLAG'], re.NOFLAG),
-        (['re.I', 're.IGNORECASE'], re.IGNORECASE),
-        (['re.M', 're.MULTILINE'], re.MULTILINE),
-        (['re.S', 're.DOTALL'], re.DOTALL),
-    ],
+    supported_flags,
     ids=str,
 )
 def test_re_constant(flags: list[str], target: int):

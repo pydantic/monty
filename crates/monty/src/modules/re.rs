@@ -34,7 +34,7 @@ use crate::{
     value::Value,
 };
 
-/// Python regex flag: no flag being applyied.
+/// Python regex flag: no flag being applied.
 pub(crate) const NOFLAG: u8 = 0;
 /// Python regex flag: case-insensitive matching.
 pub(crate) const IGNORECASE: u8 = 2;
