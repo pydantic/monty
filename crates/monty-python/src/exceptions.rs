@@ -410,10 +410,13 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
         ExcType::IsADirectoryError => exceptions::PyIsADirectoryError::new_err(msg),
         ExcType::NotADirectoryError => exceptions::PyNotADirectoryError::new_err(msg),
         ExcType::RePatternError => {
-            if let Ok(re_pattern_error) = get_re_pattern_error(py) {
-                return PyErr::from_value(re_pattern_error.call1((msg,)).unwrap());
+            if let Ok(re_pattern_error) = get_re_pattern_error(py)
+                && let Ok(exc_instance) = re_pattern_error.call1((PyString::new(py, &msg),))
+            {
+                PyErr::from_value(exc_instance)
+            } else {
+                exceptions::PyRuntimeError::new_err(msg)
             }
-            exceptions::PyRuntimeError::new_err(msg)
         }
     }
 }
