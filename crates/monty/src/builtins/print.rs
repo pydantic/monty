@@ -71,27 +71,28 @@ fn extract_print_kwargs(
     let mut error: Option<RunError> = None;
 
     for (key, value) in kwargs {
+        // defer_drop! ensures key and value are cleaned up on every path through
+        // the loop body — including continue, early return, and normal iteration
+        defer_drop!(key, heap);
+        defer_drop!(value, heap);
+
         // If we already hit an error, just drop remaining values
         if error.is_some() {
-            key.drop_with_heap(heap);
-            value.drop_with_heap(heap);
             continue;
         }
 
         let Some(keyword_name) = key.as_either_str(heap) else {
-            key.drop_with_heap(heap);
-            value.drop_with_heap(heap);
             error = Some(SimpleException::new_msg(ExcType::TypeError, "keywords must be strings").into());
             continue;
         };
 
         let key_str = keyword_name.as_str(interns);
         match key_str {
-            "sep" => match extract_string_kwarg(&value, "sep", heap, interns) {
+            "sep" => match extract_string_kwarg(value, "sep", heap, interns) {
                 Ok(custom_sep) => sep = custom_sep,
                 Err(e) => error = Some(e),
             },
-            "end" => match extract_string_kwarg(&value, "end", heap, interns) {
+            "end" => match extract_string_kwarg(value, "end", heap, interns) {
                 Ok(custom_end) => end = custom_end,
                 Err(e) => error = Some(e),
             },
@@ -105,8 +106,6 @@ fn extract_print_kwargs(
                 error = Some(ExcType::type_error_unexpected_keyword("print", key_str));
             }
         }
-        key.drop_with_heap(heap);
-        value.drop_with_heap(heap);
     }
 
     if let Some(error) = error {

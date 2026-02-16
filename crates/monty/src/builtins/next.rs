@@ -17,6 +17,5 @@ use crate::{
 pub fn builtin_next(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
     let (iterator, default) = args.get_one_two_args("next", heap)?;
     defer_drop!(iterator, heap);
-    // The iterator value is dropped by the guard; the iterator object itself remains on the heap
     iterator_next(iterator, default, heap, interns)
 }
