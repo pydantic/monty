@@ -861,4 +861,4 @@ def test_method_nonexistent_raises():
     m = pydantic_monty.Monty('g.nonexistent()', inputs=['g'], dataclass_registry=[Greeter])
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(inputs={'g': Greeter(greeting='hi')})
-    assert str(exc_info.value) == snapshot("AttributeError: 'dataclass' object has no attribute 'nonexistent'")
+    assert str(exc_info.value) == snapshot("AttributeError: 'Greeter' object has no attribute 'nonexistent'")
