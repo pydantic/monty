@@ -80,17 +80,16 @@ pub fn builtin_map(
             }
         }
         // map(f, iter1, iter2)
-        [single] => loop {
-            let Some(arg1) = first_iter.for_next(heap, interns)? else {
-                break;
-            };
-            let Some(arg2) = single.for_next(heap, interns)? else {
-                arg1.drop_with_heap(heap);
-                break;
-            };
-            let args = ArgValues::Two(arg1, arg2);
-            out.push(builtin.call(heap, args, interns, print_writer)?);
-        },
+        [single] => {
+            while let Some(arg1) = first_iter.for_next(heap, interns)? {
+                let Some(arg2) = single.for_next(heap, interns)? else {
+                    arg1.drop_with_heap(heap);
+                    break;
+                };
+                let args = ArgValues::Two(arg1, arg2);
+                out.push(builtin.call(heap, args, interns, print_writer)?);
+            }
+        }
         // map(f, iter1, iter2, *iterables)
         multiple => 'outer: loop {
             let mut items = Vec::with_capacity(1 + multiple.len());
