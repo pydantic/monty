@@ -7,7 +7,7 @@ use super::{MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
     builtins::Builtins,
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings},
@@ -247,12 +247,15 @@ impl PyTrait for List {
         heap: &mut Heap<impl ResourceTracker>,
         _interns: &Interns,
     ) -> RunResult<()> {
+        defer_drop!(key, heap);
+        defer_drop_mut!(value, heap);
+
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt.
         // Note: The LongInt-to-i64 conversion is defensive code. In normal execution,
         // heap-allocated LongInt values always exceed i64 range because into_value()
         // demotes i64-fitting values to Value::Int. However, this could be reached via
         // deserialization of crafted snapshot data.
-        let index = match &key {
+        let index = match key {
             Value::Int(i) => *i,
             Value::Bool(b) => i64::from(*b),
             Value::Ref(heap_id) => {
@@ -260,26 +263,18 @@ impl PyTrait for List {
                     if let Some(i) = li.to_i64() {
                         i
                     } else {
-                        key.drop_with_heap(heap);
-                        value.drop_with_heap(heap);
                         return Err(ExcType::index_error_int_too_large());
                     }
                 } else {
                     let key_type = key.py_type(heap);
-                    key.drop_with_heap(heap);
-                    value.drop_with_heap(heap);
                     return Err(ExcType::type_error_list_assignment_indices(key_type));
                 }
             }
             _ => {
                 let key_type = key.py_type(heap);
-                key.drop_with_heap(heap);
-                value.drop_with_heap(heap);
                 return Err(ExcType::type_error_list_assignment_indices(key_type));
             }
         };
-        // Drop the key after extracting the index (Int and Bool are not ref-counted)
-        key.drop_with_heap(heap);
 
         // Normalize negative indices (Python-style: -1 = last element)
         let len = i64::try_from(self.items.len()).expect("list length exceeds i64::MAX");
@@ -287,20 +282,19 @@ impl PyTrait for List {
 
         // Bounds check
         if normalized_index < 0 || normalized_index >= len {
-            value.drop_with_heap(heap);
             return Err(ExcType::list_assignment_index_error());
         }
 
-        // Replace value, drop old one
         let idx = usize::try_from(normalized_index).expect("index validated non-negative");
-        let old_value = std::mem::replace(&mut self.items[idx], value);
-        old_value.drop_with_heap(heap);
 
         // Update contains_refs if adding a Ref
         if matches!(self.items[idx], Value::Ref(_)) {
             self.contains_refs = true;
             heap.mark_potential_cycle();
         }
+
+        // Replace value (old one dropped by defer_drop_mut guard)
+        std::mem::swap(&mut self.items[idx], value);
 
         Ok(())
     }

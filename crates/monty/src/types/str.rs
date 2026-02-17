@@ -1439,36 +1439,27 @@ fn parse_split_args(
     interns: &Interns,
 ) -> RunResult<(Option<String>, i64)> {
     let (pos, kwargs) = args.into_parts();
+    let kwargs_iter = kwargs.into_iter();
+    defer_drop_mut!(kwargs_iter, heap);
 
     let mut pos_iter = pos;
     let sep_value = pos_iter.next();
+    defer_drop_mut!(sep_value, heap);
     let maxsplit_value = pos_iter.next();
+    defer_drop_mut!(maxsplit_value, heap);
 
     // Check no extra positional arguments
     if pos_iter.len() != 0 {
-        for v in pos_iter {
-            v.drop_with_heap(heap);
-        }
-        if let Some(v) = sep_value {
-            v.drop_with_heap(heap);
-        }
-        if let Some(v) = maxsplit_value {
-            v.drop_with_heap(heap);
-        }
-        kwargs.drop_with_heap(heap);
         return Err(ExcType::type_error_at_most(method, 2, 3));
     }
 
     // Extract positional sep (default None)
     let mut has_pos_sep = sep_value.is_some();
-    let mut sep = if let Some(v) = sep_value {
+    let mut sep = if let Some(v) = sep_value.as_ref() {
         if matches!(v, Value::None) {
-            v.drop_with_heap(heap);
             None
         } else {
-            let result = extract_string_arg(&v, heap, interns)?;
-            v.drop_with_heap(heap);
-            Some(result)
+            Some(extract_string_arg(v, heap, interns)?)
         }
     } else {
         None
@@ -1476,19 +1467,18 @@ fn parse_split_args(
 
     // Extract positional maxsplit (default -1)
     let mut has_pos_maxsplit = maxsplit_value.is_some();
-    let mut maxsplit = if let Some(v) = maxsplit_value {
-        let result = extract_int_arg(&v, heap)?;
-        v.drop_with_heap(heap);
-        result
+    let mut maxsplit = if let Some(v) = maxsplit_value.as_ref() {
+        extract_int_arg(v, heap)?
     } else {
         -1
     };
 
     // Process kwargs
-    for (key, value) in kwargs {
+    for (key, value) in kwargs_iter {
+        defer_drop!(key, heap);
+        defer_drop!(value, heap);
+
         let Some(keyword_name) = key.as_either_str(heap) else {
-            key.drop_with_heap(heap);
-            value.drop_with_heap(heap);
             return Err(ExcType::type_error("keywords must be strings"));
         };
 
@@ -1496,8 +1486,6 @@ fn parse_split_args(
         match key_str {
             "sep" => {
                 if has_pos_sep {
-                    key.drop_with_heap(heap);
-                    value.drop_with_heap(heap);
                     return Err(ExcType::type_error(format!(
                         "{method}() got multiple values for argument 'sep'"
                     )));
@@ -1505,31 +1493,25 @@ fn parse_split_args(
                 if matches!(value, Value::None) {
                     sep = None;
                 } else {
-                    sep = Some(extract_string_arg(&value, heap, interns)?);
+                    sep = Some(extract_string_arg(value, heap, interns)?);
                 }
                 has_pos_sep = true;
             }
             "maxsplit" => {
                 if has_pos_maxsplit {
-                    key.drop_with_heap(heap);
-                    value.drop_with_heap(heap);
                     return Err(ExcType::type_error(format!(
                         "{method}() got multiple values for argument 'maxsplit'"
                     )));
                 }
-                maxsplit = extract_int_arg(&value, heap)?;
+                maxsplit = extract_int_arg(value, heap)?;
                 has_pos_maxsplit = true;
             }
             _ => {
-                key.drop_with_heap(heap);
-                value.drop_with_heap(heap);
                 return Err(ExcType::type_error(format!(
                     "'{key_str}' is an invalid keyword argument for {method}()"
                 )));
             }
         }
-        key.drop_with_heap(heap);
-        value.drop_with_heap(heap);
     }
 
     Ok((sep, maxsplit))
@@ -1646,60 +1628,49 @@ fn str_splitlines(
 /// Supports both positional and keyword arguments for keepends.
 fn parse_splitlines_args(args: ArgValues, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
     let (pos, kwargs) = args.into_parts();
+    let kwargs_iter = kwargs.into_iter();
+    defer_drop_mut!(kwargs_iter, heap);
 
     let mut pos_iter = pos;
     let keepends_value = pos_iter.next();
+    defer_drop_mut!(keepends_value, heap);
 
     // Check no extra positional arguments
     if pos_iter.len() != 0 {
-        for v in pos_iter {
-            v.drop_with_heap(heap);
-        }
-        if let Some(v) = keepends_value {
-            v.drop_with_heap(heap);
-        }
-        kwargs.drop_with_heap(heap);
         return Err(ExcType::type_error_at_most("str.splitlines", 1, 2));
     }
 
     // Extract positional keepends (default false)
     let mut has_pos_keepends = keepends_value.is_some();
-    let mut keepends = if let Some(v) = keepends_value {
-        let result = value_is_truthy(&v);
-        v.drop_with_heap(heap);
-        result
+    let mut keepends = if let Some(v) = keepends_value.as_ref() {
+        value_is_truthy(v)
     } else {
         false
     };
 
     // Process kwargs
-    for (key, value) in kwargs {
+    for (key, value) in kwargs_iter {
+        defer_drop!(key, heap);
+        defer_drop!(value, heap);
+
         let Some(keyword_name) = key.as_either_str(heap) else {
-            key.drop_with_heap(heap);
-            value.drop_with_heap(heap);
             return Err(ExcType::type_error("keywords must be strings"));
         };
 
         let key_str = keyword_name.as_str(interns);
         if key_str == "keepends" {
             if has_pos_keepends {
-                key.drop_with_heap(heap);
-                value.drop_with_heap(heap);
                 return Err(ExcType::type_error(
                     "str.splitlines() got multiple values for argument 'keepends'",
                 ));
             }
-            keepends = value_is_truthy(&value);
+            keepends = value_is_truthy(value);
             has_pos_keepends = true;
         } else {
-            key.drop_with_heap(heap);
-            value.drop_with_heap(heap);
             return Err(ExcType::type_error(format!(
                 "'{key_str}' is an invalid keyword argument for str.splitlines()"
             )));
         }
-        key.drop_with_heap(heap);
-        value.drop_with_heap(heap);
     }
 
     Ok(keepends)
@@ -1813,76 +1784,61 @@ fn parse_replace_args(
     interns: &Interns,
 ) -> RunResult<(String, String, i64)> {
     let (pos, kwargs) = args.into_parts();
+    let kwargs_iter = kwargs.into_iter();
+    defer_drop_mut!(kwargs_iter, heap);
 
     let mut pos_iter = pos;
     let Some(old_value) = pos_iter.next() else {
-        kwargs.drop_with_heap(heap);
         return Err(ExcType::type_error_at_least(method, 2, 0));
     };
+    defer_drop!(old_value, heap);
+
     let Some(new_value) = pos_iter.next() else {
-        old_value.drop_with_heap(heap);
-        kwargs.drop_with_heap(heap);
         return Err(ExcType::type_error_at_least(method, 2, 1));
     };
+    defer_drop!(new_value, heap);
+
     let count_value = pos_iter.next();
+    defer_drop_mut!(count_value, heap);
 
     // Check no extra positional arguments
     if pos_iter.len() != 0 {
-        for v in pos_iter {
-            v.drop_with_heap(heap);
-        }
-        old_value.drop_with_heap(heap);
-        new_value.drop_with_heap(heap);
-        if let Some(v) = count_value {
-            v.drop_with_heap(heap);
-        }
-        kwargs.drop_with_heap(heap);
         return Err(ExcType::type_error_at_most(method, 3, 4));
     }
 
-    let old = extract_string_arg(&old_value, heap, interns)?;
-    old_value.drop_with_heap(heap);
-
-    let new = extract_string_arg(&new_value, heap, interns)?;
-    new_value.drop_with_heap(heap);
+    let old = extract_string_arg(old_value, heap, interns)?;
+    let new = extract_string_arg(new_value, heap, interns)?;
 
     let mut has_pos_count = count_value.is_some();
-    let mut count = if let Some(v) = count_value {
-        let result = extract_int_arg(&v, heap)?;
-        v.drop_with_heap(heap);
-        result
+    let mut count = if let Some(v) = count_value.as_ref() {
+        extract_int_arg(v, heap)?
     } else {
         -1
     };
 
     // Process kwargs (Python 3.13+ allows count as keyword)
-    for (key, value) in kwargs {
+    for (key, value) in kwargs_iter {
+        defer_drop!(key, heap);
+        defer_drop!(value, heap);
+
         let Some(keyword_name) = key.as_either_str(heap) else {
-            key.drop_with_heap(heap);
-            value.drop_with_heap(heap);
             return Err(ExcType::type_error("keywords must be strings"));
         };
 
         let key_str = keyword_name.as_str(interns);
         if key_str == "count" {
             if has_pos_count {
-                key.drop_with_heap(heap);
-                value.drop_with_heap(heap);
                 return Err(ExcType::type_error(format!(
                     "{method}() got multiple values for argument 'count'"
                 )));
             }
-            count = extract_int_arg(&value, heap)?;
+            count = extract_int_arg(value, heap)?;
             has_pos_count = true;
         } else {
-            key.drop_with_heap(heap);
-            value.drop_with_heap(heap);
             return Err(ExcType::type_error(format!(
                 "'{key_str}' is an invalid keyword argument for {method}()"
             )));
         }
-        key.drop_with_heap(heap);
-        value.drop_with_heap(heap);
     }
 
     Ok((old, new, count))

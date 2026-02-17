@@ -4,7 +4,7 @@ use smallvec::SmallVec;
 
 use super::VM;
 use crate::{
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, SimpleException},
     heap::{HeapData, HeapGuard},
     intern::StringId,
@@ -414,14 +414,17 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Supports lists, tuples, and strings. For strings, each character becomes
     /// a separate single-character string.
     pub(super) fn unpack_sequence(&mut self, count: usize) -> Result<(), RunError> {
-        let value = self.pop();
+        let this = self;
+
+        let value = this.pop();
+        defer_drop!(value, this);
 
         // Copy values without incrementing refcounts (avoids borrow conflict with heap.get).
         // For strings, we allocate new string values for each character.
-        let items: Vec<Value> = match &value {
+        let items: Vec<Value> = match value {
             // Interned strings (string literals stored inline, not on heap)
             Value::InternString(string_id) => {
-                let s = self.interns.get_str(*string_id);
+                let s = this.interns.get_str(*string_id);
                 let str_len = s.chars().count();
                 if str_len != count {
                     return Err(unpack_size_error(count, str_len));
@@ -429,63 +432,58 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 // Allocate each character as a new string
                 let mut items = Vec::with_capacity(str_len);
                 for c in s.chars() {
-                    items.push(allocate_char(c, self.heap)?);
+                    items.push(allocate_char(c, this.heap)?);
                 }
                 // Push items in reverse order so first item is on top
                 for item in items.into_iter().rev() {
-                    self.push(item);
+                    this.push(item);
                 }
                 return Ok(());
             }
             // Heap-allocated sequences
-            Value::Ref(heap_id) => match self.heap.get(*heap_id) {
-                HeapData::List(list) => {
-                    let list_len = list.len();
-                    if list_len != count {
-                        value.drop_with_heap(self.heap);
-                        return Err(unpack_size_error(count, list_len));
+            Value::Ref(heap_id) => {
+                match this.heap.get(*heap_id) {
+                    HeapData::List(list) => {
+                        let list_len = list.len();
+                        if list_len != count {
+                            return Err(unpack_size_error(count, list_len));
+                        }
+                        list.as_slice().iter().map(Value::copy_for_extend).collect()
                     }
-                    list.as_slice().iter().map(Value::copy_for_extend).collect()
+                    HeapData::Tuple(tuple) => {
+                        let tuple_len = tuple.as_slice().len();
+                        if tuple_len != count {
+                            return Err(unpack_size_error(count, tuple_len));
+                        }
+                        tuple.as_slice().iter().map(Value::copy_for_extend).collect()
+                    }
+                    HeapData::Str(s) => {
+                        let str_len = s.as_str().chars().count();
+                        if str_len != count {
+                            return Err(unpack_size_error(count, str_len));
+                        }
+                        // Collect characters first to avoid borrow conflict with heap
+                        let chars: Vec<char> = s.as_str().chars().collect();
+                        // Allocate each character as a new string
+                        let mut items = Vec::with_capacity(chars.len());
+                        for c in chars {
+                            items.push(allocate_char(c, this.heap)?);
+                        }
+                        // Push items in reverse order so first item is on top
+                        for item in items.into_iter().rev() {
+                            this.push(item);
+                        }
+                        return Ok(());
+                    }
+                    other => {
+                        let type_name = other.py_type(this.heap);
+                        return Err(unpack_type_error(type_name));
+                    }
                 }
-                HeapData::Tuple(tuple) => {
-                    let tuple_len = tuple.as_slice().len();
-                    if tuple_len != count {
-                        value.drop_with_heap(self.heap);
-                        return Err(unpack_size_error(count, tuple_len));
-                    }
-                    tuple.as_slice().iter().map(Value::copy_for_extend).collect()
-                }
-                HeapData::Str(s) => {
-                    let str_len = s.as_str().chars().count();
-                    if str_len != count {
-                        value.drop_with_heap(self.heap);
-                        return Err(unpack_size_error(count, str_len));
-                    }
-                    // Collect characters first to avoid borrow conflict with heap
-                    let chars: Vec<char> = s.as_str().chars().collect();
-                    // Drop the original string value before allocating new ones
-                    value.drop_with_heap(self.heap);
-                    // Allocate each character as a new string
-                    let mut items = Vec::with_capacity(chars.len());
-                    for c in chars {
-                        items.push(allocate_char(c, self.heap)?);
-                    }
-                    // Push items in reverse order so first item is on top
-                    for item in items.into_iter().rev() {
-                        self.push(item);
-                    }
-                    return Ok(());
-                }
-                other => {
-                    let type_name = other.py_type(self.heap);
-                    value.drop_with_heap(self.heap);
-                    return Err(unpack_type_error(type_name));
-                }
-            },
+            }
             // Non-iterable types
             _ => {
-                let type_name = value.py_type(self.heap);
-                value.drop_with_heap(self.heap);
+                let type_name = value.py_type(this.heap);
                 return Err(unpack_type_error(type_name));
             }
         };
@@ -496,16 +494,13 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // increment the refcounts for our copies.
         for item in &items {
             if let Value::Ref(id) = item {
-                self.heap.inc_ref(*id);
+                this.heap.inc_ref(*id);
             }
         }
 
-        // Now safe to drop the original container
-        value.drop_with_heap(self.heap);
-
         // Push items in reverse order so first item is on top
         for item in items.into_iter().rev() {
-            self.push(item);
+            this.push(item);
         }
         Ok(())
     }
@@ -518,13 +513,17 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// For example, `first, *rest, last = [1, 2, 3, 4, 5]` has before=1, after=1.
     /// After execution, the stack has: first (top), rest_list, last.
     pub(super) fn unpack_ex(&mut self, before: usize, after: usize) -> Result<(), RunError> {
-        let value = self.pop();
+        let this = self;
+
+        let value = this.pop();
+        defer_drop_mut!(value, this);
+
         let min_items = before + after;
 
         // Extract items from the sequence
-        let items: Vec<Value> = match &value {
+        let items: Vec<Value> = match value {
             Value::InternString(string_id) => {
-                let s = self.interns.get_str(*string_id);
+                let s = this.interns.get_str(*string_id);
                 // Collect chars once to avoid double iteration over UTF-8 data
                 let chars: Vec<char> = s.chars().collect();
                 if chars.len() < min_items {
@@ -533,54 +532,50 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 // Allocate each character as a new string
                 let mut items = Vec::with_capacity(chars.len());
                 for c in chars {
-                    items.push(allocate_char(c, self.heap)?);
+                    items.push(allocate_char(c, this.heap)?);
                 }
                 // String items are newly allocated, push and return
-                self.push_unpack_ex_results(&items, before, after)?;
+                this.push_unpack_ex_results(&items, before, after)?;
                 return Ok(());
             }
-            Value::Ref(heap_id) => match self.heap.get(*heap_id) {
-                HeapData::List(list) => {
-                    let list_len = list.len();
-                    if list_len < min_items {
-                        value.drop_with_heap(self.heap);
-                        return Err(unpack_ex_too_few_error(min_items, list_len));
+            Value::Ref(heap_id) => {
+                match this.heap.get(*heap_id) {
+                    HeapData::List(list) => {
+                        let list_len = list.len();
+                        if list_len < min_items {
+                            return Err(unpack_ex_too_few_error(min_items, list_len));
+                        }
+                        list.as_slice().iter().map(Value::copy_for_extend).collect()
                     }
-                    list.as_slice().iter().map(Value::copy_for_extend).collect()
-                }
-                HeapData::Tuple(tuple) => {
-                    let tuple_len = tuple.as_slice().len();
-                    if tuple_len < min_items {
-                        value.drop_with_heap(self.heap);
-                        return Err(unpack_ex_too_few_error(min_items, tuple_len));
+                    HeapData::Tuple(tuple) => {
+                        let tuple_len = tuple.as_slice().len();
+                        if tuple_len < min_items {
+                            return Err(unpack_ex_too_few_error(min_items, tuple_len));
+                        }
+                        tuple.as_slice().iter().map(Value::copy_for_extend).collect()
                     }
-                    tuple.as_slice().iter().map(Value::copy_for_extend).collect()
-                }
-                HeapData::Str(s) => {
-                    // Collect chars once to avoid double iteration over UTF-8 data
-                    let chars: Vec<char> = s.as_str().chars().collect();
-                    if chars.len() < min_items {
-                        value.drop_with_heap(self.heap);
-                        return Err(unpack_ex_too_few_error(min_items, chars.len()));
+                    HeapData::Str(s) => {
+                        // Collect chars once to avoid double iteration over UTF-8 data
+                        let chars: Vec<char> = s.as_str().chars().collect();
+                        if chars.len() < min_items {
+                            return Err(unpack_ex_too_few_error(min_items, chars.len()));
+                        }
+                        let mut items = Vec::with_capacity(chars.len());
+                        for c in chars {
+                            items.push(allocate_char(c, this.heap)?);
+                        }
+                        // String items are newly allocated, push and return
+                        this.push_unpack_ex_results(&items, before, after)?;
+                        return Ok(());
                     }
-                    value.drop_with_heap(self.heap);
-                    let mut items = Vec::with_capacity(chars.len());
-                    for c in chars {
-                        items.push(allocate_char(c, self.heap)?);
+                    other => {
+                        let type_name = other.py_type(this.heap);
+                        return Err(unpack_type_error(type_name));
                     }
-                    // String items are newly allocated, push and return
-                    self.push_unpack_ex_results(&items, before, after)?;
-                    return Ok(());
                 }
-                other => {
-                    let type_name = other.py_type(self.heap);
-                    value.drop_with_heap(self.heap);
-                    return Err(unpack_type_error(type_name));
-                }
-            },
+            }
             _ => {
-                let type_name = value.py_type(self.heap);
-                value.drop_with_heap(self.heap);
+                let type_name = value.py_type(this.heap);
                 return Err(unpack_type_error(type_name));
             }
         };
@@ -594,15 +589,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // That's one increment per item.
         for item in &items {
             if let Value::Ref(id) = item {
-                self.heap.inc_ref(*id);
+                this.heap.inc_ref(*id);
             }
         }
 
-        // Drop the original container
-        value.drop_with_heap(self.heap);
-
         // Now push the results
-        self.push_unpack_ex_results(&items, before, after)?;
+        this.push_unpack_ex_results(&items, before, after)?;
         Ok(())
     }
 
