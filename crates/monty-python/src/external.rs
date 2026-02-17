@@ -78,7 +78,7 @@ fn dispatch_method_call_inner(
         method.call(&py_args_tuple, Some(&py_kwargs))?
     };
 
-    py_to_monty(&result)
+    py_to_monty(&result, dc_registry)
 }
 
 /// Registry that maps external function names to Python callables.
@@ -157,6 +157,6 @@ impl<'py> ExternalFunctionRegistry<'py> {
         };
 
         // Convert result back to Monty format
-        py_to_monty(&result)
+        py_to_monty(&result, self.dc_registry)
     }
 }

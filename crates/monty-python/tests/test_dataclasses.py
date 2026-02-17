@@ -34,17 +34,17 @@ def test_dataclass_input():
     assert repr(result) == snapshot("Person(name='Alice', age=30)")
 
 
-def test_dataclass_unknown():
-    """Dataclass instances are converted and returned as MontyDataclass."""
+def test_dataclass_auto_registered():
+    """Dataclass passed as input is auto-registered, so isinstance() works without explicit registry."""
 
     m = pydantic_monty.Monty('x', inputs=['x'])
     result = m.run(inputs={'x': Person(name='Alice', age=30)})
     assert result.name == snapshot('Alice')
     assert result.age == snapshot(30)
     assert is_dataclass(result)
-    assert not isinstance(result, Person)
-    assert asdict(result) == snapshot({'name': 'Alice', 'age': 30})  # pyright: ignore[reportArgumentType]
-    assert repr(result) == snapshot("<Unknown Dataclass Person(name='Alice', age=30)>")
+    assert isinstance(result, Person)
+    assert asdict(result) == snapshot({'name': 'Alice', 'age': 30})
+    assert repr(result) == snapshot("Person(name='Alice', age=30)")
 
 
 @dataclass(frozen=True)
@@ -90,14 +90,43 @@ def test_dataclass_nested():
     assert result.address.zip_code == snapshot('10001')
 
 
-def test_dataclass_nested_unknown():
+def test_dataclass_nested_auto_registered():
+    """Nested dataclasses are auto-registered when passed as input."""
     m = pydantic_monty.Monty('x', inputs=['x'])
     result = m.run(inputs={'x': PersonAddress(name='Bob', address=Address(city='NYC', zip_code='10001'))})
-    assert not isinstance(result, PersonAddress)
+    assert isinstance(result, PersonAddress)
     assert result.name == snapshot('Bob')
-    assert not isinstance(result.address, Address)
+    assert isinstance(result.address, Address)
     assert result.address.city == snapshot('NYC')
     assert result.address.zip_code == snapshot('10001')
+
+
+def test_dataclass_auto_registered_in_list():
+    """Dataclass inside a list input is auto-registered."""
+
+    m = pydantic_monty.Monty('x[0]', inputs=['x'])
+    result = m.run(inputs={'x': [Person(name='Alice', age=30)]})
+    assert isinstance(result, Person)
+    assert result.name == snapshot('Alice')
+
+
+def test_dataclass_auto_registered_in_dict_value():
+    """Dataclass inside a dict value is auto-registered."""
+
+    m = pydantic_monty.Monty('x["key"]', inputs=['x'])
+    result = m.run(inputs={'x': {'key': Person(name='Alice', age=30)}})
+    assert isinstance(result, Person)
+    assert result.name == snapshot('Alice')
+
+
+def test_dataclass_explicit_registry_idempotent():
+    """Explicit registry still works alongside auto-registration (idempotent)."""
+
+    m = pydantic_monty.Monty('x', inputs=['x'], dataclass_registry=[Person])
+    result = m.run(inputs={'x': Person(name='Alice', age=30)})
+    assert isinstance(result, Person)
+    assert result.name == snapshot('Alice')
+    assert result.age == snapshot(30)
 
 
 def test_dataclass_with_list_field():
@@ -108,7 +137,6 @@ def test_dataclass_with_list_field():
         items: list[int]
 
     m = pydantic_monty.Monty('x', inputs=['x'])
-    m.register_dataclass(Container)
     result = m.run(inputs={'x': Container(items=[1, 2, 3])})
     assert result.items == snapshot([1, 2, 3])
 
@@ -260,8 +288,8 @@ def test_dataclass_repr_empty():
 # === Setattr ===
 
 
-def test_dataclass_setattr_mutable_unknown():
-    """Setting attributes on mutable dataclass works."""
+def test_dataclass_setattr_mutable():
+    """Setting attributes on mutable dataclass works (auto-registered, returns real dataclass)."""
 
     @dataclass
     class Point:
@@ -270,16 +298,12 @@ def test_dataclass_setattr_mutable_unknown():
 
     m = pydantic_monty.Monty('p', inputs=['p'])
     result = m.run(inputs={'p': Point(x=10, y=20)})
+    assert isinstance(result, Point)
 
     # Modify existing field
     result.x = 100
     assert result.x == snapshot(100)
-    assert repr(result) == snapshot('<Unknown Dataclass Point(x=100, y=20)>')
-
-    # Add new attribute (not in repr since not a declared field)
-    result.z = 30
-    assert result.z == snapshot(30)
-    assert repr(result) == snapshot('<Unknown Dataclass Point(x=100, y=20)>')
+    assert repr(result) == snapshot('test_dataclass_setattr_mutable.<locals>.Point(x=100, y=20)')
 
 
 def test_dataclass_setattr_frozen():
@@ -522,7 +546,7 @@ def test_dataclass_hash_mutable_raises():
     m = pydantic_monty.Monty('p', inputs=['p'])
     result = m.run(inputs={'p': Point(x=10, y=20)})
 
-    with pytest.raises(TypeError, match="unhashable type: 'UnknownDataclass'"):
+    with pytest.raises(TypeError, match="unhashable type: 'Point'"):
         hash(result)
 
 

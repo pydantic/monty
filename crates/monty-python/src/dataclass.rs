@@ -36,7 +36,9 @@ pub fn is_dataclass(value: &Bound<'_, PyAny>) -> bool {
 ///
 /// Extracts field names in definition order (for repr) and all field values as attrs.
 /// The `type_id` is set to `id(type(dc))` in Python, allowing registry lookups by type identity.
-pub fn dataclass_to_monty(value: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
+/// The `dc_registry` is threaded through to `py_to_monty` so that nested dataclasses
+/// in field values are also auto-registered.
+pub fn dataclass_to_monty(value: &Bound<'_, PyAny>, dc_registry: &Bound<'_, PyDict>) -> PyResult<MontyObject> {
     let py = value.py();
 
     let dc_type = value.get_type();
@@ -65,8 +67,8 @@ pub fn dataclass_to_monty(value: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
         if field_type.is(field_type_marker) {
             let field_name_str = field_name_obj.cast::<PyString>()?.to_str()?.to_string();
             let field_value = value.getattr(field_name_obj.cast::<PyString>()?)?;
-            let field_name_monty = py_to_monty(&field_name_obj)?;
-            let field_value_monty = py_to_monty(&field_value)?;
+            let field_name_monty = py_to_monty(&field_name_obj, dc_registry)?;
+            let field_value_monty = py_to_monty(&field_value, dc_registry)?;
 
             field_names.push(field_name_str);
             attrs.push((field_name_monty, field_value_monty));
@@ -119,6 +121,18 @@ pub fn dataclass_to_py(
         let dc = PyUnknownDataclass::new(py, name.to_string(), field_names.to_vec(), attrs, frozen, dc_registry)?;
         Ok(Py::new(py, dc)?.into_any())
     }
+}
+
+/// Registers a Python type in the dataclass registry, keyed by pointer identity.
+///
+/// This is idempotent — calling it multiple times with the same type is safe and
+/// simply overwrites the existing entry. The key is the raw pointer address of the
+/// type object, matching what `dataclass_to_monty` stores as `type_id` in
+/// `MontyObject::Dataclass`. This allows `dataclass_to_py` to look up the original
+/// Python class when reconstructing output values.
+pub fn add_to_dc_registry(dc_registry: &Bound<'_, PyDict>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
+    let type_id = obj.as_ptr() as u64;
+    dc_registry.set_item(type_id, obj)
 }
 
 /// Python class that mimics dataclass behavior for `MontyObject::Dataclass`.
