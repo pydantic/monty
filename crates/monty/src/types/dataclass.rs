@@ -278,20 +278,12 @@ impl PyTrait for Dataclass {
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
-        // Get method name from the attribute
+        // Method calls on dataclasses with known methods are intercepted earlier
+        // in VM::call_attr and dispatched as FrameExit::MethodCall. This path
+        // is only reached for unknown attributes.
         let method_name = attr.as_str(interns);
         defer_drop!(args, heap);
-
-        if self.methods.contains(method_name) {
-            // TODO: Integrate with external call system
-            // For now return an error indicating this needs implementation
-            Err(ExcType::attribute_error_method_not_implemented(
-                self.name(interns),
-                method_name,
-            ))
-        } else {
-            Err(ExcType::attribute_error(Type::Dataclass, method_name))
-        }
+        Err(ExcType::attribute_error(Type::Dataclass, method_name))
     }
 
     fn py_getattr(

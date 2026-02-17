@@ -41,6 +41,13 @@ pub(super) enum CallResult {
     ///
     /// The host executes the OS operation and resumes the VM with the result.
     OsCall(OsFunction, ArgValues),
+    /// Dataclass method call requested - VM should yield `FrameExit::MethodCall` to host.
+    ///
+    /// The method name is a qualified string like `"ClassName.method_name"` and the args
+    /// include the dataclass instance as the first argument (`self`). Unlike `External`,
+    /// this uses a `String` instead of `ExtFunctionId` because method names are only known
+    /// at runtime when dataclass inputs are provided.
+    MethodCall(String, ArgValues),
 }
 
 impl From<AttrCallResult> for CallResult {
@@ -270,6 +277,27 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     let result = do_list_sort(heap_id, args, this.heap, this.interns, this.print_writer);
                     return result.map(|()| CallResult::Push(Value::None));
                 }
+
+                // Check for dataclass method calls - intercept before reaching py_call_attr_raw
+                // Phase 1: check if it's a dataclass method (immutable heap borrow)
+                let method_info = if let HeapData::Dataclass(dc) = this.heap.get(heap_id) {
+                    let method_name_str = this.interns.get_str(name_id);
+                    if dc.methods().contains(method_name_str) {
+                        Some(format!("{}.{}", dc.name(this.interns), method_name_str))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                // Phase 2: if method call, clone self and prepend to args (mutable heap borrow)
+                if let Some(qualified_name) = method_info {
+                    let self_arg = obj.clone_with_heap(this.heap);
+                    let args_with_self = args.prepend(self_arg);
+                    return Ok(CallResult::MethodCall(qualified_name, args_with_self));
+                }
+
                 // Call the method on the heap object using call_attr_raw to support OS/external calls
                 let result = this.heap.call_attr_raw(heap_id, &attr, args, this.interns);
                 // Convert AttrCallResult to CallResult

@@ -16,6 +16,71 @@ use crate::{
     exceptions::exc_py_to_monty,
 };
 
+/// Dispatches a dataclass method call back to the original Python object.
+///
+/// When Monty encounters a call like `dc.my_method(args)`, the VM pauses with a
+/// `FrameExit::MethodCall` containing a qualified name like `"ClassName.method_name"`
+/// and the dataclass instance as the first arg. This function:
+/// 1. Splits the qualified name to get the method name
+/// 2. Converts the first arg (dataclass `self`) back to a Python object
+/// 3. Calls `getattr(self_obj, method_name)(*remaining_args, **kwargs)`
+/// 4. Converts the result back to Monty format
+pub fn dispatch_method_call(
+    py: Python<'_>,
+    function_name: &str,
+    args: &[MontyObject],
+    kwargs: &[(MontyObject, MontyObject)],
+    dc_registry: &Bound<'_, PyDict>,
+) -> ExternalResult {
+    match dispatch_method_call_inner(py, function_name, args, kwargs, dc_registry) {
+        Ok(result) => ExternalResult::Return(result),
+        Err(err) => ExternalResult::Error(exc_py_to_monty(py, &err)),
+    }
+}
+
+/// Inner implementation of method dispatch that returns `PyResult` for error handling.
+fn dispatch_method_call_inner(
+    py: Python<'_>,
+    function_name: &str,
+    args: &[MontyObject],
+    kwargs: &[(MontyObject, MontyObject)],
+    dc_registry: &Bound<'_, PyDict>,
+) -> PyResult<MontyObject> {
+    // Split "ClassName.method_name" to get the method name
+    let method_name = function_name.split('.').next_back().unwrap_or(function_name);
+
+    // First arg is the dataclass self
+    let self_obj = args
+        .first()
+        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Method call missing self argument"))?;
+    let py_self = monty_to_py(py, self_obj, dc_registry)?;
+
+    // Get the method from the object
+    let method = py_self.bind(py).getattr(method_name)?;
+
+    // Convert remaining positional arguments
+    let remaining_args: PyResult<Vec<Py<PyAny>>> =
+        args[1..].iter().map(|arg| monty_to_py(py, arg, dc_registry)).collect();
+    let py_args_tuple = PyTuple::new(py, remaining_args?)?;
+
+    // Convert keyword arguments
+    let py_kwargs = PyDict::new(py);
+    for (key, value) in kwargs {
+        let py_key = monty_to_py(py, key, dc_registry)?;
+        let py_value = monty_to_py(py, value, dc_registry)?;
+        py_kwargs.set_item(py_key, py_value)?;
+    }
+
+    // Call the method
+    let result = if py_kwargs.is_empty() {
+        method.call1(&py_args_tuple)?
+    } else {
+        method.call(&py_args_tuple, Some(&py_kwargs))?
+    };
+
+    py_to_monty(&result)
+}
+
 /// Registry that maps external function names to Python callables.
 ///
 /// Passed to the execution loop and used to dispatch calls when Monty

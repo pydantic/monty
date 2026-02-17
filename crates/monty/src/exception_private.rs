@@ -207,19 +207,6 @@ impl ExcType {
         })
     }
 
-    /// Creates an AttributeError for a dataclass method that requires external call integration.
-    ///
-    /// This is a temporary error used when dataclass methods are called but the external
-    /// call mechanism hasn't been integrated yet.
-    #[must_use]
-    pub(crate) fn attribute_error_method_not_implemented(class_name: &str, method_name: &str) -> RunError {
-        SimpleException::new_msg(
-            Self::AttributeError,
-            format!("'{class_name}' object method '{method_name}' requires external call (not yet implemented)"),
-        )
-        .into()
-    }
-
     /// Creates an AttributeError for attribute assignment on types that don't support it.
     ///
     /// Matches CPython's format for setting attributes on built-in types.

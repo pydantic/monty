@@ -22,6 +22,35 @@ use pyo3::{
 
 use crate::convert::{monty_to_py, py_to_monty};
 
+/// Extracts non-underscore-prefixed method names from a dataclass type.
+///
+/// Uses `inspect.isfunction` to identify user-defined methods on the class,
+/// skipping dunder methods and private methods. These method names are stored
+/// in `MontyObject::Dataclass::methods` so the VM can intercept calls and
+/// dispatch them back to the host.
+fn extract_methods(py: Python<'_>, dc_type: &Bound<'_, PyType>) -> PyResult<Vec<String>> {
+    let inspect = py.import("inspect")?;
+    // type.__dict__ returns a mappingproxy, not a dict — iterate via .items()
+    let dc_type_dict = dc_type.getattr(intern!(py, "__dict__"))?;
+
+    let mut methods = Vec::new();
+    for item in dc_type_dict.call_method0(intern!(py, "items"))?.try_iter()? {
+        let item: Bound<'_, PyAny> = item?;
+        let name_str: String = item.get_item(0)?.extract()?;
+        // Skip private and dunder methods
+        if name_str.starts_with('_') {
+            continue;
+        }
+        // Check if it's a function (method defined on the class)
+        let value = item.get_item(1)?;
+        let is_func: bool = inspect.call_method1("isfunction", (&value,))?.extract()?;
+        if is_func {
+            methods.push(name_str);
+        }
+    }
+    Ok(methods)
+}
+
 /// Checks if a Python object is a dataclass instance (not a type).
 ///
 /// Copied from pydantic's `is_dataclass` logic.
@@ -73,12 +102,15 @@ pub fn dataclass_to_monty(value: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
         }
     }
 
+    // Extract user-defined methods from the dataclass type
+    let methods = extract_methods(py, &dc_type)?;
+
     Ok(MontyObject::Dataclass {
         name,
         type_id,
         field_names,
         attrs: attrs.into(),
-        methods: vec![],
+        methods,
         frozen,
     })
 }

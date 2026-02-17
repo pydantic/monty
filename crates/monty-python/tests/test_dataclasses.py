@@ -734,3 +734,131 @@ def test_repeat_dataclass_name():
     a, b = m.run(inputs={'a': Point(x=10, y=20), 'b': point_cls2(x=30, y=40)})
     assert isinstance(a, Point)
     assert isinstance(b, point_cls2)
+
+
+# === Dataclass method call tests ===
+
+
+@dataclass
+class Greeter:
+    greeting: str
+
+    def greet(self) -> str:
+        return self.greeting
+
+
+@dataclass
+class Calculator:
+    value: int
+
+    def add(self, n: int) -> int:
+        return self.value + n
+
+    def multiply(self, n: int) -> int:
+        return self.value * n
+
+
+@dataclass
+class Point2D:
+    x: float
+    y: float
+
+    def distance(self) -> float:
+        return (self.x**2 + self.y**2) ** 0.5
+
+    def translate(self, dx: float, dy: float) -> 'Point2D':
+        return Point2D(x=self.x + dx, y=self.y + dy)
+
+
+def test_method_no_args_raw():
+    """Calling a dataclass method with no args (besides self), raw."""
+    m = pydantic_monty.Monty('g.greet()', inputs=['g'], dataclass_registry=[Greeter])
+    result = m.start(inputs={'g': Greeter(greeting='hello')})
+    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert result.script_name == snapshot('main.py')
+    assert result.function_name == snapshot('Greeter.greet')
+    assert result.args == snapshot((Greeter(greeting='hello'),))
+    assert result.kwargs == snapshot({})
+
+
+def test_method_no_args():
+    """Calling a dataclass method with no args (besides self)."""
+    m = pydantic_monty.Monty('g.greet()', inputs=['g'], dataclass_registry=[Greeter])
+    result = m.run(inputs={'g': Greeter(greeting='hello')})
+    assert result == snapshot('hello')
+
+
+def test_method_with_args():
+    """Calling a dataclass method with positional args."""
+    m = pydantic_monty.Monty('c.add(10)', inputs=['c'], dataclass_registry=[Calculator])
+    result = m.run(inputs={'c': Calculator(value=5)})
+    assert result == snapshot(15)
+
+
+def test_method_accessing_fields():
+    """Method that reads multiple fields from self."""
+    m = pydantic_monty.Monty('p.distance()', inputs=['p'], dataclass_registry=[Point2D])
+    result = m.run(inputs={'p': Point2D(x=3.0, y=4.0)})
+    assert result == snapshot(5.0)
+
+
+def test_method_returning_dataclass():
+    """Method that returns a new dataclass instance."""
+    m = pydantic_monty.Monty('p.translate(1.0, 2.0)', inputs=['p'], dataclass_registry=[Point2D])
+    result = m.run(inputs={'p': Point2D(x=3.0, y=4.0)})
+    assert isinstance(result, Point2D)
+    assert result.x == snapshot(4.0)
+    assert result.y == snapshot(6.0)
+
+
+def test_method_on_frozen_dataclass():
+    """Methods work on frozen dataclasses too."""
+
+    @dataclass(frozen=True)
+    class FrozenCalc:
+        value: int
+
+        def doubled(self) -> int:
+            return self.value * 2
+
+    m = pydantic_monty.Monty('c.doubled()', inputs=['c'], dataclass_registry=[FrozenCalc])
+    result = m.run(inputs={'c': FrozenCalc(value=21)})
+    assert result == snapshot(42)
+
+
+def test_method_with_kwargs():
+    """Method called with keyword arguments."""
+
+    @dataclass
+    class Formatter:
+        base: str
+
+        def format(self, prefix: str = '', suffix: str = '') -> str:
+            return prefix + self.base + suffix
+
+    m = pydantic_monty.Monty(
+        "f.format(prefix='[', suffix=']')",
+        inputs=['f'],
+        dataclass_registry=[Formatter],
+    )
+    result = m.run(inputs={'f': Formatter(base='hello')})
+    assert result == snapshot('[hello]')
+
+
+def test_method_multiple_calls():
+    """Multiple method calls in the same expression."""
+    m = pydantic_monty.Monty(
+        'c.add(10) + c.multiply(3)',
+        inputs=['c'],
+        dataclass_registry=[Calculator],
+    )
+    result = m.run(inputs={'c': Calculator(value=5)})
+    assert result == snapshot(30)
+
+
+def test_method_nonexistent_raises():
+    """Calling a non-existent method raises AttributeError."""
+    m = pydantic_monty.Monty('g.nonexistent()', inputs=['g'], dataclass_registry=[Greeter])
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run(inputs={'g': Greeter(greeting='hi')})
+    assert str(exc_info.value) == snapshot("AttributeError: 'dataclass' object has no attribute 'nonexistent'")

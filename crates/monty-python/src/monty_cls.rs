@@ -19,7 +19,7 @@ use send_wrapper::SendWrapper;
 use crate::{
     convert::{monty_to_py, py_to_monty},
     exceptions::{MontyError, MontyTypingError, exc_py_to_monty},
-    external::ExternalFunctionRegistry,
+    external::{ExternalFunctionRegistry, dispatch_method_call},
     limits::{PySignalTracker, extract_limits},
 };
 
@@ -353,7 +353,15 @@ impl PyMonty {
         // wrap print_output in SendWrapper so that it can be accessed inside the py.detach calls despite
         // no `Send` bound - py.detach() is overly restrictive to prevent `Bound` types going inside
         let mut print_output = SendWrapper::new(&mut print_output);
-        if self.external_function_names.is_empty() && os.is_none() {
+
+        // Check if any input dataclasses have methods - if so, we need the iterative path
+        let has_dc_methods = || -> bool {
+            input_values
+                .iter()
+                .any(|v| matches!(v, MontyObject::Dataclass { methods, .. } if !methods.is_empty()))
+        };
+
+        if self.external_function_names.is_empty() && os.is_none() && !has_dc_methods() {
             let runner = &self.runner;
             return match py.detach(|| runner.run(input_values, tracker, &mut print_output)) {
                 Ok(v) => monty_to_py(py, &v, dataclass_registry),
@@ -376,15 +384,20 @@ impl PyMonty {
                     state,
                     ..
                 } => {
-                    let registry = external_functions
-                        .map(|d| ExternalFunctionRegistry::new(py, d, dataclass_registry))
-                        .ok_or_else(|| {
-                            PyRuntimeError::new_err(format!(
-                                "External function '{function_name}' called but no external_functions provided"
-                            ))
-                        })?;
-
-                    let return_value = registry.call(&function_name, &args, &kwargs);
+                    // Check if this is a dataclass method call (qualified name like "ClassName.method")
+                    // with a dataclass as the first arg
+                    let return_value = if function_name.contains('.')
+                        && args.first().is_some_and(|a| matches!(a, MontyObject::Dataclass { .. }))
+                    {
+                        dispatch_method_call(py, &function_name, &args, &kwargs, dataclass_registry)
+                    } else if let Some(ext_fns) = external_functions {
+                        let registry = ExternalFunctionRegistry::new(py, ext_fns, dataclass_registry);
+                        registry.call(&function_name, &args, &kwargs)
+                    } else {
+                        return Err(PyRuntimeError::new_err(format!(
+                            "External function '{function_name}' called but no external_functions provided"
+                        )));
+                    };
 
                     progress = py
                         .detach(|| state.run(return_value, &mut print_output))

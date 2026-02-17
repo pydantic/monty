@@ -676,6 +676,21 @@ fn handle_vm_result<T: ResourceTracker>(
                 state: new_snapshot!(call_id),
             })
         }
+        Ok(FrameExit::MethodCall {
+            method_name,
+            args,
+            call_id,
+        }) => {
+            let (args_py, kwargs_py) = args.into_py_objects(&mut heap, &executor.interns);
+
+            Ok(RunProgress::FunctionCall {
+                function_name: method_name,
+                args: args_py,
+                kwargs: kwargs_py,
+                call_id: call_id.raw(),
+                state: new_snapshot!(call_id),
+            })
+        }
         Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
             let pending_call_ids: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
             Ok(RunProgress::ResolveFutures(FutureSnapshot {
@@ -921,6 +936,10 @@ fn frame_exit_to_object(
         }
         FrameExit::OsCall { function, .. } => Err(ExcType::not_implemented(format!(
             "OS function '{function}' not implemented with standard execution"
+        ))
+        .into()),
+        FrameExit::MethodCall { method_name, .. } => Err(ExcType::not_implemented(format!(
+            "Method call '{method_name}' not implemented with standard execution"
         ))
         .into()),
         FrameExit::ResolveFutures(_) => {

@@ -179,6 +179,10 @@ fn frame_exit_to_object(
             "OS function '{function}' not implemented with standard execution"
         ))
         .into()),
+        FrameExit::MethodCall { method_name, .. } => Err(ExcType::not_implemented(format!(
+            "Method call '{method_name}' not implemented with standard execution"
+        ))
+        .into()),
         FrameExit::ResolveFutures(_) => {
             Err(ExcType::not_implemented("async futures not supported by standard execution.").into())
         }
@@ -815,6 +819,21 @@ fn handle_repl_vm_result<T: ResourceTracker>(
 
             Ok(ReplProgress::OsCall {
                 function,
+                args: args_py,
+                kwargs: kwargs_py,
+                call_id: call_id.raw(),
+                state: new_repl_snapshot!(call_id),
+            })
+        }
+        Ok(FrameExit::MethodCall {
+            method_name,
+            args,
+            call_id,
+        }) => {
+            let (args_py, kwargs_py) = args.into_py_objects(&mut repl.heap, &executor.interns);
+
+            Ok(ReplProgress::FunctionCall {
+                function_name: method_name,
                 args: args_py,
                 kwargs: kwargs_py,
                 call_id: call_id.raw(),
