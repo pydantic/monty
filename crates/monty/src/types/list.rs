@@ -3,7 +3,7 @@ use std::{cmp::Ordering, fmt::Write};
 use ahash::AHashSet;
 use smallvec::SmallVec;
 
-use super::{MontyIter, PyTrait};
+use super::{AttrCallResult, MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
     builtins::Builtins,
@@ -435,6 +435,24 @@ impl PyTrait for List {
         let (args, heap) = args_guard.into_parts();
         call_list_method(self, method, args, heap, interns)
     }
+
+    /// Intercepts `sort` to call `do_list_sort` (which needs `PrintWriter` for key functions),
+    /// and delegates all other methods to `py_call_attr`.
+    fn py_call_attr_raw(
+        &mut self,
+        _self_id: HeapId,
+        heap: &mut Heap<impl ResourceTracker>,
+        attr: &EitherStr,
+        args: ArgValues,
+        interns: &Interns,
+        print_writer: &mut PrintWriter<'_>,
+    ) -> RunResult<AttrCallResult> {
+        if attr.static_string() == Some(StaticStrings::Sort) {
+            do_list_sort(self, args, heap, interns, print_writer)?;
+            return Ok(AttrCallResult::Value(Value::None));
+        }
+        self.py_call_attr(heap, attr, args, interns).map(AttrCallResult::Value)
+    }
 }
 
 /// Dispatches a method call on a list value.
@@ -480,7 +498,8 @@ fn call_list_method(
             list.items.reverse();
             Ok(Value::None)
         }
-        // Note: list.sort is handled at VM level in call.rs to support key functions
+        // Note: list.sort is handled by call_list_attr_raw which intercepts it
+        // before reaching this function, because sort needs PrintWriter for key functions
         _ => {
             args.drop_with_heap(heap);
             Err(ExcType::attribute_error(Type::List, method.into()))
@@ -702,9 +721,8 @@ fn normalize_list_index(index: i64, len: usize) -> usize {
 
 /// Performs an in-place sort on a list with optional key function and reverse flag.
 ///
-/// This is called from the VM's `call_attr` when `list.sort()` is invoked.
-/// The function lives here (rather than in VM) to keep list-related logic together,
-/// with the VM only passing through its resources.
+/// This is called from `call_list_attr_raw` when `list.sort()` is invoked.
+/// The function lives here to keep list-related logic together.
 ///
 /// Uses a staged approach to avoid borrow checker issues:
 /// 1. Parse and validate arguments
@@ -714,13 +732,13 @@ fn normalize_list_index(index: i64, len: usize) -> usize {
 /// 5. Rearrange items in sorted order and put back into the list
 ///
 /// # Arguments
-/// * `list_id` - The heap ID of the list to sort
+/// * `list` - The list to sort (data already taken out of the heap via `take_data!`)
 /// * `args` - The method arguments (keyword-only: `key` and `reverse`)
 /// * `heap` - The heap for memory management
 /// * `interns` - Interned strings for comparisons
 /// * `print_writer` - Output writer (needed for builtin function calls)
-pub(crate) fn do_list_sort(
-    list_id: HeapId,
+fn do_list_sort(
+    list: &mut List,
     args: ArgValues,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
@@ -748,15 +766,7 @@ pub(crate) fn do_list_sort(
     };
 
     // Step 1: Extract items from the list (temporarily empties it)
-    let mut items: Vec<Value> = {
-        let HeapData::List(list) = heap.get_mut(list_id) else {
-            if let Some(k) = key_fn {
-                k.drop_with_heap(heap);
-            }
-            return Err(RunError::internal("expected list in do_list_sort"));
-        };
-        list.as_vec_mut().drain(..).collect()
-    };
+    let mut items: Vec<Value> = list.as_vec_mut().drain(..).collect();
 
     // Step 2: Compute key values if key function provided
     let key_values: Option<Vec<Value>> = if let Some(ref key) = key_fn {
@@ -774,10 +784,8 @@ pub(crate) fn do_list_sort(
                         k.drop_with_heap(heap);
                     }
                     // Restore items to the list
-                    if let HeapData::List(list) = heap.get_mut(list_id) {
-                        for item in items {
-                            list.as_vec_mut().push(item);
-                        }
+                    for item in items {
+                        list.as_vec_mut().push(item);
                     }
                     return Err(e);
                 }
@@ -874,10 +882,8 @@ pub(crate) fn do_list_sort(
     // Check for sort error
     if let Some(err) = sort_error {
         // Restore items to list before returning error
-        if let HeapData::List(list) = heap.get_mut(list_id) {
-            for item in items {
-                list.as_vec_mut().push(item);
-            }
+        for item in items {
+            list.as_vec_mut().push(item);
         }
         return Err(err);
     }
@@ -890,10 +896,6 @@ pub(crate) fn do_list_sort(
     }
 
     // Put sorted items back into the list
-    let HeapData::List(list) = heap.get_mut(list_id) else {
-        return Err(RunError::internal("expected list in do_list_sort"));
-    };
-
     for item in sorted_items {
         list.as_vec_mut().push(item);
     }

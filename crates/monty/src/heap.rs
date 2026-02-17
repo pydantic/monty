@@ -17,6 +17,7 @@ use crate::{
     asyncio::{Coroutine, GatherFuture, GatherItem},
     exception_private::{ExcType, RunResult, SimpleException},
     intern::{FunctionId, Interns, StringId},
+    io::PrintWriter,
     resource::{DepthGuard, ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
     types::{
         AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait,
@@ -714,16 +715,22 @@ impl PyTrait for HeapData {
 
     fn py_call_attr_raw(
         &mut self,
+        self_id: HeapId,
         heap: &mut Heap<impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
         interns: &Interns,
+        print_writer: &mut PrintWriter<'_>,
     ) -> RunResult<AttrCallResult> {
         match self {
+            // List intercepts sort for key function support via PrintWriter
+            Self::List(l) => l.py_call_attr_raw(self_id, heap, attr, args, interns, print_writer),
+            // Dataclass detects public method calls and returns MethodCall
+            Self::Dataclass(dc) => dc.py_call_attr_raw(self_id, heap, attr, args, interns, print_writer),
             // Path has special handling for OS calls (exists, read_text, etc.)
-            Self::Path(p) => p.py_call_attr_raw(heap, attr, args, interns),
+            Self::Path(p) => p.py_call_attr_raw(self_id, heap, attr, args, interns, print_writer),
             // Module has special handling for OS calls (os.getenv, etc.)
-            Self::Module(m) => m.py_call_attr_raw(heap, attr, args, interns),
+            Self::Module(m) => m.py_call_attr_raw(self_id, heap, attr, args, interns, print_writer),
             // All other types use the default implementation (wrap py_call_attr)
             _ => self.py_call_attr(heap, attr, args, interns).map(AttrCallResult::Value),
         }
@@ -1203,26 +1210,31 @@ impl<T: ResourceTracker> Heap<T> {
     }
 
     /// Calls an attribute on the heap entry, returning an `AttrCallResult` that may signal
-    /// OS or external calls.
+    /// OS, external, or method calls.
     ///
     /// Temporarily takes ownership of the payload to avoid borrow conflicts when attribute
     /// implementations also need mutable heap access (e.g. for refcounting).
+    ///
+    /// The `print_writer` parameter is threaded through for `list.sort(key=...)` which
+    /// needs it to call builtin key functions.
     ///
     /// Returns `AttrCallResult` which may be:
     /// - `Value(v)` - Method completed synchronously with value `v`
     /// - `OsCall(func, args)` - Method needs OS operation; VM should yield to host
     /// - `ExternalCall(id, args)` - Method needs external function call
+    /// - `MethodCall(name, args)` - Dataclass method call; VM should yield to host
     pub fn call_attr_raw(
         &mut self,
         id: HeapId,
         attr: &EitherStr,
         args: ArgValues,
         interns: &Interns,
+        print_writer: &mut PrintWriter<'_>,
     ) -> RunResult<AttrCallResult> {
         // Take data out so the borrow of self.entries ends
         let mut data = take_data!(self, id, "call_attr");
 
-        let result = data.py_call_attr_raw(self, attr, args, interns);
+        let result = data.py_call_attr_raw(id, self, attr, args, interns, print_writer);
 
         // Restore data
         restore_data!(self, id, data, "call_attr_raw");

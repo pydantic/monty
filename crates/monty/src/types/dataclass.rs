@@ -9,6 +9,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapId},
     intern::{Interns, StringId},
+    io::PrintWriter,
     resource::{DepthGuard, ResourceError, ResourceTracker},
     types::{AttrCallResult, Type},
     value::{EitherStr, Value},
@@ -271,8 +272,8 @@ impl PyTrait for Dataclass {
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
-        // Public method calls on dataclasses are intercepted earlier in VM::call_attr
-        // and dispatched as FrameExit::MethodCall. This path is reached for:
+        // Public method calls are intercepted by py_call_attr_raw before reaching
+        // this method. This path is reached for:
         // - Private/dunder attributes that aren't in attrs (AttributeError)
         // - Attributes that exist in attrs but aren't callable (TypeError)
         let method_name = attr.as_str(interns);
@@ -285,6 +286,36 @@ impl PyTrait for Dataclass {
         } else {
             // Attribute doesn't exist — use the class name (e.g., "Point") not "Dataclass"
             Err(ExcType::attribute_error(self.name(interns), method_name))
+        }
+    }
+
+    /// Performs lazy method detection for dataclass instances.
+    ///
+    /// If the attribute is a public name (no leading underscore) not found in the
+    /// dataclass's attrs dict, returns `MethodCall` so the VM yields to the host.
+    /// Otherwise falls through to `py_call_attr`.
+    fn py_call_attr_raw(
+        &mut self,
+        self_id: HeapId,
+        heap: &mut Heap<impl ResourceTracker>,
+        attr: &EitherStr,
+        args: ArgValues,
+        interns: &Interns,
+        _print_writer: &mut PrintWriter<'_>,
+    ) -> RunResult<AttrCallResult> {
+        let attr_str = attr.as_str(interns);
+        // Only public methods (no underscore prefix = no dunders, no private)
+        if !attr_str.starts_with('_') && !self.has_attr(attr_str, heap, interns) {
+            let qualified_name = format!("{}.{}", self.name(interns), attr_str);
+            // Clone self and prepend to args for the method call
+            // inc_ref works even when data is taken out (refcount metadata is separate)
+            heap.inc_ref(self_id);
+            let self_arg = Value::Ref(self_id);
+            let args_with_self = args.prepend(self_arg);
+            Ok(AttrCallResult::MethodCall(qualified_name, args_with_self))
+        } else {
+            // Not a method call — delegate to standard attr dispatch
+            self.py_call_attr(heap, attr, args, interns).map(AttrCallResult::Value)
         }
     }
 

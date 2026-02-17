@@ -15,6 +15,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
+    io::PrintWriter,
     os::OsFunction,
     resource::{DepthGuard, ResourceError, ResourceTracker},
     types::{AttrCallResult, PyTrait, Str, Type, allocate_tuple},
@@ -502,10 +503,12 @@ impl PyTrait for Path {
 
     fn py_call_attr_raw(
         &mut self,
+        _self_id: HeapId,
         heap: &mut Heap<impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
         interns: &Interns,
+        _print_writer: &mut PrintWriter<'_>,
     ) -> RunResult<AttrCallResult> {
         let Some(method) = attr.static_string() else {
             return self.py_call_attr(heap, attr, args, interns).map(AttrCallResult::Value);

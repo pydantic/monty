@@ -19,7 +19,6 @@ use crate::{
         AttrCallResult, Dict, PyTrait, Type,
         bytes::{bytes_fromhex, call_bytes_method},
         dict::dict_fromkeys,
-        list::do_list_sort,
         str::call_str_method,
     },
     value::{EitherStr, Value},
@@ -56,6 +55,7 @@ impl From<AttrCallResult> for CallResult {
             AttrCallResult::Value(v) => Self::Push(v),
             AttrCallResult::OsCall(func, args) => Self::OsCall(func, args),
             AttrCallResult::ExternalCall(ext_id, args) => Self::External(ext_id, args),
+            AttrCallResult::MethodCall(name, args) => Self::MethodCall(name, args),
         }
     }
 }
@@ -256,15 +256,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Calls an attribute on an object.
     ///
     /// For heap-allocated objects (`Value::Ref`), dispatches to the type's
-    /// `py_call_attr_raw` implementation via `heap.call_attr_raw()`, which may return
-    /// `AttrCallResult::OsCall` or `AttrCallResult::ExternalCall` for operations that
-    /// require host involvement.
+    /// attribute call implementation via `heap.call_attr_raw()`, which may return
+    /// `AttrCallResult::OsCall`, `AttrCallResult::ExternalCall`, or
+    /// `AttrCallResult::MethodCall` for operations that require host involvement.
     ///
     /// For interned strings (`Value::InternString`), uses the unified `call_str_method`.
     /// For interned bytes (`Value::InternBytes`), uses the unified `call_bytes_method`.
-    ///
-    /// Special handling: `list.sort(key=...)` is intercepted here to allow calling
-    /// builtin key functions with VM access.
     fn call_attr(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<CallResult, RunError> {
         let this = self;
         let attr = EitherStr::Interned(name_id);
@@ -272,37 +269,9 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         match obj {
             Value::Ref(heap_id) => {
                 defer_drop!(obj, this);
-                // Check for list.sort - needs special handling for key functions
-                if name_id == StaticStrings::Sort && matches!(this.heap.get(heap_id), HeapData::List(_)) {
-                    let result = do_list_sort(heap_id, args, this.heap, this.interns, this.print_writer);
-                    return result.map(|()| CallResult::Push(Value::None));
-                }
-
-                // Lazy detection: if this is a dataclass and the attr is a public name
-                // not found in attrs, dispatch as a method call to the host.
-                // Phase 1: check if it's a dataclass method (immutable heap borrow)
-                let method_info = if let HeapData::Dataclass(dc) = this.heap.get(heap_id) {
-                    let attr_str = this.interns.get_str(name_id);
-                    // Only public methods (no underscore prefix = no dunders, no private)
-                    if !attr_str.starts_with('_') && !dc.has_attr(attr_str, this.heap, this.interns) {
-                        Some(format!("{}.{}", dc.name(this.interns), attr_str))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-                // Phase 2: if method call, clone self and prepend to args (mutable heap borrow)
-                if let Some(qualified_name) = method_info {
-                    let self_arg = obj.clone_with_heap(this.heap);
-                    let args_with_self = args.prepend(self_arg);
-                    return Ok(CallResult::MethodCall(qualified_name, args_with_self));
-                }
-
-                // Call the method on the heap object using call_attr_raw to support OS/external calls
-                let result = this.heap.call_attr_raw(heap_id, &attr, args, this.interns);
-                // Convert AttrCallResult to CallResult
+                let result = this
+                    .heap
+                    .call_attr_raw(heap_id, &attr, args, this.interns, this.print_writer);
                 result.map(Into::into)
             }
             Value::InternString(string_id) => {

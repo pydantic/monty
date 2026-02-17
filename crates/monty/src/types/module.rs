@@ -5,6 +5,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapGuard, HeapId},
     intern::{Interns, StringId},
+    io::PrintWriter,
     resource::ResourceTracker,
     types::{AttrCallResult, Dict, PyTrait},
     value::{EitherStr, Value},
@@ -127,10 +128,12 @@ impl Module {
     /// (e.g., `os.getenv()`) that require host involvement.
     pub fn py_call_attr_raw(
         &self,
+        _self_id: HeapId,
         heap: &mut Heap<impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
         interns: &Interns,
+        _print_writer: &mut PrintWriter<'_>,
     ) -> RunResult<AttrCallResult> {
         let mut args_guard = HeapGuard::new(args, heap);
 
