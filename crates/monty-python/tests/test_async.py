@@ -316,6 +316,80 @@ Path('/test.txt').exists()
     assert 'no os handler provided' in inner.args[0]
 
 
+async def test_run_monty_async_nested_gather_with_external_functions():
+    """Test nested asyncio.gather with spawned tasks and external async functions.
+
+    https://github.com/pydantic/monty/pull/174
+
+    Reproduces the pattern from stack_overflow.py: outer gather spawns 3 coroutine tasks,
+    each doing a sequential await then an inner gather with 2 external futures.
+    """
+    code = """\
+import asyncio
+
+async def get_city_weather(city_name: str):
+    coords = await get_lat_lng(location_description=city_name)
+    lat, lng = coords['lat'], coords['lng']
+    temp_task = get_temp(lat=lat, lng=lng)
+    desc_task = get_weather_description(lat=lat, lng=lng)
+    temp, desc = await asyncio.gather(temp_task, desc_task)
+    return {
+        'city': city_name,
+        'temp': temp,
+        'description': desc
+    }
+
+async def main():
+    cities = ['London', 'Paris', 'Tokyo']
+    results = await asyncio.gather(*(get_city_weather(city) for city in cities))
+    return results
+
+await main()
+"""
+    m = pydantic_monty.Monty(code, external_functions=['get_lat_lng', 'get_temp', 'get_weather_description'])
+
+    city_coords = {
+        'London': {'lat': 51.5, 'lng': -0.1},
+        'Paris': {'lat': 48.9, 'lng': 2.3},
+        'Tokyo': {'lat': 35.7, 'lng': 139.7},
+    }
+    city_temps = {
+        (51.5, -0.1): 15.0,
+        (48.9, 2.3): 18.0,
+        (35.7, 139.7): 22.0,
+    }
+    city_descs = {
+        (51.5, -0.1): 'Cloudy',
+        (48.9, 2.3): 'Sunny',
+        (35.7, 139.7): 'Humid',
+    }
+
+    async def get_lat_lng(location_description: str):
+        return city_coords[location_description]
+
+    async def get_temp(lat: float, lng: float):
+        return city_temps[(lat, lng)]
+
+    async def get_weather_description(lat: float, lng: float):
+        return city_descs[(lat, lng)]
+
+    result = await run_monty_async(
+        m,
+        external_functions={
+            'get_lat_lng': get_lat_lng,
+            'get_temp': get_temp,
+            'get_weather_description': get_weather_description,
+        },
+    )
+    assert result == snapshot(
+        [
+            {'city': 'London', 'temp': 15.0, 'description': 'Cloudy'},
+            {'city': 'Paris', 'temp': 18.0, 'description': 'Sunny'},
+            {'city': 'Tokyo', 'temp': 22.0, 'description': 'Humid'},
+        ]
+    )
+
+
 async def test_run_monty_async_os_write_and_read():
     """run_monty_async supports both reading and writing files."""
     from pydantic_monty import MemoryFile, OSAccess
