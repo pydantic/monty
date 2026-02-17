@@ -31,7 +31,7 @@ pub fn dispatch_method_call(
     function_name: &str,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
-    dc_registry: &mut DcRegistry,
+    dc_registry: &DcRegistry,
 ) -> ExternalResult {
     match dispatch_method_call_inner(py, function_name, args, kwargs, dc_registry) {
         Ok(result) => ExternalResult::Return(result),
@@ -45,7 +45,7 @@ fn dispatch_method_call_inner(
     function_name: &str,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
-    dc_registry: &mut DcRegistry,
+    dc_registry: &DcRegistry,
 ) -> PyResult<MontyObject> {
     // Split "ClassName.method_name" to get the method name
     let method_name = function_name.split('.').next_back().unwrap_or(function_name);
@@ -85,18 +85,18 @@ fn dispatch_method_call_inner(
 /// Registry that maps external function names to Python callables.
 ///
 /// Passed to the execution loop and used to dispatch calls when Monty
-/// execution pauses at an external function. The `dc_registry` is mutable
-/// because converting the return value back to Monty format (`py_to_monty`)
-/// may auto-register new dataclass types encountered in the result.
+/// execution pauses at an external function. The `dc_registry` uses interior
+/// mutability (`Arc<Mutex>`) so auto-registration of dataclass types encountered
+/// in return values is transparent to callers.
 pub struct ExternalFunctionRegistry<'a, 'py> {
     py: Python<'py>,
     functions: &'py Bound<'py, PyDict>,
-    dc_registry: &'a mut DcRegistry,
+    dc_registry: &'a DcRegistry,
 }
 
 impl<'a, 'py> ExternalFunctionRegistry<'a, 'py> {
     /// Creates a new registry from a Python dict of `name -> callable`.
-    pub fn new(py: Python<'py>, functions: &'py Bound<'py, PyDict>, dc_registry: &'a mut DcRegistry) -> Self {
+    pub fn new(py: Python<'py>, functions: &'py Bound<'py, PyDict>, dc_registry: &'a DcRegistry) -> Self {
         Self {
             py,
             functions,
@@ -112,7 +112,7 @@ impl<'a, 'py> ExternalFunctionRegistry<'a, 'py> {
     /// If the Python function raises an exception, it's converted to a Monty
     /// exception that will be raised inside Monty execution.
     pub fn call(
-        &mut self,
+        &self,
         function_name: &str,
         args: &[MontyObject],
         kwargs: &[(MontyObject, MontyObject)],
@@ -125,7 +125,7 @@ impl<'a, 'py> ExternalFunctionRegistry<'a, 'py> {
 
     /// Inner implementation that returns `PyResult` for error handling.
     fn call_inner(
-        &mut self,
+        &self,
         function_name: &str,
         args: &[MontyObject],
         kwargs: &[(MontyObject, MontyObject)],

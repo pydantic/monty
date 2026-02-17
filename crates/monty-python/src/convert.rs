@@ -15,7 +15,7 @@ use pyo3::{
 };
 
 use crate::{
-    dataclass::{DcRegistry, add_to_dc_registry, dataclass_to_monty, dataclass_to_py, is_dataclass},
+    dataclass::{DcRegistry, dataclass_to_monty, dataclass_to_py, is_dataclass},
     exceptions::{exc_monty_to_py, exc_to_monty_object},
 };
 
@@ -30,7 +30,7 @@ use crate::{
 ///
 /// # Important
 /// Checks `bool` before `int` since `bool` is a subclass of `int` in Python.
-pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &mut DcRegistry) -> PyResult<MontyObject> {
+pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult<MontyObject> {
     if obj.is_none() {
         Ok(MontyObject::None)
     } else if let Ok(bool) = obj.cast::<PyBool>() {
@@ -105,7 +105,7 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &mut DcRegistry) -> PyRe
         Ok(exc_to_monty_object(exc))
     } else if is_dataclass(obj) {
         // Auto-register the dataclass type so it can be reconstructed on output
-        add_to_dc_registry(dc_registry, &obj.get_type().into_any());
+        dc_registry.insert(&obj.get_type());
         dataclass_to_monty(obj, dc_registry)
     } else if obj.is_instance(get_pure_posix_path(obj.py())?)? {
         // Handle pathlib.PurePosixPath and thereby pathlib.PosixPath objects
