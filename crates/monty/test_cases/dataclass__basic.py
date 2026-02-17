@@ -219,6 +219,10 @@ p3 = point.add(0, 0)
 assert p3.x == 1, f'chained method access: p3.x should be 1, got {p3.x}'
 assert p3.y == 2, f'chained method access: p3.y should be 2, got {p3.y}'
 
+# === Method calls with keyword-only args (exercises ArgValues::prepend on Kwargs) ===
+desc_kw = point.describe(label='custom')
+assert desc_kw == 'custom(1, 2)', f'Point.describe(label=) should be custom(1, 2), got {desc_kw}'
+
 # === Error: calling non-existent method on mutable dataclass ===
 try:
     mut_p2.nonexistent_method()

@@ -428,7 +428,11 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
 /// The first argument is always the dataclass instance (`self`). Known methods
 /// are implemented to mirror the Python dataclass methods in `iter_test_methods.py`.
 /// Unknown methods return `AttributeError`.
-fn dispatch_method_call(method_name: &str, args: &[MontyObject]) -> ExternalResult {
+fn dispatch_method_call(
+    method_name: &str,
+    args: &[MontyObject],
+    kwargs: &[(MontyObject, MontyObject)],
+) -> ExternalResult {
     let class_name = match args.first() {
         Some(MontyObject::Dataclass { name, .. }) => name.as_str(),
         _ => "<unknown>",
@@ -480,8 +484,11 @@ fn dispatch_method_call(method_name: &str, args: &[MontyObject]) -> ExternalResu
         // Point.describe(self, label='point') -> str
         ("Point", "describe") => {
             let (x, y) = extract_point_fields(&args[0]);
+            // Check positional arg first, then kwargs, then default
             let label = if args.len() > 1 {
                 String::try_from(&args[1]).expect("label must be str")
+            } else if let Some(kw_label) = get_kwarg_str(kwargs, "label") {
+                kw_label
             } else {
                 "point".to_string()
             };
@@ -525,6 +532,18 @@ fn extract_point_fields(obj: &MontyObject) -> (i64, i64) {
         }
         other => panic!("Expected Dataclass, got {other:?}"),
     }
+}
+
+/// Extracts a string kwarg value by key name.
+fn get_kwarg_str(kwargs: &[(MontyObject, MontyObject)], name: &str) -> Option<String> {
+    for (key, value) in kwargs {
+        if let MontyObject::String(key_str) = key
+            && key_str == name
+        {
+            return Some(String::try_from(value).expect("kwarg value must be str"));
+        }
+    }
+    None
 }
 
 /// Extracts the `name` field from a User `MontyObject::Dataclass`.
@@ -1443,7 +1462,7 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
             RunProgress::FunctionCall {
                 function_name,
                 args,
-                kwargs: _,
+                kwargs,
                 call_id,
                 method_call,
                 state,
@@ -1451,7 +1470,7 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                 // Method calls on dataclasses are dispatched to the host.
                 // Dispatch known methods; return AttributeError for unknown ones.
                 if method_call {
-                    let result = dispatch_method_call(&function_name, &args);
+                    let result = dispatch_method_call(&function_name, &args, &kwargs);
                     progress = state.run(result, &mut PrintWriter::Stdout)?;
                     continue;
                 }

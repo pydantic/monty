@@ -13,7 +13,7 @@ use crate::{
     asyncio::CallId,
     bytecode::{Code, Compiler, FrameExit, VM, VMSnapshot},
     exception_private::{RunError, RunResult},
-    heap::Heap,
+    heap::{DropWithHeap, Heap},
     intern::{ExtFunctionId, InternerBuilder, Interns},
     io::PrintWriter,
     namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
@@ -168,18 +168,25 @@ fn frame_exit_to_object(
 ) -> RunResult<MontyObject> {
     match frame_exit_result? {
         FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, heap, interns)),
-        FrameExit::ExternalCall { ext_function_id, .. } => {
+        FrameExit::ExternalCall {
+            ext_function_id, args, ..
+        } => {
+            args.drop_with_heap(heap);
             let function_name = interns.get_external_function_name(ext_function_id);
             Err(ExcType::not_implemented(format!(
                 "External function '{function_name}' not implemented with standard execution"
             ))
             .into())
         }
-        FrameExit::OsCall { function, .. } => Err(ExcType::not_implemented(format!(
-            "OS function '{function}' not implemented with standard execution"
-        ))
-        .into()),
-        FrameExit::MethodCall { method_name, .. } => {
+        FrameExit::OsCall { function, args, .. } => {
+            args.drop_with_heap(heap);
+            Err(ExcType::not_implemented(format!(
+                "OS function '{function}' not implemented with standard execution"
+            ))
+            .into())
+        }
+        FrameExit::MethodCall { method_name, args, .. } => {
+            args.drop_with_heap(heap);
             let name = method_name.as_str(interns);
             Err(
                 ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution"))
