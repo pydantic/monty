@@ -1335,8 +1335,24 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                 args,
                 kwargs: _,
                 call_id,
+                method_call,
                 state,
             } => {
+                // Method calls on dataclasses are dispatched to the host; in the test
+                // runner we don't have the original Python objects, so return an
+                // AttributeError matching CPython's message format.
+                if method_call {
+                    let class_name = match args.first() {
+                        Some(MontyObject::Dataclass { name, .. }) => name.as_str(),
+                        _ => "<unknown>",
+                    };
+                    let exc = MontyException::new(
+                        ExcType::AttributeError,
+                        Some(format!("'{class_name}' object has no attribute '{function_name}'")),
+                    );
+                    progress = state.run(ExternalResult::Error(exc), &mut PrintWriter::Stdout)?;
+                    continue;
+                }
                 let dispatch_result = dispatch_external_call(&function_name, args);
                 match dispatch_result {
                     DispatchResult::Sync(return_value) => {

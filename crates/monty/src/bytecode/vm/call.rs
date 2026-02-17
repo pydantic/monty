@@ -42,11 +42,11 @@ pub(super) enum CallResult {
     OsCall(OsFunction, ArgValues),
     /// Dataclass method call requested - VM should yield `FrameExit::MethodCall` to host.
     ///
-    /// The method name is a qualified string like `"ClassName.method_name"` and the args
-    /// include the dataclass instance as the first argument (`self`). Unlike `External`,
-    /// this uses a `String` instead of `ExtFunctionId` because method names are only known
-    /// at runtime when dataclass inputs are provided.
-    MethodCall(String, ArgValues),
+    /// The method name (e.g. `"distance"`) and the args include the dataclass instance
+    /// as the first argument (`self`). Unlike `External`, this uses an `EitherStr` instead
+    /// of `ExtFunctionId` because method names are only known at runtime when dataclass
+    /// inputs are provided.
+    MethodCall(EitherStr, ArgValues),
 }
 
 impl From<AttrCallResult> for CallResult {

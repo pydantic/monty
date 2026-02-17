@@ -306,13 +306,12 @@ impl PyTrait for Dataclass {
         let attr_str = attr.as_str(interns);
         // Only public methods (no underscore prefix = no dunders, no private)
         if !attr_str.starts_with('_') && !self.has_attr(attr_str, heap, interns) {
-            let qualified_name = format!("{}.{}", self.name(interns), attr_str);
             // Clone self and prepend to args for the method call
             // inc_ref works even when data is taken out (refcount metadata is separate)
             heap.inc_ref(self_id);
             let self_arg = Value::Ref(self_id);
             let args_with_self = args.prepend(self_arg);
-            Ok(AttrCallResult::MethodCall(qualified_name, args_with_self))
+            Ok(AttrCallResult::MethodCall(attr.clone(), args_with_self))
         } else {
             // Not a method call — delegate to standard attr dispatch
             self.py_call_attr(heap, attr, args, interns).map(AttrCallResult::Value)

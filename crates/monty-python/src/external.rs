@@ -20,12 +20,11 @@ use crate::{
 /// Dispatches a dataclass method call back to the original Python object.
 ///
 /// When Monty encounters a call like `dc.my_method(args)`, the VM pauses with a
-/// `FrameExit::MethodCall` containing a qualified name like `"ClassName.method_name"`
+/// `FrameExit::MethodCall` containing the method name (e.g. `"my_method"`)
 /// and the dataclass instance as the first arg. This function:
-/// 1. Splits the qualified name to get the method name
-/// 2. Converts the first arg (dataclass `self`) back to a Python object
-/// 3. Calls `getattr(self_obj, method_name)(*remaining_args, **kwargs)`
-/// 4. Converts the result back to Monty format
+/// 1. Converts the first arg (dataclass `self`) back to a Python object
+/// 2. Calls `getattr(self_obj, method_name)(*remaining_args, **kwargs)`
+/// 3. Converts the result back to Monty format
 pub fn dispatch_method_call(
     py: Python<'_>,
     function_name: &str,
@@ -47,36 +46,37 @@ fn dispatch_method_call_inner(
     kwargs: &[(MontyObject, MontyObject)],
     dc_registry: &DcRegistry,
 ) -> PyResult<MontyObject> {
-    // Split "ClassName.method_name" to get the method name
-    let method_name = function_name.split('.').next_back().unwrap_or(function_name);
-
     // First arg is the dataclass self
-    let self_obj = args
-        .first()
+    let mut args_iter = args.iter();
+    let self_obj = args_iter
+        .next()
         .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Method call missing self argument"))?;
     let py_self = monty_to_py(py, self_obj, dc_registry)?;
 
     // Get the method from the object
-    let method = py_self.bind(py).getattr(method_name)?;
+    let method = py_self.bind(py).getattr(function_name)?;
 
-    // Convert remaining positional arguments
-    let remaining_args: PyResult<Vec<Py<PyAny>>> =
-        args[1..].iter().map(|arg| monty_to_py(py, arg, dc_registry)).collect();
-    let py_args_tuple = PyTuple::new(py, remaining_args?)?;
-
-    // Convert keyword arguments
-    let py_kwargs = PyDict::new(py);
-    for (key, value) in kwargs {
-        let py_key = monty_to_py(py, key, dc_registry)?;
-        let py_value = monty_to_py(py, value, dc_registry)?;
-        py_kwargs.set_item(py_key, py_value)?;
-    }
-
-    // Call the method
-    let result = if py_kwargs.is_empty() {
-        method.call1(&py_args_tuple)?
+    let result = if args.len() == 1 && kwargs.is_empty() {
+        method.call0()?
     } else {
-        method.call(&py_args_tuple, Some(&py_kwargs))?
+        // Convert remaining positional arguments
+        let remaining_args: PyResult<Vec<Py<PyAny>>> = args_iter.map(|arg| monty_to_py(py, arg, dc_registry)).collect();
+        let py_args_tuple = PyTuple::new(py, remaining_args?)?;
+
+        // Call the method
+        let py_kwargs = if kwargs.is_empty() {
+            None
+        } else {
+            // Convert keyword arguments
+            let py_kwargs = PyDict::new(py);
+            for (key, value) in kwargs {
+                let py_key = monty_to_py(py, key, dc_registry)?;
+                let py_value = monty_to_py(py, value, dc_registry)?;
+                py_kwargs.set_item(py_key, py_value)?;
+            }
+            Some(py_kwargs)
+        };
+        method.call(&py_args_tuple, py_kwargs.as_ref())?
     };
 
     py_to_monty(&result, dc_registry)

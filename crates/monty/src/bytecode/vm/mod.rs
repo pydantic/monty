@@ -33,7 +33,7 @@ use crate::{
     parse::CodeRange,
     resource::ResourceTracker,
     types::{LongInt, MontyIter, PyTrait, iter::advance_on_heap},
-    value::{BitwiseOp, Value},
+    value::{BitwiseOp, EitherStr, Value},
 };
 
 /// Result of executing Await opcode.
@@ -239,12 +239,12 @@ pub enum FrameExit {
     /// Execution paused for a dataclass method call.
     ///
     /// The caller should invoke the method on the original Python dataclass and call
-    /// `resume()` with the result. The `method_name` is a qualified name like
-    /// `"ClassName.method_name"` and `args` includes the dataclass instance as the
-    /// first argument (`self`).
+    /// `resume()` with the result. The `method_name` is the attribute name (e.g.
+    /// `"distance"`) and `args` includes the dataclass instance as the first argument
+    /// (`self`).
     MethodCall {
-        /// Qualified method name (e.g., "Point.distance").
-        method_name: String,
+        /// Method name (e.g., "distance").
+        method_name: EitherStr,
         /// Arguments including the dataclass instance as the first positional arg.
         args: ArgValues,
         /// Unique ID for this call, used for async correlation.

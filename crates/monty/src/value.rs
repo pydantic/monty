@@ -2131,6 +2131,17 @@ impl EitherStr {
         }
     }
 
+    /// Converts this `EitherStr` into an owned `String`.
+    ///
+    /// For interned strings, looks up and clones the string content.
+    /// For heap strings, returns the owned string directly.
+    pub fn into_string(self, interns: &Interns) -> String {
+        match self {
+            Self::Interned(id) => interns.get_str(id).to_owned(),
+            Self::Heap(s) => s,
+        }
+    }
+
     pub fn py_estimate_size(&self) -> usize {
         match self {
             Self::Interned(_) => 0,

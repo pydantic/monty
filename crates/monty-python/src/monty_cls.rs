@@ -405,14 +405,12 @@ impl PyMonty {
                     function_name,
                     args,
                     kwargs,
+                    method_call,
                     state,
                     ..
                 } => {
-                    // Check if this is a dataclass method call (qualified name like "ClassName.method")
-                    // with a dataclass as the first arg
-                    let return_value = if function_name.contains('.')
-                        && args.first().is_some_and(|a| matches!(a, MontyObject::Dataclass { .. }))
-                    {
+                    // Dataclass method calls have method_call=true and the first arg is the instance
+                    let return_value = if method_call {
                         dispatch_method_call(py, &function_name, &args, &kwargs, dc_registry)
                     } else if let Some(ext_fns) = external_functions {
                         let registry = ExternalFunctionRegistry::new(py, ext_fns, dc_registry);
@@ -497,6 +495,7 @@ impl EitherProgress {
                     kwargs,
                     state,
                     call_id,
+                    ..
                 } => Self::function_snapshot(
                     py,
                     function_name,
@@ -541,6 +540,7 @@ impl EitherProgress {
                     kwargs,
                     state,
                     call_id,
+                    ..
                 } => Self::function_snapshot(
                     py,
                     function_name,
