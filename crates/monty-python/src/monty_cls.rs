@@ -87,7 +87,7 @@ impl PyMonty {
             script_name: script_name.to_string(),
             input_names,
             external_function_names,
-            dc_registry: prep_registry(py, dataclass_registry),
+            dc_registry: DcRegistry::from_list(py, dataclass_registry),
         })
     }
 
@@ -141,8 +141,7 @@ impl PyMonty {
     ) -> PyResult<Py<PyAny>> {
         // Clone the Arc handle — all clones share the same underlying registry,
         // so auto-registrations during execution are visible to all users.
-        let dc_registry = self.dc_registry.clone_ref(py);
-        let input_values = extract_input_values(&self.input_names, inputs, &dc_registry)?;
+        let input_values = self.extract_input_values(inputs, &self.dc_registry)?;
 
         if let Some(os_callback) = os
             && !os_callback.is_callable()
@@ -164,30 +163,10 @@ impl PyMonty {
         // Run with appropriate tracker type (must branch due to different generic types)
         if let Some(limits) = limits {
             let tracker = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
-            Self::run_impl(
-                py,
-                &self.runner,
-                &self.external_function_names,
-                &dc_registry,
-                input_values,
-                tracker,
-                external_functions,
-                os,
-                print_writer,
-            )
+            self.run_impl(py, input_values, tracker, external_functions, os, print_writer)
         } else {
             let tracker = PySignalTracker::new(NoLimitTracker);
-            Self::run_impl(
-                py,
-                &self.runner,
-                &self.external_function_names,
-                &dc_registry,
-                input_values,
-                tracker,
-                external_functions,
-                os,
-                print_writer,
-            )
+            self.run_impl(py, input_values, tracker, external_functions, os, print_writer)
         }
     }
 
@@ -201,7 +180,7 @@ impl PyMonty {
     ) -> PyResult<Bound<'py, PyAny>> {
         // Clone the Arc handle — shares the same underlying registry
         let dc_registry = self.dc_registry.clone_ref(py);
-        let input_values = extract_input_values(&self.input_names, inputs, &dc_registry)?;
+        let input_values = self.extract_input_values(inputs, &dc_registry)?;
 
         // Build print writer - CallbackStringPrint is Send so GIL can be released
         let mut print_cb;
@@ -288,7 +267,7 @@ impl PyMonty {
             script_name: serialized.script_name,
             input_names: serialized.input_names,
             external_function_names: serialized.external_function_names,
-            dc_registry: prep_registry(py, dataclass_registry),
+            dc_registry: DcRegistry::from_list(py, dataclass_registry),
         })
     }
 
@@ -324,54 +303,51 @@ fn py_type_check(py: Python<'_>, code: &str, script_name: &str, type_stubs: Opti
     }
 }
 
-/// Extracts input values from a Python dict in the order they were declared.
-///
-/// Validates that all required inputs are provided. Any dataclass inputs are
-/// automatically registered in `dc_registry` via `py_to_monty` so they can be
-/// properly reconstructed on output.
-fn extract_input_values(
-    input_names: &[String],
-    inputs: Option<&Bound<'_, PyDict>>,
-    dc_registry: &DcRegistry,
-) -> PyResult<Vec<::monty::MontyObject>> {
-    if input_names.is_empty() {
-        if inputs.is_some() {
-            return Err(PyTypeError::new_err(
-                "No input variables declared but inputs dict was provided",
-            ));
-        }
-        return Ok(vec![]);
-    }
-
-    let Some(inputs) = inputs else {
-        return Err(PyTypeError::new_err(format!(
-            "Missing required inputs: {input_names:?}"
-        )));
-    };
-
-    // Extract values in declaration order
-    input_names
-        .iter()
-        .map(|name| {
-            let value = inputs
-                .get_item(name)?
-                .ok_or_else(|| PyKeyError::new_err(format!("Missing required input: '{name}'")))?;
-            py_to_monty(&value, dc_registry)
-        })
-        .collect::<PyResult<_>>()
-}
-
 impl PyMonty {
+    /// Extracts input values from a Python dict in the order they were declared.
+    ///
+    /// Validates that all required inputs are provided. Any dataclass inputs are
+    /// automatically registered in `dc_registry` via `py_to_monty` so they can be
+    /// properly reconstructed on output.
+    fn extract_input_values(
+        &self,
+        inputs: Option<&Bound<'_, PyDict>>,
+        dc_registry: &DcRegistry,
+    ) -> PyResult<Vec<::monty::MontyObject>> {
+        if self.input_names.is_empty() {
+            if inputs.is_some() {
+                return Err(PyTypeError::new_err(
+                    "No input variables declared but inputs dict was provided",
+                ));
+            }
+            return Ok(vec![]);
+        }
+
+        let Some(inputs) = inputs else {
+            return Err(PyTypeError::new_err(format!(
+                "Missing required inputs: {:?}",
+                self.input_names
+            )));
+        };
+
+        // Extract values in declaration order
+        self.input_names
+            .iter()
+            .map(|name| {
+                let value = inputs
+                    .get_item(name)?
+                    .ok_or_else(|| PyKeyError::new_err(format!("Missing required input: '{name}'")))?;
+                py_to_monty(&value, dc_registry)
+            })
+            .collect::<PyResult<_>>()
+    }
     /// Runs code with a generic resource tracker, releasing the GIL during execution.
     ///
     /// Takes explicit field references instead of `&mut self` so that `run()` can
     /// remain `&self` (required for concurrent thread access in PyO3).
-    #[expect(clippy::too_many_arguments)]
     fn run_impl(
+        &self,
         py: Python<'_>,
-        runner: &MontyRun,
-        external_function_names: &[String],
-        dc_registry: &DcRegistry,
         input_values: Vec<MontyObject>,
         tracker: impl ResourceTracker + Send,
         external_functions: Option<&Bound<'_, PyDict>>,
@@ -386,21 +362,21 @@ impl PyMonty {
         // because method calls could happen lazily and need to be dispatched to the host.
         let has_dataclass_inputs = || input_values.iter().any(|v| matches!(v, MontyObject::Dataclass { .. }));
 
-        if external_function_names.is_empty() && os.is_none() && !has_dataclass_inputs() {
-            return match py.detach(|| runner.run(input_values, tracker, &mut print_output)) {
-                Ok(v) => monty_to_py(py, &v, dc_registry),
+        if self.external_function_names.is_empty() && os.is_none() && !has_dataclass_inputs() {
+            return match py.detach(|| self.runner.run(input_values, tracker, &mut print_output)) {
+                Ok(v) => monty_to_py(py, &v, &self.dc_registry),
                 Err(err) => Err(MontyError::new_err(py, err)),
             };
         }
         // Clone the runner since start() consumes it - allows reuse of the parsed code
-        let runner = runner.clone();
+        let runner = self.runner.clone();
         let mut progress = py
             .detach(|| runner.start(input_values, tracker, &mut print_output))
             .map_err(|e| MontyError::new_err(py, e))?;
 
         loop {
             match progress {
-                RunProgress::Complete(result) => return monty_to_py(py, &result, dc_registry),
+                RunProgress::Complete(result) => return monty_to_py(py, &result, &self.dc_registry),
                 RunProgress::FunctionCall {
                     function_name,
                     args,
@@ -411,9 +387,9 @@ impl PyMonty {
                 } => {
                     // Dataclass method calls have method_call=true and the first arg is the instance
                     let return_value = if method_call {
-                        dispatch_method_call(py, &function_name, &args, &kwargs, dc_registry)
+                        dispatch_method_call(py, &function_name, &args, &kwargs, &self.dc_registry)
                     } else if let Some(ext_fns) = external_functions {
-                        let registry = ExternalFunctionRegistry::new(py, ext_fns, dc_registry);
+                        let registry = ExternalFunctionRegistry::new(py, ext_fns, &self.dc_registry);
                         registry.call(&function_name, &args, &kwargs)
                     } else {
                         return Err(PyRuntimeError::new_err(format!(
@@ -439,19 +415,22 @@ impl PyMonty {
                         // Convert args to Python
                         let py_args: Vec<Py<PyAny>> = args
                             .iter()
-                            .map(|arg| monty_to_py(py, arg, dc_registry))
+                            .map(|arg| monty_to_py(py, arg, &self.dc_registry))
                             .collect::<PyResult<_>>()?;
                         let py_args_tuple = PyTuple::new(py, py_args)?;
 
                         // Convert kwargs to Python dict
                         let py_kwargs = PyDict::new(py);
                         for (k, v) in &kwargs {
-                            py_kwargs.set_item(monty_to_py(py, k, dc_registry)?, monty_to_py(py, v, dc_registry)?)?;
+                            py_kwargs.set_item(
+                                monty_to_py(py, k, &self.dc_registry)?,
+                                monty_to_py(py, v, &self.dc_registry)?,
+                            )?;
                         }
 
                         // call the os callback, if an exception is raised, return it to monty
                         match os_callback.call1((function.to_string(), py_args_tuple, py_kwargs)) {
-                            Ok(result) => py_to_monty(&result, dc_registry)?.into(),
+                            Ok(result) => py_to_monty(&result, &self.dc_registry)?.into(),
                             Err(err) => exc_py_to_monty(py, &err).into(),
                         }
                     } else {
@@ -710,7 +689,7 @@ impl PyMontyRepl {
     ) -> PyResult<(Self, Py<PyAny>)> {
         let input_names = list_str(inputs, "inputs")?;
         let external_function_names = list_str(external_functions, "external_functions")?;
-        let dc_registry = prep_registry(py, dataclass_registry);
+        let dc_registry = DcRegistry::from_list(py, dataclass_registry);
         let input_values = Self::extract_repl_input_values(&input_names, start_inputs, &dc_registry)?;
         let print_callback = print_callback.map(|c| c.clone().unbind());
         let print_callback_for_create = print_callback.as_ref();
@@ -806,7 +785,7 @@ impl PyMontyRepl {
         Ok(Self {
             repl: serialized.repl,
             print_callback,
-            dc_registry: prep_registry(py, dataclass_registry),
+            dc_registry: DcRegistry::from_list(py, dataclass_registry),
             script_name: serialized.script_name,
         })
     }
@@ -1137,7 +1116,7 @@ impl PyMontySnapshot {
         let serialized: SerializedSnapshotOwned =
             postcard::from_bytes(bytes).map_err(|e| PyValueError::new_err(e.to_string()))?;
 
-        let dc_registry = prep_registry(py, dataclass_registry);
+        let dc_registry = DcRegistry::from_list(py, dataclass_registry);
 
         // Convert MontyObject args to Python
         let args: Vec<Py<PyAny>> = serialized
@@ -1327,7 +1306,7 @@ impl PyMontyFutureSnapshot {
         Ok(Self {
             snapshot: serialized.snapshot,
             print_callback,
-            dc_registry: prep_registry(py, dataclass_registry),
+            dc_registry: DcRegistry::from_list(py, dataclass_registry),
             script_name: serialized.script_name,
         })
     }
@@ -1366,21 +1345,6 @@ impl PyMontyComplete {
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
         Ok(format!("MontyComplete(output={})", self.output.bind(py).repr()?))
     }
-}
-
-/// Creates a `DcRegistry` from an optional Python list of dataclass types.
-///
-/// Each type in the list is registered by its pointer identity, matching the key
-/// format used by `dataclass_to_monty`.
-fn prep_registry(py: Python<'_>, dataclass_registry: Option<&Bound<'_, PyList>>) -> DcRegistry {
-    let dc_registry = DcRegistry::new(py);
-
-    if let Some(registry_list) = dataclass_registry {
-        for cls in registry_list {
-            dc_registry.insert(&cls);
-        }
-    }
-    dc_registry
 }
 
 fn list_str(arg: Option<&Bound<'_, PyList>>, name: &str) -> PyResult<Vec<String>> {

@@ -800,7 +800,7 @@ def test_method_no_args_raw():
     result = m.start(inputs={'g': Greeter(greeting='hello')})
     assert isinstance(result, pydantic_monty.MontySnapshot)
     assert result.script_name == snapshot('main.py')
-    assert result.function_name == snapshot('Greeter.greet')
+    assert result.function_name == snapshot('greet')
     assert result.args == snapshot((Greeter(greeting='hello'),))
     assert result.kwargs == snapshot({})
 

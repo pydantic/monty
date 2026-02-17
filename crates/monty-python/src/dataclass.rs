@@ -17,7 +17,7 @@ use pyo3::{
     intern,
     prelude::*,
     sync::PyOnceLock,
-    types::{PyDict, PyString, PyType},
+    types::{PyDict, PyList, PyString, PyType},
 };
 
 use crate::convert::{monty_to_py, py_to_monty};
@@ -144,6 +144,21 @@ impl DcRegistry {
         Self {
             registry: PyDict::new(py).unbind(),
         }
+    }
+
+    /// Creates a `DcRegistry` from an optional Python list of dataclass types.
+    ///
+    /// Each type in the list is registered by its pointer identity, matching the key
+    /// format used by `dataclass_to_monty`.
+    pub fn from_list(py: Python<'_>, dataclass_registry: Option<&Bound<'_, PyList>>) -> Self {
+        let slf = Self::new(py);
+
+        if let Some(registry_list) = dataclass_registry {
+            for cls in registry_list {
+                slf.insert(&cls);
+            }
+        }
+        slf
     }
 
     /// Creates a shared handle to this registry (cheap Python refcount bump).
