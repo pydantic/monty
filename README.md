@@ -250,11 +250,10 @@ import json
 
 import logfire
 from httpx import AsyncClient
-from typing_extensions import TypedDict
-
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.toolsets.code_mode import CodeModeToolset
 from pydantic_ai.toolsets.function import FunctionToolset
+from typing_extensions import TypedDict
 
 logfire.configure()
 logfire.instrument_pydantic_ai()
@@ -269,7 +268,9 @@ weather_toolset: FunctionToolset[AsyncClient] = FunctionToolset()
 
 
 @weather_toolset.tool
-async def get_lat_lng(ctx: RunContext[AsyncClient], location_description: str) -> LatLng:
+async def get_lat_lng(
+    ctx: RunContext[AsyncClient], location_description: str
+) -> LatLng:
     """Get the latitude and longitude of a location."""
     # NOTE: the response here will be random, and is not related to the location description.
     r = await ctx.deps.get(
@@ -293,7 +294,9 @@ async def get_temp(ctx: RunContext[AsyncClient], lat: float, lng: float) -> floa
 
 
 @weather_toolset.tool
-async def get_weather_description(ctx: RunContext[AsyncClient], lat: float, lng: float) -> str:
+async def get_weather_description(
+    ctx: RunContext[AsyncClient], lat: float, lng: float
+) -> str:
     """Get the weather description at a location."""
     # NOTE: the responses here will be random, and are not related to the lat and lng.
     r = await ctx.deps.get(
