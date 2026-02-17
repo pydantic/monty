@@ -737,3 +737,208 @@ fn gather_incremental_error_on_last() {
     assert_eq!(exc.exc_type(), ExcType::RuntimeError);
     assert_eq!(exc.message(), Some("last one failed"));
 }
+
+// =============================================================================
+// Nested Gather Tests (spawned tasks with external futures)
+// =============================================================================
+// These tests verify correct behavior when spawned tasks (from an outer gather)
+// themselves await external futures and inner gathers. This exercises:
+// - Resolved value push to restored task stacks (Bug 1)
+// - Correct waiter context detection for current task (Bug 2)
+
+/// Helper to drive execution, collecting function calls and resolving them async,
+/// until we reach ResolveFutures. Returns the snapshot and a vec of
+/// (call_id, function_name) pairs for all external calls made.
+fn drive_collecting_calls<T: monty::ResourceTracker>(
+    mut progress: RunProgress<T>,
+) -> (monty::FutureSnapshot<T>, Vec<(u32, String)>) {
+    let mut collected = Vec::new();
+
+    loop {
+        match progress {
+            RunProgress::FunctionCall {
+                call_id,
+                function_name,
+                state,
+                ..
+            } => {
+                collected.push((call_id, function_name));
+                progress = state.run_pending(&mut PrintWriter::Stdout).unwrap();
+            }
+            RunProgress::ResolveFutures(state) => {
+                return (state, collected);
+            }
+            RunProgress::Complete(_) => {
+                panic!("unexpected Complete before ResolveFutures");
+            }
+            RunProgress::OsCall { function, .. } => {
+                panic!("unexpected OsCall: {function:?}");
+            }
+        }
+    }
+}
+
+/// Tests nested gathers where spawned tasks do sequential external await then inner gather.
+///
+/// Pattern:
+/// - Outer gather spawns 3 coroutine tasks
+/// - Each coroutine does `await get_lat_lng(city)` then `await asyncio.gather(get_temp(city), get_desc(city))`
+/// - All external functions are resolved via async futures
+///
+/// This exercises both Bug 1 (resolved value not pushed to restored task stack) and
+/// Bug 2 (current task's gather result pushed to wrong location).
+#[test]
+fn nested_gather_with_spawned_tasks_and_external_futures() {
+    let code = r"
+import asyncio
+
+async def process(city):
+    coords = await get_lat_lng(city)
+    temp, desc = await asyncio.gather(get_temp(city), get_desc(city))
+    return coords + temp + desc
+
+async def main():
+    results = await asyncio.gather(
+        process('a'),
+        process('b'),
+        process('c'),
+    )
+    return results[0] + results[1] + results[2]
+
+await main()
+";
+
+    let runner = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec![],
+        vec!["get_lat_lng".to_owned(), "get_temp".to_owned(), "get_desc".to_owned()],
+    )
+    .unwrap();
+
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
+
+    // Drive until all initial external calls are made and we need to resolve futures
+    let (state, calls) = drive_collecting_calls(progress);
+
+    // The 3 spawned tasks each call get_lat_lng first, so we expect 3 get_lat_lng calls
+    assert_eq!(calls.len(), 3, "should have 3 initial get_lat_lng calls");
+    for (_, name) in &calls {
+        assert_eq!(name, "get_lat_lng", "initial calls should all be get_lat_lng");
+    }
+
+    // Resolve all 3 get_lat_lng calls: each returns 100
+    let results: Vec<(u32, ExternalResult)> = calls
+        .iter()
+        .map(|(id, _)| (*id, ExternalResult::Return(MontyObject::Int(100))))
+        .collect();
+
+    let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
+
+    // After resolving get_lat_lng, each task proceeds to the inner gather which
+    // calls get_temp and get_desc. Drive those calls.
+    let (state, calls) = drive_collecting_calls(progress);
+
+    // Each of 3 tasks calls get_temp + get_desc = 6 calls total
+    assert_eq!(calls.len(), 6, "should have 6 inner gather calls (3 tasks * 2 each)");
+    let temp_calls: Vec<_> = calls.iter().filter(|(_, n)| n == "get_temp").collect();
+    let desc_calls: Vec<_> = calls.iter().filter(|(_, n)| n == "get_desc").collect();
+    assert_eq!(temp_calls.len(), 3, "should have 3 get_temp calls");
+    assert_eq!(desc_calls.len(), 3, "should have 3 get_desc calls");
+
+    // Resolve all inner calls: get_temp returns 10, get_desc returns 1
+    let results: Vec<(u32, ExternalResult)> = calls
+        .iter()
+        .map(|(id, name)| {
+            let val = if name == "get_temp" { 10 } else { 1 };
+            (*id, ExternalResult::Return(MontyObject::Int(val)))
+        })
+        .collect();
+
+    let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
+
+    // Each task returns coords(100) + temp(10) + desc(1) = 111
+    // main returns 111 + 111 + 111 = 333
+    let result = progress.into_complete().expect("should complete");
+    assert_eq!(result, MontyObject::Int(333));
+}
+
+/// Tests nested gathers with incremental resolution (one task at a time).
+///
+/// Same pattern as above but resolves futures in multiple rounds to ensure
+/// task switching between partially-resolved states works correctly.
+#[test]
+fn nested_gather_incremental_resolution() {
+    let code = r"
+import asyncio
+
+async def process(x):
+    a = await step1(x)
+    b, c = await asyncio.gather(step2(x), step3(x))
+    return a + b + c
+
+async def main():
+    r1, r2 = await asyncio.gather(process('x'), process('y'))
+    return r1 + r2
+
+await main()
+";
+
+    let runner = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec![],
+        vec!["step1".to_owned(), "step2".to_owned(), "step3".to_owned()],
+    )
+    .unwrap();
+
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
+
+    // Drive to get the initial step1 calls
+    let (state, calls) = drive_collecting_calls(progress);
+    assert_eq!(calls.len(), 2, "should have 2 step1 calls");
+
+    // Resolve only the FIRST step1 call
+    let results = vec![(calls[0].0, ExternalResult::Return(MontyObject::Int(100)))];
+    let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
+
+    // First task proceeds to inner gather (step2 + step3), second task still blocked
+    let (state, new_calls) = drive_collecting_calls(progress);
+
+    // We should see step2 and step3 for the first task
+    assert_eq!(new_calls.len(), 2, "should have 2 inner calls from first task");
+
+    // Now resolve the second step1 call AND the first task's inner calls
+    let mut results: Vec<(u32, ExternalResult)> = vec![
+        // Second task's step1
+        (calls[1].0, ExternalResult::Return(MontyObject::Int(200))),
+    ];
+    // First task's inner calls
+    for (id, name) in &new_calls {
+        let val = if name == "step2" { 10 } else { 1 };
+        results.push((*id, ExternalResult::Return(MontyObject::Int(val))));
+    }
+
+    let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
+
+    // Second task now proceeds to inner gather
+    let (state, final_calls) = drive_collecting_calls(progress);
+    assert_eq!(final_calls.len(), 2, "should have 2 inner calls from second task");
+
+    // Resolve second task's inner calls
+    let results: Vec<(u32, ExternalResult)> = final_calls
+        .iter()
+        .map(|(id, name)| {
+            let val = if name == "step2" { 20 } else { 2 };
+            (*id, ExternalResult::Return(MontyObject::Int(val)))
+        })
+        .collect();
+
+    let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
+
+    // First task: 100 + 10 + 1 = 111
+    // Second task: 200 + 20 + 2 = 222
+    // Total: 111 + 222 = 333
+    let result = progress.into_complete().expect("should complete");
+    assert_eq!(result, MontyObject::Int(333));
+}

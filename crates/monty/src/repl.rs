@@ -728,7 +728,7 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
             return Err(error.into_python_exception(&executor.interns, &executor.code));
         }
 
-        let main_task_ready = vm.prepare_main_task_after_resolve();
+        let main_task_ready = vm.prepare_current_task_after_resolve();
 
         let loaded_task = match vm.load_ready_task_if_needed() {
             Ok(loaded) => loaded,

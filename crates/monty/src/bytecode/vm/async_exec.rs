@@ -627,7 +627,9 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
     /// Loads an existing task's context or initializes a new task from its coroutine.
     ///
-    /// If the task has stored frames, restores them into the VM.
+    /// If the task has stored frames, restores them into the VM. If the task was
+    /// unblocked by an external future resolution, pushes the resolved value onto
+    /// the restored stack so execution can continue past the AWAIT opcode.
     /// If the task has a coroutine_id but no frames, starts the coroutine.
     fn load_or_init_task(&mut self, task_id: TaskId) -> Result<(), RunError> {
         // Extract data from task before assigning to self to avoid borrow conflicts
@@ -677,6 +679,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         } else {
             // This shouldn't happen - task with no frames and no coroutine
             panic!("task has no frames and no coroutine_id");
+        }
+
+        // If this task was unblocked by a resolved external future, push the
+        // resolved value onto the stack. The AWAIT opcode already advanced the IP
+        // past itself before the task was saved, so execution will continue with
+        // the resolved value on top of the stack.
+        if let Some(value) = self.scheduler_mut().take_resolved_for_task(task_id) {
+            self.push(value);
         }
 
         Ok(())
@@ -806,14 +816,17 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                             // Release the GatherFuture (results already taken, so no double-drop)
                             self.heap.dec_ref(gather_id);
 
-                            // Push result onto waiter's stack and mark as ready
-                            // Check if the waiter's context is saved in the task or in the VM
-                            let waiter_context_in_vm = waiter_id.is_main() && !self.frames.is_empty();
+                            // Push result onto waiter's stack and mark as ready.
+                            // Check if the waiter's context is currently in the VM (frames not saved
+                            // to the task). This is the case when the waiter is the current task
+                            // and hasn't been switched away from (e.g., external-only gather).
+                            let waiter_context_in_vm =
+                                self.scheduler().current_task_id() == Some(waiter_id) && !self.frames.is_empty();
 
                             if waiter_context_in_vm {
-                                // Main task's frames are in VM (external-only gather, no task switching)
+                                // Waiter's frames are in the VM - push directly onto VM stack
                                 self.stack.push(Value::Ref(list_id));
-                                // Mark main task as ready but don't add to ready_queue
+                                // Mark as ready but don't add to ready_queue
                                 self.scheduler_mut().get_task_mut(waiter_id).state = TaskState::Ready;
                             } else {
                                 // Waiter's context is saved in the task (either spawned task,
@@ -928,19 +941,20 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         );
     }
 
-    /// Prepares the main task to continue after futures are resolved.
+    /// Prepares the current task to continue after futures are resolved.
     ///
-    /// When the main task was blocked on an external future and that future is now
-    /// resolved, this method takes the resolved value from the scheduler and pushes
-    /// it onto the VM's stack so execution can continue.
+    /// When the current task (main or spawned) was blocked on an external future and
+    /// that future is now resolved, this method takes the resolved value from the
+    /// scheduler and pushes it onto the VM's stack so execution can continue.
     ///
     /// This is called by `FutureSnapshot::resume()` after resolving futures but before
-    /// calling `vm.run()`. For non-main tasks, the value is handled during task switching
-    /// in `load_or_init_task`.
+    /// calling `vm.run()`. It handles the task whose frames are currently in the VM.
+    /// Other unblocked tasks get their resolved values during task switching in
+    /// `load_or_init_task`.
     ///
     /// # Returns
     /// `true` if a value was pushed, `false` if no task was ready to continue.
-    pub fn prepare_main_task_after_resolve(&mut self) -> bool {
+    pub fn prepare_current_task_after_resolve(&mut self) -> bool {
         let Some(scheduler) = &mut self.scheduler else {
             return false;
         };
@@ -963,35 +977,51 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         }
     }
 
-    /// Loads a ready task if the VM has no frames.
+    /// Loads a ready task if the VM needs one.
     ///
     /// This is called by `FutureSnapshot::resume()` after resolving futures but before
-    /// calling `vm.run()`. When all external futures for a gather are resolved while
-    /// tasks were running (mixed coroutines + external futures), the task context
-    /// may need to be loaded from the scheduler.
+    /// calling `vm.run()`. It handles two cases:
+    /// 1. **No frames in VM**: A task context needs to be loaded from the scheduler
+    ///    (e.g., gather completed while tasks were running and we yielded with no frames).
+    /// 2. **Current task is blocked**: The current task's frames are in the VM but it's
+    ///    still blocked (e.g., only some futures were resolved in incremental resolution).
+    ///    Saves the blocked task's context and switches to a ready task.
     ///
     /// # Returns
     /// - `Ok(true)` if a task was loaded and execution can continue
-    /// - `Ok(false)` if frames already exist (nothing to do)
+    /// - `Ok(false)` if no task switch is needed (current task is runnable or no ready tasks)
     /// - `Err(error)` if loading the task failed
     pub fn load_ready_task_if_needed(&mut self) -> Result<bool, RunError> {
-        // If we have frames, nothing to do
+        // If frames exist, check if the current task is blocked. If it's not blocked
+        // (i.e., it was just unblocked), there's nothing to do - it will continue running.
         if !self.frames.is_empty() {
-            return Ok(false);
+            let current_blocked = self.scheduler.as_ref().is_some_and(|s| {
+                s.current_task_id().is_some_and(|tid| {
+                    matches!(
+                        s.get_task(tid).state,
+                        TaskState::BlockedOnCall(_) | TaskState::BlockedOnGather(_)
+                    )
+                })
+            });
+            if !current_blocked {
+                return Ok(false);
+            }
+
+            // Current task is blocked - save its context before switching
+            if let Some(tid) = self.scheduler.as_ref().and_then(Scheduler::current_task_id) {
+                self.save_task_context(tid);
+            }
         }
 
         // Check if there's a ready task to load
-        let Some(scheduler) = &mut self.scheduler else {
+        let next_task_id = self.scheduler.as_mut().and_then(Scheduler::next_ready_task);
+        let Some(next_task_id) = next_task_id else {
             return Ok(false);
         };
 
-        if let Some(next_task_id) = scheduler.next_ready_task() {
-            scheduler.set_current_task(Some(next_task_id));
-            self.load_or_init_task(next_task_id)?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        self.scheduler_mut().set_current_task(Some(next_task_id));
+        self.load_or_init_task(next_task_id)?;
+        Ok(true)
     }
 
     /// Gets the pending call IDs from the scheduler.
@@ -1003,20 +1033,26 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             .map_or_else(Vec::new, Scheduler::pending_call_ids)
     }
 
-    /// Takes the error from a failed task if the main task (or current task) has failed.
+    /// Takes the error from a failed task if the current task has failed.
     ///
     /// Returns `Some(error)` if the current task is in `TaskState::Failed`, `None` otherwise.
     /// Used by `FutureSnapshot::resume` to propagate errors after resolving futures.
+    ///
+    /// Only replaces the state when the task has actually failed - other states
+    /// (e.g., `BlockedOnCall`) are left untouched.
     pub fn take_failed_task_error(&mut self) -> Option<RunError> {
         let scheduler = self.scheduler.as_mut()?;
         let current_task_id = scheduler.current_task_id()?;
         let task = scheduler.get_task_mut(current_task_id);
 
-        if let TaskState::Failed(error) = std::mem::replace(&mut task.state, TaskState::Ready) {
-            Some(error)
-        } else {
-            None
+        // Only replace state if it's actually Failed - otherwise we'd corrupt
+        // the task's real state (e.g., BlockedOnCall) by overwriting it with Ready.
+        if matches!(task.state, TaskState::Failed(_))
+            && let TaskState::Failed(error) = std::mem::replace(&mut task.state, TaskState::Ready)
+        {
+            return Some(error);
         }
+        None
     }
 }
 

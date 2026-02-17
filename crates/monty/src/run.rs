@@ -571,7 +571,7 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
 
         // Push resolved value for main task if it was blocked.
         // Returns true if the main task was unblocked and a value was pushed.
-        let main_task_ready = vm.prepare_main_task_after_resolve();
+        let main_task_ready = vm.prepare_current_task_after_resolve();
 
         // Load a ready task if frames are empty (e.g., gather completed while
         // tasks were running and we yielded with no frames)
