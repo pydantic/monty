@@ -354,14 +354,11 @@ impl PyMonty {
         // no `Send` bound - py.detach() is overly restrictive to prevent `Bound` types going inside
         let mut print_output = SendWrapper::new(&mut print_output);
 
-        // Check if any input dataclasses have methods - if so, we need the iterative path
-        let has_dc_methods = || -> bool {
-            input_values
-                .iter()
-                .any(|v| matches!(v, MontyObject::Dataclass { methods, .. } if !methods.is_empty()))
-        };
+        // Check if any inputs are dataclasses — if so, we need the iterative path
+        // because method calls could happen lazily and need to be dispatched to the host.
+        let has_dataclass_inputs = || input_values.iter().any(|v| matches!(v, MontyObject::Dataclass { .. }));
 
-        if self.external_function_names.is_empty() && os.is_none() && !has_dc_methods() {
+        if self.external_function_names.is_empty() && os.is_none() && !has_dataclass_inputs() {
             let runner = &self.runner;
             return match py.detach(|| runner.run(input_values, tracker, &mut print_output)) {
                 Ok(v) => monty_to_py(py, &v, dataclass_registry),

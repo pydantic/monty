@@ -124,7 +124,11 @@ pub enum MontyObject {
     ///
     /// Represents a filesystem path. Can be used both as input (from host) and output.
     Path(String),
-    /// A dataclass instance with class name, field names, attributes, method names, and mutability.
+    /// A dataclass instance with class name, field names, attributes, and mutability.
+    ///
+    /// Method calls are detected lazily at runtime: when `call_attr` is invoked
+    /// on a dataclass and the attribute name is not found in `attrs`, it is
+    /// dispatched as a `MethodCall` to the host (provided the name is public).
     Dataclass {
         /// The class name (e.g., "Point", "User").
         name: String,
@@ -134,8 +138,6 @@ pub enum MontyObject {
         field_names: Vec<String>,
         /// All attribute name -> value mapping (includes fields and extra attrs).
         attrs: DictPairs,
-        /// Method names that trigger external function calls.
-        methods: Vec<String>,
         /// Whether this dataclass instance is immutable.
         frozen: bool,
     },
@@ -272,7 +274,6 @@ impl MontyObject {
                 type_id,
                 field_names,
                 attrs,
-                methods,
                 frozen,
             } => {
                 use crate::types::Dataclass;
@@ -283,9 +284,7 @@ impl MontyObject {
                     .collect();
                 let dict = Dict::from_pairs(pairs?, heap, interns)
                     .map_err(|_| InvalidInputError::invalid_type("unhashable dataclass attr keys"))?;
-                // Convert methods Vec to AHashSet
-                let methods_set: AHashSet<String> = methods.into_iter().collect();
-                let dc = Dataclass::new(name, type_id, field_names, dict, methods_set, frozen);
+                let dc = Dataclass::new(name, type_id, field_names, dict, frozen);
                 Ok(Value::Ref(heap.allocate(HeapData::Dataclass(dc))?))
             }
             Self::Path(s) => Ok(Value::Ref(heap.allocate(HeapData::Path(Path::new(s)))?)),
@@ -441,15 +440,11 @@ impl MontyObject {
                                 })
                                 .collect(),
                         );
-                        // Convert methods set to sorted Vec for determinism
-                        let mut methods: Vec<String> = dc.methods().iter().cloned().collect();
-                        methods.sort();
                         Self::Dataclass {
                             name: dc.name(interns).to_owned(),
                             type_id: dc.type_id(),
                             field_names: dc.field_names().to_vec(),
                             attrs,
-                            methods,
                             frozen: dc.is_frozen(),
                         }
                     }
@@ -809,7 +804,6 @@ impl PartialEq for MontyObject {
                     type_id: a_type_id,
                     field_names: a_field_names,
                     attrs: a_attrs,
-                    methods: a_methods,
                     frozen: a_frozen,
                 },
                 Self::Dataclass {
@@ -817,7 +811,6 @@ impl PartialEq for MontyObject {
                     type_id: b_type_id,
                     field_names: b_field_names,
                     attrs: b_attrs,
-                    methods: b_methods,
                     frozen: b_frozen,
                 },
             ) => {
@@ -825,7 +818,6 @@ impl PartialEq for MontyObject {
                     && a_type_id == b_type_id
                     && a_field_names == b_field_names
                     && a_attrs == b_attrs
-                    && a_methods == b_methods
                     && a_frozen == b_frozen
             }
             (Self::Path(a), Self::Path(b)) => a == b,

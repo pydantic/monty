@@ -92,9 +92,8 @@ pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<JsMontyObject<
             type_id,
             field_names,
             attrs,
-            methods,
             frozen,
-        } => create_js_dataclass(name, *type_id, field_names, attrs, methods, *frozen, env)?,
+        } => create_js_dataclass(name, *type_id, field_names, attrs, *frozen, env)?,
         MontyObject::Path(p) => env.create_string(p)?.into_unknown(env)?,
         MontyObject::Repr(s) | MontyObject::Cycle(_, s) => env.create_string(s)?.into_unknown(env)?,
     };
@@ -277,7 +276,6 @@ fn create_js_dataclass<'e>(
     type_id: u64,
     field_names: &[String],
     attrs: &DictPairs,
-    methods: &[String],
     frozen: bool,
     env: &'e Env,
 ) -> Result<Unknown<'e>> {
@@ -320,16 +318,6 @@ fn create_js_dataclass<'e>(
         }
     }
     obj.set_named_property("fields", fields_obj)?;
-
-    // methods as array
-    let mut methods_arr = env.create_array(methods.len().try_into().expect("methods size overflows u32"))?;
-    for (i, method) in methods.iter().enumerate() {
-        methods_arr.set(
-            i.try_into().expect("overflow on methods index"),
-            env.create_string(method)?,
-        )?;
-    }
-    obj.set_named_property("methods", methods_arr)?;
 
     obj.set_named_property("frozen", frozen)?;
 
@@ -592,15 +580,6 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
             }
             let attrs = DictPairs::from(attrs_vec);
 
-            // methods
-            let methods_arr: Array = obj.get_named_property("methods")?;
-            let methods_len = methods_arr.len();
-            let mut methods = Vec::with_capacity(methods_len as usize);
-            for i in 0..methods_len {
-                let method: String = methods_arr.get::<String>(i)?.unwrap_or_default();
-                methods.push(method);
-            }
-
             let frozen: bool = obj.get_named_property("frozen")?;
 
             Ok(MontyObject::Dataclass {
@@ -608,7 +587,6 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
                 type_id,
                 field_names,
                 attrs,
-                methods,
                 frozen,
             })
         }

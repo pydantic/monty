@@ -278,12 +278,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     return result.map(|()| CallResult::Push(Value::None));
                 }
 
-                // Check for dataclass method calls - intercept before reaching py_call_attr_raw
+                // Lazy detection: if this is a dataclass and the attr is a public name
+                // not found in attrs, dispatch as a method call to the host.
                 // Phase 1: check if it's a dataclass method (immutable heap borrow)
                 let method_info = if let HeapData::Dataclass(dc) = this.heap.get(heap_id) {
-                    let method_name_str = this.interns.get_str(name_id);
-                    if dc.methods().contains(method_name_str) {
-                        Some(format!("{}.{}", dc.name(this.interns), method_name_str))
+                    let attr_str = this.interns.get_str(name_id);
+                    // Only public methods (no underscore prefix = no dunders, no private)
+                    if !attr_str.starts_with('_') && !dc.has_attr(attr_str, this.heap, this.interns) {
+                        Some(format!("{}.{}", dc.name(this.interns), attr_str))
                     } else {
                         None
                     }

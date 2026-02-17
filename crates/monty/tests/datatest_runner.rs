@@ -353,7 +353,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
                         (MontyObject::String("y".to_string()), MontyObject::Int(2)),
                     ]
                     .into(),
-                    methods: vec![],
+
                     frozen: true,
                 }
                 .into(),
@@ -372,7 +372,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
                         (MontyObject::String("y".to_string()), MontyObject::Int(2)),
                     ]
                     .into(),
-                    methods: vec![],
+
                     frozen: false,
                 }
                 .into(),
@@ -392,7 +392,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
                         (MontyObject::String("active".to_string()), MontyObject::Bool(true)),
                     ]
                     .into(),
-                    methods: vec![],
+
                     frozen: true,
                 }
                 .into(),
@@ -407,7 +407,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
                     type_id: 0, // Test fixture has no real Python type
                     field_names: vec![],
                     attrs: vec![].into(),
-                    methods: vec![],
+
                     frozen: true,
                 }
                 .into(),
@@ -419,7 +419,18 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
             assert!(args.len() == 1, "async_call requires 1 argument");
             DispatchResult::Async(args.into_iter().next().unwrap())
         }
-        _ => panic!("Unknown external function: {name}"),
+        _ => {
+            // Handle lazy-dispatched dataclass method calls (e.g., "Point.nonexistent_method").
+            // When the VM lazily detects a possible method call on a dataclass, it dispatches
+            // as "ClassName.method_name". Since the test dataclasses have no methods, return
+            // AttributeError matching CPython's format.
+            if let Some((class_name, method_name)) = name.split_once('.') {
+                let message = format!("'{class_name}' object has no attribute '{method_name}'");
+                DispatchResult::Sync(MontyException::new(ExcType::AttributeError, Some(message)).into())
+            } else {
+                panic!("Unknown external function: {name}")
+            }
+        }
     }
 }
 

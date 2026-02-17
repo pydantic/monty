@@ -578,6 +578,14 @@ impl ExcType {
         SimpleException::new_msg(Self::TypeError, format!("cannot create '{type_}' instances")).into()
     }
 
+    /// Creates a TypeError for calling a non-callable object.
+    ///
+    /// Matches CPython's format: `TypeError: '{type}' object is not callable`
+    #[must_use]
+    pub(crate) fn type_error_not_callable_object(type_: Type) -> RunError {
+        SimpleException::new_msg(Self::TypeError, format!("'{type_}' object is not callable")).into()
+    }
+
     /// Creates a TypeError for non-iterable type in list/tuple/etc constructors.
     ///
     /// Matches CPython's format: `TypeError: '{type}' object is not iterable`

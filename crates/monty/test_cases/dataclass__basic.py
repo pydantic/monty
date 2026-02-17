@@ -130,3 +130,58 @@ try:
 except AttributeError:
     caught = True
 assert caught, 'FrozenInstanceError caught by AttributeError'
+
+# === Error: accessing non-existent attribute ===
+try:
+    point.nonexistent
+    assert False, 'should have raised AttributeError for missing attr'
+except AttributeError as e:
+    assert str(e) == "'Point' object has no attribute 'nonexistent'", f'wrong message: {e}'
+
+# === Error: accessing non-existent private attribute ===
+try:
+    point._private
+    assert False, 'should have raised AttributeError for private attr'
+except AttributeError as e:
+    assert str(e) == "'Point' object has no attribute '_private'", f'wrong message: {e}'
+
+# === Error: calling a dunder that doesn't exist ===
+try:
+    point.__nonexistent__()
+    assert False, 'should have raised AttributeError for dunder'
+except AttributeError as e:
+    assert str(e) == "'Point' object has no attribute '__nonexistent__'", f'wrong message: {e}'
+
+# === Error: calling a private method that doesn't exist ===
+try:
+    point._private_method()
+    assert False, 'should have raised AttributeError for private method'
+except AttributeError as e:
+    assert str(e) == "'Point' object has no attribute '_private_method'", f'wrong message: {e}'
+
+# === Error: calling a field value (not callable) ===
+try:
+    point.x()
+    assert False, 'should have raised TypeError for calling int field'
+except TypeError as e:
+    assert str(e) == "'int' object is not callable", f'wrong message: {e}'
+
+# === Error: calling a non-existent public method ===
+try:
+    point.nonexistent_method()
+    assert False, 'should have raised AttributeError for missing method'
+except AttributeError as e:
+    assert str(e) == "'Point' object has no attribute 'nonexistent_method'", f'wrong message: {e}'
+
+# === Error: same errors on mutable dataclass ===
+try:
+    mut_point.nonexistent
+    assert False, 'should have raised AttributeError on mutable dc'
+except AttributeError as e:
+    assert str(e) == "'MutablePoint' object has no attribute 'nonexistent'", f'wrong message: {e}'
+
+try:
+    mut_point.x()
+    assert False, 'should have raised TypeError on mutable dc field call'
+except TypeError as e:
+    assert str(e) == "'int' object is not callable", f'wrong message: {e}'

@@ -205,7 +205,6 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &Bound<'_, Py
             field_names,
             attrs,
             frozen,
-            methods: _,
         } => dataclass_to_py(py, name, *type_id, field_names, attrs, *frozen, dc_registry),
         // Path - convert to Python pathlib.Path
         MontyObject::Path(p) => {
