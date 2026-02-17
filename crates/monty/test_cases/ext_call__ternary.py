@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # External calls in ternary expressions (if/else expressions)
 
 # External call in true branch

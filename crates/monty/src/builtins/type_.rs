@@ -2,7 +2,8 @@
 
 use super::Builtins;
 use crate::{
-    args::ArgValues, exception_private::RunResult, heap::Heap, resource::ResourceTracker, types::PyTrait, value::Value,
+    args::ArgValues, defer_drop, exception_private::RunResult, heap::Heap, resource::ResourceTracker, types::PyTrait,
+    value::Value,
 };
 
 /// Implementation of the type() builtin function.
@@ -10,7 +11,6 @@ use crate::{
 /// Returns the type of an object.
 pub fn builtin_type(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("type", heap)?;
-    let type_obj = value.py_type(heap);
-    value.drop_with_heap(heap);
-    Ok(Value::Builtin(Builtins::Type(type_obj)))
+    defer_drop!(value, heap);
+    Ok(Value::Builtin(Builtins::Type(value.py_type(heap))))
 }

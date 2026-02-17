@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # Test that accessing a non-existent attribute on a dataclass raises AttributeError
 point = make_point()
 point.z

@@ -1,4 +1,8 @@
+import asyncio
+import os
 import sys
+from dataclasses import dataclass
+from pathlib import Path
 from typing import assert_type
 
 # === Type checking helper functions ===
@@ -374,3 +378,51 @@ print(sys.version)
 print(sys.version_info)
 print(None, file=sys.stdout)
 print(None, file=sys.stderr)
+
+# === async ===
+
+
+async def foo(a: int):
+    return a * 2
+
+
+async def bar():
+    await foo(1)
+    await foo(2)
+    await foo(3)
+
+
+await asyncio.gather(bar())  # pyright: ignore
+
+
+@dataclass
+class Point:
+    x: int
+    y: float
+
+
+p = Point(1, 2)
+assert_type(p.x, int)
+assert_type(p.y, float)
+p.x = 3
+print(p)
+
+path = Path(__file__)
+assert_type(path, Path)
+# assert_type(path.name, str)
+
+p2 = path.parent
+assert_type(p2, Path)
+
+p3 = path / 'test.txt'
+assert_type(p3, Path)
+assert p3.name == 'test.txt'
+
+x = os.getenv('foobar')
+assert_type(x, str | None)
+
+y = os.getenv('foobar', default=int('123'))
+assert_type(y, str | int)
+
+x2 = os.environ.get('foobar')
+assert_type(x2, str | None)

@@ -7,12 +7,18 @@ on:
     tags:
       - "**"
   pull_request: {}
+  workflow_dispatch:
+    inputs:
+      run_release:
+        description: "Run release jobs (for manual tag releases)"
+        type: boolean
+        default: false
 
 env:
   COLUMNS: 150
   UV_PYTHON: "3.14"
   UV_FROZEN: "1"
-  DEBUG: napi:*
+  DEBUG: "napi:*"
 
 jobs:
   lint:
@@ -27,6 +33,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          prefix-key: "v1-rust"
 
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --all-packages --only-dev
@@ -49,7 +56,11 @@ jobs:
 
       - run: uvx pre-commit run --color=always --all-files --verbose
         env:
-          SKIP: test
+          SKIP: no-commit-to-branch
+
+      - name: Show diff on failure
+        if: failure()
+        run: git diff
 
   test-rust:
     runs-on: ubuntu-latest
@@ -76,8 +87,23 @@ jobs:
         # don't use .venv python in CI
       - run: rm .cargo/config.toml
 
-      # run rust tests with coverage
-      - run: make testcov
+      # coverage for `make test-no-features`
+      - run: cargo llvm-cov --no-report -p monty
+      # coverage for `make test-ref-count-panic`
+      - run: cargo llvm-cov --no-report -p monty --features ref-count-panic
+      # coverage for `make test-ref-count-return`
+      - run: cargo llvm-cov --no-report -p monty --features ref-count-return
+      # coverage for `make test-type-checking`
+      - run: cargo llvm-cov --no-report -p monty_type_checking -p monty_typeshed
+      # Generating text report:
+      - run: cargo llvm-cov report --ignore-filename-regex '(tests/|test_cases/|/tests\.rs$$)'
+      # Generate codecov report (use `report` subcommand to avoid recompilation)
+      - run: cargo llvm-cov report --codecov --output-path=codecov.json --ignore-filename-regex '(tests/|test_cases/|/tests\.rs$$)'
+
+      - uses: codecov/codecov-action@v5
+        with:
+          files: codecov.json
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   test-python:
     name: test python ${{ matrix.python-version }}
@@ -127,10 +153,48 @@ jobs:
 
       - run: make dev-bench
 
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - tokens_input_panic
+          # disable until https://github.com/astral-sh/ruff/issues/23198 is fixed
+          # - string_input_panic
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+      - id: cache-rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          prefix-key: "v1-rust-fuzz"
+          workspaces: "crates/fuzz -> target"
+
+      - if: steps.cache-rust.outputs.cache-hit != 'true'
+        run: cargo install cargo-fuzz
+
+      - name: Run ${{ matrix.target }} fuzzer
+        run: |
+          # Use --sanitizer none to avoid ASAN/SanitizerCoverage linking issues on CI
+          # (undefined __sancov_gen_.* symbols). For short CI runs, we're mainly
+          # catching panics, not memory bugs.
+          cargo fuzz run --fuzz-dir crates/fuzz --sanitizer none ${{ matrix.target }} -- -max_total_time=60
+
   # https://github.com/marketplace/actions/alls-green#why used for branch protection checks
   check:
     if: always()
-    needs: [lint, test-rust, test-python, bench-test]
+    needs:
+      - lint
+      - test-rust
+      - test-python
+      - bench-test
+      - fuzz
     runs-on: ubuntu-latest
     steps:
       - name: Decide whether the needed jobs succeeded or failed
@@ -138,11 +202,30 @@ jobs:
         with:
           jobs: ${{ toJSON(needs) }}
 
+  # Build source distribution
+  build-sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+          rust-toolchain: stable
+          working-directory: crates/monty-python
+      - uses: actions/upload-artifact@v6
+        with:
+          name: pypi_files-sdist
+          path: crates/monty-python/dist
+
   # Build wheels for exotic architectures (non-PGO)
   build:
     name: build on ${{ matrix.os }} (${{ matrix.target }} - ${{ matrix.manylinux || 'auto' }})
     # only run on push to main, on tags, or if 'Full Build' label is present
-    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build')
+    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build') || (github.event_name == 'workflow_dispatch' && inputs.run_release)
     strategy:
       fail-fast: false
       matrix:
@@ -185,8 +268,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      - run: pip install -U twine
-
       - name: build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -197,9 +278,7 @@ jobs:
           docker-options: -e CI
           working-directory: crates/monty-python
 
-      - run: twine check --strict crates/monty-python/dist/*
-
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: pypi_files-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux || 'manylinux' }}
           path: crates/monty-python/dist
@@ -208,7 +287,7 @@ jobs:
   build-pgo:
     name: build pgo on ${{ matrix.os }}
     # only run on push to main, on tags, or if 'Full Build' label is present
-    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build')
+    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build') || (github.event_name == 'workflow_dispatch' && inputs.run_release)
     strategy:
       fail-fast: false
       matrix:
@@ -239,8 +318,6 @@ jobs:
         with:
           components: llvm-tools
 
-      - run: pip install -U twine
-
       - name: build PGO wheel
         id: pgo
         uses: ./.github/actions/build-pgo-wheel
@@ -248,29 +325,10 @@ jobs:
           interpreter: ${{ matrix.interpreter }}
           rust-toolchain: stable
 
-      - run: twine check --strict ${{ steps.pgo.outputs.wheel-dir }}/*
-
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: pypi_files-${{ matrix.os }}-pgo
           path: ${{ steps.pgo.outputs.wheel-dir }}
-
-  # Inspect built artifacts
-  inspect-pypi-assets:
-    needs: [build, build-pgo]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: pypi_files-*
-          merge-multiple: true
-          path: dist
-
-      - name: list files
-        run: |
-          ls -lhR dist/
-          ls -1 dist/ | wc -l
-          echo "Expected ~50 wheel files (5 Python versions × 10 platform variants)"
 
   # Test wheels on exotic architectures via QEMU
   test-builds-arch:
@@ -286,7 +344,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: pypi_files-linux-${{ matrix.target }}-*
           merge-multiple: true
@@ -305,8 +363,8 @@ jobs:
             ls -lh /dist/
             python3 -m venv venv
             source venv/bin/activate
-            python3 -m pip install monty-python --no-index --no-deps --find-links /dist --force-reinstall
-            python3 -c "import monty; print(monty.Monty('1 + 2').run())"
+            python3 -m pip install pydantic-monty --no-index --no-deps --find-links /dist --force-reinstall
+            python3 -c "import pydantic_monty; print(pydantic_monty.Monty('1 + 2').run())"
 
   # Test wheels on main OS platforms
   test-builds-os:
@@ -332,60 +390,99 @@ jobs:
         with:
           python-version: "3.12"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: pypi_files-${{ matrix.os }}-*
           merge-multiple: true
           path: dist
 
-      - run: pip install monty-python --no-index --find-links dist --force-reinstall
-      - run: python -c "import monty; print(monty.Monty('1 + 2').run())"
+      - run: pip install pydantic-monty --no-index --find-links dist --force-reinstall
+      - run: python -c "import pydantic_monty; print(pydantic_monty.Monty('1 + 2').run())"
 
-  # Release to PyPI
-  release-python:
-    name: release to PyPI
-    needs: [check, build, build-pgo, test-builds-arch, test-builds-os]
-    if: success() && startsWith(github.ref, 'refs/tags/')
+  # Inspect built artifacts
+  inspect-python-assets:
+    needs: [build, build-pgo, build-sdist]
     runs-on: ubuntu-latest
-    environment: release-python
-
-    permissions:
-      id-token: write
-
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: pypi_files-*
           merge-multiple: true
           path: dist
 
       - name: list files
-        run: ls -lhR dist/
+        run: |
+          ls -lhR dist/
+          ls -1 dist/ | wc -l
+          echo "Expected ~50 wheel files (5 Python versions × 10 platform variants)"
 
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: astral-sh/setup-uv@v7
+      - run: uvx twine check dist/*
+
+  # Release to PyPI
+  release-python:
+    name: release to PyPI
+    needs: [check, inspect-python-assets, test-builds-arch, test-builds-os]
+    if: success() && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.run_release))
+    runs-on: ubuntu-latest
+
+    environment:
+      name: release-python
+      url: https://pypi.org/project/pydantic-monty/${{ steps.check-version.outputs.VERSION }}
+
+    permissions:
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: pypi_files-*
+          merge-multiple: true
+          path: dist
+
+      - id: check-version
+        uses: samuelcolvin/check-python-version@v5
+        with:
+          version_file_path: "Cargo.toml"
+
+      - run: ls -lhR dist/
+
+      - name: Publish to PyPI
+        run: "uv publish --trusted-publishing always dist/*"
 
   build-js:
+    name: build JS - ${{ matrix.settings.target }} - node@22
+    runs-on: ${{ matrix.settings.host }}
+    # only run on push to main, on tags, or if 'Full Build' label is present
+    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build') || (github.event_name == 'workflow_dispatch' && inputs.run_release)
+
     strategy:
       fail-fast: false
       matrix:
         settings:
           - host: macos-latest
             target: x86_64-apple-darwin
-            build: npm run build -- --target x86_64-apple-darwin
+            build: npm run build:napi -- --target x86_64-apple-darwin && npm run build:ts
           - host: windows-latest
-            build: npm run build -- --target x86_64-pc-windows-msvc
             target: x86_64-pc-windows-msvc
+            build: npm run build:napi -- --target x86_64-pc-windows-msvc && npm run build:ts
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            build: npm run build -- --target x86_64-unknown-linux-gnu --use-napi-cross
+            build: npm run build:napi -- --target x86_64-unknown-linux-gnu --use-napi-cross && npm run build:ts
           - host: macos-latest
             target: aarch64-apple-darwin
-            build: npm run build -- --target aarch64-apple-darwin
+            build: npm run build:napi -- --target aarch64-apple-darwin && npm run build:ts
+          - host: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            build: npm run build:napi -- --target aarch64-unknown-linux-gnu && npm run build:ts
           - host: ubuntu-latest
             target: wasm32-wasip1-threads
-            build: npm run build -- --target wasm32-wasip1-threads
-    name: build JS - ${{ matrix.settings.target }} - node@22
-    runs-on: ${{ matrix.settings.host }}
+            build: npm run build:napi -- --target wasm32-wasip1-threads && npm run build:ts
     steps:
       - uses: actions/checkout@v6
       - name: Setup node
@@ -449,14 +546,16 @@ jobs:
             crates/monty-js/browser.js
             crates/monty-js/index.js
             crates/monty-js/index.d.ts
+            crates/monty-js/wrapper.js
+            crates/monty-js/wrapper.d.ts
             crates/monty-js/monty.wasi.cjs
             crates/monty-js/monty.wasi-browser.js
             crates/monty-js/wasi-worker.mjs
             crates/monty-js/wasi-worker-browser.mjs
           if-no-files-found: error
     env:
-      MACOSX_DEPLOYMENT_TARGET: '10.13'
-      CARGO_INCREMENTAL: '1'
+      MACOSX_DEPLOYMENT_TARGET: "10.13"
+      CARGO_INCREMENTAL: "1"
 
   test-js-macOS-windows-binding:
     name: Test JS bindings on ${{ matrix.settings.target }} - node@${{ matrix.node }}
@@ -476,8 +575,8 @@ jobs:
             target: x86_64-apple-darwin
             architecture: x64
         node:
-          - '20'
-          - '22'
+          - "20"
+          - "22"
     runs-on: ${{ matrix.settings.host }}
     steps:
       - uses: actions/checkout@v6
@@ -518,9 +617,10 @@ jobs:
       matrix:
         target:
           - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
         node:
-          - '20'
-          - '22'
+          - "20"
+          - "22"
     runs-on: ${{ contains(matrix.target, 'aarch64') && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v6
@@ -574,11 +674,14 @@ jobs:
       - run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
         if: ${{ contains(matrix.target, 'armv7') }}
       - name: Test bindings
-        uses: addnab/docker-run-action@v3
-        with:
-          image: ${{ steps.docker.outputs.IMAGE }}
-          options: '-v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }}/crates/monty-js --platform ${{ steps.docker.outputs.PLATFORM }}'
-          run: npm test
+        run: >
+          docker run
+          --rm
+          -v ${{ github.workspace }}:${{ github.workspace }}
+          -w ${{ github.workspace }}/crates/monty-js
+          --platform ${{ steps.docker.outputs.PLATFORM }}
+          ${{ steps.docker.outputs.IMAGE }}
+          npm test
 
   test-js-wasi:
     name: Test WASI target
@@ -616,17 +719,19 @@ jobs:
           NAPI_RS_FORCE_WASI: 1
         working-directory: crates/monty-js
 
-  publish-js:
-    name: Publish JS
+  release-js:
+    name: Release to NPM
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      id-token: write
     needs:
-      - lint
+      - check
+      - inspect-python-assets
       - test-js-macOS-windows-binding
       - test-js-linux-binding
       - test-js-wasi
+    if: success() && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.run_release))
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v6
       - name: Setup node
@@ -635,6 +740,7 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: crates/monty-js/package-lock.json
+          registry-url: "https://registry.npmjs.org"
       - name: Install dependencies
         run: npm install
         working-directory: crates/monty-js
@@ -661,19 +767,11 @@ jobs:
         working-directory: crates/monty-js
       - name: Publish
         run: |
-          npm config set provenance true
-          if git log -1 --pretty=%B | grep "^[0-9]\+\.[0-9]\+\.[0-9]\+$";
-          then
-            echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
-            npm publish --access public
-          elif git log -1 --pretty=%B | grep "^[0-9]\+\.[0-9]\+\.[0-9]\+";
-          then
-            echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
-            npm publish --tag next --access public
+          if [[ "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Publishing stable release"
+            npm publish --provenance --access public
           else
-            echo "Not a release, skipping publish"
+            echo "Publishing pre-release with 'next' tag"
+            npm publish --provenance --tag next --access public
           fi
         working-directory: crates/monty-js
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

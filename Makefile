@@ -42,6 +42,10 @@ lint-js: install-js ## Lint JS code with oxlint
 test-js: dev-js ## Build and test the JS package
 	cd crates/monty-js && npm test
 
+.PHONY: smoke-test-js
+smoke-test-js: ## Run smoke test for JS package (builds, packs, and tests installation)
+	cd crates/monty-js && npm run smoke-test
+
 .PHONY: dev-py-release
 dev-py-release: ## Install the python package for development with a release build
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
@@ -54,7 +58,7 @@ dev-js-release: ## Build the JS package (release)
 dev-py-pgo: ## Install the python package for development with profile-guided optimization
 	$(eval PROFDATA := $(shell mktemp -d))
 	RUSTFLAGS='-Cprofile-generate=$(PROFDATA)' uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
-	uv run --package monty-python --only-dev pytest crates/monty-python/tests -k "not test_parallel_exec"
+	uv run --package pydantic-monty --only-dev pytest crates/monty-python/tests -k "not test_parallel_exec"
 	$(eval LLVM_PROFDATA := $(shell rustup run stable bash -c 'echo $$RUSTUP_HOME/toolchains/$$RUSTUP_TOOLCHAIN/lib/rustlib/$$(rustc -Vv | grep host | cut -d " " -f 2)/bin/llvm-profdata'))
 	$(LLVM_PROFDATA) merge -o $(PROFDATA)/merged.profdata $(PROFDATA)
 	RUSTFLAGS='-Cprofile-use=$(PROFDATA)/merged.profdata' $(uv-run-no-sync) maturin develop --uv -m crates/monty-python/Cargo.toml --release
@@ -94,7 +98,7 @@ lint-py: dev-py ## Lint Python code with ruff
 	uv run ruff check
 	uv run basedpyright
 	# mypy-stubtest requires a build of the python package, hence dev-py
-	uv run -m mypy.stubtest monty --allowlist crates/monty-python/.mypy-stubtest-allowlist --ignore-disjoint-bases
+	uv run -m mypy.stubtest pydantic_monty._monty --ignore-disjoint-bases
 
 .PHONY: lint
 lint: lint-rs lint-py ## Lint the code with ruff and clippy
@@ -127,14 +131,14 @@ test-type-checking: ## Run rust tests on monty_type_checking
 
 .PHONY: pytest
 pytest: ## Run Python tests with pytest
-	uv run --package monty-python --only-dev pytest crates/monty-python/tests
+	uv run --package pydantic-monty --only-dev pytest crates/monty-python/tests
 
 .PHONY: test-py
 test-py: dev-py pytest ## Build the python package (debug profile) and run tests
 
 .PHONY: test-docs
 test-docs: dev-py ## Test docs examples only
-	uv run --package monty-python --only-dev pytest crates/monty-python/tests/test_readme_examples.py
+	uv run --package pydantic-monty --only-dev pytest crates/monty-python/tests/test_readme_examples.py
 	cargo test --doc -p monty
 
 .PHONY: test
@@ -185,6 +189,14 @@ profile: ## Profile the code with pprof and generate flamegraphs
 type-sizes: ## Write type sizes for the crate to ./type-sizes.txt (requires nightly and top-type-sizes)
 	RUSTFLAGS="-Zprint-type-sizes" cargo +nightly build -j1 2>&1 | top-type-sizes -f '^monty.*' > type-sizes.txt
 	@echo "Type sizes written to ./type-sizes.txt"
+
+.PHONY: fuzz-string_input_panic
+fuzz-string_input_panic: ## Run the `string_input_panic` fuzz target
+	cargo +nightly fuzz run --fuzz-dir crates/fuzz string_input_panic
+
+.PHONY: fuzz-tokens_input_panic
+fuzz-tokens_input_panic: ## Run the `tokens_input_panic` fuzz target (structured token input)
+	cargo +nightly fuzz run --fuzz-dir crates/fuzz tokens_input_panic
 
 .PHONY: main
 main: lint test-ref-count-panic test-py ## run linting and the most important tests

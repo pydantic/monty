@@ -3,43 +3,15 @@
 //! Provides a TypedDict interface to configure resource limits for code execution,
 //! including time limits, memory limits, and recursion depth.
 
-use std::time::Duration;
+use std::{
+    sync::atomic::{AtomicU16, Ordering},
+    time::Duration,
+};
 
-use monty::{ResourceError, ResourceTracker};
+use monty::{DEFAULT_MAX_RECURSION_DEPTH, ResourceError, ResourceTracker};
 use pyo3::{prelude::*, types::PyDict};
 
 use crate::exceptions::exc_py_to_monty;
-
-/// Default maximum recursion depth if not specified.
-const DEFAULT_MAX_RECURSION_DEPTH: usize = 1000;
-
-/// Creates the `ResourceLimits` TypedDict class.
-///
-/// This is called during module initialization to create and register the TypedDict.
-pub fn create_resource_limits_class(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
-    let locals = PyDict::new(py);
-    py.run(
-        c"
-from typing import TypedDict
-
-class ResourceLimits(TypedDict, total=False):
-    \"\"\"
-    Configuration for resource limits during code execution.
-
-    All limits are optional. Omit a key to disable that limit.
-    \"\"\"
-    max_allocations: int
-    max_duration_secs: float
-    max_memory: int
-    gc_interval: int
-    max_recursion_depth: int
-",
-        None,
-        Some(&locals),
-    )?;
-
-    Ok(locals.get_item("ResourceLimits")?.unwrap())
-}
 
 /// Extracts resource limits from a Python dict.
 ///
@@ -114,7 +86,10 @@ const SIGNAL_CHECK_INTERVAL: u16 = 1000;
 pub struct PySignalTracker<T: ResourceTracker> {
     inner: T,
     /// Counter for check_time calls, used to rate-limit signal checks.
-    check_counter: u16,
+    ///
+    /// Uses `AtomicU16` for interior mutability so `check_time` can take `&self`
+    /// (required by the `ResourceTracker` trait) while remaining `Sync` for PyO3.
+    check_counter: AtomicU16,
 }
 
 impl<T: ResourceTracker> PySignalTracker<T> {
@@ -122,15 +97,15 @@ impl<T: ResourceTracker> PySignalTracker<T> {
     pub fn new(inner: T) -> Self {
         Self {
             inner,
-            check_counter: 0,
+            check_counter: AtomicU16::new(0),
         }
     }
 
-    fn check_python_signals(&mut self) -> Result<(), ResourceError> {
+    fn check_python_signals(&self) -> Result<(), ResourceError> {
         // Periodically check Python signals
-        self.check_counter = self.check_counter.wrapping_add(1);
+        let count = self.check_counter.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
 
-        if self.check_counter.is_multiple_of(SIGNAL_CHECK_INTERVAL) {
+        if count.is_multiple_of(SIGNAL_CHECK_INTERVAL) {
             Python::attach(|py| {
                 py.check_signals()
                     .map_err(|e| ResourceError::Exception(exc_py_to_monty(py, &e)))
@@ -149,7 +124,7 @@ impl<T: ResourceTracker> ResourceTracker for PySignalTracker<T> {
         self.inner.on_free(get_size);
     }
 
-    fn check_time(&mut self) -> Result<(), ResourceError> {
+    fn check_time(&self) -> Result<(), ResourceError> {
         // First check inner tracker's time limit
         self.inner.check_time()?;
 

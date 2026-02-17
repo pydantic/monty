@@ -29,12 +29,12 @@ use crate::{
     intern::{Interns, StringId},
     modules::BuiltinModule,
     parse::{CodeRange, ExceptHandler, Try},
-    value::{Attr, Value},
+    value::{EitherStr, Value},
 };
 
 /// Maximum number of arguments allowed in a function call.
 ///
-/// This limit comes from the bytecode format: `CallFunction` and `CallMethod`
+/// This limit comes from the bytecode format: `CallFunction` and `CallAttr`
 /// use a u8 operand for the argument count, so max 255. Python itself has no
 /// such limit but we need one for our bytecode encoding.
 const MAX_CALL_ARGS: usize = 255;
@@ -92,14 +92,20 @@ pub struct Compiler<'a> {
 /// Information about a loop for break/continue handling.
 ///
 /// Tracks the bytecode locations needed for compiling break and continue statements:
-/// - `start`: where continue should jump to (the ForIter instruction)
+/// - `start`: where continue should jump to (the ForIter instruction for `for` loops,
+///   or condition evaluation for `while` loops)
 /// - `break_jumps`: pending jumps from break statements that need to be patched
 ///   to jump past the loop's else block
+/// - `has_iterator_on_stack`: whether this loop has an iterator on the stack that
+///   needs to be popped on break (true for `for` loops, false for `while` loops)
 struct LoopInfo {
     /// Bytecode offset of loop start (for continue).
     start: usize,
     /// Jump labels that need patching to loop end (for break).
     break_jumps: Vec<JumpLabel>,
+    /// Whether this loop has an iterator on the stack.
+    /// True for `for` loops, false for `while` loops.
+    has_iterator_on_stack: bool,
 }
 
 /// A break or continue that needs to go through a finally block.
@@ -175,7 +181,22 @@ impl<'a> Compiler<'a> {
         interns: &Interns,
         num_locals: u16,
     ) -> Result<CompileResult, CompileError> {
+        Self::compile_module_with_functions(nodes, interns, num_locals, Vec::new())
+    }
+
+    /// Compiles module-level code while preserving an existing function table prefix.
+    ///
+    /// This is used by incremental REPL compilation so previously created
+    /// `FunctionId`s remain stable: new function IDs are allocated after
+    /// `existing_functions.len()`.
+    pub fn compile_module_with_functions(
+        nodes: &[PreparedNode],
+        interns: &Interns,
+        num_locals: u16,
+        existing_functions: Vec<Function>,
+    ) -> Result<CompileResult, CompileError> {
         let mut compiler = Compiler::new(interns, Vec::new());
+        compiler.functions = existing_functions;
         compiler.compile_block(nodes)?;
 
         // Module returns None if no explicit return
@@ -236,46 +257,60 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(expr)?;
                 self.code.emit(Opcode::Pop); // Discard result
             }
-
             Node::Return(expr) => {
                 self.compile_expr(expr)?;
                 self.compile_return();
             }
-
             Node::ReturnNone => {
                 self.code.emit(Opcode::LoadNone);
                 self.compile_return();
             }
-
             Node::Assign { target, object } => {
                 self.compile_expr(object)?;
                 self.compile_store(target);
             }
-
             Node::UnpackAssign {
                 targets,
                 targets_position,
                 object,
             } => {
                 self.compile_expr(object)?;
-                let count = u8::try_from(targets.len()).expect("too many targets in unpack");
+
+                // Check if there's a starred target
+                let star_idx = targets.iter().position(|t| matches!(t, UnpackTarget::Starred(_)));
+
                 // Set location to targets for proper caret in tracebacks
                 self.code.set_location(*targets_position, None);
-                self.code.emit_u8(Opcode::UnpackSequence, count);
-                // After UnpackSequence, values are on stack with first item on top
+
+                if let Some(star_idx) = star_idx {
+                    // Has starred target - use UnpackEx
+                    let before = u8::try_from(star_idx).expect("too many targets before star");
+                    let after = u8::try_from(targets.len() - star_idx - 1).expect("too many targets after star");
+                    self.code.emit_u8_u8(Opcode::UnpackEx, before, after);
+                } else {
+                    // No starred target - use UnpackSequence
+                    let count = u8::try_from(targets.len()).expect("too many targets in unpack");
+                    self.code.emit_u8(Opcode::UnpackSequence, count);
+                }
+
+                // After UnpackSequence/UnpackEx, values are on stack with first item on top
                 // Store them in order (first target gets first item), handling nesting
                 for target in targets {
                     self.compile_unpack_target(target);
                 }
             }
-
             Node::OpAssign { target, op, object } => {
+                let Some(opcode) = operator_to_inplace_opcode(op) else {
+                    return Err(CompileError::new(
+                        "matrix multiplication augmented assignment (@=) is not yet supported",
+                        target.position,
+                    ));
+                };
                 self.compile_name(target);
                 self.compile_expr(object)?;
-                self.code.emit(operator_to_inplace_opcode(op));
+                self.code.emit(opcode);
                 self.compile_store(target);
             }
-
             Node::SubscriptAssign {
                 target,
                 index,
@@ -290,7 +325,6 @@ impl<'a> Compiler<'a> {
                 self.code.set_location(*target_position, None);
                 self.code.emit(Opcode::StoreSubscr);
             }
-
             Node::AttrAssign {
                 object,
                 attr,
@@ -308,24 +342,15 @@ impl<'a> Compiler<'a> {
                     u16::try_from(name_id.index()).expect("name index exceeds u16"),
                 );
             }
-
-            Node::If { test, body, or_else } => {
-                self.compile_if(test, body, or_else)?;
-            }
-
+            Node::If { test, body, or_else } => self.compile_if(test, body, or_else)?,
             Node::For {
                 target,
                 iter,
                 body,
                 or_else,
-            } => {
-                self.compile_for(target, iter, body, or_else)?;
-            }
-
-            Node::Assert { test, msg } => {
-                self.compile_assert(test, msg.as_ref())?;
-            }
-
+            } => self.compile_for(target, iter, body, or_else)?,
+            Node::While { test, body, or_else } => self.compile_while(test, body, or_else)?,
+            Node::Assert { test, msg } => self.compile_assert(test, msg.as_ref())?,
             Node::Raise(expr) => {
                 if let Some(exc) = expr {
                     self.compile_expr(exc)?;
@@ -334,35 +359,16 @@ impl<'a> Compiler<'a> {
                     self.code.emit(Opcode::Reraise);
                 }
             }
-
-            Node::FunctionDef(func_def) => {
-                self.compile_function_def(func_def)?;
-            }
-
-            Node::Try(try_block) => {
-                self.compile_try(try_block)?;
-            }
-
-            Node::Import { module_name, binding } => {
-                self.compile_import(*module_name, binding)?;
-            }
-
+            Node::FunctionDef(func_def) => self.compile_function_def(func_def)?,
+            Node::Try(try_block) => self.compile_try(try_block)?,
+            Node::Import { module_name, binding } => self.compile_import(*module_name, binding),
             Node::ImportFrom {
                 module_name,
                 names,
                 position,
-            } => {
-                self.compile_import_from(*module_name, names, *position)?;
-            }
-
-            Node::Break { position } => {
-                self.compile_break(*position)?;
-            }
-
-            Node::Continue { position } => {
-                self.compile_continue(*position)?;
-            }
-
+            } => self.compile_import_from(*module_name, names, *position),
+            Node::Break { position } => self.compile_break(*position)?,
+            Node::Continue { position } => self.compile_continue(*position)?,
             // These are handled during the prepare phase and produce no bytecode
             Node::Pass | Node::Global { .. } | Node::Nonlocal { .. } => {}
         }
@@ -411,6 +417,7 @@ impl<'a> Compiler<'a> {
             func_def.cell_var_count,
             func_def.cell_param_indices.clone(),
             func_def.default_exprs.len(),
+            func_def.is_async,
             body_code,
         );
         functions.push(function);
@@ -490,6 +497,7 @@ impl<'a> Compiler<'a> {
             func_def.cell_var_count,
             func_def.cell_param_indices.clone(),
             func_def.default_exprs.len(),
+            func_def.is_async,
             body_code,
         );
         functions.push(function);
@@ -531,58 +539,60 @@ impl<'a> Compiler<'a> {
     /// Compiles an import statement.
     ///
     /// Emits `LoadModule` to create the module, then stores it to the binding name.
-    fn compile_import(&mut self, module_name: StringId, binding: &Identifier) -> Result<(), CompileError> {
+    /// If the module is unknown, emits `RaiseImportError` to defer the error to runtime.
+    /// This allows imports inside `if TYPE_CHECKING:` blocks to compile successfully.
+    fn compile_import(&mut self, module_name: StringId, binding: &Identifier) {
         let position = binding.position;
-        // Look up the module by name
-        let builtin_module = BuiltinModule::from_string_id(module_name)
-            .ok_or_else(|| CompileError::new_module_not_found(self.interns.get_str(module_name), position))?;
-
-        // Emit LoadModule with the module ID
         self.code.set_location(position, None);
-        self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
 
-        // Store to the binding (respects Local/Global/Cell scope)
-        self.compile_store(binding);
-
-        Ok(())
+        // Look up the module by name
+        if let Some(builtin_module) = BuiltinModule::from_string_id(module_name) {
+            // Known module - emit LoadModule
+            self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
+            // Store to the binding (respects Local/Global/Cell scope)
+            self.compile_store(binding);
+        } else {
+            // Unknown module - defer error to runtime with RaiseImportError
+            // This allows TYPE_CHECKING imports to compile without error
+            let name_const = self.code.add_const(Value::InternString(module_name));
+            self.code.emit_u16(Opcode::RaiseImportError, name_const);
+        }
     }
 
     /// Compiles a `from module import name, ...` statement.
     ///
     /// Creates the module once, then loads each attribute and stores to the binding.
     /// Invalid attribute names will raise `AttributeError` at runtime.
-    fn compile_import_from(
-        &mut self,
-        module_name: StringId,
-        names: &[(StringId, Identifier)],
-        position: CodeRange,
-    ) -> Result<(), CompileError> {
-        let module_name_str = self.interns.get_str(module_name);
+    /// If the module is unknown, emits `RaiseImportError` to defer the error to runtime.
+    /// This allows imports inside `if TYPE_CHECKING:` blocks to compile successfully.
+    fn compile_import_from(&mut self, module_name: StringId, names: &[(StringId, Identifier)], position: CodeRange) {
+        self.code.set_location(position, None);
 
         // Look up the module
-        let builtin_module = BuiltinModule::from_string_id(module_name)
-            .ok_or_else(|| CompileError::new_module_not_found(module_name_str, position))?;
+        if let Some(builtin_module) = BuiltinModule::from_string_id(module_name) {
+            // Known module - emit LoadModule
+            self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
 
-        // Load the module once
-        self.code.set_location(position, None);
-        self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
+            // For each name to import
+            for (i, (import_name, binding)) in names.iter().enumerate() {
+                // Dup the module if this isn't the last import (last one consumes the module)
+                if i < names.len() - 1 {
+                    self.code.emit(Opcode::Dup);
+                }
 
-        // For each name to import
-        for (i, (import_name, binding)) in names.iter().enumerate() {
-            // Dup the module if this isn't the last import (last one consumes the module)
-            if i < names.len() - 1 {
-                self.code.emit(Opcode::Dup);
+                // Load the attribute from the module (raises ImportError if not found)
+                let name_idx = u16::try_from(import_name.index()).expect("name index exceeds u16");
+                self.code.emit_u16(Opcode::LoadAttrImport, name_idx);
+
+                // Store to the binding
+                self.compile_store(binding);
             }
-
-            // Load the attribute from the module (raises ImportError if not found)
-            let name_idx = u16::try_from(import_name.index()).expect("name index exceeds u16");
-            self.code.emit_u16(Opcode::LoadAttrImport, name_idx);
-
-            // Store to the binding
-            self.compile_store(binding);
+        } else {
+            // Unknown module - defer error to runtime with RaiseImportError
+            // This allows TYPE_CHECKING imports to compile without error
+            let name_const = self.code.add_const(Value::InternString(module_name));
+            self.code.emit_u16(Opcode::RaiseImportError, name_const);
         }
-
-        Ok(())
     }
 
     // ========================================================================
@@ -620,6 +630,10 @@ impl<'a> Compiler<'a> {
                 } else {
                     self.code.emit(cmp_operator_to_opcode(op));
                 }
+            }
+
+            Expr::ChainCmp { left, comparisons } => {
+                self.compile_chain_comparison(left, comparisons, expr_loc.position)?;
             }
 
             Expr::Not(operand) => {
@@ -722,7 +736,7 @@ impl<'a> Compiler<'a> {
                 // Compile the object (will be on the stack)
                 self.compile_expr(object)?;
 
-                // Compile the method call arguments and emit CallMethod
+                // Compile the attribute call arguments and emit CallAttr
                 self.compile_method_call(attr, args, expr_loc.position)?;
             }
 
@@ -761,6 +775,15 @@ impl<'a> Compiler<'a> {
                 unreachable!("Expr::LambdaRaw should not exist after prepare phase")
             }
 
+            Expr::Await(value) => {
+                // Await expressions: compile the inner expression, then emit Await
+                // Await handles ExternalFuture, Coroutine, and GatherFuture
+                self.compile_expr(value)?;
+                // Restore the full expression's position for traceback caret range
+                self.code.set_location(expr_loc.position, None);
+                self.code.emit(Opcode::Await);
+            }
+
             Expr::Slice { lower, upper, step } => {
                 // Compile slice components: start, stop, step (push None for missing)
                 if let Some(lower) = lower {
@@ -779,6 +802,15 @@ impl<'a> Compiler<'a> {
                     self.code.emit(Opcode::LoadNone);
                 }
                 self.code.emit(Opcode::BuildSlice);
+            }
+
+            Expr::Named { target, value } => {
+                // Compile the value expression (leaves result on stack)
+                self.compile_expr(value)?;
+                // Duplicate so value remains after store
+                self.code.emit(Opcode::Dup);
+                // Store to target (pops one copy)
+                self.compile_store(target);
             }
         }
         Ok(())
@@ -923,6 +955,93 @@ impl<'a> Compiler<'a> {
                 self.code.emit(operator_to_opcode(op));
             }
         }
+        Ok(())
+    }
+
+    /// Compiles a chain comparison expression like `a < b < c < d`.
+    ///
+    /// Chain comparisons evaluate each intermediate value only once and short-circuit
+    /// on the first false result. Uses stack manipulation to avoid namespace pollution.
+    ///
+    /// Bytecode strategy for `a < b < c`:
+    /// ```text
+    /// eval a              # Stack: [a]
+    /// eval b              # Stack: [a, b]
+    /// Dup                 # Stack: [a, b, b]
+    /// Rot3                # Stack: [b, a, b]
+    /// CompareLt           # Stack: [b, result1]
+    /// JumpIfFalseOrPop    # if false: jump to cleanup; if true: pop, stack=[b]
+    /// eval c              # Stack: [b, c]
+    /// CompareLt           # Stack: [result2]
+    /// Jump @end
+    /// @cleanup:           # Stack: [b, False]
+    /// Rot2                # Stack: [False, b]
+    /// Pop                 # Stack: [False]
+    /// @end:
+    /// ```
+    fn compile_chain_comparison(
+        &mut self,
+        left: &ExprLoc,
+        comparisons: &[(CmpOperator, ExprLoc)],
+        position: CodeRange,
+    ) -> Result<(), CompileError> {
+        let n = comparisons.len();
+
+        // Remember stack depth before the chain for cleanup calculation
+        let base_depth = self.code.stack_depth();
+
+        // Compile leftmost operand
+        self.compile_expr(left)?;
+
+        // Track jump targets for short-circuit cleanup
+        let mut cleanup_jumps = Vec::with_capacity(n - 1);
+
+        for (i, (op, right)) in comparisons.iter().enumerate() {
+            let is_last = i == n - 1;
+
+            // Compile the right operand
+            self.compile_expr(right)?;
+
+            if !is_last {
+                // Keep a copy of the intermediate for the next comparison
+                self.code.emit(Opcode::Dup);
+                // Reorder: [prev, curr, curr] -> [curr, prev, curr]
+                self.code.emit(Opcode::Rot3);
+            }
+
+            // Emit comparison
+            self.code.set_location(position, None);
+            if let CmpOperator::ModEq(value) = op {
+                let const_idx = self.code.add_const(Value::Int(*value));
+                self.code.emit_u16(Opcode::CompareModEq, const_idx);
+            } else {
+                self.code.emit(cmp_operator_to_opcode(op));
+            }
+
+            if !is_last {
+                // Short-circuit: if false, jump to cleanup
+                let jump = self.code.emit_jump(Opcode::JumpIfFalseOrPop);
+                cleanup_jumps.push(jump);
+            }
+        }
+
+        // Jump past cleanup (result already on stack)
+        let end_jump = self.code.emit_jump(Opcode::Jump);
+
+        // Cleanup: remove the saved intermediate value, keep False result
+        // The cleanup is only reached via JumpIfFalseOrPop which doesn't pop,
+        // so the stack has: [intermediate, False] (2 extra items from base)
+        for jump in cleanup_jumps {
+            self.code.patch_jump(jump);
+        }
+        self.code.set_stack_depth(base_depth + 2); // [intermediate, False]
+        self.code.emit(Opcode::Rot2); // [False, intermediate]
+        self.code.emit(Opcode::Pop); // [False]
+
+        self.code.patch_jump(end_jump);
+        // Final result is on stack: base_depth + 1
+        self.code.set_stack_depth(base_depth + 1);
+
         Ok(())
     }
 
@@ -1428,20 +1547,25 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles a method call on an object.
+    /// Compiles an attribute call on an object.
     ///
     /// The object should already be on the stack. This compiles the arguments
-    /// and emits a CallMethod opcode with the method name and arg count.
-    fn compile_method_call(&mut self, attr: &Attr, args: &ArgExprs, call_pos: CodeRange) -> Result<(), CompileError> {
+    /// and emits a CallAttr opcode with the attribute name and arg count.
+    fn compile_method_call(
+        &mut self,
+        attr: &EitherStr,
+        args: &ArgExprs,
+        call_pos: CodeRange,
+    ) -> Result<(), CompileError> {
         // Get the interned attribute name
-        let name_id = attr.string_id().expect("CallMethod requires interned attr name");
+        let name_id = attr.string_id().expect("CallAttr requires interned attr name");
 
         // Compile arguments based on the argument type
         match args {
             ArgExprs::Empty => {
                 self.code.set_location(call_pos, None);
                 self.code.emit_u16_u8(
-                    Opcode::CallMethod,
+                    Opcode::CallAttr,
                     u16::try_from(name_id.index()).expect("name index exceeds u16"),
                     0,
                 );
@@ -1450,7 +1574,7 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(arg)?;
                 self.code.set_location(call_pos, None);
                 self.code.emit_u16_u8(
-                    Opcode::CallMethod,
+                    Opcode::CallAttr,
                     u16::try_from(name_id.index()).expect("name index exceeds u16"),
                     1,
                 );
@@ -1460,7 +1584,7 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(arg2)?;
                 self.code.set_location(call_pos, None);
                 self.code.emit_u16_u8(
-                    Opcode::CallMethod,
+                    Opcode::CallAttr,
                     u16::try_from(name_id.index()).expect("name index exceeds u16"),
                     2,
                 );
@@ -1479,7 +1603,7 @@ impl<'a> Compiler<'a> {
                 let arg_count = u8::try_from(args.len()).expect("argument count exceeds u8");
                 self.code.set_location(call_pos, None);
                 self.code.emit_u16_u8(
-                    Opcode::CallMethod,
+                    Opcode::CallAttr,
                     u16::try_from(name_id.index()).expect("name index exceeds u16"),
                     arg_count,
                 );
@@ -1499,7 +1623,7 @@ impl<'a> Compiler<'a> {
                     kwname_ids.push(u16::try_from(kwarg.key.name_id.index()).expect("name index exceeds u16"));
                 }
                 self.code.set_location(call_pos, None);
-                self.code.emit_call_method_kw(
+                self.code.emit_call_attr_kw(
                     u16::try_from(name_id.index()).expect("name index exceeds u16"),
                     0, // no positional args
                     &kwname_ids,
@@ -1511,15 +1635,19 @@ impl<'a> Compiler<'a> {
                 var_args,
                 var_kwargs,
             } => {
-                // Check if there's unpacking - we don't support that for method calls yet
+                // Check if there's unpacking - use CallAttrExtended
                 if var_args.is_some() || var_kwargs.is_some() {
-                    return Err(CompileError::new(
-                        "method calls with *args or **kwargs unpacking not yet supported".to_owned(),
+                    return self.compile_method_call_with_unpacking(
+                        name_id,
+                        args.as_ref(),
+                        var_args.as_ref(),
+                        kwargs.as_ref(),
+                        var_kwargs.as_ref(),
                         call_pos,
-                    ));
+                    );
                 }
 
-                // No unpacking - use CallMethodKw for efficiency
+                // No unpacking - use CallAttrKw for efficiency
                 let pos_count = args.as_ref().map_or(0, Vec::len);
                 let kw_count = kwargs.as_ref().map_or(0, Vec::len);
 
@@ -1553,13 +1681,86 @@ impl<'a> Compiler<'a> {
                 }
 
                 self.code.set_location(call_pos, None);
-                self.code.emit_call_method_kw(
+                self.code.emit_call_attr_kw(
                     u16::try_from(name_id.index()).expect("name index exceeds u16"),
                     u8::try_from(pos_count).expect("positional arg count exceeds u8"),
                     &kwname_ids,
                 );
             }
         }
+        Ok(())
+    }
+
+    /// Compiles a method call with `*args` and/or `**kwargs` unpacking.
+    ///
+    /// The receiver object should already be on the stack. This builds the args tuple
+    /// and optional kwargs dict, then emits `CallAttrExtended`.
+    fn compile_method_call_with_unpacking(
+        &mut self,
+        name_id: StringId,
+        args: Option<&Vec<ExprLoc>>,
+        var_args: Option<&ExprLoc>,
+        kwargs: Option<&Vec<Kwarg>>,
+        var_kwargs: Option<&ExprLoc>,
+        call_pos: CodeRange,
+    ) -> Result<(), CompileError> {
+        // 1. Build args tuple
+        // Push regular positional args and build list
+        let pos_count = args.map_or(0, Vec::len);
+        if let Some(args) = args {
+            for arg in args {
+                self.compile_expr(arg)?;
+            }
+        }
+        self.code.emit_u16(
+            Opcode::BuildList,
+            u16::try_from(pos_count).expect("positional arg count exceeds u16"),
+        );
+
+        // Extend with *args if present
+        if let Some(var_args_expr) = var_args {
+            self.compile_expr(var_args_expr)?;
+            self.code.emit(Opcode::ListExtend);
+        }
+
+        // Convert list to tuple
+        self.code.emit(Opcode::ListToTuple);
+
+        // 2. Build kwargs dict (if we have kwargs or var_kwargs)
+        let has_kwargs = kwargs.is_some() || var_kwargs.is_some();
+        if has_kwargs {
+            // Build dict from regular kwargs
+            let kw_count = kwargs.map_or(0, Vec::len);
+            if let Some(kwargs) = kwargs {
+                for kwarg in kwargs {
+                    // Push key as interned string constant
+                    let key_const = self.code.add_const(Value::InternString(kwarg.key.name_id));
+                    self.code.emit_u16(Opcode::LoadConst, key_const);
+                    // Push value
+                    self.compile_expr(&kwarg.value)?;
+                }
+            }
+            self.code.emit_u16(
+                Opcode::BuildDict,
+                u16::try_from(kw_count).expect("keyword count exceeds u16"),
+            );
+
+            // Merge **kwargs if present
+            if let Some(var_kwargs_expr) = var_kwargs {
+                self.compile_expr(var_kwargs_expr)?;
+                // Use the method name for error messages
+                self.code.emit_u16(
+                    Opcode::DictMerge,
+                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
+                );
+            }
+        }
+
+        // 3. Call the method with CallAttrExtended
+        self.code.set_location(call_pos, None);
+        let name_idx = u16::try_from(name_id.index()).expect("name index exceeds u16");
+        let flags = u8::from(has_kwargs);
+        self.code.emit_u16_u8(Opcode::CallAttrExtended, name_idx, flags);
         Ok(())
     }
 
@@ -1583,6 +1784,7 @@ impl<'a> Compiler<'a> {
         self.loop_stack.push(LoopInfo {
             start: loop_start,
             break_jumps: Vec::new(),
+            has_iterator_on_stack: true,
         });
 
         // ForIter: advance iterator or jump to end
@@ -1616,6 +1818,59 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// Compiles a while loop.
+    ///
+    /// The bytecode structure:
+    /// ```text
+    /// loop_start:
+    ///   [evaluate condition]
+    ///   JumpIfFalse -> end_jump
+    ///   [body]
+    ///   Jump -> loop_start
+    /// end_jump:
+    ///   [else block]
+    /// [break patches here]
+    /// ```
+    ///
+    /// Key differences from `for` loops:
+    /// - No `GetIter` (no iterator)
+    /// - No `ForIter` (use `JumpIfFalse` instead)
+    /// - `continue` jumps to condition evaluation
+    /// - `break` doesn't need to pop iterator (nothing extra on stack)
+    fn compile_while(
+        &mut self,
+        test: &ExprLoc,
+        body: &[PreparedNode],
+        or_else: &[PreparedNode],
+    ) -> Result<(), CompileError> {
+        let loop_start = self.code.current_offset();
+
+        self.loop_stack.push(LoopInfo {
+            start: loop_start,
+            break_jumps: Vec::new(),
+            has_iterator_on_stack: false,
+        });
+
+        self.compile_expr(test)?;
+        let end_jump = self.code.emit_jump(Opcode::JumpIfFalse);
+
+        self.compile_block(body)?;
+        self.code.emit_jump_to(Opcode::Jump, loop_start);
+
+        self.code.patch_jump(end_jump);
+        let loop_info = self.loop_stack.pop().expect("loop stack underflow");
+
+        if !or_else.is_empty() {
+            self.compile_block(or_else)?;
+        }
+
+        for break_jump in loop_info.break_jumps {
+            self.code.patch_jump(break_jump);
+        }
+
+        Ok(())
+    }
+
     /// Compiles a break statement.
     ///
     /// Break exits the innermost loop and skips its else block. If inside a
@@ -1623,12 +1878,12 @@ impl<'a> Compiler<'a> {
     ///
     /// The bytecode without finally:
     /// 1. Clean up exception state if inside except handler
-    /// 2. Pop the iterator (still on stack during loop body)
+    /// 2. Pop the iterator if in a `for` loop (still on stack during loop body)
     /// 3. Jump to after the else block
     ///
     /// With finally:
     /// 1. Clean up exception state if inside except handler
-    /// 2. Pop the iterator
+    /// 2. Pop the iterator if in a `for` loop
     /// 3. Jump to "finally with break" path (patched when try compilation completes)
     /// 4. That path runs finally, then jumps to after the else block
     fn compile_break(&mut self, position: CodeRange) -> Result<(), CompileError> {
@@ -1646,8 +1901,11 @@ impl<'a> Compiler<'a> {
             self.code.emit(Opcode::Pop); // Pop the exception value
         }
 
-        // Pop the iterator (on stack during loop body)
-        self.code.emit(Opcode::Pop);
+        // Pop the iterator only for `for` loops (has iterator on stack)
+        // `while` loops don't have an iterator to pop
+        if self.loop_stack[target_loop_depth].has_iterator_on_stack {
+            self.code.emit(Opcode::Pop);
+        }
 
         // Check if we need to go through any finally blocks
         // We need to run finally if break crosses the try boundary, i.e., if
@@ -1921,23 +2179,40 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles storage of an unpack target - either a single identifier or nested tuple.
+    /// Compiles storage of an unpack target - either a single identifier, nested tuple, or starred.
     ///
     /// For single identifiers: emits a simple store.
-    /// For nested tuples: emits `UnpackSequence` and recursively handles each sub-target.
+    /// For nested tuples: emits `UnpackSequence` (or `UnpackEx` with starred) and recursively
+    /// handles each sub-target.
     fn compile_unpack_target(&mut self, target: &UnpackTarget) {
         match target {
             UnpackTarget::Name(ident) => {
                 // Single identifier - just store directly
                 self.compile_store(ident);
             }
+            UnpackTarget::Starred(ident) => {
+                // Starred target by itself (shouldn't happen at top level normally)
+                // Just store as if it were a name
+                self.compile_store(ident);
+            }
             UnpackTarget::Tuple { targets, position } => {
-                // Nested tuple - emit UnpackSequence then recursively store each
-                let count = u8::try_from(targets.len()).expect("too many targets in nested unpack");
-                // Set location to targets for proper caret in tracebacks
+                // Check if there's a starred target
+                let star_idx = targets.iter().position(|t| matches!(t, UnpackTarget::Starred(_)));
+
                 self.code.set_location(*position, None);
-                self.code.emit_u8(Opcode::UnpackSequence, count);
-                // After UnpackSequence, values are on stack with first item on top
+
+                if let Some(star_idx) = star_idx {
+                    // Has starred target - use UnpackEx
+                    let before = u8::try_from(star_idx).expect("too many targets before star");
+                    let after = u8::try_from(targets.len() - star_idx - 1).expect("too many targets after star");
+                    self.code.emit_u8_u8(Opcode::UnpackEx, before, after);
+                } else {
+                    // No starred target - use UnpackSequence
+                    let count = u8::try_from(targets.len()).expect("too many targets in nested unpack");
+                    self.code.emit_u8(Opcode::UnpackSequence, count);
+                }
+
+                // After UnpackSequence/UnpackEx, values are on stack with first item on top
                 // Store them in order, recursively handling further nesting
                 for target in targets {
                     self.compile_unpack_target(target);
@@ -2526,17 +2801,6 @@ impl CompileError {
         }
     }
 
-    /// Creates a ModuleNotFoundError for when a module cannot be found.
-    ///
-    /// Matches CPython's format: `ModuleNotFoundError: No module named 'name'`
-    fn new_module_not_found(module_name: &str, position: CodeRange) -> Self {
-        Self {
-            message: format!("No module named '{module_name}'").into(),
-            position,
-            exc_type: ExcType::ModuleNotFoundError,
-        }
-    }
-
     /// Converts this compile error into a Python exception.
     ///
     /// Uses the stored exception type (SyntaxError or ModuleNotFoundError).
@@ -2585,21 +2849,30 @@ fn operator_to_opcode(op: &Operator) -> Opcode {
 }
 
 /// Maps an `Operator` to its in-place (augmented assignment) `Opcode`.
-fn operator_to_inplace_opcode(op: &Operator) -> Opcode {
+///
+/// Returns `None` for operators that don't have an in-place opcode (currently `MatMult`,
+/// since matrix multiplication is not yet supported). Returns `Some(opcode)` for all
+/// other valid augmented assignment operators.
+///
+/// # Panics
+///
+/// Panics if called with `And` or `Or` operators, which cannot be used in augmented
+/// assignments (this would be a parser bug).
+fn operator_to_inplace_opcode(op: &Operator) -> Option<Opcode> {
     match op {
-        Operator::Add => Opcode::InplaceAdd,
-        Operator::Sub => Opcode::InplaceSub,
-        Operator::Mult => Opcode::InplaceMul,
-        Operator::Div => Opcode::InplaceDiv,
-        Operator::FloorDiv => Opcode::InplaceFloorDiv,
-        Operator::Mod => Opcode::InplaceMod,
-        Operator::Pow => Opcode::InplacePow,
-        Operator::BitAnd => Opcode::InplaceAnd,
-        Operator::BitOr => Opcode::InplaceOr,
-        Operator::BitXor => Opcode::InplaceXor,
-        Operator::LShift => Opcode::InplaceLShift,
-        Operator::RShift => Opcode::InplaceRShift,
-        Operator::MatMult => todo!("InplaceMatMul not yet defined"),
+        Operator::Add => Some(Opcode::InplaceAdd),
+        Operator::Sub => Some(Opcode::InplaceSub),
+        Operator::Mult => Some(Opcode::InplaceMul),
+        Operator::Div => Some(Opcode::InplaceDiv),
+        Operator::FloorDiv => Some(Opcode::InplaceFloorDiv),
+        Operator::Mod => Some(Opcode::InplaceMod),
+        Operator::Pow => Some(Opcode::InplacePow),
+        Operator::BitAnd => Some(Opcode::InplaceAnd),
+        Operator::BitOr => Some(Opcode::InplaceOr),
+        Operator::BitXor => Some(Opcode::InplaceXor),
+        Operator::LShift => Some(Opcode::InplaceLShift),
+        Operator::RShift => Some(Opcode::InplaceRShift),
+        Operator::MatMult => None,
         Operator::And | Operator::Or => {
             unreachable!("And/Or operators cannot be used in augmented assignment")
         }

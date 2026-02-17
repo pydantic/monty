@@ -2,10 +2,11 @@ use std::{borrow::Cow, fmt::Write};
 
 // Use `::monty` to refer to the external crate (not the pymodule)
 use ::monty::{
-    ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRun, NoLimitTracker, PrintWriter,
-    ResourceTracker, RunProgress, Snapshot, StdPrint,
+    ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRepl as CoreMontyRepl, MontyRun, NoLimitTracker,
+    PrintWriter, PrintWriterCallback, ResourceTracker, RunProgress, Snapshot,
 };
-use monty_type_checking::type_check;
+use monty::{ExcType, FutureSnapshot, OsFunction};
+use monty_type_checking::{SourceFile, type_check};
 use pyo3::{
     IntoPyObjectExt,
     exceptions::{PyKeyError, PyRuntimeError, PyTypeError, PyValueError},
@@ -13,6 +14,7 @@ use pyo3::{
     prelude::*,
     types::{PyBytes, PyDict, PyList, PyTuple, PyType},
 };
+use send_wrapper::SendWrapper;
 
 use crate::{
     convert::{monty_to_py, py_to_monty},
@@ -26,7 +28,7 @@ use crate::{
 /// Parses and compiles Python code on initialization, then can be run
 /// multiple times with different input values. This separates the parsing
 /// cost from execution, making repeated runs more efficient.
-#[pyclass(name = "Monty", module = "monty")]
+#[pyclass(name = "Monty", module = "pydantic_monty")]
 #[derive(Debug)]
 pub struct PyMonty {
     /// The compiled code snapshot, ready to execute.
@@ -53,10 +55,10 @@ impl PyMonty {
     /// * `inputs` - List of input variable names available in the code
     /// * `external_functions` - List of external function names the code can call
     /// * `type_check` - Whether to perform type checking on the code
-    /// * `type_check_prefix_code` - Prefix code to be executed before type checking
+    /// * `type_check_stubs` - Prefix code to be executed before type checking
     /// * `dataclass_registry` - Registry of dataclass types for reconstructing original types on output.
     #[new]
-    #[pyo3(signature = (code, *, script_name="main.py", inputs=None, external_functions=None, type_check=false, type_check_prefix_code=None, dataclass_registry=None))]
+    #[pyo3(signature = (code, *, script_name="main.py", inputs=None, external_functions=None, type_check=false, type_check_stubs=None, dataclass_registry=None))]
     #[expect(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -65,14 +67,14 @@ impl PyMonty {
         inputs: Option<&Bound<'_, PyList>>,
         external_functions: Option<&Bound<'_, PyList>>,
         type_check: bool,
-        type_check_prefix_code: Option<&str>,
+        type_check_stubs: Option<&str>,
         dataclass_registry: Option<Bound<'_, PyList>>,
     ) -> PyResult<Self> {
         let input_names = list_str(inputs, "inputs")?;
         let external_function_names = list_str(external_functions, "external_functions")?;
 
         if type_check {
-            py_type_check(py, &code, script_name, type_check_prefix_code)?;
+            py_type_check(py, &code, script_name, type_check_stubs)?;
         }
 
         // Create the snapshot (parses the code)
@@ -124,17 +126,12 @@ impl PyMonty {
 
     /// Executes the code and returns the result.
     ///
-    /// # Arguments
-    /// * `inputs` - Dict of input variable values (must match names from `__init__`)
-    /// * `limits` - Optional `ResourceLimits` configuration
-    /// * `external_functions` - Dict of external function callbacks (must match names from `__init__`)
-    ///
     /// # Returns
     /// The result of the last expression in the code
     ///
     /// # Raises
     /// Various Python exceptions matching what the code would raise
-    #[pyo3(signature = (*, inputs=None, limits=None, external_functions=None, print_callback=None))]
+    #[pyo3(signature = (*, inputs=None, limits=None, external_functions=None, print_callback=None, os=None))]
     fn run(
         &self,
         py: Python<'_>,
@@ -142,42 +139,35 @@ impl PyMonty {
         limits: Option<&Bound<'_, PyDict>>,
         external_functions: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
+        os: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         // Extract input values in the order they were declared
         let input_values = self.extract_input_values(inputs)?;
 
-        // Use SignalCheckingTracker when limits are provided, NoLimitTracker otherwise
-        match (limits, print_callback) {
-            (Some(limits), Some(callback)) => {
-                let inner_tracker = LimitedTracker::new(extract_limits(limits)?);
-                let tracker = PySignalTracker::new(inner_tracker);
-                self.run_hold_gil(
-                    py,
-                    input_values,
-                    tracker,
-                    external_functions,
-                    CallbackStringPrint(callback),
-                )
+        if let Some(os_callback) = os
+            && !os_callback.is_callable()
+        {
+            let msg = format!("TypeError: '{}' object is not callable", os_callback.get_type().name()?);
+            return Err(PyTypeError::new_err(msg));
+        }
+
+        // Build print writer
+        let mut print_cb;
+        let print_writer = match print_callback {
+            Some(cb) => {
+                print_cb = CallbackStringPrint::new(cb);
+                PrintWriter::Callback(&mut print_cb)
             }
-            (Some(limits), None) => {
-                let inner_tracker = LimitedTracker::new(extract_limits(limits)?);
-                let tracker = PySignalTracker::new(inner_tracker);
-                self.run_release_gil(py, input_values, tracker, external_functions, StdPrint)
-            }
-            (None, Some(callback)) => self.run_hold_gil(
-                py,
-                input_values,
-                PySignalTracker::new(NoLimitTracker),
-                external_functions,
-                CallbackStringPrint(callback),
-            ),
-            (None, None) => self.run_release_gil(
-                py,
-                input_values,
-                PySignalTracker::new(NoLimitTracker),
-                external_functions,
-                StdPrint,
-            ),
+            None => PrintWriter::Stdout,
+        };
+
+        // Run with appropriate tracker type (must branch due to different generic types)
+        if let Some(limits) = limits {
+            let tracker = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
+            self.run_impl(py, input_values, tracker, external_functions, os, print_writer)
+        } else {
+            let tracker = PySignalTracker::new(NoLimitTracker);
+            self.run_impl(py, input_values, tracker, external_functions, os, print_writer)
         }
     }
 
@@ -187,51 +177,44 @@ impl PyMonty {
         py: Python<'py>,
         inputs: Option<&Bound<'py, PyDict>>,
         limits: Option<&Bound<'py, PyDict>>,
-        print_callback: Option<&Bound<'_, PyAny>>,
+        print_callback: Option<Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         // Extract input values in the order they were declared
         let input_values = self.extract_input_values(inputs)?;
 
-        // Clone the runner since start() consumes it - allows reuse of the parsed code
-        macro_rules! start_hold_gil {
-            ($resource_tracker:expr, $print_output:expr) => {
-                self.runner
-                    .clone()
-                    .start(input_values, $resource_tracker, &mut $print_output)
-                    .map_err(|e| MontyError::new_err(py, e))?
-            };
-        }
-        macro_rules! start_release_gil {
-            ($resource_tracker:expr, $print_output:expr) => {{
-                let runner = self.runner.clone();
-                py.detach(|| runner.start(input_values, $resource_tracker, &mut $print_output))
+        // Build print writer - CallbackStringPrint is Send so GIL can be released
+        let mut print_cb;
+        let print_writer = match &print_callback {
+            Some(cb) => {
+                print_cb = CallbackStringPrint::new(cb);
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
+
+        let runner = self.runner.clone();
+        let mut print_writer = SendWrapper::new(print_writer);
+
+        // Helper macro to start execution with GIL released
+        macro_rules! start_impl {
+            ($tracker:expr) => {{
+                py.detach(|| runner.start(input_values, $tracker, &mut print_writer))
                     .map_err(|e| MontyError::new_err(py, e))?
             }};
         }
 
-        // separate code paths due to generics
-        let progress = match (limits, print_callback) {
-            (Some(limits), Some(callback)) => {
-                let limits = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
-                EitherProgress::Limited(start_hold_gil!(limits, CallbackStringPrint(callback)))
-            }
-            (Some(limits), None) => {
-                let limits = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
-                EitherProgress::Limited(start_release_gil!(limits, StdPrint))
-            }
-            (None, Some(callback)) => {
-                let limits = PySignalTracker::new(NoLimitTracker);
-                EitherProgress::NoLimit(start_hold_gil!(limits, CallbackStringPrint(callback)))
-            }
-            (None, None) => {
-                let limits = PySignalTracker::new(NoLimitTracker);
-                EitherProgress::NoLimit(start_release_gil!(limits, StdPrint))
-            }
+        // Branch on limits (different generic types)
+        let progress = if let Some(limits) = limits {
+            let tracker = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
+            EitherProgress::Limited(start_impl!(tracker))
+        } else {
+            let tracker = PySignalTracker::new(NoLimitTracker);
+            EitherProgress::NoLimit(start_impl!(tracker))
         };
         progress.progress_or_complete(
             py,
             self.script_name.clone(),
-            print_callback.map(|c| c.clone().unbind()),
+            print_callback.map(Bound::unbind),
             self.dataclass_registry.clone_ref(py),
         )
     }
@@ -307,15 +290,14 @@ impl PyMonty {
     }
 }
 
-fn py_type_check(py: Python<'_>, code: &str, script_name: &str, prefix_code: Option<&str>) -> PyResult<()> {
-    let source_code: Cow<str> = if let Some(prefix_code) = prefix_code {
-        format!("{prefix_code}\n{code}").into()
-    } else {
-        code.into()
-    };
-    let result = type_check(&source_code, script_name).map_err(PyRuntimeError::new_err)?;
-    if let Some(failure) = result {
-        Err(MontyTypingError::new_err(py, failure))
+fn py_type_check(py: Python<'_>, code: &str, script_name: &str, type_stubs: Option<&str>) -> PyResult<()> {
+    let type_stubs = type_stubs.map(|type_stubs| SourceFile::new(type_stubs, "type_stubs.pyi"));
+
+    let opt_diagnostics =
+        type_check(&SourceFile::new(code, script_name), type_stubs.as_ref()).map_err(PyRuntimeError::new_err)?;
+
+    if let Some(diagnostic) = opt_diagnostics {
+        Err(MontyTypingError::new_err(py, diagnostic))
     } else {
         Ok(())
     }
@@ -354,67 +336,24 @@ impl PyMonty {
             .collect::<PyResult<_>>()
     }
 
-    /// Runs code with a generic resource tracker while holding the GIL.
-    fn run_hold_gil(
-        &self,
-        py: Python<'_>,
-        input_values: Vec<MontyObject>,
-        tracker: impl ResourceTracker,
-        external_functions: Option<&Bound<'_, PyDict>>,
-        mut print_output: impl PrintWriter,
-    ) -> PyResult<Py<PyAny>> {
-        let dataclass_registry = self.dataclass_registry.bind(py);
-        if self.external_function_names.is_empty() {
-            return match self.runner.run(input_values, tracker, &mut print_output) {
-                Ok(v) => monty_to_py(py, &v, dataclass_registry),
-                Err(err) => Err(MontyError::new_err(py, err)),
-            };
-        }
-        // Clone the runner since start() consumes it - allows reuse of the parsed code
-        let mut progress = self
-            .runner
-            .clone()
-            .start(input_values, tracker, &mut print_output)
-            .map_err(|e| MontyError::new_err(py, e))?;
-
-        loop {
-            match progress {
-                RunProgress::Complete(result) => return monty_to_py(py, &result, dataclass_registry),
-                RunProgress::FunctionCall {
-                    function_name,
-                    args,
-                    kwargs,
-                    state,
-                } => {
-                    let registry = external_functions
-                        .map(|d| ExternalFunctionRegistry::new(py, d, dataclass_registry))
-                        .ok_or_else(|| {
-                            PyRuntimeError::new_err(format!(
-                                "External function '{function_name}' called but no external_functions provided"
-                            ))
-                        })?;
-
-                    let return_value = registry.call(&function_name, &args, &kwargs);
-
-                    progress = state
-                        .run(return_value, &mut print_output)
-                        .map_err(|e| MontyError::new_err(py, e))?;
-                }
-            }
-        }
-    }
-
-    /// Runs code with a generic resource tracker while releasing the GIL.
-    fn run_release_gil(
+    /// Runs code with a generic resource tracker, releasing the GIL during execution.
+    ///
+    /// The GIL is released during Monty execution and re-acquired when needed
+    /// (e.g., for external function calls or print callbacks).
+    fn run_impl(
         &self,
         py: Python<'_>,
         input_values: Vec<MontyObject>,
         tracker: impl ResourceTracker + Send,
         external_functions: Option<&Bound<'_, PyDict>>,
-        mut print_output: impl PrintWriter + Send,
+        os: Option<&Bound<'_, PyAny>>,
+        mut print_output: PrintWriter<'_>,
     ) -> PyResult<Py<PyAny>> {
         let dataclass_registry = self.dataclass_registry.bind(py);
-        if self.external_function_names.is_empty() {
+        // wrap print_output in SendWrapper so that it can be accessed inside the py.detach calls despite
+        // no `Send` bound - py.detach() is overly restrictive to prevent `Bound` types going inside
+        let mut print_output = SendWrapper::new(&mut print_output);
+        if self.external_function_names.is_empty() && os.is_none() {
             let runner = &self.runner;
             return match py.detach(|| runner.run(input_values, tracker, &mut print_output)) {
                 Ok(v) => monty_to_py(py, &v, dataclass_registry),
@@ -435,6 +374,7 @@ impl PyMonty {
                     args,
                     kwargs,
                     state,
+                    ..
                 } => {
                     let registry = external_functions
                         .map(|d| ExternalFunctionRegistry::new(py, d, dataclass_registry))
@@ -448,6 +388,50 @@ impl PyMonty {
 
                     progress = py
                         .detach(|| state.run(return_value, &mut print_output))
+                        .map_err(|e| MontyError::new_err(py, e))?;
+                }
+                RunProgress::ResolveFutures { .. } => {
+                    return Err(PyRuntimeError::new_err("async futures not supported with `Monty.run`"));
+                }
+                RunProgress::OsCall {
+                    function,
+                    args,
+                    kwargs,
+                    state,
+                    ..
+                } => {
+                    let result: ExternalResult = if let Some(os_callback) = os {
+                        // Convert args to Python
+                        let py_args: Vec<Py<PyAny>> = args
+                            .iter()
+                            .map(|arg| monty_to_py(py, arg, dataclass_registry))
+                            .collect::<PyResult<_>>()?;
+                        let py_args_tuple = PyTuple::new(py, py_args)?;
+
+                        // Convert kwargs to Python dict
+                        let py_kwargs = PyDict::new(py);
+                        for (k, v) in &kwargs {
+                            py_kwargs.set_item(
+                                monty_to_py(py, k, dataclass_registry)?,
+                                monty_to_py(py, v, dataclass_registry)?,
+                            )?;
+                        }
+
+                        // call the os callback, if an exception is raised, return it to monty
+                        match os_callback.call1((function.to_string(), py_args_tuple, py_kwargs)) {
+                            Ok(result) => py_to_monty(&result)?.into(),
+                            Err(err) => exc_py_to_monty(py, &err).into(),
+                        }
+                    } else {
+                        MontyException::new(
+                            ExcType::NotImplementedError,
+                            Some(format!("OS function '{function}' not implemented")),
+                        )
+                        .into()
+                    };
+
+                    progress = py
+                        .detach(|| state.run(result, &mut print_output))
                         .map_err(|e| MontyError::new_err(py, e))?;
                 }
             }
@@ -470,45 +454,428 @@ impl EitherProgress {
         print_callback: Option<Py<PyAny>>,
         dc_registry: Py<PyDict>,
     ) -> PyResult<Bound<'_, PyAny>> {
-        let dcr = dc_registry.bind(py);
-        let (function_name, args, kwargs, snapshot) = match self {
+        match self {
             Self::NoLimit(p) => match p {
-                RunProgress::Complete(result) => return PyMontyComplete::create(py, &result, dcr),
+                RunProgress::Complete(result) => PyMontyComplete::create(py, &result, &dc_registry),
                 RunProgress::FunctionCall {
                     function_name,
                     args,
                     kwargs,
                     state,
-                } => (function_name, args, kwargs, EitherSnapshot::NoLimit(state)),
+                    call_id,
+                } => Self::function_snapshot(
+                    py,
+                    function_name,
+                    &args,
+                    &kwargs,
+                    call_id,
+                    EitherSnapshot::NoLimit(state),
+                    script_name,
+                    print_callback,
+                    dc_registry,
+                ),
+                RunProgress::ResolveFutures(state) => Self::future_snapshot(
+                    py,
+                    EitherFutureSnapshot::NoLimit(state),
+                    script_name,
+                    print_callback,
+                    dc_registry,
+                ),
+                RunProgress::OsCall {
+                    function,
+                    args,
+                    kwargs,
+                    call_id,
+                    state,
+                } => Self::os_function_snapshot(
+                    py,
+                    function,
+                    &args,
+                    &kwargs,
+                    call_id,
+                    EitherSnapshot::NoLimit(state),
+                    script_name,
+                    print_callback,
+                    dc_registry,
+                ),
             },
             Self::Limited(p) => match p {
-                RunProgress::Complete(result) => return PyMontyComplete::create(py, &result, dcr),
+                RunProgress::Complete(result) => PyMontyComplete::create(py, &result, &dc_registry),
                 RunProgress::FunctionCall {
                     function_name,
                     args,
                     kwargs,
                     state,
-                } => (function_name, args, kwargs, EitherSnapshot::Limited(state)),
+                    call_id,
+                } => Self::function_snapshot(
+                    py,
+                    function_name,
+                    &args,
+                    &kwargs,
+                    call_id,
+                    EitherSnapshot::Limited(state),
+                    script_name,
+                    print_callback,
+                    dc_registry,
+                ),
+                RunProgress::ResolveFutures(state) => Self::future_snapshot(
+                    py,
+                    EitherFutureSnapshot::Limited(state),
+                    script_name,
+                    print_callback,
+                    dc_registry,
+                ),
+                RunProgress::OsCall {
+                    function,
+                    args,
+                    kwargs,
+                    call_id,
+                    state,
+                } => Self::os_function_snapshot(
+                    py,
+                    function,
+                    &args,
+                    &kwargs,
+                    call_id,
+                    EitherSnapshot::Limited(state),
+                    script_name,
+                    print_callback,
+                    dc_registry,
+                ),
             },
-        };
+        }
+    }
 
+    #[expect(clippy::too_many_arguments)]
+    fn function_snapshot<'py>(
+        py: Python<'py>,
+        function_name: String,
+        args: &[MontyObject],
+        kwargs: &[(MontyObject, MontyObject)],
+        call_id: u32,
+        snapshot: EitherSnapshot,
+        script_name: String,
+        print_callback: Option<Py<PyAny>>,
+        dc_registry: Py<PyDict>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let dcr = dc_registry.bind(py);
         let items: PyResult<Vec<Py<PyAny>>> = args.iter().map(|item| monty_to_py(py, item, dcr)).collect();
 
         let dict = PyDict::new(py);
-        for (k, v) in &kwargs {
+        for (k, v) in kwargs {
             dict.set_item(monty_to_py(py, k, dcr)?, monty_to_py(py, v, dcr)?)?;
         }
 
         let slf = PyMontySnapshot {
             snapshot,
-            print_callback: print_callback.map(|callback| callback.clone_ref(py)),
+            print_callback,
             script_name,
+            is_os_function: false,
             function_name,
             args: PyTuple::new(py, items?)?.unbind(),
             kwargs: dict.unbind(),
+            call_id,
             dc_registry,
         };
         slf.into_bound_py_any(py)
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    fn os_function_snapshot<'py>(
+        py: Python<'py>,
+        function: OsFunction,
+        args: &[MontyObject],
+        kwargs: &[(MontyObject, MontyObject)],
+        call_id: u32,
+        snapshot: EitherSnapshot,
+        script_name: String,
+        print_callback: Option<Py<PyAny>>,
+        dc_registry: Py<PyDict>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let dcr = dc_registry.bind(py);
+        let items: PyResult<Vec<Py<PyAny>>> = args.iter().map(|item| monty_to_py(py, item, dcr)).collect();
+
+        let dict = PyDict::new(py);
+        for (k, v) in kwargs {
+            dict.set_item(monty_to_py(py, k, dcr)?, monty_to_py(py, v, dcr)?)?;
+        }
+
+        let slf = PyMontySnapshot {
+            snapshot,
+            print_callback,
+            script_name,
+            is_os_function: true,
+            function_name: function.to_string(),
+            args: PyTuple::new(py, items?)?.unbind(),
+            kwargs: dict.unbind(),
+            call_id,
+            dc_registry,
+        };
+        slf.into_bound_py_any(py)
+    }
+
+    fn future_snapshot(
+        py: Python<'_>,
+        snapshot: EitherFutureSnapshot,
+        script_name: String,
+        print_callback: Option<Py<PyAny>>,
+        dc_registry: Py<PyDict>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let slf = PyMontyFutureSnapshot {
+            snapshot,
+            print_callback,
+            dc_registry,
+            script_name,
+        };
+        slf.into_bound_py_any(py)
+    }
+}
+
+/// Runtime REPL session holder for pyclass interoperability.
+///
+/// PyO3 classes cannot be generic, so this enum stores REPL sessions for both
+/// resource tracker variants.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+enum EitherRepl {
+    NoLimit(CoreMontyRepl<PySignalTracker<NoLimitTracker>>),
+    Limited(CoreMontyRepl<PySignalTracker<LimitedTracker>>),
+}
+
+#[pyclass(name = "MontyRepl", module = "pydantic_monty")]
+#[derive(Debug)]
+pub struct PyMontyRepl {
+    repl: EitherRepl,
+    print_callback: Option<Py<PyAny>>,
+    dc_registry: Py<PyDict>,
+
+    /// Name of the script being executed.
+    #[pyo3(get)]
+    pub script_name: String,
+}
+
+#[pymethods]
+impl PyMontyRepl {
+    /// Creates a REPL session directly from source code.
+    ///
+    /// This mirrors `Monty` construction but returns a stateful REPL that can
+    /// be fed incrementally without replay.
+    ///
+    /// # Returns
+    /// `(repl, output)` where `output` is the initial execution result.
+    #[staticmethod]
+    #[pyo3(signature = (code, *, script_name="main.py", inputs=None, external_functions=None, start_inputs=None, limits=None, print_callback=None, dataclass_registry=None))]
+    #[expect(clippy::too_many_arguments)]
+    fn create(
+        py: Python<'_>,
+        code: String,
+        script_name: &str,
+        inputs: Option<&Bound<'_, PyList>>,
+        external_functions: Option<&Bound<'_, PyList>>,
+        start_inputs: Option<&Bound<'_, PyDict>>,
+        limits: Option<&Bound<'_, PyDict>>,
+        print_callback: Option<&Bound<'_, PyAny>>,
+        dataclass_registry: Option<Bound<'_, PyList>>,
+    ) -> PyResult<(Self, Py<PyAny>)> {
+        let input_names = list_str(inputs, "inputs")?;
+        let external_function_names = list_str(external_functions, "external_functions")?;
+        let input_values = Self::extract_repl_input_values(&input_names, start_inputs)?;
+        let print_callback = print_callback.map(|c| c.clone().unbind());
+        let print_callback_for_create = print_callback.as_ref();
+        let script_name = script_name.to_string();
+        let (repl, output) = Self::create_repl(
+            py,
+            code,
+            script_name.clone(),
+            input_names,
+            external_function_names,
+            input_values,
+            limits,
+            print_callback_for_create,
+        )?;
+
+        let dc_registry = prep_registry(py, dataclass_registry)?.unbind();
+        let output = monty_to_py(py, &output, dc_registry.bind(py))?;
+        let repl = Self {
+            repl,
+            print_callback,
+            dc_registry,
+            script_name,
+        };
+        Ok((repl, output))
+    }
+
+    /// Feeds and executes a single incremental REPL snippet.
+    ///
+    /// The snippet is compiled against existing session state and executed once
+    /// without replaying previously fed snippets.
+    #[pyo3(signature = (code, *, print_callback=None))]
+    fn feed<'py>(
+        &mut self,
+        py: Python<'py>,
+        code: &str,
+        print_callback: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        if let Some(callback) = print_callback {
+            self.print_callback = Some(callback.clone().unbind());
+        }
+
+        let mut print_cb;
+        let mut print_writer = match &self.print_callback {
+            Some(cb) => {
+                print_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
+
+        let output = match &mut self.repl {
+            EitherRepl::NoLimit(repl) => repl.feed(code, &mut print_writer),
+            EitherRepl::Limited(repl) => repl.feed(code, &mut print_writer),
+        }
+        .map_err(|e| MontyError::new_err(py, e))?;
+
+        Ok(monty_to_py(py, &output, self.dc_registry.bind(py))?.into_bound(py))
+    }
+
+    /// Serializes this REPL session to bytes.
+    fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        #[derive(serde::Serialize)]
+        struct SerializedRepl<'a> {
+            repl: &'a EitherRepl,
+            script_name: &'a str,
+        }
+
+        let serialized = SerializedRepl {
+            repl: &self.repl,
+            script_name: &self.script_name,
+        };
+        let bytes = postcard::to_allocvec(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Restores a REPL session from `dump()` bytes.
+    #[staticmethod]
+    #[pyo3(signature = (data, *, print_callback=None, dataclass_registry=None))]
+    fn load(
+        py: Python<'_>,
+        data: &Bound<'_, PyBytes>,
+        print_callback: Option<Py<PyAny>>,
+        dataclass_registry: Option<Bound<'_, PyList>>,
+    ) -> PyResult<Self> {
+        #[derive(serde::Deserialize)]
+        struct SerializedReplOwned {
+            repl: EitherRepl,
+            script_name: String,
+        }
+
+        let serialized: SerializedReplOwned =
+            postcard::from_bytes(data.as_bytes()).map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        Ok(Self {
+            repl: serialized.repl,
+            print_callback,
+            dc_registry: prep_registry(py, dataclass_registry)?.unbind(),
+            script_name: serialized.script_name,
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!("MontyRepl(script_name='{}')", self.script_name)
+    }
+}
+
+impl PyMontyRepl {
+    /// Creates a core REPL and returns both the stored REPL state enum and initial output.
+    ///
+    /// This helper centralizes REPL bootstrapping for `create()`.
+    #[expect(clippy::too_many_arguments)]
+    fn create_repl(
+        py: Python<'_>,
+        code: String,
+        script_name: String,
+        input_names: Vec<String>,
+        external_function_names: Vec<String>,
+        input_values: Vec<MontyObject>,
+        limits: Option<&Bound<'_, PyDict>>,
+        print_callback: Option<&Py<PyAny>>,
+    ) -> PyResult<(EitherRepl, MontyObject)> {
+        let mut print_cb;
+        let mut print_writer = match print_callback {
+            Some(cb) => {
+                print_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
+
+        if let Some(limits) = limits {
+            let tracker = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
+            let print_writer = SendWrapper::new(&mut print_writer);
+            let (repl, output) = py
+                .detach(move || {
+                    CoreMontyRepl::new(
+                        code,
+                        &script_name,
+                        input_names,
+                        external_function_names,
+                        input_values,
+                        tracker,
+                        print_writer.take(),
+                    )
+                })
+                .map_err(|e| MontyError::new_err(py, e))?;
+            Ok((EitherRepl::Limited(repl), output))
+        } else {
+            let tracker = PySignalTracker::new(NoLimitTracker);
+            let print_writer = SendWrapper::new(&mut print_writer);
+            let (repl, output) = py
+                .detach(move || {
+                    CoreMontyRepl::new(
+                        code,
+                        &script_name,
+                        input_names,
+                        external_function_names,
+                        input_values,
+                        tracker,
+                        print_writer.take(),
+                    )
+                })
+                .map_err(|e| MontyError::new_err(py, e))?;
+            Ok((EitherRepl::NoLimit(repl), output))
+        }
+    }
+
+    /// Extracts initial input values in declaration order for direct REPL creation.
+    ///
+    /// This matches the same validation behavior as `Monty.start()`.
+    fn extract_repl_input_values(
+        input_names: &[String],
+        inputs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Vec<::monty::MontyObject>> {
+        if input_names.is_empty() {
+            if inputs.is_some() {
+                return Err(PyTypeError::new_err(
+                    "No input variables declared but inputs dict was provided",
+                ));
+            }
+            return Ok(vec![]);
+        }
+
+        let Some(inputs) = inputs else {
+            return Err(PyTypeError::new_err(format!(
+                "Missing required inputs: {input_names:?}"
+            )));
+        };
+
+        input_names
+            .iter()
+            .map(|name| {
+                let value = inputs
+                    .get_item(name)?
+                    .ok_or_else(|| PyKeyError::new_err(format!("Missing required input: '{name}'")))?;
+                py_to_monty(&value)
+            })
+            .collect::<PyResult<_>>()
     }
 }
 
@@ -525,7 +892,7 @@ enum EitherSnapshot {
     Done,
 }
 
-#[pyclass(name = "MontySnapshot", module = "monty")]
+#[pyclass(name = "MontySnapshot", module = "pydantic_monty")]
 #[derive(Debug)]
 pub struct PyMontySnapshot {
     snapshot: EitherSnapshot,
@@ -536,6 +903,10 @@ pub struct PyMontySnapshot {
     #[pyo3(get)]
     pub script_name: String,
 
+    /// Whether this call refers to an OS function
+    #[pyo3(get)]
+    pub is_os_function: bool,
+
     /// The name of the function being called.
     #[pyo3(get)]
     pub function_name: String,
@@ -545,17 +916,45 @@ pub struct PyMontySnapshot {
     /// The keyword arguments passed to the function (key, value pairs).
     #[pyo3(get)]
     pub kwargs: Py<PyDict>,
+    /// The unique identifier for this call
+    #[pyo3(get)]
+    pub call_id: u32,
+}
+
+/// Extract an external result (object or exception) from a dictionary
+fn extract_external_result(
+    py: Python<'_>,
+    dict: &Bound<'_, PyDict>,
+    error_msg: &'static str,
+) -> PyResult<ExternalResult> {
+    if dict.len() != 1 {
+        Err(PyTypeError::new_err(error_msg))
+    } else if let Some(rv) = dict.get_item(intern!(py, "return_value"))? {
+        // Return value provided
+        Ok(py_to_monty(&rv)?.into())
+    } else if let Some(exc) = dict.get_item(intern!(py, "exception"))? {
+        // Exception provided
+        let py_err = PyErr::from_value(exc.into_any());
+        Ok(exc_py_to_monty(py, &py_err).into())
+    } else if let Some(exc) = dict.get_item(intern!(py, "future"))? {
+        if exc.eq(py.Ellipsis()).unwrap_or_default() {
+            Ok(ExternalResult::Future)
+        } else {
+            Err(PyTypeError::new_err(
+                "Value for the 'future' key must be Ellipsis (...)",
+            ))
+        }
+    } else {
+        // wrong key in kwargs
+        Err(PyTypeError::new_err(error_msg))
+    }
 }
 
 #[pymethods]
 impl PyMontySnapshot {
     /// Resumes execution with either a return value or an exception.
     ///
-    /// Exactly one of `return_value` or `exception` must be provided.
-    ///
-    /// # Arguments
-    /// * `return_value` - The value to return from the external function call
-    /// * `exception` - An exception to raise in the Monty interpreter
+    /// Exactly one of `return_value`, `exception` or `future` must be provided as a keyword argument.
     ///
     /// # Raises
     /// * `TypeError` if both arguments are provided, or neither
@@ -566,37 +965,30 @@ impl PyMontySnapshot {
         let Some(kwargs) = kwargs else {
             return Err(PyTypeError::new_err(ARGS_ERROR));
         };
-        if kwargs.len() != 1 {
-            return Err(PyTypeError::new_err(ARGS_ERROR));
-        }
-        let external_result: ExternalResult = if let Some(rv) = kwargs.get_item(intern!(py, "return_value"))? {
-            // Return value provided
-            py_to_monty(&rv)?.into()
-        } else if let Some(exc) = kwargs.get_item(intern!(py, "exception"))? {
-            // Exception provided
-            let py_err = PyErr::from_value(exc.into_any());
-            exc_py_to_monty(py, &py_err).into()
-        } else {
-            // wrong key in kwargs
-            return Err(PyTypeError::new_err(ARGS_ERROR));
-        };
+        let external_result = extract_external_result(py, kwargs, ARGS_ERROR)?;
 
         let snapshot = std::mem::replace(&mut self.snapshot, EitherSnapshot::Done);
+
+        // Build print writer before detaching - clone_ref needs py token
+        let mut print_cb;
+        let print_writer = match &self.print_callback {
+            Some(cb) => {
+                print_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
+        // wrap print_writer in SendWrapper so that it can be accessed inside the py.detach calls despite
+        // no `Send` bound - py.detach() is overly restrictive to prevent `Bound` types going inside
+        let mut print_writer = SendWrapper::new(print_writer);
+
         let progress = match snapshot {
             EitherSnapshot::NoLimit(snapshot) => {
-                let result = if let Some(print_callback) = &self.print_callback {
-                    snapshot.run(external_result, &mut CallbackStringPrint(print_callback.bind(py)))
-                } else {
-                    py.detach(|| snapshot.run(external_result, &mut StdPrint))
-                };
+                let result = py.detach(|| snapshot.run(external_result, &mut print_writer));
                 EitherProgress::NoLimit(result.map_err(|e| MontyError::new_err(py, e))?)
             }
             EitherSnapshot::Limited(snapshot) => {
-                let result = if let Some(print_callback) = &self.print_callback {
-                    snapshot.run(external_result, &mut CallbackStringPrint(print_callback.bind(py)))
-                } else {
-                    py.detach(|| snapshot.run(external_result, &mut StdPrint))
-                };
+                let result = py.detach(|| snapshot.run(external_result, &mut print_writer));
                 EitherProgress::Limited(result.map_err(|e| MontyError::new_err(py, e))?)
             }
             EitherSnapshot::Done => return Err(PyRuntimeError::new_err("Progress already resumed")),
@@ -625,6 +1017,17 @@ impl PyMontySnapshot {
     /// `ValueError` if serialization fails.
     /// `RuntimeError` if the progress has already been resumed.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        #[derive(serde::Serialize)]
+        struct SerializedSnapshot<'a> {
+            snapshot: &'a EitherSnapshot,
+            script_name: &'a str,
+            is_os_function: bool,
+            function_name: &'a str,
+            args: Vec<MontyObject>,
+            kwargs: Vec<(MontyObject, MontyObject)>,
+            call_id: u32,
+        }
+
         if matches!(self.snapshot, EitherSnapshot::Done) {
             return Err(PyRuntimeError::new_err(
                 "Cannot dump progress that has already been resumed",
@@ -647,12 +1050,14 @@ impl PyMontySnapshot {
             .map(|(k, v)| Ok((py_to_monty(&k)?, py_to_monty(&v)?)))
             .collect::<PyResult<_>>()?;
 
-        let serialized = SerializedProgress {
+        let serialized = SerializedSnapshot {
             snapshot: &self.snapshot,
             script_name: &self.script_name,
+            is_os_function: self.is_os_function,
             function_name: &self.function_name,
             args,
             kwargs,
+            call_id: self.call_id,
         };
         let bytes = postcard::to_allocvec(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(PyBytes::new(py, &bytes))
@@ -681,8 +1086,20 @@ impl PyMontySnapshot {
         print_callback: Option<Py<PyAny>>,
         dataclass_registry: Option<Bound<'_, PyList>>,
     ) -> PyResult<Self> {
+        #[derive(serde::Deserialize)]
+        struct SerializedSnapshotOwned {
+            snapshot: EitherSnapshot,
+            script_name: String,
+            is_os_function: bool,
+            function_name: String,
+            args: Vec<MontyObject>,
+            kwargs: Vec<(MontyObject, MontyObject)>,
+            call_id: u32,
+        }
+
         let bytes = data.as_bytes();
-        let serialized: SerializedProgressOwned =
+
+        let serialized: SerializedSnapshotOwned =
             postcard::from_bytes(bytes).map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         let dc_registry = prep_registry(py, dataclass_registry)?;
@@ -705,9 +1122,11 @@ impl PyMontySnapshot {
             print_callback,
             dc_registry: dc_registry.unbind(),
             script_name: serialized.script_name,
+            is_os_function: serialized.is_os_function,
             function_name: serialized.function_name,
             args: PyTuple::new(py, args)?.unbind(),
             kwargs: kwargs_dict.unbind(),
+            call_id: serialized.call_id,
         })
     }
 
@@ -722,7 +1141,182 @@ impl PyMontySnapshot {
     }
 }
 
-#[pyclass(name = "MontyComplete", module = "monty")]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+enum EitherFutureSnapshot {
+    NoLimit(FutureSnapshot<PySignalTracker<NoLimitTracker>>),
+    Limited(FutureSnapshot<PySignalTracker<LimitedTracker>>),
+    /// Done is used when taking the snapshot to run it
+    /// should only be done after execution is complete
+    Done,
+}
+
+#[pyclass(name = "MontyFutureSnapshot", module = "pydantic_monty")]
+#[derive(Debug)]
+pub struct PyMontyFutureSnapshot {
+    snapshot: EitherFutureSnapshot,
+    print_callback: Option<Py<PyAny>>,
+    dc_registry: Py<PyDict>,
+
+    /// Name of the script being executed
+    #[pyo3(get)]
+    pub script_name: String,
+}
+
+#[pymethods]
+impl PyMontyFutureSnapshot {
+    /// Resumes execution with results for one or more futures.
+    #[pyo3(signature = (results))]
+    pub fn resume<'py>(&mut self, py: Python<'py>, results: &Bound<'_, PyDict>) -> PyResult<Bound<'py, PyAny>> {
+        const ARGS_ERROR: &str = "results values must be a dict with either 'return_value' or 'exception', not both";
+        let external_results = results
+            .iter()
+            .map(|(key, value)| {
+                let call_id = key.extract::<u32>()?;
+                let dict = value.cast::<PyDict>()?;
+                let value = extract_external_result(py, dict, ARGS_ERROR)?;
+                Ok((call_id, value))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let snapshot = std::mem::replace(&mut self.snapshot, EitherFutureSnapshot::Done);
+
+        // Build print writer before detaching - clone_ref needs py token
+        let mut print_cb;
+        let print_writer = match &self.print_callback {
+            Some(cb) => {
+                print_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
+        let mut print_writer = SendWrapper::new(print_writer);
+
+        let progress = match snapshot {
+            EitherFutureSnapshot::NoLimit(snapshot) => {
+                let result = py.detach(|| snapshot.resume(external_results, &mut print_writer));
+                EitherProgress::NoLimit(result.map_err(|e| MontyError::new_err(py, e))?)
+            }
+            EitherFutureSnapshot::Limited(snapshot) => {
+                let result = py.detach(|| snapshot.resume(external_results, &mut print_writer));
+                EitherProgress::Limited(result.map_err(|e| MontyError::new_err(py, e))?)
+            }
+            EitherFutureSnapshot::Done => return Err(PyRuntimeError::new_err("Progress already resumed")),
+        };
+
+        progress.progress_or_complete(
+            py,
+            self.script_name.clone(),
+            self.print_callback.take(),
+            self.dc_registry.clone_ref(py),
+        )
+    }
+
+    /// Returns the pending call IDs associated with the MontyFutureSnapshot instance.
+    ///
+    /// # Returns
+    /// A slice of pending call IDs.
+    #[getter]
+    fn pending_call_ids(&self) -> PyResult<&[u32]> {
+        match &self.snapshot {
+            EitherFutureSnapshot::NoLimit(snapshot) => Ok(snapshot.pending_call_ids()),
+            EitherFutureSnapshot::Limited(snapshot) => Ok(snapshot.pending_call_ids()),
+            EitherFutureSnapshot::Done => Err(PyRuntimeError::new_err("MontyFutureSnapshot already resumed")),
+        }
+    }
+
+    /// Serializes the MontyFutureSnapshot instance to a binary format.
+    ///
+    /// The serialized data can be stored and later restored with `MontyFutureSnapshot.load()`.
+    /// This allows suspending execution and resuming later, potentially in a different process.
+    ///
+    /// Note: The `print_callback` is not serialized and must be re-provided when resuming
+    /// after loading.
+    ///
+    /// # Returns
+    /// Bytes containing the serialized MontyFutureSnapshot instance.
+    ///
+    /// # Raises
+    /// `ValueError` if serialization fails.
+    /// `RuntimeError` if the progress has already been resumed.
+    fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        #[derive(serde::Serialize)]
+        struct SerializedSnapshot<'a> {
+            snapshot: &'a EitherFutureSnapshot,
+            script_name: &'a str,
+        }
+
+        if matches!(self.snapshot, EitherFutureSnapshot::Done) {
+            return Err(PyRuntimeError::new_err(
+                "Cannot dump progress that has already been resumed",
+            ));
+        }
+
+        let serialized = SerializedSnapshot {
+            snapshot: &self.snapshot,
+            script_name: &self.script_name,
+        };
+        let bytes = postcard::to_allocvec(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Deserializes a MontyFutureSnapshot instance from binary format.
+    ///
+    /// Note: The `print_callback` is not preserved during serialization and must be
+    /// re-provided as a keyword argument if print output is needed.
+    ///
+    /// # Arguments
+    /// * `data` - The serialized MontyFutureSnapshot data from `dump()`
+    /// * `print_callback` - Optional callback for print output
+    /// * `dataclass_registry` - Optional list of dataclasses to register
+    ///
+    /// # Returns
+    /// A new MontyFutureSnapshot instance.
+    ///
+    /// # Raises
+    /// `ValueError` if deserialization fails.
+    #[staticmethod]
+    #[pyo3(signature = (data, *, print_callback=None, dataclass_registry=None))]
+    fn load(
+        py: Python<'_>,
+        data: &Bound<'_, PyBytes>,
+        print_callback: Option<Py<PyAny>>,
+        dataclass_registry: Option<Bound<'_, PyList>>,
+    ) -> PyResult<Self> {
+        #[derive(serde::Deserialize)]
+        struct SerializedSnapshotOwned {
+            snapshot: EitherFutureSnapshot,
+            script_name: String,
+        }
+
+        let bytes = data.as_bytes();
+
+        let serialized: SerializedSnapshotOwned =
+            postcard::from_bytes(bytes).map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        let dc_registry = prep_registry(py, dataclass_registry)?;
+
+        Ok(Self {
+            snapshot: serialized.snapshot,
+            print_callback,
+            dc_registry: dc_registry.unbind(),
+            script_name: serialized.script_name,
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        let pending_call_ids = if let Ok(ids) = self.pending_call_ids() {
+            let ids = ids.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+            Cow::Owned(format!("[{ids}]"))
+        } else {
+            "None".into()
+        };
+        format!(
+            "MontyFutureSnapshot(script_name='{}', pending_call_ids={})",
+            self.script_name, pending_call_ids
+        )
+    }
+}
+
+#[pyclass(name = "MontyComplete", module = "pydantic_monty")]
 pub struct PyMontyComplete {
     #[pyo3(get)]
     pub output: Py<PyAny>,
@@ -730,12 +1324,9 @@ pub struct PyMontyComplete {
 }
 
 impl PyMontyComplete {
-    fn create<'py>(
-        py: Python<'py>,
-        output: &MontyObject,
-        dc_registry: &Bound<'py, PyDict>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let output = monty_to_py(py, output, dc_registry)?;
+    fn create<'py>(py: Python<'py>, output: &MontyObject, dc_registry: &Py<PyDict>) -> PyResult<Bound<'py, PyAny>> {
+        let dcr = dc_registry.bind(py);
+        let output = monty_to_py(py, output, dcr)?;
         let slf = Self { output };
         slf.into_bound_py_any(py)
     }
@@ -773,23 +1364,41 @@ fn list_str(arg: Option<&Bound<'_, PyList>>, name: &str) -> PyResult<Vec<String>
     }
 }
 
+/// A `PrintWriter` implementation that calls a Python callback for each print output.
+///
+/// This struct holds a GIL-independent `Py<PyAny>` reference to the callback,
+/// allowing it to be used across GIL release boundaries. The GIL is re-acquired
+/// briefly for each callback invocation.
 #[derive(Debug)]
-pub struct CallbackStringPrint<'py>(&'py Bound<'py, PyAny>);
+pub struct CallbackStringPrint(Py<PyAny>);
 
-impl<'py> CallbackStringPrint<'py> {
-    fn write(&mut self, output: impl IntoPyObject<'py>) -> PyResult<()> {
-        self.0.call1(("stdout", output))?;
-        Ok(())
+impl CallbackStringPrint {
+    /// Creates a new `CallbackStringPrint` from a borrowed Python callback.
+    fn new(callback: &Bound<'_, PyAny>) -> Self {
+        Self(callback.clone().unbind())
+    }
+
+    /// Creates a new `CallbackStringPrint` from an owned `Py<PyAny>`.
+    fn from_py(callback: Py<PyAny>) -> Self {
+        Self(callback)
     }
 }
 
-impl PrintWriter for CallbackStringPrint<'_> {
+impl PrintWriterCallback for CallbackStringPrint {
     fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
-        self.write(output).map_err(|e| exc_py_to_monty(self.0.py(), &e))
+        Python::attach(|py| {
+            self.0.bind(py).call1(("stdout", output.as_ref()))?;
+            Ok::<_, PyErr>(())
+        })
+        .map_err(|e| Python::attach(|py| exc_py_to_monty(py, &e)))
     }
 
     fn stdout_push(&mut self, end: char) -> Result<(), MontyException> {
-        self.write(end).map_err(|e| exc_py_to_monty(self.0.py(), &e))
+        Python::attach(|py| {
+            self.0.bind(py).call1(("stdout", end.to_string()))?;
+            Ok::<_, PyErr>(())
+        })
+        .map_err(|e| Python::attach(|py| exc_py_to_monty(py, &e)))
     }
 }
 
@@ -800,28 +1409,4 @@ struct SerializedMonty {
     script_name: String,
     input_names: Vec<String>,
     external_function_names: Vec<String>,
-}
-
-/// Serialization wrapper for `PyMontySnapshot` that uses borrowed references for efficiency.
-///
-/// Used during `dump()` to avoid unnecessary cloning.
-#[derive(serde::Serialize)]
-struct SerializedProgress<'a> {
-    snapshot: &'a EitherSnapshot,
-    script_name: &'a str,
-    function_name: &'a str,
-    args: Vec<MontyObject>,
-    kwargs: Vec<(MontyObject, MontyObject)>,
-}
-
-/// Owned version of `SerializedProgress` for deserialization.
-///
-/// Used during `load()` to own all the deserialized data.
-#[derive(serde::Deserialize)]
-struct SerializedProgressOwned {
-    snapshot: EitherSnapshot,
-    script_name: String,
-    function_name: String,
-    args: Vec<MontyObject>,
-    kwargs: Vec<(MontyObject, MontyObject)>,
 }

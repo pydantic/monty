@@ -1,9 +1,145 @@
 # Tests for BigInt (arbitrary precision integer) support
-# Note: Monty's parser doesn't support literals > i64, so we compute large values
 
 # === Setup constants ===
 MAX_I64 = 9223372036854775807  # i64::MAX
 MIN_I64 = -MAX_I64 - 1  # i64::MIN (compute to avoid type checker overflow)
+
+# === BigInt literals ===
+# Monty supports parsing integer literals larger than i64
+LITERAL_BIG = 10000000000000000000000000000000000000000
+assert LITERAL_BIG == 10**40, 'bigint literal equals computed value'
+assert str(LITERAL_BIG) == '10000000000000000000000000000000000000000', 'bigint literal str'
+assert type(LITERAL_BIG) == int, 'bigint literal type is int'
+
+# Negative bigint literal (via unary negation)
+NEG_BIG_LITERAL = -10000000000000000000000000000000000000000
+assert NEG_BIG_LITERAL == -(10**40), 'negative bigint literal'
+assert str(NEG_BIG_LITERAL) == '-10000000000000000000000000000000000000000', 'negative bigint literal str'
+
+# === BigInt literal arithmetic ===
+# bigint_literal * int
+assert 10000000000000000000000000000000000000000 * 2 == 2 * 10**40, 'bigint literal * int'
+assert 2 * 10000000000000000000000000000000000000000 == 2 * 10**40, 'int * bigint literal'
+
+# bigint_literal / int (true division)
+assert 10000000000000000000000000000000000000000 / 2 == 10**40 / 2, 'bigint literal / int'
+assert 10000000000000000000000000000000000000000 / 10000000000000000000000000000000000000000 == 1.0, (
+    'bigint literal / bigint literal'
+)
+
+# bigint_literal // int (floor division)
+assert 10000000000000000000000000000000000000000 // 3 == 10**40 // 3, 'bigint literal // int'
+assert 10000000000000000000000000000000000000000 // 10000000000000000000000000000000000000000 == 1, (
+    'bigint literal // bigint literal'
+)
+
+# bigint_literal % int (modulo)
+assert 10000000000000000000000000000000000000000 % 7 == 10**40 % 7, 'bigint literal % int'
+assert 10000000000000000000000000000000000000001 % 10000000000000000000000000000000000000000 == 1, (
+    'bigint literal % bigint literal'
+)
+
+# bigint_literal + int
+assert 10000000000000000000000000000000000000000 + 1 == 10**40 + 1, 'bigint literal + int'
+assert 1 + 10000000000000000000000000000000000000000 == 10**40 + 1, 'int + bigint literal'
+
+# bigint_literal - int
+assert 10000000000000000000000000000000000000000 - 1 == 10**40 - 1, 'bigint literal - int'
+assert 10000000000000000000000000000000000000001 - 10000000000000000000000000000000000000000 == 1, (
+    'bigint literal - bigint literal'
+)
+
+# bigint_literal ** int
+assert 10000000000000000000**2 == 10**38, 'bigint literal ** 2'
+
+# === int() parsing of big integers ===
+assert int('10000000000000000000000000000000000000000') == 10**40, 'int() parses bigint string'
+assert int('-10000000000000000000000000000000000000000') == -(10**40), 'int() parses negative bigint string'
+assert int('99999999999999999999999999999999999999999999999999') == 10**50 - 1, 'int() parses very large bigint string'
+
+# === BigInt literal comparisons ===
+assert 10000000000000000000000000000000000000000 > 9999999999999999999999999999999999999999, (
+    'bigint literal > bigint literal'
+)
+assert 10000000000000000000000000000000000000000 >= 10000000000000000000000000000000000000000, (
+    'bigint literal >= bigint literal'
+)
+assert 9999999999999999999999999999999999999999 < 10000000000000000000000000000000000000000, (
+    'bigint literal < bigint literal'
+)
+assert 10000000000000000000000000000000000000000 <= 10000000000000000000000000000000000000000, (
+    'bigint literal <= bigint literal'
+)
+assert 10000000000000000000000000000000000000000 == 10000000000000000000000000000000000000000, (
+    'bigint literal == bigint literal'
+)
+assert 10000000000000000000000000000000000000000 != 10000000000000000000000000000000000000001, (
+    'bigint literal != bigint literal'
+)
+
+# bigint literal vs int comparisons
+assert 10000000000000000000000000000000000000000 > 1, 'bigint literal > int'
+assert 1 < 10000000000000000000000000000000000000000, 'int < bigint literal'
+
+# === BigInt literal bool conversion ===
+assert bool(10000000000000000000000000000000000000000), 'bigint literal is truthy'
+assert bool(-10000000000000000000000000000000000000000), 'negative bigint literal is truthy'
+
+# === BigInt literal hash consistency ===
+# Same literal value should have same hash
+h1 = hash(10000000000000000000000000000000000000000)
+h2 = hash(10000000000000000000000000000000000000000)
+assert h1 == h2, 'same bigint literal has same hash'
+
+# Computed equal value should have same hash
+h3 = hash(10**40)
+assert h1 == h3, 'bigint literal hash equals computed hash'
+
+# === BigInt literal bitwise operations ===
+assert 10000000000000000000000000000000000000000 & 0xFF == (10**40) & 0xFF, 'bigint literal & int'
+assert 10000000000000000000000000000000000000000 | 1 == (10**40) | 1, 'bigint literal | int'
+assert 10000000000000000000000000000000000000000 ^ 10000000000000000000000000000000000000000 == 0, (
+    'bigint literal ^ bigint literal'
+)
+assert 10000000000000000000000000000000000000000 >> 10 == (10**40) >> 10, 'bigint literal >> int'
+assert 10000000000000000000000000000000000000000 << 10 == (10**40) << 10, 'bigint literal << int'
+
+# === Non-decimal BigInt literals ===
+# Large hex literal (2^64)
+big_hex = 0x10000000000000000
+assert big_hex == 2**64, 'large hex literal'
+
+bigger_hex = 0x10000000000000000123
+assert bigger_hex == 75557863725914323419427, f'large hex literal {bigger_hex}'
+
+# Large binary literal (2^65)
+big_bin = 0b100000000000000000000000000000000000000000000000000000000000000000
+assert big_bin == 2**65, 'large binary literal'
+
+# Large octal literal
+big_oct = 0o10000000000000000000000
+assert big_oct == 8**22, 'large octal literal'
+
+# Underscores in large non-decimal
+big_hex_underscore = 0x1_0000_0000_0000_0000
+assert big_hex_underscore == 2**64, 'large hex with underscores'
+
+# === BigInt literal in collections ===
+d = {10000000000000000000000000000000000000000: 'value'}
+assert d[10000000000000000000000000000000000000000] == 'value', 'bigint literal as dict key'
+assert d[10**40] == 'value', 'computed bigint finds literal key'
+
+lst = [10000000000000000000000000000000000000000, 20000000000000000000000000000000000000000]
+assert lst[0] == 10**40, 'bigint literal in list'
+assert lst[1] == 2 * 10**40, 'bigint literal in list index 1'
+
+# === BigInt literal repr/str ===
+assert repr(10000000000000000000000000000000000000000) == '10000000000000000000000000000000000000000', (
+    'bigint literal repr'
+)
+assert str(10000000000000000000000000000000000000000) == '10000000000000000000000000000000000000000', (
+    'bigint literal str'
+)
 
 # === Overflow promotion ===
 bigger = MAX_I64 + 1
@@ -274,3 +410,58 @@ assert 1**10000000 == 1, '1 ** huge = 1'
 assert (-1) ** 10000000 == 1, '(-1) ** huge_even = 1'
 assert (-1) ** 10000001 == -1, '(-1) ** huge_odd = -1'
 assert 0 << 10000000 == 0, '0 << huge = 0'
+
+# === LongInt in range() ===
+# Note: Monty raises OverflowError immediately for range(10**100), while CPython
+# only raises when iterating or calling len(). We accept this difference for safety.
+big = 2**100
+small_via_big = big - big + 5  # LongInt that demotes to 5
+r = range(small_via_big)
+assert list(r) == [0, 1, 2, 3, 4], 'range with LongInt stop'
+
+r2 = range(small_via_big, small_via_big + 3)
+assert list(r2) == [5, 6, 7], 'range with LongInt start/stop'
+
+r3 = range(0, 10, big - big + 2)
+assert list(r3) == [0, 2, 4, 6, 8], 'range with LongInt step'
+
+# === Integer computed via LongInt arithmetic ===
+# These values go through BigInt arithmetic but demote to regular Int via into_value()
+idx = big - big + 1  # Results in Value::Int(1) after demotion
+assert [10, 20, 30][idx] == 20, 'list indexing with BigInt-computed int'
+assert (10, 20, 30)[idx] == 20, 'tuple indexing with BigInt-computed int'
+assert 'abc'[idx] == 'b', 'string indexing with BigInt-computed int'
+assert b'abc'[idx] == ord('b'), 'bytes indexing with BigInt-computed int'
+assert range(10)[idx] == 1, 'range indexing with BigInt-computed int'
+
+# Negative index computed via LongInt arithmetic
+neg_idx = big - big - 1  # Results in Value::Int(-1) after demotion
+assert [10, 20, 30][neg_idx] == 30, 'list indexing with negative BigInt-computed int'
+assert (10, 20, 30)[neg_idx] == 30, 'tuple indexing with negative BigInt-computed int'
+assert 'abc'[neg_idx] == 'c', 'string indexing with negative BigInt-computed int'
+assert b'abc'[neg_idx] == ord('c'), 'bytes indexing with negative BigInt-computed int'
+assert range(10)[neg_idx] == 9, 'range indexing with negative BigInt-computed int'
+
+# List assignment with LongInt index
+lst = [1, 2, 3]
+lst[idx] = 42
+assert lst == [1, 42, 3], 'list assignment with BigInt-computed index'
+lst[neg_idx] = 99
+assert lst == [1, 42, 99], 'list assignment with negative BigInt-computed index'
+
+# === String/bytes * LongInt ===
+count = big - big + 3
+assert 'ab' * count == 'ababab', 'string * LongInt'
+assert count * 'ab' == 'ababab', 'LongInt * string'
+assert b'ab' * count == b'ababab', 'bytes * LongInt'
+assert count * b'ab' == b'ababab', 'LongInt * bytes'
+
+# Negative LongInt repeat
+neg = big - big - 2
+assert 'ab' * neg == '', 'string * negative LongInt'
+assert b'ab' * neg == b'', 'bytes * negative LongInt'
+
+# Zero LongInt repeat
+zero = big - big
+assert 'ab' * zero == '', 'string * zero LongInt'
+assert b'ab' * zero == b'', 'bytes * zero LongInt'

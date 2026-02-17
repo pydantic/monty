@@ -5,12 +5,13 @@ use ahash::AHashSet;
 use super::{Dict, PyTrait};
 use crate::{
     args::ArgValues,
+    defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapId},
-    intern::Interns,
-    resource::ResourceTracker,
-    types::Type,
-    value::{Attr, Value},
+    intern::{Interns, StringId},
+    resource::{DepthGuard, ResourceError, ResourceTracker},
+    types::{AttrCallResult, Type},
+    value::{EitherStr, Value},
 };
 
 /// Python dataclass instance type.
@@ -43,7 +44,7 @@ use crate::{
 #[derive(Debug)]
 pub(crate) struct Dataclass {
     /// The class name (e.g., "Point", "User")
-    name: String,
+    name: EitherStr,
     /// Identifier of the type, from `id(type(dc))` in python.
     type_id: u64,
     /// Declared field names in definition order (for repr and hashing)
@@ -68,7 +69,7 @@ impl Dataclass {
     /// * `frozen` - Whether this dataclass instance is immutable (affects hashability)
     #[must_use]
     pub fn new(
-        name: String,
+        name: impl Into<EitherStr>,
         type_id: u64,
         field_names: Vec<String>,
         attrs: Dict,
@@ -76,7 +77,7 @@ impl Dataclass {
         frozen: bool,
     ) -> Self {
         Self {
-            name,
+            name: name.into(),
             type_id,
             field_names,
             attrs,
@@ -87,8 +88,8 @@ impl Dataclass {
 
     /// Returns the class name.
     #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
+    pub fn name<'a>(&'a self, interns: &'a Interns) -> &'a str {
+        self.name.as_str(interns)
     }
 
     /// Returns the type ID of the dataclass.
@@ -128,19 +129,6 @@ impl Dataclass {
     #[must_use]
     pub fn is_frozen(&self) -> bool {
         self.frozen
-    }
-
-    /// Gets an attribute value by name.
-    ///
-    /// Returns Ok(Some(&Value)) if the attribute exists, Ok(None) if it doesn't.
-    /// Returns Err if the key is unhashable (should not happen with string keys).
-    pub fn get_attr(
-        &self,
-        name: &Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<Option<&Value>> {
-        self.attrs.get(name, heap, interns)
     }
 
     /// Sets an attribute value.
@@ -208,7 +196,7 @@ impl PyTrait for Dataclass {
 
     fn py_estimate_size(&self) -> usize {
         std::mem::size_of::<Self>()
-            + self.name.len()
+            + self.name.py_estimate_size()
             + self.field_names.iter().map(String::len).sum::<usize>()
             + self.attrs.py_estimate_size()
             + self.methods.len() * std::mem::size_of::<String>()
@@ -219,9 +207,15 @@ impl PyTrait for Dataclass {
         None
     }
 
-    fn py_eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool {
+    fn py_eq(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Result<bool, ResourceError> {
         // Dataclasses are equal if they have the same name and equal attrs
-        self.name == other.name && self.attrs.py_eq(&other.attrs, heap, interns)
+        Ok(self.name == other.name && self.attrs.py_eq(&other.attrs, heap, guard, interns)?)
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
@@ -239,11 +233,17 @@ impl PyTrait for Dataclass {
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
+        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result {
+        // Check depth limit before recursing
+        if !guard.increase() {
+            return f.write_str("...");
+        }
+
         // Format: ClassName(field1=value1, field2=value2, ...)
         // Only declared fields are shown, not dynamically added attributes
-        f.write_str(&self.name)?;
+        f.write_str(self.name(interns))?;
         f.write_char('(')?;
 
         let mut first = true;
@@ -259,34 +259,52 @@ impl PyTrait for Dataclass {
 
             // Look up value in attrs
             if let Some(value) = self.attrs.get_by_str(field_name, heap, interns) {
-                value.py_repr_fmt(f, heap, heap_ids, interns)?;
+                value.py_repr_fmt(f, heap, heap_ids, guard, interns)?;
             } else {
                 // Field not found - shouldn't happen for well-formed dataclasses
                 f.write_str("<?>")?;
             }
         }
 
-        f.write_char(')')
+        f.write_char(')')?;
+        guard.decrease();
+        Ok(())
     }
 
     fn py_call_attr(
         &mut self,
         heap: &mut Heap<impl ResourceTracker>,
-        attr: &Attr,
+        attr: &EitherStr,
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
         // Get method name from the attribute
         let method_name = attr.as_str(interns);
+        defer_drop!(args, heap);
 
         if self.methods.contains(method_name) {
             // TODO: Integrate with external call system
-            // For now, drop args and return an error indicating this needs implementation
-            args.drop_with_heap(heap);
-            Err(ExcType::attribute_error_method_not_implemented(&self.name, method_name))
+            // For now return an error indicating this needs implementation
+            Err(ExcType::attribute_error_method_not_implemented(
+                self.name(interns),
+                method_name,
+            ))
         } else {
-            args.drop_with_heap(heap);
             Err(ExcType::attribute_error(Type::Dataclass, method_name))
+        }
+    }
+
+    fn py_getattr(
+        &self,
+        attr_id: StringId,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<Option<AttrCallResult>> {
+        let attr_name = interns.get_str(attr_id);
+        match self.attrs.get_by_str(attr_name, heap, interns) {
+            Some(value) => Ok(Some(AttrCallResult::Value(value.clone_with_heap(heap)))),
+            // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
+            None => Err(ExcType::attribute_error(self.name(interns), attr_name)),
         }
     }
 }
@@ -314,7 +332,7 @@ impl<'de> serde::Deserialize<'de> for Dataclass {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize)]
         struct DataclassData {
-            name: String,
+            name: EitherStr,
             type_id: u64,
             field_names: Vec<String>,
             attrs: Dict,

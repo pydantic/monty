@@ -17,10 +17,47 @@ use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapId},
-    intern::Interns,
-    resource::ResourceTracker,
-    value::{Attr, Value},
+    intern::{ExtFunctionId, Interns, StringId},
+    os::OsFunction,
+    resource::{DepthGuard, ResourceTracker},
+    value::{EitherStr, Value},
 };
+
+/// Result of calling an attribute method via `py_call_attr_raw`.
+///
+/// This enum enables attribute methods to signal different outcomes to the VM:
+/// - `Value`: The call completed synchronously with a return value
+/// - `OsCall`: The method needs an OS operation; VM should yield to host
+/// - `ExternalCall`: The method needs to call an external function
+///
+/// This unifies the pattern where `call_function` returns `CallResult` to indicate
+/// different outcomes. Types that only support synchronous attribute calls can
+/// use the default `py_call_attr_raw` implementation which wraps `py_call_attr`.
+///
+/// # Future Extensibility
+///
+/// When needed for features like `list.sort(key=func)`, we can add:
+/// ```ignore
+/// CallFunction(Value, ArgValues)  // Call a callable, result becomes attr result
+/// ```
+#[derive(Debug)]
+pub enum AttrCallResult {
+    /// Call completed synchronously with a value to return.
+    Value(Value),
+
+    /// The method needs an OS operation. VM should yield `FrameExit::OsCall` to host.
+    ///
+    /// The host executes the OS operation and resumes the VM with the result.
+    /// Used by `Path` filesystem methods like `exists()`, `read_text()`, etc.
+    OsCall(OsFunction, ArgValues),
+
+    /// The method needs to call an external function. VM should yield `FrameExit::ExternalCall`.
+    ///
+    /// Used when attribute methods delegate to registered external functions.
+    /// Currently unused - will be used when types need to call external functions from attribute methods.
+    #[expect(dead_code)]
+    ExternalCall(ExtFunctionId, ArgValues),
+}
 
 /// Common operations for heap-allocated Python values.
 ///
@@ -56,7 +93,18 @@ pub trait PyTrait {
     /// computation for dict key lookups.
     ///
     /// The `interns` parameter provides access to interned string content.
-    fn py_eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool;
+    /// The `guard` parameter tracks recursion depth to prevent stack overflow
+    /// on deeply nested structures.
+    ///
+    /// Returns `Ok(true)` if equal, `Ok(false)` if not equal, or
+    /// `Err(ResourceError::Recursion)` if maximum depth is exceeded.
+    fn py_eq(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Result<bool, ResourceError>;
 
     /// Python comparison (`<`, `>`, etc.).
     ///
@@ -65,8 +113,19 @@ pub trait PyTrait {
     /// computation for dict key lookups.
     ///
     /// The `interns` parameter provides access to interned string content.
-    fn py_cmp(&self, _other: &Self, _heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> Option<Ordering> {
-        None
+    /// The `guard` parameter tracks recursion depth to prevent stack overflow
+    /// on deeply nested structures.
+    ///
+    /// Returns `Ok(Some(Ordering))` for comparable values, `Ok(None)` if not comparable,
+    /// or `Err(ResourceError::Recursion)` if maximum depth is exceeded.
+    fn py_cmp(
+        &self,
+        _other: &Self,
+        _heap: &mut Heap<impl ResourceTracker>,
+        _guard: &mut DepthGuard,
+        _interns: &Interns,
+    ) -> Result<Option<Ordering>, ResourceError> {
+        Ok(None)
     }
 
     /// Pushes any contained `HeapId`s onto the stack for reference counting.
@@ -98,29 +157,45 @@ pub trait PyTrait {
     /// * `f` - The formatter to write to
     /// * `heap` - The heap for resolving value references
     /// * `heap_ids` - Set of heap IDs currently being repr'd (for cycle detection)
+    /// * `guard` - Recursion depth tracker to prevent stack overflow on deeply nested structures
     /// * `interns` - The interned strings table for looking up string/bytes literals
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
+        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result;
 
     /// Returns the Python `repr()` string for this value.
     ///
     /// Convenience wrapper around `py_repr_fmt` that returns an owned string.
-    fn py_repr(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Cow<'static, str> {
+    /// Creates a new `DepthGuard` internally to track recursion depth.
+    fn py_repr(
+        &self,
+        heap: &Heap<impl ResourceTracker>,
+        guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Cow<'static, str> {
         let mut s = String::new();
         let mut heap_ids = AHashSet::new();
         // Unwrap is safe: writing to String never fails
-        self.py_repr_fmt(&mut s, heap, &mut heap_ids, interns).unwrap();
+        self.py_repr_fmt(&mut s, heap, &mut heap_ids, guard, interns).unwrap();
         Cow::Owned(s)
     }
 
     /// Returns the Python `str()` string for this value.
-    fn py_str(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Cow<'static, str> {
-        self.py_repr(heap, interns)
+    ///
+    /// The `guard` parameter tracks recursion depth to prevent stack overflow
+    /// on deeply nested structures.
+    fn py_str(
+        &self,
+        heap: &Heap<impl ResourceTracker>,
+        guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Cow<'static, str> {
+        self.py_repr(heap, guard, interns)
     }
 
     /// Python addition (`__add__`).
@@ -197,7 +272,12 @@ pub trait PyTrait {
     ///
     /// Always returns float for numeric types. Returns `Ok(None)` if not supported.
     /// Returns `Err(ZeroDivisionError)` for division by zero.
-    fn py_div(&self, _other: &Self, _heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_div(
+        &self,
+        _other: &Self,
+        _heap: &mut Heap<impl ResourceTracker>,
+        _interns: &Interns,
+    ) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -226,11 +306,37 @@ pub trait PyTrait {
     fn py_call_attr(
         &mut self,
         heap: &mut Heap<impl ResourceTracker>,
-        attr: &Attr,
+        attr: &EitherStr,
         _args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
         Err(ExcType::attribute_error(self.py_type(heap), attr.as_str(interns)))
+    }
+
+    /// Calls an attribute method, returning an `AttrCallResult` that may signal OS or external calls.
+    ///
+    /// This method enables types to signal that they need operations the VM cannot perform
+    /// directly (OS operations, external function calls). The VM converts the result to the
+    /// appropriate `FrameExit` variant.
+    ///
+    /// The default implementation wraps `py_call_attr` in `AttrCallResult::Value`. Types that
+    /// need to perform OS or external operations should override this method.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(AttrCallResult::Value(v))` - Method completed synchronously with value `v`
+    /// - `Ok(AttrCallResult::OsCall(func, args))` - Method needs OS operation; VM yields to host
+    /// - `Ok(AttrCallResult::ExternalCall(id, args))` - Method needs external function call
+    /// - `Err(e)` - Method call failed with error
+    fn py_call_attr_raw(
+        &mut self,
+        heap: &mut Heap<impl ResourceTracker>,
+        attr: &EitherStr,
+        args: ArgValues,
+        interns: &Interns,
+    ) -> RunResult<AttrCallResult> {
+        let value = self.py_call_attr(heap, attr, args, interns)?;
+        Ok(AttrCallResult::Value(value))
     }
 
     /// Estimates the memory size in bytes of this value.
@@ -277,5 +383,30 @@ pub trait PyTrait {
             format!("'{}' object does not support item assignment", self.py_type(heap)),
         )
         .into())
+    }
+
+    /// Python attribute get operation (`__getattr__`), e.g., `obj.attr`.
+    ///
+    /// Returns the value associated with the attribute (owned), or `Ok(None)` if the type
+    /// doesn't support attribute access at all. Types that support attributes should return
+    /// `Err(AttributeError)` when an attribute is not found, not `Ok(None)`.
+    ///
+    /// The returned `Value` is always owned:
+    /// - For stored values (Dataclass, Module, NamedTuple fields): clone with `clone_with_heap`
+    /// - For computed values (Exception.args, Slice.start, Path.name): return newly created value
+    ///
+    /// Takes `&mut Heap` to allow:
+    /// - Cloning stored values with proper reference counting
+    /// - Allocating computed values that need heap storage
+    ///
+    /// Default implementation returns `Ok(None)`, indicating the type doesn't support
+    /// attribute access and a generic `AttributeError` should be raised by the caller.
+    fn py_getattr(
+        &self,
+        _attr_id: StringId,
+        _heap: &mut Heap<impl ResourceTracker>,
+        _interns: &Interns,
+    ) -> RunResult<Option<AttrCallResult>> {
+        Ok(None)
     }
 }

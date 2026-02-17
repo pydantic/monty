@@ -1,20 +1,25 @@
 use std::{
     borrow::Cow,
-    fmt::{self, Write},
+    fmt::{self, Display, Write},
 };
 
 use serde::{Deserialize, Serialize};
+use smallvec::smallvec;
 use strum::{Display, EnumString, IntoStaticStr};
 
 use crate::{
     args::ArgValues,
+    defer_drop,
     exception_public::{MontyException, StackFrame},
     fstring::FormatError,
     heap::{Heap, HeapData},
-    intern::{Interns, StringId},
+    intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
-    resource::ResourceTracker,
-    types::{PyTrait, Type, str::string_repr_fmt},
+    resource::{DepthGuard, ResourceTracker},
+    types::{
+        AttrCallResult, PyTrait, Str, Type, allocate_tuple,
+        str::{StringRepr, string_repr_fmt},
+    },
     value::Value,
 };
 
@@ -80,6 +85,18 @@ pub enum ExcType {
     /// Subclass of ImportError - for when a module cannot be found.
     ModuleNotFoundError,
 
+    // --- OSError hierarchy ---
+    /// OS-related errors (file not found, permission denied, etc.)
+    OSError,
+    /// Subclass of OSError - for when a file or directory cannot be found.
+    FileNotFoundError,
+    /// Subclass of OSError - for when a file already exists.
+    FileExistsError,
+    /// Subclass of OSError - for when a path is a directory but a file was expected.
+    IsADirectoryError,
+    /// Subclass of OSError - for when a path is not a directory but one was expected.
+    NotADirectoryError,
+
     // --- Standalone exception types ---
     AssertionError,
     MemoryError,
@@ -123,6 +140,11 @@ impl ExcType {
             Self::ValueError => matches!(self, Self::UnicodeDecodeError),
             // ImportError catches ModuleNotFoundError
             Self::ImportError => matches!(self, Self::ModuleNotFoundError),
+            // OSError catches FileNotFoundError, FileExistsError, IsADirectoryError, NotADirectoryError
+            Self::OSError => matches!(
+                self,
+                Self::FileNotFoundError | Self::FileExistsError | Self::IsADirectoryError | Self::NotADirectoryError
+            ),
             // All other types only match exactly (handled by self == handler_type above)
             _ => false,
         }
@@ -141,38 +163,29 @@ impl ExcType {
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
+        defer_drop!(args, heap);
         let exc = match args {
             ArgValues::Empty => Ok(SimpleException::new_none(self)),
-            ArgValues::One(value) => {
-                // Borrow the value to inspect its type, then clean up with drop_with_heap
-                let result = match &value {
-                    Value::InternString(string_id) => {
-                        Ok(SimpleException::new_msg(self, interns.get_str(*string_id).to_owned()))
+            ArgValues::One(value) => match value {
+                Value::InternString(string_id) => {
+                    Ok(SimpleException::new_msg(self, interns.get_str(*string_id).to_owned()))
+                }
+                Value::Ref(heap_id) => {
+                    if let HeapData::Str(s) = heap.get(*heap_id) {
+                        Ok(SimpleException::new_msg(self, s.as_str().to_owned()))
+                    } else {
+                        Err(RunError::internal(
+                            "exceptions can only be called with zero or one string argument",
+                        ))
                     }
-                    Value::Ref(heap_id) => {
-                        if let HeapData::Str(s) = heap.get(*heap_id) {
-                            Ok(SimpleException::new_msg(self, s.as_str().to_owned()))
-                        } else {
-                            Err(RunError::internal(
-                                "exceptions can only be called with zero or one string argument",
-                            ))
-                        }
-                    }
-                    _ => Err(RunError::internal(
-                        "exceptions can only be called with zero or one string argument",
-                    )),
-                };
-                // Properly clean up the value using drop_with_heap which handles ref-count-panic
-                value.drop_with_heap(heap);
-                result
-            }
-            _ => {
-                // Clean up any args before returning error
-                args.drop_with_heap(heap);
-                Err(RunError::internal(
+                }
+                _ => Err(RunError::internal(
                     "exceptions can only be called with zero or one string argument",
-                ))
-            }
+                )),
+            },
+            _ => Err(RunError::internal(
+                "exceptions can only be called with zero or one string argument",
+            )),
         }?;
         let heap_id = heap.allocate(HeapData::Exception(exc))?;
         Ok(Value::Ref(heap_id))
@@ -182,10 +195,10 @@ impl ExcType {
     ///
     /// Sets `hide_caret: true` because CPython doesn't show carets for attribute GET errors.
     #[must_use]
-    pub(crate) fn attribute_error(type_: Type, attr: &str) -> RunError {
+    pub(crate) fn attribute_error(type_name: impl Display, attr: &str) -> RunError {
         let exc = SimpleException::new_msg(
             Self::AttributeError,
-            format!("'{type_}' object has no attribute '{attr}'"),
+            format!("'{type_name}' object has no attribute '{attr}'"),
         );
         RunError::Exc(ExceptionRaise {
             exc,
@@ -205,23 +218,6 @@ impl ExcType {
             format!("'{class_name}' object method '{method_name}' requires external call (not yet implemented)"),
         )
         .into()
-    }
-
-    /// Creates an AttributeError for when a specific attribute is not found (GET operation).
-    ///
-    /// Matches CPython's format: `AttributeError: 'ClassName' object has no attribute 'attr_name'`
-    /// Sets `hide_caret: true` because CPython doesn't show carets for attribute GET errors.
-    #[must_use]
-    pub(crate) fn attribute_error_not_found(class_name: &str, attr_name: &str) -> RunError {
-        let exc = SimpleException::new_msg(
-            Self::AttributeError,
-            format!("'{class_name}' object has no attribute '{attr_name}'"),
-        );
-        RunError::Exc(ExceptionRaise {
-            exc,
-            frame: None,
-            hide_caret: true, // CPython doesn't show carets for attribute GET errors
-        })
     }
 
     /// Creates an AttributeError for attribute assignment on types that don't support it.
@@ -269,6 +265,14 @@ impl ExcType {
     #[must_use]
     pub(crate) fn type_error_not_sub(type_: Type) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("'{type_}' object is not subscriptable")).into()
+    }
+
+    /// Creates a TypeError for awaiting a non-awaitable object.
+    ///
+    /// Matches CPython's format: `TypeError: '{type}' object can't be awaited`
+    #[must_use]
+    pub(crate) fn object_not_awaitable(type_: Type) -> RunError {
+        SimpleException::new_msg(Self::TypeError, format!("'{type_}' object can't be awaited")).into()
     }
 
     /// Creates a TypeError for item assignment on types that don't support it.
@@ -320,20 +324,10 @@ impl ExcType {
     /// Creates a KeyError for a missing dict key.
     ///
     /// For string keys, uses the raw string value without extra quoting.
-    /// For other types, uses repr.
     #[must_use]
     pub(crate) fn key_error(key: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunError {
-        let key_str = match key {
-            Value::InternString(string_id) => interns.get_str(*string_id).to_owned(),
-            Value::Ref(id) => {
-                if let HeapData::Str(s) = heap.get(*id) {
-                    s.as_str().to_owned()
-                } else {
-                    key.py_repr(heap, interns).into_owned()
-                }
-            }
-            _ => key.py_repr(heap, interns).into_owned(),
-        };
+        let mut guard = DepthGuard::default();
+        let key_str = key.py_str(heap, &mut guard, interns).into_owned();
         SimpleException::new_msg(Self::KeyError, key_str).into()
     }
 
@@ -577,7 +571,7 @@ impl ExcType {
 
     /// Creates a simple TypeError with a custom message.
     #[must_use]
-    pub(crate) fn type_error(msg: impl Into<String>) -> RunError {
+    pub(crate) fn type_error(msg: impl fmt::Display) -> RunError {
         SimpleException::new_msg(Self::TypeError, msg).into()
     }
 
@@ -802,7 +796,12 @@ impl ExcType {
     /// Matches CPython's format: `NameError: name 'x' is not defined`
     #[must_use]
     pub(crate) fn name_error(name: &str) -> SimpleException {
-        SimpleException::new_msg(Self::NameError, format!("name '{name}' is not defined"))
+        let mut msg = format!("name '{name}' is not defined");
+        // add the same suffix as cpython, but only for the modules supported by Monty
+        if matches!(name, "asyncio" | "sys" | "typing" | "types") {
+            write!(&mut msg, ". Did you forget to import '{name}'?").unwrap();
+        }
+        SimpleException::new_msg(Self::NameError, msg)
     }
 
     /// Creates an UnboundLocalError for accessing a local variable before assignment.
@@ -816,16 +815,27 @@ impl ExcType {
         )
     }
 
+    /// Creates a ModuleNotFoundError for when a module cannot be found.
+    ///
+    /// Matches CPython's format: `ModuleNotFoundError: No module named 'name'`
+    /// Sets `hide_caret: true` because CPython doesn't show carets for module not found errors.
+    #[must_use]
+    pub(crate) fn module_not_found_error(module_name: &str) -> RunError {
+        let exc = SimpleException::new_msg(Self::ModuleNotFoundError, format!("No module named '{module_name}'"));
+        RunError::Exc(ExceptionRaise {
+            exc,
+            frame: None,
+            hide_caret: true, // CPython doesn't show carets for module not found errors
+        })
+    }
+
     /// Creates a NotImplementedError for an unimplemented Python feature.
     ///
     /// Used during parsing when encountering Python syntax that Monty doesn't yet support.
     /// The message format is: "The monty syntax parser does not yet support {feature}"
     #[must_use]
-    pub(crate) fn not_implemented(feature: &str) -> SimpleException {
-        SimpleException::new_msg(
-            Self::NotImplementedError,
-            format!("The monty syntax parser does not yet support {feature}"),
-        )
+    pub(crate) fn not_implemented(msg: impl fmt::Display) -> SimpleException {
+        SimpleException::new_msg(Self::NotImplementedError, msg)
     }
 
     /// Creates a ZeroDivisionError for division by zero.
@@ -842,6 +852,14 @@ impl ExcType {
     #[must_use]
     pub(crate) fn overflow_repeat_count() -> SimpleException {
         SimpleException::new_msg(Self::OverflowError, "cannot fit 'int' into an index-sized integer")
+    }
+
+    /// Creates an IndexError for when an integer index is too large to fit in i64.
+    ///
+    /// Matches CPython's format: `IndexError: cannot fit 'int' into an index-sized integer`
+    #[must_use]
+    pub(crate) fn index_error_int_too_large() -> RunError {
+        SimpleException::new_msg(Self::IndexError, "cannot fit 'int' into an index-sized integer").into()
     }
 
     /// Creates an ImportError for when a name cannot be imported from a module.
@@ -1117,10 +1135,10 @@ impl SimpleException {
 
     /// Creates a new exception with the given type and argument message.
     #[must_use]
-    pub fn new_msg(exc_type: ExcType, arg: impl Into<String>) -> Self {
+    pub fn new_msg(exc_type: ExcType, arg: impl fmt::Display) -> Self {
         Self {
             exc_type,
-            arg: Some(arg.into()),
+            arg: Some(arg.to_string()),
         }
     }
 
@@ -1138,6 +1156,17 @@ impl SimpleException {
     #[must_use]
     pub fn arg(&self) -> Option<&String> {
         self.arg.as_ref()
+    }
+
+    /// str() for an exception
+    #[must_use]
+    pub fn py_str(&self) -> String {
+        match (self.exc_type, &self.arg) {
+            // KeyError expecificaly uses repr of the key for str(exc)
+            (ExcType::KeyError, Some(exc)) => StringRepr(exc).to_string(),
+            (_, Some(arg)) => arg.to_owned(),
+            (_, None) => String::new(),
+        }
     }
 
     pub(crate) fn py_type(&self) -> Type {
@@ -1169,6 +1198,30 @@ impl SimpleException {
             exc: self,
             frame: Some(RawStackFrame::from_position(position)),
             hide_caret: false,
+        }
+    }
+
+    /// Gets an attribute from this exception.
+    ///
+    /// Handles the `.args` attribute by allocating a tuple containing the message.
+    /// Returns `Err(AttributeError)` for all other attributes.
+    pub fn py_getattr(
+        &self,
+        attr_id: StringId,
+        heap: &mut Heap<impl ResourceTracker>,
+        _interns: &Interns,
+    ) -> RunResult<Option<AttrCallResult>> {
+        if attr_id == StaticStrings::Args {
+            // Construct tuple with 0 or 1 elements based on whether arg exists
+            let elements = if let Some(arg_str) = &self.arg {
+                let str_id = heap.allocate(HeapData::Str(Str::from(arg_str.clone())))?;
+                smallvec![Value::Ref(str_id)]
+            } else {
+                smallvec![]
+            };
+            Ok(Some(AttrCallResult::Value(allocate_tuple(elements, heap)?)))
+        } else {
+            Ok(None)
         }
     }
 }
@@ -1327,7 +1380,7 @@ impl RawStackFrame {
 /// - `Internal`: Bug in interpreter implementation (static message)
 /// - `Exc`: Python exception that can be caught by try/except (when implemented)
 /// - `UncatchableExc`: Python exception from resource limits that CANNOT be caught
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum RunError {
     /// Internal interpreter error - indicates a bug in Monty, not user code.
     Internal(Cow<'static, str>),
@@ -1365,7 +1418,7 @@ impl From<FormatError> for RunError {
             FormatError::Overflow(_) => ExcType::OverflowError,
             FormatError::InvalidAlignment(_) | FormatError::ValueError(_) => ExcType::ValueError,
         };
-        Self::Exc(SimpleException::new_msg(exc_type, err.to_string()).into())
+        Self::Exc(SimpleException::new_msg(exc_type, err).into())
     }
 }
 

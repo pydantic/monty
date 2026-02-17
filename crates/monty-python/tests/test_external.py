@@ -3,11 +3,11 @@ from typing import Any
 import pytest
 from inline_snapshot import snapshot
 
-import monty
+import pydantic_monty
 
 
 def test_external_function_no_args():
-    m = monty.Monty('noop()', external_functions=['noop'])
+    m = pydantic_monty.Monty('noop()', external_functions=['noop'])
 
     def noop(*args: Any, **kwargs: Any) -> str:
         assert args == snapshot(())
@@ -18,7 +18,7 @@ def test_external_function_no_args():
 
 
 def test_external_function_positional_args():
-    m = monty.Monty('func(1, 2, 3)', external_functions=['func'])
+    m = pydantic_monty.Monty('func(1, 2, 3)', external_functions=['func'])
 
     def func(*args: Any, **kwargs: Any) -> str:
         assert args == snapshot((1, 2, 3))
@@ -29,7 +29,7 @@ def test_external_function_positional_args():
 
 
 def test_external_function_kwargs_only():
-    m = monty.Monty('func(a=1, b="two")', external_functions=['func'])
+    m = pydantic_monty.Monty('func(a=1, b="two")', external_functions=['func'])
 
     def func(*args: Any, **kwargs: Any) -> str:
         assert args == snapshot(())
@@ -40,7 +40,7 @@ def test_external_function_kwargs_only():
 
 
 def test_external_function_mixed_args_kwargs():
-    m = monty.Monty('func(1, 2, x="hello", y=True)', external_functions=['func'])
+    m = pydantic_monty.Monty('func(1, 2, x="hello", y=True)', external_functions=['func'])
 
     def func(*args: Any, **kwargs: Any) -> str:
         assert args == snapshot((1, 2))
@@ -51,7 +51,7 @@ def test_external_function_mixed_args_kwargs():
 
 
 def test_external_function_complex_types():
-    m = monty.Monty('func([1, 2], {"key": "value"})', external_functions=['func'])
+    m = pydantic_monty.Monty('func([1, 2], {"key": "value"})', external_functions=['func'])
 
     def func(*args: Any, **kwargs: Any) -> str:
         assert args == snapshot(([1, 2], {'key': 'value'}))
@@ -62,7 +62,7 @@ def test_external_function_complex_types():
 
 
 def test_external_function_returns_none():
-    m = monty.Monty('do_nothing()', external_functions=['do_nothing'])
+    m = pydantic_monty.Monty('do_nothing()', external_functions=['do_nothing'])
 
     def do_nothing(*args: Any, **kwargs: Any) -> None:
         assert args == snapshot(())
@@ -72,7 +72,7 @@ def test_external_function_returns_none():
 
 
 def test_external_function_returns_complex_type():
-    m = monty.Monty('get_data()', external_functions=['get_data'])
+    m = pydantic_monty.Monty('get_data()', external_functions=['get_data'])
 
     def get_data(*args: Any, **kwargs: Any) -> dict[str, Any]:
         return {'a': [1, 2, 3], 'b': {'nested': True}}
@@ -82,7 +82,7 @@ def test_external_function_returns_complex_type():
 
 
 def test_multiple_external_functions():
-    m = monty.Monty('add(1, 2) + mul(3, 4)', external_functions=['add', 'mul'])
+    m = pydantic_monty.Monty('add(1, 2) + mul(3, 4)', external_functions=['add', 'mul'])
 
     def add(*args: Any, **kwargs: Any) -> int:
         assert args == snapshot((1, 2))
@@ -99,7 +99,7 @@ def test_multiple_external_functions():
 
 
 def test_external_function_called_multiple_times():
-    m = monty.Monty('counter() + counter() + counter()', external_functions=['counter'])
+    m = pydantic_monty.Monty('counter() + counter() + counter()', external_functions=['counter'])
 
     call_count = 0
 
@@ -116,7 +116,7 @@ def test_external_function_called_multiple_times():
 
 
 def test_external_function_with_input():
-    m = monty.Monty('process(x)', inputs=['x'], external_functions=['process'])
+    m = pydantic_monty.Monty('process(x)', inputs=['x'], external_functions=['process'])
 
     def process(*args: Any, **kwargs: Any) -> int:
         assert args == snapshot((5,))
@@ -127,16 +127,16 @@ def test_external_function_with_input():
 
 
 def test_external_function_not_provided_raises():
-    m = monty.Monty('missing()', external_functions=['missing'])
+    m = pydantic_monty.Monty('missing()', external_functions=['missing'])
 
     with pytest.raises(RuntimeError, match='no external_functions provided'):
         m.run()
 
 
 def test_undeclared_function_raises_name_error():
-    m = monty.Monty('unknown_func()')
+    m = pydantic_monty.Monty('unknown_func()')
 
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run()
     inner = exc_info.value.exception()
     assert type(inner) is NameError
@@ -145,12 +145,12 @@ def test_undeclared_function_raises_name_error():
 
 def test_external_function_raises_exception():
     """Test that exceptions from external functions propagate to the caller."""
-    m = monty.Monty('fail()', external_functions=['fail'])
+    m = pydantic_monty.Monty('fail()', external_functions=['fail'])
 
     def fail(*args: Any, **kwargs: Any) -> None:
         raise ValueError('intentional error')
 
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(external_functions={'fail': fail})
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)
@@ -159,12 +159,12 @@ def test_external_function_raises_exception():
 
 def test_external_function_wrong_name_raises():
     """Test that calling a missing external function raises KeyError."""
-    m = monty.Monty('foo()', external_functions=['foo'])
+    m = pydantic_monty.Monty('foo()', external_functions=['foo'])
 
     def bar(*args: Any, **kwargs: Any) -> int:
         return 1
 
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(external_functions={'bar': bar})
     inner = exc_info.value.exception()
     assert isinstance(inner, KeyError)
@@ -181,7 +181,7 @@ except ValueError:
     caught = True
 caught
 """
-    m = monty.Monty(code, external_functions=['fail'])
+    m = pydantic_monty.Monty(code, external_functions=['fail'])
 
     def fail(*args: Any, **kwargs: Any) -> None:
         raise ValueError('caught error')
@@ -192,12 +192,12 @@ caught
 
 def test_external_function_exception_type_preserved():
     """Test that various exception types are correctly preserved."""
-    m = monty.Monty('fail()', external_functions=['fail'])
+    m = pydantic_monty.Monty('fail()', external_functions=['fail'])
 
     def fail_type_error(*args: Any, **kwargs: Any) -> None:
         raise TypeError('type error message')
 
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(external_functions={'fail': fail_type_error})
     inner = exc_info.value.exception()
     assert isinstance(inner, TypeError)
@@ -230,12 +230,12 @@ def test_external_function_exception_type_preserved():
 def test_external_function_exception_hierarchy(exception_class: type[BaseException], exception_name: str):
     """Test that exception types in hierarchies are correctly preserved."""
     # Test that exception propagates with correct type
-    m = monty.Monty('fail()', external_functions=['fail'])
+    m = pydantic_monty.Monty('fail()', external_functions=['fail'])
 
     def fail(*args: Any, **kwargs: Any) -> None:
         raise exception_class('test message')
 
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(external_functions={'fail': fail})
     inner = exc_info.value.exception()
     assert isinstance(inner, exception_class)
@@ -268,7 +268,7 @@ except {exception_class.__name__}:
     caught = 'child'
 caught
 """
-    m = monty.Monty(code, external_functions=['fail'])
+    m = pydantic_monty.Monty(code, external_functions=['fail'])
 
     def fail(*args: Any, **kwargs: Any) -> None:
         raise exception_class('test')
@@ -298,7 +298,7 @@ except {exception_class.__name__}:
     caught = '{expected_result}'
 caught
 """
-    m = monty.Monty(code, external_functions=['fail'])
+    m = pydantic_monty.Monty(code, external_functions=['fail'])
 
     def fail(*args: Any, **kwargs: Any) -> None:
         raise exception_class('test')
@@ -309,12 +309,12 @@ caught
 
 def test_external_function_exception_in_expression():
     """Test exception from external function in an expression context."""
-    m = monty.Monty('1 + fail() + 2', external_functions=['fail'])
+    m = pydantic_monty.Monty('1 + fail() + 2', external_functions=['fail'])
 
     def fail(*args: Any, **kwargs: Any) -> int:
         raise RuntimeError('mid-expression error')
 
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(external_functions={'fail': fail})
     inner = exc_info.value.exception()
     assert isinstance(inner, RuntimeError)
@@ -328,7 +328,7 @@ a = success()
 b = fail()
 a + b
 """
-    m = monty.Monty(code, external_functions=['success', 'fail'])
+    m = pydantic_monty.Monty(code, external_functions=['success', 'fail'])
 
     def success(*args: Any, **kwargs: Any) -> int:
         return 10
@@ -336,7 +336,7 @@ a + b
     def fail(*args: Any, **kwargs: Any) -> int:
         raise ValueError('second call fails')
 
-    with pytest.raises(monty.MontyRuntimeError) as exc_info:
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(external_functions={'success': success, 'fail': fail})
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)
@@ -355,7 +355,7 @@ finally:
     finally_ran = True
 finally_ran
 """
-    m = monty.Monty(code, external_functions=['fail'])
+    m = pydantic_monty.Monty(code, external_functions=['fail'])
 
     def fail(*args: Any, **kwargs: Any) -> None:
         raise ValueError('error')

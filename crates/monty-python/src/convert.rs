@@ -8,7 +8,7 @@ use ::monty::MontyObject;
 use monty::MontyException;
 use num_bigint::BigInt;
 use pyo3::{
-    exceptions::PyBaseException,
+    exceptions::{PyBaseException, PyTypeError},
     prelude::*,
     sync::PyOnceLock,
     types::{PyBool, PyBytes, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple},
@@ -51,6 +51,34 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
         let items: PyResult<Vec<MontyObject>> = list.iter().map(|item| py_to_monty(&item)).collect();
         Ok(MontyObject::List(items?))
     } else if let Ok(tuple) = obj.cast::<PyTuple>() {
+        // Check for namedtuple BEFORE treating as regular tuple
+        // Namedtuples have a `_fields` attribute with field names
+        if let Ok(fields) = obj.getattr("_fields")
+            && let Ok(fields_tuple) = fields.cast::<PyTuple>()
+        {
+            let py_type = obj.get_type();
+            // Get the simple class name (e.g., "stat_result")
+            let simple_name = py_type.name()?.to_string();
+            // Get the module (e.g., "os" or "__main__")
+            let module: String = py_type.getattr("__module__")?.extract()?;
+            // Construct full type name: "os.stat_result"
+            // Skip module prefix if it's a Python built-in module
+            let type_name = if module.starts_with('_') || module == "builtins" {
+                simple_name
+            } else {
+                format!("{module}.{simple_name}")
+            };
+            // Extract field names as strings
+            let field_names: PyResult<Vec<String>> = fields_tuple.iter().map(|f| f.extract::<String>()).collect();
+            // Extract values
+            let values: PyResult<Vec<MontyObject>> = tuple.iter().map(|item| py_to_monty(&item)).collect();
+            return Ok(MontyObject::NamedTuple {
+                type_name,
+                field_names: field_names?,
+                values: values?,
+            });
+        }
+        // Regular tuple
         let items: PyResult<Vec<MontyObject>> = tuple.iter().map(|item| py_to_monty(&item)).collect();
         Ok(MontyObject::Tuple(items?))
     } else if let Ok(dict) = obj.cast::<PyDict>() {
@@ -73,11 +101,14 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
         Ok(exc_to_monty_object(exc))
     } else if is_dataclass(obj) {
         dataclass_to_monty(obj)
+    } else if obj.is_instance(get_pure_posix_path(obj.py())?)? {
+        // Handle pathlib.PurePosixPath and thereby pathlib.PosixPath objects
+        let path_str: String = obj.str()?.extract()?;
+        Ok(MontyObject::Path(path_str))
+    } else if let Ok(name) = obj.get_type().name() {
+        Err(PyTypeError::new_err(format!("Cannot convert {name} to Monty value")))
     } else {
-        Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
-            "Cannot convert {} to Monty value",
-            obj.get_type().name()?
-        )))
+        Err(PyTypeError::new_err("Cannot convert unknown type to Monty value"))
     }
 }
 
@@ -105,6 +136,40 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &Bound<'_, Py
             let py_items: PyResult<Vec<Py<PyAny>>> =
                 items.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
             Ok(PyTuple::new(py, py_items?)?.into_any().unbind())
+        }
+        // NamedTuple - create a proper Python namedtuple using collections.namedtuple
+        MontyObject::NamedTuple {
+            type_name,
+            field_names,
+            values,
+        } => {
+            // Extract module and simple name from full type_name
+            // e.g., "os.stat_result" -> module="os", simple_name="stat_result"
+            let (module, simple_name) = if let Some(idx) = type_name.rfind('.') {
+                (&type_name[..idx], &type_name[idx + 1..])
+            } else {
+                ("", type_name.as_str())
+            };
+
+            // Create a namedtuple type with the module set for round-trip support
+            // collections.namedtuple(typename, field_names, module=module)
+            let namedtuple_fn = get_namedtuple(py)?;
+            let py_field_names = PyList::new(py, field_names)?;
+            let nt_type = if module.is_empty() {
+                namedtuple_fn.call1((simple_name, py_field_names))?
+            } else {
+                let kwargs = PyDict::new(py);
+                kwargs.set_item("module", module)?;
+                namedtuple_fn.call((simple_name, py_field_names), Some(&kwargs))?
+            };
+
+            // Convert values and instantiate using _make() which accepts an iterable
+            // note `_make` might start with an underscore, but it's a public documented method
+            // https://docs.python.org/3/library/collections.html#collections.somenamedtuple._make
+            let py_values: PyResult<Vec<Py<PyAny>>> =
+                values.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
+            let instance = nt_type.call_method1("_make", (py_values?,))?;
+            Ok(instance.into_any().unbind())
         }
         MontyObject::Dict(map) => {
             let dict = PyDict::new(py);
@@ -142,6 +207,12 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &Bound<'_, Py
             frozen,
             methods: _,
         } => dataclass_to_py(py, name, *type_id, field_names, attrs, *frozen, dc_registry),
+        // Path - convert to Python pathlib.Path
+        MontyObject::Path(p) => {
+            let pure_posix_path = get_pure_posix_path(py)?;
+            let path_obj = pure_posix_path.call1((p,))?;
+            Ok(path_obj.into_any().unbind())
+        }
         // Output-only types - convert to string representation
         MontyObject::Repr(s) => Ok(PyString::new(py, s).into_any().unbind()),
         MontyObject::Cycle(_, placeholder) => Ok(PyString::new(py, placeholder).into_any().unbind()),
@@ -152,4 +223,18 @@ pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {
     static BUILTINS: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
 
     BUILTINS.get_or_try_init(py, || py.import("builtins").map(Bound::unbind))
+}
+
+/// Cached import of `collections.namedtuple` function.
+fn get_namedtuple(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static NAMEDTUPLE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    NAMEDTUPLE.import(py, "collections", "namedtuple")
+}
+
+/// Cached import of `pathlib.PurePosixPath` class.
+fn get_pure_posix_path(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static PUREPOSIX: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    PUREPOSIX.import(py, "pathlib", "PurePosixPath")
 }

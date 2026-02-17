@@ -1,5 +1,0 @@
-# Allowlist for mypy stubtest
-# Add fully-qualified names of items that should be excluded from stubtest checks
-
-# Internal module exposed by PyO3 - not part of public API
-monty.monty

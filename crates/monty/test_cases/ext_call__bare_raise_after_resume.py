@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # Test bare raise after external call resumption in except handler
 # This tests that current_exception is properly restored after resuming
 # Note: bare raise after resumption only works when exception is bound (as e)

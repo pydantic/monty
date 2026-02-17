@@ -1,5 +1,6 @@
 use std::{
     fmt,
+    sync::atomic::{AtomicU16, Ordering},
     time::{Duration, Instant},
 };
 
@@ -15,6 +16,166 @@ use crate::{
 /// where operations like `2 ** 10_000_000` allocate huge amounts of memory before
 /// the allocation check can catch them.
 pub const LARGE_RESULT_THRESHOLD: usize = 100_000;
+
+/// Pre-checks that a sequence repeat won't exceed resource limits before allocating.
+///
+/// This prevents DoS via expressions like `'x' * 999_999_999` or `b'ab' * huge_int`
+/// by estimating the result size and checking against the resource tracker.
+pub fn check_repeat_size(item_len: usize, count: usize, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
+    check_estimated_size(item_len.saturating_mul(count), tracker)
+}
+
+/// Pre-checks that `base ** exponent` won't exceed resource limits before computing.
+///
+/// The result of `base ** exp` has approximately `base_bits * exp` bits.
+/// For bases with 0 or 1 significant bits (0, 1, -1), the result is always
+/// small regardless of exponent, so the check is skipped.
+///
+/// The estimate includes a 4× safety multiplier because `BigInt::pow` uses repeated squaring,
+/// which allocates intermediate values on the Rust heap (not tracked by the resource tracker).
+/// At peak, old/new base and old/new accumulator coexist simultaneously during each
+/// multiplication step, requiring roughly 4× the final result size in memory.
+pub fn check_pow_size(base_bits: u64, exponent: u64, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
+    // 0**n = 0, 1**n = 1, (-1)**n = ±1 — always small
+    if base_bits <= 1 {
+        return Ok(());
+    }
+    let result_bytes = estimate_bits_to_bytes(base_bits.saturating_mul(exponent));
+    // Repeated squaring needs ~4× result size in peak memory (old/new base + old/new accumulator
+    // coexist during each multiplication step), and these are Rust heap allocations not tracked
+    // by the resource tracker.
+    check_estimated_size(result_bytes.saturating_mul(4), tracker)
+}
+
+/// Pre-checks that an integer multiplication won't exceed resource limits.
+///
+/// The result of multiplying two numbers has at most `a_bits + b_bits` bits.
+pub fn check_mult_size(a_bits: u64, b_bits: u64, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
+    check_estimated_size(estimate_bits_to_bytes(a_bits.saturating_add(b_bits)), tracker)
+}
+
+/// Pre-checks that a left shift won't exceed resource limits.
+///
+/// The result of `value << shift` has approximately `value_bits + shift` bits.
+/// For zero values the result is always zero, so the check is skipped.
+pub fn check_lshift_size(
+    value_bits: u64,
+    shift_amount: u64,
+    tracker: &impl ResourceTracker,
+) -> Result<(), ResourceError> {
+    if value_bits == 0 {
+        return Ok(());
+    }
+    check_estimated_size(estimate_bits_to_bytes(value_bits.saturating_add(shift_amount)), tracker)
+}
+
+/// Pre-checks that an integer division overflow promotion won't exceed resource limits.
+///
+/// Division results are bounded by the dividend size, but we still check for consistency
+/// with other BigInt promotion paths.
+pub fn check_div_size(dividend_bits: u64, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
+    check_estimated_size(estimate_bits_to_bytes(dividend_bits), tracker)
+}
+
+/// Checks an estimated result size against the resource tracker.
+///
+/// Only calls the tracker when the estimate exceeds `LARGE_RESULT_THRESHOLD`
+/// to avoid overhead on small operations.
+fn check_estimated_size(estimated_bytes: usize, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
+    if estimated_bytes > LARGE_RESULT_THRESHOLD {
+        tracker.check_large_result(estimated_bytes)?;
+    }
+    Ok(())
+}
+
+/// Converts an estimated bit count to bytes, saturating to `usize::MAX` on overflow.
+///
+/// Overflow means the result is astronomically large, so saturating ensures
+/// the resource limit check always triggers rather than being silently skipped.
+fn estimate_bits_to_bytes(bits: u64) -> usize {
+    usize::try_from(bits.saturating_add(7) / 8).unwrap_or(usize::MAX)
+}
+
+/// Maximum recursion depth for data structure operations (repr, eq, hash, etc.).
+///
+/// Separate from the function call stack limit. This protects against stack overflow
+/// when traversing deeply nested structures.
+///
+/// Lower in debug mode to avoid stack overflow (debug builds use more stack space
+/// per call frame).
+#[cfg(debug_assertions)]
+pub const MAX_DATA_RECURSION_DEPTH: u16 = 100;
+
+/// Maximum recursion depth for data structure operations (repr, eq, hash, etc.).
+///
+/// Separate from the function call stack limit. This protects against stack overflow
+/// when traversing deeply nested structures.
+#[cfg(not(debug_assertions))]
+pub const MAX_DATA_RECURSION_DEPTH: u16 = 500;
+
+/// Tracks recursion depth for container operations (repr, eq, cmp, hash).
+///
+/// The guard tracks remaining depth rather than current depth, making the
+/// check a simple decrement-and-check operation.
+#[derive(Debug, Clone)]
+pub struct DepthGuard {
+    /// Remaining depth before limit is exceeded.
+    depth_remaining: u16,
+}
+
+impl DepthGuard {
+    /// Increases recursion depth, returning `true` if within limits, `false` if exceeded.
+    ///
+    /// When this returns `true`, you MUST call `decrease()` on every return path.
+    /// When it returns `false`, the depth was not incremented, so `decrease()` must NOT be called.
+    ///
+    /// Use this in contexts like `py_repr_fmt` where exceeding the limit should
+    /// produce a truncated representation (e.g. `...`) rather than an error.
+    #[inline]
+    pub fn increase(&mut self) -> bool {
+        if let Some(decr) = self.depth_remaining.checked_sub(1) {
+            self.depth_remaining = decr;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Increases recursion depth, returning `Err(ResourceError::Recursion)` if
+    /// the limit is exceeded.
+    ///
+    /// MUST call `decrease()` on every return path after a successful call.
+    /// For complex control flow with multiple exit points, use the `*_inner` pattern
+    /// where the outer function handles `increase_err()/decrease()` and delegates to
+    /// an inner function for the actual implementation.
+    #[inline]
+    pub fn increase_err(&mut self) -> Result<(), ResourceError> {
+        if self.increase() {
+            Ok(())
+        } else {
+            Err(ResourceError::Recursion {
+                limit: MAX_DATA_RECURSION_DEPTH as usize,
+                depth: MAX_DATA_RECURSION_DEPTH as usize + 1,
+            })
+        }
+    }
+
+    /// Decreases recursion depth (must be called after a successful `increase()` or `increase_err()`).
+    ///
+    /// This restores the guard's remaining depth after exiting a level of recursion.
+    #[inline]
+    pub fn decrease(&mut self) {
+        self.depth_remaining += 1;
+    }
+}
+
+impl Default for DepthGuard {
+    fn default() -> Self {
+        Self {
+            depth_remaining: MAX_DATA_RECURSION_DEPTH,
+        }
+    }
+}
 
 /// Error returned when a resource limit is exceeded during execution.
 ///
@@ -129,7 +290,11 @@ pub trait ResourceTracker: fmt::Debug {
     ///
     /// Returns `Ok(())` if within time limit, or `Err(ResourceError::Time)`
     /// if the limit is exceeded.
-    fn check_time(&mut self) -> Result<(), ResourceError>;
+    ///
+    /// Takes `&self` rather than `&mut self` because checking elapsed time is a
+    /// read-only operation. This allows time checks in contexts that only have
+    /// an immutable heap reference, such as `py_repr_fmt`.
+    fn check_time(&self) -> Result<(), ResourceError>;
 
     /// Called before pushing a new call frame to check recursion depth.
     ///
@@ -170,7 +335,7 @@ impl ResourceTracker for NoLimitTracker {
     fn on_free(&mut self, _: impl FnOnce() -> usize) {}
 
     #[inline]
-    fn check_time(&mut self) -> Result<(), ResourceError> {
+    fn check_time(&self) -> Result<(), ResourceError> {
         Ok(())
     }
 
@@ -216,6 +381,9 @@ pub struct ResourceLimits {
     /// Maximum recursion depth (function call stack depth).
     pub max_recursion_depth: Option<usize>,
 }
+
+/// Recommended maximum recursion depth if not otherwise specified.
+pub const DEFAULT_MAX_RECURSION_DEPTH: usize = 1000;
 
 impl ResourceLimits {
     /// Creates a new ResourceLimits with all limits disabled, except max recursion which is set to 1000.
@@ -263,6 +431,14 @@ impl ResourceLimits {
     }
 }
 
+/// How often to actually check `Instant::elapsed()` in `check_time`.
+///
+/// Calling `Instant::elapsed()` on every `check_time` invocation adds measurable
+/// overhead in tight loops (the VM calls `check_time` on every instruction).
+/// By only checking every N calls, we reduce this overhead while still catching
+/// timeouts promptly.
+const TIME_CHECK_INTERVAL: u16 = 10;
+
 /// A resource tracker that enforces configurable limits.
 ///
 /// Tracks allocation count, memory usage, and execution time, returning
@@ -282,6 +458,11 @@ pub struct LimitedTracker {
     allocation_count: usize,
     /// Current approximate memory usage in bytes.
     current_memory: usize,
+    /// Counter for rate-limiting `Instant::elapsed()` calls in `check_time`.
+    ///
+    /// Uses `AtomicU16` for interior mutability since `check_time` takes `&self`
+    /// and `LimitedTracker` must be `Sync` (it ends up inside PyO3 pyclass types).
+    check_counter: AtomicU16,
 }
 
 impl LimitedTracker {
@@ -296,6 +477,7 @@ impl LimitedTracker {
             start_time: Instant::now(),
             allocation_count: 0,
             current_memory: 0,
+            check_counter: AtomicU16::new(0),
         }
     }
 
@@ -315,6 +497,16 @@ impl LimitedTracker {
     #[must_use]
     pub fn elapsed(&self) -> Duration {
         self.start_time.elapsed()
+    }
+
+    /// Sets the maximum execution duration and resets the start time to now.
+    ///
+    /// This is useful when resuming execution after an external function call
+    /// where you want to enforce a different (typically shorter) time limit
+    /// for the resumed phase without counting the time spent in the host.
+    pub fn set_max_duration(&mut self, duration: Duration) {
+        self.limits.max_duration = Some(duration);
+        self.start_time = Instant::now();
     }
 }
 
@@ -353,11 +545,21 @@ impl ResourceTracker for LimitedTracker {
         self.current_memory = self.current_memory.saturating_sub(get_size());
     }
 
-    fn check_time(&mut self) -> Result<(), ResourceError> {
+    fn check_time(&self) -> Result<(), ResourceError> {
         if let Some(max) = self.limits.max_duration {
-            let elapsed = self.start_time.elapsed();
-            if elapsed > max {
-                return Err(ResourceError::Time { limit: max, elapsed });
+            let count = self.check_counter.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+            if count.is_multiple_of(TIME_CHECK_INTERVAL) {
+                // Only call Instant::elapsed() every TIME_CHECK_INTERVAL calls
+                let elapsed = self.start_time.elapsed();
+                if elapsed > max {
+                    // Reset counter so the very next check_time call also triggers
+                    // an elapsed check. This is important because some callers
+                    // (e.g. repr_sequence_fmt) catch the error and return normally,
+                    // and we need the VM loop's next check_time to re-detect timeout.
+                    self.check_counter
+                        .store(TIME_CHECK_INTERVAL.wrapping_sub(1), Ordering::Relaxed);
+                    return Err(ResourceError::Time { limit: max, elapsed });
+                }
             }
         }
         Ok(())

@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # === Basic dataclass tests ===
 
 # Get immutable dataclass from external function

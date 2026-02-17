@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # External calls in nested call expressions
 
 # Nested external calls - inner first

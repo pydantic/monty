@@ -14,25 +14,87 @@ Project goals:
 - **Snapshotting and iteration**: Plan is to allow code to be iteratively executed and snapshotted at each function call
 - Targets the latest stable version of Python, currently Python 3.14
 
+## Important Security Notice
+
+It's ABSOLUTELY CRITICAL that there's no way for code run in a Monty sandbox to access the host filesystem, or environment or to in any way "escape the sandbox".
+
+**Monty will be used to run untrusted, potentially malicious code.**
+
+Make sure there's no risk of this, either in the implementation, or in the public API that makes it more like that a developer using the pydantic_monty package might make such a mistake.
+
+Possible security risks to consider:
+* filesystem access
+* path traversal to access files the users did not intend to expose to the monty sandbox
+* memory errors - use of unsafe memory operations
+* excessive memory usage - evading monty's resource limits
+* infinite loops - evading monty's resource limits
+* network access - sockets, HTTP requests
+* subprocess/shell execution - os.system, subprocess, etc.
+* import system abuse - importing modules with side effects or accessing `__import__`
+* external function/callback misuse - callbacks run in host environment
+* deserialization attacks - loading untrusted serialized Monty/snapshot data
+* regex/string DoS - catastrophic backtracking or operations bypassing limits
+* information leakage via timing or error messages
+* Python/Javascript/Rust APIs that accidentally allow developers to expose their host to monty code
+
 ## Bytecode VM Architecture
 
 Monty is implemented as a bytecode VM, same as CPython.
 
 ### Reference Count Safety
 
-When operations can fail (return `Result`), operands must be dropped BEFORE propagating errors with `?`. Otherwise, reference counts leak:
+All types that implement `DropWithHeap` hold heap references and **must** be cleaned up correctly on every code path — not just the happy path, but also early returns via `?`, `continue`, conditional branches, etc. A missed `drop_with_heap` on any branch leaks reference counts. There are three mechanisms for ensuring this, listed in order of preference:
+
+#### 1. `defer_drop!` macro (preferred)
+
+The simplest and safest approach. Use `defer_drop!` (or `defer_drop_mut!` when mutable access to the value is needed) to bind a value into a guard that automatically drops it when scope exits — whether that's normal completion, early return via `?`, `continue`, or any other branch. The macro rebinds the value and heap variables as borrows from the guard, so you keep using them by name as before:
 
 ```rust
-// WRONG (leaks on error):
-let result = lhs.py_add(&rhs, heap)?;  // If error, lhs/rhs leak!
-lhs.drop_with_heap(heap);
-
-// CORRECT (drop before propagating):
-let result = lhs.py_add(&rhs, heap);   // Don't use ? yet
-lhs.drop_with_heap(heap);              // Always drop operands
-rhs.drop_with_heap(heap);
-self.push(result?);                    // Now propagate error
+let value = self.pop();
+defer_drop!(value, heap);          // value is now &Value, heap is now &mut Heap
+let result = value.py_repr(heap)?; // guard handles cleanup on all paths
 ```
+
+Beyond safety, `defer_drop!` is often much more concise than inserting `drop_with_heap` calls in every branch of complex control flow.
+
+`defer_drop!` gives you an immutable reference to the value. Use `defer_drop_mut!` when you need a mutable reference (e.g. iterators, values you may swap):
+
+```rust
+let iter = heap.get_iter(iter_ref);
+defer_drop_mut!(iter, heap);
+while let Some(item) = iter.for_next(heap)? { ... }
+```
+
+**Limitation:** because the macro rebinds the heap, it cannot be used inside `&mut self` methods where `self` owns the heap — first assign `let this = self;` and pass `this` instead.
+
+#### 2. `HeapGuard` (when you need control over the value's fate)
+
+Use `HeapGuard` directly when `defer_drop!` is too restrictive — specifically when you need to conditionally extract the value instead of dropping it. `HeapGuard` provides `into_inner()` and `into_parts()` to reclaim ownership, while its `Drop` impl still guarantees cleanup on all other paths:
+
+```rust
+// HeapGuard needed here because on success we push lhs back onto the stack
+// instead of dropping it
+let mut lhs_guard = HeapGuard::new(self.pop(), self);
+let (lhs, this) = lhs_guard.as_parts_mut();
+
+if lhs.py_iadd(rhs, this.heap)? {
+    let (lhs, this) = lhs_guard.into_parts(); // reclaim lhs, don't drop
+    this.push(lhs);
+    return Ok(());
+}
+// otherwise lhs_guard drops lhs automatically at scope exit
+```
+
+#### 3. Manual `drop_with_heap` (for trivially simple cases)
+
+For very simple cases with a single linear code path and no branching between acquiring and releasing the value, a direct `drop_with_heap` call is fine:
+
+```rust
+let iter = self.pop();
+iter.drop_with_heap(&mut self.heap); // single path, no branching
+```
+
+Avoid manual `drop_with_heap` whenever there are multiple code paths (branching, `?`, `continue`, early returns) between acquiring and releasing the value — that is exactly where `defer_drop!` or `HeapGuard` prevent leaks by guaranteeing cleanup on every path.
 
 ## Dev Commands
 
@@ -83,6 +145,10 @@ make help                 Show this help (usage: make help)
 
 Use the /python-playground skill to check cpython and monty behavior.
 
+## Releasing
+
+See [RELEASING.md](RELEASING.md) for the release process.
+
 ## Exception
 
 It's important that exceptions raised/returned by this library match those raised by Python.
@@ -118,13 +184,17 @@ explain what it does and why and any considerations or potential foot-guns of us
 
 The only exception is trait implementation methods where a docstring is not necessary if the method is self-explanatory.
 
+It's important that docstrings cover the motivation and primary usage patterns of code, not just the simple "what it does".
+
+Similarly, you should add comments to code, especially if the code is complex or esoteric.
+
 Only add examples to docstrings of public functions and structs, examples should be <=8 lines, if the example is more, remove it.
 
 If you add example code to docstrings, it must be run in tests. NEVER add examples that are ignored.
 
-Similarly, you should add lots of comments to code.
+If you encounter a comment or docstring that's out of date - you MUST update it to be correct.
 
-If you see a comment or docstring that's out of date - you MUST update it to be correct.
+Similarly, if you encounter code that has no docstrings or comments, or they are minimal, you should add more detail.
 
 NOTE: COMMENTS AND DOCSTRINGS ARE EXTREMELY IMPORTANT TO THE LONG TERM HEALTH OF THE PROJECT.
 
@@ -191,6 +261,8 @@ assert x == expected, 'test description'
 
 Each `assert` should have a descriptive message.
 
+Do NOT Write tests like `assert 'thing' in msg` it's lazy and inexact unless explicitly told to do so, instead write tests like `assert msg == 'expected message'` to ensure clarity and accuracy and most importantly, to identify differences between Monty and CPython.
+
 ### When to Create Separate Test Files
 
 Only create a separate test file when you MUST use one of these special expectation formats:
@@ -256,7 +328,11 @@ Key points:
 
 Only use `# Raise=` when you only care about the exception type/message and not the traceback.
 
-### Xfail Directive (Strict)
+### Python fixture markers
+
+You may mark python files with:
+* `# call-external` to support calling external functions
+* `# run-async` to support running async code
 
 NEVER MARK TESTS AS XFAIL UNDER ANY CIRCUMSTANCES!!! INSTEAD FIX THE BEHAVIOR SO THAT THE TEST PASSES.
 
@@ -266,22 +342,25 @@ Never mark tests as:
 
 NEVER MARK TESTS AS XFAIL UNDER ANY CIRCUMSTANCES!!! INSTEAD FIX THE BEHAVIOR SO THAT THE TEST PASSES.
 
+All these markers must be at the start of comment lines to be recognized.
+
 ### Other Notes
 
 - Prefer single quotes for strings in Python tests
-- do NOT add `# noqa` comments to test code, instead add the failing code to `pyproject.toml`
+- Do NOT add `# noqa` or  `# pyright: ignore` comments to test code, instead add the failing code to `pyproject.toml`
+- The ONLY exception is `await` expressions outside of async functions, where you should add `# pyright: ignore`
 - Run `make lint-py` after adding tests
 - Use `make complete-tests` to fill in blank expectations
-- Tests run via `datatest-stable` harness in `tests/datatest_runner.rs`
+- Tests run via `datatest-stable` harness in `tests/datatest_runner.rs`, use `make test-cases` to run them
 
-## Python Package (`monty-python`)
+## Python Package (`pydantic-monty`)
 
 The Python package provides Python bindings for the Monty interpreter, located in `crates/monty-python/`.
 
 ### Structure
 
 - `crates/monty-python/src/` - Rust source for PyO3 bindings
-- `crates/monty-python/monty.pyi` - Type stubs for the Python module
+- `crates/monty-python/python/pydantic_monty/_monty.pyi` - Type stubs for the Python module
 - `crates/monty-python/tests/` - Python tests using pytest
 
 ### Building and Testing
@@ -312,13 +391,16 @@ Check and follow the style of other python tests.
 
 Make sure you put tests in the correct file.
 
-**DO NOT use python/pytest tests for `monty` core functionality!** When testing core functionality, add tests to `crates/monty/test_cases/` or `crates/monty/tests/`. Only use python/pytest tests for `monty-python` functionality testing.
+**DO NOT use python/pytest tests for `monty` core functionality!** When testing core functionality, add tests to `crates/monty/test_cases/` or `crates/monty/tests/`. Only use python/pytest tests for `pydantic_monty` functionality testing.
 
 **NEVER use class-based tests.** All tests should be simple functions.
 
 Use `@pytest.mark.parametrize` whenever testing multiple similar cases.
 
 Use `snapshot` from `inline-snapshot` for all test asserts.
+
+NEVER do the lazy `assert '...' in ...` instead always do `assert value == snapshot()`,
+then run the test and inline-snapshot will fill in the missing value in the `snapshot()` call.
 
 Use `pytest.raises` for expected exceptions, like this
 
@@ -373,16 +455,29 @@ The JavaScript package provides Node.js bindings for the Monty interpreter via n
 
 ### Current API
 
-The package currently exposes a single function:
+The package exposes:
+
+- `Monty` class - Parse and execute Python code with inputs, external functions, and resource limits
+- `MontySnapshot` / `MontyComplete` - For iterative execution with `start()` / `resume()`
+- `runMontyAsync()` - Helper for async external functions
+- `MontySyntaxError` / `MontyRuntimeError` / `MontyTypingError` - Error classes
 
 ```ts
-function run(code: string): RunResult
+import { Monty, MontySnapshot, runMontyAsync } from '@pydantic/monty'
 
-interface RunResult {
-  output: string  // Captured print() output
-  result: string  // Debug representation of final value
+// Basic execution
+const m = new Monty('x + 1', { inputs: ['x'] })
+const result = m.run({ inputs: { x: 10 } }) // returns 11
+
+// Iterative execution for external functions
+const m2 = new Monty('fetch(url)', { inputs: ['url'], externalFunctions: ['fetch'] })
+let progress = m2.start({ inputs: { url: 'https://...' } })
+if (progress instanceof MontySnapshot) {
+  progress = progress.resume({ returnValue: 'response data' })
 }
 ```
+
+See `crates/monty-js/README.md` for full API documentation.
 
 ### Building and Testing
 
@@ -419,14 +514,4 @@ npm test
 
 - Tests use [ava](https://github.com/avajs/ava) and live in `crates/monty-js/__test__/`
 - Tests are written in TypeScript
-- Follow the existing test style in `index.spec.ts`
-
-### Future Work
-
-The JS bindings currently only expose a simple `run()` function. Future work may expose:
-- Input variables
-- Resource limits
-- External functions
-- Snapshot/resume (iterative execution)
-
-These features mirror the Python package API and are implemented in the Rust core.
+- Follow the existing test style in the `__test__/` directory

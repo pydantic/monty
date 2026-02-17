@@ -66,3 +66,108 @@ def kwonly_echo(*, keyword):
 
 key_name = 'k' + 'e' + 'y' + 'w' + 'o' + 'r' + 'd'
 assert kwonly_echo(**{key_name: 'dynamic'}) == 'dynamic', 'runtime string key matches kw-only param'
+
+
+# ============================================================
+# *args unpacking tests (function calls)
+# ============================================================
+
+
+# === *args with zero args ===
+def no_args():
+    return 'ok'
+
+
+assert no_args(*[]) == 'ok', '*args with empty list'
+assert no_args(*()) == 'ok', '*args with empty tuple'
+
+
+# === *args with one arg ===
+def one_arg(x):
+    return x * 2
+
+
+assert one_arg(*[5]) == 10, '*args with one item list'
+assert one_arg(*(7,)) == 14, '*args with one item tuple'
+
+
+# === *args with two args ===
+def two_args(a, b):
+    return a + b
+
+
+assert two_args(*[1, 2]) == 3, '*args with two item list'
+assert two_args(*(3, 4)) == 7, '*args with two item tuple'
+
+
+# === *args with three+ args ===
+def many_args(a, b, c, d):
+    return a + b + c + d
+
+
+assert many_args(*[1, 2, 3, 4]) == 10, '*args with four items'
+assert many_args(*(10, 20, 30, 40)) == 100, '*args with tuple four items'
+
+
+# === Mixed positional and *args ===
+assert two_args(1, *[2]) == 3, 'pos + *args'
+assert many_args(1, 2, *[3, 4]) == 10, 'two pos + *args'
+
+
+# === *args with heap-allocated values ===
+def list_arg(lst):
+    return len(lst)
+
+
+my_list = [1, 2, 3]
+assert list_arg(*[my_list]) == 3, '*args with list value'
+
+
+# ============================================================
+# Combined *args and **kwargs (function calls)
+# ============================================================
+
+
+# === *args and **kwargs together ===
+def mixed_func(a, b, c):
+    return f'{a}-{b}-{c}'
+
+
+assert mixed_func(*[1], **{'b': 2, 'c': 3}) == '1-2-3', '*args and **kwargs'
+assert mixed_func(*[1, 2], **{'c': 3}) == '1-2-3', 'two *args and **kwargs'
+
+
+# === *args tuple with **kwargs ===
+args_tuple = (10, 20)
+kwargs_dict = {'c': 30}
+assert many_args(*args_tuple, **kwargs_dict, d=40) == 100, '*args tuple + **kwargs + regular kwarg'
+
+
+# === Empty *args with **kwargs ===
+assert mixed_func(*[], **{'a': 'x', 'b': 'y', 'c': 'z'}) == 'x-y-z', 'empty *args with **kwargs'
+
+
+# === *args with empty **kwargs ===
+assert two_args(*[5, 6], **{}) == 11, '*args with empty **kwargs'
+
+
+# === All combinations: pos, *args, kwargs, **kwargs ===
+def full_func(a, b, c, d):
+    return a * 1000 + b * 100 + c * 10 + d
+
+
+assert full_func(1, *[2], c=3, **{'d': 4}) == 1234, 'pos + *args + kwarg + **kwargs'
+
+
+# === *args with heap values and **kwargs ===
+def heap_func(lst, dct):
+    return len(lst) + len(dct)
+
+
+list_val = [1, 2, 3]
+dict_val = {'a': 1}
+assert heap_func(*[list_val], **{'dct': dict_val}) == 4, '*args and **kwargs with heap values'
+
+
+# === Both *args and **kwargs empty ===
+assert no_args(*[], **{}) == 'ok', 'empty *args and empty **kwargs'

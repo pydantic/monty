@@ -1,5 +1,5 @@
 [package]
-name = "monty-python"
+name = "pydantic-monty"
 description = "Python bindings for the Monty sandboxed Python interpreter"
 readme = "README.md"
 version = { workspace = true }
@@ -13,20 +13,21 @@ homepage = { workspace = true }
 repository = { workspace = true }
 
 [lib]
-name = "monty"
+name = "_monty"
 crate-type = ["cdylib"]
 
 [dependencies]
 monty = { path = "../monty" }
 monty_type_checking = { path = "../monty-type-checking" }
-pyo3 = { version = "0.27.2", features = ["indexmap", "generate-import-lib", "num-bigint"] }
+pyo3 = { version = "0.28", features = ["indexmap", "generate-import-lib", "num-bigint"] }
 num-bigint = { workspace = true }
 indexmap = { workspace = true }
 serde = { workspace = true }
 postcard = { workspace = true }
+send_wrapper = "0.6.0"
 
 [build-dependencies]
-pyo3-build-config = { version = "0.27.2", features = ["resolve-config"] }
+pyo3-build-config = { version = "0.28", features = ["resolve-config"] }
 
 [features]
 # make extensions visible to cargo vendor

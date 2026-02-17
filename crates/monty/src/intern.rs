@@ -1,7 +1,7 @@
-//! String and bytes interning for efficient storage of literals and identifiers.
+//! String, bytes, and long integer interning for efficient storage of literals and identifiers.
 //!
-//! This module provides interners that store unique strings and bytes in vectors
-//! and return indices (`StringId`, `BytesId`) for efficient storage and comparison.
+//! This module provides interners that store unique strings, bytes, and long integers in vectors
+//! and return indices (`StringId`, `BytesId`, `LongIntId`) for efficient storage and comparison.
 //! This avoids the overhead of cloning strings or using atomic reference counting.
 //!
 //! The interners are populated during parsing and preparation, then owned by the `Executor`.
@@ -15,6 +15,7 @@
 use std::{str::FromStr, sync::LazyLock};
 
 use ahash::AHashMap;
+use num_bigint::BigInt;
 use strum::{EnumString, FromRepr, IntoStaticStr};
 
 use crate::{function::Function, value::Value};
@@ -221,6 +222,31 @@ pub enum StaticStrings {
     Monty,
 
     // ==========================
+    // os.stat_result fields
+    #[strum(serialize = "StatResult")]
+    OsStatResult,
+    #[strum(serialize = "st_mode")]
+    StMode,
+    #[strum(serialize = "st_ino")]
+    StIno,
+    #[strum(serialize = "st_dev")]
+    StDev,
+    #[strum(serialize = "st_nlink")]
+    StNlink,
+    #[strum(serialize = "st_uid")]
+    StUid,
+    #[strum(serialize = "st_gid")]
+    StGid,
+    #[strum(serialize = "st_size")]
+    StSize,
+    #[strum(serialize = "st_atime")]
+    StAtime,
+    #[strum(serialize = "st_mtime")]
+    StMtime,
+    #[strum(serialize = "st_ctime")]
+    StCtime,
+
+    // ==========================
     // typing module strings
     #[strum(serialize = "typing")]
     Typing,
@@ -278,8 +304,109 @@ pub enum StaticStrings {
     NoReturn,
 
     // ==========================
+    // asyncio module strings
+    #[strum(serialize = "asyncio")]
+    Asyncio,
+    #[strum(serialize = "gather")]
+    Gather,
+
+    // ==========================
+    // os module strings
+    #[strum(serialize = "os")]
+    Os,
+    #[strum(serialize = "getenv")]
+    Getenv,
+    #[strum(serialize = "environ")]
+    Environ,
+    #[strum(serialize = "default")]
+    Default,
+
+    // ==========================
     // Exception attributes
     Args,
+
+    // ==========================
+    // Type attributes
+    #[strum(serialize = "__name__")]
+    DunderName,
+
+    // ==========================
+    // pathlib module strings
+    #[strum(serialize = "pathlib")]
+    Pathlib,
+    #[strum(serialize = "Path")]
+    PathClass,
+
+    // Path properties (pure - no I/O)
+    #[strum(serialize = "name")]
+    Name,
+    #[strum(serialize = "parent")]
+    Parent,
+    #[strum(serialize = "stem")]
+    Stem,
+    #[strum(serialize = "suffix")]
+    Suffix,
+    #[strum(serialize = "suffixes")]
+    Suffixes,
+    #[strum(serialize = "parts")]
+    Parts,
+
+    // Path pure methods (no I/O)
+    #[strum(serialize = "is_absolute")]
+    IsAbsolute,
+    #[strum(serialize = "joinpath")]
+    Joinpath,
+    #[strum(serialize = "with_name")]
+    WithName,
+    #[strum(serialize = "with_stem")]
+    WithStem,
+    #[strum(serialize = "with_suffix")]
+    WithSuffix,
+    #[strum(serialize = "as_posix")]
+    AsPosix,
+    #[strum(serialize = "__fspath__")]
+    Fspath,
+
+    // Path filesystem methods (require OsAccess - yield external calls)
+    #[strum(serialize = "exists")]
+    Exists,
+    #[strum(serialize = "is_file")]
+    IsFile,
+    #[strum(serialize = "is_dir")]
+    IsDir,
+    #[strum(serialize = "is_symlink")]
+    IsSymlink,
+    #[strum(serialize = "stat")]
+    StatMethod,
+    #[strum(serialize = "read_bytes")]
+    ReadBytes,
+    #[strum(serialize = "read_text")]
+    ReadText,
+    #[strum(serialize = "iterdir")]
+    Iterdir,
+    #[strum(serialize = "resolve")]
+    Resolve,
+    #[strum(serialize = "absolute")]
+    Absolute,
+
+    // Path write methods (require OsAccess - yield external calls)
+    #[strum(serialize = "write_text")]
+    WriteText,
+    #[strum(serialize = "write_bytes")]
+    WriteBytes,
+    #[strum(serialize = "mkdir")]
+    Mkdir,
+    #[strum(serialize = "unlink")]
+    Unlink,
+    #[strum(serialize = "rmdir")]
+    Rmdir,
+    #[strum(serialize = "rename")]
+    Rename,
+
+    // Slice attributes
+    Start,
+    Stop,
+    Step,
 }
 
 impl StaticStrings {
@@ -333,6 +460,21 @@ impl BytesId {
     }
 }
 
+/// Index into the long integer interner's storage.
+///
+/// Used for integer literals that exceed i64 range. The actual `BigInt` values
+/// are stored in the `Interns` table and looked up by index at runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct LongIntId(u32);
+
+impl LongIntId {
+    /// Returns the raw index value.
+    #[inline]
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 /// Unique identifier for functions
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct FunctionId(u32);
@@ -370,11 +512,11 @@ impl ExtFunctionId {
     }
 }
 
-/// A string and bytes interner that stores unique values and returns indices for lookup.
+/// A string, bytes, and long integer interner that stores unique values and returns indices for lookup.
 ///
 /// Interns are deduplicated on insertion - interning the same string twice returns
-/// the same `StringId`. Bytes are NOT deduplicated (rare enough that it's not worth it).
-/// The interner owns all strings/bytes and provides lookup by index.
+/// the same `StringId`. Bytes and long integers are NOT deduplicated (rare enough that it's not worth it).
+/// The interner owns all strings/bytes/long integers and provides lookup by index.
 ///
 /// # Thread Safety
 ///
@@ -389,6 +531,9 @@ pub struct InternerBuilder {
     /// Storage for interned bytes literals, indexed by `BytesId`.
     /// Not deduplicated since bytes literals are rare.
     bytes: Vec<Vec<u8>>,
+    /// Storage for interned long integer literals, indexed by `LongIntId`.
+    /// Not deduplicated since long integer literals are rare.
+    long_ints: Vec<BigInt>,
 }
 
 impl InternerBuilder {
@@ -414,7 +559,32 @@ impl InternerBuilder {
             string_map: AHashMap::with_capacity(capacity),
             strings: Vec::with_capacity(capacity),
             bytes: Vec::new(),
+            long_ints: Vec::new(),
         }
+    }
+
+    /// Creates a builder pre-seeded from an existing [`Interns`] table.
+    ///
+    /// This is used by REPL incremental compilation: previously compiled interned
+    /// values keep stable IDs, and newly interned values are appended.
+    pub(crate) fn from_interns(interns: &Interns, code: &str) -> Self {
+        let mut builder = Self::new(code);
+        builder.strings.clone_from(&interns.strings);
+        builder.bytes.clone_from(&interns.bytes);
+        builder.long_ints.clone_from(&interns.long_ints);
+
+        builder.string_map = builder
+            .strings
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let id = StringId(
+                    u32::try_from(INTERN_STRING_ID_OFFSET + index).expect("StringId overflow while seeding interner"),
+                );
+                (value.clone(), id)
+            })
+            .collect();
+        builder
     }
 
     /// Interns a string, returning its `StringId`.
@@ -447,6 +617,15 @@ impl InternerBuilder {
         id
     }
 
+    /// Interns a long integer, returning its `LongIntId`.
+    ///
+    /// Big integers are not deduplicated since literals exceeding i64 are rare.
+    pub fn intern_long_int(&mut self, bi: BigInt) -> LongIntId {
+        let id = LongIntId(self.long_ints.len().try_into().expect("LongIntId overflow"));
+        self.long_ints.push(bi);
+        id
+    }
+
     /// Looks up a string by its `StringId`.
     #[inline]
     pub fn get_str(&self, id: StringId) -> &str {
@@ -470,13 +649,14 @@ fn get_str(strings: &[String], id: StringId) -> &str {
     }
 }
 
-/// Read-only storage for interned string and bytes.
+/// Read-only storage for interned strings, bytes, and long integers.
 ///
-/// This provides lookup by `StringId`, `BytesId` and `FunctionId` for interned literals and functions
+/// This provides lookup by `StringId`, `BytesId`, `LongIntId` and `FunctionId` for interned literals and functions.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Interns {
     strings: Vec<String>,
     bytes: Vec<Vec<u8>>,
+    long_ints: Vec<BigInt>,
     functions: Vec<Function>,
     external_functions: Vec<String>,
 }
@@ -486,6 +666,7 @@ impl Interns {
         Self {
             strings: interner.strings,
             bytes: interner.bytes,
+            long_ints: interner.long_ints,
             functions,
             external_functions,
         }
@@ -509,6 +690,16 @@ impl Interns {
     #[inline]
     pub fn get_bytes(&self, id: BytesId) -> &[u8] {
         &self.bytes[id.index()]
+    }
+
+    /// Looks up a long integer by its `LongIntId`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `LongIntId` is invalid.
+    #[inline]
+    pub fn get_long_int(&self, id: LongIntId) -> &BigInt {
+        &self.long_ints[id.index()]
     }
 
     /// Lookup a function by its `FunctionId`
@@ -540,5 +731,12 @@ impl Interns {
     /// compiled from `PreparedFunctionDef` nodes.
     pub fn set_functions(&mut self, functions: Vec<Function>) {
         self.functions = functions;
+    }
+
+    /// Returns a clone of the compiled function table.
+    ///
+    /// Used by REPL incremental compilation to preserve existing function IDs.
+    pub(crate) fn functions_clone(&self) -> Vec<Function> {
+        self.functions.clone()
     }
 }

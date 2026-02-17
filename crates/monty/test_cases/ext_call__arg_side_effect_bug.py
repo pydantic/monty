@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # BUG: Side effects in arguments are duplicated when external call suspends
 #
 # When an external call is in one argument position and there's a side effect

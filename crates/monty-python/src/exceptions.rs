@@ -14,7 +14,7 @@
 //! ```
 
 use ::monty::{ExcType, MontyException, StackFrame};
-use monty_type_checking::TypeCheckingFailure;
+use monty_type_checking::TypeCheckingDiagnostics;
 use pyo3::{
     PyClassInitializer, PyTypeCheck,
     exceptions::{self},
@@ -28,7 +28,7 @@ use crate::dataclass::get_frozen_instance_error;
 ///
 /// This is the parent class for both `MontySyntaxError` and `MontyRuntimeError`.
 /// Catching `MontyError` will catch any exception raised by Monty.
-#[pyclass(extends=exceptions::PyException, module="monty", subclass)]
+#[pyclass(extends=exceptions::PyException, module="pydantic_monty", subclass, skip_from_py_object)]
 #[derive(Clone)]
 pub struct MontyError {
     /// The underlying Monty exception.
@@ -98,7 +98,7 @@ impl MontyError {
 /// Raised when Python code has syntax errors or cannot be parsed by Monty.
 ///
 /// Inherits from `MontyError`. The inner exception is always a `SyntaxError`.
-#[pyclass(extends=MontyError, module="monty")]
+#[pyclass(extends=MontyError, module="pydantic_monty", skip_from_py_object)]
 #[derive(Clone)]
 pub struct MontySyntaxError;
 
@@ -156,15 +156,15 @@ impl MontySyntaxError {
 /// Inherits from `MontyError`. This exception is raised when static type
 /// analysis detects type errors. Stores the `TypeCheckingFailure` so diagnostics
 /// can be re-rendered with different format/color settings via `display()`.
-#[pyclass(extends=MontyError, module="monty", unsendable)]
+#[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyTypingError {
-    failure: TypeCheckingFailure,
+    failure: TypeCheckingDiagnostics,
 }
 
 impl MontyTypingError {
     /// Creates a `MontyTypingError` from a `TypeCheckingFailure`.
     #[must_use]
-    pub fn new_err(py: Python<'_>, failure: TypeCheckingFailure) -> PyErr {
+    pub fn new_err(py: Python<'_>, failure: TypeCheckingDiagnostics) -> PyErr {
         // we need a MontyException to create the base, but it shouldn't be visible anywhere
         let base = MontyError::new(MontyException::new(ExcType::TypeError, None));
         let init = PyClassInitializer::from(base).add_subclass(Self { failure });
@@ -205,7 +205,7 @@ impl MontyTypingError {
 ///
 /// Inherits from `MontyError`. Additionally provides `traceback()` to access
 /// the Monty stack frames where the error occurred.
-#[pyclass(extends=MontyError, module="monty")]
+#[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyRuntimeError {
     /// The traceback frames where the error occurred (pre-converted to Python objects).
     frames: Vec<Py<PyFrame>>,
@@ -293,7 +293,7 @@ impl MontyRuntimeError {
 ///
 /// Contains all the information needed to display a traceback line:
 /// the file location, function name, and optional source code preview.
-#[pyclass(name = "Frame", module = "monty", frozen)]
+#[pyclass(name = "Frame", module = "pydantic_monty", frozen, skip_from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyFrame {
     /// The filename where the code is located.
@@ -403,6 +403,11 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
         ExcType::UnicodeDecodeError => exceptions::PyUnicodeDecodeError::new_err(msg),
         ExcType::ImportError => exceptions::PyImportError::new_err(msg),
         ExcType::ModuleNotFoundError => exceptions::PyModuleNotFoundError::new_err(msg),
+        ExcType::OSError => exceptions::PyOSError::new_err(msg),
+        ExcType::FileNotFoundError => exceptions::PyFileNotFoundError::new_err(msg),
+        ExcType::FileExistsError => exceptions::PyFileExistsError::new_err(msg),
+        ExcType::IsADirectoryError => exceptions::PyIsADirectoryError::new_err(msg),
+        ExcType::NotADirectoryError => exceptions::PyNotADirectoryError::new_err(msg),
     }
 }
 
@@ -486,6 +491,19 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
                 ExcType::UnboundLocalError
             } else {
                 ExcType::NameError
+            }
+        // OSError hierarchy (check specific subclasses first)
+        } else if exceptions::PyOSError::type_check(exc) {
+            if exceptions::PyFileNotFoundError::type_check(exc) {
+                ExcType::FileNotFoundError
+            } else if exceptions::PyFileExistsError::type_check(exc) {
+                ExcType::FileExistsError
+            } else if exceptions::PyIsADirectoryError::type_check(exc) {
+                ExcType::IsADirectoryError
+            } else if exceptions::PyNotADirectoryError::type_check(exc) {
+                ExcType::NotADirectoryError
+            } else {
+                ExcType::OSError
             }
         // other standalone exception types
         } else if exceptions::PyTimeoutError::type_check(exc) {

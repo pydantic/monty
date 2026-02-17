@@ -7,20 +7,22 @@
 use super::{CallFrame, VM};
 use crate::{
     args::{ArgValues, KwargsValues},
+    asyncio::Coroutine,
     builtins::{Builtins, BuiltinsFunctions},
+    defer_drop,
     exception_private::{ExcType, RunError},
-    heap::{Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{ExtFunctionId, FunctionId, Interns, StaticStrings, StringId},
-    io::PrintWriter,
+    os::OsFunction,
     resource::ResourceTracker,
     types::{
-        Dict, PyTrait, Type,
+        AttrCallResult, Dict, PyTrait, Type,
         bytes::{bytes_fromhex, call_bytes_method},
         dict::dict_fromkeys,
         list::do_list_sort,
         str::call_str_method,
     },
-    value::{Attr, Value},
+    value::{EitherStr, Value},
 };
 
 /// Result of executing a call opcode.
@@ -35,9 +37,23 @@ pub(super) enum CallResult {
     FramePushed,
     /// External function call requested - VM should pause and return to caller.
     External(ExtFunctionId, ArgValues),
+    /// OS operation call requested - VM should yield `FrameExit::OsCall` to host.
+    ///
+    /// The host executes the OS operation and resumes the VM with the result.
+    OsCall(OsFunction, ArgValues),
 }
 
-impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
+impl From<AttrCallResult> for CallResult {
+    fn from(result: AttrCallResult) -> Self {
+        match result {
+            AttrCallResult::Value(v) => Self::Push(v),
+            AttrCallResult::OsCall(func, args) => Self::OsCall(func, args),
+            AttrCallResult::ExternalCall(ext_id, args) => Self::External(ext_id, args),
+        }
+    }
+}
+
+impl<T: ResourceTracker> VM<'_, '_, T> {
     // ========================================================================
     // Call Opcode Executors
     // ========================================================================
@@ -121,26 +137,27 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         self.call_function(callable, args)
     }
 
-    /// Executes `CallMethod` opcode.
+    /// Executes `CallAttr` opcode.
     ///
-    /// Pops the object and arguments from the stack, calls the method,
-    /// and returns the result value.
-    pub(super) fn exec_call_method(&mut self, name_id: StringId, arg_count: usize) -> Result<Value, RunError> {
+    /// Pops the object and arguments from the stack, calls the attribute,
+    /// and returns a `CallResult` which may indicate an OS or external call.
+    pub(super) fn exec_call_attr(&mut self, name_id: StringId, arg_count: usize) -> Result<CallResult, RunError> {
         let args = self.pop_n_args(arg_count);
         let obj = self.pop();
-        self.call_method(obj, name_id, args)
+        self.call_attr(obj, name_id, args)
     }
 
-    /// Executes `CallMethodKw` opcode.
+    /// Executes `CallAttrKw` opcode.
     ///
     /// Pops the object, positional args, and keyword args from the stack,
-    /// builds the appropriate `ArgValues`, and calls the method.
-    pub(super) fn exec_call_method_kw(
+    /// builds the appropriate `ArgValues`, and calls the attribute.
+    /// Returns a `CallResult` which may indicate an OS or external call.
+    pub(super) fn exec_call_attr_kw(
         &mut self,
         name_id: StringId,
         pos_count: usize,
         kwname_ids: Vec<StringId>,
-    ) -> Result<Value, RunError> {
+    ) -> Result<CallResult, RunError> {
         let kw_count = kwname_ids.len();
 
         // Pop keyword values (TOS is last kwarg value)
@@ -167,7 +184,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             }
         };
 
-        self.call_method(obj, name_id, args)
+        self.call_attr(obj, name_id, args)
     }
 
     /// Executes `CallFunctionExtended` opcode.
@@ -185,6 +202,27 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
 
         // Unpack and call
         self.call_function_extended(callable, args_tuple, kwargs)
+    }
+
+    /// Executes `CallAttrExtended` opcode.
+    ///
+    /// Handles method calls with `*args` and/or `**kwargs` unpacking.
+    pub(super) fn exec_call_attr_extended(
+        &mut self,
+        name_id: StringId,
+        has_kwargs: bool,
+    ) -> Result<CallResult, RunError> {
+        // Pop kwargs dict if present
+        let kwargs = if has_kwargs { Some(self.pop()) } else { None };
+
+        // Pop args tuple
+        let args_tuple = self.pop();
+
+        // Pop the receiver object
+        let obj = self.pop();
+
+        // Unpack and call
+        self.call_attr_extended(obj, name_id, args_tuple, kwargs)
     }
 
     // ========================================================================
@@ -208,52 +246,54 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         }
     }
 
-    /// Calls a method on an object.
+    /// Calls an attribute on an object.
     ///
     /// For heap-allocated objects (`Value::Ref`), dispatches to the type's
-    /// `py_call_attr` implementation via `heap.call_attr()`.
+    /// `py_call_attr_raw` implementation via `heap.call_attr_raw()`, which may return
+    /// `AttrCallResult::OsCall` or `AttrCallResult::ExternalCall` for operations that
+    /// require host involvement.
+    ///
     /// For interned strings (`Value::InternString`), uses the unified `call_str_method`.
     /// For interned bytes (`Value::InternBytes`), uses the unified `call_bytes_method`.
     ///
     /// Special handling: `list.sort(key=...)` is intercepted here to allow calling
     /// builtin key functions with VM access.
-    fn call_method(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<Value, RunError> {
-        let attr = Attr::Interned(name_id);
+    fn call_attr(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<CallResult, RunError> {
+        let this = self;
+        let attr = EitherStr::Interned(name_id);
 
         match obj {
             Value::Ref(heap_id) => {
+                defer_drop!(obj, this);
                 // Check for list.sort - needs special handling for key functions
-                if name_id == StaticStrings::Sort && matches!(self.heap.get(heap_id), HeapData::List(_)) {
-                    let result = do_list_sort(heap_id, args, self.heap, self.interns, self.print_writer);
-                    obj.drop_with_heap(self.heap);
-                    return result.map(|()| Value::None);
+                if name_id == StaticStrings::Sort && matches!(this.heap.get(heap_id), HeapData::List(_)) {
+                    let result = do_list_sort(heap_id, args, this.heap, this.interns, this.print_writer);
+                    return result.map(|()| CallResult::Push(Value::None));
                 }
-
-                // Call the method on the heap object
-                let result = self.heap.call_attr(heap_id, &attr, args, self.interns);
-                // Drop the object reference after the call
-                obj.drop_with_heap(self.heap);
-                result
+                // Call the method on the heap object using call_attr_raw to support OS/external calls
+                let result = this.heap.call_attr_raw(heap_id, &attr, args, this.interns);
+                // Convert AttrCallResult to CallResult
+                result.map(Into::into)
             }
             Value::InternString(string_id) => {
                 // Call string method on interned string literal using the unified dispatcher
-                let s = self.interns.get_str(string_id);
-                call_str_method(s, name_id, args, self.heap, self.interns)
+                let s = this.interns.get_str(string_id);
+                call_str_method(s, name_id, args, this.heap, this.interns).map(CallResult::Push)
             }
             Value::InternBytes(bytes_id) => {
                 // Call bytes method on interned bytes literal using the unified dispatcher
-                let b = self.interns.get_bytes(bytes_id);
-                call_bytes_method(b, name_id, args, self.heap, self.interns)
+                let b = this.interns.get_bytes(bytes_id);
+                call_bytes_method(b, name_id, args, this.heap, this.interns).map(CallResult::Push)
             }
             Value::Builtin(Builtins::Type(t)) => {
                 // Handle classmethods on type objects like dict.fromkeys()
-                call_type_method(t, name_id, args, self.heap, self.interns)
+                call_type_method(t, name_id, args, this.heap, this.interns).map(CallResult::Push)
             }
             _ => {
                 // Non-heap values without method support
-                let type_name = obj.py_type(self.heap);
-                args.drop_with_heap(self.heap);
-                Err(ExcType::attribute_error(type_name, self.interns.get_str(name_id)))
+                let type_name = obj.py_type(this.heap);
+                args.drop_with_heap(this.heap);
+                Err(ExcType::attribute_error(type_name, this.interns.get_str(name_id)))
             }
         }
     }
@@ -262,6 +302,7 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
     ///
     /// Dispatches based on the callable type:
     /// - `Value::Builtin`: calls builtin directly, returns `Push`
+    /// - `Value::ModuleFunction`: calls module function directly, returns `Push`
     /// - `Value::ExtFunction`: returns `External` for caller to execute
     /// - `Value::DefFunction`: pushes a new frame, returns `FramePushed`
     /// - `Value::Ref`: checks for closure/function on heap
@@ -271,14 +312,17 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 let result = builtin.call(self.heap, args, self.interns, self.print_writer)?;
                 Ok(CallResult::Push(result))
             }
+            Value::ModuleFunction(mf) => {
+                let result = mf.call(self.heap, args)?;
+                Ok(result.into())
+            }
             Value::ExtFunction(ext_id) => {
                 // External function - return to caller to execute
                 Ok(CallResult::External(ext_id, args))
             }
             Value::DefFunction(func_id) => {
                 // Defined function without defaults or captured variables
-                self.call_def_function(func_id, &[], Vec::new(), args)?;
-                Ok(CallResult::FramePushed)
+                self.call_def_function(func_id, &[], Vec::new(), args)
             }
             Value::Ref(heap_id) => {
                 // Could be a closure or function with defaults - check heap
@@ -302,8 +346,11 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         callable: Value,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
+        let this = self;
+        defer_drop!(callable, this);
+
         // Phase 1: Copy data (func_id, cells, defaults) without refcount changes
-        let (func_id, cells, defaults) = match self.heap.get(heap_id) {
+        let (func_id, cells, defaults) = match this.heap.get(heap_id) {
             HeapData::Closure(fid, cells, defaults) => {
                 let cloned_cells = cells.clone();
                 let cloned_defaults: Vec<Value> = defaults.iter().map(Value::copy_for_extend).collect();
@@ -314,28 +361,23 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
                 (*fid, Vec::new(), cloned_defaults)
             }
             _ => {
-                callable.drop_with_heap(self.heap);
-                args.drop_with_heap(self.heap);
+                args.drop_with_heap(this.heap);
                 return Err(ExcType::type_error("object is not callable"));
             }
         };
 
         // Phase 2: Increment refcounts now that the heap borrow has ended
         for &cell_id in &cells {
-            self.heap.inc_ref(cell_id);
+            this.heap.inc_ref(cell_id);
         }
         for default in &defaults {
             if let Value::Ref(id) = default {
-                self.heap.inc_ref(*id);
+                this.heap.inc_ref(*id);
             }
         }
 
-        // Drop the callable ref (cloned data has its own refcounts)
-        callable.drop_with_heap(self.heap);
-
-        // Call the defined function
-        self.call_def_function(func_id, &cells, defaults, args)?;
-        Ok(CallResult::FramePushed)
+        // Call the defined function (callable guard drops at scope exit)
+        this.call_def_function(func_id, &cells, defaults, args)
     }
 
     /// Calls a function with unpacked args tuple and optional kwargs dict.
@@ -347,91 +389,114 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         args_tuple: Value,
         kwargs: Option<Value>,
     ) -> Result<CallResult, RunError> {
+        let this = self;
+        defer_drop!(args_tuple, this);
+
         // Extract positional args from tuple
-        let copied_args = self.extract_args_tuple(&callable, &args_tuple, kwargs.as_ref())?;
+        let copied_args = this.extract_args_tuple(args_tuple);
 
         // Increment refcounts for positional args
         for arg in &copied_args {
             if let Value::Ref(id) = arg {
-                self.heap.inc_ref(*id);
+                this.heap.inc_ref(*id);
             }
         }
 
         // Build ArgValues from positional args and optional kwargs
         let args = if let Some(kwargs_ref) = kwargs {
-            self.build_args_with_kwargs(copied_args, kwargs_ref, &callable, &args_tuple)?
+            this.build_args_with_kwargs(copied_args, kwargs_ref)?
         } else {
             Self::build_args_positional_only(copied_args)
         };
 
-        // Clean up the args tuple ref (we cloned the contents)
-        args_tuple.drop_with_heap(self.heap);
+        // Call the function (args_tuple guard drops at scope exit)
+        this.call_function(callable, args)
+    }
 
-        // Call the function
-        self.call_function(callable, args)
+    /// Calls a method with unpacked args tuple and optional kwargs dict.
+    ///
+    /// Used for `obj.method(*args)` and `obj.method(**kwargs)` style calls.
+    fn call_attr_extended(
+        &mut self,
+        obj: Value,
+        name_id: StringId,
+        args_tuple: Value,
+        kwargs: Option<Value>,
+    ) -> Result<CallResult, RunError> {
+        let this = self;
+        defer_drop!(args_tuple, this);
+
+        // Extract positional args from tuple
+        let copied_args = this.extract_args_tuple_for_attr(args_tuple);
+
+        // Increment refcounts for positional args
+        for arg in &copied_args {
+            if let Value::Ref(id) = arg {
+                this.heap.inc_ref(*id);
+            }
+        }
+
+        // Build ArgValues from positional args and optional kwargs
+        let args = if let Some(kwargs_ref) = kwargs {
+            this.build_args_with_kwargs_for_attr(copied_args, kwargs_ref)?
+        } else {
+            Self::build_args_positional_only(copied_args)
+        };
+
+        // Call the method (args_tuple guard drops at scope exit)
+        this.call_attr(obj, name_id, args)
     }
 
     /// Extracts arguments from a tuple for `CallFunctionExtended`.
-    fn extract_args_tuple(
-        &mut self,
-        callable: &Value,
-        args_tuple: &Value,
-        kwargs: Option<&Value>,
-    ) -> Result<Vec<Value>, RunError> {
-        if let Value::Ref(id) = args_tuple
-            && let HeapData::Tuple(tuple) = self.heap.get(*id)
-        {
-            return Ok(tuple.as_vec().iter().map(Value::copy_for_extend).collect());
-        }
-        // Error case - clean up and return error
-        callable.clone_immediate().drop_with_heap(self.heap);
-        args_tuple.clone_immediate().drop_with_heap(self.heap);
-        if let Some(k) = kwargs {
-            k.clone_immediate().drop_with_heap(self.heap);
-        }
-        Err(RunError::internal("CallFunctionEx: expected tuple for args"))
+    ///
+    /// # Panics
+    /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
+    /// the compiler always emits `ListToTuple` before `CallFunctionExtended`.
+    fn extract_args_tuple(&mut self, args_tuple: &Value) -> Vec<Value> {
+        let Value::Ref(id) = args_tuple else {
+            unreachable!("CallFunctionExtended: args_tuple must be a Ref")
+        };
+        let HeapData::Tuple(tuple) = self.heap.get(*id) else {
+            unreachable!("CallFunctionExtended: args_tuple must be a Tuple")
+        };
+        tuple.as_slice().iter().map(Value::copy_for_extend).collect()
     }
 
     /// Builds `ArgValues` with kwargs for `CallFunctionExtended`.
-    fn build_args_with_kwargs(
-        &mut self,
-        copied_args: Vec<Value>,
-        kwargs_ref: Value,
-        callable: &Value,
-        args_tuple: &Value,
-    ) -> Result<ArgValues, RunError> {
+    ///
+    /// # Panics
+    /// Panics if `kwargs_ref` is not a dict. This indicates a compiler bug since
+    /// the compiler always emits `BuildDict` before `CallFunctionExtended` with kwargs.
+    fn build_args_with_kwargs(&mut self, copied_args: Vec<Value>, kwargs_ref: Value) -> Result<ArgValues, RunError> {
+        let this = self;
+        defer_drop!(kwargs_ref, this);
+
         // Extract kwargs dict items
-        let copied_kwargs: Vec<(Value, Value)> = if let Value::Ref(id) = &kwargs_ref {
-            if let HeapData::Dict(dict) = self.heap.get(*id) {
-                dict.iter()
-                    .map(|(k, v)| (Value::copy_for_extend(k), Value::copy_for_extend(v)))
-                    .collect()
-            } else {
-                self.cleanup_call_ex_error(callable, args_tuple, &kwargs_ref, copied_args);
-                return Err(RunError::internal("CallFunctionEx: expected dict for kwargs"));
-            }
-        } else {
-            self.cleanup_call_ex_error(callable, args_tuple, &kwargs_ref, copied_args);
-            return Err(RunError::internal("CallFunctionEx: expected dict ref for kwargs"));
+        let Value::Ref(id) = kwargs_ref else {
+            unreachable!("CallFunctionExtended: kwargs must be a Ref")
         };
+        let HeapData::Dict(dict) = this.heap.get(*id) else {
+            unreachable!("CallFunctionExtended: kwargs must be a Dict")
+        };
+        let copied_kwargs: Vec<(Value, Value)> = dict
+            .iter()
+            .map(|(k, v)| (Value::copy_for_extend(k), Value::copy_for_extend(v)))
+            .collect();
 
         // Increment refcounts for kwargs
         for (k, v) in &copied_kwargs {
             if let Value::Ref(id) = k {
-                self.heap.inc_ref(*id);
+                this.heap.inc_ref(*id);
             }
             if let Value::Ref(id) = v {
-                self.heap.inc_ref(*id);
+                this.heap.inc_ref(*id);
             }
         }
-
-        // Clean up the kwargs dict ref
-        kwargs_ref.drop_with_heap(self.heap);
 
         let kwargs_values = if copied_kwargs.is_empty() {
             KwargsValues::Empty
         } else {
-            let kwargs_dict = Dict::from_pairs(copied_kwargs, self.heap, self.interns)?;
+            let kwargs_dict = Dict::from_pairs(copied_kwargs, this.heap, this.interns)?;
             KwargsValues::Dict(kwargs_dict)
         };
 
@@ -465,37 +530,185 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
         }
     }
 
-    /// Cleans up values when `CallFunctionExtended` encounters an error.
-    fn cleanup_call_ex_error(
+    /// Extracts arguments from a tuple for `CallAttrExtended`.
+    ///
+    /// # Panics
+    /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
+    /// the compiler always emits `ListToTuple` before `CallAttrExtended`.
+    fn extract_args_tuple_for_attr(&mut self, args_tuple: &Value) -> Vec<Value> {
+        let Value::Ref(id) = args_tuple else {
+            unreachable!("CallAttrExtended: args_tuple must be a Ref")
+        };
+        let HeapData::Tuple(tuple) = self.heap.get(*id) else {
+            unreachable!("CallAttrExtended: args_tuple must be a Tuple")
+        };
+        tuple.as_slice().iter().map(Value::copy_for_extend).collect()
+    }
+
+    /// Builds `ArgValues` with kwargs for `CallAttrExtended`.
+    ///
+    /// # Panics
+    /// Panics if `kwargs_ref` is not a dict. This indicates a compiler bug since
+    /// the compiler always emits `BuildDict` before `CallAttrExtended` with kwargs.
+    fn build_args_with_kwargs_for_attr(
         &mut self,
-        callable: &Value,
-        args_tuple: &Value,
-        kwargs_ref: &Value,
         copied_args: Vec<Value>,
-    ) {
-        callable.clone_immediate().drop_with_heap(self.heap);
-        args_tuple.clone_immediate().drop_with_heap(self.heap);
-        kwargs_ref.clone_immediate().drop_with_heap(self.heap);
-        for arg in copied_args {
-            arg.drop_with_heap(self.heap);
+        kwargs_ref: Value,
+    ) -> Result<ArgValues, RunError> {
+        let this = self;
+        defer_drop!(kwargs_ref, this);
+
+        // Extract kwargs dict items
+        let Value::Ref(id) = kwargs_ref else {
+            unreachable!("CallAttrExtended: kwargs must be a Ref")
+        };
+        let HeapData::Dict(dict) = this.heap.get(*id) else {
+            unreachable!("CallAttrExtended: kwargs must be a Dict")
+        };
+        let copied_kwargs: Vec<(Value, Value)> = dict
+            .iter()
+            .map(|(k, v)| (Value::copy_for_extend(k), Value::copy_for_extend(v)))
+            .collect();
+
+        // Increment refcounts for kwargs
+        for (k, v) in &copied_kwargs {
+            if let Value::Ref(id) = k {
+                this.heap.inc_ref(*id);
+            }
+            if let Value::Ref(id) = v {
+                this.heap.inc_ref(*id);
+            }
         }
+
+        let kwargs_values = if copied_kwargs.is_empty() {
+            KwargsValues::Empty
+        } else {
+            let kwargs_dict = Dict::from_pairs(copied_kwargs, this.heap, this.interns)?;
+            KwargsValues::Dict(kwargs_dict)
+        };
+
+        Ok(
+            if copied_args.is_empty() && matches!(kwargs_values, KwargsValues::Empty) {
+                ArgValues::Empty
+            } else if copied_args.is_empty() {
+                ArgValues::Kwargs(kwargs_values)
+            } else {
+                ArgValues::ArgsKargs {
+                    args: copied_args,
+                    kwargs: kwargs_values,
+                }
+            },
+        )
     }
 
     // ========================================================================
     // Frame Setup
     // ========================================================================
 
-    /// Calls a defined function by pushing a new frame.
+    /// Calls a defined function by pushing a new frame or creating a coroutine.
     ///
-    /// Sets up the function's namespace with bound arguments, cell variables,
-    /// and free variables (captured from enclosing scope for closures).
+    /// For sync functions: sets up the function's namespace with bound arguments,
+    /// cell variables, and free variables, then pushes a new frame.
+    ///
+    /// For async functions: binds arguments immediately but returns a Coroutine
+    /// instead of pushing a frame. The coroutine stores the pre-bound namespace
+    /// and will be executed when awaited.
     fn call_def_function(
         &mut self,
         func_id: FunctionId,
         cells: &[HeapId],
         defaults: Vec<Value>,
         args: ArgValues,
-    ) -> Result<(), RunError> {
+    ) -> Result<CallResult, RunError> {
+        // Get function info (interns is a shared reference so no conflict)
+        let func = self.interns.get_function(func_id);
+
+        if func.is_async {
+            // Async function: create a Coroutine instead of pushing a frame
+            self.create_coroutine(func_id, cells, defaults, args)
+        } else {
+            // Sync function: push a new frame
+            self.call_sync_function(func_id, cells, defaults, args)
+        }
+    }
+
+    /// Creates a Coroutine for an async function call.
+    ///
+    /// Binds arguments immediately (errors are raised at call time, not await time)
+    /// but stores the namespace in the Coroutine instead of registering it.
+    /// The coroutine is executed when awaited via Await.
+    fn create_coroutine(
+        &mut self,
+        func_id: FunctionId,
+        cells: &[HeapId],
+        defaults: Vec<Value>,
+        args: ArgValues,
+    ) -> Result<CallResult, RunError> {
+        let this = self;
+        defer_drop!(defaults, this);
+        let func = this.interns.get_function(func_id);
+
+        // 1. Create namespace vector (not registered with Namespaces)
+        let namespace = Vec::with_capacity(func.namespace_size);
+        let mut namespace_guard = HeapGuard::new(namespace, this);
+        let (namespace, this) = namespace_guard.as_parts_mut();
+
+        // 2. Bind arguments to parameters
+        func.signature
+            .bind(args, defaults, this.heap, this.interns, func.name, namespace)?;
+
+        // Track created cell HeapIds for the coroutine
+        let mut frame_cells: Vec<HeapId> = Vec::with_capacity(func.cell_var_count + cells.len());
+
+        // 3. Create cells for variables captured by nested functions
+        {
+            let param_count = func.signature.total_slots();
+            for (i, maybe_param_idx) in func.cell_param_indices.iter().enumerate() {
+                let cell_slot = param_count + i;
+                let cell_value = if let Some(param_idx) = maybe_param_idx {
+                    namespace[*param_idx].clone_with_heap(this.heap)
+                } else {
+                    Value::Undefined
+                };
+                let cell_id = this.heap.allocate(HeapData::Cell(cell_value))?;
+                frame_cells.push(cell_id);
+                namespace.resize_with(cell_slot, || Value::Undefined);
+                namespace.push(Value::Ref(cell_id));
+            }
+
+            // 4. Copy captured cells (free vars) into namespace
+            let free_var_start = param_count + func.cell_var_count;
+            for (i, &cell_id) in cells.iter().enumerate() {
+                this.heap.inc_ref(cell_id);
+                frame_cells.push(cell_id);
+                let slot = free_var_start + i;
+                namespace.resize_with(slot, || Value::Undefined);
+                namespace.push(Value::Ref(cell_id));
+            }
+
+            // 5. Fill remaining slots with Undefined
+            namespace.resize_with(func.namespace_size, || Value::Undefined);
+        }
+
+        // 6. Create Coroutine on heap
+        let (namespace, this) = namespace_guard.into_parts();
+        let coroutine = Coroutine::new(func_id, namespace, frame_cells);
+        let coroutine_id = this.heap.allocate(HeapData::Coroutine(coroutine))?;
+
+        Ok(CallResult::Push(Value::Ref(coroutine_id)))
+    }
+
+    /// Calls a sync function by pushing a new frame.
+    ///
+    /// Sets up the function's namespace with bound arguments, cell variables,
+    /// and free variables (captured from enclosing scope for closures).
+    fn call_sync_function(
+        &mut self,
+        func_id: FunctionId,
+        cells: &[HeapId],
+        defaults: Vec<Value>,
+        args: ArgValues,
+    ) -> Result<CallResult, RunError> {
         // Get call position BEFORE borrowing namespaces mutably
         let call_position = self.current_position();
 
@@ -567,10 +780,10 @@ impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
             namespace_idx,
             func_id,
             frame_cells,
-            call_position,
+            Some(call_position),
         ));
 
-        Ok(())
+        Ok(CallResult::FramePushed)
     }
 }
 

@@ -20,9 +20,13 @@ path = "src/lib.rs"
 monty_typeshed = { path = "../monty-typeshed" }
 ruff_python_ast = { workspace = true }
 ruff_db = { workspace = true }
+ruff_text_size = { workspace = true }
 ty_python_semantic = { workspace = true }
 ty_module_resolver = { workspace = true }
 salsa = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
 
 [lints]
 workspace = true

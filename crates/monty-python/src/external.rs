@@ -66,7 +66,7 @@ impl<'py> ExternalFunctionRegistry<'py> {
         let callable = self
             .functions
             .get_item(function_name)?
-            .ok_or_else(|| PyErr::new::<PyKeyError, _>(format!("External function '{function_name}' not found")))?;
+            .ok_or_else(|| PyKeyError::new_err(format!("External function '{function_name}' not found")))?;
 
         // Convert positional arguments to Python objects
         let py_args: PyResult<Vec<Py<PyAny>>> = args

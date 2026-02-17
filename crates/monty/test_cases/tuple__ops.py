@@ -1,3 +1,15 @@
+# === Empty tuple identity (singleton optimization) ===
+# In Python, () is () is always True because empty tuples are interned
+assert () is (), 'empty tuple identity'
+assert tuple() is (), 'tuple() is empty tuple'
+assert tuple() is tuple(), 'tuple() identity'
+a = ()
+b = ()
+assert a is b, 'empty tuple vars are same object'
+# Empty tuple from operations
+assert (1,)[1:] is (), 'slice to empty is singleton'
+assert (1, 2) * 0 is (), 'mult by 0 is empty singleton'
+
 # === Tuple length ===
 assert len(()) == 0, 'len empty'
 assert len((1,)) == 1, 'len single'
@@ -17,6 +29,14 @@ assert ((1, 2), (3, 4)) == ((1, 2), (3, 4)), 'nested tuple'
 # === Tuple repr/str ===
 assert repr((1, 2)) == '(1, 2)', 'tuple repr'
 assert str((1, 2)) == '(1, 2)', 'tuple str'
+
+# === Tuple concatenation (+) ===
+assert (1, 2) + (3, 4) == (1, 2, 3, 4), 'tuple add basic'
+assert () + (1, 2) == (1, 2), 'empty add tuple'
+assert (1, 2) + () == (1, 2), 'tuple add empty'
+assert () + () == (), 'empty add empty'
+assert ('a', 'b') + ('c',) == ('a', 'b', 'c'), 'tuple add strings'
+assert ((1, 2),) + ((3, 4),) == ((1, 2), (3, 4)), 'tuple add nested'
 
 # === Tuple repetition (*) ===
 assert (1, 2) * 3 == (1, 2, 1, 2, 1, 2), 'tuple mult int'

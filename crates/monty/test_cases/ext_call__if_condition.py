@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # External calls in if conditions
 
 

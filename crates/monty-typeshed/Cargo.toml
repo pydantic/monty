@@ -1,6 +1,6 @@
 [package]
 name = "monty_typeshed"
-readme = "../../README.md"
+readme = "README.md"
 version = { workspace = true }
 rust-version = { workspace = true }
 edition = { workspace = true }

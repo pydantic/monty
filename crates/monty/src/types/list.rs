@@ -1,18 +1,20 @@
 use std::{cmp::Ordering, fmt::Write};
 
 use ahash::AHashSet;
+use smallvec::SmallVec;
 
 use super::{MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
     builtins::Builtins,
+    defer_drop,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings},
     io::PrintWriter,
-    resource::{ResourceError, ResourceTracker},
+    resource::{DepthGuard, ResourceError, ResourceTracker},
     types::Type,
-    value::{Attr, Value},
+    value::{EitherStr, Value},
 };
 
 /// Python list type, wrapping a Vec of Values.
@@ -76,7 +78,7 @@ impl List {
 
     /// Returns a reference to the underlying vector.
     #[must_use]
-    pub fn as_vec(&self) -> &Vec<Value> {
+    pub fn as_slice(&self) -> &[Value] {
         &self.items
     }
 
@@ -104,6 +106,15 @@ impl List {
     #[must_use]
     pub fn contains_refs(&self) -> bool {
         self.contains_refs
+    }
+
+    /// Marks that the list contains heap references.
+    ///
+    /// This should be called when directly mutating the list's items vector
+    /// (via `as_vec_mut()`) with values that include `Value::Ref` variants.
+    #[inline]
+    pub fn set_contains_refs(&mut self) {
+        self.contains_refs = true;
     }
 
     /// Appends an element to the end of the list.
@@ -161,9 +172,7 @@ impl List {
                 Ok(Value::Ref(heap_id))
             }
             Some(v) => {
-                let mut iter = MontyIter::new(v, heap, interns)?;
-                let items = iter.collect(heap, interns)?;
-                iter.drop_with_heap(heap);
+                let items = MontyIter::new(v, heap, interns)?.collect(heap, interns)?;
                 let heap_id = heap.allocate(HeapData::List(Self::new(items)))?;
                 Ok(Value::Ref(heap_id))
             }
@@ -178,7 +187,7 @@ impl List {
             .indices(self.items.len())
             .map_err(|()| ExcType::value_error_slice_step_zero())?;
 
-        let items = get_slice_items(&self.items, start, stop, step, heap);
+        let items = get_slice_items(&self.items, start, stop, step, heap)?;
         let heap_id = heap.allocate(HeapData::List(Self::new(items)))?;
         Ok(Value::Ref(heap_id))
     }
@@ -213,12 +222,8 @@ impl PyTrait for List {
             return self.getitem_slice(&slice, heap);
         }
 
-        // Extract integer index, accepting both Int and Bool (True=1, False=0)
-        let index = match key {
-            Value::Int(i) => *i,
-            Value::Bool(b) => i64::from(*b),
-            _ => return Err(ExcType::type_error_indices(Type::List, key.py_type(heap))),
-        };
+        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
+        let index = key.as_index(heap, Type::List)?;
 
         // Convert to usize, handling negative indices (Python-style: -1 = last element)
         let len = i64::try_from(self.items.len()).expect("list length exceeds i64::MAX");
@@ -242,10 +247,30 @@ impl PyTrait for List {
         heap: &mut Heap<impl ResourceTracker>,
         _interns: &Interns,
     ) -> RunResult<()> {
-        // Extract integer index, accepting both Int and Bool (True=1, False=0)
-        let index = match key {
-            Value::Int(i) => i,
-            Value::Bool(b) => i64::from(b),
+        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt.
+        // Note: The LongInt-to-i64 conversion is defensive code. In normal execution,
+        // heap-allocated LongInt values always exceed i64 range because into_value()
+        // demotes i64-fitting values to Value::Int. However, this could be reached via
+        // deserialization of crafted snapshot data.
+        let index = match &key {
+            Value::Int(i) => *i,
+            Value::Bool(b) => i64::from(*b),
+            Value::Ref(heap_id) => {
+                if let HeapData::LongInt(li) = heap.get(*heap_id) {
+                    if let Some(i) = li.to_i64() {
+                        i
+                    } else {
+                        key.drop_with_heap(heap);
+                        value.drop_with_heap(heap);
+                        return Err(ExcType::index_error_int_too_large());
+                    }
+                } else {
+                    let key_type = key.py_type(heap);
+                    key.drop_with_heap(heap);
+                    value.drop_with_heap(heap);
+                    return Err(ExcType::type_error_list_assignment_indices(key_type));
+                }
+            }
             _ => {
                 let key_type = key.py_type(heap);
                 key.drop_with_heap(heap);
@@ -253,6 +278,8 @@ impl PyTrait for List {
                 return Err(ExcType::type_error_list_assignment_indices(key_type));
             }
         };
+        // Drop the key after extracting the index (Int and Bool are not ref-counted)
+        key.drop_with_heap(heap);
 
         // Normalize negative indices (Python-style: -1 = last element)
         let len = i64::try_from(self.items.len()).expect("list length exceeds i64::MAX");
@@ -278,16 +305,27 @@ impl PyTrait for List {
         Ok(())
     }
 
-    fn py_eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool {
+    fn py_eq(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Result<bool, ResourceError> {
         if self.items.len() != other.items.len() {
-            return false;
+            return Ok(false);
         }
+        guard.increase_err()?;
+
         for (i1, i2) in self.items.iter().zip(&other.items) {
-            if !i1.py_eq(i2, heap, interns) {
-                return false;
+            heap.check_time()?;
+            if !i1.py_eq(i2, heap, guard, interns)? {
+                guard.decrease();
+                return Ok(false);
             }
         }
-        true
+        guard.decrease();
+        Ok(true)
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
@@ -313,9 +351,10 @@ impl PyTrait for List {
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
+        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result {
-        repr_sequence_fmt('[', ']', &self.items, f, heap, heap_ids, interns)
+        repr_sequence_fmt('[', ']', &self.items, f, heap, heap_ids, guard, interns)
     }
 
     fn py_add(
@@ -384,15 +423,16 @@ impl PyTrait for List {
     fn py_call_attr(
         &mut self,
         heap: &mut Heap<impl ResourceTracker>,
-        attr: &Attr,
+        attr: &EitherStr,
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
+        let args_guard = HeapGuard::new(args, heap);
         let Some(method) = attr.static_string() else {
-            args.drop_with_heap(heap);
             return Err(ExcType::attribute_error(Type::List, attr.as_str(interns)));
         };
 
+        let (args, heap) = args_guard.into_parts();
         call_list_method(self, method, args, heap, interns)
     }
 }
@@ -451,19 +491,13 @@ fn call_list_method(
 /// Implements Python's `list.insert(index, item)` method.
 fn list_insert(list: &mut List, args: ArgValues, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
     let (index_obj, item) = args.get_two_args("insert", heap)?;
+    defer_drop!(index_obj, heap);
+    let mut item_guard = HeapGuard::new(item, heap);
+    let heap = item_guard.heap();
     // Python's insert() handles negative indices by adding len
     // If still negative after adding len, clamps to 0
     // If >= len, appends to end
-    let index_result = index_obj.as_int(heap);
-    // Drop index_obj before propagating error - it could be a Ref (e.g., dict)
-    index_obj.drop_with_heap(heap);
-    let index_i64 = match index_result {
-        Ok(i) => i,
-        Err(e) => {
-            item.drop_with_heap(heap);
-            return Err(e);
-        }
-    };
+    let index_i64 = index_obj.as_int(heap)?;
     let len = list.items.len();
     let len_i64 = i64::try_from(len).expect("list length exceeds i64::MAX");
     let index = if index_i64 < 0 {
@@ -474,6 +508,7 @@ fn list_insert(list: &mut List, args: ArgValues, heap: &mut Heap<impl ResourceTr
         // Positive index: clamp to len if too large
         usize::try_from(index_i64).unwrap_or(len)
     };
+    let (item, heap) = item_guard.into_parts();
     list.insert(heap, index, item);
     Ok(Value::None)
 }
@@ -525,17 +560,18 @@ fn list_remove(
     interns: &Interns,
 ) -> RunResult<Value> {
     let value = args.get_one_arg("list.remove", heap)?;
+    defer_drop!(value, heap);
 
     // Find the first matching element
     let mut found_idx = None;
+    let mut guard = DepthGuard::default();
     for (i, item) in list.items.iter().enumerate() {
-        if value.py_eq(item, heap, interns) {
+        heap.check_time()?;
+        if value.py_eq(item, heap, &mut guard, interns)? {
             found_idx = Some(i);
             break;
         }
     }
-
-    value.drop_with_heap(heap);
 
     match found_idx {
         Some(idx) => {
@@ -577,13 +613,7 @@ fn list_extend(
     interns: &Interns,
 ) -> RunResult<Value> {
     let iterable = args.get_one_arg("list.extend", heap)?;
-
-    // Create iterator for the iterable
-    let mut iter = MontyIter::new(iterable, heap, interns)?;
-
-    // Collect all items from the iterator
-    let items = iter.collect(heap, interns)?;
-    iter.drop_with_heap(heap);
+    let items: SmallVec<[_; 2]> = MontyIter::new(iterable, heap, interns)?.collect(heap, interns)?;
 
     // Add each item to the list
     for item in items {
@@ -603,18 +633,35 @@ fn list_index(
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<Value> {
-    let (value, start, end) = parse_index_count_args("list.index", list.items.len(), args, heap)?;
+    let pos_args = args.into_pos_only("list.index", heap)?;
+    defer_drop!(pos_args, heap);
+
+    let len = list.items.len();
+    let (value, start, end) = match pos_args.as_slice() {
+        [] => return Err(ExcType::type_error_at_least("list.index", 1, 0)),
+        [value] => (value, 0, len),
+        [value, start_arg] => {
+            let start = normalize_list_index(start_arg.as_int(heap)?, len);
+            (value, start, len)
+        }
+        [value, start_arg, end_arg] => {
+            let start = normalize_list_index(start_arg.as_int(heap)?, len);
+            let end = normalize_list_index(end_arg.as_int(heap)?, len).max(start);
+            (value, start, end)
+        }
+        other => return Err(ExcType::type_error_at_most("list.index", 3, other.len())),
+    };
 
     // Search for the value in the specified range
+    let mut guard = DepthGuard::default();
     for (i, item) in list.items[start..end].iter().enumerate() {
-        if value.py_eq(item, heap, interns) {
-            value.drop_with_heap(heap);
+        heap.check_time()?;
+        if value.py_eq(item, heap, &mut guard, interns)? {
             let idx = i64::try_from(start + i).expect("index exceeds i64::MAX");
             return Ok(Value::Int(idx));
         }
     }
 
-    value.drop_with_heap(heap);
     Err(ExcType::value_error_not_in_list())
 }
 
@@ -628,94 +675,19 @@ fn list_count(
     interns: &Interns,
 ) -> RunResult<Value> {
     let value = args.get_one_arg("list.count", heap)?;
+    defer_drop!(value, heap);
 
-    let count = list
-        .items
-        .iter()
-        .filter(|item| value.py_eq(item, heap, interns))
-        .count();
+    let mut guard = DepthGuard::default();
+    let mut count: usize = 0;
+    for item in &list.items {
+        heap.check_time()?;
+        if value.py_eq(item, heap, &mut guard, interns)? {
+            count += 1;
+        }
+    }
 
-    value.drop_with_heap(heap);
     let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
     Ok(Value::Int(count_i64))
-}
-
-/// Parses arguments for list.index() and similar methods.
-///
-/// Returns (value, start, end) where start and end are normalized indices.
-/// Guarantees `start <= end` to prevent slice panics.
-fn parse_index_count_args(
-    method: &str,
-    len: usize,
-    args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-) -> RunResult<(Value, usize, usize)> {
-    let (pos, kwargs) = args.into_parts();
-    if !kwargs.is_empty() {
-        kwargs.drop_with_heap(heap);
-        return Err(ExcType::type_error_no_kwargs(method));
-    }
-
-    let mut pos_iter = pos;
-    let value = pos_iter
-        .next()
-        .ok_or_else(|| ExcType::type_error_at_least(method, 1, 0))?;
-    let start_value = pos_iter.next();
-    let end_value = pos_iter.next();
-
-    // Check no extra arguments - must drop the 4th arg consumed by .next()
-    if let Some(fourth) = pos_iter.next() {
-        fourth.drop_with_heap(heap);
-        for v in pos_iter {
-            v.drop_with_heap(heap);
-        }
-        value.drop_with_heap(heap);
-        if let Some(v) = start_value {
-            v.drop_with_heap(heap);
-        }
-        if let Some(v) = end_value {
-            v.drop_with_heap(heap);
-        }
-        return Err(ExcType::type_error_at_most(method, 3, 4));
-    }
-
-    // Extract start (default 0)
-    let start = if let Some(v) = start_value {
-        let result = v.as_int(heap);
-        v.drop_with_heap(heap);
-        match result {
-            Ok(i) => normalize_list_index(i, len),
-            Err(e) => {
-                value.drop_with_heap(heap);
-                if let Some(ev) = end_value {
-                    ev.drop_with_heap(heap);
-                }
-                return Err(e);
-            }
-        }
-    } else {
-        0
-    };
-
-    // Extract end (default len)
-    let end = if let Some(v) = end_value {
-        let result = v.as_int(heap);
-        v.drop_with_heap(heap);
-        match result {
-            Ok(i) => normalize_list_index(i, len),
-            Err(e) => {
-                value.drop_with_heap(heap);
-                return Err(e);
-            }
-        }
-    } else {
-        len
-    };
-
-    // Ensure start <= end to prevent slice panics (Python treats start > end as empty slice)
-    let end = end.max(start);
-
-    Ok((value, start, end))
 }
 
 /// Normalizes a Python-style list index to a valid index in range [0, len].
@@ -730,7 +702,7 @@ fn normalize_list_index(index: i64, len: usize) -> usize {
 
 /// Performs an in-place sort on a list with optional key function and reverse flag.
 ///
-/// This is called from the VM's `call_method` when `list.sort()` is invoked.
+/// This is called from the VM's `call_attr` when `list.sort()` is invoked.
 /// The function lives here (rather than in VM) to keep list-related logic together,
 /// with the VM only passing through its resources.
 ///
@@ -752,7 +724,7 @@ pub(crate) fn do_list_sort(
     args: ArgValues,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
-    print_writer: &mut impl PrintWriter,
+    print_writer: &mut PrintWriter<'_>,
 ) -> Result<(), RunError> {
     // Parse keyword-only arguments: key and reverse
     let (key_arg, reverse_arg) = args.extract_two_kwargs_only("list.sort", "key", "reverse", heap, interns)?;
@@ -825,21 +797,38 @@ pub(crate) fn do_list_sort(
     let len = items.len();
     let mut indices: Vec<usize> = (0..len).collect();
     let mut sort_error: Option<RunError> = None;
+    // Create a guard for py_cmp calls. We use a RefCell to allow mutable borrows inside the closure.
+    let guard = std::cell::RefCell::new(DepthGuard::default());
 
     if let Some(ref keys) = key_values {
         indices.sort_by(|&a, &b| {
             if sort_error.is_some() {
                 return Ordering::Equal;
             }
-            if let Some(ord) = keys[a].py_cmp(&keys[b], heap, interns) {
-                if reverse { ord.reverse() } else { ord }
-            } else {
-                sort_error = Some(ExcType::type_error(format!(
-                    "'<' not supported between instances of '{}' and '{}'",
-                    keys[a].py_type(heap),
-                    keys[b].py_type(heap)
-                )));
-                Ordering::Equal
+            if let Err(e) = heap.check_time() {
+                sort_error = Some(e.into());
+                return Ordering::Equal;
+            }
+            match keys[a].py_cmp(&keys[b], heap, &mut guard.borrow_mut(), interns) {
+                Ok(Some(ord)) => {
+                    if reverse {
+                        ord.reverse()
+                    } else {
+                        ord
+                    }
+                }
+                Ok(None) => {
+                    sort_error = Some(ExcType::type_error(format!(
+                        "'<' not supported between instances of '{}' and '{}'",
+                        keys[a].py_type(heap),
+                        keys[b].py_type(heap)
+                    )));
+                    Ordering::Equal
+                }
+                Err(e) => {
+                    sort_error = Some(e.into());
+                    Ordering::Equal
+                }
             }
         });
     } else {
@@ -847,15 +836,30 @@ pub(crate) fn do_list_sort(
             if sort_error.is_some() {
                 return Ordering::Equal;
             }
-            if let Some(ord) = items[a].py_cmp(&items[b], heap, interns) {
-                if reverse { ord.reverse() } else { ord }
-            } else {
-                sort_error = Some(ExcType::type_error(format!(
-                    "'<' not supported between instances of '{}' and '{}'",
-                    items[a].py_type(heap),
-                    items[b].py_type(heap)
-                )));
-                Ordering::Equal
+            if let Err(e) = heap.check_time() {
+                sort_error = Some(e.into());
+                return Ordering::Equal;
+            }
+            match items[a].py_cmp(&items[b], heap, &mut guard.borrow_mut(), interns) {
+                Ok(Some(ord)) => {
+                    if reverse {
+                        ord.reverse()
+                    } else {
+                        ord
+                    }
+                }
+                Ok(None) => {
+                    sort_error = Some(ExcType::type_error(format!(
+                        "'<' not supported between instances of '{}' and '{}'",
+                        items[a].py_type(heap),
+                        items[b].py_type(heap)
+                    )));
+                    Ordering::Equal
+                }
+                Err(e) => {
+                    sort_error = Some(e.into());
+                    Ordering::Equal
+                }
             }
         });
     }
@@ -907,7 +911,7 @@ fn call_key_function(
     elem: Value,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
-    print_writer: &mut impl PrintWriter,
+    print_writer: &mut PrintWriter<'_>,
 ) -> Result<Value, RunError> {
     match key_fn {
         Value::Builtin(Builtins::Function(builtin)) => {
@@ -945,7 +949,9 @@ fn call_key_function(
 /// * `f` - The formatter to write to
 /// * `heap` - The heap for resolving value references
 /// * `heap_ids` - Set of heap IDs being repr'd (for cycle detection)
+/// * `guard` - Recursion depth tracker to prevent stack overflow on deeply nested structures
 /// * `interns` - The interned strings table for looking up string/bytes literals
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn repr_sequence_fmt(
     start: char,
     end: char,
@@ -953,18 +959,31 @@ pub(crate) fn repr_sequence_fmt(
     f: &mut impl Write,
     heap: &Heap<impl ResourceTracker>,
     heap_ids: &mut AHashSet<HeapId>,
+    guard: &mut DepthGuard,
     interns: &Interns,
 ) -> std::fmt::Result {
+    // Check depth limit before recursing
+    if !guard.increase() {
+        return f.write_str("...");
+    }
+
     f.write_char(start)?;
     let mut iter = items.iter();
     if let Some(first) = iter.next() {
-        first.py_repr_fmt(f, heap, heap_ids, interns)?;
+        first.py_repr_fmt(f, heap, heap_ids, guard, interns)?;
         for item in iter {
+            if heap.check_time().is_err() {
+                f.write_str(", ...[timeout]")?;
+                break;
+            }
             f.write_str(", ")?;
-            item.py_repr_fmt(f, heap, heap_ids, interns)?;
+            item.py_repr_fmt(f, heap, heap_ids, guard, interns)?;
         }
     }
-    f.write_char(end)
+    f.write_char(end)?;
+
+    guard.decrease();
+    Ok(())
 }
 
 /// Helper to extract items from a slice for list/tuple slicing.
@@ -973,6 +992,7 @@ pub(crate) fn repr_sequence_fmt(
 /// iterates backward from start down to (but not including) stop.
 ///
 /// Returns a new Vec of cloned values with proper refcount increments.
+/// Checks the time limit on each iteration to enforce timeouts during slicing.
 ///
 /// Note: step must be non-zero (callers should validate this via `slice.indices()`).
 pub(crate) fn get_slice_items(
@@ -981,7 +1001,7 @@ pub(crate) fn get_slice_items(
     stop: usize,
     step: i64,
     heap: &mut Heap<impl ResourceTracker>,
-) -> Vec<Value> {
+) -> RunResult<Vec<Value>> {
     let mut result = Vec::new();
 
     // try_from succeeds for non-negative step; step==0 rejected upstream by slice.indices()
@@ -989,6 +1009,7 @@ pub(crate) fn get_slice_items(
         // Positive step: iterate forward
         let mut i = start;
         while i < stop && i < items.len() {
+            heap.check_time()?;
             result.push(items[i].clone_with_heap(heap));
             i += step_usize;
         }
@@ -1009,10 +1030,115 @@ pub(crate) fn get_slice_items(
             if i_usize >= items.len() || i <= stop_i64 {
                 break;
             }
+            heap.check_time()?;
             result.push(items[i_usize].clone_with_heap(heap));
             i -= step_abs_i64;
         }
     }
 
-    result
+    Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use num_bigint::BigInt;
+
+    use super::*;
+    use crate::{intern::InternerBuilder, resource::NoLimitTracker, types::LongInt};
+
+    /// Creates a minimal Interns for testing.
+    fn create_test_interns() -> crate::intern::Interns {
+        let interner = InternerBuilder::new("");
+        crate::intern::Interns::new(interner, vec![], vec![])
+    }
+
+    /// Creates a heap with a list and a LongInt index, bypassing into_value() demotion.
+    ///
+    /// This allows testing the defensive code path where a LongInt contains an i64-fitting value.
+    fn create_heap_with_list_and_longint(
+        list_items: Vec<Value>,
+        index_value: BigInt,
+    ) -> (Heap<NoLimitTracker>, HeapId, HeapId) {
+        let mut heap = Heap::new(16, NoLimitTracker);
+        let list = List::new(list_items);
+        let list_id = heap.allocate(HeapData::List(list)).unwrap();
+        let long_int = LongInt::new(index_value);
+        let index_id = heap.allocate(HeapData::LongInt(long_int)).unwrap();
+        (heap, list_id, index_id)
+    }
+
+    /// Tests py_setitem with a LongInt index that fits in i64.
+    ///
+    /// This is a defensive code path - normally unreachable because LongInt::into_value()
+    /// demotes i64-fitting values to Value::Int. However, it could be reached via
+    /// deserialization of crafted snapshot data.
+    #[test]
+    fn py_setitem_longint_fits_in_i64() {
+        let (mut heap, list_id, index_id) =
+            create_heap_with_list_and_longint(vec![Value::Int(10), Value::Int(20), Value::Int(30)], BigInt::from(1));
+        let interns = create_test_interns();
+
+        // Use heap.with_entry_mut to avoid double mutable borrow
+        let key = Value::Ref(index_id);
+        let new_value = Value::Int(99);
+        heap.inc_ref(index_id);
+
+        let result = heap.with_entry_mut(list_id, |heap, data| data.py_setitem(key, new_value, heap, &interns));
+
+        assert!(result.is_ok());
+
+        // Verify the list was updated by checking it matches expected Int value
+        let HeapData::List(list) = heap.get(list_id) else {
+            panic!("expected list");
+        };
+        assert!(matches!(list.as_slice()[1], Value::Int(99)));
+
+        // Clean up
+        Value::Ref(list_id).drop_with_heap(&mut heap);
+    }
+
+    /// Tests py_setitem with a negative LongInt index that fits in i64.
+    #[test]
+    fn py_setitem_longint_negative_fits_in_i64() {
+        let (mut heap, list_id, index_id) = create_heap_with_list_and_longint(
+            vec![Value::Int(10), Value::Int(20), Value::Int(30)],
+            BigInt::from(-1), // Last element
+        );
+        let interns = create_test_interns();
+
+        let key = Value::Ref(index_id);
+        let new_value = Value::Int(99);
+        heap.inc_ref(index_id);
+
+        let result = heap.with_entry_mut(list_id, |heap, data| data.py_setitem(key, new_value, heap, &interns));
+
+        assert!(result.is_ok());
+
+        // Verify the last element was updated
+        let HeapData::List(list) = heap.get(list_id) else {
+            panic!("expected list");
+        };
+        assert!(matches!(list.as_slice()[2], Value::Int(99)));
+
+        Value::Ref(list_id).drop_with_heap(&mut heap);
+    }
+
+    /// Tests py_setitem with i64::MAX as a LongInt index.
+    #[test]
+    fn py_setitem_longint_at_i64_max() {
+        let (mut heap, list_id, index_id) =
+            create_heap_with_list_and_longint(vec![Value::Int(10)], BigInt::from(i64::MAX));
+        let interns = create_test_interns();
+
+        let key = Value::Ref(index_id);
+        let new_value = Value::Int(99);
+        heap.inc_ref(index_id);
+
+        // This should fail with IndexError because i64::MAX is out of bounds for a 1-element list
+        let result = heap.with_entry_mut(list_id, |heap, data| data.py_setitem(key, new_value, heap, &interns));
+
+        assert!(result.is_err());
+
+        Value::Ref(list_id).drop_with_heap(&mut heap);
+    }
 }
