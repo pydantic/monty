@@ -670,6 +670,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                         function_id: sf.function_id,
                         cells: sf.cells,
                         call_position: sf.call_position,
+                        should_return: false,
                     }
                 })
                 .collect();
