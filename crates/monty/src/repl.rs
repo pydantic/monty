@@ -323,7 +323,11 @@ impl<T: ResourceTracker> MontyRepl<T> {
     ///
     /// # Errors
     /// Returns `MontyException` for syntax/compile/runtime failures.
-    pub fn start(self, code: &str, print: &mut PrintWriter<'_>) -> Result<ReplProgress<T>, MontyException> {
+    pub fn start(
+        self,
+        code: &str,
+        print: &mut PrintWriter<'_>,
+    ) -> Result<ReplProgress<T>, (MontyRepl<T>, MontyException)> {
         let mut this = self;
         if code.is_empty() {
             return Ok(ReplProgress::Complete {
@@ -333,13 +337,18 @@ impl<T: ResourceTracker> MontyRepl<T> {
         }
 
         let input_script_name = this.next_input_script_name();
-        let executor = ReplExecutor::new_repl_snippet(
+        let executor = match ReplExecutor::new_repl_snippet(
             code.to_owned(),
             &input_script_name,
             this.external_function_names.clone(),
             this.global_name_map.clone(),
             &this.interns,
-        )?;
+        ) {
+            Ok(x) => x,
+            Err(err) => {
+                return Err((this, err));
+            }
+        };
 
         this.ensure_global_namespace_size(executor.namespace_size);
 
@@ -354,7 +363,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
     }
 
     /// Starts snippet execution with `PrintWriter::Stdout` and no additional host output wiring.
-    pub fn start_no_print(self, code: &str) -> Result<ReplProgress<T>, MontyException> {
+    pub fn start_no_print(self, code: &str) -> Result<ReplProgress<T>, (MontyRepl<T>, MontyException)> {
         self.start(code, &mut PrintWriter::Stdout)
     }
 
@@ -603,7 +612,7 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
         self,
         result: impl Into<ExternalResult>,
         print: &mut PrintWriter<'_>,
-    ) -> Result<ReplProgress<T>, MontyException> {
+    ) -> Result<ReplProgress<T>, (MontyRepl<T>, MontyException)> {
         let Self {
             mut repl,
             executor,
@@ -641,7 +650,7 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
     /// Continues snippet execution by pushing an unresolved `ExternalFuture`.
     ///
     /// This is the REPL-aware async pattern equivalent to `Snapshot::run_pending`.
-    pub fn run_pending(self, print: &mut PrintWriter<'_>) -> Result<ReplProgress<T>, MontyException> {
+    pub fn run_pending(self, print: &mut PrintWriter<'_>) -> Result<ReplProgress<T>, (MontyRepl<T>, MontyException)> {
         self.run(MontyFuture, print)
     }
 }
@@ -680,7 +689,7 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
         self,
         results: Vec<(u32, ExternalResult)>,
         print: &mut PrintWriter<'_>,
-    ) -> Result<ReplProgress<T>, MontyException> {
+    ) -> Result<ReplProgress<T>, (MontyRepl<T>, MontyException)> {
         let Self {
             mut repl,
             executor,
@@ -706,16 +715,26 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
             vm.cleanup();
             #[cfg(feature = "ref-count-panic")]
             repl.namespaces.drop_global_with_heap(&mut repl.heap);
-            return Err(MontyException::runtime_error(format!(
-                "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
-            )));
+            return Err((
+                repl,
+                MontyException::runtime_error(format!(
+                    "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
+                )),
+            ));
         }
 
         for (call_id, ext_result) in results {
             match ext_result {
-                ExternalResult::Return(obj) => vm.resolve_future(call_id, obj).map_err(|e| {
-                    MontyException::runtime_error(format!("Invalid return type for call {call_id}: {e}"))
-                })?,
+                ExternalResult::Return(obj) => match vm.resolve_future(call_id, obj) {
+                    Ok(x) => x,
+                    Err(err) => {
+                        return Err((
+                            repl,
+                            MontyException::runtime_error(format!("Invalid return type for call {call_id}: {err}")),
+                        ))
+                    }
+                },
+
                 ExternalResult::Error(exc) => vm.fail_future(call_id, RunError::from(exc)),
                 ExternalResult::Future => {}
             }
@@ -725,7 +744,7 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
             vm.cleanup();
             #[cfg(feature = "ref-count-panic")]
             repl.namespaces.drop_global_with_heap(&mut repl.heap);
-            return Err(error.into_python_exception(&executor.interns, &executor.code));
+            return Err((repl, error.into_python_exception(&executor.interns, &executor.code)));
         }
 
         let main_task_ready = vm.prepare_main_task_after_resolve();
@@ -736,7 +755,7 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
                 vm.cleanup();
                 #[cfg(feature = "ref-count-panic")]
                 repl.namespaces.drop_global_with_heap(&mut repl.heap);
-                return Err(e.into_python_exception(&executor.interns, &executor.code));
+                return Err((repl, e.into_python_exception(&executor.interns, &executor.code)));
             }
         };
 
@@ -770,7 +789,7 @@ fn handle_repl_vm_result<T: ResourceTracker>(
     vm_state: Option<VMSnapshot>,
     executor: ReplExecutor,
     mut repl: MontyRepl<T>,
-) -> Result<ReplProgress<T>, MontyException> {
+) -> Result<ReplProgress<T>, (MontyRepl<T>, MontyException)> {
     macro_rules! new_repl_snapshot {
         ($call_id: expr) => {
             ReplSnapshot {
@@ -834,7 +853,7 @@ fn handle_repl_vm_result<T: ResourceTracker>(
             #[cfg(feature = "ref-count-panic")]
             repl.namespaces.drop_global_with_heap(&mut repl.heap);
 
-            Err(err.into_python_exception(&executor.interns, &executor.code))
+            Err((repl, err.into_python_exception(&executor.interns, &executor.code)))
         }
     }
 }
