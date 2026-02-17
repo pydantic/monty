@@ -44,3 +44,9 @@ assert list(map(pow, [2, 3, 4, 5], [3, 2])) == [8, 9], 'map stops at shortest it
 assert list(map(pow, [2, 3], [3, 2, 1, 0])) == [8, 9], 'map stops at shortest iterable (first shorter)'
 
 assert list(map(pow, [2], [3, 4, 5])) == [8], 'map with single item in shortest'
+
+map()
+# Raise=TypeError('map() must have at least two arguments.')
+
+map(None)
+# Raise=TypeError('map() must have at least two arguments.')

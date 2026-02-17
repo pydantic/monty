@@ -241,7 +241,7 @@ impl BuiltinsFunctions {
             Self::Id => id::builtin_id(heap, args),
             Self::Isinstance => isinstance::builtin_isinstance(heap, args),
             Self::Len => len::builtin_len(heap, args, interns),
-            Self::Map => map::builtin_map(heap, args, interns),
+            Self::Map => map::builtin_map(heap, args, interns, print_writer),
             Self::Max => min_max::builtin_max(heap, args, interns),
             Self::Min => min_max::builtin_min(heap, args, interns),
             Self::Next => next::builtin_next(heap, args, interns),
