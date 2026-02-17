@@ -105,15 +105,6 @@ impl Dataclass {
         self.attrs.has_refs()
     }
 
-    /// Checks if the given attribute name exists in this dataclass's attrs dict.
-    ///
-    /// Used for lazy method detection: when an attribute is not found in attrs,
-    /// the VM dispatches the call as a method call to the host.
-    #[must_use]
-    pub fn has_attr(&self, name: &str, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> bool {
-        self.attrs.get_by_str(name, heap, interns).is_some()
-    }
-
     /// Returns a reference to the attrs Dict.
     #[must_use]
     pub fn attrs(&self) -> &Dict {
@@ -305,7 +296,7 @@ impl PyTrait for Dataclass {
     ) -> RunResult<AttrCallResult> {
         let attr_str = attr.as_str(interns);
         // Only public methods (no underscore prefix = no dunders, no private)
-        if !attr_str.starts_with('_') && !self.has_attr(attr_str, heap, interns) {
+        if !attr_str.starts_with('_') && self.attrs.get_by_str(attr_str, heap, interns).is_none() {
             // Clone self and prepend to args for the method call
             // inc_ref works even when data is taken out (refcount metadata is separate)
             heap.inc_ref(self_id);

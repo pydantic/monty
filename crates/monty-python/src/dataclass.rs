@@ -99,7 +99,7 @@ pub fn dataclass_to_py(
     dc_registry: &DcRegistry,
 ) -> PyResult<Py<PyAny>> {
     // Try to use the original type from the dc_registry (keyed by type_id)
-    if let Some(original_type_py) = dc_registry.get(py, type_id) {
+    if let Some(original_type_py) = dc_registry.get(py, type_id)? {
         let original_type = original_type_py.bind(py).cast::<PyType>()?;
         // Build kwargs dict from field names and values
         let kwargs = PyDict::new(py);
@@ -150,15 +150,15 @@ impl DcRegistry {
     ///
     /// Each type in the list is registered by its pointer identity, matching the key
     /// format used by `dataclass_to_monty`.
-    pub fn from_list(py: Python<'_>, dataclass_registry: Option<&Bound<'_, PyList>>) -> Self {
+    pub fn from_list(py: Python<'_>, dataclass_registry: Option<&Bound<'_, PyList>>) -> PyResult<Self> {
         let slf = Self::new(py);
 
         if let Some(registry_list) = dataclass_registry {
             for cls in registry_list {
-                slf.insert(&cls);
+                slf.insert(&cls)?;
             }
         }
-        slf
+        Ok(slf)
     }
 
     /// Creates a shared handle to this registry (cheap Python refcount bump).
@@ -178,23 +178,15 @@ impl DcRegistry {
     /// type object, matching what `dataclass_to_monty` stores as `type_id` in
     /// `MontyObject::Dataclass`. This allows `dataclass_to_py` to look up the original
     /// Python class when reconstructing output values.
-    pub fn insert<T>(&self, obj: &Bound<'_, T>) {
+    pub fn insert<T>(&self, obj: &Bound<'_, T>) -> PyResult<()> {
         let py = obj.py();
         let type_id = obj.as_ptr() as u64;
-        self.registry
-            .bind(py)
-            .set_item(type_id, obj.as_any())
-            .expect("failed to insert into dc_registry");
+        self.registry.bind(py).set_item(type_id, obj.as_any())
     }
 
     /// Looks up an original Python type by its pointer identity.
-    pub fn get(&self, py: Python<'_>, type_id: u64) -> Option<Py<PyAny>> {
-        self.registry
-            .bind(py)
-            .get_item(type_id)
-            .ok()
-            .flatten()
-            .map(Bound::unbind)
+    pub fn get(&self, py: Python<'_>, type_id: u64) -> PyResult<Option<Py<PyAny>>> {
+        Ok(self.registry.bind(py).get_item(type_id)?.map(Bound::unbind))
     }
 }
 

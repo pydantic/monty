@@ -85,9 +85,9 @@ fn dispatch_method_call_inner(
 /// Registry that maps external function names to Python callables.
 ///
 /// Passed to the execution loop and used to dispatch calls when Monty
-/// execution pauses at an external function. The `dc_registry` uses interior
-/// mutability (`Arc<Mutex>`) so auto-registration of dataclass types encountered
-/// in return values is transparent to callers.
+/// execution pauses at an external function. The `dc_registry` is a
+/// GIL-protected `PyDict` wrapper, so auto-registration of dataclass types
+/// encountered in return values is transparent to callers.
 pub struct ExternalFunctionRegistry<'a, 'py> {
     py: Python<'py>,
     functions: &'py Bound<'py, PyDict>,

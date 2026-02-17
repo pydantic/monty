@@ -105,7 +105,7 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
         Ok(exc_to_monty_object(exc))
     } else if is_dataclass(obj) {
         // Auto-register the dataclass type so it can be reconstructed on output
-        dc_registry.insert(&obj.get_type());
+        dc_registry.insert(&obj.get_type())?;
         dataclass_to_monty(obj, dc_registry)
     } else if obj.is_instance(get_pure_posix_path(obj.py())?)? {
         // Handle pathlib.PurePosixPath and thereby pathlib.PosixPath objects

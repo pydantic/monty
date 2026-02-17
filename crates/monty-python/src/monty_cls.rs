@@ -87,7 +87,7 @@ impl PyMonty {
             script_name: script_name.to_string(),
             input_names,
             external_function_names,
-            dc_registry: DcRegistry::from_list(py, dataclass_registry),
+            dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
         })
     }
 
@@ -101,8 +101,8 @@ impl PyMonty {
     ///
     /// # Raises
     /// * `TypeError` if the argument is not a dataclass type
-    fn register_dataclass(&self, cls: &Bound<'_, PyType>) {
-        self.dc_registry.insert(cls);
+    fn register_dataclass(&self, cls: &Bound<'_, PyType>) -> PyResult<()> {
+        self.dc_registry.insert(cls)
     }
 
     /// Performs static type checking on the code.
@@ -267,7 +267,7 @@ impl PyMonty {
             script_name: serialized.script_name,
             input_names: serialized.input_names,
             external_function_names: serialized.external_function_names,
-            dc_registry: DcRegistry::from_list(py, dataclass_registry),
+            dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
         })
     }
 
@@ -358,9 +358,10 @@ impl PyMonty {
         // no `Send` bound - py.detach() is overly restrictive to prevent `Bound` types going inside
         let mut print_output = SendWrapper::new(&mut print_output);
 
-        // Check if any inputs are dataclasses — if so, we need the iterative path
-        // because method calls could happen lazily and need to be dispatched to the host.
-        let has_dataclass_inputs = || input_values.iter().any(|v| matches!(v, MontyObject::Dataclass { .. }));
+        // Check if any inputs contain dataclasses (including nested in containers) —
+        // if so, we need the iterative path because method calls could happen lazily
+        // and need to be dispatched to the host.
+        let has_dataclass_inputs = || input_values.iter().any(contains_dataclass);
 
         if self.external_function_names.is_empty() && os.is_none() && !has_dataclass_inputs() {
             return match py.detach(|| self.runner.run(input_values, tracker, &mut print_output)) {
@@ -689,7 +690,7 @@ impl PyMontyRepl {
     ) -> PyResult<(Self, Py<PyAny>)> {
         let input_names = list_str(inputs, "inputs")?;
         let external_function_names = list_str(external_functions, "external_functions")?;
-        let dc_registry = DcRegistry::from_list(py, dataclass_registry);
+        let dc_registry = DcRegistry::from_list(py, dataclass_registry)?;
         let input_values = Self::extract_repl_input_values(&input_names, start_inputs, &dc_registry)?;
         let print_callback = print_callback.map(|c| c.clone().unbind());
         let print_callback_for_create = print_callback.as_ref();
@@ -785,7 +786,7 @@ impl PyMontyRepl {
         Ok(Self {
             repl: serialized.repl,
             print_callback,
-            dc_registry: DcRegistry::from_list(py, dataclass_registry),
+            dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
             script_name: serialized.script_name,
         })
     }
@@ -1116,7 +1117,7 @@ impl PyMontySnapshot {
         let serialized: SerializedSnapshotOwned =
             postcard::from_bytes(bytes).map_err(|e| PyValueError::new_err(e.to_string()))?;
 
-        let dc_registry = DcRegistry::from_list(py, dataclass_registry);
+        let dc_registry = DcRegistry::from_list(py, dataclass_registry)?;
 
         // Convert MontyObject args to Python
         let args: Vec<Py<PyAny>> = serialized
@@ -1306,7 +1307,7 @@ impl PyMontyFutureSnapshot {
         Ok(Self {
             snapshot: serialized.snapshot,
             print_callback,
-            dc_registry: DcRegistry::from_list(py, dataclass_registry),
+            dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
             script_name: serialized.script_name,
         })
     }
@@ -1394,6 +1395,23 @@ impl PrintWriterCallback for CallbackStringPrint {
             Ok::<_, PyErr>(())
         })
         .map_err(|e| Python::attach(|py| exc_py_to_monty(py, &e)))
+    }
+}
+
+/// Recursively checks whether a `MontyObject` contains a dataclass, including
+/// inside containers like `List`, `Tuple`, and `Dict`.
+///
+/// This is used to decide whether to take the iterative execution path: dataclass
+/// method calls need host dispatch, so if any input (even nested) is a dataclass
+/// we must use the iterative runner rather than the non-iterative `run()`.
+fn contains_dataclass(obj: &MontyObject) -> bool {
+    match obj {
+        MontyObject::Dataclass { .. } => true,
+        MontyObject::List(items) | MontyObject::Tuple(items) => items.iter().any(contains_dataclass),
+        MontyObject::Dict(pairs) => pairs
+            .into_iter()
+            .any(|(k, v)| contains_dataclass(k) || contains_dataclass(v)),
+        _ => false,
     }
 }
 

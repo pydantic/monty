@@ -886,3 +886,43 @@ def test_method_nonexistent_raises():
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(inputs={'g': Greeter(greeting='hi')})
     assert str(exc_info.value) == snapshot("AttributeError: 'Greeter' object has no attribute 'nonexistent'")
+
+
+def test_method_on_nested_dataclass_in_list():
+    """Method call on a dataclass nested inside a list input."""
+    m = pydantic_monty.Monty('items[0].greet()', inputs=['items'], dataclass_registry=[Greeter])
+    result = m.run(inputs={'items': [Greeter(greeting='nested')]})
+    assert result == snapshot('nested')
+
+
+def test_method_on_nested_dataclass_in_dict():
+    """Method call on a dataclass nested inside a dict input."""
+    m = pydantic_monty.Monty('d["g"].greet()', inputs=['d'], dataclass_registry=[Greeter])
+    result = m.run(inputs={'d': {'g': Greeter(greeting='from dict')}})
+    assert result == snapshot('from dict')
+
+
+def test_method_on_nested_dataclass_in_tuple():
+    """Method call on a dataclass nested inside a tuple input."""
+    m = pydantic_monty.Monty('t[1].add(10)', inputs=['t'], dataclass_registry=[Calculator])
+    result = m.run(inputs={'t': (0, Calculator(value=5))})
+    assert result == snapshot(15)
+
+
+def test_method_on_nested_dataclass_field():
+    """Method call on a dataclass that is a field of another dataclass (d.c.method())."""
+
+    @dataclass
+    class Inner:
+        value: int
+
+        def doubled(self) -> int:
+            return self.value * 2
+
+    @dataclass
+    class Outer:
+        inner: Inner
+
+    m = pydantic_monty.Monty('o.inner.doubled()', inputs=['o'], dataclass_registry=[Outer, Inner])
+    result = m.run(inputs={'o': Outer(inner=Inner(value=21))})
+    assert result == snapshot(42)
