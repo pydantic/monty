@@ -13,7 +13,7 @@ default-members = ["crates/monty-cli"]
 
 [workspace.package]
 edition = "2024"
-version = "0.0.5"
+version = "0.0.6"
 rust-version = "1.90"
 license = "MIT"
 authors = ["Samuel Colvin <samuel@pydantic.dev>"]

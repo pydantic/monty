@@ -71,7 +71,7 @@ impl Builtins {
         heap: &mut Heap<impl ResourceTracker>,
         args: ArgValues,
         interns: &Interns,
-        print: &mut impl PrintWriter,
+        print: &mut PrintWriter<'_>,
     ) -> RunResult<Value> {
         match self {
             Self::Function(b) => b.call(heap, args, interns, print),
@@ -225,7 +225,7 @@ impl BuiltinsFunctions {
         heap: &mut Heap<impl ResourceTracker>,
         args: ArgValues,
         interns: &Interns,
-        print_writer: &mut impl PrintWriter,
+        print_writer: &mut PrintWriter<'_>,
     ) -> RunResult<Value> {
         match self {
             Self::Abs => abs::builtin_abs(heap, args),

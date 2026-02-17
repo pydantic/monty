@@ -31,7 +31,7 @@ pub use crate::run::RefCountOutput;
 pub use crate::{
     exception_private::ExcType,
     exception_public::{CodeLoc, MontyException, StackFrame},
-    io::{CollectStringPrint, NoPrint, PrintWriter, StdPrint},
+    io::{PrintWriter, PrintWriterCallback},
     object::{DictPairs, InvalidInputError, MontyObject},
     os::{OsFunction, dir_stat, file_stat, stat_result, symlink_stat},
     repl::{

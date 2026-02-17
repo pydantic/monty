@@ -8,7 +8,7 @@ use crate::{
     exception_private::RunResult,
     heap::Heap,
     intern::{ExtFunctionId, Interns},
-    io::{PrintWriter, StdPrint},
+    io::PrintWriter,
     namespace::Namespaces,
     object::MontyObject,
     os::OsFunction,
@@ -81,19 +81,19 @@ impl MontyRun {
     /// # Arguments
     /// * `inputs` - Values to fill the first N slots of the namespace
     /// * `resource_tracker` - Custom resource tracker implementation
-    /// * `print` - print print implementation
+    /// * `print` - print output writer (mutably borrowed so `Collect` data is preserved)
     pub fn run(
         &self,
         inputs: Vec<MontyObject>,
         resource_tracker: impl ResourceTracker,
-        print: &mut impl PrintWriter,
+        print: &mut PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
         self.executor.run(inputs, resource_tracker, print)
     }
 
     /// Executes the code to completion with no resource limits, printing to stdout/stderr.
     pub fn run_no_limits(&self, inputs: Vec<MontyObject>) -> Result<MontyObject, MontyException> {
-        self.run(inputs, NoLimitTracker, &mut StdPrint)
+        self.run(inputs, NoLimitTracker, &mut PrintWriter::Stdout)
     }
 
     /// Serializes the runner to a binary format.
@@ -147,7 +147,7 @@ impl MontyRun {
         self,
         inputs: Vec<MontyObject>,
         resource_tracker: T,
-        print: &mut impl PrintWriter,
+        print: &mut PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         let executor = self.executor;
 
@@ -155,7 +155,7 @@ impl MontyRun {
         let mut heap = Heap::new(executor.namespace_size, resource_tracker);
         let mut namespaces = executor.prepare_namespaces(inputs, &mut heap)?;
 
-        // Create and run VM - scope the VM borrow so we can move heap/namespaces after
+        // Create and run VM
         let mut vm = VM::new(&mut heap, &mut namespaces, &executor.interns, print);
 
         // Start execution
@@ -383,7 +383,7 @@ impl<T: ResourceTracker> Snapshot<T> {
     pub fn run(
         mut self,
         result: impl Into<ExternalResult>,
-        print: &mut impl PrintWriter,
+        print: &mut PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         let ext_result = result.into();
 
@@ -442,7 +442,7 @@ impl<T: ResourceTracker> Snapshot<T> {
     ///
     /// # Panics
     /// Panics if the VM reaches an inconsistent state (indicating a bug in the interpreter).
-    pub fn run_pending(self, print: &mut impl PrintWriter) -> Result<RunProgress<T>, MontyException> {
+    pub fn run_pending(self, print: &mut PrintWriter<'_>) -> Result<RunProgress<T>, MontyException> {
         self.run(MontyFuture, print)
     }
 }
@@ -508,7 +508,7 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
     pub fn resume(
         self,
         results: Vec<(u32, ExternalResult)>,
-        print: &mut impl PrintWriter,
+        print: &mut PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         use crate::exception_private::RunError;
 
@@ -781,12 +781,12 @@ impl Executor {
     /// # Arguments
     /// * `inputs` - Values to fill the first N slots of the namespace
     /// * `resource_tracker` - Custom resource tracker implementation
-    /// * `print` - Print implementation for print() output
+    /// * `print` - Print output writer (mutably borrowed so `Collect` data is preserved)
     fn run(
         &self,
         inputs: Vec<MontyObject>,
         resource_tracker: impl ResourceTracker,
-        print: &mut impl PrintWriter,
+        print: &mut PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
         let heap_capacity = self.heap_capacity.load(Ordering::Relaxed);
         let mut heap = Heap::new(heap_capacity, resource_tracker);
@@ -831,8 +831,8 @@ impl Executor {
         let mut heap = Heap::new(self.namespace_size, NoLimitTracker);
         let mut namespaces = self.prepare_namespaces(inputs, &mut heap)?;
 
-        // Create and run VM with StdPrint for output
-        let mut print = StdPrint;
+        // Create and run VM with Stdout for output
+        let mut print = PrintWriter::Stdout;
         let mut vm = VM::new(&mut heap, &mut namespaces, &self.interns, &mut print);
         let frame_exit_result = vm.run_module(&self.module_code);
 

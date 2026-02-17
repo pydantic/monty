@@ -15,7 +15,7 @@ use crate::{
     exception_private::{RunError, RunResult},
     heap::Heap,
     intern::{ExtFunctionId, InternerBuilder, Interns},
-    io::{PrintWriter, StdPrint},
+    io::PrintWriter,
     namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
     object::MontyObject,
     os::OsFunction,
@@ -284,7 +284,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
         external_function_names: Vec<String>,
         inputs: Vec<MontyObject>,
         resource_tracker: T,
-        print: &mut impl PrintWriter,
+        print: &mut PrintWriter<'_>,
     ) -> Result<(Self, MontyObject), MontyException> {
         let executor = ReplExecutor::new(code, script_name, input_names, external_function_names.clone())?;
 
@@ -323,7 +323,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
     ///
     /// # Errors
     /// Returns `MontyException` for syntax/compile/runtime failures.
-    pub fn start(self, code: &str, print: &mut impl PrintWriter) -> Result<ReplProgress<T>, MontyException> {
+    pub fn start(self, code: &str, print: &mut PrintWriter<'_>) -> Result<ReplProgress<T>, MontyException> {
         let mut this = self;
         if code.is_empty() {
             return Ok(ReplProgress::Complete {
@@ -353,9 +353,9 @@ impl<T: ResourceTracker> MontyRepl<T> {
         handle_repl_vm_result(vm_result, vm_state, executor, this)
     }
 
-    /// Starts snippet execution with `StdPrint` and no additional host output wiring.
+    /// Starts snippet execution with `PrintWriter::Stdout` and no additional host output wiring.
     pub fn start_no_print(self, code: &str) -> Result<ReplProgress<T>, MontyException> {
-        self.start(code, &mut StdPrint)
+        self.start(code, &mut PrintWriter::Stdout)
     }
 
     /// Feeds and executes a new snippet against the current REPL state.
@@ -368,7 +368,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
     ///
     /// # Errors
     /// Returns `MontyException` for syntax/compile/runtime failures.
-    pub fn feed(&mut self, code: &str, print: &mut impl PrintWriter) -> Result<MontyObject, MontyException> {
+    pub fn feed(&mut self, code: &str, print: &mut PrintWriter<'_>) -> Result<MontyObject, MontyException> {
         if code.is_empty() {
             return Ok(MontyObject::None);
         }
@@ -407,9 +407,9 @@ impl<T: ResourceTracker> MontyRepl<T> {
             .map_err(|e| e.into_python_exception(&self.interns, &code))
     }
 
-    /// Executes a snippet with `StdPrint` and no additional host output wiring.
+    /// Executes a snippet with no additional host output wiring.
     pub fn feed_no_print(&mut self, code: &str) -> Result<MontyObject, MontyException> {
-        self.feed(code, &mut StdPrint)
+        self.feed(code, &mut PrintWriter::Stdout)
     }
 
     /// Grows the global namespace to at least `namespace_size`.
@@ -602,7 +602,7 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
     pub fn run(
         self,
         result: impl Into<ExternalResult>,
-        print: &mut impl PrintWriter,
+        print: &mut PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, MontyException> {
         let Self {
             mut repl,
@@ -641,7 +641,7 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
     /// Continues snippet execution by pushing an unresolved `ExternalFuture`.
     ///
     /// This is the REPL-aware async pattern equivalent to `Snapshot::run_pending`.
-    pub fn run_pending(self, print: &mut impl PrintWriter) -> Result<ReplProgress<T>, MontyException> {
+    pub fn run_pending(self, print: &mut PrintWriter<'_>) -> Result<ReplProgress<T>, MontyException> {
         self.run(MontyFuture, print)
     }
 }
@@ -679,7 +679,7 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
     pub fn resume(
         self,
         results: Vec<(u32, ExternalResult)>,
-        print: &mut impl PrintWriter,
+        print: &mut PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, MontyException> {
         let Self {
             mut repl,

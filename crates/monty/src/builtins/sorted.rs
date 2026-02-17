@@ -25,9 +25,6 @@ pub fn builtin_sorted(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, in
 
     let positional_len = positional.len();
     if positional_len != 1 {
-        for v in positional {
-            v.drop_with_heap(heap);
-        }
         return Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!("sorted expected 1 argument, got {positional_len}"),

@@ -24,6 +24,7 @@ num-bigint = { workspace = true }
 indexmap = { workspace = true }
 serde = { workspace = true }
 postcard = { workspace = true }
+send_wrapper = "0.6.0"
 
 [build-dependencies]
 pyo3-build-config = { version = "0.28", features = ["resolve-config"] }

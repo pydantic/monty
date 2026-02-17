@@ -5,10 +5,11 @@
 //! It also handles default values and the argument binding algorithm.
 
 use crate::{
-    args::{ArgValues, KwargsValues},
+    args::{ArgPosIter, ArgValues},
+    defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     expressions::Identifier,
-    heap::{DropWithHeap, Heap, HeapData},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard},
     intern::{Interns, StringId},
     resource::ResourceTracker,
     types::{Dict, allocate_tuple},
@@ -200,76 +201,72 @@ impl Signature {
     /// - Same argument passed both positionally and by keyword
     pub fn bind(
         &self,
-        mut args: ArgValues,
+        args: ArgValues,
         defaults: &[Value],
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
         func_name: Identifier,
         namespace: &mut Vec<Value>,
     ) -> RunResult<()> {
+        let (pos_iter, keyword_args) = args.into_parts();
+
+        // Convert kwargs to an iterator and guard it so remaining items are cleaned up
+        // on any error path
+        let kwonly_given = keyword_args.len();
+        let keyword_args = keyword_args.into_iter();
+        defer_drop_mut!(keyword_args, heap);
+
+        // On error paths need to empty the namespace
+        let mut namespace_guard = HeapGuard::new(NamespaceGuard { namespace }, heap);
+        let (NamespaceGuard { namespace }, heap) = namespace_guard.as_parts_mut();
+
         // Fast path for simple signatures (no defaults, no special params) and
         // signatures with only positional-or-keyword params and defaults.
         // This avoids the full binding algorithm overhead for common cases.
 
-        if matches!(self.bind_mode, BindMode::Simple | BindMode::SimpleWithDefaults) {
-            // Try to consume args directly into namespace without the full algorithm.
-            // Returns Some(args) if kwargs were passed (need full algorithm).
-            let opt_args = match args {
-                ArgValues::Empty => None,
-                ArgValues::One(a) => {
+        if matches!(self.bind_mode, BindMode::Simple | BindMode::SimpleWithDefaults) && kwonly_given == 0 {
+            match pos_iter {
+                ArgPosIter::Empty => {}
+                ArgPosIter::One(a) => {
                     namespace.push(a);
-                    None
                 }
-                ArgValues::Two(a1, a2) => {
+                ArgPosIter::Two([a1, a2]) => {
                     namespace.push(a1);
                     namespace.push(a2);
-                    None
                 }
-                ArgValues::ArgsKargs {
-                    args,
-                    kwargs: KwargsValues::Empty,
-                } => {
+                ArgPosIter::Vec(args) => {
                     namespace.extend(args);
-                    None
                 }
-                args => Some(args),
-            };
-
-            if let Some(continue_args) = opt_args {
-                // Kwargs were passed - need full algorithm
-                args = continue_args;
-            } else {
-                let actual_count = namespace.len();
-                let param_count = self.param_count();
-
-                if actual_count == param_count {
-                    // Exact match - no defaults needed
-                    return Ok(());
-                } else if self.bind_mode == BindMode::SimpleWithDefaults {
-                    let required = self.required_positional_count();
-                    if actual_count >= required && actual_count < param_count {
-                        // Apply defaults for remaining parameters
-                        // Defaults are stored at the end of the defaults array for pos-or-kw params
-                        let defaults_needed = param_count - actual_count;
-                        let defaults_start = self.arg_defaults_count - defaults_needed;
-                        for i in 0..defaults_needed {
-                            namespace.push(defaults[defaults_start + i].clone_with_heap(heap));
-                        }
-                        return Ok(());
-                    }
-                }
-
-                // Wrong number of arguments - clean up and return error
-                for val in namespace.drain(..) {
-                    val.drop_with_heap(heap);
-                }
-                return self.wrong_arg_count_error(actual_count, interns, func_name);
             }
-        }
-        // Full binding algorithm for complex signatures or kwargs
 
-        // Split args into positional iterator and keyword components without allocating
-        let (mut pos_iter, keyword_args) = args.into_parts();
+            let actual_count = namespace.len();
+            let param_count = self.param_count();
+
+            if actual_count == param_count {
+                // Exact match - no defaults needed
+                std::mem::forget(namespace_guard);
+                return Ok(());
+            } else if self.bind_mode == BindMode::SimpleWithDefaults {
+                let required = self.required_positional_count();
+                if actual_count >= required && actual_count < param_count {
+                    // Apply defaults for remaining parameters
+                    // Defaults are stored at the end of the defaults array for pos-or-kw params
+                    let defaults_needed = param_count - actual_count;
+                    let defaults_start = self.arg_defaults_count - defaults_needed;
+                    for i in 0..defaults_needed {
+                        namespace.push(defaults[defaults_start + i].clone_with_heap(heap));
+                    }
+                    std::mem::forget(namespace_guard);
+                    return Ok(());
+                }
+            }
+
+            return self.wrong_arg_count_error(actual_count, interns, func_name);
+        }
+
+        // Full binding algorithm for complex signatures or kwargs
+        let mut pos_iter_guard = HeapGuard::new(pos_iter, heap);
+        let (pos_iter, heap) = pos_iter_guard.as_parts_mut();
 
         // Calculate how many positional params we have
         let pos_param_count = self.pos_arg_count();
@@ -277,31 +274,23 @@ impl Signature {
         let total_positional_params = pos_param_count + arg_param_count;
 
         // Check positional argument count against maximum
-        let positional_count = pos_iter.len();
-        let kwonly_given = keyword_args.len();
-        if let Some(max) = self.max_positional_count()
-            && positional_count > max
-        {
-            let func = interns.get_str(func_name.name_id);
-            // Must clean up iterator and kwargs before returning error
-            for value in pos_iter {
-                value.drop_with_heap(heap);
+        if let Some(max) = self.max_positional_count() {
+            let positional_count = pos_iter.len();
+            if positional_count > max {
+                let func = interns.get_str(func_name.name_id);
+                return Err(ExcType::type_error_too_many_positional(
+                    func,
+                    max,
+                    positional_count,
+                    kwonly_given,
+                ));
             }
-            keyword_args.drop_with_heap(heap);
-            return Err(ExcType::type_error_too_many_positional(
-                func,
-                max,
-                positional_count,
-                kwonly_given,
-            ));
         }
 
         // Initialize result namespace with Undefined values for all slots
         // Layout: [pos_args][args][*args?][kwargs][**kwargs?]
         let var_args_offset = usize::from(self.var_args.is_some());
-        for _ in 0..self.total_slots() {
-            namespace.push(Value::Undefined);
-        }
+        namespace.resize_with(namespace.len() + self.total_slots(), || Value::Undefined);
 
         // Track which parameters have been bound (for duplicate detection)
         // Uses a u64 bitmap - supports up to 64 named parameters which is sufficient
@@ -333,24 +322,28 @@ impl Signature {
         }
 
         // 2. Collect excess positional args into *args tuple
-        let excess_positional = pos_iter.collect();
-        let var_args_value = if self.var_args.is_some() {
-            // Create tuple from excess args
-            Some(allocate_tuple(excess_positional, heap)?)
+        if self.var_args.is_some() {
+            namespace[total_positional_params] = allocate_tuple(pos_iter.collect(), heap)?;
         } else {
-            None
-        };
-        // If no *args, excess was already checked above via max_positional_count
+            // If no *args, excess was already checked above via max_positional_count
+            debug_assert_eq!(pos_iter.len(), 0);
+        }
 
         // 3. Bind keyword args
         // Bind keywords to args and kwargs (not pos_args - those are positional-only)
-        let mut excess_kwargs = Dict::new();
+        let mut excess_kwargs_guard = HeapGuard::new(self.var_kwargs.is_some().then(Dict::new), heap);
+        let (excess_kwargs, heap) = excess_kwargs_guard.as_parts_mut();
 
-        for (key, value) in keyword_args {
-            let Some(keyword_name) = key.as_either_str(heap) else {
-                key.drop_with_heap(heap);
-                value.drop_with_heap(heap);
-                cleanup_on_error(namespace, var_args_value, excess_kwargs, heap);
+        'kwargs: for (key, value) in keyword_args {
+            // Guard key: dropped on most paths, consumed into **kwargs via into_parts().
+            let mut key_guard = HeapGuard::new(key, heap);
+            let (key, heap) = key_guard.as_parts_mut();
+
+            // Guard value: consumed into namespace/excess_kwargs via into_inner(),
+            // or dropped automatically on error paths.
+            let mut value_guard = HeapGuard::new(value, heap);
+
+            let Some(keyword_name) = key.as_either_str(value_guard.heap()) else {
                 return Err(ExcType::type_error("keywords must be strings"));
             };
 
@@ -362,101 +355,57 @@ impl Signature {
             {
                 let func = interns.get_str(func_name.name_id);
                 let param = interns.get_str(param_id);
-                key.drop_with_heap(heap);
-                value.drop_with_heap(heap);
-                cleanup_on_error(namespace, var_args_value, excess_kwargs, heap);
                 return Err(ExcType::type_error_positional_only(func, param));
             }
 
-            // Use Option to track the value as we try to bind it
-            let mut remaining_value = Some(value);
-            let mut key_value = Some(key);
-
-            // Try to bind to an args param
-            if let Some(ref args) = self.args {
-                let matching_param = args
-                    .iter()
-                    .enumerate()
-                    .find(|&(_, param_id)| keyword_name.matches(*param_id, interns));
-                if let Some((i, &param_id)) = matching_param {
-                    let idx = pos_param_count + i;
-                    if (bound_params & (1 << idx)) != 0 {
-                        let func = interns.get_str(func_name.name_id);
-                        let param = interns.get_str(param_id);
-                        if let Some(v) = remaining_value.take() {
-                            v.drop_with_heap(heap);
-                        }
-                        if let Some(dup_key) = key_value.take() {
-                            dup_key.drop_with_heap(heap);
-                        }
-                        cleanup_on_error(namespace, var_args_value, excess_kwargs, heap);
-                        return Err(ExcType::type_error_duplicate_arg(func, param));
-                    }
-                    if let Some(v) = remaining_value.take() {
-                        namespace[idx] = v;
-                    }
-                    bound_params |= 1 << idx;
-                    if let Some(key) = key_value.take() {
-                        key.drop_with_heap(heap);
-                    }
-                }
-            }
-
-            // Try to bind to a kwargs param (keyword-only)
-            if remaining_value.is_some()
-                && let Some(ref kwargs) = self.kwargs
-            {
-                for (i, &param_id) in kwargs.iter().enumerate() {
+            // Try positional-or-keyword params
+            if let Some(args) = &self.args {
+                for (i, &param_id) in args.iter().enumerate() {
                     if keyword_name.matches(param_id, interns) {
-                        // Skip past *args slot if present
-                        let ns_idx = total_positional_params + var_args_offset + i;
-                        let idx = total_positional_params + i;
-                        if (bound_params & (1 << idx)) != 0 {
+                        let ns_idx = pos_param_count + i;
+                        if (bound_params & (1 << ns_idx)) != 0 {
                             let func = interns.get_str(func_name.name_id);
                             let param = interns.get_str(param_id);
-                            if let Some(v) = remaining_value.take() {
-                                v.drop_with_heap(heap);
-                            }
-                            if let Some(dup_key) = key_value.take() {
-                                dup_key.drop_with_heap(heap);
-                            }
-                            cleanup_on_error(namespace, var_args_value, excess_kwargs, heap);
                             return Err(ExcType::type_error_duplicate_arg(func, param));
                         }
-                        // Store the value for this keyword-only param
-                        if let Some(v) = remaining_value.take() {
-                            namespace[ns_idx] = v;
-                        }
-                        bound_params |= 1 << idx;
-                        if let Some(bound_key) = key_value.take() {
-                            bound_key.drop_with_heap(heap);
-                        }
-                        break;
+                        let (value, _) = value_guard.into_parts();
+                        namespace[ns_idx] = value;
+                        bound_params |= 1 << ns_idx;
+                        continue 'kwargs;
                     }
                 }
             }
 
-            // If still not bound, handle as excess or error
-            if let Some(v) = remaining_value {
-                if self.var_kwargs.is_some() {
-                    // Collect into **kwargs
-                    let key_for_kwargs = key_value.take().expect("keyword key available for **kwargs");
-                    excess_kwargs.set(key_for_kwargs, v, heap, interns)?;
-                } else {
-                    let func = interns.get_str(func_name.name_id);
-                    let key_str = keyword_name.as_str(interns);
-                    v.drop_with_heap(heap);
-                    if let Some(unused_key) = key_value.take() {
-                        unused_key.drop_with_heap(heap);
+            // Try keyword-only params
+            if let Some(kwargs) = &self.kwargs {
+                for (i, &param_id) in kwargs.iter().enumerate() {
+                    if keyword_name.matches(param_id, interns) {
+                        let ns_idx = total_positional_params + var_args_offset + i;
+                        let bit_idx = total_positional_params + i;
+                        if (bound_params & (1 << bit_idx)) != 0 {
+                            let func = interns.get_str(func_name.name_id);
+                            let param = interns.get_str(param_id);
+                            return Err(ExcType::type_error_duplicate_arg(func, param));
+                        }
+                        let (value, _) = value_guard.into_parts();
+                        namespace[ns_idx] = value;
+                        bound_params |= 1 << bit_idx;
+                        continue 'kwargs;
                     }
-                    cleanup_on_error(namespace, var_args_value, excess_kwargs, heap);
-                    return Err(ExcType::type_error_unexpected_keyword(func, key_str));
                 }
             }
 
-            if let Some(unused_key) = key_value {
-                unused_key.drop_with_heap(heap);
+            if let Some(excess_kwargs) = excess_kwargs {
+                // Consume both value and key into **kwargs dict
+                let (value, _) = value_guard.into_parts();
+                let (key, heap) = key_guard.into_parts();
+                excess_kwargs.set(key, value, heap, interns)?;
+                continue 'kwargs;
             }
+
+            let func = interns.get_str(func_name.name_id);
+            let key_str = keyword_name.as_str(interns);
+            return Err(ExcType::type_error_unexpected_keyword(func, key_str));
         }
 
         // 3.5. Apply default values to unbound optional parameters
@@ -506,7 +455,6 @@ impl Signature {
 
         // 4. Check that all required params are bound BEFORE building final namespace.
         // This ensures we can clean up properly on error without leaking heap values.
-        let func = interns.get_str(func_name.name_id);
 
         // Check required positional params (pos_args + required args)
         let mut missing_positional: Vec<&str> = Vec::new();
@@ -533,7 +481,7 @@ impl Signature {
 
         if !missing_positional.is_empty() {
             // Clean up bound values before returning error
-            cleanup_on_error(namespace, var_args_value, excess_kwargs, heap);
+            let func = interns.get_str(func_name.name_id);
             return Err(ExcType::type_error_missing_positional_with_names(
                 func,
                 &missing_positional,
@@ -553,25 +501,21 @@ impl Signature {
         }
 
         if !missing_kwonly.is_empty() {
-            // Clean up bound values before returning error
-            cleanup_on_error(namespace, var_args_value, excess_kwargs, heap);
+            let func = interns.get_str(func_name.name_id);
             return Err(ExcType::type_error_missing_kwonly_with_names(func, &missing_kwonly));
         }
 
-        // 5. Fill in *args and **kwargs slots directly
+        // 5. Insert **kwargs dict if present (at the last slot)
         // Namespace layout: [pos_args][args][*args?][kwargs][**kwargs?]
-
-        // Insert *args tuple if present
-        if let Some(var_args_val) = var_args_value {
-            namespace[total_positional_params] = var_args_val;
-        }
-
-        // Insert **kwargs dict if present (at the last slot)
-        if self.var_kwargs.is_some() {
+        let (excess_kwargs, heap) = excess_kwargs_guard.into_parts();
+        if let Some(excess_kwargs) = excess_kwargs {
             let dict_id = heap.allocate(HeapData::Dict(excess_kwargs))?;
             let last_slot = namespace.len() - 1;
             namespace[last_slot] = Value::Ref(dict_id);
         }
+
+        std::mem::drop(pos_iter_guard); // So that `namespace_guard` can be forgotten
+        std::mem::forget(namespace_guard); // Because we have fully constructed the namespace and don't want it cleared
 
         Ok(())
     }
@@ -709,29 +653,15 @@ impl Signature {
     }
 }
 
-/// Cleans up bound values when returning an error from `bind()`.
-///
-/// This function properly decrements reference counts for all heap-allocated
-/// values that were bound during argument processing but need to be discarded
-/// due to an error (e.g., missing required argument).
-fn cleanup_on_error(
-    namespace: &mut [Value],
-    var_args_value: Option<Value>,
-    excess_kwargs: Dict,
-    heap: &mut Heap<impl ResourceTracker>,
-) {
-    // Clean up values in namespace
-    for slot in namespace.iter_mut() {
-        let value = std::mem::replace(slot, Value::Undefined);
-        value.drop_with_heap(heap);
-    }
-    // Clean up *args tuple if allocated
-    if let Some(val) = var_args_value {
-        val.drop_with_heap(heap);
-    }
-    // Clean up excess kwargs dict contents (keys and values)
-    for (key, value) in excess_kwargs {
-        key.drop_with_heap(heap);
-        value.drop_with_heap(heap);
+/// Empties the namespace on error paths by draining it.
+struct NamespaceGuard<'a> {
+    namespace: &'a mut Vec<Value>,
+}
+
+impl DropWithHeap for NamespaceGuard<'_> {
+    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
+        for value in self.namespace.drain(..) {
+            value.drop_with_heap(heap);
+        }
     }
 }

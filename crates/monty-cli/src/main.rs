@@ -7,7 +7,7 @@ use std::{
 
 use clap::Parser;
 use monty::{
-    MontyObject, MontyRepl, MontyRun, NoLimitTracker, ReplContinuationMode, RunProgress, StdPrint,
+    MontyObject, MontyRepl, MontyRun, NoLimitTracker, PrintWriter, ReplContinuationMode, RunProgress,
     detect_repl_continuation_mode,
 };
 // disabled due to format failing on https://github.com/pydantic/monty/pull/75 where CI and local wanted imports ordered differently
@@ -101,7 +101,7 @@ fn run_script(file_path: &str, code: String) -> ExitCode {
 
     if EXT_FUNCTIONS {
         let start = Instant::now();
-        let progress = match runner.start(inputs, NoLimitTracker, &mut StdPrint) {
+        let progress = match runner.start(inputs, NoLimitTracker, &mut PrintWriter::Stdout) {
             Ok(p) => p,
             Err(err) => {
                 let elapsed = start.elapsed();
@@ -160,7 +160,7 @@ fn run_repl(file_path: &str, code: String) -> ExitCode {
         ext_functions,
         inputs,
         NoLimitTracker,
-        &mut StdPrint,
+        &mut PrintWriter::Stdout,
     ) {
         Ok(v) => v,
         Err(err) => {
@@ -273,7 +273,9 @@ fn run_until_complete(mut progress: RunProgress<NoLimitTracker>) -> Result<Monty
                 ..
             } => {
                 let return_value = resolve_external_call(&function_name, &args)?;
-                progress = state.run(return_value, &mut StdPrint).map_err(|err| format!("{err}"))?;
+                progress = state
+                    .run(return_value, &mut PrintWriter::Stdout)
+                    .map_err(|err| format!("{err}"))?;
             }
             RunProgress::ResolveFutures(state) => {
                 return Err(format!(

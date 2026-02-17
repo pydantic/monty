@@ -3,7 +3,7 @@
 //! These tests verify the behavior of the async execution model, specifically around
 //! resolving external futures incrementally via `FutureSnapshot::resume()`.
 
-use monty::{ExcType, ExternalResult, MontyException, MontyObject, MontyRun, NoLimitTracker, RunProgress, StdPrint};
+use monty::{ExcType, ExternalResult, MontyException, MontyObject, MontyRun, NoLimitTracker, PrintWriter, RunProgress};
 
 /// Helper to create a MontyRun for async external function tests.
 ///
@@ -61,7 +61,7 @@ fn drive_to_resolve_futures<T: monty::ResourceTracker>(
         match progress {
             RunProgress::FunctionCall { call_id, state, .. } => {
                 collected_call_ids.push(call_id);
-                progress = state.run_pending(&mut StdPrint).unwrap();
+                progress = state.run_pending(&mut PrintWriter::Stdout).unwrap();
             }
             RunProgress::ResolveFutures(state) => {
                 return (state, collected_call_ids);
@@ -81,7 +81,7 @@ fn drive_to_resolve_futures<T: monty::ResourceTracker>(
 #[test]
 fn resume_with_all_call_ids() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
@@ -95,7 +95,7 @@ fn resume_with_all_call_ids() {
         (call_ids[1], ExternalResult::Return(MontyObject::Int(32))),
     ];
 
-    let progress = state.resume(results, &mut StdPrint).unwrap();
+    let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
 
     // Should complete with 10 + 32 = 42
     let result = progress.into_complete().expect("should complete");
@@ -107,7 +107,7 @@ fn resume_with_all_call_ids() {
 #[test]
 fn resume_with_partial_call_ids() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
@@ -116,7 +116,7 @@ fn resume_with_partial_call_ids() {
     // Resolve only the first one
     let results = vec![(call_ids[0], ExternalResult::Return(MontyObject::Int(10)))];
 
-    let progress = state.resume(results, &mut StdPrint).unwrap();
+    let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
 
     // Should return ResolveFutures with the remaining call
     let state = progress.into_resolve_futures().expect("should need more futures");
@@ -135,7 +135,7 @@ fn resume_with_partial_call_ids() {
     // Now resolve the second one
     let results = vec![(call_ids[1], ExternalResult::Return(MontyObject::Int(32)))];
 
-    let progress = state.resume(results, &mut StdPrint).unwrap();
+    let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
 
     // Should complete with 10 + 32 = 42
     let result = progress.into_complete().expect("should complete");
@@ -147,7 +147,7 @@ fn resume_with_partial_call_ids() {
 #[test]
 fn resume_with_unknown_call_id_errors() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     let (state, _call_ids) = drive_to_resolve_futures(progress);
 
@@ -156,7 +156,7 @@ fn resume_with_unknown_call_id_errors() {
     // Try to resolve with an unknown call_id (9999)
     let results = vec![(9999, ExternalResult::Return(MontyObject::Int(10)))];
 
-    let result = state.resume(results, &mut StdPrint);
+    let result = state.resume(results, &mut PrintWriter::Stdout);
 
     assert!(result.is_err(), "should error on unknown call_id");
     let exc = result.unwrap_err();
@@ -172,7 +172,7 @@ fn resume_with_unknown_call_id_errors() {
 #[test]
 fn resume_with_empty_results() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
@@ -181,7 +181,7 @@ fn resume_with_empty_results() {
     // Resume with empty results - should return same pending list
     let results: Vec<(u32, ExternalResult)> = vec![];
 
-    let progress = state.resume(results, &mut StdPrint).unwrap();
+    let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
 
     // Should return ResolveFutures with the same pending calls
     let state = progress.into_resolve_futures().expect("should still need futures");
@@ -202,7 +202,7 @@ fn resume_with_empty_results() {
         (call_ids[1], ExternalResult::Return(MontyObject::Int(32))),
     ];
 
-    let progress = state.resume(results, &mut StdPrint).unwrap();
+    let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
     let result = progress.into_complete().expect("should complete");
     assert_eq!(result, MontyObject::Int(42));
 }
@@ -212,7 +212,7 @@ fn resume_with_empty_results() {
 #[test]
 fn resume_with_mixed_success_and_failure() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
@@ -230,7 +230,7 @@ fn resume_with_mixed_success_and_failure() {
         ),
     ];
 
-    let result = state.resume(results, &mut StdPrint);
+    let result = state.resume(results, &mut PrintWriter::Stdout);
 
     // Should propagate the exception
     assert!(result.is_err(), "should propagate the error");
@@ -244,7 +244,7 @@ fn resume_with_mixed_success_and_failure() {
 #[test]
 fn resume_order_independence() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
@@ -256,7 +256,7 @@ fn resume_order_independence() {
         (call_ids[0], ExternalResult::Return(MontyObject::Int(10))), // foo() = 10
     ];
 
-    let progress = state.resume(results, &mut StdPrint).unwrap();
+    let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
 
     // Should still complete with foo() + bar() = 10 + 32 = 42
     // (gather preserves order of original awaitables, not resolution order)
@@ -269,7 +269,7 @@ fn resume_order_independence() {
 #[test]
 fn resume_multiple_rounds() {
     let runner = create_gather_three_runner();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
@@ -278,21 +278,21 @@ fn resume_multiple_rounds() {
 
     // Round 1: resolve first call only
     let results = vec![(call_ids[0], ExternalResult::Return(MontyObject::Int(100)))];
-    let progress = state.resume(results, &mut StdPrint).unwrap();
+    let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
 
     let state = progress.into_resolve_futures().expect("should need more futures");
     assert_eq!(state.pending_call_ids().len(), 2, "should have 2 remaining");
 
     // Round 2: resolve second call only
     let results = vec![(call_ids[1], ExternalResult::Return(MontyObject::Int(200)))];
-    let progress = state.resume(results, &mut StdPrint).unwrap();
+    let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
 
     let state = progress.into_resolve_futures().expect("should need more futures");
     assert_eq!(state.pending_call_ids().len(), 1, "should have 1 remaining");
 
     // Round 3: resolve third call
     let results = vec![(call_ids[2], ExternalResult::Return(MontyObject::Int(300)))];
-    let progress = state.resume(results, &mut StdPrint).unwrap();
+    let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
 
     // Should complete with 100 + 200 + 300 = 600
     let result = progress.into_complete().expect("should complete");
@@ -304,7 +304,7 @@ fn resume_multiple_rounds() {
 #[test]
 fn resume_with_duplicate_call_id() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
@@ -319,7 +319,7 @@ fn resume_with_duplicate_call_id() {
         (call_ids[1], ExternalResult::Return(MontyObject::Int(32))),
     ];
 
-    let progress = state.resume(results, &mut StdPrint).unwrap();
+    let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
 
     // Should complete with first value used: 10 + 32 = 42
     let result = progress.into_complete().expect("should complete");
@@ -369,7 +369,7 @@ await main()
 #[test]
 fn single_external_await_success() {
     let runner = create_single_await_runner();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
@@ -378,7 +378,7 @@ fn single_external_await_success() {
 
     // Resolve with success
     let results = vec![(call_ids[0], ExternalResult::Return(MontyObject::Int(42)))];
-    let progress = state.resume(results, &mut StdPrint).unwrap();
+    let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
 
     let result = progress.into_complete().expect("should complete");
     assert_eq!(result, MontyObject::Int(42));
@@ -393,7 +393,7 @@ fn single_external_await_success() {
 #[test]
 fn single_external_await_error() {
     let runner = create_single_await_runner();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
@@ -408,7 +408,7 @@ fn single_external_await_error() {
         )),
     )];
 
-    let result = state.resume(results, &mut StdPrint);
+    let result = state.resume(results, &mut PrintWriter::Stdout);
 
     assert!(result.is_err(), "should propagate the error");
     let exc = result.unwrap_err();
@@ -421,7 +421,7 @@ fn single_external_await_error() {
 #[test]
 fn single_external_await_runtime_error() {
     let runner = create_single_await_runner();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
@@ -433,7 +433,7 @@ fn single_external_await_runtime_error() {
         )),
     )];
 
-    let result = state.resume(results, &mut StdPrint);
+    let result = state.resume(results, &mut PrintWriter::Stdout);
 
     assert!(result.is_err(), "should propagate RuntimeError");
     let exc = result.unwrap_err();
@@ -446,7 +446,7 @@ fn single_external_await_runtime_error() {
 #[test]
 fn single_external_await_type_error() {
     let runner = create_single_await_runner();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
@@ -458,7 +458,7 @@ fn single_external_await_type_error() {
         )),
     )];
 
-    let result = state.resume(results, &mut StdPrint);
+    let result = state.resume(results, &mut PrintWriter::Stdout);
 
     assert!(result.is_err(), "should propagate TypeError");
     let exc = result.unwrap_err();
@@ -471,14 +471,14 @@ fn single_external_await_type_error() {
 #[test]
 fn sequential_awaits_second_fails() {
     let runner = create_sequential_awaits_runner();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     // First external call (foo)
     let RunProgress::FunctionCall { call_id, state, .. } = progress else {
         panic!("expected FunctionCall for foo");
     };
     let foo_call_id = call_id;
-    let progress = state.run_pending(&mut StdPrint).unwrap();
+    let progress = state.run_pending(&mut PrintWriter::Stdout).unwrap();
 
     // Should yield for resolution
     let state = progress.into_resolve_futures().expect("should need foo resolved");
@@ -486,14 +486,14 @@ fn sequential_awaits_second_fails() {
 
     // Resolve foo successfully
     let results = vec![(foo_call_id, ExternalResult::Return(MontyObject::Int(10)))];
-    let progress = state.resume(results, &mut StdPrint).unwrap();
+    let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
 
     // Second external call (bar)
     let RunProgress::FunctionCall { call_id, state, .. } = progress else {
         panic!("expected FunctionCall for bar");
     };
     let bar_call_id = call_id;
-    let progress = state.run_pending(&mut StdPrint).unwrap();
+    let progress = state.run_pending(&mut PrintWriter::Stdout).unwrap();
 
     // Should yield for resolution
     let state = progress.into_resolve_futures().expect("should need bar resolved");
@@ -505,7 +505,7 @@ fn sequential_awaits_second_fails() {
         ExternalResult::Error(MontyException::new(ExcType::ValueError, Some("bar failed".to_string()))),
     )];
 
-    let result = state.resume(results, &mut StdPrint);
+    let result = state.resume(results, &mut PrintWriter::Stdout);
 
     assert!(result.is_err(), "should propagate bar's error");
     let exc = result.unwrap_err();
@@ -518,14 +518,14 @@ fn sequential_awaits_second_fails() {
 #[test]
 fn sequential_awaits_first_fails() {
     let runner = create_sequential_awaits_runner();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     // First external call (foo)
     let RunProgress::FunctionCall { call_id, state, .. } = progress else {
         panic!("expected FunctionCall for foo");
     };
     let foo_call_id = call_id;
-    let progress = state.run_pending(&mut StdPrint).unwrap();
+    let progress = state.run_pending(&mut PrintWriter::Stdout).unwrap();
 
     let state = progress.into_resolve_futures().expect("should need foo resolved");
 
@@ -538,7 +538,7 @@ fn sequential_awaits_first_fails() {
         )),
     )];
 
-    let result = state.resume(results, &mut StdPrint);
+    let result = state.resume(results, &mut PrintWriter::Stdout);
 
     assert!(result.is_err(), "should propagate foo's error");
     let exc = result.unwrap_err();
@@ -551,7 +551,7 @@ fn sequential_awaits_first_fails() {
 #[test]
 fn gather_first_external_fails_immediately() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
@@ -566,7 +566,7 @@ fn gather_first_external_fails_immediately() {
         )),
     )];
 
-    let result = state.resume(results, &mut StdPrint);
+    let result = state.resume(results, &mut PrintWriter::Stdout);
 
     // Should propagate the error immediately
     assert!(result.is_err(), "should propagate first's error");
@@ -580,7 +580,7 @@ fn gather_first_external_fails_immediately() {
 #[test]
 fn gather_second_external_fails_first_pending() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
@@ -593,7 +593,7 @@ fn gather_second_external_fails_first_pending() {
         )),
     )];
 
-    let result = state.resume(results, &mut StdPrint);
+    let result = state.resume(results, &mut PrintWriter::Stdout);
 
     assert!(result.is_err(), "should propagate second's error");
     let exc = result.unwrap_err();
@@ -606,7 +606,7 @@ fn gather_second_external_fails_first_pending() {
 #[test]
 fn gather_all_externals_fail() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
@@ -628,7 +628,7 @@ fn gather_all_externals_fail() {
         ),
     ];
 
-    let result = state.resume(results, &mut StdPrint);
+    let result = state.resume(results, &mut PrintWriter::Stdout);
 
     // First error in the list should be propagated
     assert!(result.is_err(), "should propagate an error");
@@ -642,7 +642,7 @@ fn gather_all_externals_fail() {
 #[test]
 fn gather_three_middle_fails() {
     let runner = create_gather_three_runner();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
@@ -661,7 +661,7 @@ fn gather_three_middle_fails() {
         (call_ids[2], ExternalResult::Return(MontyObject::Int(300))),
     ];
 
-    let result = state.resume(results, &mut StdPrint);
+    let result = state.resume(results, &mut PrintWriter::Stdout);
 
     assert!(result.is_err(), "should propagate middle's error");
     let exc = result.unwrap_err();
@@ -674,13 +674,13 @@ fn gather_three_middle_fails() {
 #[test]
 fn gather_incremental_error_after_success() {
     let runner = create_gather_three_runner();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
     // Round 1: resolve first successfully
     let results = vec![(call_ids[0], ExternalResult::Return(MontyObject::Int(100)))];
-    let progress = state.resume(results, &mut StdPrint).unwrap();
+    let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
 
     let state = progress.into_resolve_futures().expect("should need more");
     assert_eq!(state.pending_call_ids().len(), 2, "should have 2 remaining");
@@ -694,7 +694,7 @@ fn gather_incremental_error_after_success() {
         )),
     )];
 
-    let result = state.resume(results, &mut StdPrint);
+    let result = state.resume(results, &mut PrintWriter::Stdout);
 
     assert!(result.is_err(), "should propagate delayed error");
     let exc = result.unwrap_err();
@@ -707,7 +707,7 @@ fn gather_incremental_error_after_success() {
 #[test]
 fn gather_incremental_error_on_last() {
     let runner = create_gather_three_runner();
-    let progress = runner.start(vec![], NoLimitTracker, &mut StdPrint).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
@@ -716,7 +716,7 @@ fn gather_incremental_error_on_last() {
         (call_ids[0], ExternalResult::Return(MontyObject::Int(100))),
         (call_ids[1], ExternalResult::Return(MontyObject::Int(200))),
     ];
-    let progress = state.resume(results, &mut StdPrint).unwrap();
+    let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
 
     let state = progress.into_resolve_futures().expect("should need last one");
     assert_eq!(state.pending_call_ids().len(), 1, "should have 1 remaining");
@@ -730,7 +730,7 @@ fn gather_incremental_error_on_last() {
         )),
     )];
 
-    let result = state.resume(results, &mut StdPrint);
+    let result = state.resume(results, &mut PrintWriter::Stdout);
 
     assert!(result.is_err(), "should propagate last error");
     let exc = result.unwrap_err();

@@ -204,7 +204,7 @@ print(result.output)
 ### Rust
 
 ```rust
-use monty::{MontyRun, MontyObject, NoLimitTracker, StdPrint};
+use monty::{MontyRun, MontyObject, NoLimitTracker, PrintWriter};
 
 let code = r#"
 def fib(n):
@@ -216,7 +216,7 @@ fib(x)
 "#;
 
 let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()], vec![]).unwrap();
-let result = runner.run(vec![MontyObject::Int(10)], NoLimitTracker, &mut StdPrint).unwrap();
+let result = runner.run(vec![MontyObject::Int(10)], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 assert_eq!(result, MontyObject::Int(55));
 ```
 
@@ -225,7 +225,7 @@ assert_eq!(result, MontyObject::Int(55));
 `MontyRun` and `RunProgress` can be serialized using the `dump()` and `load()` methods:
 
 ```rust
-use monty::{MontyRun, MontyObject, NoLimitTracker, StdPrint};
+use monty::{MontyRun, MontyObject, NoLimitTracker, PrintWriter};
 
 // Serialize parsed code
 let runner = MontyRun::new("x + 1".to_owned(), "main.py", vec!["x".to_owned()], vec![]).unwrap();
@@ -233,7 +233,7 @@ let bytes = runner.dump().unwrap();
 
 // Later, restore and run
 let runner2 = MontyRun::load(&bytes).unwrap();
-let result = runner2.run(vec![MontyObject::Int(41)], NoLimitTracker, &mut StdPrint).unwrap();
+let result = runner2.run(vec![MontyObject::Int(41)], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 assert_eq!(result, MontyObject::Int(42));
 ```
 

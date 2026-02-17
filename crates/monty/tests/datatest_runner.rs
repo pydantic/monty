@@ -17,7 +17,7 @@ use std::{
 use ahash::AHashMap;
 use monty::{
     ExcType, ExternalResult, LimitedTracker, MontyException, MontyFuture, MontyObject, MontyRun, OsFunction,
-    ResourceLimits, RunProgress, StdPrint, dir_stat, file_stat,
+    PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
 };
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
@@ -1028,7 +1028,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<()
     match MontyRun::new(code.to_owned(), &test_name, vec![], vec![]) {
         Ok(ex) => {
             let limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
-            let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+            let result = ex.run(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout);
             match result {
                 Ok(obj) => match expectation {
                     Expectation::ReturnStr(expected) => {
@@ -1303,7 +1303,7 @@ fn try_run_iter_test(path: &Path, code: &str, expectation: &Expectation) -> Resu
 /// - Async functions: `state.run_pending()` creates a future, resolved via `ResolveFutures`
 fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
     let limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
-    let mut progress = exec.start(vec![], LimitedTracker::new(limits), &mut StdPrint)?;
+    let mut progress = exec.start(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout)?;
 
     // Track pending async calls: (call_id, result_value)
     let mut pending_results: Vec<(u32, MontyObject)> = Vec::new();
@@ -1329,13 +1329,13 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                 let dispatch_result = dispatch_external_call(&function_name, args);
                 match dispatch_result {
                     DispatchResult::Sync(return_value) => {
-                        progress = state.run(return_value, &mut StdPrint)?;
+                        progress = state.run(return_value, &mut PrintWriter::Stdout)?;
                     }
                     DispatchResult::Async(result_value) => {
                         // Store the result for later resolution
                         pending_results.push((call_id, result_value));
                         // Continue execution with a pending future
-                        progress = state.run(MontyFuture, &mut StdPrint)?;
+                        progress = state.run(MontyFuture, &mut PrintWriter::Stdout)?;
                     }
                 }
             }
@@ -1358,7 +1358,7 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                     state.pending_call_ids().iter().collect::<Vec<_>>()
                 );
 
-                progress = state.resume(results, &mut StdPrint)?;
+                progress = state.resume(results, &mut PrintWriter::Stdout)?;
             }
             RunProgress::OsCall {
                 function,
@@ -1368,7 +1368,7 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                 ..
             } => {
                 let result = dispatch_os_call(function, &args, &kwargs);
-                progress = state.run(result, &mut StdPrint)?;
+                progress = state.run(result, &mut PrintWriter::Stdout)?;
             }
         }
     }

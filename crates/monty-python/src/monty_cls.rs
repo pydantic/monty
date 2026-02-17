@@ -3,7 +3,7 @@ use std::{borrow::Cow, fmt::Write};
 // Use `::monty` to refer to the external crate (not the pymodule)
 use ::monty::{
     ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRepl as CoreMontyRepl, MontyRun, NoLimitTracker,
-    PrintWriter, ResourceTracker, RunProgress, Snapshot, StdPrint,
+    PrintWriter, PrintWriterCallback, ResourceTracker, RunProgress, Snapshot,
 };
 use monty::{ExcType, FutureSnapshot, OsFunction};
 use monty_type_checking::{SourceFile, type_check};
@@ -14,6 +14,7 @@ use pyo3::{
     prelude::*,
     types::{PyBytes, PyDict, PyList, PyTuple, PyType},
 };
+use send_wrapper::SendWrapper;
 
 use crate::{
     convert::{monty_to_py, py_to_monty},
@@ -151,23 +152,22 @@ impl PyMonty {
         }
 
         // Build print writer
-        let print_writer = print_callback.map(CallbackStringPrint::new);
+        let mut print_cb;
+        let print_writer = match print_callback {
+            Some(cb) => {
+                print_cb = CallbackStringPrint::new(cb);
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
 
         // Run with appropriate tracker type (must branch due to different generic types)
         if let Some(limits) = limits {
             let tracker = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
-            if let Some(print_writer) = print_writer {
-                self.run_impl(py, input_values, tracker, external_functions, os, print_writer)
-            } else {
-                self.run_impl(py, input_values, tracker, external_functions, os, StdPrint)
-            }
+            self.run_impl(py, input_values, tracker, external_functions, os, print_writer)
         } else {
             let tracker = PySignalTracker::new(NoLimitTracker);
-            if let Some(print_writer) = print_writer {
-                self.run_impl(py, input_values, tracker, external_functions, os, print_writer)
-            } else {
-                self.run_impl(py, input_values, tracker, external_functions, os, StdPrint)
-            }
+            self.run_impl(py, input_values, tracker, external_functions, os, print_writer)
         }
     }
 
@@ -177,44 +177,44 @@ impl PyMonty {
         py: Python<'py>,
         inputs: Option<&Bound<'py, PyDict>>,
         limits: Option<&Bound<'py, PyDict>>,
-        print_callback: Option<&Bound<'_, PyAny>>,
+        print_callback: Option<Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         // Extract input values in the order they were declared
         let input_values = self.extract_input_values(inputs)?;
 
+        // Build print writer - CallbackStringPrint is Send so GIL can be released
+        let mut print_cb;
+        let print_writer = match &print_callback {
+            Some(cb) => {
+                print_cb = CallbackStringPrint::new(cb);
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
+
+        let runner = self.runner.clone();
+        let mut print_writer = SendWrapper::new(print_writer);
+
         // Helper macro to start execution with GIL released
-        // CallbackStringPrint is Send so this works for both print_callback cases
         macro_rules! start_impl {
-            ($tracker:expr, $print_output:expr) => {{
-                let runner = self.runner.clone();
-                py.detach(|| runner.start(input_values, $tracker, &mut $print_output))
+            ($tracker:expr) => {{
+                py.detach(|| runner.start(input_values, $tracker, &mut print_writer))
                     .map_err(|e| MontyError::new_err(py, e))?
             }};
         }
 
-        // Build print writer - CallbackStringPrint is Send so GIL can be released
-        let print_writer = print_callback.map(CallbackStringPrint::new);
-
-        // Branch on limits (different generic types) then on print_writer
+        // Branch on limits (different generic types)
         let progress = if let Some(limits) = limits {
             let tracker = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
-            if let Some(mut print_writer) = print_writer {
-                EitherProgress::Limited(start_impl!(tracker, print_writer))
-            } else {
-                EitherProgress::Limited(start_impl!(tracker, StdPrint))
-            }
+            EitherProgress::Limited(start_impl!(tracker))
         } else {
             let tracker = PySignalTracker::new(NoLimitTracker);
-            if let Some(mut print_writer) = print_writer {
-                EitherProgress::NoLimit(start_impl!(tracker, print_writer))
-            } else {
-                EitherProgress::NoLimit(start_impl!(tracker, StdPrint))
-            }
+            EitherProgress::NoLimit(start_impl!(tracker))
         };
         progress.progress_or_complete(
             py,
             self.script_name.clone(),
-            print_callback.map(|c| c.clone().unbind()),
+            print_callback.map(Bound::unbind),
             self.dataclass_registry.clone_ref(py),
         )
     }
@@ -347,9 +347,12 @@ impl PyMonty {
         tracker: impl ResourceTracker + Send,
         external_functions: Option<&Bound<'_, PyDict>>,
         os: Option<&Bound<'_, PyAny>>,
-        mut print_output: impl PrintWriter + Send,
+        mut print_output: PrintWriter<'_>,
     ) -> PyResult<Py<PyAny>> {
         let dataclass_registry = self.dataclass_registry.bind(py);
+        // wrap print_output in SendWrapper so that it can be accessed inside the py.detach calls despite
+        // no `Send` bound - py.detach() is overly restrictive to prevent `Bound` types going inside
+        let mut print_output = SendWrapper::new(&mut print_output);
         if self.external_function_names.is_empty() && os.is_none() {
             let runner = &self.runner;
             return match py.detach(|| runner.run(input_values, tracker, &mut print_output)) {
@@ -565,7 +568,7 @@ impl EitherProgress {
 
         let slf = PyMontySnapshot {
             snapshot,
-            print_callback: print_callback.map(|callback| callback.clone_ref(py)),
+            print_callback,
             script_name,
             is_os_function: false,
             function_name,
@@ -599,7 +602,7 @@ impl EitherProgress {
 
         let slf = PyMontySnapshot {
             snapshot,
-            print_callback: print_callback.map(|callback| callback.clone_ref(py)),
+            print_callback,
             script_name,
             is_os_function: true,
             function_name: function.to_string(),
@@ -620,9 +623,9 @@ impl EitherProgress {
     ) -> PyResult<Bound<'_, PyAny>> {
         let slf = PyMontyFutureSnapshot {
             snapshot,
-            print_callback: print_callback.map(|callback| callback.clone_ref(py)),
-            script_name,
+            print_callback,
             dc_registry,
+            script_name,
         };
         slf.into_bound_py_any(py)
     }
@@ -716,26 +719,18 @@ impl PyMontyRepl {
             self.print_callback = Some(callback.clone().unbind());
         }
 
-        let mut print_writer = self
-            .print_callback
-            .as_ref()
-            .map(|cb| CallbackStringPrint::from_py(cb.clone_ref(py)));
+        let mut print_cb;
+        let mut print_writer = match &self.print_callback {
+            Some(cb) => {
+                print_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
 
         let output = match &mut self.repl {
-            EitherRepl::NoLimit(repl) => {
-                if let Some(ref mut writer) = print_writer {
-                    repl.feed(code, writer)
-                } else {
-                    repl.feed(code, &mut StdPrint)
-                }
-            }
-            EitherRepl::Limited(repl) => {
-                if let Some(ref mut writer) = print_writer {
-                    repl.feed(code, writer)
-                } else {
-                    repl.feed(code, &mut StdPrint)
-                }
-            }
+            EitherRepl::NoLimit(repl) => repl.feed(code, &mut print_writer),
+            EitherRepl::Limited(repl) => repl.feed(code, &mut print_writer),
         }
         .map_err(|e| MontyError::new_err(py, e))?;
 
@@ -804,74 +799,49 @@ impl PyMontyRepl {
         limits: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Py<PyAny>>,
     ) -> PyResult<(EitherRepl, MontyObject)> {
+        let mut print_cb;
+        let mut print_writer = match print_callback {
+            Some(cb) => {
+                print_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
+
         if let Some(limits) = limits {
             let tracker = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
-            if let Some(callback) = print_callback.as_ref() {
-                let mut print_writer = CallbackStringPrint::from_py(callback.clone_ref(py));
-                let (repl, output) = py
-                    .detach(move || {
-                        CoreMontyRepl::new(
-                            code,
-                            &script_name,
-                            input_names,
-                            external_function_names,
-                            input_values,
-                            tracker,
-                            &mut print_writer,
-                        )
-                    })
-                    .map_err(|e| MontyError::new_err(py, e))?;
-                Ok((EitherRepl::Limited(repl), output))
-            } else {
-                let (repl, output) = py
-                    .detach(move || {
-                        CoreMontyRepl::new(
-                            code,
-                            &script_name,
-                            input_names,
-                            external_function_names,
-                            input_values,
-                            tracker,
-                            &mut StdPrint,
-                        )
-                    })
-                    .map_err(|e| MontyError::new_err(py, e))?;
-                Ok((EitherRepl::Limited(repl), output))
-            }
+            let print_writer = SendWrapper::new(&mut print_writer);
+            let (repl, output) = py
+                .detach(move || {
+                    CoreMontyRepl::new(
+                        code,
+                        &script_name,
+                        input_names,
+                        external_function_names,
+                        input_values,
+                        tracker,
+                        print_writer.take(),
+                    )
+                })
+                .map_err(|e| MontyError::new_err(py, e))?;
+            Ok((EitherRepl::Limited(repl), output))
         } else {
             let tracker = PySignalTracker::new(NoLimitTracker);
-            if let Some(callback) = print_callback.as_ref() {
-                let mut print_writer = CallbackStringPrint::from_py(callback.clone_ref(py));
-                let (repl, output) = py
-                    .detach(move || {
-                        CoreMontyRepl::new(
-                            code,
-                            &script_name,
-                            input_names,
-                            external_function_names,
-                            input_values,
-                            tracker,
-                            &mut print_writer,
-                        )
-                    })
-                    .map_err(|e| MontyError::new_err(py, e))?;
-                Ok((EitherRepl::NoLimit(repl), output))
-            } else {
-                let (repl, output) = py
-                    .detach(move || {
-                        CoreMontyRepl::new(
-                            code,
-                            &script_name,
-                            input_names,
-                            external_function_names,
-                            input_values,
-                            tracker,
-                            &mut StdPrint,
-                        )
-                    })
-                    .map_err(|e| MontyError::new_err(py, e))?;
-                Ok((EitherRepl::NoLimit(repl), output))
-            }
+            let print_writer = SendWrapper::new(&mut print_writer);
+            let (repl, output) = py
+                .detach(move || {
+                    CoreMontyRepl::new(
+                        code,
+                        &script_name,
+                        input_names,
+                        external_function_names,
+                        input_values,
+                        tracker,
+                        print_writer.take(),
+                    )
+                })
+                .map_err(|e| MontyError::new_err(py, e))?;
+            Ok((EitherRepl::NoLimit(repl), output))
         }
     }
 
@@ -1000,26 +970,25 @@ impl PyMontySnapshot {
         let snapshot = std::mem::replace(&mut self.snapshot, EitherSnapshot::Done);
 
         // Build print writer before detaching - clone_ref needs py token
-        let print_writer = self
-            .print_callback
-            .as_ref()
-            .map(|cb| CallbackStringPrint::from_py(cb.clone_ref(py)));
+        let mut print_cb;
+        let print_writer = match &self.print_callback {
+            Some(cb) => {
+                print_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
+        // wrap print_writer in SendWrapper so that it can be accessed inside the py.detach calls despite
+        // no `Send` bound - py.detach() is overly restrictive to prevent `Bound` types going inside
+        let mut print_writer = SendWrapper::new(print_writer);
 
         let progress = match snapshot {
             EitherSnapshot::NoLimit(snapshot) => {
-                let result = if let Some(mut print_writer) = print_writer {
-                    py.detach(|| snapshot.run(external_result, &mut print_writer))
-                } else {
-                    py.detach(|| snapshot.run(external_result, &mut StdPrint))
-                };
+                let result = py.detach(|| snapshot.run(external_result, &mut print_writer));
                 EitherProgress::NoLimit(result.map_err(|e| MontyError::new_err(py, e))?)
             }
             EitherSnapshot::Limited(snapshot) => {
-                let result = if let Some(mut print_writer) = print_writer {
-                    py.detach(|| snapshot.run(external_result, &mut print_writer))
-                } else {
-                    py.detach(|| snapshot.run(external_result, &mut StdPrint))
-                };
+                let result = py.detach(|| snapshot.run(external_result, &mut print_writer));
                 EitherProgress::Limited(result.map_err(|e| MontyError::new_err(py, e))?)
             }
             EitherSnapshot::Done => return Err(PyRuntimeError::new_err("Progress already resumed")),
@@ -1211,26 +1180,23 @@ impl PyMontyFutureSnapshot {
         let snapshot = std::mem::replace(&mut self.snapshot, EitherFutureSnapshot::Done);
 
         // Build print writer before detaching - clone_ref needs py token
-        let print_writer = self
-            .print_callback
-            .as_ref()
-            .map(|cb| CallbackStringPrint::from_py(cb.clone_ref(py)));
+        let mut print_cb;
+        let print_writer = match &self.print_callback {
+            Some(cb) => {
+                print_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
+        let mut print_writer = SendWrapper::new(print_writer);
 
         let progress = match snapshot {
             EitherFutureSnapshot::NoLimit(snapshot) => {
-                let result = if let Some(mut print_writer) = print_writer {
-                    py.detach(|| snapshot.resume(external_results, &mut print_writer))
-                } else {
-                    py.detach(|| snapshot.resume(external_results, &mut StdPrint))
-                };
+                let result = py.detach(|| snapshot.resume(external_results, &mut print_writer));
                 EitherProgress::NoLimit(result.map_err(|e| MontyError::new_err(py, e))?)
             }
             EitherFutureSnapshot::Limited(snapshot) => {
-                let result = if let Some(mut print_writer) = print_writer {
-                    py.detach(|| snapshot.resume(external_results, &mut print_writer))
-                } else {
-                    py.detach(|| snapshot.resume(external_results, &mut StdPrint))
-                };
+                let result = py.detach(|| snapshot.resume(external_results, &mut print_writer));
                 EitherProgress::Limited(result.map_err(|e| MontyError::new_err(py, e))?)
             }
             EitherFutureSnapshot::Done => return Err(PyRuntimeError::new_err("Progress already resumed")),
@@ -1418,7 +1384,7 @@ impl CallbackStringPrint {
     }
 }
 
-impl PrintWriter for CallbackStringPrint {
+impl PrintWriterCallback for CallbackStringPrint {
     fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
         Python::attach(|py| {
             self.0.bind(py).call1(("stdout", output.as_ref()))?;

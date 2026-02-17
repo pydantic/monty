@@ -5,13 +5,12 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunError},
     heap::HeapGuard,
-    io::PrintWriter,
     resource::ResourceTracker,
     types::PyTrait,
     value::BitwiseOp,
 };
 
-impl<T: ResourceTracker, P: PrintWriter> VM<'_, T, P> {
+impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Binary addition with proper refcount handling.
     ///
     /// Uses lazy type capture: only calls `py_type()` in error paths to avoid

@@ -46,9 +46,8 @@
 use std::borrow::Cow;
 
 use monty::{
-    CollectStringPrint, ExcType, ExternalResult, LimitedTracker, MontyException, MontyObject,
-    MontyRepl as CoreMontyRepl, MontyRun, NoLimitTracker, PrintWriter, ResourceTracker, RunProgress, Snapshot,
-    StdPrint,
+    ExcType, ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRepl as CoreMontyRepl, MontyRun,
+    NoLimitTracker, PrintWriter, PrintWriterCallback, ResourceTracker, RunProgress, Snapshot,
 };
 use monty_type_checking::{type_check, SourceFile};
 use napi::bindgen_prelude::*;
@@ -83,6 +82,7 @@ pub struct Monty {
 
 /// Options for creating a new Monty instance.
 #[napi(object)]
+#[derive(Default)]
 pub struct MontyOptions {
     /// Name used in tracebacks and error messages. Default: 'main.py'
     pub script_name: Option<String>,
@@ -98,6 +98,7 @@ pub struct MontyOptions {
 
 /// Options for running code.
 #[napi(object)]
+#[derive(Default)]
 pub struct RunOptions<'env> {
     pub inputs: Option<Object<'env>>,
     /// Resource limits configuration.
@@ -111,6 +112,7 @@ pub struct RunOptions<'env> {
 
 /// Options for starting execution.
 #[napi(object)]
+#[derive(Default)]
 pub struct StartOptions<'env> {
     /// Dict of input variable values.
     pub inputs: Option<Object<'env>>,
@@ -185,52 +187,37 @@ impl Monty {
         env: &'env Env,
         options: Option<RunOptions<'env>>,
     ) -> Result<Either<JsMontyObject<'env>, JsMontyException>> {
-        // Extract input values
-        let input_values = self.extract_input_values(options.as_ref().and_then(|opts| opts.inputs), *env)?;
+        let options = options.unwrap_or_default();
+        let input_values = self.extract_input_values(options.inputs, *env)?;
 
-        let external_functions = options.as_ref().and_then(|opts| opts.external_functions);
+        let external_functions = options.external_functions;
 
-        let mut print_output = options
-            .as_ref()
-            .and_then(|t| t.print_callback.as_ref())
-            .map(|t| CallbackStringPrint::new_js(env, t))
-            .transpose()?;
+        let mut print_cb;
+        let mut print_writer = match &options.print_callback {
+            Some(func) => {
+                print_cb = CallbackStringPrint::new_js(env, func)?;
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
 
         // If we have external functions declared, use the start/resume loop
         if !self.external_function_names.is_empty() {
-            if let Some(ref mut writer) = print_output {
-                return self.run_with_external_functions(
-                    env,
-                    input_values,
-                    options.as_ref().and_then(|opts| opts.limits),
-                    external_functions,
-                    writer,
-                );
-            }
-
             return self.run_with_external_functions(
                 env,
                 input_values,
-                options.as_ref().and_then(|opts| opts.limits),
+                options.limits,
                 external_functions,
-                &mut StdPrint,
+                print_writer,
             );
         }
 
-        let result = if let Some(limits) = options.as_ref().and_then(|opts| opts.limits) {
+        let result = if let Some(limits) = options.limits {
             let tracker = LimitedTracker::new(limits.into());
-            if let Some(ref mut writer) = print_output {
-                self.runner.run(input_values, tracker, writer)
-            } else {
-                self.runner.run(input_values, tracker, &mut StdPrint)
-            }
+            self.runner.run(input_values, tracker, &mut print_writer)
         } else {
             let tracker = NoLimitTracker;
-            if let Some(ref mut writer) = print_output {
-                self.runner.run(input_values, tracker, writer)
-            } else {
-                self.runner.run(input_values, tracker, &mut StdPrint)
-            }
+            self.runner.run(input_values, tracker, &mut print_writer)
         };
 
         match result {
@@ -246,14 +233,14 @@ impl Monty {
         input_values: Vec<MontyObject>,
         limits: Option<JsResourceLimits>,
         external_functions: Option<Object<'env>>,
-        print_output: &mut impl PrintWriter,
+        mut print_output: PrintWriter<'_>,
     ) -> Result<Either<JsMontyObject<'env>, JsMontyException>> {
         let runner = self.runner.clone();
 
         // Helper macro to handle the execution loop for both tracker types
         macro_rules! run_loop {
             ($tracker:expr) => {{
-                let progress = runner.start(input_values, $tracker, print_output);
+                let progress = runner.start(input_values, $tracker, &mut print_output);
 
                 let mut progress = match progress {
                     Ok(p) => p,
@@ -280,7 +267,7 @@ impl Monty {
                                 &kwargs,
                             )?;
 
-                            progress = match state.run(return_value, print_output) {
+                            progress = match state.run(return_value, &mut print_output) {
                                 Ok(p) => p,
                                 Err(exc) => return Ok(Either::B(JsMontyException::new(exc))),
                             };
@@ -321,53 +308,38 @@ impl Monty {
         env: &'env Env,
         options: Option<StartOptions<'env>>,
     ) -> Result<Either3<MontySnapshot, MontyComplete, JsMontyException>> {
-        // Extract input values
-        let input_values = self.extract_input_values(options.as_ref().and_then(|opts| opts.inputs), *env)?;
+        let options = options.unwrap_or_default();
+        let input_values = self.extract_input_values(options.inputs, *env)?;
 
         // Clone the runner since start() consumes it - allows reuse of the parsed code
         let runner = self.runner.clone();
 
-        // Start execution with appropriate tracker
-        if let Some(limits) = options.as_ref().and_then(|opts| opts.limits) {
-            let tracker = LimitedTracker::new(limits.into());
-            if let Some(func) = options.as_ref().and_then(|t| t.print_callback.as_ref()) {
-                let mut print_output = CallbackStringPrint::new_js(env, func)?;
-                let progress = match runner.start(input_values, tracker, &mut print_output) {
-                    Ok(p) => p,
-                    Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
-                };
-                Ok(progress_to_result(
-                    progress,
-                    Some(func.create_ref()?),
-                    self.script_name(),
-                ))
-            } else {
-                let progress = match runner.start(input_values, tracker, &mut StdPrint) {
-                    Ok(p) => p,
-                    Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
-                };
-                Ok(progress_to_result(progress, None, self.script_name()))
+        // Build print writer and capture the callback ref for the snapshot
+        let mut print_cb;
+        let mut print_writer = match &options.print_callback {
+            Some(func) => {
+                print_cb = CallbackStringPrint::new_js(env, func)?;
+                PrintWriter::Callback(&mut print_cb)
             }
+            None => PrintWriter::Stdout,
+        };
+        let print_callback_ref = options.print_callback.as_ref().map(Function::create_ref).transpose()?;
+
+        // Start execution with appropriate tracker
+        if let Some(limits) = options.limits {
+            let tracker = LimitedTracker::new(limits.into());
+            let progress = match runner.start(input_values, tracker, &mut print_writer) {
+                Ok(p) => p,
+                Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
+            };
+            Ok(progress_to_result(progress, print_callback_ref, self.script_name()))
         } else {
             let tracker = NoLimitTracker;
-            if let Some(func) = options.as_ref().and_then(|t| t.print_callback.as_ref()) {
-                let mut print_output = CallbackStringPrint::new_js(env, func)?;
-                let progress = match runner.start(input_values, tracker, &mut print_output) {
-                    Ok(p) => p,
-                    Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
-                };
-                Ok(progress_to_result(
-                    progress,
-                    Some(func.create_ref()?),
-                    self.script_name(),
-                ))
-            } else {
-                let progress = match runner.start(input_values, tracker, &mut StdPrint) {
-                    Ok(p) => p,
-                    Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
-                };
-                Ok(progress_to_result(progress, None, self.script_name()))
-            }
+            let progress = match runner.start(input_values, tracker, &mut print_writer) {
+                Ok(p) => p,
+                Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
+            };
+            Ok(progress_to_result(progress, print_callback_ref, self.script_name()))
         }
     }
 
@@ -525,15 +497,19 @@ impl MontyRepl {
             }
         }
 
-        let (start_inputs, start_limits) = match start_options {
-            Some(opts) => (opts.inputs, opts.limits),
-            None => (None, None),
+        let start_options = start_options.unwrap_or_default();
+
+        let mut print_cb;
+        let mut print_writer = match &start_options.print_callback {
+            Some(func) => {
+                print_cb = CallbackStringPrint::new_js(env, func)?;
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
         };
 
-        let input_values = extract_input_values_in_order(&input_names, start_inputs, *env)?;
-        let mut print_output = CollectStringPrint::default();
-
-        if let Some(limits) = start_limits {
+        let input_values = extract_input_values_in_order(&input_names, start_options.inputs, *env)?;
+        if let Some(limits) = start_options.limits {
             let tracker = LimitedTracker::new(limits.into());
             match CoreMontyRepl::new(
                 code,
@@ -542,7 +518,7 @@ impl MontyRepl {
                 external_function_names,
                 input_values,
                 tracker,
-                &mut print_output,
+                &mut print_writer,
             ) {
                 Ok((repl, _output)) => Ok(Either3::A(Self {
                     repl: EitherRepl::Limited(repl),
@@ -558,7 +534,7 @@ impl MontyRepl {
                 external_function_names,
                 input_values,
                 NoLimitTracker,
-                &mut print_output,
+                &mut print_writer,
             ) {
                 Ok((repl, _output)) => Ok(Either3::A(Self {
                     repl: EitherRepl::NoLimit(repl),
@@ -583,10 +559,9 @@ impl MontyRepl {
         env: &'env Env,
         code: String,
     ) -> Result<Either<JsMontyObject<'env>, JsMontyException>> {
-        let mut print_output = CollectStringPrint::default();
         let output = match &mut self.repl {
-            EitherRepl::NoLimit(repl) => repl.feed(&code, &mut print_output),
-            EitherRepl::Limited(repl) => repl.feed(&code, &mut print_output),
+            EitherRepl::NoLimit(repl) => repl.feed(&code, &mut PrintWriter::Stdout),
+            EitherRepl::Limited(repl) => repl.feed(&code, &mut PrintWriter::Stdout),
         };
 
         match output {
@@ -835,39 +810,31 @@ impl MontySnapshot {
         // Unless the entire snapshot generator is refactored we have to do this.
         let print_callback = std::mem::take(&mut self.print_callback);
 
+        // Build print writer from the callback ref
+        let mut print_cb;
+        let mut print_writer = match &print_callback {
+            Some(func) => {
+                print_cb = CallbackStringPrint::new_js_ref(env, func)?;
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
+
         // Resume execution based on the snapshot type
         match snapshot {
             EitherSnapshot::NoLimit(state) => {
-                if let Some(func) = print_callback {
-                    let mut print_output = CallbackStringPrint::new_js_ref(env, &func)?;
-                    let progress = match state.run(external_result, &mut print_output) {
-                        Ok(p) => p,
-                        Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
-                    };
-                    Ok(progress_to_result(progress, Some(func), self.script_name.clone()))
-                } else {
-                    let progress = match state.run(external_result, &mut StdPrint) {
-                        Ok(p) => p,
-                        Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
-                    };
-                    Ok(progress_to_result(progress, None, self.script_name.clone()))
-                }
+                let progress = match state.run(external_result, &mut print_writer) {
+                    Ok(p) => p,
+                    Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
+                };
+                Ok(progress_to_result(progress, print_callback, self.script_name.clone()))
             }
             EitherSnapshot::Limited(state) => {
-                if let Some(func) = print_callback {
-                    let mut print_output = CallbackStringPrint::new_js_ref(env, &func)?;
-                    let progress = match state.run(external_result, &mut print_output) {
-                        Ok(p) => p,
-                        Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
-                    };
-                    Ok(progress_to_result(progress, Some(func), self.script_name.clone()))
-                } else {
-                    let progress = match state.run(external_result, &mut StdPrint) {
-                        Ok(p) => p,
-                        Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
-                    };
-                    Ok(progress_to_result(progress, None, self.script_name.clone()))
-                }
+                let progress = match state.run(external_result, &mut print_writer) {
+                    Ok(p) => p,
+                    Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
+                };
+                Ok(progress_to_result(progress, print_callback, self.script_name.clone()))
             }
             EitherSnapshot::Done => Err(Error::from_reason("Snapshot has already been resumed")),
         }
@@ -984,7 +951,7 @@ impl<'env> CallbackStringPrint<'env> {
     }
 }
 
-impl PrintWriter for CallbackStringPrint<'_> {
+impl PrintWriterCallback for CallbackStringPrint<'_> {
     fn stdout_write(&mut self, output: Cow<'_, str>) -> std::result::Result<(), MontyException> {
         self.0
             .call(("stdout", output.as_ref().to_owned()).into())

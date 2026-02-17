@@ -409,7 +409,11 @@ pub struct VMSnapshot {
 /// Executes compiled bytecode using a stack-based execution model.
 /// The instruction pointer (IP) lives in each `CallFrame`, not here,
 /// to avoid sync bugs on call/return.
-pub struct VM<'a, T: ResourceTracker, P: PrintWriter> {
+///
+/// # Lifetimes
+/// * `'a` - Lifetime of the heap, namespaces, interns, and the print writer borrow
+/// * `'p` - Lifetime of the callback reference inside [`PrintWriter::Callback`]
+pub struct VM<'a, 'p, T: ResourceTracker> {
     /// Operand stack - values being computed.
     stack: Vec<Value>,
 
@@ -425,8 +429,8 @@ pub struct VM<'a, T: ResourceTracker, P: PrintWriter> {
     /// Interned strings/bytes.
     interns: &'a Interns,
 
-    /// Print output writer.
-    print_writer: &'a mut P,
+    /// Print output writer, borrowed so callers retain access to collected output.
+    print_writer: &'a mut PrintWriter<'p>,
 
     /// Stack of exceptions being handled for nested except blocks.
     ///
@@ -461,13 +465,13 @@ pub struct VM<'a, T: ResourceTracker, P: PrintWriter> {
     module_code: Option<&'a Code>,
 }
 
-impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
+impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// Creates a new VM with the given runtime context.
     pub fn new(
         heap: &'a mut Heap<T>,
         namespaces: &'a mut Namespaces,
         interns: &'a Interns,
-        print_writer: &'a mut P,
+        print_writer: &'a mut PrintWriter<'p>,
     ) -> Self {
         Self {
             stack: Vec::with_capacity(64),
@@ -503,7 +507,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         heap: &'a mut Heap<T>,
         namespaces: &'a mut Namespaces,
         interns: &'a Interns,
-        print_writer: &'a mut P,
+        print_writer: &'a mut PrintWriter<'p>,
     ) -> Self {
         // Reconstruct call frames from serialized form
         let frames = snapshot
@@ -1693,7 +1697,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
 }
 
 // `heap` is not a public field on VM, so this implementation needs to go here rather than in `heap.rs`
-impl<T: ResourceTracker, P: PrintWriter> ContainsHeap for VM<'_, T, P> {
+impl<T: ResourceTracker> ContainsHeap for VM<'_, '_, T> {
     type ResourceTracker = T;
     fn heap_mut(&mut self) -> &mut Heap<T> {
         self.heap

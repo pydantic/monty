@@ -12,7 +12,7 @@ use std::{
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use monty::{LimitedTracker, MontyRun, NoPrint, ResourceLimits};
+use monty::{LimitedTracker, MontyRun, PrintWriter, ResourceLimits};
 
 /// A token representing a piece of Python syntax.
 #[derive(Debug, Clone, Arbitrary)]
@@ -548,5 +548,5 @@ fuzz_target!(|tokens: Tokens| {
     };
 
     // Try to execute with resource limits
-    let _ = runner.run(vec![], fuzz_limits(), &mut NoPrint);
+    let _ = runner.run(vec![], fuzz_limits(), &mut PrintWriter::Disabled);
 });

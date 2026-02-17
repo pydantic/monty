@@ -724,7 +724,7 @@ pub(crate) fn do_list_sort(
     args: ArgValues,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
-    print_writer: &mut impl PrintWriter,
+    print_writer: &mut PrintWriter<'_>,
 ) -> Result<(), RunError> {
     // Parse keyword-only arguments: key and reverse
     let (key_arg, reverse_arg) = args.extract_two_kwargs_only("list.sort", "key", "reverse", heap, interns)?;
@@ -911,7 +911,7 @@ fn call_key_function(
     elem: Value,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
-    print_writer: &mut impl PrintWriter,
+    print_writer: &mut PrintWriter<'_>,
 ) -> Result<Value, RunError> {
     match key_fn {
         Value::Builtin(Builtins::Function(builtin)) => {
