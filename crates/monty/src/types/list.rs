@@ -287,8 +287,9 @@ impl PyTrait for List {
 
         let idx = usize::try_from(normalized_index).expect("index validated non-negative");
 
-        // Update contains_refs if adding a Ref
-        if matches!(self.items[idx], Value::Ref(_)) {
+        // Update contains_refs if storing a Ref (must check before swap,
+        // since after swap `value` holds the old item)
+        if matches!(*value, Value::Ref(_)) {
             self.contains_refs = true;
             heap.mark_potential_cycle();
         }
