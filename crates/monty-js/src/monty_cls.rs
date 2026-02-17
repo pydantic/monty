@@ -332,22 +332,14 @@ impl Monty {
                 Ok(p) => p,
                 Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
             };
-            Ok(progress_to_result(
-                progress,
-                print_callback_ref,
-                self.script_name().clone(),
-            ))
+            Ok(progress_to_result(progress, print_callback_ref, self.script_name()))
         } else {
             let tracker = NoLimitTracker;
             let progress = match runner.start(input_values, tracker, &mut print_writer) {
                 Ok(p) => p,
                 Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
             };
-            Ok(progress_to_result(
-                progress,
-                print_callback_ref,
-                self.script_name().clone(),
-            ))
+            Ok(progress_to_result(progress, print_callback_ref, self.script_name()))
         }
     }
 
