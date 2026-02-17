@@ -6,7 +6,7 @@
 //! - `PyUnknownDataclass`: A Python class that mimics dataclass behavior
 
 use std::{
-    collections::hash_map::DefaultHasher,
+    collections::{HashMap, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
 };
 
@@ -21,6 +21,15 @@ use pyo3::{
 };
 
 use crate::convert::{monty_to_py, py_to_monty};
+
+/// Maps Python dataclass type identity (pointer address as `u64`) to the original
+/// Python type object (`Py<PyAny>`).
+///
+/// This registry enables round-trip reconstruction of dataclass types: when a
+/// dataclass passes through Monty, its type is stored here so that on output,
+/// `isinstance(result, OriginalClass)` works correctly. Using a Rust `HashMap`
+/// avoids Python int boxing for `u64` keys and removes GIL dependency for lookups.
+pub type DcRegistry = HashMap<u64, Py<PyAny>>;
 
 /// Checks if a Python object is a dataclass instance (not a type).
 ///
@@ -38,7 +47,7 @@ pub fn is_dataclass(value: &Bound<'_, PyAny>) -> bool {
 /// The `type_id` is set to `id(type(dc))` in Python, allowing registry lookups by type identity.
 /// The `dc_registry` is threaded through to `py_to_monty` so that nested dataclasses
 /// in field values are also auto-registered.
-pub fn dataclass_to_monty(value: &Bound<'_, PyAny>, dc_registry: &Bound<'_, PyDict>) -> PyResult<MontyObject> {
+pub fn dataclass_to_monty(value: &Bound<'_, PyAny>, dc_registry: &mut DcRegistry) -> PyResult<MontyObject> {
     let py = value.py();
 
     let dc_type = value.get_type();
@@ -96,11 +105,11 @@ pub fn dataclass_to_py(
     field_names: &[String],
     attrs: &DictPairs,
     frozen: bool,
-    dc_registry: &Bound<'_, PyDict>,
+    dc_registry: &DcRegistry,
 ) -> PyResult<Py<PyAny>> {
     // Try to use the original type from the dc_registry (keyed by type_id)
-    if let Some(original_type) = dc_registry.get_item(type_id)? {
-        let original_type: Bound<'_, PyType> = original_type.cast_into()?;
+    if let Some(original_type_py) = dc_registry.get(&type_id) {
+        let original_type = original_type_py.bind(py).cast::<PyType>()?;
         // Build kwargs dict from field names and values
         let kwargs = PyDict::new(py);
         for (key, value) in attrs {
@@ -130,9 +139,17 @@ pub fn dataclass_to_py(
 /// type object, matching what `dataclass_to_monty` stores as `type_id` in
 /// `MontyObject::Dataclass`. This allows `dataclass_to_py` to look up the original
 /// Python class when reconstructing output values.
-pub fn add_to_dc_registry(dc_registry: &Bound<'_, PyDict>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
+/// Clones a `DcRegistry`, incrementing Python reference counts for each entry.
+///
+/// This is needed because `Py<PyAny>` uses `clone_ref(py)` instead of `Clone`,
+/// requiring the GIL token to safely increment reference counts.
+pub fn clone_dc_registry(py: Python<'_>, registry: &DcRegistry) -> DcRegistry {
+    registry.iter().map(|(&k, v)| (k, v.clone_ref(py))).collect()
+}
+
+pub fn add_to_dc_registry(dc_registry: &mut DcRegistry, obj: &Bound<'_, PyAny>) {
     let type_id = obj.as_ptr() as u64;
-    dc_registry.set_item(type_id, obj)
+    dc_registry.insert(type_id, obj.clone().unbind());
 }
 
 /// Python class that mimics dataclass behavior for `MontyObject::Dataclass`.
@@ -346,7 +363,7 @@ impl PyUnknownDataclass {
         field_names: Vec<String>,
         attrs: impl IntoIterator<Item = &'a (MontyObject, MontyObject)>,
         frozen: bool,
-        dc_registry: &Bound<'_, PyDict>,
+        dc_registry: &DcRegistry,
     ) -> PyResult<Self> {
         let dict = PyDict::new(py);
         for (k, v) in attrs {
