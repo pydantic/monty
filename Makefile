@@ -47,8 +47,42 @@ dev-kotlin: ## Build the Kotlin bindings (debug)
 	cargo build -p monty-kotlin
 
 .PHONY: test-kotlin
-test-kotlin: ## Build and test the Kotlin bindings (requires jna.jar in repo root or CLASSPATH set)
+test-kotlin: build-kotlin-native ## Build and test the Kotlin bindings (requires jna.jar in repo root or CLASSPATH set)
 	CLASSPATH=$${CLASSPATH:+$$CLASSPATH:}$(CURDIR)/jna.jar cargo test -p monty-kotlin
+
+.PHONY: init-kotlin-gradle
+init-kotlin-gradle: ## One-time setup: generate Gradle wrapper jar (requires `gradle` installed)
+	cd crates/monty-kotlin/kotlin && gradle wrapper --gradle-version 8.10.2
+
+.PHONY: build-kotlin-native
+build-kotlin-native: ## Build macOS ARM64 native library (native cargo build, release profile)
+	cargo build -p monty-kotlin --release
+
+.PHONY: cross-kotlin-linux
+cross-kotlin-linux: ## Cross-compile Linux x86_64 native library via cargo-zigbuild (requires cargo-zigbuild and zig)
+	rustup target add x86_64-unknown-linux-gnu
+	cargo zigbuild -p monty-kotlin --target x86_64-unknown-linux-gnu.2.17 --release
+
+.PHONY: gen-kotlin-bindings
+gen-kotlin-bindings: build-kotlin-native ## Generate Kotlin UniFFI bindings from the compiled native library
+	cargo run -p monty-kotlin --features uniffi-bindgen-cli --bin uniffi-bindgen --release -- \
+		generate \
+		--library target/release/libmonty_kotlin.dylib \
+		--language kotlin \
+		--out-dir crates/monty-kotlin/kotlin/src/main/kotlin
+
+.PHONY: copy-kotlin-natives
+copy-kotlin-natives: build-kotlin-native cross-kotlin-linux ## Copy native libs into Gradle resource directories for JAR bundling
+	mkdir -p crates/monty-kotlin/kotlin/src/main/resources/darwin-aarch64
+	mkdir -p crates/monty-kotlin/kotlin/src/main/resources/linux-x86-64
+	cp target/release/libmonty_kotlin.dylib \
+		crates/monty-kotlin/kotlin/src/main/resources/darwin-aarch64/libmonty_kotlin.dylib
+	cp target/x86_64-unknown-linux-gnu/release/libmonty_kotlin.so \
+		crates/monty-kotlin/kotlin/src/main/resources/linux-x86-64/libmonty_kotlin.so
+
+.PHONY: package-kotlin
+package-kotlin: copy-kotlin-natives gen-kotlin-bindings ## Build JAR bundling Kotlin bindings + native libs for macOS ARM64 and Linux x86_64
+	cd crates/monty-kotlin/kotlin && ./gradlew jar
 
 .PHONY: smoke-test-js
 smoke-test-js: ## Run smoke test for JS package (builds, packs, and tests installation)

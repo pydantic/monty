@@ -1,3 +1,4 @@
+*.jar
 *.py[cod]
 *.so
 /.idea/

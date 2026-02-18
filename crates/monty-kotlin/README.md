@@ -362,3 +362,60 @@ CLASSPATH=jna.jar cargo test -p monty-kotlin
 
 Tests require `kotlinc` and `jna.jar` (download from
 [Maven Central](https://repo1.maven.org/maven2/net/java/dev/jna/jna/5.13.0/jna-5.13.0.jar)).
+
+## JAR Packaging
+
+To build a distributable JAR that bundles the Kotlin bindings and native libraries for
+macOS ARM64 and Linux x86_64:
+
+### Prerequisites
+
+```bash
+# Install cargo-zigbuild (cross-compilation driver)
+cargo install cargo-zigbuild
+
+# Install Zig (required by cargo-zigbuild)
+brew install zig
+
+# Add the Linux cross-compilation target
+rustup target add x86_64-unknown-linux-gnu
+
+# Install Gradle (one-time, for wrapper setup)
+brew install gradle
+
+# Generate the Gradle wrapper JAR (one-time per clone)
+make init-kotlin-gradle
+```
+
+### Building the JAR
+
+```bash
+# Full pipeline: compile native libs, cross-compile for Linux, generate Kotlin
+# bindings, and package everything into a JAR
+make package-kotlin
+```
+
+Individual steps if needed:
+
+```bash
+make build-kotlin-native   # Build macOS ARM64 .dylib
+make cross-kotlin-linux    # Cross-compile Linux x86_64 .so
+make gen-kotlin-bindings   # Generate monty_kotlin.kt via uniffi-bindgen
+make copy-kotlin-natives   # Stage native libs into Gradle resource dirs
+```
+
+The resulting JAR is at `crates/monty-kotlin/kotlin/build/libs/monty-kotlin-*.jar`
+and can be verified with:
+
+```bash
+jar tf crates/monty-kotlin/kotlin/build/libs/monty-kotlin-*.jar \
+  | grep -E "(darwin|linux|\.class)"
+```
+
+Expected output includes:
+```
+darwin-aarch64/libmonty_kotlin.dylib
+linux-x86-64/libmonty_kotlin.so
+uniffi/monty_kotlin/MontyKtKt.class
+...
+```

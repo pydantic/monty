@@ -14,6 +14,16 @@ repository = { workspace = true }
 [lib]
 crate-type = ["lib", "cdylib"]
 
+[features]
+# Enables the uniffi-bindgen CLI for generating Kotlin (and other language) bindings.
+# Not enabled by default to avoid bloating the cdylib with CLI deps.
+uniffi-bindgen-cli = ["uniffi/cli"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["uniffi-bindgen-cli"]
+
 [dependencies]
 monty = { path = "../monty" }
 monty_type_checking = { path = "../monty-type-checking" }

@@ -1,0 +1,14 @@
+# Gradle build outputs and caches
+.gradle/
+build/
+
+# Generated UniFFI Kotlin bindings (produced by `make gen-kotlin-bindings`)
+src/main/kotlin/
+
+# Native libraries copied by `make copy-kotlin-natives`
+src/main/resources/darwin-aarch64/
+src/main/resources/linux-x86-64/
+
+# Gradle wrapper JAR — binary file generated locally by `make init-kotlin-gradle`.
+# Contributors must run that target once after cloning (requires `gradle` installed).
+gradle/wrapper/gradle-wrapper.jar
