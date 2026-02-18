@@ -1164,9 +1164,9 @@ fn timeout_in_str_join() {
 )]
 fn timeout_in_sorted_comparison_loop() {
     // Build a reverse-sorted list, then sort it. Insertion sort on reverse-sorted
-    // data is O(n^2). With 50k elements that's 2.5 billion comparisons.
+    // data is O(n^2).
     let code = r"
-x = list(range(50000, 0, -1))
+x = list(range(10**6, 0, -1))
 sorted(x)
 ";
     assert_timeout_in_builtin(code, "sorted(reversed list)");

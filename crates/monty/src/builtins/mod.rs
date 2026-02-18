@@ -239,7 +239,7 @@ impl BuiltinsFunctions {
             Self::Repr => repr::builtin_repr(vm.heap, args, vm.interns),
             Self::Reversed => reversed::builtin_reversed(vm.heap, args, vm.interns),
             Self::Round => round::builtin_round(vm.heap, args),
-            Self::Sorted => sorted::builtin_sorted(vm.heap, args, vm.interns),
+            Self::Sorted => sorted::builtin_sorted(vm, args),
             Self::Sum => sum::builtin_sum(vm.heap, args, vm.interns),
             Self::Type => type_::builtin_type(vm.heap, args),
             Self::Zip => zip::builtin_zip(vm.heap, args, vm.interns),

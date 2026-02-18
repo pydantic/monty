@@ -757,9 +757,10 @@ fn do_list_sort(list: &mut List, args: ArgValues, vm: &mut VM<impl ResourceTrack
     let mut items: Vec<Value> = list.as_vec_mut().drain(..).collect();
 
     // Step 2: Compute key values if key function provided
-    let key_values: Option<Vec<Value>> = if let Some(f) = key_fn {
+    let mut keys_guard;
+    let (keys, vm) = if let Some(f) = key_fn {
         let keys: Vec<Value> = Vec::with_capacity(items.len());
-        let mut keys_guard = HeapGuard::new(keys, vm);
+        keys_guard = HeapGuard::new(keys, vm);
         let (keys, vm) = keys_guard.as_parts_mut();
         for item in &items {
             let elem = item.clone_with_heap(vm.heap);
@@ -774,9 +775,9 @@ fn do_list_sort(list: &mut List, args: ArgValues, vm: &mut VM<impl ResourceTrack
                 }
             }
         }
-        Some(keys_guard.into_inner())
+        keys_guard.as_parts()
     } else {
-        None
+        (&items, vm)
     };
 
     // Step 3: Sort indices based on items or key values
@@ -786,76 +787,36 @@ fn do_list_sort(list: &mut List, args: ArgValues, vm: &mut VM<impl ResourceTrack
     // Create a guard for py_cmp calls. We use a RefCell to allow mutable borrows inside the closure.
     let guard = std::cell::RefCell::new(DepthGuard::default());
 
-    if let Some(ref keys) = key_values {
-        indices.sort_by(|&a, &b| {
-            if sort_error.is_some() {
-                return Ordering::Equal;
-            }
-            if let Err(e) = vm.heap.check_time() {
-                sort_error = Some(e.into());
-                return Ordering::Equal;
-            }
-            match keys[a].py_cmp(&keys[b], vm.heap, &mut guard.borrow_mut(), vm.interns) {
-                Ok(Some(ord)) => {
-                    if reverse {
-                        ord.reverse()
-                    } else {
-                        ord
-                    }
-                }
-                Ok(None) => {
-                    sort_error = Some(ExcType::type_error(format!(
-                        "'<' not supported between instances of '{}' and '{}'",
-                        keys[a].py_type(vm.heap),
-                        keys[b].py_type(vm.heap)
-                    )));
-                    Ordering::Equal
-                }
-                Err(e) => {
-                    sort_error = Some(e.into());
-                    Ordering::Equal
-                }
-            }
-        });
-    } else {
-        indices.sort_by(|&a, &b| {
-            if sort_error.is_some() {
-                return Ordering::Equal;
-            }
-            if let Err(e) = vm.heap.check_time() {
-                sort_error = Some(e.into());
-                return Ordering::Equal;
-            }
-            match items[a].py_cmp(&items[b], vm.heap, &mut guard.borrow_mut(), vm.interns) {
-                Ok(Some(ord)) => {
-                    if reverse {
-                        ord.reverse()
-                    } else {
-                        ord
-                    }
-                }
-                Ok(None) => {
-                    sort_error = Some(ExcType::type_error(format!(
-                        "'<' not supported between instances of '{}' and '{}'",
-                        items[a].py_type(vm.heap),
-                        items[b].py_type(vm.heap)
-                    )));
-                    Ordering::Equal
-                }
-                Err(e) => {
-                    sort_error = Some(e.into());
-                    Ordering::Equal
-                }
-            }
-        });
-    }
-
-    // Clean up key values
-    if let Some(keys) = key_values {
-        for k in keys {
-            k.drop_with_heap(vm.heap);
+    indices.sort_by(|&a, &b| {
+        if sort_error.is_some() {
+            return Ordering::Equal;
         }
-    }
+        if let Err(e) = vm.heap.check_time() {
+            sort_error = Some(e.into());
+            return Ordering::Equal;
+        }
+        match keys[a].py_cmp(&keys[b], vm.heap, &mut guard.borrow_mut(), vm.interns) {
+            Ok(Some(ord)) => {
+                if reverse {
+                    ord.reverse()
+                } else {
+                    ord
+                }
+            }
+            Ok(None) => {
+                sort_error = Some(ExcType::type_error(format!(
+                    "'<' not supported between instances of '{}' and '{}'",
+                    keys[a].py_type(vm.heap),
+                    keys[b].py_type(vm.heap)
+                )));
+                Ordering::Equal
+            }
+            Err(e) => {
+                sort_error = Some(e.into());
+                Ordering::Equal
+            }
+        }
+    });
 
     // Check for sort error
     if let Some(err) = sort_error {
