@@ -42,6 +42,14 @@ lint-js: install-js ## Lint JS code with oxlint
 test-js: dev-js ## Build and test the JS package
 	cd crates/monty-js && npm test
 
+.PHONY: dev-kotlin
+dev-kotlin: ## Build the Kotlin bindings (debug)
+	cargo build -p monty-kotlin
+
+.PHONY: test-kotlin
+test-kotlin: ## Build and test the Kotlin bindings (requires jna.jar in repo root or CLASSPATH set)
+	CLASSPATH=$${CLASSPATH:+$$CLASSPATH:}$(CURDIR)/jna.jar cargo test -p monty-kotlin
+
 .PHONY: smoke-test-js
 smoke-test-js: ## Run smoke test for JS package (builds, packs, and tests installation)
 	cd crates/monty-js && npm run smoke-test

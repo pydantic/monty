@@ -1,0 +1,5 @@
+/// Minimal UDL for the monty_kotlin namespace.
+///
+/// All types and functions are defined via proc-macros in lib.rs.
+/// This file only declares the namespace required by UniFFI's hybrid approach.
+namespace monty_kotlin {};

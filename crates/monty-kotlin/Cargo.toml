@@ -1,0 +1,31 @@
+[package]
+name = "monty-kotlin"
+description = "Kotlin/JVM bindings for the Monty sandboxed Python interpreter via UniFFI"
+version = { workspace = true }
+rust-version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+license = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
+monty = { path = "../monty" }
+monty_type_checking = { path = "../monty-type-checking" }
+uniffi = { version = "0.31", features = ["scaffolding-ffi-buffer-fns"] }
+serde_json = "1"
+thiserror = "2"
+
+[build-dependencies]
+uniffi = { version = "0.31", features = ["build", "scaffolding-ffi-buffer-fns"] }
+
+[dev-dependencies]
+uniffi = { version = "0.31", features = ["bindgen-tests"] }
+
+[lints]
+workspace = true
