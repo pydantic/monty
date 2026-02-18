@@ -21,6 +21,14 @@ assert m.span() == (4, 9), 're.search span() returns (start, end) tuple'
 m = re.search('xyz', 'hello world')
 assert m is None, 're.search returns None when no match'
 
+# === re.search() with error ===
+try:
+    re.search('(', 'test')
+    assert False, 're.search with invalid pattern should raise error'
+except re.PatternError as e:
+    # The error message may vary based on the regex engine, but it should not be empty
+    assert len(str(e)) > 0, 're.search with invalid pattern raises PatternError with message'
+
 # === re.match() ===
 m = re.match('hello', 'hello world')
 assert m is not None, 're.match matches at start'
@@ -214,3 +222,7 @@ try:
     assert False, 'Accessing group with non-integer index should raise IndexError'
 except IndexError as e:
     assert str(e) == 'no such group'
+
+# === Object basic ===
+assert bool(re.compile(r'\d+'))
+assert bool(re.search(r'\w+', 'hello'))

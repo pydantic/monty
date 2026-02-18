@@ -109,7 +109,14 @@ pub enum ExcType {
 
     // --- re module ---
     /// `re.PatternError` - raised for invalid regex patterns or unsupported regex features.
-    /// Direct subclass of `Exception`.
+    ///
+    /// # Behavior Note
+    ///
+    /// Limited to monty's exception type, `PatternError` does not provide `pattern`, `pos`,
+    /// `lineno` and `colno` attributes.
+    ///
+    /// As per CPython's implementation, it would be hard to convert `fancy-regex`'s error
+    /// representations into the required attributes.
     #[strum(serialize = "re.PatternError")]
     RePatternError,
 }

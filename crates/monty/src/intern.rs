@@ -465,6 +465,7 @@ pub enum StaticStrings {
     #[strum(serialize = "NOFLAG")]
     NoFlag,
     /// `re.PatternError` exception
+    #[strum(serialize = "PatternError")]
     PatternError,
 }
 

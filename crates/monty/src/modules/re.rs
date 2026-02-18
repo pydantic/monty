@@ -24,6 +24,7 @@ use std::borrow::Cow;
 
 use crate::{
     args::ArgValues,
+    builtins::Builtins,
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
@@ -134,6 +135,14 @@ pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -
     module.set_attr(StaticStrings::M, Value::Int(i64::from(MULTILINE)), heap, interns);
     module.set_attr(StaticStrings::DotallFlag, Value::Int(i64::from(DOTALL)), heap, interns);
     module.set_attr(StaticStrings::S, Value::Int(i64::from(DOTALL)), heap, interns);
+
+    // Exception type
+    module.set_attr(
+        StaticStrings::PatternError,
+        Value::Builtin(Builtins::ExcType(ExcType::RePatternError)),
+        heap,
+        interns,
+    );
 
     heap.allocate(HeapData::Module(module))
 }
