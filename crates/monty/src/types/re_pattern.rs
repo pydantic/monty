@@ -375,19 +375,19 @@ fn call_pattern_sub(
 pub(crate) fn compile_regex(pattern: &str, flags: u8) -> RunResult<Regex> {
     let mut prefix = String::new();
     if flags & IGNORECASE != 0 {
-        prefix.push_str("(?i)");
+        prefix.push('i');
     }
     if flags & MULTILINE != 0 {
-        prefix.push_str("(?m)");
+        prefix.push('m');
     }
     if flags & DOTALL != 0 {
-        prefix.push_str("(?s)");
+        prefix.push('s');
     }
 
     let full_pattern = if prefix.is_empty() {
         pattern.to_owned()
     } else {
-        format!("{prefix}{pattern}")
+        format!("(?{prefix}){pattern}")
     };
 
     Regex::new(&full_pattern).map_err(ExcType::re_pattern_error)

@@ -180,6 +180,84 @@ pattern = re.compile(r'^hello', re.IGNORECASE | re.MULTILINE)
 result = pattern.findall('Hello\nhello\nHELLO')
 assert result == ['Hello', 'hello', 'HELLO'], 'Combined IGNORECASE | MULTILINE flags'
 
+# === More MULTILINE tests ===
+# Without MULTILINE, ^ matches only start of string
+pattern = re.compile(r'^\w+')
+result = pattern.findall('line1\nline2\nline3')
+assert result == ['line1'], 'Without MULTILINE, ^ matches only start of string'
+
+# With MULTILINE, ^ matches each line start
+pattern = re.compile(r'^\w+', re.MULTILINE)
+result = pattern.findall('line1\nline2\nline3')
+assert result == ['line1', 'line2', 'line3'], 'With MULTILINE, ^ matches each line start'
+
+# Without MULTILINE, $ matches only end of string
+pattern = re.compile(r'\w+$')
+result = pattern.findall('line1\nline2\nline3')
+assert result == ['line3'], 'Without MULTILINE, $ matches only end of string'
+
+# With MULTILINE, $ matches each line end
+pattern = re.compile(r'\w+$', re.MULTILINE)
+result = pattern.findall('line1\nline2\nline3')
+assert result == ['line1', 'line2', 'line3'], 'With MULTILINE, $ matches each line end'
+
+# === More DOTALL tests ===
+# Without DOTALL, . does not match newline
+pattern = re.compile(r'a.b')
+m = pattern.search('a\nb')
+assert m is None, 'Without DOTALL, . does not match newline'
+
+# With DOTALL, . matches newline
+pattern = re.compile(r'a.b', re.DOTALL)
+m = pattern.search('a\nb')
+assert m is not None, 'With DOTALL, . matches newline'
+assert m.group() == 'a\nb', 'DOTALL allows . to match newline'
+
+# DOTALL with multiple newlines
+pattern = re.compile(r'start.*end', re.DOTALL)
+m = pattern.search('start\nline1\nline2\nend')
+assert m is not None, 'DOTALL .* matches multiple newlines'
+assert m.group() == 'start\nline1\nline2\nend', 'DOTALL .* captures everything including newlines'
+
+# === Pattern repr with multiple flags (I, M, D order) ===
+p = re.compile(r'test', re.IGNORECASE)
+assert repr(p) == r"re.compile('test', re.IGNORECASE)", 'Pattern repr with I flag'
+
+p = re.compile(r'test', re.MULTILINE)
+assert repr(p) == r"re.compile('test', re.MULTILINE)", 'Pattern repr with M flag'
+
+p = re.compile(r'test', re.DOTALL)
+assert repr(p) == r"re.compile('test', re.DOTALL)", 'Pattern repr with D flag'
+
+p = re.compile(r'test', re.IGNORECASE | re.MULTILINE)
+assert repr(p) == r"re.compile('test', re.IGNORECASE|re.MULTILINE)", 'Pattern repr with I|M flags'
+
+p = re.compile(r'test', re.IGNORECASE | re.DOTALL)
+assert repr(p) == r"re.compile('test', re.IGNORECASE|re.DOTALL)", 'Pattern repr with I|D flags'
+
+p = re.compile(r'test', re.MULTILINE | re.DOTALL)
+assert repr(p) == r"re.compile('test', re.MULTILINE|re.DOTALL)", 'Pattern repr with M|D flags'
+
+p = re.compile(r'test', re.IGNORECASE | re.MULTILINE | re.DOTALL)
+assert repr(p) == r"re.compile('test', re.IGNORECASE|re.MULTILINE|re.DOTALL)", 'Pattern repr with I|M|D flags'
+
+# === Combined IGNORECASE and DOTALL ===
+pattern = re.compile(r'Hello.*World', re.IGNORECASE | re.DOTALL)
+m = pattern.search('HELLO\nmiddle\nWORLD')
+assert m is not None, 'Combined IGNORECASE|DOTALL finds match'
+assert m.group() == 'HELLO\nmiddle\nWORLD', 'IGNORECASE|DOTALL matches case-insensitively across newlines'
+
+# === Combined MULTILINE and DOTALL ===
+pattern = re.compile(r'^a.*b$', re.MULTILINE | re.DOTALL)
+result = pattern.findall('a\nb\nc\nb')
+assert result == ['a\nb\nc\nb'], 'Combined MULTILINE|DOTALL with ^ and $ and .'
+
+# === All three flags combined ===
+pattern = re.compile(r'^Hello.*World$', re.IGNORECASE | re.MULTILINE | re.DOTALL)
+m = pattern.search('first\nHELLO\nsome\nlines\nWORLD\nlast')
+assert m is not None, 'All three flags combined finds match'
+assert m.group() == 'HELLO\nsome\nlines\nWORLD', 'I|M|D flags work together'
+
 # === No groups: groups() returns empty tuple ===
 m = re.search(r'\d+', '42')
 assert m is not None, 'search with no groups finds match'
