@@ -38,8 +38,12 @@
 //! ```
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use monty::{ExternalResult, MontyException, MontyObject, MontyRun, NoLimitTracker, PrintWriter, RunProgress};
+use monty::{
+    ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRun, NoLimitTracker, PrintWriter,
+    ResourceLimits, ResourceTracker, RunProgress,
+};
 use monty_type_checking::{SourceFile, type_check};
 use serde_json::Value as JsonValue;
 
@@ -108,6 +112,62 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for MontyError {
         Self::RuntimeError {
             reason: format!("Unexpected callback error: {}", e.reason),
         }
+    }
+}
+
+// =============================================================================
+// Resource limits
+// =============================================================================
+
+/// Optional resource limits for sandboxed Python execution.
+///
+/// All fields are optional — pass `null` for any field to leave that limit
+/// disabled (or at the default). Construct in Kotlin as a data class:
+///
+/// ```kotlin
+/// val limits = MontyLimits(maxDurationSecs = 5.0, maxRecursionDepth = 100u)
+/// monty.run("{}", handler, limits)
+/// ```
+///
+/// The available limits mirror `pydantic_monty.ResourceLimits`:
+/// - `max_allocations` — heap allocation count before `MemoryError`
+/// - `max_duration_secs` — wall-clock seconds before `TimeoutError`
+/// - `max_memory` — heap bytes before `MemoryError`
+/// - `gc_interval` — run GC every N allocations
+/// - `max_recursion_depth` — call stack depth before `RecursionError`
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct MontyLimits {
+    /// Maximum number of heap allocations before raising `MemoryError`. `null` = no limit.
+    pub max_allocations: Option<u64>,
+    /// Maximum wall-clock execution time in seconds before raising `TimeoutError`. `null` = no limit.
+    pub max_duration_secs: Option<f64>,
+    /// Maximum heap memory in bytes before raising `MemoryError`. `null` = no limit.
+    pub max_memory: Option<u64>,
+    /// Run garbage collection every N allocations. `null` = GC disabled.
+    pub gc_interval: Option<u64>,
+    /// Maximum call stack depth before raising `RecursionError`. `null` = default (1000).
+    pub max_recursion_depth: Option<u64>,
+}
+
+impl From<MontyLimits> for ResourceLimits {
+    fn from(l: MontyLimits) -> Self {
+        let mut limits = ResourceLimits::new();
+        if let Some(n) = l.max_allocations {
+            limits = limits.max_allocations(n as usize);
+        }
+        if let Some(s) = l.max_duration_secs {
+            limits = limits.max_duration(Duration::from_secs_f64(s));
+        }
+        if let Some(m) = l.max_memory {
+            limits = limits.max_memory(m as usize);
+        }
+        if let Some(g) = l.gc_interval {
+            limits = limits.gc_interval(g as usize);
+        }
+        if let Some(d) = l.max_recursion_depth {
+            limits = limits.max_recursion_depth(Some(d as usize));
+        }
+        limits
     }
 }
 
@@ -232,60 +292,75 @@ impl MontyKt {
     /// * `inputs_json` – JSON object mapping input names to their values,
     ///   e.g. `{"x": 10, "name": "Alice"}`. Use `"{}"` when there are no inputs.
     /// * `handler` – called for each external function invocation
+    /// * `limits` – optional resource limits (allocations, time, memory, recursion depth).
+    ///   Pass `null` for unlimited execution.
     ///
     /// # Returns
     /// A JSON string representing the final return value of the executed code.
     ///
     /// # Errors
-    /// - `MontyError::RuntimeError` for Python runtime exceptions
+    /// - `MontyError::RuntimeError` for Python runtime exceptions (including
+    ///   `MemoryError`, `TimeoutError`, `RecursionError` when limits are hit)
     /// - `MontyError::OsCallNotSupported` if the code attempts an OS-level call
-    pub fn run(&self, inputs_json: String, handler: Box<dyn ExternalFunctionHandler>) -> Result<String, MontyError> {
+    pub fn run(
+        &self,
+        inputs_json: String,
+        handler: Box<dyn ExternalFunctionHandler>,
+        limits: Option<MontyLimits>,
+    ) -> Result<String, MontyError> {
         let input_values = parse_inputs_json(&inputs_json, &self.input_names)?;
 
         // Clone runner since start() consumes it, allowing this MontyKt to be reused.
         let runner = self.runner.clone();
-
         let mut print_writer = PrintWriter::Stdout;
-        let mut progress = runner
-            .start(input_values, NoLimitTracker, &mut print_writer)
-            .map_err(runtime_error)?;
 
-        loop {
-            match progress {
-                RunProgress::Complete(result) => {
-                    return Ok(monty_to_json(&result));
-                }
-                RunProgress::FunctionCall {
-                    function_name,
-                    args,
-                    kwargs,
-                    state,
-                    ..
-                } => {
-                    let args_json = args_to_json(&args);
-                    let kwargs_json = kwargs_to_json(&kwargs);
+        match limits {
+            Some(l) => run_execution_loop(runner, input_values, LimitedTracker::new(l.into()), &*handler, &mut print_writer),
+            None => run_execution_loop(runner, input_values, NoLimitTracker, &*handler, &mut print_writer),
+        }
+    }
+}
 
-                    // Call the Kotlin handler; any error becomes a RuntimeError.
-                    let return_json = handler
-                        .call(function_name, args_json, kwargs_json)
-                        .map_err(|e| MontyError::RuntimeError { reason: e.to_string() })?;
+/// Drives the Monty execution loop with the given tracker.
+///
+/// Extracted into a generic helper so `run()` can dispatch to either
+/// `NoLimitTracker` or `LimitedTracker` without duplicating the loop logic.
+/// The tracker type affects the `Snapshot<T>` stored inside `RunProgress::FunctionCall`,
+/// requiring this function to be generic over `T`.
+fn run_execution_loop(
+    runner: MontyRun,
+    input_values: Vec<MontyObject>,
+    tracker: impl ResourceTracker,
+    handler: &dyn ExternalFunctionHandler,
+    print_writer: &mut PrintWriter,
+) -> Result<String, MontyError> {
+    let mut progress = runner.start(input_values, tracker, print_writer).map_err(runtime_error)?;
 
-                    let return_value = json_to_monty(&return_json)?;
+    loop {
+        match progress {
+            RunProgress::Complete(result) => {
+                return Ok(monty_to_json(&result));
+            }
+            RunProgress::FunctionCall { function_name, args, kwargs, state, .. } => {
+                let args_json = args_to_json(&args);
+                let kwargs_json = kwargs_to_json(&kwargs);
 
-                    progress = state
-                        .run(ExternalResult::Return(return_value), &mut print_writer)
-                        .map_err(runtime_error)?;
-                }
-                RunProgress::OsCall { function, .. } => {
-                    return Err(MontyError::OsCallNotSupported {
-                        reason: format!("{function:?}"),
-                    });
-                }
-                RunProgress::ResolveFutures(_) => {
-                    return Err(MontyError::OsCallNotSupported {
-                        reason: "Async futures (ResolveFutures) are not supported in the Kotlin binding".to_string(),
-                    });
-                }
+                // Call the Kotlin handler; any error becomes a RuntimeError.
+                let return_json = handler
+                    .call(function_name, args_json, kwargs_json)
+                    .map_err(|e| MontyError::RuntimeError { reason: e.to_string() })?;
+
+                let return_value = json_to_monty(&return_json)?;
+
+                progress = state.run(ExternalResult::Return(return_value), print_writer).map_err(runtime_error)?;
+            }
+            RunProgress::OsCall { function, .. } => {
+                return Err(MontyError::OsCallNotSupported { reason: format!("{function:?}") });
+            }
+            RunProgress::ResolveFutures(_) => {
+                return Err(MontyError::OsCallNotSupported {
+                    reason: "Async futures (ResolveFutures) are not supported in the Kotlin binding".to_string(),
+                });
             }
         }
     }

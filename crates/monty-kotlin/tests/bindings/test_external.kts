@@ -13,7 +13,7 @@ val rNoArgs = mNoArgs.run("{}", object : ExternalFunctionHandler {
         assert(kwargsJson == "{}") { "Expected {}, got $kwargsJson" }
         return """"called""""
     }
-})
+}, null)
 assert(rNoArgs == """"called"""") { "Expected \"called\", got $rNoArgs" }
 
 // === Positional args ===
@@ -25,7 +25,7 @@ val rPosArgs = mPosArgs.run("{}", object : ExternalFunctionHandler {
         assert(kwargsJson == "{}") { "Expected {}, got $kwargsJson" }
         return """"ok""""
     }
-})
+}, null)
 assert(rPosArgs == """"ok"""") { "Expected \"ok\", got $rPosArgs" }
 
 // === Kwargs only ===
@@ -38,7 +38,7 @@ val rKwargs = mKwargs.run("{}", object : ExternalFunctionHandler {
         assert(kwargsJson.contains(""""b":"two"""")) { "Expected b:\"two\" in kwargs, got $kwargsJson" }
         return """"ok""""
     }
-})
+}, null)
 assert(rKwargs == """"ok"""") { "Expected \"ok\", got $rKwargs" }
 
 // === Mixed positional and keyword args ===
@@ -51,7 +51,7 @@ val rMixed = mMixed.run("{}", object : ExternalFunctionHandler {
         assert(kwargsJson.contains(""""y":true""")) { "Expected y:true in kwargs, got $kwargsJson" }
         return """"ok""""
     }
-})
+}, null)
 assert(rMixed == """"ok"""") { "Expected \"ok\", got $rMixed" }
 
 // === Complex type args (list and dict) ===
@@ -63,7 +63,7 @@ val rComplex = mComplex.run("{}", object : ExternalFunctionHandler {
         assert(argsJson.contains(""""key":"value"""")) { "Expected key:value in args, got $argsJson" }
         return """"ok""""
     }
-})
+}, null)
 assert(rComplex == """"ok"""") { "Expected \"ok\", got $rComplex" }
 
 // === Returns null ===
@@ -71,7 +71,7 @@ assert(rComplex == """"ok"""") { "Expected \"ok\", got $rComplex" }
 val mReturnsNull = MontyKt.create("do_nothing()", null, null, listOf("do_nothing"), null)
 val rReturnsNull = mReturnsNull.run("{}", object : ExternalFunctionHandler {
     override fun call(functionName: String, argsJson: String, kwargsJson: String): String = "null"
-})
+}, null)
 assert(rReturnsNull == "null") { "Expected null, got $rReturnsNull" }
 
 // === Returns complex dict ===
@@ -80,7 +80,7 @@ val mReturnsComplex = MontyKt.create("get_data()", null, null, listOf("get_data"
 val rReturnsComplex = mReturnsComplex.run("{}", object : ExternalFunctionHandler {
     override fun call(functionName: String, argsJson: String, kwargsJson: String): String =
         """{"a":[1,2,3],"b":{"nested":true}}"""
-})
+}, null)
 assert(rReturnsComplex == """{"a":[1,2,3],"b":{"nested":true}}""") {
     "Expected complex dict, got $rReturnsComplex"
 }
@@ -97,7 +97,7 @@ val rMultiFuncs = mMultiFuncs.run("{}", object : ExternalFunctionHandler {
             else -> "null"
         }
     }
-})
+}, null)
 assert(rMultiFuncs == "15") { "Expected 15 (3 + 12), got $rMultiFuncs" }
 
 // === External function called multiple times ===
@@ -109,7 +109,7 @@ val rCounter = mCounter.run("{}", object : ExternalFunctionHandler {
         callCount++
         return callCount.toString()
     }
-})
+}, null)
 assert(rCounter == "6") { "Expected 6 (1+2+3), got $rCounter" }
 assert(callCount == 3) { "Expected 3 calls, got $callCount" }
 
@@ -122,7 +122,7 @@ val rWithInput = mWithInput.run("""{"x": 5}""", object : ExternalFunctionHandler
         val x = argsJson.removePrefix("[").removeSuffix("]").trim().toInt()
         return (x * 10).toString()
     }
-})
+}, null)
 assert(rWithInput == "50") { "Expected 50 (5 * 10), got $rWithInput" }
 
 // === Exception from handler propagates as RuntimeException ===
@@ -134,7 +134,7 @@ try {
         override fun call(functionName: String, argsJson: String, kwargsJson: String): String {
             throw MontyException.RuntimeException(reason = "intentional error")
         }
-    })
+    }, null)
     throw RuntimeException("Expected RuntimeException from handler")
 } catch (e: MontyException.RuntimeException) {
     assert(e.reason.isNotEmpty()) { "Expected non-empty error from handler, got: ${e.reason}" }
@@ -160,5 +160,5 @@ val rFinally = mFinally.run("{}", object : ExternalFunctionHandler {
         // (no exception) lets finally run.
         return "null"
     }
-})
+}, null)
 assert(rFinally == "true") { "Expected true (finally_ran), got $rFinally" }

@@ -6,5 +6,8 @@ uniffi::build_foreign_language_testcases!(
     "tests/bindings/test_exceptions.kts",
     "tests/bindings/test_external.kts",
     "tests/bindings/test_type_check.kts",
+    "tests/bindings/test_print.kts",
+    "tests/bindings/test_os_calls.kts",
+    "tests/bindings/test_limits.kts",
     "tests/bindings/test_mcp.kts",
 );

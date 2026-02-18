@@ -59,7 +59,7 @@ result
                 val escaped = unescaped.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
                 return "\"$escaped\""
             }
-        })
+        }, null)
 
         println("MCP time result: $result")
         assert(result.isNotEmpty()) { "Expected non-empty result from MCP time server, got: $result" }

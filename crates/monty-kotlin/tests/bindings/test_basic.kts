@@ -7,17 +7,17 @@ val noopHandler = object : ExternalFunctionHandler {
 
 // === Test 1: simple arithmetic ===
 val m1 = MontyKt.create("1 + 1", null, null, null, null)
-val r1 = m1.run("{}", noopHandler)
+val r1 = m1.run("{}", noopHandler, null)
 assert(r1 == "2") { "Expected 2, got $r1" }
 
 // === Test 2: with inputs ===
 val m2 = MontyKt.create("x + y", null, listOf("x", "y"), null, null)
-val r2 = m2.run("""{"x": 10, "y": 20}""", noopHandler)
+val r2 = m2.run("""{"x": 10, "y": 20}""", noopHandler, null)
 assert(r2 == "30") { "Expected 30, got $r2" }
 
 // === Test 3: string result ===
 val m3 = MontyKt.create(""""hello " + name""", null, listOf("name"), null, null)
-val r3 = m3.run("""{"name": "world"}""", noopHandler)
+val r3 = m3.run("""{"name": "world"}""", noopHandler, null)
 assert(r3 == """"hello world"""") { "Expected \"hello world\", got $r3" }
 
 // === Test 4: external function callback ===
@@ -29,14 +29,14 @@ val r4 = m4.run("{}", object : ExternalFunctionHandler {
         val x = matchResult?.groupValues?.get(1)?.toInt() ?: 0
         return (x * 2).toString()
     }
-})
+}, null)
 assert(r4 == "10") { "Expected 10, got $r4" }
 
 // === Test 5: runtime error becomes MontyException.RuntimeException ===
 // With flat_error, e.message contains the full Display string: "RuntimeError: ..."
 try {
     val m5 = MontyKt.create("1 / 0", null, null, null, null)
-    m5.run("{}", noopHandler)
+    m5.run("{}", noopHandler, null)
     throw RuntimeException("Should have thrown a MontyException.RuntimeException")
 } catch (e: MontyException.RuntimeException) {
     assert(e.message!!.contains("ZeroDivisionError")) {
@@ -46,17 +46,17 @@ try {
 
 // === Test 6: list input and output ===
 val m6 = MontyKt.create("items", null, listOf("items"), null, null)
-val r6 = m6.run("""{"items": [1, 2, 3]}""", noopHandler)
+val r6 = m6.run("""{"items": [1, 2, 3]}""", noopHandler, null)
 assert(r6 == "[1,2,3]") { "Expected [1,2,3], got $r6" }
 
 // === Test 7: None return value ===
 val m7 = MontyKt.create("x = 1", null, null, null, null)
-val r7 = m7.run("{}", noopHandler)
+val r7 = m7.run("{}", noopHandler, null)
 assert(r7 == "null") { "Expected null, got $r7" }
 
 // === Test 8: type checking — valid code passes ===
 val m8 = MontyKt.create("x: int = 1\nx + 1", null, null, null, "")
-val r8 = m8.run("{}", noopHandler)
+val r8 = m8.run("{}", noopHandler, null)
 assert(r8 == "2") { "Expected 2, got $r8" }
 
 // === Test 9: type checking — type error raises TypingException ===
@@ -80,5 +80,5 @@ val r10 = m10.run("{}", object : ExternalFunctionHandler {
         val sum = nums.sumOf { it.trim().toInt() }
         return sum.toString()
     }
-})
+}, null)
 assert(r10 == "3") { "Expected 3, got $r10" }
