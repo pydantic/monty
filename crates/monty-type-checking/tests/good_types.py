@@ -394,6 +394,8 @@ async def bar():
 
 await asyncio.gather(bar())  # pyright: ignore
 
+asyncio.run(foo(1))
+
 
 @dataclass
 class Point:
