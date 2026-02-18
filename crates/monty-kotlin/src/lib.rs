@@ -33,7 +33,7 @@
 //! try {
 //!     MontyKt.create("x: int = 'oops'", null, null, null, Some(""))
 //! } catch (e: MontyException.TypingException) {
-//!     println("Type error: ${e.message}")
+//!     println("Type error: ${e.reason}")
 //! }
 //! ```
 
@@ -52,47 +52,50 @@ uniffi::include_scaffolding!("monty_kotlin");
 
 /// Errors that can occur during Monty code parsing, type checking, or execution.
 ///
-/// Uses `#[uniffi(flat_error)]` so that each variant in Kotlin receives a single
-/// `message: String` constructor argument (the `Display` text), avoiding a naming
-/// conflict with `Throwable.message` that arises when error variants have a field
-/// also named `message`.
+/// Each variant carries a `reason: String` field (not `message`, to avoid
+/// conflicting with `Throwable.message` in Kotlin). UniFFI auto-generates
+/// `override val message get() = "reason=${reason}"` so that `e.message` works
+/// as expected, but `e.reason` gives direct access to the error text.
+///
+/// Using a named field (rather than `#[uniffi(flat_error)]`) makes this error
+/// type fully bidirectional: Kotlin callbacks may throw typed
+/// `MontyException.RuntimeException(reason = "…")` and Rust can lift it back.
 ///
 /// In Kotlin, these surface as a sealed class hierarchy:
-/// - `MontyException.SyntaxException(message)`
-/// - `MontyException.TypingException(message)`
-/// - `MontyException.RuntimeException(message)`
-/// - `MontyException.OsCallNotSupported(message)`
+/// - `MontyException.SyntaxException(reason)`
+/// - `MontyException.TypingException(reason)`
+/// - `MontyException.RuntimeException(reason)`
+/// - `MontyException.OsCallNotSupported(reason)`
 #[derive(Debug, thiserror::Error, uniffi::Error)]
-#[uniffi(flat_error)]
 pub enum MontyError {
     /// The provided Python code could not be parsed.
-    #[error("SyntaxError: {message}")]
+    #[error("SyntaxError: {reason}")]
     SyntaxError {
         /// Human-readable description of the syntax problem.
-        message: String,
+        reason: String,
     },
     /// Static type checking found errors in the code.
     ///
     /// Only returned when `type_check_prefix` is provided to `MontyKt::create()`.
-    #[error("TypingError:\n{message}")]
+    #[error("TypingError:\n{reason}")]
     TypingError {
         /// The formatted type-checking diagnostics, ready for display to the user.
-        message: String,
+        reason: String,
     },
     /// A runtime error occurred during execution (e.g., `ZeroDivisionError`).
-    #[error("RuntimeError: {message}")]
+    #[error("RuntimeError: {reason}")]
     RuntimeError {
         /// Human-readable description of the runtime error.
-        message: String,
+        reason: String,
     },
     /// The sandboxed code attempted an OS-level operation (e.g., filesystem, network).
     ///
     /// Monty intentionally blocks OS calls in this binding; they should be routed
     /// through `ExternalFunctionHandler` instead.
-    #[error("OsCallNotSupported: {message}")]
+    #[error("OsCallNotSupported: {reason}")]
     OsCallNotSupported {
         /// Description of the OS function that was attempted.
-        message: String,
+        reason: String,
     },
 }
 
@@ -103,7 +106,7 @@ pub enum MontyError {
 impl From<uniffi::UnexpectedUniFFICallbackError> for MontyError {
     fn from(e: uniffi::UnexpectedUniFFICallbackError) -> Self {
         Self::RuntimeError {
-            message: format!("Unexpected callback error: {}", e.reason),
+            reason: format!("Unexpected callback error: {}", e.reason),
         }
     }
 }
@@ -150,12 +153,7 @@ pub trait ExternalFunctionHandler: Send + Sync {
     ///
     /// # Errors
     /// Return a `MontyError` to propagate an error into the Python sandbox.
-    fn call(
-        &self,
-        function_name: String,
-        args_json: String,
-        kwargs_json: String,
-    ) -> Result<String, MontyError>;
+    fn call(&self, function_name: String, args_json: String, kwargs_json: String) -> Result<String, MontyError>;
 }
 
 // =============================================================================
@@ -215,9 +213,11 @@ impl MontyKt {
             run_type_check(&code, &script_name, prefix)?;
         }
 
-        let runner = MontyRun::new(code, &script_name, input_names.clone(), external_function_names)
-            .map_err(|exc| MontyError::SyntaxError {
-                message: exc.to_string(),
+        let runner =
+            MontyRun::new(code, &script_name, input_names.clone(), external_function_names).map_err(|exc| {
+                MontyError::SyntaxError {
+                    reason: exc.to_string(),
+                }
             })?;
 
         Ok(Arc::new(Self { runner, input_names }))
@@ -239,11 +239,7 @@ impl MontyKt {
     /// # Errors
     /// - `MontyError::RuntimeError` for Python runtime exceptions
     /// - `MontyError::OsCallNotSupported` if the code attempts an OS-level call
-    pub fn run(
-        &self,
-        inputs_json: String,
-        handler: Box<dyn ExternalFunctionHandler>,
-    ) -> Result<String, MontyError> {
+    pub fn run(&self, inputs_json: String, handler: Box<dyn ExternalFunctionHandler>) -> Result<String, MontyError> {
         let input_values = parse_inputs_json(&inputs_json, &self.input_names)?;
 
         // Clone runner since start() consumes it, allowing this MontyKt to be reused.
@@ -272,9 +268,7 @@ impl MontyKt {
                     // Call the Kotlin handler; any error becomes a RuntimeError.
                     let return_json = handler
                         .call(function_name, args_json, kwargs_json)
-                        .map_err(|e| MontyError::RuntimeError {
-                            message: e.to_string(),
-                        })?;
+                        .map_err(|e| MontyError::RuntimeError { reason: e.to_string() })?;
 
                     let return_value = json_to_monty(&return_json)?;
 
@@ -284,13 +278,12 @@ impl MontyKt {
                 }
                 RunProgress::OsCall { function, .. } => {
                     return Err(MontyError::OsCallNotSupported {
-                        message: format!("{function:?}"),
+                        reason: format!("{function:?}"),
                     });
                 }
                 RunProgress::ResolveFutures(_) => {
                     return Err(MontyError::OsCallNotSupported {
-                        message: "Async futures (ResolveFutures) are not supported in the Kotlin binding"
-                            .to_string(),
+                        reason: "Async futures (ResolveFutures) are not supported in the Kotlin binding".to_string(),
                     });
                 }
             }
@@ -325,10 +318,10 @@ fn run_type_check(code: &str, script_name: &str, prefix: &str) -> Result<(), Mon
     match type_check(&source_file, stubs_file.as_ref()) {
         Ok(None) => Ok(()),
         Ok(Some(diagnostics)) => Err(MontyError::TypingError {
-            message: diagnostics.to_string(),
+            reason: diagnostics.to_string(),
         }),
         Err(e) => Err(MontyError::RuntimeError {
-            message: format!("Type checker internal error: {e}"),
+            reason: format!("Type checker internal error: {e}"),
         }),
     }
 }
@@ -364,9 +357,7 @@ fn monty_to_json_value(obj: &MontyObject) -> JsonValue {
         MontyObject::List(items) | MontyObject::Tuple(items) => {
             JsonValue::Array(items.iter().map(monty_to_json_value).collect())
         }
-        MontyObject::NamedTuple { values, .. } => {
-            JsonValue::Array(values.iter().map(monty_to_json_value).collect())
-        }
+        MontyObject::NamedTuple { values, .. } => JsonValue::Array(values.iter().map(monty_to_json_value).collect()),
         MontyObject::Dict(pairs) => {
             let mut map = serde_json::Map::new();
             for (k, v) in pairs {
@@ -408,7 +399,7 @@ fn monty_to_json_value(obj: &MontyObject) -> JsonValue {
 /// Returns `MontyError::RuntimeError` if the string is not valid JSON.
 fn json_to_monty(s: &str) -> Result<MontyObject, MontyError> {
     let value: JsonValue = serde_json::from_str(s).map_err(|e| MontyError::RuntimeError {
-        message: format!("Invalid JSON from external function handler: {e}"),
+        reason: format!("Invalid JSON from external function handler: {e}"),
     })?;
     Ok(json_value_to_monty(value))
 }
@@ -472,11 +463,11 @@ fn parse_inputs_json(inputs_json: &str, input_names: &[String]) -> Result<Vec<Mo
     }
 
     let parsed: JsonValue = serde_json::from_str(inputs_json).map_err(|e| MontyError::RuntimeError {
-        message: format!("Invalid inputs JSON: {e}"),
+        reason: format!("Invalid inputs JSON: {e}"),
     })?;
 
     let obj = parsed.as_object().ok_or_else(|| MontyError::RuntimeError {
-        message: "inputs_json must be a JSON object".to_string(),
+        reason: "inputs_json must be a JSON object".to_string(),
     })?;
 
     input_names
@@ -485,7 +476,7 @@ fn parse_inputs_json(inputs_json: &str, input_names: &[String]) -> Result<Vec<Mo
             obj.get(name)
                 .map(|v| json_value_to_monty(v.clone()))
                 .ok_or_else(|| MontyError::RuntimeError {
-                    message: format!("Missing required input: '{name}'"),
+                    reason: format!("Missing required input: '{name}'"),
                 })
         })
         .collect()
@@ -494,6 +485,6 @@ fn parse_inputs_json(inputs_json: &str, input_names: &[String]) -> Result<Vec<Mo
 /// Converts a `MontyException` to a `MontyError::RuntimeError`.
 fn runtime_error(exc: MontyException) -> MontyError {
     MontyError::RuntimeError {
-        message: exc.to_string(),
+        reason: exc.to_string(),
     }
 }
