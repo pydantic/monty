@@ -105,11 +105,12 @@ impl FromStr for Builtins {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // Priority: BuiltinsFunctions > ExcType > Type
+        // Only matches names that are true Python builtins (accessible without imports).
         if let Ok(b) = BuiltinsFunctions::from_str(s) {
             Ok(Self::Function(b))
         } else if let Ok(exc) = ExcType::from_str(s) {
             Ok(Self::ExcType(exc))
-        } else if let Ok(t) = Type::from_str(s) {
+        } else if let Some(t) = Type::from_builtin_name(s) {
             Ok(Self::Type(t))
         } else {
             Err(())
