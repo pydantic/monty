@@ -226,3 +226,5 @@ except IndexError as e:
 # === Object basic ===
 assert bool(re.compile(r'\d+'))
 assert bool(re.search(r'\w+', 'hello'))
+assert isinstance(re.compile(r'\d+'), re.Pattern), 're.compile returns re.Pattern instance'
+assert isinstance(re.search(r'\w+', 'hello'), re.Match), 're.search returns re.Match instance'

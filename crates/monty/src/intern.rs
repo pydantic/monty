@@ -435,6 +435,12 @@ pub enum StaticStrings {
     Span,
     /// `match.end()` method
     End,
+    /// `re.Pattern`
+    #[strum(serialize = "Pattern")]
+    PatternClass,
+    /// `re.Match`
+    #[strum(serialize = "Match")]
+    MatchClass,
     /// `pattern.pattern`
     #[strum(serialize = "pattern")]
     PatternAttr,

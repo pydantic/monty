@@ -31,7 +31,7 @@ use crate::{
     intern::{Interns, StaticStrings},
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
-    types::{AttrCallResult, Module, PyTrait, RePattern, re_pattern::value_to_str},
+    types::{AttrCallResult, Module, PyTrait, RePattern, Type, re_pattern::value_to_str},
     value::Value,
 };
 
@@ -140,6 +140,20 @@ pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -
     module.set_attr(
         StaticStrings::PatternError,
         Value::Builtin(Builtins::ExcType(ExcType::RePatternError)),
+        heap,
+        interns,
+    );
+
+    // Constructed types
+    module.set_attr(
+        StaticStrings::PatternClass,
+        Value::Builtin(Builtins::Type(Type::RePattern)),
+        heap,
+        interns,
+    );
+    module.set_attr(
+        StaticStrings::MatchClass,
+        Value::Builtin(Builtins::Type(Type::ReMatch)),
         heap,
         interns,
     );

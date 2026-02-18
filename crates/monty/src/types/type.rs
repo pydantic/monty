@@ -58,10 +58,8 @@ pub enum Type {
     /// A property descriptor - displays as "property"
     Property,
     /// A compiled regex pattern from `re.compile()` - displays as "re.Pattern"
-    #[strum(serialize = "re.Pattern")]
     RePattern,
     /// A regex match result from `re.match()` / `re.search()` etc. - displays as "re.Match"
-    #[strum(serialize = "re.Match")]
     ReMatch,
 }
 
