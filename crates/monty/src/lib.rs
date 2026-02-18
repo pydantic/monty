@@ -23,6 +23,7 @@ mod repl;
 mod resource;
 mod run;
 mod signature;
+mod sorting;
 mod types;
 mod value;
 
