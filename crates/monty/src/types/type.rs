@@ -39,20 +39,27 @@ pub enum Type {
     Bytes,
     List,
     Tuple,
+    #[strum(disabled)]
     NamedTuple,
     Dict,
     Set,
     FrozenSet,
+    #[strum(disabled)]
     Dataclass,
     #[strum(disabled)]
     Exception(ExcType),
+    #[strum(disabled)]
     Function,
+    #[strum(disabled)]
     BuiltinFunction,
+    #[strum(disabled)]
     Cell,
     #[strum(serialize = "iter")]
     Iterator,
     /// Coroutine type for async functions and external futures.
+    #[strum(disabled)]
     Coroutine,
+    #[strum(disabled)]
     Module,
     /// Marker types like stdout/stderr - displays as "TextIOWrapper"
     #[strum(serialize = "TextIOWrapper")]
