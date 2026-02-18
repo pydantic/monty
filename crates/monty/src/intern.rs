@@ -309,6 +309,8 @@ pub enum StaticStrings {
     Asyncio,
     #[strum(serialize = "gather")]
     Gather,
+    #[strum(serialize = "run")]
+    Run,
 
     // ==========================
     // os module strings

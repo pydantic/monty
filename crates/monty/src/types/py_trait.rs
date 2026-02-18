@@ -69,7 +69,6 @@ pub enum AttrCallResult {
     ///
     /// Used by `asyncio.run()` to execute a coroutine without an explicit `await`.
     /// The VM will push the value onto the stack and execute `exec_get_awaitable`.
-    #[expect(dead_code)]
     AwaitValue(Value),
 }
 
