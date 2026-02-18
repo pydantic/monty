@@ -207,19 +207,6 @@ impl ExcType {
         })
     }
 
-    /// Creates an AttributeError for a dataclass method that requires external call integration.
-    ///
-    /// This is a temporary error used when dataclass methods are called but the external
-    /// call mechanism hasn't been integrated yet.
-    #[must_use]
-    pub(crate) fn attribute_error_method_not_implemented(class_name: &str, method_name: &str) -> RunError {
-        SimpleException::new_msg(
-            Self::AttributeError,
-            format!("'{class_name}' object method '{method_name}' requires external call (not yet implemented)"),
-        )
-        .into()
-    }
-
     /// Creates an AttributeError for attribute assignment on types that don't support it.
     ///
     /// Matches CPython's format for setting attributes on built-in types.
@@ -589,6 +576,14 @@ impl ExcType {
     #[must_use]
     pub(crate) fn type_error_not_callable(type_: Type) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("cannot create '{type_}' instances")).into()
+    }
+
+    /// Creates a TypeError for calling a non-callable object.
+    ///
+    /// Matches CPython's format: `TypeError: '{type}' object is not callable`
+    #[must_use]
+    pub(crate) fn type_error_not_callable_object(type_: Type) -> RunError {
+        SimpleException::new_msg(Self::TypeError, format!("'{type_}' object is not callable")).into()
     }
 
     /// Creates a TypeError for non-iterable type in list/tuple/etc constructors.

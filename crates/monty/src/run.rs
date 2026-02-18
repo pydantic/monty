@@ -6,7 +6,7 @@ use crate::{
     asyncio::CallId,
     bytecode::{Code, Compiler, FrameExit, VM, VMSnapshot},
     exception_private::RunResult,
-    heap::Heap,
+    heap::{DropWithHeap, Heap},
     intern::{ExtFunctionId, Interns},
     io::PrintWriter,
     namespace::Namespaces,
@@ -182,7 +182,7 @@ impl MontyRun {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
 pub enum RunProgress<T: ResourceTracker> {
-    /// Execution paused at an external function call.
+    /// Execution paused at an external function call or dataclass method call.
     ///
     /// The host can choose how to handle this:
     /// - **Sync resolution**: Call `state.run(return_value)` to push the result and continue
@@ -190,8 +190,11 @@ pub enum RunProgress<T: ResourceTracker> {
     ///
     /// When using async resolution, the code continues and may `await` the future later.
     /// If the future isn't resolved when awaited, execution yields with `ResolveFutures`.
+    ///
+    /// When `method_call` is true, this represents a dataclass method call where the first
+    /// positional arg is the dataclass instance (`self`).
     FunctionCall {
-        /// The name of the function being called.
+        /// The name of the function or method being called.
         function_name: String,
         /// The positional arguments passed to the function.
         args: Vec<MontyObject>,
@@ -199,6 +202,8 @@ pub enum RunProgress<T: ResourceTracker> {
         kwargs: Vec<(MontyObject, MontyObject)>,
         /// Unique identifier for this call (used for async correlation).
         call_id: u32,
+        /// Whether this is a dataclass method call (first arg is `self`).
+        method_call: bool,
         /// The execution state that can be resumed with a return value.
         state: Snapshot<T>,
     },
@@ -234,7 +239,7 @@ pub enum RunProgress<T: ResourceTracker> {
 impl<T: ResourceTracker> RunProgress<T> {
     /// Consumes the `RunProgress` and returns external function call info and state.
     ///
-    /// Returns (function_name, positional_args, keyword_args, call_id, state).
+    /// Returns (function_name, positional_args, keyword_args, call_id, method_call, state).
     #[must_use]
     #[expect(clippy::type_complexity)]
     pub fn into_function_call(
@@ -244,6 +249,7 @@ impl<T: ResourceTracker> RunProgress<T> {
         Vec<MontyObject>,
         Vec<(MontyObject, MontyObject)>,
         u32,
+        bool,
         Snapshot<T>,
     )> {
         match self {
@@ -252,8 +258,9 @@ impl<T: ResourceTracker> RunProgress<T> {
                 args,
                 kwargs,
                 call_id,
+                method_call,
                 state,
-            } => Some((function_name, args, kwargs, call_id, state)),
+            } => Some((function_name, args, kwargs, call_id, method_call, state)),
             _ => None,
         }
     }
@@ -658,6 +665,7 @@ fn handle_vm_result<T: ResourceTracker>(
                 args: args_py,
                 kwargs: kwargs_py,
                 call_id: call_id.raw(),
+                method_call: false,
                 state: new_snapshot!(call_id),
             })
         }
@@ -673,6 +681,23 @@ fn handle_vm_result<T: ResourceTracker>(
                 args: args_py,
                 kwargs: kwargs_py,
                 call_id: call_id.raw(),
+                state: new_snapshot!(call_id),
+            })
+        }
+        Ok(FrameExit::MethodCall {
+            method_name,
+            args,
+            call_id,
+        }) => {
+            let function_name = method_name.into_string(&executor.interns);
+            let (args_py, kwargs_py) = args.into_py_objects(&mut heap, &executor.interns);
+
+            Ok(RunProgress::FunctionCall {
+                function_name,
+                args: args_py,
+                kwargs: kwargs_py,
+                call_id: call_id.raw(),
+                method_call: true,
                 state: new_snapshot!(call_id),
             })
         }
@@ -912,17 +937,31 @@ fn frame_exit_to_object(
 ) -> RunResult<MontyObject> {
     match frame_exit_result? {
         FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, heap, interns)),
-        FrameExit::ExternalCall { ext_function_id, .. } => {
+        FrameExit::ExternalCall {
+            ext_function_id, args, ..
+        } => {
+            args.drop_with_heap(heap);
             let function_name = interns.get_external_function_name(ext_function_id);
             Err(ExcType::not_implemented(format!(
                 "External function '{function_name}' not implemented with standard execution"
             ))
             .into())
         }
-        FrameExit::OsCall { function, .. } => Err(ExcType::not_implemented(format!(
-            "OS function '{function}' not implemented with standard execution"
-        ))
-        .into()),
+        FrameExit::OsCall { function, args, .. } => {
+            args.drop_with_heap(heap);
+            Err(ExcType::not_implemented(format!(
+                "OS function '{function}' not implemented with standard execution"
+            ))
+            .into())
+        }
+        FrameExit::MethodCall { method_name, args, .. } => {
+            args.drop_with_heap(heap);
+            let name = method_name.as_str(interns);
+            Err(
+                ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution"))
+                    .into(),
+            )
+        }
         FrameExit::ResolveFutures(_) => {
             Err(ExcType::not_implemented("async futures not supported by standard execution.").into())
         }

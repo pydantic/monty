@@ -33,7 +33,7 @@ use crate::{
     parse::CodeRange,
     resource::ResourceTracker,
     types::{LongInt, MontyIter, PyTrait, iter::advance_on_heap},
-    value::{BitwiseOp, Value},
+    value::{BitwiseOp, EitherStr, Value},
 };
 
 /// Result of executing Await opcode.
@@ -161,6 +161,8 @@ macro_rules! jump_relative {
 /// - `FramePushed`: Reload the cached frame (a new frame was pushed)
 /// - `External(ext_id, args)`: Return `FrameExit::ExternalCall` to yield to host
 /// - `OsCall(func, args)`: Return `FrameExit::OsCall` to yield to host
+/// - `MethodCall(name, args)`: Return `FrameExit::MethodCall` to yield to host
+/// - `AwaitValue(value)`: Push value, then implicitly await it via `exec_get_awaitable`
 /// - `Err(err)`: Handle the exception via `catch_sync!`
 macro_rules! handle_call_result {
     ($self:expr, $cached_frame:ident, $result:expr) => {
@@ -186,6 +188,35 @@ macro_rules! handle_call_result {
                     args,
                     call_id,
                 });
+            }
+            Ok(CallResult::MethodCall(method_name, args)) => {
+                let call_id = $self.allocate_call_id();
+                // Sync cached IP back to frame before snapshot for resume
+                $self.current_frame_mut().ip = $cached_frame.ip;
+                return Ok(FrameExit::MethodCall {
+                    method_name,
+                    args,
+                    call_id,
+                });
+            }
+            Ok(CallResult::AwaitValue(value)) => {
+                // Push the value and implicitly await it (used by asyncio.run())
+                $self.push(value);
+                $self.current_frame_mut().ip = $cached_frame.ip;
+                match $self.exec_get_awaitable() {
+                    Ok(AwaitResult::ValueReady(value)) => {
+                        $self.push(value);
+                    }
+                    Ok(AwaitResult::FramePushed) => {
+                        reload_cache!($self, $cached_frame);
+                    }
+                    Ok(AwaitResult::Yield(pending_calls)) => {
+                        return Ok(FrameExit::ResolveFutures(pending_calls));
+                    }
+                    Err(e) => {
+                        catch_sync!($self, $cached_frame, e);
+                    }
+                }
             }
             Err(err) => catch_sync!($self, $cached_frame, err),
         }
@@ -220,6 +251,21 @@ pub enum FrameExit {
         /// ID of the os function to call.
         function: OsFunction,
         /// Arguments for the external function (includes both positional and keyword args).
+        args: ArgValues,
+        /// Unique ID for this call, used for async correlation.
+        call_id: CallId,
+    },
+
+    /// Execution paused for a dataclass method call.
+    ///
+    /// The caller should invoke the method on the original Python dataclass and call
+    /// `resume()` with the result. The `method_name` is the attribute name (e.g.
+    /// `"distance"`) and `args` includes the dataclass instance as the first argument
+    /// (`self`).
+    MethodCall {
+        /// Method name (e.g., "distance").
+        method_name: EitherStr,
+        /// Arguments including the dataclass instance as the first positional arg.
         args: ArgValues,
         /// Unique ID for this call, used for async correlation.
         call_id: CallId,
@@ -559,7 +605,10 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     pub fn check_snapshot(mut self, result: &RunResult<FrameExit>) -> Option<VMSnapshot> {
         if matches!(
             result,
-            Ok(FrameExit::ExternalCall { .. } | FrameExit::OsCall { .. } | FrameExit::ResolveFutures(_))
+            Ok(FrameExit::ExternalCall { .. }
+                | FrameExit::OsCall { .. }
+                | FrameExit::MethodCall { .. }
+                | FrameExit::ResolveFutures(_))
         ) {
             Some(self.snapshot())
         } else {

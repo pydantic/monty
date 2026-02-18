@@ -11,6 +11,7 @@ use smallvec::SmallVec;
 
 use crate::{
     args::{ArgValues, KwargsValues},
+    bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapId},
@@ -502,25 +503,28 @@ impl PyTrait for Path {
 
     fn py_call_attr_raw(
         &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
+        _self_id: HeapId,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
     ) -> RunResult<AttrCallResult> {
         let Some(method) = attr.static_string() else {
-            return self.py_call_attr(heap, attr, args, interns).map(AttrCallResult::Value);
+            return self
+                .py_call_attr(vm.heap, attr, args, vm.interns)
+                .map(AttrCallResult::Value);
         };
 
         // Check if this is an OS method that requires host system access
         if let Ok(os_fn) = OsFunction::try_from(method) {
             // Package path as first argument for OS call (as Path, not string)
-            let path_arg = Value::Ref(heap.allocate(HeapData::Path(self.clone()))?);
+            let path_arg = Value::Ref(vm.heap.allocate(HeapData::Path(self.clone()))?);
             let os_args = prepend_path_arg(path_arg, args);
             return Ok(AttrCallResult::OsCall(os_fn, os_args));
         }
 
         // Fall back to py_call_attr for pure methods
-        self.py_call_attr(heap, attr, args, interns).map(AttrCallResult::Value)
+        self.py_call_attr(vm.heap, attr, args, vm.interns)
+            .map(AttrCallResult::Value)
     }
 
     fn py_getattr(

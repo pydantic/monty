@@ -117,7 +117,6 @@ pub enum StaticStrings {
     Union,
     Intersection,
     Difference,
-    #[strum(serialize = "symmetric_difference")]
     SymmetricDifference,
     Issubset,
     Issuperset,
@@ -190,65 +189,41 @@ pub enum StaticStrings {
 
     // ==========================
     // sys module strings
-    #[strum(serialize = "sys")]
     Sys,
     #[strum(serialize = "sys.version_info")]
     SysVersionInfo,
-    #[strum(serialize = "version")]
     Version,
-    #[strum(serialize = "version_info")]
     VersionInfo,
-    #[strum(serialize = "platform")]
     Platform,
-    #[strum(serialize = "stdout")]
     Stdout,
-    #[strum(serialize = "stderr")]
     Stderr,
-    #[strum(serialize = "major")]
     Major,
-    #[strum(serialize = "minor")]
     Minor,
-    #[strum(serialize = "micro")]
     Micro,
-    #[strum(serialize = "releaselevel")]
     Releaselevel,
-    #[strum(serialize = "serial")]
     Serial,
-    #[strum(serialize = "final")]
     Final,
     #[strum(serialize = "3.14.0 (Monty)")]
     MontyVersionString,
-    #[strum(serialize = "monty")]
     Monty,
 
     // ==========================
     // os.stat_result fields
     #[strum(serialize = "StatResult")]
     OsStatResult,
-    #[strum(serialize = "st_mode")]
     StMode,
-    #[strum(serialize = "st_ino")]
     StIno,
-    #[strum(serialize = "st_dev")]
     StDev,
-    #[strum(serialize = "st_nlink")]
     StNlink,
-    #[strum(serialize = "st_uid")]
     StUid,
-    #[strum(serialize = "st_gid")]
     StGid,
-    #[strum(serialize = "st_size")]
     StSize,
-    #[strum(serialize = "st_atime")]
     StAtime,
-    #[strum(serialize = "st_mtime")]
     StMtime,
-    #[strum(serialize = "st_ctime")]
     StCtime,
 
     // ==========================
     // typing module strings
-    #[strum(serialize = "typing")]
     Typing,
     #[strum(serialize = "TYPE_CHECKING")]
     TypeChecking,
@@ -305,20 +280,15 @@ pub enum StaticStrings {
 
     // ==========================
     // asyncio module strings
-    #[strum(serialize = "asyncio")]
     Asyncio,
-    #[strum(serialize = "gather")]
     Gather,
+    Run,
 
     // ==========================
     // os module strings
-    #[strum(serialize = "os")]
     Os,
-    #[strum(serialize = "getenv")]
     Getenv,
-    #[strum(serialize = "environ")]
     Environ,
-    #[strum(serialize = "default")]
     Default,
 
     // ==========================
@@ -332,75 +302,47 @@ pub enum StaticStrings {
 
     // ==========================
     // pathlib module strings
-    #[strum(serialize = "pathlib")]
     Pathlib,
     #[strum(serialize = "Path")]
     PathClass,
 
     // Path properties (pure - no I/O)
-    #[strum(serialize = "name")]
     Name,
-    #[strum(serialize = "parent")]
     Parent,
-    #[strum(serialize = "stem")]
     Stem,
-    #[strum(serialize = "suffix")]
     Suffix,
-    #[strum(serialize = "suffixes")]
     Suffixes,
-    #[strum(serialize = "parts")]
     Parts,
 
     // Path pure methods (no I/O)
-    #[strum(serialize = "is_absolute")]
     IsAbsolute,
-    #[strum(serialize = "joinpath")]
     Joinpath,
-    #[strum(serialize = "with_name")]
     WithName,
-    #[strum(serialize = "with_stem")]
     WithStem,
-    #[strum(serialize = "with_suffix")]
     WithSuffix,
-    #[strum(serialize = "as_posix")]
     AsPosix,
     #[strum(serialize = "__fspath__")]
     Fspath,
 
     // Path filesystem methods (require OsAccess - yield external calls)
-    #[strum(serialize = "exists")]
     Exists,
-    #[strum(serialize = "is_file")]
     IsFile,
-    #[strum(serialize = "is_dir")]
     IsDir,
-    #[strum(serialize = "is_symlink")]
     IsSymlink,
     #[strum(serialize = "stat")]
     StatMethod,
-    #[strum(serialize = "read_bytes")]
     ReadBytes,
-    #[strum(serialize = "read_text")]
     ReadText,
-    #[strum(serialize = "iterdir")]
     Iterdir,
-    #[strum(serialize = "resolve")]
     Resolve,
-    #[strum(serialize = "absolute")]
     Absolute,
 
     // Path write methods (require OsAccess - yield external calls)
-    #[strum(serialize = "write_text")]
     WriteText,
-    #[strum(serialize = "write_bytes")]
     WriteBytes,
-    #[strum(serialize = "mkdir")]
     Mkdir,
-    #[strum(serialize = "unlink")]
     Unlink,
-    #[strum(serialize = "rmdir")]
     Rmdir,
-    #[strum(serialize = "rename")]
     Rename,
 
     // Slice attributes

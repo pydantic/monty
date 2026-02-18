@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass
 from typing import Any
 
 import pytest
@@ -235,3 +235,41 @@ def test_progress_dump_load_dataclass():
     assert isinstance(result.output, Person)
     assert result.output.name == snapshot('Alice')
     assert result.output.age == snapshot(30)
+
+
+def test_progress_dump_load_unknown_dataclass():
+    """When a snapshot containing a dataclass is loaded without registering the type,
+    the result should be an UnknownDataclass with the correct attributes."""
+    m = pydantic_monty.Monty(
+        'external_call()\nx',
+        inputs=['x'],
+        external_functions=['external_call'],
+    )
+    progress = m.start(inputs={'x': Person(name='Bob', age=25)})
+    assert isinstance(progress, pydantic_monty.MontySnapshot)
+    assert progress.function_name == snapshot('external_call')
+
+    # Dump the snapshot (dataclass x is in the heap)
+    data = progress.dump()
+
+    # Load WITHOUT providing dataclass_registry — Person type is unknown
+    progress2 = pydantic_monty.MontySnapshot.load(data)
+
+    # Resume execution — x is returned as UnknownDataclass
+    result = progress2.resume(return_value=None)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+
+    output = result.output
+    # Should NOT be a Person instance since the type wasn't registered
+    assert not isinstance(output, Person)
+    assert type(output).__name__ == snapshot('UnknownDataclass')
+
+    # Attributes should still be accessible
+    assert output.name == snapshot('Bob')
+    assert output.age == snapshot(25)
+
+    # Should be compatible with dataclasses module
+    assert is_dataclass(output)
+
+    # repr should indicate it's unknown
+    assert repr(output) == snapshot("<Unknown Dataclass Person(name='Bob', age=25)>")

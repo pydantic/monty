@@ -127,7 +127,7 @@ fn run_progress_dump_load_roundtrip() {
     let loaded: RunProgress<NoLimitTracker> = RunProgress::load(&bytes).unwrap();
 
     // Should still be at the external function call
-    let (fn_name, args, _, _call_id, state) = loaded.into_function_call().expect("should be at function call");
+    let (fn_name, args, _, _call_id, _, state) = loaded.into_function_call().expect("should be at function call");
     assert_eq!(fn_name, "ext_fn");
     assert_eq!(args, vec![MontyObject::Int(42)]);
 
@@ -151,7 +151,7 @@ fn run_progress_dump_load_multiple_calls() {
     let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
     let bytes = progress.dump().unwrap();
     let loaded: RunProgress<NoLimitTracker> = RunProgress::load(&bytes).unwrap();
-    let (fn_name, args, _, _call_id, state) = loaded.into_function_call().unwrap();
+    let (fn_name, args, _, _call_id, _, state) = loaded.into_function_call().unwrap();
     assert_eq!(fn_name, "ext_fn");
     assert_eq!(args, vec![MontyObject::Int(1)]);
 
@@ -161,7 +161,7 @@ fn run_progress_dump_load_multiple_calls() {
     // Dump/load at second call
     let bytes = progress.dump().unwrap();
     let loaded: RunProgress<NoLimitTracker> = RunProgress::load(&bytes).unwrap();
-    let (fn_name, args, _, _call_id, state) = loaded.into_function_call().unwrap();
+    let (fn_name, args, _, _call_id, _, state) = loaded.into_function_call().unwrap();
     assert_eq!(fn_name, "ext_fn");
     assert_eq!(args, vec![MontyObject::Int(2)]);
 

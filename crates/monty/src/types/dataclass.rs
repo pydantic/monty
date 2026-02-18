@@ -5,6 +5,7 @@ use ahash::AHashSet;
 use super::{Dict, PyTrait};
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapId},
@@ -17,13 +18,15 @@ use crate::{
 /// Python dataclass instance type.
 ///
 /// Represents an instance of a dataclass with a class name, field values, and
-/// a set of method names that trigger external function calls when invoked.
+/// frozen/mutable semantics. Method calls on dataclasses are detected lazily:
+/// when `call_attr` is invoked on a dataclass and the attribute name is not found
+/// in `attrs`, it is dispatched as a `MethodCall` to the host (provided the name
+/// is public — no leading underscore).
 ///
 /// # Fields
 /// - `name`: The class name (e.g., "Point", "User")
 /// - `field_names`: Declared field names in definition order (used for repr)
 /// - `attrs`: All attributes including declared fields and dynamically added ones
-/// - `methods`: Set of method names that should trigger external calls
 /// - `frozen`: Whether the dataclass instance is immutable
 ///
 /// # Hashability
@@ -39,7 +42,7 @@ use crate::{
 /// # Attribute Access
 /// - Getting: Looks up the attribute name in the attrs Dict
 /// - Setting: Updates or adds the attribute in attrs (only if not frozen)
-/// - Method calls: If the attribute name is in `methods`, triggers external call
+/// - Method calls: If the attribute is a public name not found in attrs, dispatched to host
 /// - repr: Only shows declared fields (from field_names), not extra attributes
 #[derive(Debug)]
 pub(crate) struct Dataclass {
@@ -51,8 +54,6 @@ pub(crate) struct Dataclass {
     field_names: Vec<String>,
     /// All attributes (both declared fields and dynamically added)
     attrs: Dict,
-    /// Method names that trigger external function calls
-    methods: AHashSet<String>,
     /// Whether this dataclass instance is immutable (affects hashability)
     frozen: bool,
 }
@@ -65,23 +66,14 @@ impl Dataclass {
     /// * `type_id` - The type ID of the dataclass
     /// * `field_names` - Declared field names in definition order
     /// * `attrs` - Dict of attribute name -> value pairs (ownership transferred)
-    /// * `methods` - Set of method names that trigger external calls
     /// * `frozen` - Whether this dataclass instance is immutable (affects hashability)
     #[must_use]
-    pub fn new(
-        name: impl Into<EitherStr>,
-        type_id: u64,
-        field_names: Vec<String>,
-        attrs: Dict,
-        methods: AHashSet<String>,
-        frozen: bool,
-    ) -> Self {
+    pub fn new(name: impl Into<EitherStr>, type_id: u64, field_names: Vec<String>, attrs: Dict, frozen: bool) -> Self {
         Self {
             name: name.into(),
             type_id,
             field_names,
             attrs,
-            methods,
             frozen,
         }
     }
@@ -111,12 +103,6 @@ impl Dataclass {
     #[must_use]
     pub fn has_refs(&self) -> bool {
         self.attrs.has_refs()
-    }
-
-    /// Returns a reference to the methods set.
-    #[must_use]
-    pub fn methods(&self) -> &AHashSet<String> {
-        &self.methods
     }
 
     /// Returns a reference to the attrs Dict.
@@ -199,7 +185,6 @@ impl PyTrait for Dataclass {
             + self.name.py_estimate_size()
             + self.field_names.iter().map(String::len).sum::<usize>()
             + self.attrs.py_estimate_size()
-            + self.methods.len() * std::mem::size_of::<String>()
     }
 
     fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
@@ -278,19 +263,48 @@ impl PyTrait for Dataclass {
         args: ArgValues,
         interns: &Interns,
     ) -> RunResult<Value> {
-        // Get method name from the attribute
+        // Public method calls are intercepted by py_call_attr_raw before reaching
+        // this method. This path is reached for:
+        // - Private/dunder attributes that aren't in attrs (AttributeError)
+        // - Attributes that exist in attrs but aren't callable (TypeError)
         let method_name = attr.as_str(interns);
         defer_drop!(args, heap);
 
-        if self.methods.contains(method_name) {
-            // TODO: Integrate with external call system
-            // For now return an error indicating this needs implementation
-            Err(ExcType::attribute_error_method_not_implemented(
-                self.name(interns),
-                method_name,
-            ))
+        // If the attribute exists in attrs, it's a data value (not callable)
+        if let Some(value) = self.attrs.get_by_str(method_name, heap, interns) {
+            let type_name = value.py_type(heap);
+            Err(ExcType::type_error_not_callable_object(type_name))
         } else {
-            Err(ExcType::attribute_error(Type::Dataclass, method_name))
+            // Attribute doesn't exist — use the class name (e.g., "Point") not "Dataclass"
+            Err(ExcType::attribute_error(self.name(interns), method_name))
+        }
+    }
+
+    /// Performs lazy method detection for dataclass instances.
+    ///
+    /// If the attribute is a public name (no leading underscore) not found in the
+    /// dataclass's attrs dict, returns `MethodCall` so the VM yields to the host.
+    /// Otherwise falls through to `py_call_attr`.
+    fn py_call_attr_raw(
+        &mut self,
+        self_id: HeapId,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
+        attr: &EitherStr,
+        args: ArgValues,
+    ) -> RunResult<AttrCallResult> {
+        let attr_str = attr.as_str(vm.interns);
+        // Only public methods (no underscore prefix = no dunders, no private)
+        if !attr_str.starts_with('_') && self.attrs.get_by_str(attr_str, vm.heap, vm.interns).is_none() {
+            // Clone self and prepend to args for the method call
+            // inc_ref works even when data is taken out (refcount metadata is separate)
+            vm.heap.inc_ref(self_id);
+            let self_arg = Value::Ref(self_id);
+            let args_with_self = args.prepend(self_arg);
+            Ok(AttrCallResult::MethodCall(attr.clone(), args_with_self))
+        } else {
+            // Not a method call — delegate to standard attr dispatch
+            self.py_call_attr(vm.heap, attr, args, vm.interns)
+                .map(AttrCallResult::Value)
         }
     }
 
@@ -310,19 +324,15 @@ impl PyTrait for Dataclass {
 }
 
 // Custom serde implementation for Dataclass.
-// Serializes all six fields; methods set is serialized as a Vec for determinism.
+// Serializes all five fields.
 impl serde::Serialize for Dataclass {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("Dataclass", 6)?;
+        let mut state = serializer.serialize_struct("Dataclass", 5)?;
         state.serialize_field("name", &self.name)?;
         state.serialize_field("type_id", &self.type_id)?;
         state.serialize_field("field_names", &self.field_names)?;
         state.serialize_field("attrs", &self.attrs)?;
-        // Serialize methods as sorted Vec for deterministic output
-        let mut methods_vec: Vec<&String> = self.methods.iter().collect();
-        methods_vec.sort();
-        state.serialize_field("methods", &methods_vec)?;
         state.serialize_field("frozen", &self.frozen)?;
         state.end()
     }
@@ -336,7 +346,6 @@ impl<'de> serde::Deserialize<'de> for Dataclass {
             type_id: u64,
             field_names: Vec<String>,
             attrs: Dict,
-            methods: Vec<String>,
             frozen: bool,
         }
         let dc = DataclassData::deserialize(deserializer)?;
@@ -345,7 +354,6 @@ impl<'de> serde::Deserialize<'de> for Dataclass {
             type_id: dc.type_id,
             field_names: dc.field_names,
             attrs: dc.attrs,
-            methods: dc.methods.into_iter().collect(),
             frozen: dc.frozen,
         })
     }

@@ -192,6 +192,30 @@ impl ArgValues {
         Ok((val1_guard.into_inner(), val2_guard.into_inner()))
     }
 
+    /// Prepends a value as the first positional argument.
+    ///
+    /// Used to insert `self` when dispatching dataclass method calls to the host.
+    /// The dataclass instance becomes the first arg so the host can reconstruct
+    /// the original object and call the method on it.
+    pub fn prepend(self, value: Value) -> Self {
+        match self {
+            Self::Empty => Self::One(value),
+            Self::One(a) => Self::Two(value, a),
+            Self::Two(a, b) => Self::ArgsKargs {
+                args: vec![value, a, b],
+                kwargs: KwargsValues::Empty,
+            },
+            Self::Kwargs(kw) => Self::ArgsKargs {
+                args: vec![value],
+                kwargs: kw,
+            },
+            Self::ArgsKargs { mut args, kwargs } => {
+                args.insert(0, value);
+                Self::ArgsKargs { args, kwargs }
+            }
+        }
+    }
+
     /// Splits into positional iterator and keyword values without allocating
     /// for the common One/Two cases.
     pub fn into_parts(self) -> (ArgPosIter, KwargsValues) {

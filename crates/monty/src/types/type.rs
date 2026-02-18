@@ -1,7 +1,6 @@
 use std::fmt;
 
 use num_bigint::BigInt;
-use strum::EnumString;
 
 use crate::{
     args::ArgValues,
@@ -19,12 +18,10 @@ use crate::{
 /// Represents the Python type of a value.
 ///
 /// This enum is used both for type checking and as a callable constructor.
-/// When parsed from a string (e.g., "list", "dict"), it can be used to create
-/// new instances of that type.
-///
-/// Note: `Exception` variants is disabled for strum's `EnumString` (they can't be parsed from strings).
-#[derive(Debug, Clone, Copy, EnumString, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[strum(serialize_all = "lowercase")]
+/// Some variants are Python builtins accessible by name (e.g., `int`, `list`),
+/// while others are internal types only available through imports or introspection
+/// (e.g., `TextIOWrapper`, `PosixPath`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[expect(clippy::enum_variant_names)]
 pub enum Type {
     Ellipsis,
@@ -44,27 +41,21 @@ pub enum Type {
     Set,
     FrozenSet,
     Dataclass,
-    #[strum(disabled)]
     Exception(ExcType),
     Function,
     BuiltinFunction,
     Cell,
-    #[strum(serialize = "iter")]
     Iterator,
     /// Coroutine type for async functions and external futures.
     Coroutine,
     Module,
     /// Marker types like stdout/stderr - displays as "TextIOWrapper"
-    #[strum(serialize = "TextIOWrapper")]
     TextIOWrapper,
     /// typing module special forms (Any, Optional, Union, etc.) - displays as "typing._SpecialForm"
-    #[strum(serialize = "typing._SpecialForm")]
     SpecialForm,
     /// A filesystem path from `pathlib.Path` - displays as "PosixPath"
-    #[strum(serialize = "PosixPath")]
     Path,
     /// A property descriptor - displays as "property"
-    #[strum(serialize = "property")]
     Property,
 }
 
@@ -104,6 +95,36 @@ impl fmt::Display for Type {
 }
 
 impl Type {
+    /// Resolves a bare Python name to a builtin type, if it is one.
+    ///
+    /// Only matches names that are true Python builtins — accessible without any import.
+    /// Internal types like `TextIOWrapper`, `PosixPath`, `NoneType`, and `ellipsis` are
+    /// intentionally excluded because they require imports or are not directly nameable.
+    ///
+    /// This replaces the previous strum `FromStr` derive which matched ALL variants,
+    /// including internal types that shouldn't be resolvable from bare names.
+    #[must_use]
+    pub fn from_builtin_name(name: &str) -> Option<Self> {
+        match name {
+            "bool" => Some(Self::Bool),
+            "int" => Some(Self::Int),
+            "float" => Some(Self::Float),
+            "str" => Some(Self::Str),
+            "bytes" => Some(Self::Bytes),
+            "list" => Some(Self::List),
+            "tuple" => Some(Self::Tuple),
+            "dict" => Some(Self::Dict),
+            "set" => Some(Self::Set),
+            "frozenset" => Some(Self::FrozenSet),
+            "range" => Some(Self::Range),
+            "slice" => Some(Self::Slice),
+            "iter" => Some(Self::Iterator),
+            "type" => Some(Self::Type),
+            "property" => Some(Self::Property),
+            _ => None,
+        }
+    }
+
     /// Checks if a value of type `self` is an instance of `other`.
     ///
     /// This handles Python's subtype relationships:

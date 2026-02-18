@@ -2,6 +2,7 @@
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapGuard, HeapId},
     intern::{Interns, StringId},
@@ -127,11 +128,13 @@ impl Module {
     /// (e.g., `os.getenv()`) that require host involvement.
     pub fn py_call_attr_raw(
         &self,
-        heap: &mut Heap<impl ResourceTracker>,
+        _self_id: HeapId,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
     ) -> RunResult<AttrCallResult> {
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
         let mut args_guard = HeapGuard::new(args, heap);
 
         let attr_key = match attr {
@@ -154,7 +157,7 @@ impl Module {
             }
             None => Err(ExcType::attribute_error_module(
                 interns.get_str(self.name),
-                attr.as_str(interns),
+                attr.as_str(vm.interns),
             )),
         }
     }

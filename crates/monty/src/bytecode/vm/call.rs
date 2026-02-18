@@ -20,7 +20,6 @@ use crate::{
         AttrCallResult, Dict, PyTrait, Type,
         bytes::{bytes_fromhex, call_bytes_method},
         dict::dict_fromkeys,
-        list::do_list_sort,
         str::call_str_method,
     },
     value::{EitherStr, Value},
@@ -42,6 +41,18 @@ pub(super) enum CallResult {
     ///
     /// The host executes the OS operation and resumes the VM with the result.
     OsCall(OsFunction, ArgValues),
+    /// Dataclass method call requested - VM should yield `FrameExit::MethodCall` to host.
+    ///
+    /// The method name (e.g. `"distance"`) and the args include the dataclass instance
+    /// as the first argument (`self`). Unlike `External`, this uses an `EitherStr` instead
+    /// of `ExtFunctionId` because method names are only known at runtime when dataclass
+    /// inputs are provided.
+    MethodCall(EitherStr, ArgValues),
+    /// The call returned a value that should be implicitly awaited.
+    ///
+    /// Used by `asyncio.run()` to execute a coroutine without an explicit `await`.
+    /// The VM will push the value onto the stack and execute `exec_get_awaitable`.
+    AwaitValue(Value),
 }
 
 impl From<AttrCallResult> for CallResult {
@@ -50,6 +61,8 @@ impl From<AttrCallResult> for CallResult {
             AttrCallResult::Value(v) => Self::Push(v),
             AttrCallResult::OsCall(func, args) => Self::OsCall(func, args),
             AttrCallResult::ExternalCall(ext_id, args) => Self::External(ext_id, args),
+            AttrCallResult::MethodCall(name, args) => Self::MethodCall(name, args),
+            AttrCallResult::AwaitValue(v) => Self::AwaitValue(v),
         }
     }
 }
@@ -254,15 +267,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Calls an attribute on an object.
     ///
     /// For heap-allocated objects (`Value::Ref`), dispatches to the type's
-    /// `py_call_attr_raw` implementation via `heap.call_attr_raw()`, which may return
-    /// `AttrCallResult::OsCall` or `AttrCallResult::ExternalCall` for operations that
-    /// require host involvement.
+    /// attribute call implementation via `heap.call_attr_raw()`, which may return
+    /// `AttrCallResult::OsCall`, `AttrCallResult::ExternalCall`, or
+    /// `AttrCallResult::MethodCall` for operations that require host involvement.
     ///
     /// For interned strings (`Value::InternString`), uses the unified `call_str_method`.
     /// For interned bytes (`Value::InternBytes`), uses the unified `call_bytes_method`.
-    ///
-    /// Special handling: `list.sort(key=...)` is intercepted here to allow calling
-    /// builtin key functions with VM access.
     fn call_attr(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<CallResult, RunError> {
         let this = self;
         let attr = EitherStr::Interned(name_id);
@@ -270,14 +280,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         match obj {
             Value::Ref(heap_id) => {
                 defer_drop!(obj, this);
-                // Check for list.sort - needs special handling for key functions
-                if name_id == StaticStrings::Sort && matches!(this.heap.get(heap_id), HeapData::List(_)) {
-                    let result = do_list_sort(heap_id, args, this);
-                    return result.map(|()| CallResult::Push(Value::None));
-                }
-                // Call the method on the heap object using call_attr_raw to support OS/external calls
-                let result = this.heap.call_attr_raw(heap_id, &attr, args, this.interns);
-                // Convert AttrCallResult to CallResult
+                let result = Heap::call_attr_raw(this, heap_id, &attr, args);
                 result.map(Into::into)
             }
             Value::InternString(string_id) => {
@@ -326,7 +329,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 self.current_frame_mut().should_return = true;
                 match self.run()? {
                     FrameExit::Return(v) => Ok(v),
-                    FrameExit::ResolveFutures(_) | FrameExit::ExternalCall { .. } | FrameExit::OsCall { .. } => {
+                    FrameExit::ResolveFutures(_)
+                    | FrameExit::ExternalCall { .. }
+                    | FrameExit::OsCall { .. }
+                    | FrameExit::MethodCall { .. } => {
                         // Pop frames off the stack from this failed evaluation
                         while self.frames.len() > stack_depth {
                             self.pop_frame();
@@ -337,7 +343,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     }
                 }
             }
-            CallResult::External(_, _) | CallResult::OsCall(_, _) => {
+            CallResult::External(_, _)
+            | CallResult::OsCall(_, _)
+            | CallResult::MethodCall(_, _)
+            | CallResult::AwaitValue(_) => {
                 // External calls are not supported in this context since the caller doesn't support suspending
                 Err(RunError::internal(format!(
                     "{ctx}: external functions are not yet supported in this context"

@@ -12,7 +12,6 @@ use ruff_text_size::{Ranged, TextRange};
 use crate::{
     StackFrame,
     args::{ArgExprs, Kwarg},
-    builtins::Builtins,
     exception_private::ExcType,
     exception_public::{CodeLoc, MontyException},
     expressions::{
@@ -851,16 +850,11 @@ impl<'a> Parser<'a> {
                 let args = ArgExprs::new_with_var_kwargs(positional_args, var_args_expr, kwargs, var_kwargs);
                 match *func {
                     AstExpr::Name(ast::ExprName { id, range, .. }) => {
-                        let name = id.to_string();
-                        // Try to resolve the name as a builtin function or exception type.
-                        // If neither, treat it as a name to be looked up at runtime.
-                        let callable = if let Ok(builtin) = name.parse::<Builtins>() {
-                            Callable::Builtin(builtin)
-                        } else {
-                            // Name will be looked up in the namespace at runtime
-                            let ident = self.identifier(&id, range);
-                            Callable::Name(ident)
-                        };
+                        // Always create Callable::Name — builtin resolution happens in
+                        // the prepare phase with scope awareness, so local assignments
+                        // can shadow builtins.
+                        let ident = self.identifier(&id, range);
+                        let callable = Callable::Name(ident);
                         Ok(ExprLoc::new(
                             position,
                             Expr::Call {
@@ -970,14 +964,10 @@ impl<'a> Parser<'a> {
                 self.convert_range(s.range),
             )),
             AstExpr::Name(ast::ExprName { id, range, .. }) => {
-                let name = id.to_string();
                 let position = self.convert_range(range);
-                // Check if the name is a builtin function or exception type
-                let expr = if let Ok(builtin) = name.parse::<Builtins>() {
-                    Expr::Builtin(builtin)
-                } else {
-                    Expr::Name(self.identifier(&id, range))
-                };
+                // Always create Expr::Name — builtin resolution happens in the prepare
+                // phase with scope awareness, so local assignments can shadow builtins.
+                let expr = Expr::Name(self.identifier(&id, range));
                 Ok(ExprLoc::new(position, expr))
             }
             AstExpr::List(ast::ExprList { elts, range, .. }) => {

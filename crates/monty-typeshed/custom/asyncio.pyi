@@ -18,6 +18,7 @@ class _Future(Awaitable[_T]):
 
 _FutureLike: TypeAlias = _Future[_T] | Awaitable[_T]
 
+def run(main: Awaitable[_T], *, debug: bool | None = None, loop_factory: Any = None) -> _T: ...
 @overload
 def gather(
     coro_or_future1: _FutureLike[_T1], /, *, return_exceptions: Literal[False] = False

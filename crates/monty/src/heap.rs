@@ -15,6 +15,7 @@ use smallvec::SmallVec;
 use crate::{
     args::ArgValues,
     asyncio::{Coroutine, GatherFuture, GatherItem},
+    bytecode::VM,
     exception_private::{ExcType, RunResult, SimpleException},
     intern::{FunctionId, Interns, StringId},
     resource::{DepthGuard, ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
@@ -714,20 +715,24 @@ impl PyTrait for HeapData {
 
     fn py_call_attr_raw(
         &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
+        self_id: HeapId,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
     ) -> RunResult<AttrCallResult> {
         match self {
+            // List intercepts sort for key function support via PrintWriter
+            Self::List(l) => l.py_call_attr_raw(self_id, vm, attr, args),
+            // Dataclass detects public method calls and returns MethodCall
+            Self::Dataclass(dc) => dc.py_call_attr_raw(self_id, vm, attr, args),
             // Path has special handling for OS calls (exists, read_text, etc.)
-            Self::Path(p) => p.py_call_attr_raw(heap, attr, args, interns),
-            // Dataclass has special handling for external method calls
-            Self::Dataclass(dc) => dc.py_call_attr_raw(heap, attr, args, interns),
+            Self::Path(p) => p.py_call_attr_raw(self_id, vm, attr, args),
             // Module has special handling for OS calls (os.getenv, etc.)
-            Self::Module(m) => m.py_call_attr_raw(heap, attr, args, interns),
+            Self::Module(m) => m.py_call_attr_raw(self_id, vm, attr, args),
             // All other types use the default implementation (wrap py_call_attr)
-            _ => self.py_call_attr(heap, attr, args, interns).map(AttrCallResult::Value),
+            _ => self
+                .py_call_attr(vm.heap, attr, args, vm.interns)
+                .map(AttrCallResult::Value),
         }
     }
 
@@ -1205,29 +1210,37 @@ impl<T: ResourceTracker> Heap<T> {
     }
 
     /// Calls an attribute on the heap entry, returning an `AttrCallResult` that may signal
-    /// OS or external calls.
+    /// OS, external, or method calls.
     ///
     /// Temporarily takes ownership of the payload to avoid borrow conflicts when attribute
     /// implementations also need mutable heap access (e.g. for refcounting).
+    ///
+    /// The `print_writer` parameter is threaded through for `list.sort(key=...)` which
+    /// needs it to call builtin key functions.
     ///
     /// Returns `AttrCallResult` which may be:
     /// - `Value(v)` - Method completed synchronously with value `v`
     /// - `OsCall(func, args)` - Method needs OS operation; VM should yield to host
     /// - `ExternalCall(id, args)` - Method needs external function call
+    /// - `MethodCall(name, args)` - Dataclass method call; VM should yield to host
     pub fn call_attr_raw(
-        &mut self,
+        // FIXME: this is pretty awkward - the `take_data!` pattern is probably a code
+        // smell. We need the full VM here to enable method implementations to enter
+        // user-defined functions.
+        vm: &mut VM<'_, '_, T>,
         id: HeapId,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
     ) -> RunResult<AttrCallResult> {
         // Take data out so the borrow of self.entries ends
-        let mut data = take_data!(self, id, "call_attr");
+        let heap = &mut *vm.heap;
+        let mut data = take_data!(heap, id, "call_attr");
 
-        let result = data.py_call_attr_raw(self, attr, args, interns);
+        let result = data.py_call_attr_raw(id, vm, attr, args);
 
         // Restore data
-        restore_data!(self, id, data, "call_attr_raw");
+        let heap = &mut *vm.heap;
+        restore_data!(heap, id, data, "call_attr_raw");
         result
     }
 

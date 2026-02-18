@@ -245,47 +245,83 @@ sequential tool calls, the LLM writes Python code that calls your tools
 as functions and Monty executes it safely.
 
 ```python test="skip"
-from pydantic_ai import Agent
+import asyncio
+import json
+
+import logfire
+from httpx import AsyncClient
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.toolsets.code_mode import CodeModeToolset
 from pydantic_ai.toolsets.function import FunctionToolset
 from typing_extensions import TypedDict
 
-
-class WeatherResult(TypedDict):
-    city: str
-    temp_c: float
-    conditions: str
+logfire.configure()
+logfire.instrument_pydantic_ai()
 
 
-toolset = FunctionToolset()
+class LatLng(TypedDict):
+    lat: float
+    lng: float
 
 
-@toolset.tool
-def get_weather(city: str) -> WeatherResult:
-    """Get current weather for a city."""
-    # your real implementation here
-    return {'city': city, 'temp_c': 18, 'conditions': 'partly cloudy'}
+weather_toolset: FunctionToolset[AsyncClient] = FunctionToolset()
 
 
-@toolset.tool
-def get_population(city: str) -> int:
-    """Get the population of a city."""
-    return {'london': 9_000_000, 'paris': 2_100_000, 'tokyo': 14_000_000}.get(
-        city.lower(), 0
+@weather_toolset.tool
+async def get_lat_lng(
+    ctx: RunContext[AsyncClient], location_description: str
+) -> LatLng:
+    """Get the latitude and longitude of a location."""
+    # NOTE: the response here will be random, and is not related to the location description.
+    r = await ctx.deps.get(
+        'https://demo-endpoints.pydantic.workers.dev/latlng',
+        params={'location': location_description},
     )
+    r.raise_for_status()
+    return json.loads(r.content)
 
 
-toolset = CodeModeToolset(toolset)
+@weather_toolset.tool
+async def get_temp(ctx: RunContext[AsyncClient], lat: float, lng: float) -> float:
+    """Get the temp at a location."""
+    # NOTE: the responses here will be random, and are not related to the lat and lng.
+    r = await ctx.deps.get(
+        'https://demo-endpoints.pydantic.workers.dev/number',
+        params={'min': 10, 'max': 30},
+    )
+    r.raise_for_status()
+    return float(r.text)
+
+
+@weather_toolset.tool
+async def get_weather_description(
+    ctx: RunContext[AsyncClient], lat: float, lng: float
+) -> str:
+    """Get the weather description at a location."""
+    # NOTE: the responses here will be random, and are not related to the lat and lng.
+    r = await ctx.deps.get(
+        'https://demo-endpoints.pydantic.workers.dev/weather',
+        params={'lat': lat, 'lng': lng},
+    )
+    r.raise_for_status()
+    return r.text
+
 
 agent = Agent(
-    'anthropic:claude-sonnet-4-5',
-    toolsets=[toolset],
+    'gateway/anthropic:claude-sonnet-4-5',
+    # toolsets=[weather_toolset],
+    toolsets=[CodeModeToolset(weather_toolset)],
+    deps_type=AsyncClient,
 )
 
-result = agent.run_sync(
-    'Compare the weather and population of London, Paris, and Tokyo.'
-)
-print(result.output)
+
+async def main():
+    async with AsyncClient() as client:
+        await agent.run('Compare the weather of London, Paris, and Tokyo.', deps=client)
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
 ```
 
 # Alternatives

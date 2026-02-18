@@ -4,6 +4,7 @@ use ahash::{AHashMap, AHashSet};
 
 use crate::{
     args::ArgExprs,
+    builtins::Builtins,
     expressions::{
         Callable, CmpOperator, Comprehension, Expr, ExprLoc, Identifier, Literal, NameScope, Node, Operator,
         PreparedFunctionDef, PreparedNode, UnpackTarget,
@@ -316,26 +317,19 @@ impl<'i> Prepare<'i> {
                 Node::Raise(exc) => {
                     let expr = match exc {
                         Some(expr) => {
-                            match expr.expr {
-                                // Handle raising an exception type constant without instantiation,
-                                // e.g. `raise TypeError`. This is transformed into a call: `raise TypeError()`
+                            let prepared = self.prepare_expression(expr)?;
+                            match prepared.expr {
+                                // Handle raising a builtin exception type without instantiation,
+                                // e.g. `raise TypeError`. Transform into `raise TypeError()`
                                 // so the exception is properly instantiated before being raised.
-                                // Also handle raising a builtin constant (unlikely but consistent)
                                 Expr::Builtin(b) => {
                                     let call_expr = Expr::Call {
                                         callable: Callable::Builtin(b),
                                         args: Box::new(ArgExprs::Empty),
                                     };
-                                    Some(ExprLoc::new(expr.position, call_expr))
+                                    Some(ExprLoc::new(prepared.position, call_expr))
                                 }
-                                Expr::Name(id) => {
-                                    // Handle raising a variable - could be an exception type or instance.
-                                    // The runtime will determine whether to call it (type) or raise it directly (instance).
-                                    let position = id.position;
-                                    let (resolved_id, _is_new) = self.get_id(id);
-                                    Some(ExprLoc::new(position, Expr::Name(resolved_id)))
-                                }
-                                _ => Some(self.prepare_expression(expr)?),
+                                _ => Some(prepared),
                             }
                         }
                         None => None,
@@ -623,7 +617,7 @@ impl<'i> Prepare<'i> {
         let expr = match expr {
             Expr::Literal(object) => Expr::Literal(object),
             Expr::Builtin(callable) => Expr::Builtin(callable),
-            Expr::Name(name) => Expr::Name(self.get_id(name).0),
+            Expr::Name(name) => self.resolve_name_or_builtin(name),
             Expr::Op { left, op, right } => Expr::Op {
                 left: Box::new(self.prepare_expression(*left)?),
                 op,
@@ -647,8 +641,11 @@ impl<'i> Prepare<'i> {
                 // For Name callables, resolve the identifier in the namespace
                 // Don't error here if undefined - let runtime raise NameError with proper traceback
                 let callable = match callable {
-                    Callable::Name(ident) => Callable::Name(self.get_id(ident).0),
-                    // Builtins are already resolved at parse time
+                    Callable::Name(ident) => match self.resolve_name_or_builtin(ident) {
+                        Expr::Builtin(b) => Callable::Builtin(b),
+                        Expr::Name(resolved) => Callable::Name(resolved),
+                        _ => unreachable!("resolve_name_or_builtin returns Name or Builtin"),
+                    },
                     other @ Callable::Builtin(_) => other,
                 };
                 Expr::Call { callable, args }
@@ -799,6 +796,49 @@ impl<'i> Prepare<'i> {
         }
 
         Ok(ExprLoc { position, expr })
+    }
+
+    /// Resolves a name to either `Expr::Builtin` or `Expr::Name` with scope-aware builtin detection.
+    ///
+    /// Python's name resolution follows LEGB order (Local, Enclosing, Global, Builtin).
+    /// Builtins are only used when the name is not found in any other scope. This method
+    /// ensures that local assignments (e.g., `int = 42`) properly shadow builtin names.
+    ///
+    /// We check before calling `get_id` to avoid allocating unnecessary namespace slots.
+    /// At module level, a slot allocated for an unassigned builtin would leak into
+    /// `global_name_map` for nested functions, causing incorrect resolution.
+    fn resolve_name_or_builtin(&mut self, name: Identifier) -> Expr {
+        let name_str = self.interner.get_str(name.name_id);
+
+        // Check if the name is assigned in the current scope. If so, it shadows
+        // any builtin with the same name.
+        let is_locally_assigned = if self.is_module_scope {
+            // Module scope: sequential — only names assigned SO FAR shadow builtins
+            self.names_assigned_in_order.contains(name_str)
+        } else {
+            // Function scope: lexical — ANY assignment in the function body makes
+            // the name local for the entire function
+            self.assigned_names.contains(name_str)
+        };
+
+        if !is_locally_assigned {
+            // In function scope, also check if the name is bound by other mechanisms
+            // (global declaration, parameter, closure capture, enclosing/global scope).
+            // Only fall back to builtins if the name is truly unresolved.
+            let is_otherwise_bound = !self.is_module_scope
+                && (self.global_names.contains(name_str)
+                    || self.free_var_map.contains_key(name_str)
+                    || self.cell_var_map.contains_key(name_str)
+                    || self.name_map.contains_key(name_str)
+                    || self.enclosing_locals.as_ref().is_some_and(|l| l.contains(name_str))
+                    || self.global_name_map.as_ref().is_some_and(|m| m.contains_key(name_str)));
+
+            if !is_otherwise_bound && let Ok(builtin) = name_str.parse::<Builtins>() {
+                return Expr::Builtin(builtin);
+            }
+        }
+
+        Expr::Name(self.get_id(name).0)
     }
 
     /// Prepares a comprehension with scope isolation for loop variables.

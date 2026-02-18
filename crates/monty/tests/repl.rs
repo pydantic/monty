@@ -169,7 +169,7 @@ fn repl_start_external_call_resumes_to_updated_repl() {
     assert_eq!(init_output, MontyObject::None);
 
     let progress = repl.start("ext_fn(41) + 1", &mut PrintWriter::Stdout).unwrap();
-    let (function_name, args, _kwargs, _call_id, state) =
+    let (function_name, args, _kwargs, _call_id, _, state) =
         progress.into_function_call().expect("expected function call");
     assert_eq!(function_name, "ext_fn");
     assert_eq!(args, vec![MontyObject::Int(41)]);
@@ -189,7 +189,8 @@ fn repl_progress_dump_load_roundtrip() {
     let bytes = progress.dump().unwrap();
     let loaded: ReplProgress<NoLimitTracker> = ReplProgress::load(&bytes).unwrap();
 
-    let (_function_name, args, _kwargs, _call_id, state) = loaded.into_function_call().expect("expected function call");
+    let (_function_name, args, _kwargs, _call_id, _, state) =
+        loaded.into_function_call().expect("expected function call");
     assert_eq!(args, vec![MontyObject::Int(20)]);
 
     let progress = state.run(MontyObject::Int(20), &mut PrintWriter::Stdout).unwrap();
@@ -211,7 +212,7 @@ async def main():
     );
 
     let progress = repl.start("await main()", &mut PrintWriter::Stdout).unwrap();
-    let (_function_name, _args, _kwargs, call_id, state) =
+    let (_function_name, _args, _kwargs, call_id, _, state) =
         progress.into_function_call().expect("expected function call");
 
     let progress = state.run_pending(&mut PrintWriter::Stdout).unwrap();
@@ -230,4 +231,50 @@ async def main():
     assert_eq!(value, MontyObject::Int(42));
     assert_eq!(repl.feed_no_print("final_value = 42").unwrap(), MontyObject::None);
     assert_eq!(repl.feed_no_print("final_value").unwrap(), MontyObject::Int(42));
+}
+
+#[test]
+fn repl_dataclass_method_call_yields_function_call_with_method_flag() {
+    // Create a REPL with a dataclass input and call a method on it.
+    // This exercises the MethodCall path in repl.rs handle_repl_vm_result.
+    let point = MontyObject::Dataclass {
+        name: "Point".to_string(),
+        type_id: 0,
+        field_names: vec!["x".to_string(), "y".to_string()],
+        attrs: vec![
+            (MontyObject::String("x".to_string()), MontyObject::Int(1)),
+            (MontyObject::String("y".to_string()), MontyObject::Int(2)),
+        ]
+        .into(),
+        frozen: true,
+    };
+
+    let (repl, _) = MontyRepl::new(
+        String::new(),
+        "repl.py",
+        vec!["point".to_string()],
+        vec![],
+        vec![point],
+        NoLimitTracker,
+        &mut PrintWriter::Stdout,
+    )
+    .unwrap();
+
+    // Calling point.sum() should yield a FunctionCall with method_call=true
+    let progress = repl.start("point.sum()", &mut PrintWriter::Stdout).unwrap();
+    let (function_name, args, _kwargs, _call_id, method_call, state) =
+        progress.into_function_call().expect("expected method call");
+
+    assert_eq!(function_name, "sum");
+    assert!(method_call, "should be a method call");
+    // First arg should be the dataclass instance (self)
+    assert!(matches!(&args[0], MontyObject::Dataclass { name, .. } if name == "Point"));
+
+    // Resume with a return value (sum of x + y = 3)
+    let progress = state.run(MontyObject::Int(3), &mut PrintWriter::Stdout).unwrap();
+    let (mut repl, value) = progress.into_complete().expect("expected completion");
+    assert_eq!(value, MontyObject::Int(3));
+
+    // Verify REPL state is preserved after method call
+    assert_eq!(repl.feed_no_print("1 + 1").unwrap(), MontyObject::Int(2));
 }
