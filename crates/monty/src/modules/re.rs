@@ -261,13 +261,13 @@ fn call_sub(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &In
     )]
     let count = match pos.next() {
         Some(Value::Int(n)) if n >= 0 => n as usize,
-        Some(Value::Int(_)) => {
-            return Err(ExcType::type_error("count must be a non-negative integer"));
-        }
+        Some(Value::Int(_)) => 0,
         Some(other) => {
             let t = other.py_type(heap);
             other.drop_with_heap(heap);
-            return Err(ExcType::type_error(format!("expected int for count, not {t}")));
+            return Err(ExcType::type_error(format!(
+                "'{t}' object cannot be interpreted as an integer for 'count' argument"
+            )));
         }
         None => 0,
     };

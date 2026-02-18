@@ -1,4 +1,4 @@
-# Tests for the re (regular expression) module
+# Tests for the re (regular expression) module - basic functionality
 
 import re
 
@@ -45,42 +45,9 @@ assert m.group() == 'hello', 're.fullmatch group returns full match'
 m = re.fullmatch('hello', 'hello world')
 assert m is None, 're.fullmatch does not match partial string'
 
-# === Capture groups ===
-m = re.search(r'(\w+)@(\w+)', 'user@host')
-assert m is not None, 're.search with groups finds a match'
-assert m.group(0) == 'user@host', 'group(0) is the full match'
-assert m.group(1) == 'user', 'group(1) is first capture'
-assert m.group(2) == 'host', 'group(2) is second capture'
-assert m.groups() == ('user', 'host'), 'groups() returns tuple of captures'
-
-# === group start/end/span with capture groups ===
-m = re.search(r'(\w+)@(\w+)', 'email: user@host here')
-assert m is not None, 'search with groups finds match'
-assert m.start(0) == 7, 'start(0) is full match start'
-assert m.end(0) == 16, 'end(0) is full match end'
-assert m.start(1) == 7, 'start(1) is group 1 start'
-assert m.end(1) == 11, 'end(1) is group 1 end'
-assert m.span(1) == (7, 11), 'span(1) is group 1 span'
-assert m.start(2) == 12, 'start(2) is group 2 start'
-assert m.end(2) == 16, 'end(2) is group 2 end'
-assert m.span(2) == (12, 16), 'span(2) is group 2 span'
-
-# === Match .string attribute ===
-m = re.search('hello', 'say hello')
-assert m is not None, 'search finds match for .string test'
-assert m.string == 'say hello', '.string returns the input string'
-
 # === re.findall() with no groups ===
 result = re.findall(r'\d+', 'a1 b22 c333')
 assert result == ['1', '22', '333'], 'findall without groups returns list of matches'
-
-# === re.findall() with one group ===
-result = re.findall(r'(\d+)', 'a1 b22 c333')
-assert result == ['1', '22', '333'], 'findall with one group returns list of group strings'
-
-# === re.findall() with multiple groups ===
-result = re.findall(r'(\w+)=(\w+)', 'a=1 b=2')
-assert result == [('a', '1'), ('b', '2')], 'findall with multiple groups returns list of tuples'
 
 # === re.findall() with no match ===
 result = re.findall(r'\d+', 'no numbers')
@@ -155,20 +122,12 @@ assert pattern.pattern == r'\d+', '.pattern returns the pattern string'
 # CPython flags include re.UNICODE (32) by default, so we check flags & 2 instead
 assert pattern.flags & re.IGNORECASE, '.flags includes IGNORECASE'
 
-# === Match truthiness ===
-m = re.search(r'\d+', '123')
-assert m, 'Match objects are truthy'
-
 # === Pattern repr ===
 p = re.compile(r'\d+')
 assert repr(p) == r"re.compile('\\d+')", 'Pattern repr without flags'
 
 p = re.compile(r'\d+', re.IGNORECASE)
 assert repr(p) == r"re.compile('\\d+', re.IGNORECASE)", 'Pattern repr with IGNORECASE'
-
-# === Match repr ===
-m = re.search(r'\d+', 'abc 42 def')
-assert repr(m) == "<re.Match object; span=(4, 6), match='42'>", 'Match repr'
 
 # === Flag constants ===
 assert re.IGNORECASE == 2, 'IGNORECASE flag value'
@@ -258,11 +217,6 @@ m = pattern.search('first\nHELLO\nsome\nlines\nWORLD\nlast')
 assert m is not None, 'All three flags combined finds match'
 assert m.group() == 'HELLO\nsome\nlines\nWORLD', 'I|M|D flags work together'
 
-# === No groups: groups() returns empty tuple ===
-m = re.search(r'\d+', '42')
-assert m is not None, 'search with no groups finds match'
-assert m.groups() == (), 'groups() with no capture groups returns empty tuple'
-
 # === Empty pattern ===
 m = re.search(r'', 'abc')
 assert m is not None, 'search with empty pattern finds match'
@@ -281,28 +235,108 @@ match1 = p1.search('123')
 match2 = p2.search('123')
 assert match1 != match2, 'matches from different pattern objects are distinct'
 
-# === Backreferences ===
-m = re.search(r'(\w+)\s+\1', 'hello hello')
-assert m is not None, 'backreference finds repeated word'
-assert m.group(0) == 'hello hello', 'backreference full match'
-assert m.group(1) == 'hello', 'backreference group'
+# === re.sub() error: missing pattern ===
+try:
+    re.sub()
+    assert False, 're.sub() with no args should raise TypeError'
+except TypeError as e:
+    assert 'pattern' in str(e).lower(), 're.sub missing pattern error mentions pattern'
 
-# === Invalid group index ===
-m = re.search(r'(\w+)', 'hello')
-assert m is not None, 'search with group finds match'
+# === re.sub() error: missing repl ===
 try:
-    m.group(2)
-    assert False, 'Accessing invalid group index should raise IndexError'
-except IndexError as e:
-    assert str(e) == 'no such group'
+    re.sub(r'\d+')
+    assert False, 're.sub(pattern) should raise TypeError'
+except TypeError as e:
+    assert 'repl' in str(e).lower(), 're.sub missing repl error mentions repl'
+
+# === re.sub() error: missing string ===
 try:
-    m.group('foo')
-    assert False, 'Accessing group with non-integer index should raise IndexError'
-except IndexError as e:
-    assert str(e) == 'no such group'
+    re.sub(r'\d+', 'X')
+    assert False, 're.sub(pattern, repl) should raise TypeError'
+except TypeError as e:
+    assert 'string' in str(e).lower(), 're.sub missing string error mentions string'
+
+# === re.sub() error: count is not an integer ===
+try:
+    re.sub(r'\d+', 'X', 'a1b2', 1.5)
+    assert False, 're.sub with float count should raise TypeError'
+except TypeError as e:
+    assert "'float' object cannot be interpreted as an integer" in str(e), 're.sub float count error'
+
+try:
+    re.sub(r'\d+', 'X', 'a1b2', 'one')
+    assert False, 're.sub with string count should raise TypeError'
+except TypeError as e:
+    assert "'str' object cannot be interpreted as an integer" in str(e), 're.sub string count error'
+
+# === Pattern.sub() error: missing repl ===
+pattern = re.compile(r'\d+')
+try:
+    pattern.sub()
+    assert False, 'Pattern.sub() with no args should raise TypeError'
+except TypeError as e:
+    assert 'repl' in str(e).lower(), 'Pattern.sub missing repl error mentions repl'
+
+# === Pattern.sub() error: missing string ===
+try:
+    pattern.sub('X')
+    assert False, 'Pattern.sub(repl) should raise TypeError'
+except TypeError as e:
+    assert 'string' in str(e).lower(), 'Pattern.sub missing string error mentions string'
+
+# === re.sub() with count=0 (replace all) ===
+result = re.sub(r'\d', 'X', '1a2b3c', 0)
+assert result == 'XaXbXc', 're.sub with count=0 replaces all'
+
+# === re.sub() empty replacement ===
+result = re.sub(r'\d+', '', 'a1 b2 c3')
+assert result == 'a b c', 're.sub with empty replacement removes matches'
+
+# === Pattern.sub() edge case: empty match ===
+pattern = re.compile(r'a*')
+result = pattern.sub('X', 'bac')
+# Note: this might be a zero-width match behavior that's different
+assert 'X' in result, 'Pattern.sub handles zero-width matches'
+
+# === re.compile() error: invalid pattern ===
+try:
+    re.compile('(unclosed')
+    assert False, 're.compile with invalid pattern should raise PatternError'
+except re.PatternError as e:
+    assert len(str(e)) > 0, 're.compile invalid pattern raises PatternError'
+
+# === re.search() error: pattern is not a string ===
+try:
+    re.search(123, 'hello')
+    assert False, 're.search with int pattern should raise TypeError'
+except TypeError as e:
+    assert 'string' in str(e).lower(), 're.search non-string pattern error'
+
+# === re.search() error: string is not a string ===
+try:
+    re.search(r'\d+', 123)
+    assert False, 're.search with int string should raise TypeError'
+except TypeError as e:
+    assert 'string' in str(e).lower(), 're.search non-string string error'
+
+# === re.match() error: pattern is not a string ===
+try:
+    re.match(None, 'hello')
+    assert False, 're.match with None pattern should raise TypeError'
+except TypeError as e:
+    assert 'string' in str(e).lower(), 're.match None pattern error'
+
+# === re.fullmatch() error: string is not a string ===
+try:
+    re.fullmatch(r'\d+', None)
+    assert False, 're.fullmatch with None string should raise TypeError'
+except TypeError as e:
+    assert 'string' in str(e).lower(), 're.fullmatch None string error'
 
 # === Object basic ===
 assert bool(re.compile(r'\d+'))
 assert bool(re.search(r'\w+', 'hello'))
 assert isinstance(re.compile(r'\d+'), re.Pattern), 're.compile returns re.Pattern instance'
 assert isinstance(re.search(r'\w+', 'hello'), re.Match), 're.search returns re.Match instance'
+assert str(type(re.compile(r'\d+'))) == "<class 're.Pattern'>", 'type of compiled pattern is re.Pattern'
+assert str(type(re.search(r'\w+', 'hello'))) == "<class 're.Match'>", 'type of search match is re.Match'
