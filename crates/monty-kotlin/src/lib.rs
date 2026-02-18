@@ -172,7 +172,7 @@ impl From<MontyLimits> for ResourceLimits {
 }
 
 // =============================================================================
-// Callback interface
+// Callback interfaces
 // =============================================================================
 
 /// Kotlin-implemented handler for external function calls from sandboxed Python.
@@ -214,6 +214,103 @@ pub trait ExternalFunctionHandler: Send + Sync {
     /// # Errors
     /// Return a `MontyError` to propagate an error into the Python sandbox.
     fn call(&self, function_name: String, args_json: String, kwargs_json: String) -> Result<String, MontyError>;
+}
+
+// =============================================================================
+// Concurrent external function types
+// =============================================================================
+
+/// A single external function call that has been deferred for concurrent resolution.
+///
+/// Produced by `run_concurrent()` when a Kotlin handler returns `null` from its
+/// `call()` method, signalling that the result will be provided later via
+/// `resolve_pending()`. All fields are JSON-encoded for easy handling in Kotlin.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PendingFunctionCall {
+    /// Unique identifier for this call, used to correlate results in `resolve_pending()`.
+    pub call_id: u32,
+    /// The name of the Python external function being called.
+    pub function_name: String,
+    /// Positional arguments as a JSON array string (e.g. `"[1, \"hello\"]"`).
+    pub args_json: String,
+    /// Keyword arguments as a JSON object string (e.g. `"{\"timeout\": 30}"`).
+    pub kwargs_json: String,
+}
+
+/// The resolved result of a single pending external function call.
+///
+/// Return one `FunctionCallResult` per `PendingFunctionCall` from `resolve_pending()`.
+/// The `call_id` must match a `PendingFunctionCall.call_id` in the current batch.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FunctionCallResult {
+    /// The call identifier this result belongs to — must match a `PendingFunctionCall.call_id`.
+    pub call_id: u32,
+    /// The JSON-encoded return value (e.g. `"42"`, `"null"`, `"\"hello\""`).
+    pub result_json: String,
+}
+
+/// Kotlin-implemented handler for concurrent external function calls.
+///
+/// Used with `MontyKt.runConcurrent()` to support Python code that uses
+/// `asyncio.gather()` to execute multiple external function calls concurrently.
+///
+/// ## How it works
+///
+/// For each `FunctionCall` Monty yields, the handler's `call()` method is invoked:
+/// - Return a JSON string → the call is resolved **synchronously** and execution continues.
+/// - Return `null` → the call is marked as a **pending future**; execution continues
+///   until Python tries to `await` the result, at which point Monty yields
+///   `ResolveFutures` and the binding calls `resolve_pending()` with all queued calls.
+///
+/// ## Concurrent resolution
+///
+/// In `resolve_pending()`, the Kotlin host receives all currently-pending calls in one
+/// batch and may execute them on JVM threads concurrently (e.g. using coroutines,
+/// virtual threads, or a thread pool) before returning the results.
+///
+/// ## Example (Kotlin)
+///
+/// ```kotlin
+/// val handler = object : ConcurrentFunctionHandler {
+///     // Return null to defer all calls; resolve concurrently in resolvePending
+///     override fun call(callId: UInt, functionName: String, argsJson: String, kwargsJson: String): String? = null
+///
+///     override fun resolvePending(calls: List<PendingFunctionCall>): List<FunctionCallResult> {
+///         // Execute all pending calls concurrently using virtual threads
+///         return calls.parallelStream().map { call ->
+///             FunctionCallResult(callId = call.callId, resultJson = fetchData(call))
+///         }.toList()
+///     }
+/// }
+/// ```
+#[uniffi::export(callback_interface)]
+pub trait ConcurrentFunctionHandler: Send + Sync {
+    /// Called for each external function invocation.
+    ///
+    /// Return a JSON string to resolve the call synchronously (result injected immediately),
+    /// or return `null` to defer it — the call will be queued and delivered to
+    /// `resolve_pending()` when Monty pauses for future resolution.
+    ///
+    /// # Errors
+    /// Throw a `MontyError` (or any exception, converted via UniFFI) to propagate an
+    /// error into the Python sandbox for this call.
+    fn call(
+        &self,
+        call_id: u32,
+        function_name: String,
+        args_json: String,
+        kwargs_json: String,
+    ) -> Result<Option<String>, MontyError>;
+
+    /// Called when Monty is waiting for all deferred (future) calls to be resolved.
+    ///
+    /// Receives a batch of previously-deferred `PendingFunctionCall`s and must return a
+    /// `FunctionCallResult` for each one (in any order). The host may execute them
+    /// concurrently before returning.
+    ///
+    /// # Errors
+    /// Throw a `MontyError` to abort execution with a runtime error.
+    fn resolve_pending(&self, calls: Vec<PendingFunctionCall>) -> Result<Vec<FunctionCallResult>, MontyError>;
 }
 
 // =============================================================================
@@ -319,6 +416,54 @@ impl MontyKt {
             None => run_execution_loop(runner, input_values, NoLimitTracker, &*handler, &mut print_writer),
         }
     }
+
+    /// Executes the compiled Python code with support for concurrent external function calls.
+    ///
+    /// Use this method instead of `run()` when the Python code uses `asyncio.gather()` or
+    /// `await` to call external functions concurrently. The `handler` decides per-call
+    /// whether to resolve synchronously (return a JSON string) or defer to the batch
+    /// `resolve_pending()` callback, which the JVM host can execute concurrently.
+    ///
+    /// ## Sequential calls
+    ///
+    /// For `result = sync_func()` (no `await`), the handler's `call()` should return
+    /// a JSON string immediately so the value is available synchronously.
+    ///
+    /// ## Concurrent calls
+    ///
+    /// For `await asyncio.gather(f1(), f2(), f3())`, the handler's `call()` should return
+    /// `null` for each invocation. Once all three are pending, Monty yields and the binding
+    /// calls `resolve_pending([f1_call, f2_call, f3_call])`, which the host resolves
+    /// concurrently before returning the results.
+    ///
+    /// # Arguments
+    /// * `inputs_json` – JSON object of input values, e.g. `"{\"x\": 42}"`
+    /// * `handler` – per-call dispatch and batch resolution callback
+    /// * `limits` – optional resource limits; `null` for unlimited execution
+    ///
+    /// # Returns
+    /// A JSON string representing the final value of the executed code.
+    ///
+    /// # Errors
+    /// - `MontyError::RuntimeError` for Python runtime exceptions or handler errors
+    /// - `MontyError::OsCallNotSupported` if the code attempts an OS-level call
+    pub fn run_concurrent(
+        &self,
+        inputs_json: String,
+        handler: Box<dyn ConcurrentFunctionHandler>,
+        limits: Option<MontyLimits>,
+    ) -> Result<String, MontyError> {
+        let input_values = parse_inputs_json(&inputs_json, &self.input_names)?;
+
+        // Clone runner since start() consumes it, allowing this MontyKt to be reused.
+        let runner = self.runner.clone();
+        let mut print_writer = PrintWriter::Stdout;
+
+        match limits {
+            Some(l) => run_concurrent_loop(runner, input_values, LimitedTracker::new(l.into()), &*handler, &mut print_writer),
+            None => run_concurrent_loop(runner, input_values, NoLimitTracker, &*handler, &mut print_writer),
+        }
+    }
 }
 
 /// Drives the Monty execution loop with the given tracker.
@@ -361,6 +506,78 @@ fn run_execution_loop(
                 return Err(MontyError::OsCallNotSupported {
                     reason: "Async futures (ResolveFutures) are not supported in the Kotlin binding".to_string(),
                 });
+            }
+        }
+    }
+}
+
+/// Drives the Monty execution loop with support for concurrent future resolution.
+///
+/// Similar to `run_execution_loop`, but for each `FunctionCall` it consults the
+/// `ConcurrentFunctionHandler`:
+/// - If `call()` returns `Some(json)` → resolve immediately (synchronous).
+/// - If `call()` returns `None` → mark the call as a pending future and continue;
+///   when Monty yields `ResolveFutures`, the batch is sent to `resolve_pending()`.
+///
+/// This allows Python code using `asyncio.gather()` to trigger concurrent resolution
+/// on the JVM side: all pending futures from one gather are delivered together to
+/// `resolve_pending()`, where the Kotlin host can dispatch them on JVM threads.
+fn run_concurrent_loop(
+    runner: MontyRun,
+    input_values: Vec<MontyObject>,
+    tracker: impl ResourceTracker,
+    handler: &dyn ConcurrentFunctionHandler,
+    print_writer: &mut PrintWriter,
+) -> Result<String, MontyError> {
+    let mut progress = runner.start(input_values, tracker, print_writer).map_err(runtime_error)?;
+    // Calls deferred via run_pending(), awaiting batch resolution.
+    let mut pending: Vec<PendingFunctionCall> = Vec::new();
+
+    loop {
+        match progress {
+            RunProgress::Complete(result) => return Ok(monty_to_json(&result)),
+            RunProgress::FunctionCall { call_id, function_name, args, kwargs, state, .. } => {
+                let args_json = args_to_json(&args);
+                let kwargs_json = kwargs_to_json(&kwargs);
+
+                // Ask the handler: sync resolve (Some) or defer (None)?
+                let maybe_result = handler.call(call_id, function_name.clone(), args_json.clone(), kwargs_json.clone())?;
+
+                progress = match maybe_result {
+                    Some(return_json) => {
+                        // Resolved synchronously — feed the result back immediately.
+                        let value = json_to_monty(&return_json)?;
+                        state.run(ExternalResult::Return(value), print_writer).map_err(runtime_error)?
+                    }
+                    None => {
+                        // Deferred — register as a pending future and continue execution.
+                        pending.push(PendingFunctionCall { call_id, function_name, args_json, kwargs_json });
+                        state.run_pending(print_writer).map_err(runtime_error)?
+                    }
+                };
+            }
+            RunProgress::OsCall { function, .. } => {
+                return Err(MontyError::OsCallNotSupported { reason: format!("{function:?}") });
+            }
+            RunProgress::ResolveFutures(future_snapshot) => {
+                // Determine which pending calls Monty is currently blocked on.
+                let needed: std::collections::HashSet<u32> =
+                    future_snapshot.pending_call_ids().iter().copied().collect();
+
+                // Extract only the relevant pending calls; keep the rest for later rounds.
+                let (to_resolve, remaining): (Vec<_>, Vec<_>) =
+                    pending.drain(..).partition(|c| needed.contains(&c.call_id));
+                pending = remaining;
+
+                // Deliver the batch to the Kotlin host for (potentially concurrent) resolution.
+                let results = handler.resolve_pending(to_resolve)?;
+
+                let external_results = results
+                    .into_iter()
+                    .map(|r| json_to_monty(&r.result_json).map(|v| (r.call_id, ExternalResult::Return(v))))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                progress = future_snapshot.resume(external_results, print_writer).map_err(runtime_error)?;
             }
         }
     }

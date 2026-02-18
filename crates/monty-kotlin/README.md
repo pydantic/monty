@@ -69,6 +69,92 @@ val result = m.run("{}", object : ExternalFunctionHandler {
 }, null)
 ```
 
+## Concurrent External Functions
+
+When LLM-generated Python code uses `asyncio.gather()` to call multiple external
+functions in parallel, use `runConcurrent()` instead of `run()`. It drives the same
+execution loop but lets the JVM resolve pending futures as a batch — enabling true
+concurrency across IO-bound calls.
+
+```kotlin
+import asyncio
+results = await asyncio.gather(
+    fetch_weather(city="London"),
+    fetch_weather(city="Paris"),
+    fetch_weather(city="Tokyo"),
+)
+results
+```
+
+```kotlin
+val monty = MontyKt.create(code, null, null, listOf("fetch_weather"), null)
+
+val result = monty.runConcurrent("{}", object : ConcurrentFunctionHandler {
+    // Called for every external function invocation.
+    // Return a JSON string to resolve synchronously, or null to defer.
+    override fun call(callId: UInt, functionName: String, argsJson: String, kwargsJson: String): String? =
+        null  // defer all calls — they will arrive together in resolvePending
+
+    // Called when Monty is blocked waiting for futures.
+    // All deferred calls from one asyncio.gather arrive here at once.
+    override fun resolvePending(calls: List<PendingFunctionCall>): List<FunctionCallResult> =
+        calls.parallelStream().map { call ->
+            val resultJson = weatherService.fetch(call.kwargsJson)  // runs concurrently
+            FunctionCallResult(callId = call.callId, resultJson = resultJson)
+        }.toList()
+}, null)
+```
+
+### `run()` vs `runConcurrent()` — which to use
+
+**Use `runConcurrent()` for everything.** It is a strict superset of `run()`: the
+execution strategy is determined by what `call()` returns, not by which method you call.
+
+| `call()` returns | Behaviour |
+|---|---|
+| A JSON string | Resolved immediately — identical to `run()` |
+| `null` | Deferred to `resolvePending()` for concurrent resolution |
+
+The practical rule is to base this on your *own* function implementations, not on
+the generated Python code:
+
+```kotlin
+val ioFunctions = setOf("fetch_weather", "query_db", "call_api")
+
+val handler = object : ConcurrentFunctionHandler {
+    override fun call(callId: UInt, functionName: String, argsJson: String, kwargsJson: String): String? =
+        if (functionName in ioFunctions) null          // IO-bound → defer
+        else resolveSync(functionName, argsJson, kwargsJson)  // fast → resolve now
+
+    override fun resolvePending(calls: List<PendingFunctionCall>): List<FunctionCallResult> =
+        calls.parallelStream().map { call ->
+            FunctionCallResult(callId = call.callId, resultJson = dispatch(call))
+        }.toList()
+}
+```
+
+When the LLM writes `asyncio.gather(fetch_weather(...), query_db(...))`, the deferred
+calls naturally arrive together in `resolvePending()`. When it writes
+`result = format_date(x)` (no `await`), `call()` returns the value immediately and
+`resolvePending()` is never involved. No code inspection needed.
+
+### Typed exceptions from concurrent handlers
+
+Both `call()` and `resolvePending()` can throw typed exceptions that propagate into
+the Python sandbox:
+
+```kotlin
+override fun resolvePending(calls: List<PendingFunctionCall>): List<FunctionCallResult> {
+    return calls.map { call ->
+        try {
+            FunctionCallResult(callId = call.callId, resultJson = fetch(call))
+        } catch (e: ServiceUnavailableException) {
+            throw MontyException.RuntimeException(reason = "service unavailable: ${e.message}")
+        }
+    }
+}
+```
+
 ## Resource Limits
 
 Constrain execution time, memory, allocations, and recursion depth:
@@ -176,7 +262,8 @@ Throws `MontyException.SyntaxException` or `MontyException.TypingException`.
 
 #### `monty.run(inputsJson, handler, limits)`
 
-Executes the code. Drives the pause/resume loop internally.
+Executes the code sequentially. Each external function call blocks until the handler
+returns a result before execution continues.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -186,6 +273,20 @@ Executes the code. Drives the pause/resume loop internally.
 
 Returns a JSON string (the last expression's value). Throws `MontyException.RuntimeException`
 or `MontyException.OsCallNotSupported`.
+
+#### `monty.runConcurrent(inputsJson, handler, limits)`
+
+Executes the code with support for concurrent external function resolution. Use this
+instead of `run()` when the code may use `asyncio.gather()`. It is a strict superset
+of `run()` — the execution strategy is controlled by what `call()` returns.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `inputsJson` | `String` | JSON object of input values, e.g. `"""{"x": 42}"""` |
+| `handler` | `ConcurrentFunctionHandler` | Dispatches individual calls and resolves batched futures |
+| `limits` | `MontyLimits?` | Resource limits, or `null` for unlimited |
+
+Returns a JSON string. Throws `MontyException.RuntimeException` or `MontyException.OsCallNotSupported`.
 
 ### `ExternalFunctionHandler` interface
 
@@ -198,6 +299,34 @@ interface ExternalFunctionHandler {
 Throw a `MontyException` subclass to propagate an error into the Python sandbox, or
 throw any other exception to convert it to a `RuntimeException` via UniFFI's
 `UnexpectedUniFFICallbackError` mechanism.
+
+### `ConcurrentFunctionHandler` interface
+
+```kotlin
+interface ConcurrentFunctionHandler {
+    // Return a JSON string to resolve immediately, or null to defer.
+    fun call(callId: UInt, functionName: String, argsJson: String, kwargsJson: String): String?
+
+    // Called when Monty is waiting for deferred futures.
+    fun resolvePending(calls: List<PendingFunctionCall>): List<FunctionCallResult>
+}
+```
+
+### `PendingFunctionCall` data class
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `callId` | `UInt` | Unique ID — must be echoed back in `FunctionCallResult.callId` |
+| `functionName` | `String` | Name of the Python function being called |
+| `argsJson` | `String` | Positional arguments as a JSON array |
+| `kwargsJson` | `String` | Keyword arguments as a JSON object |
+
+### `FunctionCallResult` data class
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `callId` | `UInt` | Must match the corresponding `PendingFunctionCall.callId` |
+| `resultJson` | `String` | JSON-encoded return value (e.g. `"42"`, `"null"`, `"\"hello\""`) |
 
 ### `MontyLimits` data class
 
