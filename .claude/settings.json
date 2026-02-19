@@ -42,6 +42,7 @@
       "Bash(xargs:*)",
       "Bash(perl:*)",
       "Bash(du:*)",
+      "Bash(npm run:*)",
       "WebSearch",
       "WebFetch(domain:pypi.org)",
       "WebFetch(domain:docs.anthropic.com)",
