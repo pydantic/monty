@@ -1,6 +1,5 @@
 use std::{
     fmt, fs,
-    io::{self, BufRead, Write},
     process::ExitCode,
     time::{Duration, Instant},
 };
@@ -10,6 +9,7 @@ use monty::{
     MontyObject, MontyRepl, MontyRun, NoLimitTracker, PrintWriter, ReplContinuationMode, RunProgress,
     detect_repl_continuation_mode,
 };
+use rustyline::{DefaultEditor, error::ReadlineError};
 // disabled due to format failing on https://github.com/pydantic/monty/pull/75 where CI and local wanted imports ordered differently
 // TODO re-enabled soon!
 #[rustfmt::skip]
@@ -219,34 +219,39 @@ fn run_repl(file_path: &str, code: String) -> ExitCode {
     }
 
     eprintln!("Monty v{} REPL. Type `exit` to exit.", env!("CARGO_PKG_VERSION"));
-    let stdin = io::stdin();
-    let mut stdin = stdin.lock();
+
+    let mut rl = match DefaultEditor::new() {
+        Ok(rl) => rl,
+        Err(err) => {
+            eprintln!("{BOLD_RED}error{RESET} initializing editor: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let mut pending_snippet = String::new();
     let mut continuation_mode = ReplContinuationMode::Complete;
 
     loop {
-        if continuation_mode == ReplContinuationMode::Complete {
-            print!("{BOLD_CYAN}{ARROW}{RESET} ");
+        let prompt = if continuation_mode == ReplContinuationMode::Complete {
+            format!("{BOLD_CYAN}{ARROW}{RESET} ")
         } else {
-            print!("… ");
-        }
-        if io::stdout().flush().is_err() {
-            eprintln!("{BOLD_RED}error{RESET}: failed to flush stdout");
-            return ExitCode::FAILURE;
-        }
+            "… ".to_owned()
+        };
 
-        let mut line = String::new();
-        let read = match stdin.read_line(&mut line) {
-            Ok(n) => n,
+        let line = match rl.readline(&prompt) {
+            Ok(line) => line,
+            Err(ReadlineError::Eof) => return ExitCode::SUCCESS,
+            Err(ReadlineError::Interrupted) => {
+                // Ctrl-C: discard pending input and start fresh
+                pending_snippet.clear();
+                continuation_mode = ReplContinuationMode::Complete;
+                continue;
+            }
             Err(err) => {
                 eprintln!("{BOLD_RED}error{RESET} reading input: {err}");
                 return ExitCode::FAILURE;
             }
         };
-
-        if read == 0 {
-            return ExitCode::SUCCESS;
-        }
 
         let snippet = line.trim_end();
         if continuation_mode == ReplContinuationMode::Complete && snippet.is_empty() {
@@ -260,6 +265,7 @@ fn run_repl(file_path: &str, code: String) -> ExitCode {
         pending_snippet.push('\n');
 
         if continuation_mode == ReplContinuationMode::IncompleteBlock && snippet.is_empty() {
+            let _ = rl.add_history_entry(pending_snippet.trim_end());
             execute_repl_snippet(&mut repl, &pending_snippet);
             pending_snippet.clear();
             continuation_mode = ReplContinuationMode::Complete;
@@ -272,6 +278,7 @@ fn run_repl(file_path: &str, code: String) -> ExitCode {
                 if continuation_mode == ReplContinuationMode::IncompleteBlock {
                     continue;
                 }
+                let _ = rl.add_history_entry(pending_snippet.trim_end());
                 execute_repl_snippet(&mut repl, &pending_snippet);
                 pending_snippet.clear();
                 continuation_mode = ReplContinuationMode::Complete;
