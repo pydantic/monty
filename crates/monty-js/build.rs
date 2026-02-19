@@ -1,4 +1,4 @@
-use std::{env, fs, path::Path};
+use std::{env, fs, path::Path, process::Command};
 
 /// Build script that sets up napi bindings and syncs the package.json version
 /// with the Cargo workspace version.
@@ -42,7 +42,14 @@ fn sync_package_json_version() {
     }
 
     if changed {
-        fs::write(package_json_path, result).expect("failed to write package.json");
-        eprintln!("Updated package.json version to {cargo_version}");
+        eprintln!("Updating package.json version to {cargo_version}");
+        fs::write(package_json_path, &result).expect("failed to write package.json");
+
+        // Sync package-lock.json to match the updated version.
+        let status = Command::new("npm")
+            .args(["install", "--package-lock-only"])
+            .status()
+            .expect("failed to run npm");
+        assert!(status.success(), "npm install --package-lock-only failed");
     }
 }
