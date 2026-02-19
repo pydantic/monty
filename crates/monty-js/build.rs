@@ -32,8 +32,11 @@ fn sync_package_json_version() {
     for line in contents.lines() {
         // Only match the top-level "version" field (exactly 2-space indent),
         // not nested ones like scripts.version (4-space indent).
-        if !changed && line.starts_with("  \"version\"") && line != expected {
-            result.push_str(&expected);
+        if !changed && line.starts_with("  \"version\"") {
+            // version unchanged, exit early
+            if line == expected {
+                return;
+            }
             changed = true;
         } else {
             result.push_str(line);
@@ -41,15 +44,17 @@ fn sync_package_json_version() {
         result.push('\n');
     }
 
-    if changed {
-        eprintln!("Updating package.json version to {cargo_version}");
-        fs::write(package_json_path, &result).expect("failed to write package.json");
-
-        // Sync package-lock.json to match the updated version.
-        let status = Command::new("npm")
-            .args(["install", "--package-lock-only"])
-            .status()
-            .expect("failed to run npm");
-        assert!(status.success(), "npm install --package-lock-only failed");
+    if !changed {
+        return;
     }
+
+    eprintln!("Updating package.json version to {cargo_version}");
+    fs::write(package_json_path, &result).expect("failed to write package.json");
+
+    // Sync package-lock.json to match the updated version.
+    let status = Command::new("npm")
+        .args(["install", "--package-lock-only"])
+        .status()
+        .expect("failed to run npm");
+    assert!(status.success(), "npm install --package-lock-only failed");
 }
