@@ -41,3 +41,22 @@ assert list(filter(None, range(0))) == [], 'filter empty range'
 
 assert list(filter(None, [[], [1], []])) == [[1]], 'filter nested lists'
 assert list(filter(None, [(), (1,), ()])) == [(1,)], 'filter nested tuples'
+
+
+# filter() with user-defined function
+# This should error until user-defined functions are supported
+def is_positive(x):
+    return x > 0
+
+
+assert list(filter(is_positive, [-1, 1])) == [1], 'filter with user-defined function keeps positives'
+
+
+assert list(filter(lambda x: x > 0, [-1, 1])) == [1], 'filter with lambda keeps positives'
+
+
+try:
+    list(filter(4, [1, 2]))
+    assert False, 'filter with non-callable first argument should raise TypeError'
+except TypeError as e:
+    assert str(e) == "'int' object is not callable", 'filter with non-callable first argument raises TypeError'

@@ -387,7 +387,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
             _ => {
                 args.drop_with_heap(self.heap);
-                Err(ExcType::type_error("object is not callable"))
+                let ty = callable.py_type(self.heap);
+                Err(ExcType::type_error(format!("'{ty}' object is not callable",)))
             }
         }
     }
