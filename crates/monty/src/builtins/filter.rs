@@ -12,7 +12,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::RunResult,
-    heap::HeapData,
+    heap::{HeapData, HeapGuard},
     resource::ResourceTracker,
     types::{List, MontyIter, PyTrait},
     value::Value,
@@ -37,9 +37,13 @@ pub fn builtin_filter(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> Run
     let iter = MontyIter::new(iterable, vm.heap, vm.interns)?;
     defer_drop_mut!(iter, vm);
 
-    let mut out: Vec<Value> = Vec::new();
+    let out: Vec<Value> = Vec::new();
+    let mut out_guard = HeapGuard::new(out, vm);
+    let (out, vm) = out_guard.as_parts_mut();
 
     while let Some(item) = iter.for_next(vm.heap, vm.interns)? {
+        let mut item_guard = HeapGuard::new(item, vm);
+        let (item, vm) = item_guard.as_parts_mut();
         let should_include = if let Value::None = function {
             // No predicate - use truthiness of element
             item.py_bool(vm.heap, vm.interns)
@@ -53,12 +57,11 @@ pub fn builtin_filter(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> Run
         };
 
         if should_include {
-            out.push(item);
-        } else {
-            item.drop_with_heap(vm.heap);
+            out.push(item_guard.into_inner());
         }
     }
 
+    let (out, vm) = out_guard.into_parts();
     let heap_id = vm.heap.allocate(HeapData::List(List::new(out)))?;
     Ok(Value::Ref(heap_id))
 }
