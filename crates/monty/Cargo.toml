@@ -51,9 +51,6 @@ serde_json = "1.0"
 pprof = { version = "0.15", features = ["flamegraph", "criterion"] }
 similar = "2.7.0"
 
-[build-dependencies]
-pyo3-build-config = "0.28"
-
 [[bench]]
 name = "main"
 harness = false
