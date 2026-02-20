@@ -1327,24 +1327,18 @@ impl<T: ResourceTracker> Heap<T> {
 
     /// Gets the value inside a cell, cloning it with proper refcount handling.
     ///
-    /// Uses `clone_with_heap` to properly handle all value types including closures,
-    /// which need their captured cell refcounts incremented.
-    ///
     /// # Panics
     /// Panics if the ID is invalid, the value has been freed, or the entry is not a Cell.
     pub fn get_cell_value(&mut self, id: HeapId) -> Value {
-        // Take the data out to avoid borrow conflicts when cloning
-        let data = take_data!(self, id, "get_cell_value");
-
-        let result = match &data {
-            HeapData::Cell(v) => v.clone_with_heap(self),
+        // Two-phase approach avoids borrow conflicts when cloning
+        let value = match self.get(id) {
+            HeapData::Cell(v) => v.copy_for_extend(),
             _ => panic!("Heap::get_cell_value: entry is not a Cell"),
         };
-
-        // Restore data before returning
-        restore_data!(self, id, data, "get_cell_value");
-
-        result
+        if let Value::Ref(ref_id) = &value {
+            self.inc_ref(*ref_id);
+        }
+        value
     }
 
     /// Sets the value inside a cell, properly dropping the old value.
@@ -1352,17 +1346,12 @@ impl<T: ResourceTracker> Heap<T> {
     /// # Panics
     /// Panics if the ID is invalid, the value has been freed, or the entry is not a Cell.
     pub fn set_cell_value(&mut self, id: HeapId, value: Value) {
-        // Take the data out to avoid borrow conflicts
-        let mut data = take_data!(self, id, "set_cell_value");
+        // The guard will clean up the new value if we panic, or the old value if we swap
+        let mut guard = HeapGuard::new(value, self);
+        let (value, this) = guard.as_parts_mut();
 
-        match &mut data {
-            HeapData::Cell(old_value) => {
-                // Swap in the new value
-                let old = std::mem::replace(old_value, value);
-                // Restore data first, then drop old value
-                restore_data!(self, id, data, "set_cell_value");
-                old.drop_with_heap(self);
-            }
+        match &mut this.get_mut(id) {
+            HeapData::Cell(old_value) => std::mem::swap(old_value, value),
             _ => panic!("Heap::set_cell_value: entry is not a Cell"),
         }
     }
