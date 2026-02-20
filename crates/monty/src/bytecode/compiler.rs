@@ -181,7 +181,22 @@ impl<'a> Compiler<'a> {
         interns: &Interns,
         num_locals: u16,
     ) -> Result<CompileResult, CompileError> {
+        Self::compile_module_with_functions(nodes, interns, num_locals, Vec::new())
+    }
+
+    /// Compiles module-level code while preserving an existing function table prefix.
+    ///
+    /// This is used by incremental REPL compilation so previously created
+    /// `FunctionId`s remain stable: new function IDs are allocated after
+    /// `existing_functions.len()`.
+    pub fn compile_module_with_functions(
+        nodes: &[PreparedNode],
+        interns: &Interns,
+        num_locals: u16,
+        existing_functions: Vec<Function>,
+    ) -> Result<CompileResult, CompileError> {
         let mut compiler = Compiler::new(interns, Vec::new());
+        compiler.functions = existing_functions;
         compiler.compile_block(nodes)?;
 
         // Module returns None if no explicit return
@@ -242,22 +257,18 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(expr)?;
                 self.code.emit(Opcode::Pop); // Discard result
             }
-
             Node::Return(expr) => {
                 self.compile_expr(expr)?;
                 self.compile_return();
             }
-
             Node::ReturnNone => {
                 self.code.emit(Opcode::LoadNone);
                 self.compile_return();
             }
-
             Node::Assign { target, object } => {
                 self.compile_expr(object)?;
                 self.compile_store(target);
             }
-
             Node::UnpackAssign {
                 targets,
                 targets_position,
@@ -288,14 +299,18 @@ impl<'a> Compiler<'a> {
                     self.compile_unpack_target(target);
                 }
             }
-
             Node::OpAssign { target, op, object } => {
+                let Some(opcode) = operator_to_inplace_opcode(op) else {
+                    return Err(CompileError::new(
+                        "matrix multiplication augmented assignment (@=) is not yet supported",
+                        target.position,
+                    ));
+                };
                 self.compile_name(target);
                 self.compile_expr(object)?;
-                self.code.emit(operator_to_inplace_opcode(op));
+                self.code.emit(opcode);
                 self.compile_store(target);
             }
-
             Node::SubscriptAssign {
                 target,
                 index,
@@ -310,7 +325,6 @@ impl<'a> Compiler<'a> {
                 self.code.set_location(*target_position, None);
                 self.code.emit(Opcode::StoreSubscr);
             }
-
             Node::AttrAssign {
                 object,
                 attr,
@@ -328,28 +342,15 @@ impl<'a> Compiler<'a> {
                     u16::try_from(name_id.index()).expect("name index exceeds u16"),
                 );
             }
-
-            Node::If { test, body, or_else } => {
-                self.compile_if(test, body, or_else)?;
-            }
-
+            Node::If { test, body, or_else } => self.compile_if(test, body, or_else)?,
             Node::For {
                 target,
                 iter,
                 body,
                 or_else,
-            } => {
-                self.compile_for(target, iter, body, or_else)?;
-            }
-
-            Node::While { test, body, or_else } => {
-                self.compile_while(test, body, or_else)?;
-            }
-
-            Node::Assert { test, msg } => {
-                self.compile_assert(test, msg.as_ref())?;
-            }
-
+            } => self.compile_for(target, iter, body, or_else)?,
+            Node::While { test, body, or_else } => self.compile_while(test, body, or_else)?,
+            Node::Assert { test, msg } => self.compile_assert(test, msg.as_ref())?,
             Node::Raise(expr) => {
                 if let Some(exc) = expr {
                     self.compile_expr(exc)?;
@@ -358,35 +359,16 @@ impl<'a> Compiler<'a> {
                     self.code.emit(Opcode::Reraise);
                 }
             }
-
-            Node::FunctionDef(func_def) => {
-                self.compile_function_def(func_def)?;
-            }
-
-            Node::Try(try_block) => {
-                self.compile_try(try_block)?;
-            }
-
-            Node::Import { module_name, binding } => {
-                self.compile_import(*module_name, binding)?;
-            }
-
+            Node::FunctionDef(func_def) => self.compile_function_def(func_def)?,
+            Node::Try(try_block) => self.compile_try(try_block)?,
+            Node::Import { module_name, binding } => self.compile_import(*module_name, binding),
             Node::ImportFrom {
                 module_name,
                 names,
                 position,
-            } => {
-                self.compile_import_from(*module_name, names, *position)?;
-            }
-
-            Node::Break { position } => {
-                self.compile_break(*position)?;
-            }
-
-            Node::Continue { position } => {
-                self.compile_continue(*position)?;
-            }
-
+            } => self.compile_import_from(*module_name, names, *position),
+            Node::Break { position } => self.compile_break(*position)?,
+            Node::Continue { position } => self.compile_continue(*position)?,
             // These are handled during the prepare phase and produce no bytecode
             Node::Pass | Node::Global { .. } | Node::Nonlocal { .. } => {}
         }
@@ -557,58 +539,60 @@ impl<'a> Compiler<'a> {
     /// Compiles an import statement.
     ///
     /// Emits `LoadModule` to create the module, then stores it to the binding name.
-    fn compile_import(&mut self, module_name: StringId, binding: &Identifier) -> Result<(), CompileError> {
+    /// If the module is unknown, emits `RaiseImportError` to defer the error to runtime.
+    /// This allows imports inside `if TYPE_CHECKING:` blocks to compile successfully.
+    fn compile_import(&mut self, module_name: StringId, binding: &Identifier) {
         let position = binding.position;
-        // Look up the module by name
-        let builtin_module = BuiltinModule::from_string_id(module_name)
-            .ok_or_else(|| CompileError::new_module_not_found(self.interns.get_str(module_name), position))?;
-
-        // Emit LoadModule with the module ID
         self.code.set_location(position, None);
-        self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
 
-        // Store to the binding (respects Local/Global/Cell scope)
-        self.compile_store(binding);
-
-        Ok(())
+        // Look up the module by name
+        if let Some(builtin_module) = BuiltinModule::from_string_id(module_name) {
+            // Known module - emit LoadModule
+            self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
+            // Store to the binding (respects Local/Global/Cell scope)
+            self.compile_store(binding);
+        } else {
+            // Unknown module - defer error to runtime with RaiseImportError
+            // This allows TYPE_CHECKING imports to compile without error
+            let name_const = self.code.add_const(Value::InternString(module_name));
+            self.code.emit_u16(Opcode::RaiseImportError, name_const);
+        }
     }
 
     /// Compiles a `from module import name, ...` statement.
     ///
     /// Creates the module once, then loads each attribute and stores to the binding.
     /// Invalid attribute names will raise `AttributeError` at runtime.
-    fn compile_import_from(
-        &mut self,
-        module_name: StringId,
-        names: &[(StringId, Identifier)],
-        position: CodeRange,
-    ) -> Result<(), CompileError> {
-        let module_name_str = self.interns.get_str(module_name);
+    /// If the module is unknown, emits `RaiseImportError` to defer the error to runtime.
+    /// This allows imports inside `if TYPE_CHECKING:` blocks to compile successfully.
+    fn compile_import_from(&mut self, module_name: StringId, names: &[(StringId, Identifier)], position: CodeRange) {
+        self.code.set_location(position, None);
 
         // Look up the module
-        let builtin_module = BuiltinModule::from_string_id(module_name)
-            .ok_or_else(|| CompileError::new_module_not_found(module_name_str, position))?;
+        if let Some(builtin_module) = BuiltinModule::from_string_id(module_name) {
+            // Known module - emit LoadModule
+            self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
 
-        // Load the module once
-        self.code.set_location(position, None);
-        self.code.emit_u8(Opcode::LoadModule, builtin_module as u8);
+            // For each name to import
+            for (i, (import_name, binding)) in names.iter().enumerate() {
+                // Dup the module if this isn't the last import (last one consumes the module)
+                if i < names.len() - 1 {
+                    self.code.emit(Opcode::Dup);
+                }
 
-        // For each name to import
-        for (i, (import_name, binding)) in names.iter().enumerate() {
-            // Dup the module if this isn't the last import (last one consumes the module)
-            if i < names.len() - 1 {
-                self.code.emit(Opcode::Dup);
+                // Load the attribute from the module (raises ImportError if not found)
+                let name_idx = u16::try_from(import_name.index()).expect("name index exceeds u16");
+                self.code.emit_u16(Opcode::LoadAttrImport, name_idx);
+
+                // Store to the binding
+                self.compile_store(binding);
             }
-
-            // Load the attribute from the module (raises ImportError if not found)
-            let name_idx = u16::try_from(import_name.index()).expect("name index exceeds u16");
-            self.code.emit_u16(Opcode::LoadAttrImport, name_idx);
-
-            // Store to the binding
-            self.compile_store(binding);
+        } else {
+            // Unknown module - defer error to runtime with RaiseImportError
+            // This allows TYPE_CHECKING imports to compile without error
+            let name_const = self.code.add_const(Value::InternString(module_name));
+            self.code.emit_u16(Opcode::RaiseImportError, name_const);
         }
-
-        Ok(())
     }
 
     // ========================================================================
@@ -1651,12 +1635,16 @@ impl<'a> Compiler<'a> {
                 var_args,
                 var_kwargs,
             } => {
-                // Check if there's unpacking - we don't support that for method calls yet
+                // Check if there's unpacking - use CallAttrExtended
                 if var_args.is_some() || var_kwargs.is_some() {
-                    return Err(CompileError::new(
-                        "method calls with *args or **kwargs unpacking not yet supported".to_owned(),
+                    return self.compile_method_call_with_unpacking(
+                        name_id,
+                        args.as_ref(),
+                        var_args.as_ref(),
+                        kwargs.as_ref(),
+                        var_kwargs.as_ref(),
                         call_pos,
-                    ));
+                    );
                 }
 
                 // No unpacking - use CallAttrKw for efficiency
@@ -1700,6 +1688,79 @@ impl<'a> Compiler<'a> {
                 );
             }
         }
+        Ok(())
+    }
+
+    /// Compiles a method call with `*args` and/or `**kwargs` unpacking.
+    ///
+    /// The receiver object should already be on the stack. This builds the args tuple
+    /// and optional kwargs dict, then emits `CallAttrExtended`.
+    fn compile_method_call_with_unpacking(
+        &mut self,
+        name_id: StringId,
+        args: Option<&Vec<ExprLoc>>,
+        var_args: Option<&ExprLoc>,
+        kwargs: Option<&Vec<Kwarg>>,
+        var_kwargs: Option<&ExprLoc>,
+        call_pos: CodeRange,
+    ) -> Result<(), CompileError> {
+        // 1. Build args tuple
+        // Push regular positional args and build list
+        let pos_count = args.map_or(0, Vec::len);
+        if let Some(args) = args {
+            for arg in args {
+                self.compile_expr(arg)?;
+            }
+        }
+        self.code.emit_u16(
+            Opcode::BuildList,
+            u16::try_from(pos_count).expect("positional arg count exceeds u16"),
+        );
+
+        // Extend with *args if present
+        if let Some(var_args_expr) = var_args {
+            self.compile_expr(var_args_expr)?;
+            self.code.emit(Opcode::ListExtend);
+        }
+
+        // Convert list to tuple
+        self.code.emit(Opcode::ListToTuple);
+
+        // 2. Build kwargs dict (if we have kwargs or var_kwargs)
+        let has_kwargs = kwargs.is_some() || var_kwargs.is_some();
+        if has_kwargs {
+            // Build dict from regular kwargs
+            let kw_count = kwargs.map_or(0, Vec::len);
+            if let Some(kwargs) = kwargs {
+                for kwarg in kwargs {
+                    // Push key as interned string constant
+                    let key_const = self.code.add_const(Value::InternString(kwarg.key.name_id));
+                    self.code.emit_u16(Opcode::LoadConst, key_const);
+                    // Push value
+                    self.compile_expr(&kwarg.value)?;
+                }
+            }
+            self.code.emit_u16(
+                Opcode::BuildDict,
+                u16::try_from(kw_count).expect("keyword count exceeds u16"),
+            );
+
+            // Merge **kwargs if present
+            if let Some(var_kwargs_expr) = var_kwargs {
+                self.compile_expr(var_kwargs_expr)?;
+                // Use the method name for error messages
+                self.code.emit_u16(
+                    Opcode::DictMerge,
+                    u16::try_from(name_id.index()).expect("name index exceeds u16"),
+                );
+            }
+        }
+
+        // 3. Call the method with CallAttrExtended
+        self.code.set_location(call_pos, None);
+        let name_idx = u16::try_from(name_id.index()).expect("name index exceeds u16");
+        let flags = u8::from(has_kwargs);
+        self.code.emit_u16_u8(Opcode::CallAttrExtended, name_idx, flags);
         Ok(())
     }
 
@@ -2740,17 +2801,6 @@ impl CompileError {
         }
     }
 
-    /// Creates a ModuleNotFoundError for when a module cannot be found.
-    ///
-    /// Matches CPython's format: `ModuleNotFoundError: No module named 'name'`
-    fn new_module_not_found(module_name: &str, position: CodeRange) -> Self {
-        Self {
-            message: format!("No module named '{module_name}'").into(),
-            position,
-            exc_type: ExcType::ModuleNotFoundError,
-        }
-    }
-
     /// Converts this compile error into a Python exception.
     ///
     /// Uses the stored exception type (SyntaxError or ModuleNotFoundError).
@@ -2799,21 +2849,30 @@ fn operator_to_opcode(op: &Operator) -> Opcode {
 }
 
 /// Maps an `Operator` to its in-place (augmented assignment) `Opcode`.
-fn operator_to_inplace_opcode(op: &Operator) -> Opcode {
+///
+/// Returns `None` for operators that don't have an in-place opcode (currently `MatMult`,
+/// since matrix multiplication is not yet supported). Returns `Some(opcode)` for all
+/// other valid augmented assignment operators.
+///
+/// # Panics
+///
+/// Panics if called with `And` or `Or` operators, which cannot be used in augmented
+/// assignments (this would be a parser bug).
+fn operator_to_inplace_opcode(op: &Operator) -> Option<Opcode> {
     match op {
-        Operator::Add => Opcode::InplaceAdd,
-        Operator::Sub => Opcode::InplaceSub,
-        Operator::Mult => Opcode::InplaceMul,
-        Operator::Div => Opcode::InplaceDiv,
-        Operator::FloorDiv => Opcode::InplaceFloorDiv,
-        Operator::Mod => Opcode::InplaceMod,
-        Operator::Pow => Opcode::InplacePow,
-        Operator::BitAnd => Opcode::InplaceAnd,
-        Operator::BitOr => Opcode::InplaceOr,
-        Operator::BitXor => Opcode::InplaceXor,
-        Operator::LShift => Opcode::InplaceLShift,
-        Operator::RShift => Opcode::InplaceRShift,
-        Operator::MatMult => todo!("InplaceMatMul not yet defined"),
+        Operator::Add => Some(Opcode::InplaceAdd),
+        Operator::Sub => Some(Opcode::InplaceSub),
+        Operator::Mult => Some(Opcode::InplaceMul),
+        Operator::Div => Some(Opcode::InplaceDiv),
+        Operator::FloorDiv => Some(Opcode::InplaceFloorDiv),
+        Operator::Mod => Some(Opcode::InplaceMod),
+        Operator::Pow => Some(Opcode::InplacePow),
+        Operator::BitAnd => Some(Opcode::InplaceAnd),
+        Operator::BitOr => Some(Opcode::InplaceOr),
+        Operator::BitXor => Some(Opcode::InplaceXor),
+        Operator::LShift => Some(Opcode::InplaceLShift),
+        Operator::RShift => Some(Opcode::InplaceRShift),
+        Operator::MatMult => None,
         Operator::And | Operator::Or => {
             unreachable!("And/Or operators cannot be used in augmented assignment")
         }

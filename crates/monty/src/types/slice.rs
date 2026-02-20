@@ -9,10 +9,11 @@ use ahash::AHashSet;
 
 use crate::{
     args::ArgValues,
+    defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
-    resource::ResourceTracker,
+    resource::{DepthGuard, ResourceError, ResourceTracker},
     types::{AttrCallResult, PyTrait, Type},
     value::Value,
 };
@@ -51,53 +52,27 @@ impl Slice {
     ///
     /// Each argument can be None to indicate "use default".
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let slice = match args {
-            ArgValues::Empty => return Err(ExcType::type_error_at_least("slice", 1, 0)),
-            ArgValues::One(stop_val) => {
-                // Store result before dropping to avoid refcount leak on error
-                let stop = value_to_option_i64(&stop_val);
-                stop_val.drop_with_heap(heap);
-                Self::new(None, stop?, None)
-            }
-            ArgValues::Two(start_val, stop_val) => {
-                // Store results before dropping to avoid refcount leak on error
-                let start = value_to_option_i64(&start_val);
-                let stop = value_to_option_i64(&stop_val);
-                start_val.drop_with_heap(heap);
-                stop_val.drop_with_heap(heap);
-                Self::new(start?, stop?, None)
-            }
-            ArgValues::ArgsKargs { args, kwargs } if kwargs.is_empty() && args.len() == 3 => {
-                let mut iter = args.into_iter();
-                let start_val = iter.next().unwrap();
-                let stop_val = iter.next().unwrap();
-                let step_val = iter.next().unwrap();
+        let pos_args = args.into_pos_only("slice", heap)?;
+        defer_drop!(pos_args, heap);
 
-                // Store results before dropping to avoid refcount leak on error
-                let start = value_to_option_i64(&start_val);
-                let stop = value_to_option_i64(&stop_val);
-                let step = value_to_option_i64(&step_val);
-                start_val.drop_with_heap(heap);
-                stop_val.drop_with_heap(heap);
-                step_val.drop_with_heap(heap);
-
-                Self::new(start?, stop?, step?)
+        let slice = match pos_args.as_slice() {
+            [] => return Err(ExcType::type_error_at_least("slice", 1, 0)),
+            [first_arg] => {
+                let stop = value_to_option_i64(first_arg)?;
+                Self::new(None, stop, None)
             }
-            ArgValues::Kwargs(kwargs) => {
-                kwargs.drop_with_heap(heap);
-                return Err(ExcType::type_error_no_kwargs("slice"));
+            [first_arg, second_arg] => {
+                let start = value_to_option_i64(first_arg)?;
+                let stop = value_to_option_i64(second_arg)?;
+                Self::new(start, stop, None)
             }
-            ArgValues::ArgsKargs { args, kwargs } => {
-                let arg_count = args.len();
-                for v in args {
-                    v.drop_with_heap(heap);
-                }
-                if !kwargs.is_empty() {
-                    kwargs.drop_with_heap(heap);
-                    return Err(ExcType::type_error_no_kwargs("slice"));
-                }
-                return Err(ExcType::type_error_at_most("slice", 3, arg_count));
+            [first_arg, second_arg, third_arg] => {
+                let start = value_to_option_i64(first_arg)?;
+                let stop = value_to_option_i64(second_arg)?;
+                let step = value_to_option_i64(third_arg)?;
+                Self::new(start, stop, step)
             }
+            _ => return Err(ExcType::type_error_at_most("slice", 3, pos_args.len())),
         };
 
         Ok(Value::Ref(heap.allocate(HeapData::Slice(slice))?))
@@ -215,8 +190,14 @@ impl PyTrait for Slice {
         None
     }
 
-    fn py_eq(&self, other: &Self, _heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
-        self.start == other.start && self.stop == other.stop && self.step == other.step
+    fn py_eq(
+        &self,
+        other: &Self,
+        _heap: &mut Heap<impl ResourceTracker>,
+        _guard: &mut DepthGuard,
+        _interns: &Interns,
+    ) -> Result<bool, ResourceError> {
+        Ok(self.start == other.start && self.stop == other.stop && self.step == other.step)
     }
 
     fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
@@ -229,6 +210,7 @@ impl PyTrait for Slice {
         f: &mut impl Write,
         _heap: &Heap<impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
+        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> std::fmt::Result {
         f.write_str("slice(")?;

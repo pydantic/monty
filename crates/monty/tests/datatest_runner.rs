@@ -17,7 +17,7 @@ use std::{
 use ahash::AHashMap;
 use monty::{
     ExcType, ExternalResult, LimitedTracker, MontyException, MontyFuture, MontyObject, MontyRun, OsFunction,
-    ResourceLimits, RunProgress, StdPrint, dir_stat, file_stat,
+    PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
 };
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
@@ -353,7 +353,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
                         (MontyObject::String("y".to_string()), MontyObject::Int(2)),
                     ]
                     .into(),
-                    methods: vec![],
+
                     frozen: true,
                 }
                 .into(),
@@ -372,7 +372,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
                         (MontyObject::String("y".to_string()), MontyObject::Int(2)),
                     ]
                     .into(),
-                    methods: vec![],
+
                     frozen: false,
                 }
                 .into(),
@@ -392,7 +392,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
                         (MontyObject::String("active".to_string()), MontyObject::Bool(true)),
                     ]
                     .into(),
-                    methods: vec![],
+
                     frozen: true,
                 }
                 .into(),
@@ -407,7 +407,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
                     type_id: 0, // Test fixture has no real Python type
                     field_names: vec![],
                     attrs: vec![].into(),
-                    methods: vec![],
+
                     frozen: true,
                 }
                 .into(),
@@ -420,6 +420,146 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
             DispatchResult::Async(args.into_iter().next().unwrap())
         }
         _ => panic!("Unknown external function: {name}"),
+    }
+}
+
+/// Dispatches a dataclass method call to the appropriate test implementation.
+///
+/// The first argument is always the dataclass instance (`self`). Known methods
+/// are implemented to mirror the Python dataclass methods in `iter_test_methods.py`.
+/// Unknown methods return `AttributeError`.
+fn dispatch_method_call(
+    method_name: &str,
+    args: &[MontyObject],
+    kwargs: &[(MontyObject, MontyObject)],
+) -> ExternalResult {
+    let class_name = match args.first() {
+        Some(MontyObject::Dataclass { name, .. }) => name.as_str(),
+        _ => "<unknown>",
+    };
+
+    match (class_name, method_name) {
+        // Point.sum(self) -> int
+        ("Point" | "MutablePoint", "sum") => {
+            let (x, y) = extract_point_fields(&args[0]);
+            MontyObject::Int(x + y).into()
+        }
+        // Point.add(self, dx, dy) -> Point
+        ("Point", "add") => {
+            assert!(args.len() == 3, "Point.add requires self, dx, dy");
+            let (x, y) = extract_point_fields(&args[0]);
+            let dx = i64::try_from(&args[1]).expect("dx must be int");
+            let dy = i64::try_from(&args[2]).expect("dy must be int");
+            MontyObject::Dataclass {
+                name: "Point".to_string(),
+                type_id: 0,
+                field_names: vec!["x".to_string(), "y".to_string()],
+                attrs: vec![
+                    (MontyObject::String("x".to_string()), MontyObject::Int(x + dx)),
+                    (MontyObject::String("y".to_string()), MontyObject::Int(y + dy)),
+                ]
+                .into(),
+                frozen: true,
+            }
+            .into()
+        }
+        // Point.scale(self, factor) -> Point
+        ("Point", "scale") => {
+            assert!(args.len() == 2, "Point.scale requires self, factor");
+            let (x, y) = extract_point_fields(&args[0]);
+            let factor = i64::try_from(&args[1]).expect("factor must be int");
+            MontyObject::Dataclass {
+                name: "Point".to_string(),
+                type_id: 0,
+                field_names: vec!["x".to_string(), "y".to_string()],
+                attrs: vec![
+                    (MontyObject::String("x".to_string()), MontyObject::Int(x * factor)),
+                    (MontyObject::String("y".to_string()), MontyObject::Int(y * factor)),
+                ]
+                .into(),
+                frozen: true,
+            }
+            .into()
+        }
+        // Point.describe(self, label='point') -> str
+        ("Point", "describe") => {
+            let (x, y) = extract_point_fields(&args[0]);
+            // Check positional arg first, then kwargs, then default
+            let label = if args.len() > 1 {
+                String::try_from(&args[1]).expect("label must be str")
+            } else if let Some(kw_label) = get_kwarg_str(kwargs, "label") {
+                kw_label
+            } else {
+                "point".to_string()
+            };
+            MontyObject::String(format!("{label}({x}, {y})")).into()
+        }
+        // MutablePoint.shift(self, dx, dy) -> None (mutates in-place via host)
+        // Note: In the test runner, we can't actually mutate the dataclass in-place
+        // since the host doesn't have direct heap access. Return None as the method
+        // would in Python (the mutation happens inside Python's method body).
+        // For test coverage purposes, we just return None.
+        ("MutablePoint", "shift") => MontyObject::None.into(),
+        // User.greeting(self) -> str
+        ("User", "greeting") => {
+            let name = extract_user_name(&args[0]);
+            MontyObject::String(format!("Hello, {name}!")).into()
+        }
+        // Unknown method — return AttributeError
+        _ => {
+            let message = format!("'{class_name}' object has no attribute '{method_name}'");
+            MontyException::new(ExcType::AttributeError, Some(message)).into()
+        }
+    }
+}
+
+/// Extracts (x, y) fields from a Point or MutablePoint `MontyObject::Dataclass`.
+fn extract_point_fields(obj: &MontyObject) -> (i64, i64) {
+    match obj {
+        MontyObject::Dataclass { attrs, .. } => {
+            let mut x = 0i64;
+            let mut y = 0i64;
+            for (key, value) in attrs {
+                if let MontyObject::String(k) = key {
+                    match k.as_str() {
+                        "x" => x = i64::try_from(value).expect("x must be int"),
+                        "y" => y = i64::try_from(value).expect("y must be int"),
+                        _ => {}
+                    }
+                }
+            }
+            (x, y)
+        }
+        other => panic!("Expected Dataclass, got {other:?}"),
+    }
+}
+
+/// Extracts a string kwarg value by key name.
+fn get_kwarg_str(kwargs: &[(MontyObject, MontyObject)], name: &str) -> Option<String> {
+    for (key, value) in kwargs {
+        if let MontyObject::String(key_str) = key
+            && key_str == name
+        {
+            return Some(String::try_from(value).expect("kwarg value must be str"));
+        }
+    }
+    None
+}
+
+/// Extracts the `name` field from a User `MontyObject::Dataclass`.
+fn extract_user_name(obj: &MontyObject) -> String {
+    match obj {
+        MontyObject::Dataclass { attrs, .. } => {
+            for (key, value) in attrs {
+                if let MontyObject::String(k) = key
+                    && k == "name"
+                {
+                    return String::try_from(value).expect("name must be str");
+                }
+            }
+            panic!("User dataclass has no 'name' field");
+        }
+        other => panic!("Expected Dataclass, got {other:?}"),
     }
 }
 
@@ -1028,7 +1168,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<()
     match MontyRun::new(code.to_owned(), &test_name, vec![], vec![]) {
         Ok(ex) => {
             let limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
-            let result = ex.run(vec![], LimitedTracker::new(limits), &mut StdPrint);
+            let result = ex.run(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout);
             match result {
                 Ok(obj) => match expectation {
                     Expectation::ReturnStr(expected) => {
@@ -1303,7 +1443,7 @@ fn try_run_iter_test(path: &Path, code: &str, expectation: &Expectation) -> Resu
 /// - Async functions: `state.run_pending()` creates a future, resolved via `ResolveFutures`
 fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
     let limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
-    let mut progress = exec.start(vec![], LimitedTracker::new(limits), &mut StdPrint)?;
+    let mut progress = exec.start(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout)?;
 
     // Track pending async calls: (call_id, result_value)
     let mut pending_results: Vec<(u32, MontyObject)> = Vec::new();
@@ -1322,20 +1462,28 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
             RunProgress::FunctionCall {
                 function_name,
                 args,
-                kwargs: _,
+                kwargs,
                 call_id,
+                method_call,
                 state,
             } => {
+                // Method calls on dataclasses are dispatched to the host.
+                // Dispatch known methods; return AttributeError for unknown ones.
+                if method_call {
+                    let result = dispatch_method_call(&function_name, &args, &kwargs);
+                    progress = state.run(result, &mut PrintWriter::Stdout)?;
+                    continue;
+                }
                 let dispatch_result = dispatch_external_call(&function_name, args);
                 match dispatch_result {
                     DispatchResult::Sync(return_value) => {
-                        progress = state.run(return_value, &mut StdPrint)?;
+                        progress = state.run(return_value, &mut PrintWriter::Stdout)?;
                     }
                     DispatchResult::Async(result_value) => {
                         // Store the result for later resolution
                         pending_results.push((call_id, result_value));
                         // Continue execution with a pending future
-                        progress = state.run(MontyFuture, &mut StdPrint)?;
+                        progress = state.run(MontyFuture, &mut PrintWriter::Stdout)?;
                     }
                 }
             }
@@ -1358,7 +1506,7 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                     state.pending_call_ids().iter().collect::<Vec<_>>()
                 );
 
-                progress = state.resume(results, &mut StdPrint)?;
+                progress = state.resume(results, &mut PrintWriter::Stdout)?;
             }
             RunProgress::OsCall {
                 function,
@@ -1368,7 +1516,7 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                 ..
             } => {
                 let result = dispatch_os_call(function, &args, &kwargs);
-                progress = state.run(result, &mut StdPrint)?;
+                progress = state.run(result, &mut PrintWriter::Stdout)?;
             }
         }
     }
@@ -1810,17 +1958,15 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
     let (code, expectation, config) = parse_fixture(&content);
     let test_name = path.strip_prefix("test_cases/").unwrap_or(path).display().to_string();
 
-    // Clone data for the closure since it needs 'static lifetime
+    // Move data into the closure since it needs 'static lifetime
     let path_owned = path.to_owned();
-    let code_owned = code.clone();
-    let expectation_owned = expectation.clone();
     let iter_mode = config.iter_mode;
 
     let result = run_with_timeout(TEST_TIMEOUT, move || {
         if iter_mode {
-            try_run_iter_test(&path_owned, &code_owned, &expectation_owned)
+            try_run_iter_test(&path_owned, &code, &expectation)
         } else {
-            try_run_test(&path_owned, &code_owned, &expectation_owned)
+            try_run_test(&path_owned, &code, &expectation)
         }
     });
 

@@ -231,8 +231,7 @@ pub enum Opcode {
     BinarySubscr,
     /// a[b] = c: pop value, pop index, pop obj.
     StoreSubscr,
-    /// del a[b]: pop index, pop obj.
-    DeleteSubscr,
+    // NOTE: DeleteSubscr removed - `del` statement not supported by parser
     /// Pop obj, push obj.attr. Operand: u16 name_id.
     LoadAttr,
     /// Pop module, push module.attr for `from ... import`. Operand: u16 name_id.
@@ -242,8 +241,7 @@ pub enum Opcode {
     LoadAttrImport,
     /// Pop value, pop obj, set obj.attr. Operand: u16 name_id.
     StoreAttr,
-    /// Pop obj, delete obj.attr. Operand: u16 name_id.
-    DeleteAttr,
+    // NOTE: DeleteAttr removed - `del` statement not supported by parser
 
     // === Function Calls ===
     /// Call TOS with n positional args. Operand: u8 arg_count.
@@ -293,6 +291,18 @@ pub enum Opcode {
     ///
     /// Used for calls with `*args` and/or `**kwargs` unpacking.
     CallFunctionExtended,
+    /// Call attribute with *args tuple and **kwargs dict. Operands: u16 name_id, u8 flags.
+    ///
+    /// Flags:
+    /// - bit 0: has kwargs dict on stack
+    ///
+    /// Stack layout (bottom to top):
+    /// - receiver object
+    /// - args tuple
+    /// - kwargs dict (if flag bit 0 set)
+    ///
+    /// Used for method calls with `*args` and/or `**kwargs` unpacking.
+    CallAttrExtended,
 
     // === Control Flow ===
     /// Unconditional relative jump. Operand: i16 offset.
@@ -322,8 +332,7 @@ pub enum Opcode {
     // Note: No SetupTry/PopExceptHandler - we use static exception_table
     /// Raise TOS as exception.
     Raise,
-    /// Raise TOS from TOS-1.
-    RaiseFrom,
+    // NOTE: RaiseFrom removed - `raise ... from ...` not supported by parser
     /// Re-raise current exception (bare `raise`).
     Reraise,
     /// Clear current_exception when exiting except block.
@@ -367,6 +376,15 @@ pub enum Opcode {
     /// The module_id maps to `BuiltinModule` (0=sys, 1=typing).
     /// Creates the module on the heap and pushes a `Value::Ref` to it.
     LoadModule,
+    /// Raises `ModuleNotFoundError` at runtime. Operand: u16 constant index for module name.
+    ///
+    /// This opcode is emitted when the compiler encounters an import of an unknown module.
+    /// Instead of failing at compile time, the error is deferred to runtime so that
+    /// imports inside `if TYPE_CHECKING:` blocks or other non-executed code paths
+    /// don't cause errors.
+    ///
+    /// The operand is an index into the constant pool where the module name string is stored.
+    RaiseImportError,
 }
 
 impl TryFrom<u8> for Opcode {
@@ -389,15 +407,15 @@ impl Opcode {
         use Opcode::{
             Await, BinaryAdd, BinaryAnd, BinaryDiv, BinaryFloorDiv, BinaryLShift, BinaryMatMul, BinaryMod, BinaryMul,
             BinaryOr, BinaryPow, BinaryRShift, BinarySub, BinarySubscr, BinaryXor, BuildDict, BuildFString, BuildList,
-            BuildSet, BuildSlice, BuildTuple, CallAttr, CallAttrKw, CallBuiltinFunction, CallBuiltinType, CallFunction,
-            CallFunctionExtended, CallFunctionKw, CheckExcMatch, ClearException, CompareEq, CompareGe, CompareGt,
-            CompareIn, CompareIs, CompareIsNot, CompareLe, CompareLt, CompareModEq, CompareNe, CompareNotIn,
-            DeleteAttr, DeleteLocal, DeleteSubscr, DictMerge, DictSetItem, Dup, ForIter, FormatValue, GetIter,
+            BuildSet, BuildSlice, BuildTuple, CallAttr, CallAttrExtended, CallAttrKw, CallBuiltinFunction,
+            CallBuiltinType, CallFunction, CallFunctionExtended, CallFunctionKw, CheckExcMatch, ClearException,
+            CompareEq, CompareGe, CompareGt, CompareIn, CompareIs, CompareIsNot, CompareLe, CompareLt, CompareModEq,
+            CompareNe, CompareNotIn, DeleteLocal, DictMerge, DictSetItem, Dup, ForIter, FormatValue, GetIter,
             InplaceAdd, InplaceAnd, InplaceDiv, InplaceFloorDiv, InplaceLShift, InplaceMod, InplaceMul, InplaceOr,
             InplacePow, InplaceRShift, InplaceSub, InplaceXor, Jump, JumpIfFalse, JumpIfFalseOrPop, JumpIfTrue,
             JumpIfTrueOrPop, ListAppend, ListExtend, ListToTuple, LoadAttr, LoadAttrImport, LoadCell, LoadConst,
             LoadFalse, LoadGlobal, LoadLocal, LoadLocal0, LoadLocal1, LoadLocal2, LoadLocal3, LoadLocalW, LoadModule,
-            LoadNone, LoadSmallInt, LoadTrue, MakeClosure, MakeFunction, Nop, Pop, Raise, RaiseFrom, Reraise,
+            LoadNone, LoadSmallInt, LoadTrue, MakeClosure, MakeFunction, Nop, Pop, Raise, RaiseImportError, Reraise,
             ReturnValue, Rot2, Rot3, SetAdd, StoreAttr, StoreCell, StoreGlobal, StoreLocal, StoreLocalW, StoreSubscr,
             UnaryInvert, UnaryNeg, UnaryNot, UnaryPos, UnpackEx, UnpackSequence,
         };
@@ -451,14 +469,12 @@ impl Opcode {
             // Subscript & Attribute
             BinarySubscr => -1,             // pop 2, push 1
             StoreSubscr => -3,              // pop 3, push 0
-            DeleteSubscr => -2,             // pop 2, push 0
             LoadAttr | LoadAttrImport => 0, // pop 1, push 1
             StoreAttr => -2,                // pop 2, push 0
-            DeleteAttr => -1,               // pop 1, push 0
 
             // Function calls - depend on arg count
             CallFunction | CallBuiltinFunction | CallBuiltinType | CallFunctionKw | CallAttr | CallAttrKw
-            | CallFunctionExtended => return None,
+            | CallFunctionExtended | CallAttrExtended => return None,
 
             // Control flow - no stack effect (jumps don't push/pop)
             Jump => 0,
@@ -477,7 +493,6 @@ impl Opcode {
 
             // Exception handling
             Raise => -1,         // pop exception
-            RaiseFrom => -2,     // pop exception, pop cause
             Reraise => 0,        // no stack change (reads from exception_stack)
             ClearException => 0, // clears exception_stack, no operand stack change
             CheckExcMatch => 0,  // pop exc_type, push bool (net 0, but exc stays)
@@ -492,7 +507,8 @@ impl Opcode {
             Nop => 0,
 
             // Module
-            LoadModule => 1, // push module
+            LoadModule => 1,       // push module
+            RaiseImportError => 0, // raises exception, no stack change before that
         })
     }
 }
@@ -515,8 +531,8 @@ mod tests {
 
     #[test]
     fn test_opcode_roundtrip() {
-        // Verify that all opcodes from 0 to LoadModule (last opcode) can be converted to u8 and back
-        for byte in 0..=Opcode::LoadModule as u8 {
+        // Verify that all opcodes from 0 to RaiseImportError (last opcode) can be converted to u8 and back
+        for byte in 0..=Opcode::RaiseImportError as u8 {
             let opcode = Opcode::try_from(byte).unwrap();
             assert_eq!(opcode as u8, byte, "opcode {opcode:?} has wrong discriminant");
         }
@@ -525,7 +541,7 @@ mod tests {
     #[test]
     fn test_invalid_opcode() {
         // Byte just after the last valid opcode should fail
-        let result = Opcode::try_from(Opcode::LoadModule as u8 + 1);
+        let result = Opcode::try_from(Opcode::RaiseImportError as u8 + 1);
         assert!(result.is_err());
         // 255 should also fail
         let result = Opcode::try_from(255u8);

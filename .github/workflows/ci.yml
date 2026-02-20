@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       run_release:
-        description: 'Run release jobs (for manual tag releases)'
+        description: "Run release jobs (for manual tag releases)"
         type: boolean
         default: false
 
@@ -153,10 +153,48 @@ jobs:
 
       - run: make dev-bench
 
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - tokens_input_panic
+          # disable until https://github.com/astral-sh/ruff/issues/23198 is fixed
+          # - string_input_panic
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+      - id: cache-rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          prefix-key: "v1-rust-fuzz"
+          workspaces: "crates/fuzz -> target"
+
+      - if: steps.cache-rust.outputs.cache-hit != 'true'
+        run: cargo install cargo-fuzz
+
+      - name: Run ${{ matrix.target }} fuzzer
+        run: |
+          # Use --sanitizer none to avoid ASAN/SanitizerCoverage linking issues on CI
+          # (undefined __sancov_gen_.* symbols). For short CI runs, we're mainly
+          # catching panics, not memory bugs.
+          cargo fuzz run --fuzz-dir crates/fuzz --sanitizer none ${{ matrix.target }} -- -max_total_time=60
+
   # https://github.com/marketplace/actions/alls-green#why used for branch protection checks
   check:
     if: always()
-    needs: [lint, test-rust, test-python, bench-test]
+    needs:
+      - lint
+      - test-rust
+      - test-python
+      - bench-test
+      - fuzz
     runs-on: ubuntu-latest
     steps:
       - name: Decide whether the needed jobs succeeded or failed
@@ -178,7 +216,7 @@ jobs:
           args: --out dist
           rust-toolchain: stable
           working-directory: crates/monty-python
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: pypi_files-sdist
           path: crates/monty-python/dist
@@ -240,7 +278,7 @@ jobs:
           docker-options: -e CI
           working-directory: crates/monty-python
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: pypi_files-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux || 'manylinux' }}
           path: crates/monty-python/dist
@@ -306,7 +344,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: pypi_files-linux-${{ matrix.target }}-*
           merge-multiple: true
@@ -352,7 +390,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: pypi_files-${{ matrix.os }}-*
           merge-multiple: true
@@ -439,6 +477,9 @@ jobs:
           - host: macos-latest
             target: aarch64-apple-darwin
             build: npm run build:napi -- --target aarch64-apple-darwin && npm run build:ts
+          - host: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            build: npm run build:napi -- --target aarch64-unknown-linux-gnu && npm run build:ts
           - host: ubuntu-latest
             target: wasm32-wasip1-threads
             build: npm run build:napi -- --target wasm32-wasip1-threads && npm run build:ts
@@ -505,6 +546,8 @@ jobs:
             crates/monty-js/browser.js
             crates/monty-js/index.js
             crates/monty-js/index.d.ts
+            crates/monty-js/wrapper.js
+            crates/monty-js/wrapper.d.ts
             crates/monty-js/monty.wasi.cjs
             crates/monty-js/monty.wasi-browser.js
             crates/monty-js/wasi-worker.mjs
@@ -574,6 +617,7 @@ jobs:
       matrix:
         target:
           - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
         node:
           - "20"
           - "22"
@@ -630,11 +674,14 @@ jobs:
       - run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
         if: ${{ contains(matrix.target, 'armv7') }}
       - name: Test bindings
-        uses: addnab/docker-run-action@v3
-        with:
-          image: ${{ steps.docker.outputs.IMAGE }}
-          options: "-v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }}/crates/monty-js --platform ${{ steps.docker.outputs.PLATFORM }}"
-          run: npm test
+        run: >
+          docker run
+          --rm
+          -v ${{ github.workspace }}:${{ github.workspace }}
+          -w ${{ github.workspace }}/crates/monty-js
+          --platform ${{ steps.docker.outputs.PLATFORM }}
+          ${{ steps.docker.outputs.IMAGE }}
+          npm test
 
   test-js-wasi:
     name: Test WASI target
@@ -693,7 +740,7 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: crates/monty-js/package-lock.json
-          registry-url: 'https://registry.npmjs.org'
+          registry-url: "https://registry.npmjs.org"
       - name: Install dependencies
         run: npm install
         working-directory: crates/monty-js

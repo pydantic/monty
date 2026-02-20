@@ -1,3 +1,15 @@
+# === Empty tuple identity (singleton optimization) ===
+# In Python, () is () is always True because empty tuples are interned
+assert () is (), 'empty tuple identity'
+assert tuple() is (), 'tuple() is empty tuple'
+assert tuple() is tuple(), 'tuple() identity'
+a = ()
+b = ()
+assert a is b, 'empty tuple vars are same object'
+# Empty tuple from operations
+assert (1,)[1:] is (), 'slice to empty is singleton'
+assert (1, 2) * 0 is (), 'mult by 0 is empty singleton'
+
 # === Tuple length ===
 assert len(()) == 0, 'len empty'
 assert len((1,)) == 1, 'len single'

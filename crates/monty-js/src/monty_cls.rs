@@ -46,8 +46,8 @@
 use std::borrow::Cow;
 
 use monty::{
-    CollectStringPrint, ExcType, ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRun, NoLimitTracker,
-    ResourceTracker, RunProgress, Snapshot,
+    ExcType, ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRepl as CoreMontyRepl, MontyRun,
+    NoLimitTracker, PrintWriter, PrintWriterCallback, ResourceTracker, RunProgress, Snapshot,
 };
 use monty_type_checking::{type_check, SourceFile};
 use napi::bindgen_prelude::*;
@@ -55,7 +55,7 @@ use napi_derive::napi;
 
 use crate::{
     convert::{js_to_monty, monty_to_js, JsMontyObject},
-    exceptions::{JsMontyException, MontyTypingError},
+    exceptions::{exc_js_to_monty, JsMontyException, MontyTypingError},
     limits::JsResourceLimits,
 };
 
@@ -82,6 +82,7 @@ pub struct Monty {
 
 /// Options for creating a new Monty instance.
 #[napi(object)]
+#[derive(Default)]
 pub struct MontyOptions {
     /// Name used in tracebacks and error messages. Default: 'main.py'
     pub script_name: Option<String>,
@@ -97,11 +98,13 @@ pub struct MontyOptions {
 
 /// Options for running code.
 #[napi(object)]
-#[derive(Clone)]
+#[derive(Default)]
 pub struct RunOptions<'env> {
     pub inputs: Option<Object<'env>>,
     /// Resource limits configuration.
     pub limits: Option<JsResourceLimits>,
+    /// Optional print callback function.
+    pub print_callback: Option<JsPrintCallback<'env>>,
     /// Dict of external function callbacks.
     /// Keys are function names, values are callable functions.
     pub external_functions: Option<Object<'env>>,
@@ -109,12 +112,14 @@ pub struct RunOptions<'env> {
 
 /// Options for starting execution.
 #[napi(object)]
-#[derive(Clone, Copy)]
+#[derive(Default)]
 pub struct StartOptions<'env> {
     /// Dict of input variable values.
     pub inputs: Option<Object<'env>>,
     /// Resource limits configuration.
     pub limits: Option<JsResourceLimits>,
+    /// Optional print callback function.
+    pub print_callback: Option<JsPrintCallback<'env>>,
 }
 
 #[napi]
@@ -132,23 +137,17 @@ impl Monty {
         code: String,
         options: Option<MontyOptions>,
     ) -> Result<Either3<Self, JsMontyException, MontyTypingError>> {
-        let options = options.unwrap_or(MontyOptions {
-            script_name: None,
-            inputs: None,
-            external_functions: None,
-            type_check: None,
-            type_check_prefix_code: None,
-        });
-
-        let script_name = options.script_name.unwrap_or_else(|| "main.py".to_string());
-        let input_names = options.inputs.unwrap_or_default();
-        let external_function_names = options.external_functions.unwrap_or_default();
-        let do_type_check = options.type_check.unwrap_or(false);
+        let ResolvedMontyOptions {
+            script_name,
+            input_names,
+            external_function_names,
+            do_type_check,
+            type_check_prefix_code,
+        } = resolve_monty_options(options);
 
         // Perform type checking if requested
         if do_type_check {
-            if let Some(error) = run_type_check_result(&code, &script_name, options.type_check_prefix_code.as_deref())?
-            {
+            if let Some(error) = run_type_check_result(&code, &script_name, type_check_prefix_code.as_deref())? {
                 return Ok(Either3::C(error));
             }
         }
@@ -188,29 +187,37 @@ impl Monty {
         env: &'env Env,
         options: Option<RunOptions<'env>>,
     ) -> Result<Either<JsMontyObject<'env>, JsMontyException>> {
-        // Extract input values
-        let input_values = self.extract_input_values(options.as_ref().and_then(|opts| opts.inputs), *env)?;
+        let options = options.unwrap_or_default();
+        let input_values = self.extract_input_values(options.inputs, *env)?;
 
-        let external_functions = options.as_ref().and_then(|opts| opts.external_functions);
+        let external_functions = options.external_functions;
+
+        let mut print_cb;
+        let mut print_writer = match &options.print_callback {
+            Some(func) => {
+                print_cb = CallbackStringPrint::new_js(env, func)?;
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
 
         // If we have external functions declared, use the start/resume loop
         if !self.external_function_names.is_empty() {
             return self.run_with_external_functions(
                 env,
                 input_values,
-                options.as_ref().and_then(|opts| opts.limits),
+                options.limits,
                 external_functions,
+                print_writer,
             );
         }
 
-        // No external functions - simple run
-        let mut print_output = CollectStringPrint::default();
-
-        let result = if let Some(limits) = options.as_ref().and_then(|opts| opts.limits) {
+        let result = if let Some(limits) = options.limits {
             let tracker = LimitedTracker::new(limits.into());
-            self.runner.run(input_values, tracker, &mut print_output)
+            self.runner.run(input_values, tracker, &mut print_writer)
         } else {
-            self.runner.run(input_values, NoLimitTracker, &mut print_output)
+            let tracker = NoLimitTracker;
+            self.runner.run(input_values, tracker, &mut print_writer)
         };
 
         match result {
@@ -226,8 +233,8 @@ impl Monty {
         input_values: Vec<MontyObject>,
         limits: Option<JsResourceLimits>,
         external_functions: Option<Object<'env>>,
+        mut print_output: PrintWriter<'_>,
     ) -> Result<Either<JsMontyObject<'env>, JsMontyException>> {
-        let mut print_output = CollectStringPrint::default();
         let runner = self.runner.clone();
 
         // Helper macro to handle the execution loop for both tracker types
@@ -301,27 +308,38 @@ impl Monty {
         env: &'env Env,
         options: Option<StartOptions<'env>>,
     ) -> Result<Either3<MontySnapshot, MontyComplete, JsMontyException>> {
-        // Extract input values
-        let input_values = self.extract_input_values(options.and_then(|opts| opts.inputs), *env)?;
+        let options = options.unwrap_or_default();
+        let input_values = self.extract_input_values(options.inputs, *env)?;
 
         // Clone the runner since start() consumes it - allows reuse of the parsed code
         let runner = self.runner.clone();
-        let mut print_output = CollectStringPrint::default();
+
+        // Build print writer and capture the callback ref for the snapshot
+        let mut print_cb;
+        let mut print_writer = match &options.print_callback {
+            Some(func) => {
+                print_cb = CallbackStringPrint::new_js(env, func)?;
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
+        let print_callback_ref = options.print_callback.as_ref().map(Function::create_ref).transpose()?;
 
         // Start execution with appropriate tracker
-        if let Some(limits) = options.and_then(|opts| opts.limits) {
+        if let Some(limits) = options.limits {
             let tracker = LimitedTracker::new(limits.into());
-            let progress = match runner.start(input_values, tracker, &mut print_output) {
+            let progress = match runner.start(input_values, tracker, &mut print_writer) {
                 Ok(p) => p,
                 Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
             };
-            Ok(progress_to_result(progress, self.script_name.clone()))
+            Ok(progress_to_result(progress, print_callback_ref, self.script_name()))
         } else {
-            let progress = match runner.start(input_values, NoLimitTracker, &mut print_output) {
+            let tracker = NoLimitTracker;
+            let progress = match runner.start(input_values, tracker, &mut print_writer) {
                 Ok(p) => p,
                 Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
             };
-            Ok(progress_to_result(progress, self.script_name.clone()))
+            Ok(progress_to_result(progress, print_callback_ref, self.script_name()))
         }
     }
 
@@ -402,33 +420,7 @@ impl Monty {
 
     /// Extracts input values from the JS Object in the order they were declared.
     fn extract_input_values(&self, inputs: Option<Object<'_>>, env: Env) -> Result<Vec<MontyObject>> {
-        if self.input_names.is_empty() {
-            if inputs.is_some() {
-                return Err(Error::from_reason(
-                    "No input variables declared but inputs object was provided",
-                ));
-            }
-            return Ok(vec![]);
-        }
-
-        let Some(inputs) = inputs else {
-            return Err(Error::from_reason(format!(
-                "Missing required inputs: {:?}",
-                self.input_names
-            )));
-        };
-
-        // Extract values in declaration order
-        self.input_names
-            .iter()
-            .map(|name| {
-                if !inputs.has_named_property(name)? {
-                    return Err(Error::from_reason(format!("Missing required input: '{name}'")));
-                }
-                let value: Unknown = inputs.get_named_property(name)?;
-                js_to_monty(value, env)
-            })
-            .collect()
+        extract_input_values_in_order(&self.input_names, inputs, env)
     }
 }
 
@@ -447,6 +439,231 @@ fn run_type_check_result(code: &str, script_name: &str, prefix_code: Option<&str
         type_check(&source_file, None).map_err(|e| Error::from_reason(format!("Type checking failed: {e}")))?;
 
     Ok(result.map(MontyTypingError::from_failure))
+}
+
+// =============================================================================
+// MontyRepl - Incremental no-replay REPL session
+// =============================================================================
+
+/// REPL state holder for napi interoperability.
+///
+/// `napi` classes cannot be generic, so this enum stores REPL sessions for both
+/// resource tracker variants.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+enum EitherRepl {
+    NoLimit(CoreMontyRepl<NoLimitTracker>),
+    Limited(CoreMontyRepl<LimitedTracker>),
+}
+
+/// Stateful no-replay REPL session.
+///
+/// Each call to `feed()` compiles and executes only the provided snippet against
+/// existing session state.
+#[napi]
+pub struct MontyRepl {
+    repl: EitherRepl,
+    script_name: String,
+}
+
+#[napi]
+impl MontyRepl {
+    /// Creates a REPL session directly from source code.
+    ///
+    /// This mirrors `Monty.create(...)` for parsing/type-checking options, then
+    /// initializes a stateful REPL that executes the initial module once.
+    ///
+    /// @param code - Python code to execute for REPL initialization
+    /// @param options - Parser/type-checking configuration
+    /// @param startOptions - Initial inputs and optional resource limits
+    /// @returns MontyRepl on success, or error object on failure
+    #[napi]
+    pub fn create<'env>(
+        env: &'env Env,
+        code: String,
+        options: Option<MontyOptions>,
+        start_options: Option<StartOptions<'env>>,
+    ) -> Result<Either3<Self, JsMontyException, MontyTypingError>> {
+        let ResolvedMontyOptions {
+            script_name,
+            input_names,
+            external_function_names,
+            do_type_check,
+            type_check_prefix_code,
+        } = resolve_monty_options(options);
+
+        if do_type_check {
+            if let Some(error) = run_type_check_result(&code, &script_name, type_check_prefix_code.as_deref())? {
+                return Ok(Either3::C(error));
+            }
+        }
+
+        let start_options = start_options.unwrap_or_default();
+
+        let mut print_cb;
+        let mut print_writer = match &start_options.print_callback {
+            Some(func) => {
+                print_cb = CallbackStringPrint::new_js(env, func)?;
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
+
+        let input_values = extract_input_values_in_order(&input_names, start_options.inputs, *env)?;
+        if let Some(limits) = start_options.limits {
+            let tracker = LimitedTracker::new(limits.into());
+            match CoreMontyRepl::new(
+                code,
+                &script_name,
+                input_names,
+                external_function_names,
+                input_values,
+                tracker,
+                &mut print_writer,
+            ) {
+                Ok((repl, _output)) => Ok(Either3::A(Self {
+                    repl: EitherRepl::Limited(repl),
+                    script_name,
+                })),
+                Err(exc) => Ok(Either3::B(JsMontyException::new(exc))),
+            }
+        } else {
+            match CoreMontyRepl::new(
+                code,
+                &script_name,
+                input_names,
+                external_function_names,
+                input_values,
+                NoLimitTracker,
+                &mut print_writer,
+            ) {
+                Ok((repl, _output)) => Ok(Either3::A(Self {
+                    repl: EitherRepl::NoLimit(repl),
+                    script_name,
+                })),
+                Err(exc) => Ok(Either3::B(JsMontyException::new(exc))),
+            }
+        }
+    }
+
+    /// Returns the script name for this REPL session.
+    #[napi(getter)]
+    #[must_use]
+    pub fn script_name(&self) -> String {
+        self.script_name.clone()
+    }
+
+    /// Executes one incremental snippet against persistent REPL state.
+    #[napi]
+    pub fn feed<'env>(
+        &mut self,
+        env: &'env Env,
+        code: String,
+    ) -> Result<Either<JsMontyObject<'env>, JsMontyException>> {
+        let output = match &mut self.repl {
+            EitherRepl::NoLimit(repl) => repl.feed(&code, &mut PrintWriter::Stdout),
+            EitherRepl::Limited(repl) => repl.feed(&code, &mut PrintWriter::Stdout),
+        };
+
+        match output {
+            Ok(value) => Ok(Either::A(monty_to_js(&value, env)?)),
+            Err(exc) => Ok(Either::B(JsMontyException::new(exc))),
+        }
+    }
+
+    /// Serializes this REPL session to bytes.
+    #[napi]
+    pub fn dump(&self) -> Result<Buffer> {
+        let serialized = SerializedRepl {
+            repl: &self.repl,
+            script_name: &self.script_name,
+        };
+        let bytes =
+            postcard::to_allocvec(&serialized).map_err(|e| Error::from_reason(format!("Serialization failed: {e}")))?;
+        Ok(Buffer::from(bytes))
+    }
+
+    /// Restores a REPL session from bytes produced by `dump()`.
+    #[napi(factory)]
+    pub fn load(data: Buffer) -> Result<Self> {
+        let serialized: SerializedReplOwned =
+            postcard::from_bytes(&data).map_err(|e| Error::from_reason(format!("Deserialization failed: {e}")))?;
+        Ok(Self {
+            repl: serialized.repl,
+            script_name: serialized.script_name,
+        })
+    }
+
+    /// Returns a string representation of the REPL session.
+    #[napi]
+    #[must_use]
+    pub fn repr(&self) -> String {
+        format!("MontyRepl(scriptName='{}')", self.script_name)
+    }
+}
+
+/// Fully resolved creation options shared by `Monty` and `MontyRepl`.
+///
+/// This keeps parsing/type-checking defaults consistent across non-REPL and
+/// REPL entry points.
+struct ResolvedMontyOptions {
+    script_name: String,
+    input_names: Vec<String>,
+    external_function_names: Vec<String>,
+    do_type_check: bool,
+    type_check_prefix_code: Option<String>,
+}
+
+/// Normalizes optional JS-facing creation options into concrete defaults.
+fn resolve_monty_options(options: Option<MontyOptions>) -> ResolvedMontyOptions {
+    let options = options.unwrap_or(MontyOptions {
+        script_name: None,
+        inputs: None,
+        external_functions: None,
+        type_check: None,
+        type_check_prefix_code: None,
+    });
+
+    ResolvedMontyOptions {
+        script_name: options.script_name.unwrap_or_else(|| "main.py".to_string()),
+        input_names: options.inputs.unwrap_or_default(),
+        external_function_names: options.external_functions.unwrap_or_default(),
+        do_type_check: options.type_check.unwrap_or(false),
+        type_check_prefix_code: options.type_check_prefix_code,
+    }
+}
+
+/// Extracts input values in declaration order from a JS object.
+///
+/// This helper is shared by regular `Monty` execution and direct REPL creation
+/// so both paths perform identical input validation.
+fn extract_input_values_in_order(
+    input_names: &[String],
+    inputs: Option<Object<'_>>,
+    env: Env,
+) -> Result<Vec<MontyObject>> {
+    if input_names.is_empty() {
+        if inputs.is_some() {
+            return Err(Error::from_reason(
+                "No input variables declared but inputs object was provided",
+            ));
+        }
+        return Ok(vec![]);
+    }
+
+    let Some(inputs) = inputs else {
+        return Err(Error::from_reason(format!("Missing required inputs: {input_names:?}")));
+    };
+
+    input_names
+        .iter()
+        .map(|name| {
+            if !inputs.has_named_property(name)? {
+                return Err(Error::from_reason(format!("Missing required input: '{name}'")));
+            }
+            let value: Unknown = inputs.get_named_property(name)?;
+            js_to_monty(value, env)
+        })
+        .collect()
 }
 
 // =============================================================================
@@ -486,6 +703,8 @@ pub struct MontySnapshot {
     args: Vec<MontyObject>,
     /// The keyword arguments passed to the function (stored as MontyObject pairs for serialization).
     kwargs: Vec<(MontyObject, MontyObject)>,
+    /// Optional print callback function.
+    print_callback: Option<JsPrintCallbackRef>,
 }
 
 /// Options for resuming execution.
@@ -509,7 +728,9 @@ pub struct ExceptionInput {
 
 /// Options for loading a serialized snapshot.
 #[napi(object)]
-pub struct SnapshotLoadOptions {
+pub struct SnapshotLoadOptions<'env> {
+    /// Optional print callback function.
+    pub print_callback: Option<JsPrintCallback<'env>>,
     // Future: could add dataclass-like registry support
 }
 
@@ -584,22 +805,36 @@ impl MontySnapshot {
         // Take the snapshot, replacing with Done
         let snapshot = std::mem::replace(&mut self.snapshot, EitherSnapshot::Done);
 
+        // Take the print callback
+        // This is necessary to move out of `&mut self` to please the borrow checker.
+        // Unless the entire snapshot generator is refactored we have to do this.
+        let print_callback = std::mem::take(&mut self.print_callback);
+
+        // Build print writer from the callback ref
+        let mut print_cb;
+        let mut print_writer = match &print_callback {
+            Some(func) => {
+                print_cb = CallbackStringPrint::new_js_ref(env, func)?;
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
+
         // Resume execution based on the snapshot type
-        let mut print_output = CollectStringPrint::default();
         match snapshot {
             EitherSnapshot::NoLimit(state) => {
-                let progress = match state.run(external_result, &mut print_output) {
+                let progress = match state.run(external_result, &mut print_writer) {
                     Ok(p) => p,
                     Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
                 };
-                Ok(progress_to_result(progress, self.script_name.clone()))
+                Ok(progress_to_result(progress, print_callback, self.script_name.clone()))
             }
             EitherSnapshot::Limited(state) => {
-                let progress = match state.run(external_result, &mut print_output) {
+                let progress = match state.run(external_result, &mut print_writer) {
                     Ok(p) => p,
                     Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
                 };
-                Ok(progress_to_result(progress, self.script_name.clone()))
+                Ok(progress_to_result(progress, print_callback, self.script_name.clone()))
             }
             EitherSnapshot::Done => Err(Error::from_reason("Snapshot has already been resumed")),
         }
@@ -636,7 +871,7 @@ impl MontySnapshot {
     /// @param options - Optional load options (reserved for future use)
     /// @returns A new MontySnapshot instance
     #[napi(factory)]
-    pub fn load(data: Buffer, _options: Option<SnapshotLoadOptions>) -> Result<Self> {
+    pub fn load(data: Buffer, options: Option<SnapshotLoadOptions>) -> Result<Self> {
         let serialized: SerializedSnapshotOwned =
             postcard::from_bytes(&data).map_err(|e| Error::from_reason(format!("Deserialization failed: {e}")))?;
 
@@ -646,6 +881,11 @@ impl MontySnapshot {
             function_name: serialized.function_name,
             args: serialized.args,
             kwargs: serialized.kwargs,
+            print_callback: options
+                .as_ref()
+                .and_then(|t| t.print_callback.as_ref())
+                .map(Function::create_ref)
+                .transpose()?,
         })
     }
 
@@ -688,6 +928,45 @@ impl MontyComplete {
     }
 }
 
+// Function type for JS callback used in `CallbackStringPrint`.
+type JsPrintCallback<'env> = Function<'env, FnArgs<(&'static str, String)>, ()>;
+type JsPrintCallbackRef = FunctionRef<FnArgs<(&'static str, String)>, ()>;
+
+/// A `PrintWriter` implementation that calls a javascript callback for each print output.
+///
+/// This structure internally holds a `napi::Function`.
+pub struct CallbackStringPrint<'env>(JsPrintCallback<'env>);
+
+impl<'env> CallbackStringPrint<'env> {
+    /// Creates a new `CallbackStringPrint` from a `JsFunction`.
+    pub fn new_js(env: &'env Env, func: &JsPrintCallback<'env>) -> napi::Result<Self> {
+        Ok(Self(func.create_ref()?.borrow_back(env)?))
+    }
+
+    /// Creates a new printer from a function reference.
+    ///
+    /// This will re-borrow the function reference for use in printing.
+    pub fn new_js_ref(env: &'env Env, func: &JsPrintCallbackRef) -> napi::Result<Self> {
+        Ok(Self(func.borrow_back(env)?))
+    }
+}
+
+impl PrintWriterCallback for CallbackStringPrint<'_> {
+    fn stdout_write(&mut self, output: Cow<'_, str>) -> std::result::Result<(), MontyException> {
+        self.0
+            .call(("stdout", output.as_ref().to_owned()).into())
+            .map_err(exc_js_to_monty)?;
+        Ok(())
+    }
+
+    fn stdout_push(&mut self, end: char) -> std::result::Result<(), MontyException> {
+        self.0
+            .call(("stdout", end.to_string()).into())
+            .map_err(exc_js_to_monty)?;
+        Ok(())
+    }
+}
+
 // =============================================================================
 // Helper functions for progress conversion
 // =============================================================================
@@ -698,6 +977,7 @@ impl MontyComplete {
 /// Panics if the progress is `ResolveFutures` - async futures are not yet supported in the JS bindings.
 fn progress_to_result<T>(
     progress: RunProgress<T>,
+    print_callback: Option<JsPrintCallbackRef>,
     script_name: String,
 ) -> Either3<MontySnapshot, MontyComplete, JsMontyException>
 where
@@ -720,6 +1000,7 @@ where
                 function_name,
                 args,
                 kwargs,
+                print_callback,
             })
         }
         RunProgress::ResolveFutures(_) => {
@@ -766,6 +1047,20 @@ struct SerializedMonty {
     script_name: String,
     input_names: Vec<String>,
     external_function_names: Vec<String>,
+}
+
+/// Serialization wrapper for `MontyRepl` using borrowed references.
+#[derive(serde::Serialize)]
+struct SerializedRepl<'a> {
+    repl: &'a EitherRepl,
+    script_name: &'a str,
+}
+
+/// Owned version of `SerializedRepl` for deserialization.
+#[derive(serde::Deserialize)]
+struct SerializedReplOwned {
+    repl: EitherRepl,
+    script_name: String,
 }
 
 /// Serialization wrapper for `MontySnapshot` using borrowed references.
@@ -843,12 +1138,14 @@ fn call_external_function(
 
     // Get undefined for the 'this' argument
     let mut undefined_raw = std::ptr::null_mut();
+    // SAFETY: [DH] - all arguments are valid and result is valid on success
     unsafe {
         sys::napi_get_undefined(env.raw(), &raw mut undefined_raw);
     }
 
     // Call the function using raw napi
     let mut result_raw = std::ptr::null_mut();
+    // SAFETY: [DH] - all arguments are valid and result is valid on success
     let status = unsafe {
         sys::napi_call_function(
             env.raw(),
@@ -863,14 +1160,24 @@ fn call_external_function(
     if status != sys::Status::napi_ok {
         // An error occurred - get the pending exception
         let mut is_exception = false;
+        // SAFETY: [DH] - all arguments are valid
         unsafe { sys::napi_is_exception_pending(env.raw(), &raw mut is_exception) };
 
         if is_exception {
             let mut exception_raw = std::ptr::null_mut();
-            unsafe { sys::napi_get_and_clear_last_exception(env.raw(), &raw mut exception_raw) };
+            // SAFETY: [DH] - all arguments are valid and exception_raw is valid on success
+            let status = unsafe { sys::napi_get_and_clear_last_exception(env.raw(), &raw mut exception_raw) };
 
-            // Try to extract exception info
-            let exc = extract_js_exception(env, exception_raw);
+            if status != sys::Status::napi_ok {
+                // Failed to get the exception - return a generic error
+                let exc = MontyException::new(
+                    ExcType::RuntimeError,
+                    Some("External function call failed and exception could not be retrieved".to_string()),
+                );
+                return Ok(ExternalResult::Error(exc));
+            }
+            let exception_obj = Object::from_raw(env.raw(), exception_raw);
+            let exc = extract_js_exception(exception_obj);
             return Ok(ExternalResult::Error(exc));
         }
 
@@ -880,16 +1187,14 @@ fn call_external_function(
     }
 
     // Convert the result back to Monty format
+    // SAFETY: [DH] - result_raw is valid on success
     let result = unsafe { Unknown::from_raw_unchecked(env.raw(), result_raw) };
     let monty_result = js_to_monty(result, *env)?;
     Ok(ExternalResult::Return(monty_result))
 }
 
 /// Extracts exception info from a JS exception object.
-fn extract_js_exception(env: &Env, exception_raw: sys::napi_value) -> MontyException {
-    // Try to get the exception as an object and extract name/message
-    let exception_obj = Object::from_raw(env.raw(), exception_raw);
-
+fn extract_js_exception(exception_obj: Object<'_>) -> MontyException {
     // Try to get the 'name' property (e.g., "ValueError")
     let name: std::result::Result<String, _> = exception_obj.get_named_property("name");
     // Try to get the 'message' property

@@ -24,7 +24,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapId},
     intern::{Interns, StringId},
-    resource::ResourceTracker,
+    resource::{DepthGuard, ResourceError, ResourceTracker},
     types::{AttrCallResult, Type},
     value::{EitherStr, Value},
 };
@@ -179,18 +179,27 @@ impl PyTrait for NamedTuple {
         }
     }
 
-    fn py_eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool {
+    fn py_eq(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Result<bool, ResourceError> {
         // Compare only by items (not type_name) to match tuple semantics
         // This allows sys.version_info == (3, 14, 0, 'final', 0) to work
         if self.items.len() != other.items.len() {
-            return false;
+            return Ok(false);
         }
+        guard.increase_err()?;
         for (i1, i2) in self.items.iter().zip(&other.items) {
-            if !i1.py_eq(i2, heap, interns) {
-                return false;
+            if !i1.py_eq(i2, heap, guard, interns)? {
+                guard.decrease();
+                return Ok(false);
             }
         }
-        true
+        guard.decrease();
+        Ok(true)
     }
 
     /// Pushes all heap IDs contained in this named tuple onto the stack.
@@ -220,8 +229,14 @@ impl PyTrait for NamedTuple {
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
+        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result {
+        // Check depth limit before recursing
+        if !guard.increase() {
+            return f.write_str("...");
+        }
+
         // Format: type_name(field1=value1, field2=value2, ...)
         write!(f, "{}(", self.name.as_str(interns))?;
 
@@ -233,10 +248,12 @@ impl PyTrait for NamedTuple {
             first = false;
             f.write_str(field_name.as_str(interns))?;
             f.write_char('=')?;
-            value.py_repr_fmt(f, heap, heap_ids, interns)?;
+            value.py_repr_fmt(f, heap, heap_ids, guard, interns)?;
         }
 
-        f.write_char(')')
+        f.write_char(')')?;
+        guard.decrease();
+        Ok(())
     }
 
     fn py_getattr(

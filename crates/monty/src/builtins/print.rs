@@ -2,11 +2,12 @@
 
 use crate::{
     args::{ArgValues, KwargsValues},
+    defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData},
     intern::Interns,
     io::PrintWriter,
-    resource::ResourceTracker,
+    resource::{DepthGuard, ResourceTracker},
     types::PyTrait,
     value::Value,
 };
@@ -23,25 +24,19 @@ pub fn builtin_print(
     heap: &mut Heap<impl ResourceTracker>,
     args: ArgValues,
     interns: &Interns,
-    print: &mut impl PrintWriter,
+    print: &mut PrintWriter<'_>,
 ) -> RunResult<Value> {
     // Split into positional args and kwargs
     let (positional, kwargs) = args.into_parts();
+    defer_drop!(positional, heap);
 
-    // Extract kwargs first, consuming them - this handles cleanup on error
-    let (sep, end) = match extract_print_kwargs(kwargs, heap, interns) {
-        Ok(se) => se,
-        Err(err) => {
-            for value in positional {
-                value.drop_with_heap(heap);
-            }
-            return Err(err);
-        }
-    };
+    // Extract kwargs first
+    let (sep, end) = extract_print_kwargs(kwargs, heap, interns)?;
 
     // Print positional args with separator, dropping each value after use
     let mut first = true;
-    for value in positional {
+    let mut guard = DepthGuard::default();
+    for value in positional.as_slice() {
         if first {
             first = false;
         } else if let Some(sep) = &sep {
@@ -49,8 +44,7 @@ pub fn builtin_print(
         } else {
             print.stdout_push(' ')?;
         }
-        print.stdout_write(value.py_str(heap, interns))?;
-        value.drop_with_heap(heap);
+        print.stdout_write(value.py_str(heap, &mut guard, interns))?;
     }
 
     // Append end string
@@ -77,27 +71,28 @@ fn extract_print_kwargs(
     let mut error: Option<RunError> = None;
 
     for (key, value) in kwargs {
+        // defer_drop! ensures key and value are cleaned up on every path through
+        // the loop body — including continue, early return, and normal iteration
+        defer_drop!(key, heap);
+        defer_drop!(value, heap);
+
         // If we already hit an error, just drop remaining values
         if error.is_some() {
-            key.drop_with_heap(heap);
-            value.drop_with_heap(heap);
             continue;
         }
 
         let Some(keyword_name) = key.as_either_str(heap) else {
-            key.drop_with_heap(heap);
-            value.drop_with_heap(heap);
             error = Some(SimpleException::new_msg(ExcType::TypeError, "keywords must be strings").into());
             continue;
         };
 
         let key_str = keyword_name.as_str(interns);
         match key_str {
-            "sep" => match extract_string_kwarg(&value, "sep", heap, interns) {
+            "sep" => match extract_string_kwarg(value, "sep", heap, interns) {
                 Ok(custom_sep) => sep = custom_sep,
                 Err(e) => error = Some(e),
             },
-            "end" => match extract_string_kwarg(&value, "end", heap, interns) {
+            "end" => match extract_string_kwarg(value, "end", heap, interns) {
                 Ok(custom_end) => end = custom_end,
                 Err(e) => error = Some(e),
             },
@@ -111,8 +106,6 @@ fn extract_print_kwargs(
                 error = Some(ExcType::type_error_unexpected_keyword("print", key_str));
             }
         }
-        key.drop_with_heap(heap);
-        value.drop_with_heap(heap);
     }
 
     if let Some(error) = error {

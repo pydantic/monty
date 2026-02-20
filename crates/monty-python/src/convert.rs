@@ -15,7 +15,7 @@ use pyo3::{
 };
 
 use crate::{
-    dataclass::{dataclass_to_monty, dataclass_to_py, is_dataclass},
+    dataclass::{DcRegistry, dataclass_to_monty, dataclass_to_py, is_dataclass},
     exceptions::{exc_monty_to_py, exc_to_monty_object},
 };
 
@@ -24,9 +24,13 @@ use crate::{
 /// Handles all standard Python types that Monty supports as inputs.
 /// Unsupported types will raise a `TypeError`.
 ///
+/// When a dataclass is encountered, it is automatically registered in `dc_registry`
+/// so that the original Python type can be reconstructed on output (enabling `isinstance()`).
+/// This applies recursively to nested dataclasses in fields, lists, dicts, etc.
+///
 /// # Important
 /// Checks `bool` before `int` since `bool` is a subclass of `int` in Python.
-pub fn py_to_monty(obj: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
+pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult<MontyObject> {
     if obj.is_none() {
         Ok(MontyObject::None)
     } else if let Ok(bool) = obj.cast::<PyBool>() {
@@ -48,7 +52,7 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
     } else if let Ok(bytes) = obj.cast::<PyBytes>() {
         Ok(MontyObject::Bytes(bytes.extract()?))
     } else if let Ok(list) = obj.cast::<PyList>() {
-        let items: PyResult<Vec<MontyObject>> = list.iter().map(|item| py_to_monty(&item)).collect();
+        let items: PyResult<Vec<MontyObject>> = list.iter().map(|item| py_to_monty(&item, dc_registry)).collect();
         Ok(MontyObject::List(items?))
     } else if let Ok(tuple) = obj.cast::<PyTuple>() {
         // Check for namedtuple BEFORE treating as regular tuple
@@ -71,7 +75,7 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
             // Extract field names as strings
             let field_names: PyResult<Vec<String>> = fields_tuple.iter().map(|f| f.extract::<String>()).collect();
             // Extract values
-            let values: PyResult<Vec<MontyObject>> = tuple.iter().map(|item| py_to_monty(&item)).collect();
+            let values: PyResult<Vec<MontyObject>> = tuple.iter().map(|item| py_to_monty(&item, dc_registry)).collect();
             return Ok(MontyObject::NamedTuple {
                 type_name,
                 field_names: field_names?,
@@ -79,28 +83,30 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
             });
         }
         // Regular tuple
-        let items: PyResult<Vec<MontyObject>> = tuple.iter().map(|item| py_to_monty(&item)).collect();
+        let items: PyResult<Vec<MontyObject>> = tuple.iter().map(|item| py_to_monty(&item, dc_registry)).collect();
         Ok(MontyObject::Tuple(items?))
     } else if let Ok(dict) = obj.cast::<PyDict>() {
         // in theory we could provide a way of passing the iterator direct to the internal MontyObject construct
         // it's probably not worth it right now
         Ok(MontyObject::dict(
             dict.iter()
-                .map(|(k, v)| Ok((py_to_monty(&k)?, py_to_monty(&v)?)))
+                .map(|(k, v)| Ok((py_to_monty(&k, dc_registry)?, py_to_monty(&v, dc_registry)?)))
                 .collect::<PyResult<Vec<(MontyObject, MontyObject)>>>()?,
         ))
     } else if let Ok(set) = obj.cast::<PySet>() {
-        let items: PyResult<Vec<MontyObject>> = set.iter().map(|item| py_to_monty(&item)).collect();
+        let items: PyResult<Vec<MontyObject>> = set.iter().map(|item| py_to_monty(&item, dc_registry)).collect();
         Ok(MontyObject::Set(items?))
     } else if let Ok(frozenset) = obj.cast::<PyFrozenSet>() {
-        let items: PyResult<Vec<MontyObject>> = frozenset.iter().map(|item| py_to_monty(&item)).collect();
+        let items: PyResult<Vec<MontyObject>> = frozenset.iter().map(|item| py_to_monty(&item, dc_registry)).collect();
         Ok(MontyObject::FrozenSet(items?))
     } else if obj.is(obj.py().Ellipsis()) {
         Ok(MontyObject::Ellipsis)
     } else if let Ok(exc) = obj.cast::<PyBaseException>() {
         Ok(exc_to_monty_object(exc))
     } else if is_dataclass(obj) {
-        dataclass_to_monty(obj)
+        // Auto-register the dataclass type so it can be reconstructed on output
+        dc_registry.insert(&obj.get_type())?;
+        dataclass_to_monty(obj, dc_registry)
     } else if obj.is_instance(get_pure_posix_path(obj.py())?)? {
         // Handle pathlib.PurePosixPath and thereby pathlib.PosixPath objects
         let path_str: String = obj.str()?.extract()?;
@@ -117,7 +123,7 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
 /// When a dataclass is converted and its class name is found in the registry,
 /// an instance of the original Python type is created (so `isinstance()` works).
 /// Otherwise, falls back to `PyMontyDataclass`.
-pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &Bound<'_, PyDict>) -> PyResult<Py<PyAny>> {
+pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) -> PyResult<Py<PyAny>> {
     match obj {
         MontyObject::None => Ok(py.None()),
         MontyObject::Ellipsis => Ok(py.Ellipsis()),
@@ -205,7 +211,6 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &Bound<'_, Py
             field_names,
             attrs,
             frozen,
-            methods: _,
         } => dataclass_to_py(py, name, *type_id, field_names, attrs, *frozen, dc_registry),
         // Path - convert to Python pathlib.Path
         MontyObject::Path(p) => {

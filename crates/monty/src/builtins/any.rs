@@ -2,6 +2,7 @@
 
 use crate::{
     args::ArgValues,
+    defer_drop, defer_drop_mut,
     exception_private::RunResult,
     heap::Heap,
     intern::Interns,
@@ -16,17 +17,16 @@ use crate::{
 /// Returns False for an empty iterable. Short-circuits on the first truthy value.
 pub fn builtin_any(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
     let iterable = args.get_one_arg("any", heap)?;
-    let mut iter = MontyIter::new(iterable, heap, interns)?;
+    let iter = MontyIter::new(iterable, heap, interns)?;
+    defer_drop_mut!(iter, heap);
 
     while let Some(item) = iter.for_next(heap, interns)? {
+        defer_drop!(item, heap);
         let is_truthy = item.py_bool(heap, interns);
-        item.drop_with_heap(heap);
         if is_truthy {
-            iter.drop_with_heap(heap);
             return Ok(Value::Bool(true));
         }
     }
 
-    iter.drop_with_heap(heap);
     Ok(Value::Bool(false))
 }

@@ -195,3 +195,14 @@ for i in range(5):
     assert isinstance(inner, ValueError)
     assert inner.args[0] == snapshot('stopped at 3')
     assert call_count == snapshot(3)
+
+
+def test_map_print() -> None:
+    """Test that print can be used inside map."""
+    code = """
+list(map(print, [1, 2, 3]))
+"""
+    m = pydantic_monty.Monty(code)
+    output, callback = make_print_collector()
+    m.run(print_callback=callback)
+    assert ''.join(output) == snapshot('1\n2\n3\n')

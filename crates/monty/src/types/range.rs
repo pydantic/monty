@@ -9,10 +9,11 @@ use ahash::AHashSet;
 
 use crate::{
     args::ArgValues,
+    defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::Interns,
-    resource::ResourceTracker,
+    resource::{DepthGuard, ResourceError, ResourceTracker},
     types::{PyTrait, Type},
     value::Value,
 };
@@ -116,54 +117,30 @@ impl Range {
     /// - `range(start, stop)` - range from start to stop
     /// - `range(start, stop, step)` - range with custom step
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let range = match args {
-            ArgValues::Empty => return Err(ExcType::type_error_at_least("range", 1, 0)),
-            ArgValues::One(stop_val) => {
-                let result = stop_val.as_int(heap);
-                stop_val.drop_with_heap(heap);
-                Self::from_stop(result?)
-            }
-            ArgValues::Two(start_val, stop_val) => {
-                let start = start_val.as_int(heap);
-                let stop = stop_val.as_int(heap);
-                start_val.drop_with_heap(heap);
-                stop_val.drop_with_heap(heap);
-                Self::from_start_stop(start?, stop?)
-            }
-            ArgValues::ArgsKargs { args, kwargs } if kwargs.is_empty() && args.len() == 3 => {
-                let mut iter = args.into_iter();
-                let start_val = iter.next().unwrap();
-                let stop_val = iter.next().unwrap();
-                let step_val = iter.next().unwrap();
+        let pos_args = args.into_pos_only("range", heap)?;
+        defer_drop!(pos_args, heap);
 
-                let start = start_val.as_int(heap);
-                let stop = stop_val.as_int(heap);
-                let step = step_val.as_int(heap);
-                start_val.drop_with_heap(heap);
-                stop_val.drop_with_heap(heap);
-                step_val.drop_with_heap(heap);
-
-                let step = step?;
+        let range = match pos_args.as_slice() {
+            [] => return Err(ExcType::type_error_at_least("range", 1, 0)),
+            [first_arg] => {
+                let stop = first_arg.as_int(heap)?;
+                Self::from_stop(stop)
+            }
+            [first_arg, second_arg] => {
+                let start = first_arg.as_int(heap)?;
+                let stop = second_arg.as_int(heap)?;
+                Self::from_start_stop(start, stop)
+            }
+            [first_arg, second_arg, third_arg] => {
+                let start = first_arg.as_int(heap)?;
+                let stop = second_arg.as_int(heap)?;
+                let step = third_arg.as_int(heap)?;
                 if step == 0 {
                     return Err(ExcType::value_error_range_step_zero());
                 }
-                Self::new(start?, stop?, step)
+                Self::new(start, stop, step)
             }
-            ArgValues::Kwargs(kwargs) => {
-                kwargs.drop_with_heap(heap);
-                return Err(ExcType::type_error_no_kwargs("range"));
-            }
-            ArgValues::ArgsKargs { args, kwargs } => {
-                let arg_count = args.len();
-                for v in args {
-                    v.drop_with_heap(heap);
-                }
-                if !kwargs.is_empty() {
-                    kwargs.drop_with_heap(heap);
-                    return Err(ExcType::type_error_no_kwargs("range"));
-                }
-                return Err(ExcType::type_error_at_most("range", 3, arg_count));
-            }
+            _ => return Err(ExcType::type_error_at_most("range", 3, pos_args.len())),
         };
 
         Ok(Value::Ref(heap.allocate(HeapData::Range(range))?))
@@ -244,12 +221,8 @@ impl PyTrait for Range {
             return self.getitem_slice(&slice, heap);
         }
 
-        // Extract integer index, accepting both Int and Bool (True=1, False=0)
-        let index = match key {
-            Value::Int(i) => *i,
-            Value::Bool(b) => i64::from(*b),
-            _ => return Err(ExcType::type_error_indices(Type::Range, key.py_type(heap))),
-        };
+        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
+        let index = key.as_index(heap, Type::Range)?;
 
         // Get range length for normalization
         let len = i64::try_from(self.len()).expect("range length exceeds i64::MAX");
@@ -269,19 +242,25 @@ impl PyTrait for Range {
         Ok(Value::Int(offset))
     }
 
-    fn py_eq(&self, other: &Self, _heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
+    fn py_eq(
+        &self,
+        other: &Self,
+        _heap: &mut Heap<impl ResourceTracker>,
+        _guard: &mut DepthGuard,
+        _interns: &Interns,
+    ) -> Result<bool, ResourceError> {
         // Compare ranges by their actual sequences, not parameters.
         // Two ranges are equal if they produce the same elements.
         let len1 = self.len();
         let len2 = other.len();
         if len1 != len2 {
-            return false;
+            return Ok(false);
         }
         // Same length - compare first element and step (if non-empty)
         if len1 == 0 {
-            return true; // Both empty
+            return Ok(true); // Both empty
         }
-        self.start == other.start && self.step == other.step
+        Ok(self.start == other.start && self.step == other.step)
     }
 
     fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
@@ -293,6 +272,7 @@ impl PyTrait for Range {
         f: &mut impl Write,
         _heap: &Heap<impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
+        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> std::fmt::Result {
         if self.step == 1 {

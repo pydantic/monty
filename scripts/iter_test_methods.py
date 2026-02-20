@@ -48,6 +48,18 @@ class Point:
     x: int
     y: int
 
+    def sum(self) -> int:
+        return self.x + self.y
+
+    def add(self, dx: int, dy: int) -> 'Point':
+        return Point(x=self.x + dx, y=self.y + dy)
+
+    def scale(self, factor: int) -> 'Point':
+        return Point(x=self.x * factor, y=self.y * factor)
+
+    def describe(self, label: str = 'point') -> str:
+        return f'{label}({self.x}, {self.y})'
+
 
 def make_point() -> Point:
     return Point(x=1, y=2)
@@ -58,6 +70,13 @@ class MutablePoint:
     x: int
     y: int
 
+    def sum(self) -> int:
+        return self.x + self.y
+
+    def shift(self, dx: int, dy: int) -> None:
+        self.x += dx
+        self.y += dy
+
 
 def make_mutable_point() -> MutablePoint:
     return MutablePoint(x=1, y=2)
@@ -67,6 +86,9 @@ def make_mutable_point() -> MutablePoint:
 class User:
     name: str
     active: bool = True
+
+    def greeting(self) -> str:
+        return f'Hello, {self.name}!'
 
 
 def make_user(name: str) -> User:

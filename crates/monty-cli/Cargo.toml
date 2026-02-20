@@ -16,8 +16,10 @@ name = "monty"
 path = "src/main.rs"
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
 monty = { path = "../monty" }
 monty_type_checking = { path = "../monty-type-checking" }
+rustyline = "15"
 
 [lints]
 workspace = true

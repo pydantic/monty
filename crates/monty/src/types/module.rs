@@ -2,8 +2,9 @@
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapId},
+    heap::{Heap, HeapGuard, HeapId},
     intern::{Interns, StringId},
     resource::ResourceTracker,
     types::{AttrCallResult, Dict, PyTrait},
@@ -127,35 +128,37 @@ impl Module {
     /// (e.g., `os.getenv()`) that require host involvement.
     pub fn py_call_attr_raw(
         &self,
-        heap: &mut Heap<impl ResourceTracker>,
+        _self_id: HeapId,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
     ) -> RunResult<AttrCallResult> {
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
+        let mut args_guard = HeapGuard::new(args, heap);
+
         let attr_key = match attr {
             EitherStr::Interned(id) => Value::InternString(*id),
             EitherStr::Heap(s) => {
                 // Module attributes are always interned, so owned strings won't match
-                args.drop_with_heap(heap);
                 return Err(ExcType::attribute_error_module(interns.get_str(self.name), s));
             }
         };
 
-        match self.get_attr(&attr_key, heap, interns) {
-            Some(Value::ModuleFunction(mf)) => mf.call(heap, args),
+        match self.get_attr(&attr_key, args_guard.heap(), interns) {
+            Some(Value::ModuleFunction(mf)) => {
+                let (args, heap) = args_guard.into_parts();
+                mf.call(heap, args)
+            }
             Some(func) => {
                 // Found attribute but it's not callable
-                func.drop_with_heap(heap);
-                args.drop_with_heap(heap);
+                func.drop_with_heap(args_guard.heap());
                 Err(ExcType::type_error("module attribute is not callable"))
             }
-            None => {
-                args.drop_with_heap(heap);
-                Err(ExcType::attribute_error_module(
-                    interns.get_str(self.name),
-                    attr.as_str(interns),
-                ))
-            }
+            None => Err(ExcType::attribute_error_module(
+                interns.get_str(self.name),
+                attr.as_str(vm.interns),
+            )),
         }
     }
 }

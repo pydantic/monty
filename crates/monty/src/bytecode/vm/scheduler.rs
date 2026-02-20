@@ -18,7 +18,7 @@ use crate::{
     args::ArgValues,
     asyncio::{CallId, TaskId},
     exception_private::RunError,
-    heap::HeapId,
+    heap::{DropWithHeap, HeapId},
     namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
     parse::CodeRange,
     value::Value,

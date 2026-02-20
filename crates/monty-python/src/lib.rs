@@ -15,7 +15,7 @@ use std::sync::OnceLock;
 
 // Use `::monty` to refer to the external crate (not the pymodule)
 pub use exceptions::{MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, PyFrame};
-pub use monty_cls::{PyMonty, PyMontyComplete, PyMontyFutureSnapshot, PyMontySnapshot};
+pub use monty_cls::{PyMonty, PyMontyComplete, PyMontyFutureSnapshot, PyMontyRepl, PyMontySnapshot};
 use pyo3::prelude::*;
 
 /// Copied from `get_pydantic_core_version` in pydantic
@@ -54,6 +54,8 @@ mod _monty {
     use super::PyMontyComplete as MontyComplete;
     #[pymodule_export]
     use super::PyMontyFutureSnapshot as MontyFutureSnapshot;
+    #[pymodule_export]
+    use super::PyMontyRepl as MontyRepl;
     #[pymodule_export]
     use super::PyMontySnapshot as MontySnapshot;
     use super::get_version;

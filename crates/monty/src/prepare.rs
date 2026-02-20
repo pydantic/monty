@@ -4,6 +4,7 @@ use ahash::{AHashMap, AHashSet};
 
 use crate::{
     args::ArgExprs,
+    builtins::Builtins,
     expressions::{
         Callable, CmpOperator, Comprehension, Expr, ExprLoc, Identifier, Literal, NameScope, Node, Operator,
         PreparedFunctionDef, PreparedNode, UnpackTarget,
@@ -26,9 +27,10 @@ pub struct PrepareResult {
     /// Number of items in the namespace (at module level, this IS the global namespace)
     pub namespace_size: usize,
     /// Maps variable names to their indices in the namespace.
-    /// Used for ref-count testing to look up variables by name.
-    /// Only available when the `ref-count-return` feature is enabled.
-    #[cfg(feature = "ref-count-return")]
+    ///
+    /// This map is used by:
+    /// - ref-count tests for looking up variables by name
+    /// - REPL incremental compilation to preserve stable global slot IDs across snippets
     pub name_map: AHashMap<String, NamespaceId>,
     /// The prepared AST nodes with all names resolved to namespace indices.
     /// Function definitions are inline as `PreparedFunctionDef` variants.
@@ -63,7 +65,35 @@ pub(crate) fn prepare(
 
     Ok(PrepareResult {
         namespace_size: p.namespace_size,
-        #[cfg(feature = "ref-count-return")]
+        name_map: p.name_map,
+        nodes: prepared_nodes,
+        interner,
+    })
+}
+
+/// Prepares parsed nodes for REPL-style incremental compilation using an existing global namespace map.
+///
+/// Existing bindings keep their original namespace slots; any new names are appended with new slots.
+/// This ensures snippets can be compiled independently while sharing one persistent global namespace.
+pub(crate) fn prepare_with_existing_names(
+    parse_result: ParseResult,
+    existing_name_map: AHashMap<String, NamespaceId>,
+) -> Result<PrepareResult, ParseError> {
+    let ParseResult { nodes, interner } = parse_result;
+    let mut p = Prepare::new_module_with_name_map(existing_name_map, &interner);
+    let mut prepared_nodes = p.prepare_nodes(nodes)?;
+
+    // In the root frame, the last expression is implicitly returned to match REPL behavior.
+    if let Some(Node::Expr(expr_loc)) = prepared_nodes.last()
+        && !expr_loc.expr.is_none()
+    {
+        let new_expr_loc = expr_loc.clone();
+        prepared_nodes.pop();
+        prepared_nodes.push(Node::Return(new_expr_loc));
+    }
+
+    Ok(PrepareResult {
+        namespace_size: p.namespace_size,
         name_map: p.name_map,
         nodes: prepared_nodes,
         interner,
@@ -139,6 +169,31 @@ impl<'i> Prepare<'i> {
             name_map.insert(name, NamespaceId::new(external_functions.len() + index));
         }
         let namespace_size = name_map.len();
+        Self {
+            interner,
+            name_map,
+            namespace_size,
+            is_module_scope: true,
+            global_names: AHashSet::new(),
+            assigned_names: AHashSet::new(),
+            names_assigned_in_order: AHashSet::new(),
+            global_name_map: None,
+            enclosing_locals: None,
+            free_var_map: AHashMap::new(),
+            cell_var_map: AHashMap::new(),
+        }
+    }
+
+    /// Creates a module-scope Prepare instance from an existing global name map.
+    ///
+    /// Used by incremental REPL compilation to keep stable slot assignments across snippets.
+    fn new_module_with_name_map(name_map: AHashMap<String, NamespaceId>, interner: &'i InternerBuilder) -> Self {
+        let namespace_size = name_map
+            .values()
+            .map(|id| id.index())
+            .max()
+            .map_or(0, |max_idx| max_idx + 1);
+
         Self {
             interner,
             name_map,
@@ -262,26 +317,19 @@ impl<'i> Prepare<'i> {
                 Node::Raise(exc) => {
                     let expr = match exc {
                         Some(expr) => {
-                            match expr.expr {
-                                // Handle raising an exception type constant without instantiation,
-                                // e.g. `raise TypeError`. This is transformed into a call: `raise TypeError()`
+                            let prepared = self.prepare_expression(expr)?;
+                            match prepared.expr {
+                                // Handle raising a builtin exception type without instantiation,
+                                // e.g. `raise TypeError`. Transform into `raise TypeError()`
                                 // so the exception is properly instantiated before being raised.
-                                // Also handle raising a builtin constant (unlikely but consistent)
                                 Expr::Builtin(b) => {
                                     let call_expr = Expr::Call {
                                         callable: Callable::Builtin(b),
                                         args: Box::new(ArgExprs::Empty),
                                     };
-                                    Some(ExprLoc::new(expr.position, call_expr))
+                                    Some(ExprLoc::new(prepared.position, call_expr))
                                 }
-                                Expr::Name(id) => {
-                                    // Handle raising a variable - could be an exception type or instance.
-                                    // The runtime will determine whether to call it (type) or raise it directly (instance).
-                                    let position = id.position;
-                                    let (resolved_id, _is_new) = self.get_id(id);
-                                    Some(ExprLoc::new(position, Expr::Name(resolved_id)))
-                                }
-                                _ => Some(self.prepare_expression(expr)?),
+                                _ => Some(prepared),
                             }
                         }
                         None => None,
@@ -569,7 +617,7 @@ impl<'i> Prepare<'i> {
         let expr = match expr {
             Expr::Literal(object) => Expr::Literal(object),
             Expr::Builtin(callable) => Expr::Builtin(callable),
-            Expr::Name(name) => Expr::Name(self.get_id(name).0),
+            Expr::Name(name) => self.resolve_name_or_builtin(name),
             Expr::Op { left, op, right } => Expr::Op {
                 left: Box::new(self.prepare_expression(*left)?),
                 op,
@@ -593,8 +641,11 @@ impl<'i> Prepare<'i> {
                 // For Name callables, resolve the identifier in the namespace
                 // Don't error here if undefined - let runtime raise NameError with proper traceback
                 let callable = match callable {
-                    Callable::Name(ident) => Callable::Name(self.get_id(ident).0),
-                    // Builtins are already resolved at parse time
+                    Callable::Name(ident) => match self.resolve_name_or_builtin(ident) {
+                        Expr::Builtin(b) => Callable::Builtin(b),
+                        Expr::Name(resolved) => Callable::Name(resolved),
+                        _ => unreachable!("resolve_name_or_builtin returns Name or Builtin"),
+                    },
                     other @ Callable::Builtin(_) => other,
                 };
                 Expr::Call { callable, args }
@@ -745,6 +796,49 @@ impl<'i> Prepare<'i> {
         }
 
         Ok(ExprLoc { position, expr })
+    }
+
+    /// Resolves a name to either `Expr::Builtin` or `Expr::Name` with scope-aware builtin detection.
+    ///
+    /// Python's name resolution follows LEGB order (Local, Enclosing, Global, Builtin).
+    /// Builtins are only used when the name is not found in any other scope. This method
+    /// ensures that local assignments (e.g., `int = 42`) properly shadow builtin names.
+    ///
+    /// We check before calling `get_id` to avoid allocating unnecessary namespace slots.
+    /// At module level, a slot allocated for an unassigned builtin would leak into
+    /// `global_name_map` for nested functions, causing incorrect resolution.
+    fn resolve_name_or_builtin(&mut self, name: Identifier) -> Expr {
+        let name_str = self.interner.get_str(name.name_id);
+
+        // Check if the name is assigned in the current scope. If so, it shadows
+        // any builtin with the same name.
+        let is_locally_assigned = if self.is_module_scope {
+            // Module scope: sequential — only names assigned SO FAR shadow builtins
+            self.names_assigned_in_order.contains(name_str)
+        } else {
+            // Function scope: lexical — ANY assignment in the function body makes
+            // the name local for the entire function
+            self.assigned_names.contains(name_str)
+        };
+
+        if !is_locally_assigned {
+            // In function scope, also check if the name is bound by other mechanisms
+            // (global declaration, parameter, closure capture, enclosing/global scope).
+            // Only fall back to builtins if the name is truly unresolved.
+            let is_otherwise_bound = !self.is_module_scope
+                && (self.global_names.contains(name_str)
+                    || self.free_var_map.contains_key(name_str)
+                    || self.cell_var_map.contains_key(name_str)
+                    || self.name_map.contains_key(name_str)
+                    || self.enclosing_locals.as_ref().is_some_and(|l| l.contains(name_str))
+                    || self.global_name_map.as_ref().is_some_and(|m| m.contains_key(name_str)));
+
+            if !is_otherwise_bound && let Ok(builtin) = name_str.parse::<Builtins>() {
+                return Expr::Builtin(builtin);
+            }
+        }
+
+        Expr::Name(self.get_id(name).0)
     }
 
     /// Prepares a comprehension with scope isolation for loop variables.

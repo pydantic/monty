@@ -218,7 +218,9 @@ impl TypeCheckingDiagnostics {
     }
 
     fn config(&self) -> DisplayDiagnosticConfig {
-        DisplayDiagnosticConfig::default().format(self.format).color(self.color)
+        DisplayDiagnosticConfig::new("monty")
+            .format(self.format)
+            .color(self.color)
     }
 
     /// To display debug details for the TypeCheckingDiagnostics since debug is the pretty output

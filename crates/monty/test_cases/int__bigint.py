@@ -410,3 +410,58 @@ assert 1**10000000 == 1, '1 ** huge = 1'
 assert (-1) ** 10000000 == 1, '(-1) ** huge_even = 1'
 assert (-1) ** 10000001 == -1, '(-1) ** huge_odd = -1'
 assert 0 << 10000000 == 0, '0 << huge = 0'
+
+# === LongInt in range() ===
+# Note: Monty raises OverflowError immediately for range(10**100), while CPython
+# only raises when iterating or calling len(). We accept this difference for safety.
+big = 2**100
+small_via_big = big - big + 5  # LongInt that demotes to 5
+r = range(small_via_big)
+assert list(r) == [0, 1, 2, 3, 4], 'range with LongInt stop'
+
+r2 = range(small_via_big, small_via_big + 3)
+assert list(r2) == [5, 6, 7], 'range with LongInt start/stop'
+
+r3 = range(0, 10, big - big + 2)
+assert list(r3) == [0, 2, 4, 6, 8], 'range with LongInt step'
+
+# === Integer computed via LongInt arithmetic ===
+# These values go through BigInt arithmetic but demote to regular Int via into_value()
+idx = big - big + 1  # Results in Value::Int(1) after demotion
+assert [10, 20, 30][idx] == 20, 'list indexing with BigInt-computed int'
+assert (10, 20, 30)[idx] == 20, 'tuple indexing with BigInt-computed int'
+assert 'abc'[idx] == 'b', 'string indexing with BigInt-computed int'
+assert b'abc'[idx] == ord('b'), 'bytes indexing with BigInt-computed int'
+assert range(10)[idx] == 1, 'range indexing with BigInt-computed int'
+
+# Negative index computed via LongInt arithmetic
+neg_idx = big - big - 1  # Results in Value::Int(-1) after demotion
+assert [10, 20, 30][neg_idx] == 30, 'list indexing with negative BigInt-computed int'
+assert (10, 20, 30)[neg_idx] == 30, 'tuple indexing with negative BigInt-computed int'
+assert 'abc'[neg_idx] == 'c', 'string indexing with negative BigInt-computed int'
+assert b'abc'[neg_idx] == ord('c'), 'bytes indexing with negative BigInt-computed int'
+assert range(10)[neg_idx] == 9, 'range indexing with negative BigInt-computed int'
+
+# List assignment with LongInt index
+lst = [1, 2, 3]
+lst[idx] = 42
+assert lst == [1, 42, 3], 'list assignment with BigInt-computed index'
+lst[neg_idx] = 99
+assert lst == [1, 42, 99], 'list assignment with negative BigInt-computed index'
+
+# === String/bytes * LongInt ===
+count = big - big + 3
+assert 'ab' * count == 'ababab', 'string * LongInt'
+assert count * 'ab' == 'ababab', 'LongInt * string'
+assert b'ab' * count == b'ababab', 'bytes * LongInt'
+assert count * b'ab' == b'ababab', 'LongInt * bytes'
+
+# Negative LongInt repeat
+neg = big - big - 2
+assert 'ab' * neg == '', 'string * negative LongInt'
+assert b'ab' * neg == b'', 'bytes * negative LongInt'
+
+# Zero LongInt repeat
+zero = big - big
+assert 'ab' * zero == '', 'string * zero LongInt'
+assert b'ab' * zero == b'', 'bytes * zero LongInt'

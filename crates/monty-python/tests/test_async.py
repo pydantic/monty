@@ -232,3 +232,178 @@ async def test_run_monty_async_no_external_calls():
     m = pydantic_monty.Monty('1 + 2 + 3')
     result = await run_monty_async(m)
     assert result == snapshot(6)
+
+
+# === Tests for run_monty_async with os parameter ===
+
+
+async def test_run_monty_async_with_os():
+    """run_monty_async can use OSAccess for file operations."""
+    from pydantic_monty import MemoryFile, OSAccess
+
+    fs = OSAccess([MemoryFile('/test.txt', content='hello world')])
+
+    m = pydantic_monty.Monty(
+        """
+from pathlib import Path
+Path('/test.txt').read_text()
+        """,
+        external_functions=[],
+    )
+
+    result = await run_monty_async(m, os=fs)
+    assert result == snapshot('hello world')
+
+
+async def test_run_monty_async_os_with_external_functions():
+    """run_monty_async can combine OSAccess with external functions."""
+    from pydantic_monty import MemoryFile, OSAccess
+
+    fs = OSAccess([MemoryFile('/data.txt', content='test data')])
+
+    async def process(text: str) -> str:
+        return text.upper()
+
+    m = pydantic_monty.Monty(
+        """
+from pathlib import Path
+content = Path('/data.txt').read_text()
+await process(content)
+        """,
+        external_functions=['process'],
+    )
+
+    result = await run_monty_async(
+        m,
+        external_functions={'process': process},
+        os=fs,
+    )
+    assert result == snapshot('TEST DATA')
+
+
+async def test_run_monty_async_os_file_not_found():
+    """run_monty_async propagates OS errors correctly."""
+    from pydantic_monty import OSAccess
+
+    fs = OSAccess()
+
+    m = pydantic_monty.Monty(
+        """
+from pathlib import Path
+Path('/missing.txt').read_text()
+        """,
+    )
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        await run_monty_async(m, os=fs)
+    assert str(exc_info.value) == snapshot("FileNotFoundError: [Errno 2] No such file or directory: '/missing.txt'")
+
+
+async def test_run_monty_async_os_not_provided():
+    """run_monty_async raises error when OS function called without os handler."""
+    m = pydantic_monty.Monty(
+        """
+from pathlib import Path
+Path('/test.txt').exists()
+        """,
+    )
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        await run_monty_async(m)
+    inner = exc_info.value.exception()
+    assert isinstance(inner, RuntimeError)
+    assert 'OS function' in inner.args[0]
+    assert 'no os handler provided' in inner.args[0]
+
+
+async def test_run_monty_async_nested_gather_with_external_functions():
+    """Test nested asyncio.gather with spawned tasks and external async functions.
+
+    https://github.com/pydantic/monty/pull/174
+
+    Reproduces the pattern from stack_overflow.py: outer gather spawns 3 coroutine tasks,
+    each doing a sequential await then an inner gather with 2 external futures.
+    """
+    code = """\
+import asyncio
+
+async def get_city_weather(city_name: str):
+    coords = await get_lat_lng(location_description=city_name)
+    lat, lng = coords['lat'], coords['lng']
+    temp_task = get_temp(lat=lat, lng=lng)
+    desc_task = get_weather_description(lat=lat, lng=lng)
+    temp, desc = await asyncio.gather(temp_task, desc_task)
+    return {
+        'city': city_name,
+        'temp': temp,
+        'description': desc
+    }
+
+async def main():
+    cities = ['London', 'Paris', 'Tokyo']
+    results = await asyncio.gather(*(get_city_weather(city) for city in cities))
+    return results
+
+await main()
+"""
+    m = pydantic_monty.Monty(code, external_functions=['get_lat_lng', 'get_temp', 'get_weather_description'])
+
+    city_coords = {
+        'London': {'lat': 51.5, 'lng': -0.1},
+        'Paris': {'lat': 48.9, 'lng': 2.3},
+        'Tokyo': {'lat': 35.7, 'lng': 139.7},
+    }
+    city_temps = {
+        (51.5, -0.1): 15.0,
+        (48.9, 2.3): 18.0,
+        (35.7, 139.7): 22.0,
+    }
+    city_descs = {
+        (51.5, -0.1): 'Cloudy',
+        (48.9, 2.3): 'Sunny',
+        (35.7, 139.7): 'Humid',
+    }
+
+    async def get_lat_lng(location_description: str):
+        return city_coords[location_description]
+
+    async def get_temp(lat: float, lng: float):
+        return city_temps[(lat, lng)]
+
+    async def get_weather_description(lat: float, lng: float):
+        return city_descs[(lat, lng)]
+
+    result = await run_monty_async(
+        m,
+        external_functions={
+            'get_lat_lng': get_lat_lng,
+            'get_temp': get_temp,
+            'get_weather_description': get_weather_description,
+        },
+    )
+    assert result == snapshot(
+        [
+            {'city': 'London', 'temp': 15.0, 'description': 'Cloudy'},
+            {'city': 'Paris', 'temp': 18.0, 'description': 'Sunny'},
+            {'city': 'Tokyo', 'temp': 22.0, 'description': 'Humid'},
+        ]
+    )
+
+
+async def test_run_monty_async_os_write_and_read():
+    """run_monty_async supports both reading and writing files."""
+    from pydantic_monty import MemoryFile, OSAccess
+
+    fs = OSAccess([MemoryFile('/file.txt', content='original')])
+
+    m = pydantic_monty.Monty(
+        """
+from pathlib import Path
+p = Path('/file.txt')
+p.write_text('updated')
+p.read_text()
+        """,
+    )
+
+    result = await run_monty_async(m, os=fs)
+    assert result == snapshot('updated')

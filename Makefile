@@ -190,6 +190,14 @@ type-sizes: ## Write type sizes for the crate to ./type-sizes.txt (requires nigh
 	RUSTFLAGS="-Zprint-type-sizes" cargo +nightly build -j1 2>&1 | top-type-sizes -f '^monty.*' > type-sizes.txt
 	@echo "Type sizes written to ./type-sizes.txt"
 
+.PHONY: fuzz-string_input_panic
+fuzz-string_input_panic: ## Run the `string_input_panic` fuzz target
+	cargo +nightly fuzz run --fuzz-dir crates/fuzz string_input_panic
+
+.PHONY: fuzz-tokens_input_panic
+fuzz-tokens_input_panic: ## Run the `tokens_input_panic` fuzz target (structured token input)
+	cargo +nightly fuzz run --fuzz-dir crates/fuzz tokens_input_panic
+
 .PHONY: main
 main: lint test-ref-count-panic test-py ## run linting and the most important tests
 

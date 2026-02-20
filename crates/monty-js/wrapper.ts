@@ -2,20 +2,21 @@
 // These wrap the native Rust classes to provide instanceof support.
 
 import type {
-  MontyOptions,
-  RunOptions,
-  ResourceLimits,
-  Frame,
   ExceptionInfo,
-  StartOptions,
-  ResumeOptions,
   ExceptionInput,
-  SnapshotLoadOptions,
+  Frame,
   JsMontyObject,
+  MontyOptions,
+  ResourceLimits,
+  ResumeOptions,
+  RunOptions,
+  SnapshotLoadOptions,
+  StartOptions,
 } from './index.js'
 
 import {
   Monty as NativeMonty,
+  MontyRepl as NativeMontyRepl,
   MontySnapshot as NativeMontySnapshot,
   MontyComplete as NativeMontyComplete,
   MontyException as NativeMontyException,
@@ -351,6 +352,69 @@ export class Monty {
 }
 
 /**
+ * Incremental no-replay REPL session.
+ */
+export class MontyRepl {
+  private _native: NativeMontyRepl
+
+  /**
+   * Creates a REPL session directly from source code.
+   */
+  static create(code: string, options?: MontyOptions, startOptions?: StartOptions): MontyRepl {
+    const result = NativeMontyRepl.create(code, options, startOptions)
+    if (result instanceof NativeMontyException) {
+      if (result.exception.typeName === 'SyntaxError') {
+        throw new MontySyntaxError(result)
+      }
+      throw new MontyRuntimeError(result)
+    }
+    if (result instanceof NativeMontyTypingError) {
+      throw new MontyTypingError(result)
+    }
+    return new MontyRepl(result)
+  }
+
+  constructor(nativeRepl: NativeMontyRepl) {
+    this._native = nativeRepl
+  }
+
+  /** Returns the script name for this REPL session. */
+  get scriptName(): string {
+    return this._native.scriptName
+  }
+
+  /**
+   * Executes one incremental snippet.
+   *
+   * @param code - Snippet code to execute
+   * @returns Snippet output
+   * @throws {MontyRuntimeError} If execution raises an exception
+   */
+  feed(code: string): JsMontyObject {
+    const result = this._native.feed(code)
+    if (result instanceof NativeMontyException) {
+      throw new MontyRuntimeError(result)
+    }
+    return result
+  }
+
+  /** Serializes the REPL session to bytes. */
+  dump(): Buffer {
+    return this._native.dump()
+  }
+
+  /** Restores a REPL session from bytes. */
+  static load(data: Buffer): MontyRepl {
+    return new MontyRepl(NativeMontyRepl.load(data))
+  }
+
+  /** Returns a string representation of the REPL session. */
+  repr(): string {
+    return this._native.repr()
+  }
+}
+
+/**
  * Helper to wrap native start/resume results, throwing errors as needed.
  */
 function wrapStartResult(
@@ -499,7 +563,10 @@ export interface RunMontyAsyncOptions {
 export async function runMontyAsync(montyRunner: Monty, options: RunMontyAsyncOptions = {}): Promise<JsMontyObject> {
   const { inputs, externalFunctions = {}, limits } = options
 
-  let progress: MontySnapshot | MontyComplete = montyRunner.start({ inputs, limits })
+  let progress: MontySnapshot | MontyComplete = montyRunner.start({
+    inputs,
+    limits,
+  })
 
   while (progress instanceof MontySnapshot) {
     const snapshot = progress

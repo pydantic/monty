@@ -5,9 +5,10 @@ use num_traits::{Signed, ToPrimitive, Zero};
 
 use crate::{
     args::ArgValues,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    defer_drop,
+    exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapData},
-    resource::{LARGE_RESULT_THRESHOLD, ResourceTracker},
+    resource::{ResourceTracker, check_pow_size},
     types::{LongInt, PyTrait},
     value::Value,
 };
@@ -18,80 +19,67 @@ use crate::{
 /// Handles negative exponents by returning a float.
 pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     // pow() accepts 2 or 3 arguments
-    let (mut positional, kwargs) = args.into_parts();
-    if !kwargs.is_empty() {
-        for (k, v) in kwargs {
-            k.drop_with_heap(heap);
-            v.drop_with_heap(heap);
-        }
-        for v in positional {
-            v.drop_with_heap(heap);
-        }
-        return Err(SimpleException::new_msg(ExcType::TypeError, "pow() takes no keyword arguments").into());
-    }
+    let positional = args.into_pos_only("pow", heap)?;
+    defer_drop!(positional, heap);
 
-    let (base, exp, modulo) = match positional.len() {
-        2 => (positional.next().unwrap(), positional.next().unwrap(), None),
-        3 => (
-            positional.next().unwrap(),
-            positional.next().unwrap(),
-            Some(positional.next().unwrap()),
-        ),
-        n => {
-            for v in positional {
-                v.drop_with_heap(heap);
-            }
-            return Err(SimpleException::new_msg(
-                ExcType::TypeError,
-                format!("pow expected 2 or 3 arguments, got {n}"),
-            )
-            .into());
+    match positional.as_slice() {
+        [base, exp] => {
+            let base = normalize_bool(base);
+            let exp = normalize_bool(exp);
+            two_arg_pow(base, exp, heap)
         }
-    };
-
-    let base = super::round::normalize_bool_to_int(base);
-    let exp = super::round::normalize_bool_to_int(exp);
-    let modulo = modulo.map(super::round::normalize_bool_to_int);
-
-    let result = if let Some(m) = &modulo {
-        // Three-argument pow: modular exponentiation
-        match (&base, &exp, &m) {
-            (Value::Int(b), Value::Int(e), Value::Int(m_val)) => {
-                if *m_val == 0 {
-                    Err(SimpleException::new_msg(ExcType::ValueError, "pow() 3rd argument cannot be 0").into())
-                } else if *e < 0 {
-                    Err(SimpleException::new_msg(
-                        ExcType::ValueError,
-                        "pow() 2nd argument cannot be negative when 3rd argument specified",
-                    )
-                    .into())
-                } else {
-                    // Use modular exponentiation
-                    let result = mod_pow(
-                        *b,
-                        u64::try_from(*e).expect("pow exponent >= 0 but failed u64 conversion"),
-                        *m_val,
-                    );
-                    Ok(Value::Int(result))
+        [base, exp, m] => {
+            let base = normalize_bool(base);
+            let exp = normalize_bool(exp);
+            let m = normalize_bool(m);
+            // Three-argument pow: modular exponentiation
+            match (base, exp, m) {
+                (Value::Int(b), Value::Int(e), Value::Int(m_val)) => {
+                    if *m_val == 0 {
+                        Err(SimpleException::new_msg(ExcType::ValueError, "pow() 3rd argument cannot be 0").into())
+                    } else if *e < 0 {
+                        Err(SimpleException::new_msg(
+                            ExcType::ValueError,
+                            "pow() 2nd argument cannot be negative when 3rd argument specified",
+                        )
+                        .into())
+                    } else {
+                        // Use modular exponentiation
+                        let result = mod_pow(
+                            *b,
+                            u64::try_from(*e).expect("pow exponent >= 0 but failed u64 conversion"),
+                            *m_val,
+                        );
+                        Ok(Value::Int(result))
+                    }
                 }
+                _ => Err(SimpleException::new_msg(
+                    ExcType::TypeError,
+                    "pow() 3rd argument not allowed unless all arguments are integers",
+                )
+                .into()),
             }
-            _ => Err(SimpleException::new_msg(
-                ExcType::TypeError,
-                "pow() 3rd argument not allowed unless all arguments are integers",
-            )
-            .into()),
         }
-    } else {
-        // Two-argument pow
-        Ok(two_arg_pow(&base, &exp, heap)?)
-    };
-
-    base.drop_with_heap(heap);
-    exp.drop_with_heap(heap);
-    if let Some(m) = modulo {
-        m.drop_with_heap(heap);
+        args => Err(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("pow expected 2 or 3 arguments, got {}", args.len()),
+        )
+        .into()),
     }
-    result
+}
+
+/// Normalizes a `Bool` to its `Int` equivalent by reference.
+///
+/// Returns `&Value::Int(0)` or `&Value::Int(1)` for bools (using static storage),
+/// and the original reference unchanged for all other types.
+fn normalize_bool(value: &Value) -> &Value {
+    static FALSE_INT: Value = Value::Int(0);
+    static TRUE_INT: Value = Value::Int(1);
+    match value {
+        Value::Bool(false) => &FALSE_INT,
+        Value::Bool(true) => &TRUE_INT,
+        other => other,
+    }
 }
 
 /// Computes (base^exp) % modulo using binary exponentiation.
@@ -240,7 +228,7 @@ fn int_pow_int(b: i64, e: i64, heap: &mut Heap<impl ResourceTracker>) -> RunResu
         } else {
             // Overflow - promote to LongInt
             // Check size before computing to prevent DoS
-            check_pow_size(i64_bits(b), u64::from(exp_u32), heap)?;
+            check_pow_size(i64_bits(b), u64::from(exp_u32), heap.tracker())?;
             let bi = BigInt::from(b).pow(exp_u32);
             Ok(LongInt::new(bi).into_value(heap)?)
         }
@@ -250,7 +238,7 @@ fn int_pow_int(b: i64, e: i64, heap: &mut Heap<impl ResourceTracker>) -> RunResu
         #[expect(clippy::cast_sign_loss)]
         let exp_u64 = e as u64;
         // Check size before computing to prevent DoS
-        check_pow_size(i64_bits(b), exp_u64, heap)?;
+        check_pow_size(i64_bits(b), exp_u64, heap.tracker())?;
         let base_bi = BigInt::from(b);
         let bi = bigint_pow_large(&base_bi, exp_u64)?;
         Ok(LongInt::new(bi).into_value(heap)?)
@@ -282,7 +270,7 @@ fn int_pow_longint(b: i64, e: &BigInt, heap: &mut Heap<impl ResourceTracker>) ->
         Ok(Value::Int(if is_even { 1 } else { -1 }))
     } else if let Some(exp_u32) = e.to_u32() {
         // Check size before computing to prevent DoS
-        check_pow_size(i64_bits(b), u64::from(exp_u32), heap)?;
+        check_pow_size(i64_bits(b), u64::from(exp_u32), heap.tracker())?;
         let bi = BigInt::from(b).pow(exp_u32);
         Ok(LongInt::new(bi).into_value(heap)?)
     } else {
@@ -305,7 +293,7 @@ fn longint_pow_int(b: &BigInt, e: i64, heap: &mut Heap<impl ResourceTracker>) ->
         }
     } else if let Ok(exp_u32) = u32::try_from(e) {
         // Check size before computing to prevent DoS
-        check_pow_size(b.bits(), u64::from(exp_u32), heap)?;
+        check_pow_size(b.bits(), u64::from(exp_u32), heap.tracker())?;
         let bi = b.pow(exp_u32);
         Ok(LongInt::new(bi).into_value(heap)?)
     } else {
@@ -314,7 +302,7 @@ fn longint_pow_int(b: &BigInt, e: i64, heap: &mut Heap<impl ResourceTracker>) ->
         #[expect(clippy::cast_sign_loss)]
         let exp_u64 = e as u64;
         // Check size before computing to prevent DoS
-        check_pow_size(b.bits(), exp_u64, heap)?;
+        check_pow_size(b.bits(), exp_u64, heap.tracker())?;
         let bi = bigint_pow_large(b, exp_u64)?;
         Ok(LongInt::new(bi).into_value(heap)?)
     }
@@ -334,7 +322,7 @@ fn longint_pow_longint(b: &BigInt, e: &BigInt, heap: &mut Heap<impl ResourceTrac
         }
     } else if let Some(exp_u32) = e.to_u32() {
         // Check size before computing to prevent DoS
-        check_pow_size(b.bits(), u64::from(exp_u32), heap)?;
+        check_pow_size(b.bits(), u64::from(exp_u32), heap.tracker())?;
         let bi = b.pow(exp_u32);
         Ok(LongInt::new(bi).into_value(heap)?)
     } else {
@@ -373,19 +361,4 @@ fn i64_bits(value: i64) -> u64 {
     } else {
         u64::from(64 - value.unsigned_abs().leading_zeros())
     }
-}
-
-/// Checks if a pow operation result would exceed the large result threshold.
-fn check_pow_size(base_bits: u64, exp: u64, heap: &Heap<impl ResourceTracker>) -> Result<(), RunError> {
-    // Special case: 0 or 1 bit bases can't produce large results worth checking
-    if base_bits <= 1 {
-        return Ok(());
-    }
-
-    if let Some(estimated) = LongInt::estimate_pow_bytes(base_bits, exp)
-        && estimated > LARGE_RESULT_THRESHOLD
-    {
-        heap.tracker().check_large_result(estimated)?;
-    }
-    Ok(())
 }

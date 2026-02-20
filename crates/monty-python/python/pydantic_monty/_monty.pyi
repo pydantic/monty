@@ -9,6 +9,7 @@ from .os_access import OsFunction
 __all__ = [
     '__version__',
     'Monty',
+    'MontyRepl',
     'MontyComplete',
     'MontySnapshot',
     'MontyFutureSnapshot',
@@ -187,6 +188,59 @@ class Monty:
         """
 
     def __repr__(self) -> str: ...
+
+@final
+class MontyRepl:
+    """
+    Incremental no-replay REPL session.
+
+    Each `feed()` call compiles and executes only the provided snippet against
+    preserved heap/global state.
+    """
+
+    @staticmethod
+    def create(
+        code: str,
+        *,
+        script_name: str = 'main.py',
+        inputs: list[str] | None = None,
+        external_functions: list[str] | None = None,
+        start_inputs: dict[str, Any] | None = None,
+        limits: ResourceLimits | None = None,
+        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        dataclass_registry: list[type] | None = None,
+    ) -> tuple['MontyRepl', Any]:
+        """
+        Create a REPL session directly from source code.
+
+        Returns `(repl, output)` where `output` is the initial execution result.
+        """
+
+    @property
+    def script_name(self) -> str:
+        """The name of the script being executed."""
+
+    def feed(
+        self,
+        code: str,
+        *,
+        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+    ) -> Any:
+        """
+        Execute one incremental snippet and return its output.
+        """
+
+    def dump(self) -> bytes:
+        """Serialize the REPL session to bytes."""
+
+    @staticmethod
+    def load(
+        data: bytes,
+        *,
+        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        dataclass_registry: list[type] | None = None,
+    ) -> 'MontyRepl':
+        """Restore a REPL session from bytes."""
 
 @final
 class MontySnapshot:

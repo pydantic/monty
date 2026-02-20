@@ -96,7 +96,7 @@ impl Db for MemoryDb {
         default_lint_registry()
     }
 
-    fn analysis_settings(&self) -> &AnalysisSettings {
+    fn analysis_settings(&self, _file: File) -> &AnalysisSettings {
         &self.analysis_settings
     }
 

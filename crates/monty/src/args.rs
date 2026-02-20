@@ -1,10 +1,10 @@
 use std::vec::IntoIter;
 
 use crate::{
-    MontyObject, ResourceTracker,
-    exception_private::{ExcType, RunResult},
+    MontyObject, ResourceTracker, defer_drop, defer_drop_mut,
+    exception_private::{ExcType, RunError, RunResult, SimpleException},
     expressions::{ExprLoc, Identifier},
-    heap::Heap,
+    heap::{DropWithHeap, Heap, HeapGuard},
     intern::{Interns, StringId},
     parse::ParseError,
     types::{Dict, dict::DictIntoIter},
@@ -151,61 +151,69 @@ impl ArgValues {
         interns: &Interns,
     ) -> RunResult<(Option<Value>, Option<Value>)> {
         let (pos, kwargs) = self.into_parts();
+        defer_drop!(pos, heap);
+        let kwargs = kwargs.into_iter();
+        defer_drop_mut!(kwargs, heap);
 
         // Check no positional arguments
-        let mut pos_iter = pos;
-        if pos_iter.next().is_some() {
-            for v in pos_iter {
-                v.drop_with_heap(heap);
-            }
-            kwargs.drop_with_heap(heap);
+        if pos.len() > 0 {
             return Err(ExcType::type_error_no_args(method_name, 1));
         }
 
         // Parse keyword arguments
-        let mut val1: Option<Value> = None;
-        let mut val2: Option<Value> = None;
+        // Guards are reversed so that destructure can pull them
+        let mut val2_guard = HeapGuard::new(None, heap);
+        let (val2, heap) = val2_guard.as_parts_mut();
+        let mut val1_guard = HeapGuard::new(None, heap);
+        let (val1, heap) = val1_guard.as_parts_mut();
 
         for (key, value) in kwargs {
-            let Some(keyword_name) = key.as_either_str(heap) else {
-                key.drop_with_heap(heap);
-                value.drop_with_heap(heap);
-                if let Some(v) = val1 {
-                    v.drop_with_heap(heap);
-                }
-                if let Some(v) = val2 {
-                    v.drop_with_heap(heap);
-                }
+            defer_drop!(key, heap);
+            let mut value = HeapGuard::new(value, heap);
+
+            let Some(keyword_name) = key.as_either_str(value.heap()) else {
                 return Err(ExcType::type_error("keywords must be strings"));
             };
 
             let key_str = keyword_name.as_str(interns);
-            if key_str == kwarg1 {
-                key.drop_with_heap(heap);
-                if let Some(old) = val1.replace(value) {
-                    old.drop_with_heap(heap);
-                }
+            let old = if key_str == kwarg1 {
+                val1.replace(value.into_inner())
             } else if key_str == kwarg2 {
-                key.drop_with_heap(heap);
-                if let Some(old) = val2.replace(value) {
-                    old.drop_with_heap(heap);
-                }
+                val2.replace(value.into_inner())
             } else {
-                key.drop_with_heap(heap);
-                value.drop_with_heap(heap);
-                if let Some(v) = val1 {
-                    v.drop_with_heap(heap);
-                }
-                if let Some(v) = val2 {
-                    v.drop_with_heap(heap);
-                }
                 return Err(ExcType::type_error(format!(
                     "'{key_str}' is an invalid keyword argument for {method_name}()"
                 )));
-            }
+            };
+
+            old.drop_with_heap(heap);
         }
 
-        Ok((val1, val2))
+        Ok((val1_guard.into_inner(), val2_guard.into_inner()))
+    }
+
+    /// Prepends a value as the first positional argument.
+    ///
+    /// Used to insert `self` when dispatching dataclass method calls to the host.
+    /// The dataclass instance becomes the first arg so the host can reconstruct
+    /// the original object and call the method on it.
+    pub fn prepend(self, value: Value) -> Self {
+        match self {
+            Self::Empty => Self::One(value),
+            Self::One(a) => Self::Two(value, a),
+            Self::Two(a, b) => Self::ArgsKargs {
+                args: vec![value, a, b],
+                kwargs: KwargsValues::Empty,
+            },
+            Self::Kwargs(kw) => Self::ArgsKargs {
+                args: vec![value],
+                kwargs: kw,
+            },
+            Self::ArgsKargs { mut args, kwargs } => {
+                args.insert(0, value);
+                Self::ArgsKargs { args, kwargs }
+            }
+        }
     }
 
     /// Splits into positional iterator and keyword values without allocating
@@ -213,11 +221,45 @@ impl ArgValues {
     pub fn into_parts(self) -> (ArgPosIter, KwargsValues) {
         match self {
             Self::Empty => (ArgPosIter::Empty, KwargsValues::Empty),
-            Self::One(v) => (ArgPosIter::One(Some(v)), KwargsValues::Empty),
-            Self::Two(v1, v2) => (ArgPosIter::Two(Some(v1), Some(v2)), KwargsValues::Empty),
+            Self::One(v) => (ArgPosIter::One(v), KwargsValues::Empty),
+            Self::Two(v1, v2) => (ArgPosIter::Two([v1, v2]), KwargsValues::Empty),
             Self::Kwargs(kwargs) => (ArgPosIter::Empty, kwargs),
             Self::ArgsKargs { args, kwargs } => (ArgPosIter::Vec(args.into_iter()), kwargs),
         }
+    }
+
+    /// Variant of [`into_parts()`](Self::into_parts) that accepts no kwargs, returning an error if any are present.
+    pub fn into_pos_only(self, method_name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<ArgPosIter> {
+        match self {
+            Self::Empty => Ok(ArgPosIter::Empty),
+            Self::One(v) => Ok(ArgPosIter::One(v)),
+            Self::Two(v1, v2) => Ok(ArgPosIter::Two([v1, v2])),
+            Self::Kwargs(kwargs) => {
+                if kwargs.is_empty() {
+                    Ok(ArgPosIter::Empty)
+                } else {
+                    Err(Self::unexpected_kwargs_error(kwargs, method_name, heap))
+                }
+            }
+            Self::ArgsKargs { args, kwargs } => {
+                if kwargs.is_empty() {
+                    Ok(ArgPosIter::Vec(args.into_iter()))
+                } else {
+                    args.drop_with_heap(heap);
+                    Err(Self::unexpected_kwargs_error(kwargs, method_name, heap))
+                }
+            }
+        }
+    }
+
+    #[cold]
+    fn unexpected_kwargs_error(
+        kwargs: KwargsValues,
+        method_name: &str,
+        heap: &mut Heap<impl ResourceTracker>,
+    ) -> RunError {
+        kwargs.drop_with_heap(heap);
+        ExcType::type_error_no_kwargs(method_name)
     }
 
     /// Converts the arguments into a Vec of MontyObjects.
@@ -255,12 +297,10 @@ impl ArgValues {
             Self::ArgsKargs { args, .. } => args.len(),
         }
     }
+}
 
-    /// Properly drops all values in the arguments, decrementing reference counts.
-    ///
-    /// This must be called when discarding `ArgValues` that may contain `Value::Ref`
-    /// variants to maintain correct reference counts on the heap.
-    pub fn drop_with_heap(self, heap: &mut Heap<impl ResourceTracker>) {
+impl DropWithHeap for ArgValues {
+    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
         match self {
             Self::Empty => {}
             Self::One(v) => v.drop_with_heap(heap),
@@ -272,9 +312,7 @@ impl ArgValues {
                 kwargs.drop_with_heap(heap);
             }
             Self::ArgsKargs { args, kwargs } => {
-                for v in args {
-                    v.drop_with_heap(heap);
-                }
+                args.drop_with_heap(heap);
                 kwargs.drop_with_heap(heap);
             }
         }
@@ -291,9 +329,21 @@ impl ArgValues {
 /// the caller is responsible for either using it or calling `drop_with_heap()` on it.
 pub(crate) enum ArgPosIter {
     Empty,
-    One(Option<Value>),
-    Two(Option<Value>, Option<Value>),
+    One(Value),
+    Two([Value; 2]),
     Vec(IntoIter<Value>),
+}
+
+impl ArgPosIter {
+    /// Returns a slice of the remaining positional arguments without consuming them.
+    pub fn as_slice(&self) -> &[Value] {
+        match self {
+            Self::Empty => &[],
+            Self::One(v) => std::slice::from_ref(v),
+            Self::Two(array) => array.as_slice(),
+            Self::Vec(iter) => iter.as_slice(),
+        }
+    }
 }
 
 impl Iterator for ArgPosIter {
@@ -303,8 +353,19 @@ impl Iterator for ArgPosIter {
     fn next(&mut self) -> Option<Value> {
         match self {
             Self::Empty => None,
-            Self::One(v) => v.take(),
-            Self::Two(v1, v2) => v1.take().or_else(|| v2.take()),
+            Self::One(_) => {
+                let Self::One(v) = std::mem::replace(self, Self::Empty) else {
+                    unreachable!()
+                };
+                Some(v)
+            }
+            Self::Two(_) => {
+                let Self::Two([v1, v2]) = std::mem::replace(self, Self::Empty) else {
+                    unreachable!()
+                };
+                *self = Self::One(v2);
+                Some(v1)
+            }
             Self::Vec(iter) => iter.next(),
         }
     }
@@ -313,20 +374,25 @@ impl Iterator for ArgPosIter {
     fn size_hint(&self) -> (usize, Option<usize>) {
         match self {
             Self::Empty => (0, Some(0)),
-            Self::One(v) => {
-                let n = usize::from(v.is_some());
-                (n, Some(n))
-            }
-            Self::Two(v1, v2) => {
-                let n = usize::from(v1.is_some()) + usize::from(v2.is_some());
-                (n, Some(n))
-            }
+            Self::One(_) => (1, Some(1)),
+            Self::Two(_) => (2, Some(2)),
             Self::Vec(iter) => iter.size_hint(),
         }
     }
 }
 
 impl ExactSizeIterator for ArgPosIter {}
+
+impl DropWithHeap for ArgPosIter {
+    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
+        match self {
+            Self::Empty => {}
+            Self::One(v1) => v1.drop_with_heap(heap),
+            Self::Two(v12) => v12.drop_with_heap(heap),
+            Self::Vec(iter) => iter.drop_with_heap(heap),
+        }
+    }
+}
 
 /// Type for keyword arguments.
 ///
@@ -381,8 +447,24 @@ impl KwargsValues {
         }
     }
 
+    /// Helper for functions which do not yet support kwargs, returns an `Err` if there are kwargs.
+    pub fn not_supported_yet(self, method_name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<()> {
+        if self.is_empty() {
+            Ok(())
+        } else {
+            self.drop_with_heap(heap);
+            Err(SimpleException::new_msg(
+                ExcType::TypeError,
+                format!("{method_name}() does not support keyword arguments yet"),
+            )
+            .into())
+        }
+    }
+}
+
+impl DropWithHeap for KwargsValues {
     /// Properly drops all values in the arguments, decrementing reference counts.
-    pub fn drop_with_heap(self, heap: &mut Heap<impl ResourceTracker>) {
+    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
         match self {
             Self::Empty => {}
             Self::Inline(kvs) => {
@@ -445,6 +527,25 @@ impl Iterator for KwargsValuesIter {
 }
 
 impl ExactSizeIterator for KwargsValuesIter {}
+
+impl DropWithHeap for KwargsValuesIter {
+    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
+        match self {
+            Self::Empty => {}
+            Self::Inline(iter) => {
+                for (_, v) in iter {
+                    v.drop_with_heap(heap);
+                }
+            }
+            Self::Dict(iter) => {
+                for (k, v) in iter {
+                    k.drop_with_heap(heap);
+                    v.drop_with_heap(heap);
+                }
+            }
+        }
+    }
+}
 
 /// A keyword argument in a function call expression.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
