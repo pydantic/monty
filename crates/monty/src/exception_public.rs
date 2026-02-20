@@ -8,7 +8,7 @@ use crate::{
 };
 
 /// Public representation of a Monty exception.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MontyException {
     /// The exception type raised
     exc_type: ExcType,
@@ -175,7 +175,7 @@ fn frames_are_identical(a: &StackFrame, b: &StackFrame) -> bool {
 /// Monty uses only `~` characters for caret markers in tracebacks, unlike CPython 3.11+
 /// which uses `~` for the function name and `^` for arguments (e.g., `~~~~~~~~~~~^^^^^^^^^^^`).
 /// This simplification is intentional - Monty marks the entire expression span uniformly.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StackFrame {
     /// The filename where the code is located.
     pub filename: String,
