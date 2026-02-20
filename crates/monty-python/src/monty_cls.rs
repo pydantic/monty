@@ -1,4 +1,8 @@
-use std::{borrow::Cow, fmt::Write};
+use std::{
+    borrow::Cow,
+    fmt::Write,
+    sync::{Mutex, PoisonError},
+};
 
 // Use `::monty` to refer to the external crate (not the pymodule)
 use ::monty::{
@@ -580,7 +584,7 @@ impl EitherProgress {
         }
 
         let slf = PyMontySnapshot {
-            snapshot,
+            snapshot: Mutex::new(snapshot),
             print_callback,
             script_name,
             is_os_function: false,
@@ -613,7 +617,7 @@ impl EitherProgress {
         }
 
         let slf = PyMontySnapshot {
-            snapshot,
+            snapshot: Mutex::new(snapshot),
             print_callback,
             script_name,
             is_os_function: true,
@@ -634,7 +638,7 @@ impl EitherProgress {
         dc_registry: DcRegistry,
     ) -> PyResult<Bound<'_, PyAny>> {
         let slf = PyMontyFutureSnapshot {
-            snapshot,
+            snapshot: Mutex::new(snapshot),
             print_callback,
             dc_registry,
             script_name,
@@ -653,10 +657,10 @@ enum EitherRepl {
     Limited(CoreMontyRepl<PySignalTracker<LimitedTracker>>),
 }
 
-#[pyclass(name = "MontyRepl", module = "pydantic_monty")]
+#[pyclass(name = "MontyRepl", module = "pydantic_monty", frozen)]
 #[derive(Debug)]
 pub struct PyMontyRepl {
-    repl: EitherRepl,
+    repl: Mutex<EitherRepl>,
     print_callback: Option<Py<PyAny>>,
     dc_registry: DcRegistry,
 
@@ -708,7 +712,7 @@ impl PyMontyRepl {
 
         let output = monty_to_py(py, &output, &dc_registry)?;
         let repl = Self {
-            repl,
+            repl: Mutex::new(repl),
             print_callback,
             dc_registry,
             script_name,
@@ -721,26 +725,24 @@ impl PyMontyRepl {
     /// The snippet is compiled against existing session state and executed once
     /// without replaying previously fed snippets.
     #[pyo3(signature = (code, *, print_callback=None))]
-    fn feed<'py>(
-        &mut self,
-        py: Python<'py>,
-        code: &str,
-        print_callback: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        if let Some(callback) = print_callback {
-            self.print_callback = Some(callback.clone().unbind());
-        }
+    fn feed<'py>(&self, py: Python<'py>, code: &str, print_callback: Option<Py<PyAny>>) -> PyResult<Bound<'py, PyAny>> {
+        let print_callback = print_callback.or_else(|| self.print_callback.as_ref().map(|cb| cb.clone_ref(py)));
 
         let mut print_cb;
-        let mut print_writer = match &self.print_callback {
+        let mut print_writer = match print_callback {
             Some(cb) => {
-                print_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
+                print_cb = CallbackStringPrint::from_py(cb);
                 PrintWriter::Callback(&mut print_cb)
             }
             None => PrintWriter::Stdout,
         };
 
-        let output = match &mut self.repl {
+        let mut repl = self
+            .repl
+            .try_lock()
+            .map_err(|_| PyRuntimeError::new_err("REPL session is currently executing another snippet"))?;
+
+        let output = match &mut *repl {
             EitherRepl::NoLimit(repl) => repl.feed(code, &mut print_writer),
             EitherRepl::Limited(repl) => repl.feed(code, &mut print_writer),
         }
@@ -757,8 +759,10 @@ impl PyMontyRepl {
             script_name: &'a str,
         }
 
+        let repl = self.repl.lock().unwrap_or_else(PoisonError::into_inner);
+
         let serialized = SerializedRepl {
-            repl: &self.repl,
+            repl: &repl,
             script_name: &self.script_name,
         };
         let bytes = postcard::to_allocvec(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -784,7 +788,7 @@ impl PyMontyRepl {
             postcard::from_bytes(data.as_bytes()).map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         Ok(Self {
-            repl: serialized.repl,
+            repl: Mutex::new(serialized.repl),
             print_callback,
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
             script_name: serialized.script_name,
@@ -910,7 +914,7 @@ enum EitherSnapshot {
 #[pyclass(name = "MontySnapshot", module = "pydantic_monty")]
 #[derive(Debug)]
 pub struct PyMontySnapshot {
-    snapshot: EitherSnapshot,
+    snapshot: Mutex<EitherSnapshot>,
     print_callback: Option<Py<PyAny>>,
     dc_registry: DcRegistry,
 
@@ -979,14 +983,19 @@ impl PyMontySnapshot {
     /// * `TypeError` if both arguments are provided, or neither
     /// * `RuntimeError` if the snapshot has already been resumed
     #[pyo3(signature = (**kwargs))]
-    pub fn resume<'py>(&mut self, py: Python<'py>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Bound<'py, PyAny>> {
+    pub fn resume<'py>(&self, py: Python<'py>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Bound<'py, PyAny>> {
         const ARGS_ERROR: &str = "resume() accepts either return_value or exception, not both";
+
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Snapshot is currently being resumed by another thread"))?;
+
+        let snapshot = std::mem::replace(&mut *snapshot, EitherSnapshot::Done);
         let Some(kwargs) = kwargs else {
             return Err(PyTypeError::new_err(ARGS_ERROR));
         };
         let external_result = extract_external_result(py, kwargs, ARGS_ERROR, &self.dc_registry)?;
-
-        let snapshot = std::mem::replace(&mut self.snapshot, EitherSnapshot::Done);
 
         // Build print writer before detaching - clone_ref needs py token
         let mut print_cb;
@@ -1014,7 +1023,12 @@ impl PyMontySnapshot {
         };
 
         let dc_registry = self.dc_registry.clone_ref(py);
-        progress.progress_or_complete(py, self.script_name.clone(), self.print_callback.take(), dc_registry)
+        progress.progress_or_complete(
+            py,
+            self.script_name.clone(),
+            self.print_callback.as_ref().map(|cb| cb.clone_ref(py)),
+            dc_registry,
+        )
     }
 
     /// Serializes the MontySnapshot instance to a binary format.
@@ -1043,7 +1057,8 @@ impl PyMontySnapshot {
             call_id: u32,
         }
 
-        if matches!(self.snapshot, EitherSnapshot::Done) {
+        let snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
+        if matches!(&*snapshot, EitherSnapshot::Done) {
             return Err(PyRuntimeError::new_err(
                 "Cannot dump progress that has already been resumed",
             ));
@@ -1066,7 +1081,7 @@ impl PyMontySnapshot {
             .collect::<PyResult<_>>()?;
 
         let serialized = SerializedSnapshot {
-            snapshot: &self.snapshot,
+            snapshot: &snapshot,
             script_name: &self.script_name,
             is_os_function: self.is_os_function,
             function_name: &self.function_name,
@@ -1133,7 +1148,7 @@ impl PyMontySnapshot {
         }
 
         Ok(Self {
-            snapshot: serialized.snapshot,
+            snapshot: Mutex::new(serialized.snapshot),
             print_callback,
             dc_registry,
             script_name: serialized.script_name,
@@ -1165,10 +1180,10 @@ enum EitherFutureSnapshot {
     Done,
 }
 
-#[pyclass(name = "MontyFutureSnapshot", module = "pydantic_monty")]
+#[pyclass(name = "MontyFutureSnapshot", module = "pydantic_monty", frozen)]
 #[derive(Debug)]
 pub struct PyMontyFutureSnapshot {
-    snapshot: EitherFutureSnapshot,
+    snapshot: Mutex<EitherFutureSnapshot>,
     print_callback: Option<Py<PyAny>>,
     dc_registry: DcRegistry,
 
@@ -1181,8 +1196,16 @@ pub struct PyMontyFutureSnapshot {
 impl PyMontyFutureSnapshot {
     /// Resumes execution with results for one or more futures.
     #[pyo3(signature = (results))]
-    pub fn resume<'py>(&mut self, py: Python<'py>, results: &Bound<'_, PyDict>) -> PyResult<Bound<'py, PyAny>> {
+    pub fn resume<'py>(&self, py: Python<'py>, results: &Bound<'_, PyDict>) -> PyResult<Bound<'py, PyAny>> {
         const ARGS_ERROR: &str = "results values must be a dict with either 'return_value' or 'exception', not both";
+
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Snapshot is currently being resumed by another thread"))?;
+
+        let snapshot = std::mem::replace(&mut *snapshot, EitherFutureSnapshot::Done);
+
         let external_results = results
             .iter()
             .map(|(key, value)| {
@@ -1192,7 +1215,6 @@ impl PyMontyFutureSnapshot {
                 Ok((call_id, value))
             })
             .collect::<PyResult<Vec<_>>>()?;
-        let snapshot = std::mem::replace(&mut self.snapshot, EitherFutureSnapshot::Done);
 
         // Build print writer before detaching - clone_ref needs py token
         let mut print_cb;
@@ -1219,7 +1241,12 @@ impl PyMontyFutureSnapshot {
 
         // Clone the Arc handle for the next snapshot/complete
         let dc_registry = self.dc_registry.clone_ref(py);
-        progress.progress_or_complete(py, self.script_name.clone(), self.print_callback.take(), dc_registry)
+        progress.progress_or_complete(
+            py,
+            self.script_name.clone(),
+            self.print_callback.as_ref().map(|cb| cb.clone_ref(py)),
+            dc_registry,
+        )
     }
 
     /// Returns the pending call IDs associated with the MontyFutureSnapshot instance.
@@ -1227,10 +1254,11 @@ impl PyMontyFutureSnapshot {
     /// # Returns
     /// A slice of pending call IDs.
     #[getter]
-    fn pending_call_ids(&self) -> PyResult<&[u32]> {
-        match &self.snapshot {
-            EitherFutureSnapshot::NoLimit(snapshot) => Ok(snapshot.pending_call_ids()),
-            EitherFutureSnapshot::Limited(snapshot) => Ok(snapshot.pending_call_ids()),
+    fn pending_call_ids<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
+        match &*snapshot {
+            EitherFutureSnapshot::NoLimit(snapshot) => PyList::new(py, snapshot.pending_call_ids()),
+            EitherFutureSnapshot::Limited(snapshot) => PyList::new(py, snapshot.pending_call_ids()),
             EitherFutureSnapshot::Done => Err(PyRuntimeError::new_err("MontyFutureSnapshot already resumed")),
         }
     }
@@ -1256,14 +1284,15 @@ impl PyMontyFutureSnapshot {
             script_name: &'a str,
         }
 
-        if matches!(self.snapshot, EitherFutureSnapshot::Done) {
+        let snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
+        if matches!(&*snapshot, EitherFutureSnapshot::Done) {
             return Err(PyRuntimeError::new_err(
                 "Cannot dump progress that has already been resumed",
             ));
         }
 
         let serialized = SerializedSnapshot {
-            snapshot: &self.snapshot,
+            snapshot: &snapshot,
             script_name: &self.script_name,
         };
         let bytes = postcard::to_allocvec(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -1305,7 +1334,7 @@ impl PyMontyFutureSnapshot {
             postcard::from_bytes(bytes).map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         Ok(Self {
-            snapshot: serialized.snapshot,
+            snapshot: Mutex::new(serialized.snapshot),
             print_callback,
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
             script_name: serialized.script_name,
@@ -1313,20 +1342,20 @@ impl PyMontyFutureSnapshot {
     }
 
     fn __repr__(&self) -> String {
-        let pending_call_ids = if let Ok(ids) = self.pending_call_ids() {
-            let ids = ids.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
-            Cow::Owned(format!("[{ids}]"))
-        } else {
-            "None".into()
+        let snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
+        let pending_call_ids = match &*snapshot {
+            EitherFutureSnapshot::NoLimit(snapshot) => snapshot.pending_call_ids(),
+            EitherFutureSnapshot::Limited(snapshot) => snapshot.pending_call_ids(),
+            EitherFutureSnapshot::Done => &[],
         };
         format!(
-            "MontyFutureSnapshot(script_name='{}', pending_call_ids={})",
-            self.script_name, pending_call_ids
+            "MontyFutureSnapshot(script_name='{}', pending_call_ids={pending_call_ids:?})",
+            self.script_name,
         )
     }
 }
 
-#[pyclass(name = "MontyComplete", module = "pydantic_monty")]
+#[pyclass(name = "MontyComplete", module = "pydantic_monty", frozen)]
 pub struct PyMontyComplete {
     #[pyo3(get)]
     pub output: Py<PyAny>,

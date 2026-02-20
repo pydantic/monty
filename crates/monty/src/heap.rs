@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    cell::Cell,
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
@@ -852,7 +853,7 @@ impl HashState {
 /// for `inc_ref`/`dec_ref` during the borrow.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct HeapValue {
-    refcount: usize,
+    refcount: Cell<usize>,
     /// The payload data. Temporarily `None` while borrowed via `with_entry_mut`/`call_attr`.
     data: Option<HeapData>,
     /// Current hashing status / cached hash value
@@ -1044,7 +1045,7 @@ impl<T: ResourceTracker> Heap<T> {
 
         let hash_state = HashState::for_data(&data);
         let new_entry = HeapValue {
-            refcount: 1,
+            refcount: Cell::new(1),
             data: Some(data),
             hash_state,
         };
@@ -1081,14 +1082,14 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// # Panics
     /// Panics if the value ID is invalid or the value has already been freed.
-    pub fn inc_ref(&mut self, id: HeapId) {
+    pub fn inc_ref(&self, id: HeapId) {
         let value = self
             .entries
-            .get_mut(id.index())
+            .get(id.index())
             .expect("Heap::inc_ref: slot missing")
-            .as_mut()
+            .as_ref()
             .expect("Heap::inc_ref: object already freed");
-        value.refcount += 1;
+        value.refcount.update(|r| r + 1);
     }
 
     /// Decrements the reference count and frees the value (plus children) once it hits zero.
@@ -1102,8 +1103,8 @@ impl<T: ResourceTracker> Heap<T> {
     pub fn dec_ref(&mut self, id: HeapId) {
         let slot = self.entries.get_mut(id.index()).expect("Heap::dec_ref: slot missing");
         let entry = slot.as_mut().expect("Heap::dec_ref: object already freed");
-        if entry.refcount > 1 {
-            entry.refcount -= 1;
+        if entry.refcount.get() > 1 {
+            entry.refcount.update(|r| r - 1);
         } else if let Some(value) = slot.take() {
             // refcount == 1, free the value and add slot to free list for reuse
             self.free_list.push(id);
@@ -1309,6 +1310,7 @@ impl<T: ResourceTracker> Heap<T> {
             .as_ref()
             .expect("Heap::get_refcount: object already freed")
             .refcount
+            .get()
     }
 
     /// Returns the number of live (non-freed) values on the heap.
