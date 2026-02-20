@@ -336,7 +336,7 @@ impl MontyIter {
                     return Ok(None);
                 };
                 self.index += 1;
-                Ok(Some(clone_and_inc_ref(item, heap)))
+                Ok(Some(item))
             }
         }
     }
@@ -451,10 +451,6 @@ pub(crate) fn advance_on_heap(
             let Some(item) = item else {
                 return Ok(None);
             };
-            // Inc refcount after borrow ends
-            if let Value::Ref(id) = &item {
-                heap.inc_ref(*id);
-            }
             (item, None)
         }
     };
@@ -484,10 +480,10 @@ fn get_heap_item(
             if index >= list.len() {
                 return Ok(None);
             }
-            Ok(Some(list.as_slice()[index].copy_for_extend()))
+            Ok(Some(list.as_slice()[index].clone_with_heap(heap)))
         }
-        HeapData::Tuple(tuple) => Ok(Some(tuple.as_slice()[index].copy_for_extend())),
-        HeapData::NamedTuple(namedtuple) => Ok(Some(namedtuple.as_vec()[index].copy_for_extend())),
+        HeapData::Tuple(tuple) => Ok(Some(tuple.as_slice()[index].clone_with_heap(heap))),
+        HeapData::NamedTuple(namedtuple) => Ok(Some(namedtuple.as_vec()[index].clone_with_heap(heap))),
         HeapData::Dict(dict) => {
             // Check for dict mutation
             if let Some(expected) = expected_len
@@ -496,7 +492,7 @@ fn get_heap_item(
                 return Err(ExcType::runtime_error_dict_changed_size());
             }
             Ok(Some(
-                dict.key_at(index).expect("index should be valid").copy_for_extend(),
+                dict.key_at(index).expect("index should be valid").clone_with_heap(heap),
             ))
         }
         HeapData::Bytes(bytes) => Ok(Some(Value::Int(i64::from(bytes.as_slice()[index])))),
@@ -511,7 +507,7 @@ fn get_heap_item(
                 set.storage()
                     .value_at(index)
                     .expect("index should be valid")
-                    .copy_for_extend(),
+                    .clone_with_heap(heap),
             ))
         }
         HeapData::FrozenSet(frozenset) => Ok(Some(
@@ -519,7 +515,7 @@ fn get_heap_item(
                 .storage()
                 .value_at(index)
                 .expect("index should be valid")
-                .copy_for_extend(),
+                .clone_with_heap(heap),
         )),
         _ => panic!("get_heap_item: unexpected heap data type"),
     }
@@ -604,18 +600,6 @@ enum IterState {
         index: usize,
         expected_len: Option<usize>,
     },
-}
-
-/// Increments the reference count for a value copied via `copy_for_extend()`.
-///
-/// This is the second half of the two-phase clone pattern: first copy the value
-/// without incrementing refcount (to avoid borrow conflicts), then increment
-/// the refcount once the heap borrow is released.
-fn clone_and_inc_ref(value: Value, heap: &mut Heap<impl ResourceTracker>) -> Value {
-    if let Value::Ref(ref_id) = &value {
-        heap.inc_ref(*ref_id);
-    }
-    value
 }
 
 /// Type-specific iteration data for different Python iterable types.

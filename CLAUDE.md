@@ -416,7 +416,6 @@ Heap-allocated values (`Value::Ref`) use manual reference counting. Key rules:
 
 - **Cloning**: Use `clone_with_heap(heap)` which increments refcounts for `Ref` variants.
 - **Dropping**: Call `drop_with_heap(heap)` when discarding an `Value` that may be a `Ref`.
-- **Borrow conflicts**: When you need to read from the heap and then mutate it, use `copy_for_extend()` to copy the `Value` without incrementing refcount, then call `heap.inc_ref()` separately after the borrow ends.
 
 Container types (`List`, `Tuple`, `Dict`) also have `clone_with_heap()` methods.
 

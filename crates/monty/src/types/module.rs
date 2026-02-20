@@ -71,8 +71,7 @@ impl Module {
     /// Looks up an attribute by name in the module's attribute dictionary.
     ///
     /// Returns `Some(value)` if the attribute exists, `None` otherwise.
-    /// The returned value is copied without incrementing refcount - caller must
-    /// call `heap.inc_ref()` if the value is a `Value::Ref`.
+    /// The returned value is cloned with proper refcount handling.
     pub fn get_attr(
         &self,
         attr_value: &Value,
@@ -85,7 +84,7 @@ impl Module {
             .get(attr_value, heap, interns)
             .ok()
             .flatten()
-            .map(Value::copy_for_extend)
+            .map(|v| v.clone_with_heap(heap))
     }
 
     /// Returns whether this module has any heap references in its attributes.

@@ -1331,16 +1331,11 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// # Panics
     /// Panics if the ID is invalid, the value has been freed, or the entry is not a Cell.
-    pub fn get_cell_value(&mut self, id: HeapId) -> Value {
-        // Two-phase approach avoids borrow conflicts when cloning
-        let value = match self.get(id) {
-            HeapData::Cell(v) => v.copy_for_extend(),
+    pub fn get_cell_value(&self, id: HeapId) -> Value {
+        match self.get(id) {
+            HeapData::Cell(v) => v.clone_with_heap(self),
             _ => panic!("Heap::get_cell_value: entry is not a Cell"),
-        };
-        if let Value::Ref(ref_id) = &value {
-            self.inc_ref(*ref_id);
         }
-        value
     }
 
     /// Sets the value inside a cell, properly dropping the old value.
@@ -1367,28 +1362,11 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// Returns `true` if successful, `false` if the source ID is not a List.
     pub fn iadd_extend_list(&mut self, source_id: HeapId, dest: &mut Vec<Value>) -> bool {
-        // Take the source data temporarily
-        let source_data = take_data!(self, source_id, "iadd_extend_list");
-
-        if let HeapData::List(list) = &source_data {
-            // Copy items and track which refs need incrementing
-            let items: Vec<Value> = list.as_slice().iter().map(Value::copy_for_extend).collect();
-            let ref_ids: Vec<HeapId> = items.iter().filter_map(Value::ref_id).collect();
-
-            // Restore source data before mutating heap (inc_ref needs it)
-            restore_data!(self, source_id, source_data, "iadd_extend_list");
-
-            // Now increment refcounts
-            for id in ref_ids {
-                self.inc_ref(id);
-            }
-
-            // Extend destination
+        if let HeapData::List(list) = self.get(source_id) {
+            let items: Vec<Value> = list.as_slice().iter().map(|v| v.clone_with_heap(self)).collect();
             dest.extend(items);
             true
         } else {
-            // Not a list, restore and return false
-            restore_data!(self, source_id, source_data, "iadd_extend_list");
             false
         }
     }
@@ -1475,117 +1453,45 @@ impl<T: ResourceTracker> Heap<T> {
     /// * `Ok(None)` - If the heap entry is not a sequence type
     /// * `Err` - If allocation fails due to resource limits
     pub fn mult_sequence(&mut self, id: HeapId, count: usize) -> RunResult<Option<Value>> {
-        // Take the data out to avoid borrow conflicts
-        let data = take_data!(self, id, "mult_sequence");
-
-        match &data {
+        match self.get(id) {
             HeapData::Str(s) => {
                 check_repeat_size(s.len(), count, &self.tracker)?;
-                let repeated = s.as_str().repeat(count);
-                restore_data!(self, id, data, "mult_sequence");
-                Ok(Some(Value::Ref(self.allocate(HeapData::Str(repeated.into()))?)))
+                Ok(Some(Value::Ref(
+                    self.allocate(HeapData::Str(s.as_str().repeat(count).into()))?,
+                )))
             }
             HeapData::Bytes(b) => {
                 check_repeat_size(b.len(), count, &self.tracker)?;
-                let repeated = b.as_slice().repeat(count);
-                restore_data!(self, id, data, "mult_sequence");
-                Ok(Some(Value::Ref(self.allocate(HeapData::Bytes(repeated.into()))?)))
+                Ok(Some(Value::Ref(
+                    self.allocate(HeapData::Bytes(b.as_slice().repeat(count).into()))?,
+                )))
             }
             HeapData::List(list) => {
-                if count == 0 {
-                    restore_data!(self, id, data, "mult_sequence");
-                    Ok(Some(Value::Ref(self.allocate(HeapData::List(List::new(Vec::new())))?)))
-                } else {
-                    // Pre-check memory limit for large results
-                    check_repeat_size(list.len().saturating_mul(size_of::<Value>()), count, &self.tracker)?;
-
-                    // Copy items and track which refs need incrementing
-                    let items: Vec<Value> = list.as_slice().iter().map(Value::copy_for_extend).collect();
-                    let ref_ids: Vec<HeapId> = items.iter().filter_map(Value::ref_id).collect();
-                    let original_len = items.len();
-
-                    // Restore data before heap operations
-                    restore_data!(self, id, data, "mult_sequence");
-
-                    // Now increment refcounts for each copy we'll make
-                    // We need (count) copies of each ref
-                    for ref_id in &ref_ids {
-                        for _ in 0..count {
-                            self.inc_ref(*ref_id);
-                        }
-                    }
-
-                    // Build the repeated list with overflow check
-                    let capacity = original_len
-                        .checked_mul(count)
-                        .ok_or_else(ExcType::overflow_repeat_count)?;
-                    let mut result = Vec::with_capacity(capacity);
-                    for _ in 0..count {
-                        self.check_time()?;
-                        for item in &items {
-                            result.push(item.copy_for_extend());
-                        }
-                    }
-
-                    // Manually forget the items vec to avoid Drop panic
-                    // The values have been copied to result with proper refcounts
-                    std::mem::forget(items);
-
-                    Ok(Some(Value::Ref(self.allocate(HeapData::List(List::new(result)))?)))
+                check_repeat_size(list.len().saturating_mul(size_of::<Value>()), count, &self.tracker)?;
+                let mut result = Vec::with_capacity(list.as_slice().len() * count);
+                for _ in 0..count {
+                    result.extend(list.as_slice().iter().map(|v| v.clone_with_heap(self)));
+                    self.check_time()?;
                 }
+                Ok(Some(Value::Ref(self.allocate(HeapData::List(List::new(result)))?)))
             }
             HeapData::Tuple(tuple) => {
                 if count == 0 {
-                    restore_data!(self, id, data, "mult_sequence");
-                    // Use empty tuple singleton
-                    Ok(Some(self.get_empty_tuple()))
-                } else {
-                    // Pre-check memory limit for large results
-                    check_repeat_size(
-                        tuple.as_slice().len().saturating_mul(size_of::<Value>()),
-                        count,
-                        &self.tracker,
-                    )?;
-
-                    // Copy items and track which refs need incrementing
-                    let items: Vec<Value> = tuple.as_slice().iter().map(Value::copy_for_extend).collect();
-                    let ref_ids: Vec<HeapId> = items.iter().filter_map(Value::ref_id).collect();
-                    let original_len = items.len();
-
-                    // Restore data before heap operations
-                    restore_data!(self, id, data, "mult_sequence");
-
-                    // Now increment refcounts for each copy we'll make
-                    // We need (count) copies of each ref
-                    for ref_id in &ref_ids {
-                        for _ in 0..count {
-                            self.inc_ref(*ref_id);
-                        }
-                    }
-
-                    // Build the repeated tuple with overflow check
-                    let capacity = original_len
-                        .checked_mul(count)
-                        .ok_or_else(ExcType::overflow_repeat_count)?;
-                    let mut result = SmallVec::with_capacity(capacity);
-                    for _ in 0..count {
-                        self.check_time()?;
-                        for item in &items {
-                            result.push(item.copy_for_extend());
-                        }
-                    }
-
-                    // Manually forget the items vec to avoid Drop panic
-                    std::mem::forget(items);
-
-                    Ok(Some(allocate_tuple(result, self)?))
+                    return Ok(Some(self.get_empty_tuple()));
                 }
+                check_repeat_size(
+                    tuple.as_slice().len().saturating_mul(size_of::<Value>()),
+                    count,
+                    &self.tracker,
+                )?;
+                let mut result = SmallVec::with_capacity(tuple.as_slice().len() * count);
+                for _ in 0..count {
+                    result.extend(tuple.as_slice().iter().map(|v| v.clone_with_heap(self)));
+                    self.check_time()?;
+                }
+                Ok(Some(allocate_tuple(result, self)?))
             }
-            _ => {
-                // Dicts, Cells, Callables, Functions and Closures don't support multiplication
-                restore_data!(self, id, data, "mult_sequence");
-                Ok(None)
-            }
+            _ => Ok(None),
         }
     }
 

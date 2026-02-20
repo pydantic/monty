@@ -121,15 +121,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Extract coroutine data before mutating
         let func_id = coro.func_id;
-        let namespace_values: Vec<Value> = coro.namespace.iter().map(Value::copy_for_extend).collect();
+        let namespace_values: Vec<Value> = coro.namespace.iter().map(|v| v.clone_with_heap(this.heap)).collect();
         let frame_cells: Vec<HeapId> = coro.frame_cells.clone();
 
-        // Increment refcounts for copied values
-        for value in &namespace_values {
-            if let Value::Ref(id) = value {
-                this.heap.inc_ref(*id);
-            }
-        }
+        // Increment refcounts for shared cell references
         for &cell_id in &frame_cells {
             this.heap.inc_ref(cell_id);
         }
@@ -712,15 +707,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Extract coroutine data
         let func_id = coro.func_id;
-        let namespace_values: Vec<Value> = coro.namespace.iter().map(Value::copy_for_extend).collect();
+        let namespace_values: Vec<Value> = coro.namespace.iter().map(|v| v.clone_with_heap(self.heap)).collect();
         let frame_cells: Vec<HeapId> = coro.frame_cells.clone();
 
-        // Increment refcounts for copied values
-        for value in &namespace_values {
-            if let Value::Ref(id) = value {
-                self.heap.inc_ref(*id);
-            }
-        }
+        // Increment refcounts for shared cell references
         for &cell_id in &frame_cells {
             self.heap.inc_ref(cell_id);
         }

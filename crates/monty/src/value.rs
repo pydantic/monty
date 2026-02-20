@@ -1939,7 +1939,7 @@ impl Value {
     /// proper reference counting. Using `.clone()` directly will bypass reference counting
     /// and cause memory leaks or double-frees.
     #[must_use]
-    pub fn clone_with_heap(&self, heap: &mut Heap<impl ResourceTracker>) -> Self {
+    pub fn clone_with_heap(&self, heap: &Heap<impl ResourceTracker>) -> Self {
         match self {
             Self::Ref(id) => {
                 heap.inc_ref(*id);
@@ -1985,26 +1985,6 @@ impl Value {
     /// Attempting to clone a Ref variant will panic.
     pub fn clone_immediate(&self) -> Self {
         match self {
-            Self::Ref(_) => panic!("Ref clones must go through clone_with_heap to maintain refcounts"),
-            #[cfg(feature = "ref-count-panic")]
-            Self::Dereferenced => panic!("Cannot clone Dereferenced object"),
-            _ => self.copy_for_extend(),
-        }
-    }
-
-    /// Creates a shallow copy of this Value without incrementing reference counts.
-    ///
-    /// IMPORTANT: For Ref variants, this copies the ValueId but does NOT increment
-    /// the reference count. The caller MUST call `heap.inc_ref()` separately for any
-    /// Ref variants to maintain correct reference counting.
-    ///
-    /// For Closure variants, this copies without incrementing cell ref counts.
-    /// The caller MUST increment ref counts on the captured cells separately.
-    ///
-    /// This is useful when you need to copy Objects from a borrowed heap context
-    /// and will increment refcounts in a separate step.
-    pub(crate) fn copy_for_extend(&self) -> Self {
-        match self {
             Self::Undefined => Self::Undefined,
             Self::Ellipsis => Self::Ellipsis,
             Self::None => Self::None,
@@ -2021,7 +2001,7 @@ impl Value {
             Self::Marker(m) => Self::Marker(*m),
             Self::Property(p) => Self::Property(*p),
             Self::ExternalFuture(call_id) => Self::ExternalFuture(*call_id),
-            Self::Ref(id) => Self::Ref(*id), // Caller must increment refcount!
+            Self::Ref(_) => panic!("Ref clones must go through clone_with_heap to maintain refcounts"),
             #[cfg(feature = "ref-count-panic")]
             Self::Dereferenced => panic!("Cannot copy Dereferenced object"),
         }

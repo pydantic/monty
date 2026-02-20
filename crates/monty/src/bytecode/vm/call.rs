@@ -393,20 +393,15 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     }
 
     /// Handles calling a heap-allocated callable (closure or function with defaults).
-    ///
-    /// Uses a two-phase approach to avoid borrow conflicts:
-    /// 1. Copy data without incrementing refcounts
-    /// 2. Increment refcounts after the borrow ends
     fn call_heap_callable(&mut self, heap_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
-        // Phase 1: Copy data (func_id, cells, defaults) without refcount changes
         let (func_id, cells, defaults) = match self.heap.get(heap_id) {
             HeapData::Closure(fid, cells, defaults) => {
                 let cloned_cells = cells.clone();
-                let cloned_defaults: Vec<Value> = defaults.iter().map(Value::copy_for_extend).collect();
+                let cloned_defaults: Vec<Value> = defaults.iter().map(|v| v.clone_with_heap(self.heap)).collect();
                 (*fid, cloned_cells, cloned_defaults)
             }
             HeapData::FunctionDefaults(fid, defaults) => {
-                let cloned_defaults: Vec<Value> = defaults.iter().map(Value::copy_for_extend).collect();
+                let cloned_defaults: Vec<Value> = defaults.iter().map(|v| v.clone_with_heap(self.heap)).collect();
                 (*fid, Vec::new(), cloned_defaults)
             }
             _ => {
@@ -415,17 +410,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
         };
 
-        // Phase 2: Increment refcounts now that the heap borrow has ended
+        // Increment refcounts for captured cells
         for &cell_id in &cells {
             self.heap.inc_ref(cell_id);
         }
-        for default in &defaults {
-            if let Value::Ref(id) = default {
-                self.heap.inc_ref(*id);
-            }
-        }
 
-        // Call the defined function (callable guard drops at scope exit)
         self.call_def_function(func_id, &cells, defaults, args)
     }
 
@@ -444,13 +433,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Extract positional args from tuple
         let copied_args = this.extract_args_tuple(args_tuple);
-
-        // Increment refcounts for positional args
-        for arg in &copied_args {
-            if let Value::Ref(id) = arg {
-                this.heap.inc_ref(*id);
-            }
-        }
 
         // Build ArgValues from positional args and optional kwargs
         let args = if let Some(kwargs_ref) = kwargs {
@@ -479,13 +461,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // Extract positional args from tuple
         let copied_args = this.extract_args_tuple_for_attr(args_tuple);
 
-        // Increment refcounts for positional args
-        for arg in &copied_args {
-            if let Value::Ref(id) = arg {
-                this.heap.inc_ref(*id);
-            }
-        }
-
         // Build ArgValues from positional args and optional kwargs
         let args = if let Some(kwargs_ref) = kwargs {
             this.build_args_with_kwargs_for_attr(copied_args, kwargs_ref)?
@@ -509,7 +484,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let HeapData::Tuple(tuple) = self.heap.get(*id) else {
             unreachable!("CallFunctionExtended: args_tuple must be a Tuple")
         };
-        tuple.as_slice().iter().map(Value::copy_for_extend).collect()
+        tuple.as_slice().iter().map(|v| v.clone_with_heap(self.heap)).collect()
     }
 
     /// Builds `ArgValues` with kwargs for `CallFunctionExtended`.
@@ -530,18 +505,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         };
         let copied_kwargs: Vec<(Value, Value)> = dict
             .iter()
-            .map(|(k, v)| (Value::copy_for_extend(k), Value::copy_for_extend(v)))
+            .map(|(k, v)| (k.clone_with_heap(this.heap), v.clone_with_heap(this.heap)))
             .collect();
-
-        // Increment refcounts for kwargs
-        for (k, v) in &copied_kwargs {
-            if let Value::Ref(id) = k {
-                this.heap.inc_ref(*id);
-            }
-            if let Value::Ref(id) = v {
-                this.heap.inc_ref(*id);
-            }
-        }
 
         let kwargs_values = if copied_kwargs.is_empty() {
             KwargsValues::Empty
@@ -592,7 +557,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let HeapData::Tuple(tuple) = self.heap.get(*id) else {
             unreachable!("CallAttrExtended: args_tuple must be a Tuple")
         };
-        tuple.as_slice().iter().map(Value::copy_for_extend).collect()
+        tuple.as_slice().iter().map(|v| v.clone_with_heap(self.heap)).collect()
     }
 
     /// Builds `ArgValues` with kwargs for `CallAttrExtended`.
@@ -617,18 +582,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         };
         let copied_kwargs: Vec<(Value, Value)> = dict
             .iter()
-            .map(|(k, v)| (Value::copy_for_extend(k), Value::copy_for_extend(v)))
+            .map(|(k, v)| (k.clone_with_heap(this.heap), v.clone_with_heap(this.heap)))
             .collect();
-
-        // Increment refcounts for kwargs
-        for (k, v) in &copied_kwargs {
-            if let Value::Ref(id) = k {
-                this.heap.inc_ref(*id);
-            }
-            if let Value::Ref(id) = v {
-                this.heap.inc_ref(*id);
-            }
-        }
 
         let kwargs_values = if copied_kwargs.is_empty() {
             KwargsValues::Empty

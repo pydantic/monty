@@ -765,12 +765,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                     value.drop_with_heap(self.heap);
                 }
                 Opcode::Dup => {
-                    // Copy without incrementing refcount first (avoids borrow conflict)
-                    let value = self.peek().copy_for_extend();
-                    // Now we can safely increment refcount and push
-                    if let Value::Ref(id) = &value {
-                        self.heap.inc_ref(*id);
-                    }
+                    let value = self.peek().clone_with_heap(self.heap);
                     self.push(value);
                 }
                 Opcode::Rot2 => {
@@ -789,21 +784,16 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 // Constants & Literals
                 Opcode::LoadConst => {
                     let idx = fetch_u16!(cached_frame);
-                    // Copy without incrementing refcount first (avoids borrow conflict)
-                    let value = cached_frame.code.constants().get(idx).copy_for_extend();
+                    let value = cached_frame.code.constants().get(idx);
                     // Handle InternLongInt specially - convert to heap-allocated LongInt
                     if let Value::InternLongInt(long_int_id) = value {
-                        let bi = self.interns.get_long_int(long_int_id).clone();
+                        let bi = self.interns.get_long_int(*long_int_id).clone();
                         match LongInt::new(bi).into_value(self.heap) {
                             Ok(v) => self.push(v),
                             Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                         }
                     } else {
-                        // Now we can safely increment refcount for Ref values
-                        if let Value::Ref(id) = &value {
-                            self.heap.inc_ref(*id);
-                        }
-                        self.push(value);
+                        self.push(value.clone_with_heap(self.heap));
                     }
                 }
                 Opcode::LoadNone => self.push(Value::None),
@@ -1639,8 +1629,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// or `NameError` if the name doesn't exist in any scope.
     fn load_local(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) -> RunResult<()> {
         let namespace = self.namespaces.get(cached_frame.namespace_idx);
-        // Copy without incrementing refcount first (avoids borrow conflict)
-        let value = namespace.get(NamespaceId::new(slot as usize)).copy_for_extend();
+        let value = namespace.get(NamespaceId::new(slot as usize));
 
         // Check for undefined value - raise appropriate error based on whether
         // this is a true local (assigned somewhere) or an undefined reference
@@ -1656,11 +1645,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
             return Err(err);
         }
 
-        // Now we can safely increment refcount and push
-        if let Value::Ref(id) = &value {
-            self.heap.inc_ref(*id);
-        }
-        self.push(value);
+        self.push(value.clone_with_heap(self.heap));
         Ok(())
     }
 
