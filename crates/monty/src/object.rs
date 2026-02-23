@@ -410,9 +410,9 @@ impl MontyObject {
                             .collect(),
                     ),
                     // Cells are internal closure implementation details
-                    HeapData::Cell(inner) => {
+                    HeapData::Cell(cell) => {
                         // Show the cell's contents
-                        Self::from_value_inner(inner, heap, visited, guard, interns)
+                        Self::from_value_inner(&cell.0, heap, visited, guard, interns)
                     }
                     HeapData::Closure(..) | HeapData::FunctionDefaults(..) => {
                         Self::Repr(object.py_repr(heap, guard, interns).into_owned())

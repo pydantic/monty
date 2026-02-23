@@ -11,7 +11,7 @@ use crate::{
     builtins::{Builtins, BuiltinsFunctions},
     defer_drop,
     exception_private::{ExcType, RunError},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
+    heap::{CellValue, DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{ExtFunctionId, FunctionId, Interns, StaticStrings, StringId},
     os::OsFunction,
     resource::ResourceTracker,
@@ -356,14 +356,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Phase 1: Copy data (func_id, cells, defaults) without refcount changes
         let (func_id, cells, defaults) = match this.heap.get(heap_id) {
-            HeapData::Closure(fid, cells, defaults) => {
-                let cloned_cells = cells.clone();
-                let cloned_defaults: Vec<Value> = defaults.iter().map(Value::copy_for_extend).collect();
-                (*fid, cloned_cells, cloned_defaults)
+            HeapData::Closure(closure) => {
+                let cloned_cells = closure.cells.clone();
+                let cloned_defaults: Vec<Value> = closure.defaults.iter().map(Value::copy_for_extend).collect();
+                (closure.func_id, cloned_cells, cloned_defaults)
             }
-            HeapData::FunctionDefaults(fid, defaults) => {
-                let cloned_defaults: Vec<Value> = defaults.iter().map(Value::copy_for_extend).collect();
-                (*fid, Vec::new(), cloned_defaults)
+            HeapData::FunctionDefaults(fd) => {
+                let cloned_defaults: Vec<Value> = fd.defaults.iter().map(Value::copy_for_extend).collect();
+                (fd.func_id, Vec::new(), cloned_defaults)
             }
             _ => {
                 args.drop_with_heap(this.heap);
@@ -675,7 +675,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 } else {
                     Value::Undefined
                 };
-                let cell_id = this.heap.allocate(HeapData::Cell(cell_value))?;
+                let cell_id = this.heap.allocate(HeapData::Cell(CellValue(cell_value)))?;
                 frame_cells.push(cell_id);
                 namespace.resize_with(cell_slot, || Value::Undefined);
                 namespace.push(Value::Ref(cell_id));
@@ -757,7 +757,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 } else {
                     Value::Undefined
                 };
-                let cell_id = self.heap.allocate(HeapData::Cell(cell_value))?;
+                let cell_id = self.heap.allocate(HeapData::Cell(CellValue(cell_value)))?;
                 frame_cells.push(cell_id);
                 namespace.resize_with(cell_slot, || Value::Undefined);
                 namespace.push(Value::Ref(cell_id));

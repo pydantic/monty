@@ -46,9 +46,6 @@ const EMPTY_TUPLE_ID: HeapId = HeapId(0);
 /// Each variant wraps a type that implements `AbstractValue`, providing
 /// Python-compatible operations. The trait is manually implemented to dispatch
 /// to the appropriate variant's implementation.
-///
-/// Note: The `Value` variant is special - it wraps boxed immediate values
-/// that need heap identity (e.g., when `id()` is called on an int).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum HeapData {
     Str(Str),
@@ -59,26 +56,15 @@ pub(crate) enum HeapData {
     Dict(Dict),
     Set(Set),
     FrozenSet(FrozenSet),
-    /// A closure: a function that captures variables from enclosing scopes.
-    ///
-    /// Contains a reference to the function definition, a vector of captured cell HeapIds,
-    /// and evaluated default values (if any). When the closure is called, these cells are
-    /// passed to the RunFrame for variable access. When the closure is dropped, we must
-    /// decrement the ref count on each captured cell and each default value.
-    Closure(FunctionId, Vec<HeapId>, Vec<Value>),
-    /// A function with evaluated default parameter values (non-closure).
-    ///
-    /// Contains a reference to the function definition and the evaluated default values.
-    /// When the function is called, defaults are cloned for missing optional parameters.
-    /// When dropped, we must decrement the ref count on each default value.
-    FunctionDefaults(FunctionId, Vec<Value>),
+    Closure(Closure),
+    FunctionDefaults(FunctionDefaults),
     /// A cell wrapping a single mutable value for closure support.
     ///
     /// Cells enable nonlocal variable access by providing a heap-allocated
     /// container that can be shared between a function and its nested functions.
     /// Both the outer function and inner function hold references to the same
     /// cell, allowing modifications to propagate across scope boundaries.
-    Cell(Value),
+    Cell(CellValue),
     /// A range object (e.g., `range(10)` or `range(1, 10, 2)`).
     ///
     /// Stored on the heap to keep `Value` enum small (16 bytes). Range objects
@@ -133,6 +119,51 @@ pub(crate) enum HeapData {
     Path(Path),
 }
 
+/// Thin wrapper around `Value` which is used in the `Cell` variant above.
+///
+/// The inner value is the cell's mutable payload.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+#[repr(transparent)]
+pub(crate) struct CellValue(pub(crate) Value);
+
+impl std::ops::Deref for CellValue {
+    type Target = Value;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// A closure: a function that captures variables from enclosing scopes.
+///
+/// Contains a reference to the function definition, a vector of captured cell HeapIds,
+/// and evaluated default values (if any). When the closure is called, these cells are
+/// passed to the RunFrame for variable access. When the closure is dropped, we must
+/// decrement the ref count on each captured cell and each default value.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Closure {
+    /// The function definition being captured.
+    pub func_id: FunctionId,
+    /// Captured cells from enclosing scopes.
+    pub cells: Vec<HeapId>,
+    /// Evaluated default parameter values (if any).
+    pub defaults: Vec<Value>,
+}
+
+/// A function with evaluated default parameter values (non-closure).
+///
+/// Contains a reference to the function definition and the evaluated default values.
+/// When the function is called, defaults are cloned for missing optional parameters.
+/// When dropped, we must decrement the ref count on each default value.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct FunctionDefaults {
+    /// The function definition being captured.
+    pub func_id: FunctionId,
+    /// Evaluated default parameter values (if any).
+    pub defaults: Vec<Value>,
+}
+
 impl HeapData {
     /// Returns whether this heap data type can participate in reference cycles.
     ///
@@ -152,8 +183,8 @@ impl HeapData {
                 | Self::Dict(_)
                 | Self::Set(_)
                 | Self::FrozenSet(_)
-                | Self::Closure(_, _, _)
-                | Self::FunctionDefaults(_, _)
+                | Self::Closure(_)
+                | Self::FunctionDefaults(_)
                 | Self::Cell(_)
                 | Self::Dataclass(_)
                 | Self::Iter(_)
@@ -180,11 +211,11 @@ impl HeapData {
             Self::Set(set) => set.has_refs(),
             Self::FrozenSet(fset) => fset.has_refs(),
             // Closures always have refs when they have captured cells (HeapIds)
-            Self::Closure(_, cells, defaults) => {
-                !cells.is_empty() || defaults.iter().any(|v| matches!(v, Value::Ref(_)))
+            Self::Closure(closure) => {
+                !closure.cells.is_empty() || closure.defaults.iter().any(|v| matches!(v, Value::Ref(_)))
             }
-            Self::FunctionDefaults(_, defaults) => defaults.iter().any(|v| matches!(v, Value::Ref(_))),
-            Self::Cell(value) => matches!(value, Value::Ref(_)),
+            Self::FunctionDefaults(fd) => fd.defaults.iter().any(|v| matches!(v, Value::Ref(_))),
+            Self::Cell(cell) => matches!(&cell.0, Value::Ref(_)),
             Self::Dataclass(dc) => dc.has_refs(),
             Self::Iter(iter) => iter.has_refs(),
             Self::Module(m) => m.has_refs(),
@@ -265,11 +296,18 @@ impl HeapData {
                 }
                 Some(hasher.finish())
             }
-            Self::Closure(f, _, _) | Self::FunctionDefaults(f, _) => {
+            Self::Closure(closure) => {
                 let mut hasher = DefaultHasher::new();
                 discriminant(self).hash(&mut hasher);
                 // TODO, this is NOT proper hashing, we should somehow hash the function properly
-                f.hash(&mut hasher);
+                closure.func_id.hash(&mut hasher);
+                Some(hasher.finish())
+            }
+            Self::FunctionDefaults(fd) => {
+                let mut hasher = DefaultHasher::new();
+                discriminant(self).hash(&mut hasher);
+                // TODO, this is NOT proper hashing, we should somehow hash the function properly
+                fd.func_id.hash(&mut hasher);
                 Some(hasher.finish())
             }
             Self::Range(range) => {
@@ -330,7 +368,7 @@ impl PyTrait for HeapData {
             Self::Dict(d) => d.py_type(heap),
             Self::Set(s) => s.py_type(heap),
             Self::FrozenSet(fs) => fs.py_type(heap),
-            Self::Closure(_, _, _) | Self::FunctionDefaults(_, _) => Type::Function,
+            Self::Closure(_) | Self::FunctionDefaults(_) => Type::Function,
             Self::Cell(_) => Type::Cell,
             Self::Range(_) => Type::Range,
             Self::Slice(_) => Type::Slice,
@@ -356,8 +394,8 @@ impl PyTrait for HeapData {
             Self::Set(s) => s.py_estimate_size(),
             Self::FrozenSet(fs) => fs.py_estimate_size(),
             // TODO: should include size of captured cells and defaults
-            Self::Closure(_, _, _) | Self::FunctionDefaults(_, _) => 0,
-            Self::Cell(v) => std::mem::size_of::<Value>() + v.py_estimate_size(),
+            Self::Closure(_) | Self::FunctionDefaults(_) => 0,
+            Self::Cell(cell) => std::mem::size_of::<Value>() + cell.0.py_estimate_size(),
             Self::Range(_) => std::mem::size_of::<Range>(),
             Self::Slice(s) => s.py_estimate_size(),
             Self::Exception(e) => std::mem::size_of::<SimpleException>() + e.arg().map_or(0, String::len),
@@ -393,8 +431,8 @@ impl PyTrait for HeapData {
             Self::Range(r) => Some(r.len()),
             // Cells, Slices, Exceptions, Dataclasses, Iterators, LongInts, Modules, Paths, and async types don't have length
             Self::Cell(_)
-            | Self::Closure(_, _, _)
-            | Self::FunctionDefaults(_, _)
+            | Self::Closure(_)
+            | Self::FunctionDefaults(_)
             | Self::Slice(_)
             | Self::Exception(_)
             | Self::Dataclass(_)
@@ -440,10 +478,8 @@ impl PyTrait for HeapData {
             (Self::Dict(a), Self::Dict(b)) => a.py_eq(b, heap, guard, interns),
             (Self::Set(a), Self::Set(b)) => a.py_eq(b, heap, guard, interns),
             (Self::FrozenSet(a), Self::FrozenSet(b)) => a.py_eq(b, heap, guard, interns),
-            (Self::Closure(a_id, a_cells, _), Self::Closure(b_id, b_cells, _)) => {
-                Ok(*a_id == *b_id && a_cells == b_cells)
-            }
-            (Self::FunctionDefaults(a_id, _), Self::FunctionDefaults(b_id, _)) => Ok(*a_id == *b_id),
+            (Self::Closure(a), Self::Closure(b)) => Ok(a.func_id == b.func_id && a.cells == b.cells),
+            (Self::FunctionDefaults(a), Self::FunctionDefaults(b)) => Ok(a.func_id == b.func_id),
             (Self::Range(a), Self::Range(b)) => a.py_eq(b, heap, guard, interns),
             (Self::Dataclass(a), Self::Dataclass(b)) => a.py_eq(b, heap, guard, interns),
             // LongInt equality
@@ -473,21 +509,21 @@ impl PyTrait for HeapData {
             Self::Dict(d) => d.py_dec_ref_ids(stack),
             Self::Set(s) => s.py_dec_ref_ids(stack),
             Self::FrozenSet(fs) => fs.py_dec_ref_ids(stack),
-            Self::Closure(_, cells, defaults) => {
+            Self::Closure(closure) => {
                 // Decrement ref count for captured cells
-                stack.extend(cells.iter().copied());
+                stack.extend(closure.cells.iter().copied());
                 // Decrement ref count for default values that are heap references
-                for default in defaults.iter_mut() {
+                for default in &mut closure.defaults {
                     default.py_dec_ref_ids(stack);
                 }
             }
-            Self::FunctionDefaults(_, defaults) => {
+            Self::FunctionDefaults(fd) => {
                 // Decrement ref count for default values that are heap references
-                for default in defaults.iter_mut() {
+                for default in &mut fd.defaults {
                     default.py_dec_ref_ids(stack);
                 }
             }
-            Self::Cell(v) => v.py_dec_ref_ids(stack),
+            Self::Cell(cell) => cell.0.py_dec_ref_ids(stack),
             Self::Dataclass(dc) => dc.py_dec_ref_ids(stack),
             Self::Iter(iter) => iter.py_dec_ref_ids(stack),
             Self::Module(m) => m.py_dec_ref_ids(stack),
@@ -526,7 +562,7 @@ impl PyTrait for HeapData {
             Self::Dict(d) => d.py_bool(heap, interns),
             Self::Set(s) => s.py_bool(heap, interns),
             Self::FrozenSet(fs) => fs.py_bool(heap, interns),
-            Self::Closure(_, _, _) | Self::FunctionDefaults(_, _) => true,
+            Self::Closure(_) | Self::FunctionDefaults(_) => true,
             Self::Cell(_) => true, // Cells are always truthy
             Self::Range(r) => r.py_bool(heap, interns),
             Self::Slice(s) => s.py_bool(heap, interns),
@@ -558,11 +594,10 @@ impl PyTrait for HeapData {
             Self::Dict(d) => d.py_repr_fmt(f, heap, heap_ids, guard, interns),
             Self::Set(s) => s.py_repr_fmt(f, heap, heap_ids, guard, interns),
             Self::FrozenSet(fs) => fs.py_repr_fmt(f, heap, heap_ids, guard, interns),
-            Self::Closure(f_id, _, _) | Self::FunctionDefaults(f_id, _) => {
-                interns.get_function(*f_id).py_repr_fmt(f, interns, 0)
-            }
+            Self::Closure(closure) => interns.get_function(closure.func_id).py_repr_fmt(f, interns, 0),
+            Self::FunctionDefaults(fd) => interns.get_function(fd.func_id).py_repr_fmt(f, interns, 0),
             // Cell repr shows the contained value's type
-            Self::Cell(v) => write!(f, "<cell: {} object>", v.py_type(heap)),
+            Self::Cell(cell) => write!(f, "<cell: {} object>", cell.0.py_type(heap)),
             Self::Range(r) => r.py_repr_fmt(f, heap, heap_ids, guard, interns),
             Self::Slice(s) => s.py_repr_fmt(f, heap, heap_ids, guard, interns),
             Self::Exception(e) => e.py_repr_fmt(f),
@@ -811,8 +846,8 @@ impl HashState {
             | HeapData::NamedTuple(_)
             | HeapData::FrozenSet(_)
             | HeapData::Cell(_)
-            | HeapData::Closure(_, _, _)
-            | HeapData::FunctionDefaults(_, _)
+            | HeapData::Closure(_)
+            | HeapData::FunctionDefaults(_)
             | HeapData::Range(_)
             | HeapData::Slice(_)
             | HeapData::LongInt(_) => Self::Unknown,
@@ -1334,7 +1369,7 @@ impl<T: ResourceTracker> Heap<T> {
         let data = take_data!(self, id, "get_cell_value");
 
         let result = match &data {
-            HeapData::Cell(v) => v.clone_with_heap(self),
+            HeapData::Cell(cell) => cell.0.clone_with_heap(self),
             _ => panic!("Heap::get_cell_value: entry is not a Cell"),
         };
 
@@ -1353,9 +1388,9 @@ impl<T: ResourceTracker> Heap<T> {
         let mut data = take_data!(self, id, "set_cell_value");
 
         match &mut data {
-            HeapData::Cell(old_value) => {
+            HeapData::Cell(cell) => {
                 // Swap in the new value
-                let old = std::mem::replace(old_value, value);
+                let old = std::mem::replace(&mut cell.0, value);
                 // Restore data first, then drop old value
                 restore_data!(self, id, data, "set_cell_value");
                 old.drop_with_heap(self);
@@ -1780,29 +1815,29 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
                 }
             }
         }
-        HeapData::Closure(_, cells, defaults) => {
+        HeapData::Closure(closure) => {
             // Add captured cells to work list
-            for cell_id in cells {
+            for cell_id in &closure.cells {
                 work_list.push(*cell_id);
             }
             // Add default values that are heap references
-            for default in defaults {
+            for default in &closure.defaults {
                 if let Value::Ref(id) = default {
                     work_list.push(*id);
                 }
             }
         }
-        HeapData::FunctionDefaults(_, defaults) => {
+        HeapData::FunctionDefaults(fd) => {
             // Add default values that are heap references
-            for default in defaults {
+            for default in &fd.defaults {
                 if let Value::Ref(id) = default {
                     work_list.push(*id);
                 }
             }
         }
-        HeapData::Cell(value) => {
+        HeapData::Cell(cell) => {
             // Cell can contain a reference to another heap value
-            if let Value::Ref(id) = value {
+            if let Value::Ref(id) = &cell.0 {
                 work_list.push(*id);
             }
         }
