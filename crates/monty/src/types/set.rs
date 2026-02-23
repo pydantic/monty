@@ -115,7 +115,7 @@ impl SetStorage {
             }
             Err(e) => {
                 value.drop_with_heap(heap);
-                return Err(e.into_catchable());
+                return Err(e.into());
             }
         };
 
@@ -143,8 +143,7 @@ impl SetStorage {
     /// Returns `Err` if the key is unhashable.
     fn remove(&mut self, value: &Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
         let hash = value
-            .py_hash(heap, interns)
-            .map_err(ResourceError::into_catchable)?
+            .py_hash(heap, interns)?
             .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(heap)))?;
 
         let entry = self.indices.entry(
@@ -227,8 +226,7 @@ impl SetStorage {
     /// Checks if the set contains a value.
     pub fn contains(&self, value: &Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
         let hash = value
-            .py_hash(heap, interns)
-            .map_err(ResourceError::into_catchable)?
+            .py_hash(heap, interns)?
             .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(heap)))?;
 
         // Set values are typically shallow (strings, ints, tuples of primitives),
