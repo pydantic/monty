@@ -278,9 +278,10 @@ impl Monty {
                             ));
                         }
                         RunProgress::OsCall { function, .. } => {
-                            return Err(Error::from_reason(format!(
-                                "OS calls are not supported: {function:?}",
-                            )));
+                            return Ok(Either::B(JsMontyException::new(MontyException::new(
+                                ExcType::NotImplementedError,
+                                Some(format!("OS function '{function}' not implemented")),
+                            ))));
                         }
                     }
                 }
@@ -973,8 +974,12 @@ impl PrintWriterCallback for CallbackStringPrint<'_> {
 
 /// Converts a `RunProgress` to either a `MontySnapshot`, `MontyComplete`, or `JsMontyException`.
 ///
+/// For progress types that are not yet supported in the JS bindings (`ResolveFutures`, `OsCall`),
+/// returns a `JsMontyException` with `NotImplementedError` instead of panicking, matching
+/// the Python bindings behavior.
+///
 /// # Panics
-/// Panics if the progress is `ResolveFutures` - async futures are not yet supported in the JS bindings.
+/// This function does not panic.
 fn progress_to_result<T>(
     progress: RunProgress<T>,
     print_callback: Option<JsPrintCallbackRef>,
@@ -1003,12 +1008,14 @@ where
                 print_callback,
             })
         }
-        RunProgress::ResolveFutures(_) => {
-            panic!("Async futures (ResolveFutures) are not yet supported in the JS bindings")
-        }
-        RunProgress::OsCall { function, .. } => {
-            panic!("OS calls are not yet supported in the JS bindings: {function:?}")
-        }
+        RunProgress::ResolveFutures(_) => Either3::C(JsMontyException::new(MontyException::new(
+            ExcType::NotImplementedError,
+            Some("Async futures (ResolveFutures) are not yet supported in the JS bindings".to_owned()),
+        ))),
+        RunProgress::OsCall { function, .. } => Either3::C(JsMontyException::new(MontyException::new(
+            ExcType::NotImplementedError,
+            Some(format!("OS function '{function}' not implemented")),
+        ))),
     }
 }
 
