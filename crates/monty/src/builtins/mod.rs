@@ -10,6 +10,7 @@ mod bin;
 mod chr;
 mod divmod;
 mod enumerate;
+mod filter;
 mod hash;
 mod hex;
 mod id;
@@ -159,7 +160,7 @@ pub enum BuiltinsFunctions {
     Enumerate,
     // Eval,
     // Exec,
-    // Filter,
+    Filter,
     // float - handled by Type enum
     // Format,
     // frozenset - handled by Type enum
@@ -223,6 +224,7 @@ impl BuiltinsFunctions {
             Self::Chr => chr::builtin_chr(vm.heap, args),
             Self::Divmod => divmod::builtin_divmod(vm.heap, args),
             Self::Enumerate => enumerate::builtin_enumerate(vm.heap, args, vm.interns),
+            Self::Filter => filter::builtin_filter(vm, args),
             Self::Hash => hash::builtin_hash(vm.heap, args, vm.interns),
             Self::Hex => hex::builtin_hex(vm.heap, args),
             Self::Id => id::builtin_id(vm.heap, args),

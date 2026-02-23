@@ -24,7 +24,7 @@ use crate::{
     asyncio::{CallId, TaskId},
     bytecode::{code::Code, op::Opcode},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, Heap, HeapData, HeapId},
+    heap::{Closure, ContainsHeap, FunctionDefaults, Heap, HeapData, HeapId},
     intern::{ExtFunctionId, FunctionId, Interns, StringId},
     io::PrintWriter,
     modules::BuiltinModule,
@@ -1296,7 +1296,9 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                         let defaults = self.pop_n(defaults_count);
 
                         // Create FunctionDefaults on heap and push reference
-                        let heap_id = self.heap.allocate(HeapData::FunctionDefaults(func_id, defaults))?;
+                        let heap_id = self
+                            .heap
+                            .allocate(HeapData::FunctionDefaults(FunctionDefaults { func_id, defaults }))?;
                         self.push(Value::Ref(heap_id));
                     }
                 }
@@ -1336,7 +1338,11 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                     let defaults = self.pop_n(defaults_count);
 
                     // Create Closure on heap and push reference
-                    let heap_id = self.heap.allocate(HeapData::Closure(func_id, cells, defaults))?;
+                    let heap_id = self.heap.allocate(HeapData::Closure(Closure {
+                        func_id,
+                        cells,
+                        defaults,
+                    }))?;
                     self.push(Value::Ref(heap_id));
                 }
                 // Exception Handling
