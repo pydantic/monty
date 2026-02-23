@@ -20,7 +20,7 @@ use crate::{
         AttrCallResult, PyTrait, Str, Type, allocate_tuple,
         str::{StringRepr, string_repr_fmt},
     },
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// Result type alias for operations that can produce a runtime error.
@@ -378,9 +378,10 @@ impl ExcType {
     #[must_use]
     pub(crate) fn type_error_at_least(name: &str, min: usize, actual: usize) -> RunError {
         // CPython: "get expected at least 1 argument, got 0"
+        let plural = if min == 1 { "" } else { "s" };
         SimpleException::new_msg(
             Self::TypeError,
-            format!("{name} expected at least {min} argument, got {actual}"),
+            format!("{name} expected at least {min} argument{plural}, got {actual}"),
         )
         .into()
     }
@@ -1201,11 +1202,16 @@ impl SimpleException {
     /// Returns `Err(AttributeError)` for all other attributes.
     pub fn py_getattr(
         &self,
-        attr_id: StringId,
+        attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
+        interns: &Interns,
     ) -> RunResult<Option<AttrCallResult>> {
-        if attr_id == StaticStrings::Args {
+        // Fast path: interned strings can be matched by ID
+        let is_args = attr
+            .static_string()
+            .map_or_else(|| attr.as_str(interns) == "args", |ss| ss == StaticStrings::Args);
+
+        if is_args {
             // Construct tuple with 0 or 1 elements based on whether arg exists
             let elements = if let Some(arg_str) = &self.arg {
                 let str_id = heap.allocate(HeapData::Str(Str::from(arg_str.clone())))?;
