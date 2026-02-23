@@ -590,12 +590,8 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
         // Restore recursion depth to match the number of active non-global namespace
         // frames. During serialization, recursion_depth is transient (defaults to 0),
         // but cleanup paths call decr_recursion_depth for each non-global frame.
-        let current_frame_depth = frames.iter().filter(|f| f.namespace_idx != GLOBAL_NS_IDX).count();
-        let scheduler_frame_depth = snapshot
-            .scheduler
-            .as_ref()
-            .map_or(0, Scheduler::count_non_global_frames);
-        heap.set_recursion_depth(current_frame_depth + scheduler_frame_depth);
+        let current_frame_depth = frames.len().saturating_sub(1); // Subtract 1 for root frame which doesn't contribute to depth
+        heap.set_recursion_depth(current_frame_depth);
 
         Self {
             stack: snapshot.stack,
@@ -652,7 +648,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     pub fn run_module(&mut self, code: &'a Code) -> Result<FrameExit, RunError> {
         // Store module code for restoring main task frames during task switching
         self.module_code = Some(code);
-        self.frames.push(CallFrame::new_module(code, GLOBAL_NS_IDX));
+        self.push_frame(CallFrame::new_module(code, GLOBAL_NS_IDX))?;
         self.run()
     }
 
@@ -684,6 +680,10 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// Task frames reference namespaces and cells that need to be cleaned up
     /// before the VM is dropped. This is separate from `scheduler.cleanup()`
     /// because the scheduler doesn't have access to the VM's namespaces.
+    ///
+    /// Each task's `recursion_depth` must be restored to the global counter before
+    /// dropping its namespaces, because `save_task_context` subtracted it and
+    /// `namespaces.drop_with_heap` calls `decr_recursion_depth` for each non-global frame.
     fn cleanup_all_task_frames(&mut self) {
         let Some(scheduler) = &mut self.scheduler else {
             return;
@@ -692,6 +692,12 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
         for task_idx in 0..scheduler.task_count() {
             let task_id = TaskId::new(u32::try_from(task_idx).expect("task_idx exceeds u32"));
             let task = scheduler.get_task_mut(task_id);
+            // Restore this task's depth contribution so decr_recursion_depth
+            // inside drop_with_heap doesn't underflow.
+            let task_depth = task.frames.len();
+            let global_depth = self.heap.get_recursion_depth();
+            self.heap.set_recursion_depth(global_depth + task_depth);
+
             for frame in std::mem::take(&mut task.frames) {
                 // Clean up cell references
                 for cell_id in frame.cells {
@@ -1562,6 +1568,30 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
         self.frames.last_mut().expect("no active frame")
     }
 
+    /// Pushes the given frame onto the call stack.
+    ///
+    /// Returns an error if the recursion depth limit is exceeded by pushing this frame.
+    pub(super) fn push_frame(&mut self, frame: CallFrame<'a>) -> RunResult<()> {
+        // root frame doesn't count towards recursion depth, so only check if there's already a frame on the stack
+        if !self.frames.is_empty()
+            && let Err(e) = self.heap.incr_recursion_depth()
+        {
+            // Clean up the frame's stack region before returning the error
+            while self.stack.len() > frame.stack_base {
+                let value = self.stack.pop().unwrap();
+                value.drop_with_heap(self.heap);
+            }
+            // Clean up the namespace (but not the global namespace)
+            if frame.namespace_idx != GLOBAL_NS_IDX {
+                self.namespaces.drop_with_heap(frame.namespace_idx, self.heap);
+            }
+            return Err(e.into());
+        }
+        self.frames.push(frame);
+
+        Ok(())
+    }
+
     /// Pops the current frame from the call stack.
     ///
     /// Cleans up the frame's stack region and namespace (except for global namespace).
@@ -1584,6 +1614,10 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
         // target the correct frame after returning from a nested run() call.
         if let Some(parent) = self.frames.last() {
             self.instruction_ip = parent.ip;
+        }
+        // Decrement recursion depth if this wasn't the root frame
+        if !self.frames.is_empty() {
+            self.heap.decr_recursion_depth();
         }
         frame.should_return
     }

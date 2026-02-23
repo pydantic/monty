@@ -303,14 +303,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let namespace_idx = self.namespaces.register_prebuilt(namespace_values, self.heap)?;
 
         // Push frame to execute the coroutine
-        self.frames.push(CallFrame::new_function(
+        self.push_frame(CallFrame::new_function(
             &func.code,
             self.stack.len(),
             namespace_idx,
             func_id,
             frame_cells,
             Some(call_position),
-        ));
+        ))?;
 
         Ok(())
     }
@@ -593,7 +593,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
     /// Saves the current VM context into the given task in the scheduler.
     ///
-    /// Serializes frames, moves stack/exception_stack, and stores instruction_ip.
+    /// Serializes frames, moves stack/exception_stack, stores instruction_ip,
+    /// and adjusts the global recursion depth counter.
     fn save_task_context(&mut self, task_id: TaskId) {
         // Collect data before borrowing scheduler to avoid borrow conflicts
         let frames: Vec<SerializedTaskFrame> = self
@@ -612,6 +613,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let exception_stack = std::mem::take(&mut self.exception_stack);
         let instruction_ip = self.instruction_ip;
 
+        // Count this task's recursion depth contribution and subtract it from
+        // the global counter so the next task gets a clean budget.
+        let task_depth = frames.len().saturating_sub(1); // root frame doesn't contribute to recursion depth
+        let global_depth = self.heap.get_recursion_depth();
+        self.heap.set_recursion_depth(global_depth - task_depth);
+
         // Now assign to task (scheduler must exist - we're in async context)
         let task = self.scheduler_mut().get_task_mut(task_id);
         task.frames = frames;
@@ -626,6 +633,9 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// unblocked by an external future resolution, pushes the resolved value onto
     /// the restored stack so execution can continue past the AWAIT opcode.
     /// If the task has a coroutine_id but no frames, starts the coroutine.
+    ///
+    /// Restores the task's recursion depth contribution to the global counter
+    /// (balances the subtraction in `save_task_context`).
     fn load_or_init_task(&mut self, task_id: TaskId) -> Result<(), RunError> {
         // Extract data from task before assigning to self to avoid borrow conflicts
         // (scheduler must exist - we're in async context)
@@ -639,6 +649,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 task.coroutine_id,
             )
         };
+
+        // Restore this task's recursion depth contribution to the global counter
+        let task_depth = frames.len().saturating_sub(1); // root frame doesn't contribute to recursion depth
+        let global_depth = self.heap.get_recursion_depth();
+        self.heap.set_recursion_depth(global_depth + task_depth);
 
         if !frames.is_empty() {
             // Task has existing context - restore it
@@ -725,14 +740,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // don't have a parent frame - the coroutine is the root)
         let func = self.interns.get_function(func_id);
         let namespace_idx = self.namespaces.register_prebuilt(namespace_values, self.heap)?;
-        self.frames.push(CallFrame::new_function(
+        self.push_frame(CallFrame::new_function(
             &func.code,
             self.stack.len(),
             namespace_idx,
             func_id,
             frame_cells,
             None, // No call position - this is the root frame for a spawned task
-        ));
+        ))?;
 
         Ok(())
     }

@@ -158,9 +158,6 @@ impl Namespaces {
         namespace_size: usize,
         heap: &mut Heap<impl ResourceTracker>,
     ) -> Result<NamespaceId, ResourceError> {
-        // Check recursion depth BEFORE memory allocation (fail fast)
-        let _token = heap.incr_recursion_depth()?;
-
         // Track the memory used by this namespace's slots
         let size = namespace_size * std::mem::size_of::<Value>();
         heap.tracker_mut().on_allocate(|| size)?;
@@ -193,9 +190,6 @@ impl Namespaces {
         namespace: Vec<Value>,
         heap: &mut Heap<impl ResourceTracker>,
     ) -> Result<NamespaceId, ResourceError> {
-        // Check recursion depth BEFORE memory allocation (fail fast)
-        let _token = heap.incr_recursion_depth()?;
-
         // Track the memory used by this namespace's slots
         let size = namespace.len() * std::mem::size_of::<Value>();
         heap.tracker_mut().on_allocate(|| size)?;
@@ -222,9 +216,6 @@ impl Namespaces {
     /// # Panics
     /// Panics if attempting to pop the global namespace (index 0).
     pub fn drop_with_heap(&mut self, namespace_id: NamespaceId, heap: &mut Heap<impl ResourceTracker>) {
-        // Decrement recursion depth (balances incr_recursion_depth in new_namespace/register_prebuilt)
-        heap.decr_recursion_depth();
-
         let namespace = &mut self.stack[namespace_id.index()];
         // Track the freed memory for this namespace
         let size = namespace.0.len() * std::mem::size_of::<Value>();

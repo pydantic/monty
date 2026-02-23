@@ -781,14 +781,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         let code = &func.code;
         // 6. Push new frame
-        self.frames.push(CallFrame::new_function(
+        self.push_frame(CallFrame::new_function(
             code,
             self.stack.len(),
             namespace_idx,
             func_id,
             frame_cells,
             Some(call_position),
-        ));
+        ))?;
 
         Ok(CallResult::FramePushed)
     }

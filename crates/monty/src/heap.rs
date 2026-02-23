@@ -913,7 +913,8 @@ pub struct HeapValue {
 /// - **`DropWithImmutableHeap`** — for `&Heap` paths (e.g., `py_repr_fmt`) where
 ///   only shared access is available. Compatible with `defer_drop_immutable_heap!`
 ///   and `ImmutableHeapGuard`.
-pub(crate) struct RecursionToken;
+#[derive(Debug)]
+pub(crate) struct RecursionToken(());
 
 impl DropWithHeap for RecursionToken {
     #[inline]
@@ -1078,7 +1079,7 @@ impl<T: ResourceTracker> Heap<T> {
         let depth = self.recursion_depth.get();
         self.tracker.check_recursion_depth(depth)?;
         self.recursion_depth.set(depth + 1);
-        Ok(RecursionToken)
+        Ok(RecursionToken(()))
     }
 
     /// Increments the recursion depth, returning `Some(RecursionToken)` if within
@@ -1102,12 +1103,20 @@ impl<T: ResourceTracker> Heap<T> {
         self.recursion_depth.set(depth - 1);
     }
 
+    /// Returns the current recursion depth.
+    ///
+    /// Used during async task switching to compute a task's depth contribution
+    /// before adjusting the global counter.
+    pub(crate) fn get_recursion_depth(&self) -> usize {
+        self.recursion_depth.get()
+    }
+
     /// Sets the recursion depth to an explicit value.
     ///
     /// Used after deserialization to restore the recursion depth to match
     /// the number of active (non-global) namespace frames that were serialized.
-    /// Without this, `decr_recursion_depth` would underflow when cleaning up
-    /// deserialized frames since `recursion_depth` defaults to 0 on deserialization.
+    /// Also used during async task switching to subtract/add a task's depth
+    /// contribution when switching away from/to that task.
     pub(crate) fn set_recursion_depth(&self, depth: usize) {
         self.recursion_depth.set(depth);
     }
