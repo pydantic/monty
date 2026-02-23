@@ -499,6 +499,7 @@ impl PyTrait for Dict {
         let Some(token) = heap.incr_recursion_depth_for_repr() else {
             return f.write_str("{...}");
         };
+        crate::defer_drop_immutable_heap!(token, heap);
 
         f.write_char('{')?;
         let mut first = true;
@@ -517,7 +518,6 @@ impl PyTrait for Dict {
         }
         f.write_char('}')?;
 
-        token.release(heap);
         Ok(())
     }
 

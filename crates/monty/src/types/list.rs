@@ -791,6 +791,7 @@ pub(crate) fn repr_sequence_fmt(
     let Some(token) = heap.incr_recursion_depth_for_repr() else {
         return f.write_str("...");
     };
+    crate::defer_drop_immutable_heap!(token, heap);
 
     f.write_char(start)?;
     let mut iter = items.iter();
@@ -807,7 +808,6 @@ pub(crate) fn repr_sequence_fmt(
     }
     f.write_char(end)?;
 
-    token.release(heap);
     Ok(())
 }
 

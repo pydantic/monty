@@ -232,6 +232,7 @@ impl PyTrait for Dataclass {
         let Some(token) = heap.incr_recursion_depth_for_repr() else {
             return f.write_str("...");
         };
+        crate::defer_drop_immutable_heap!(token, heap);
 
         // Format: ClassName(field1=value1, field2=value2, ...)
         // Only declared fields are shown, not dynamically added attributes
@@ -259,7 +260,6 @@ impl PyTrait for Dataclass {
         }
 
         f.write_char(')')?;
-        token.release(heap);
         Ok(())
     }
 

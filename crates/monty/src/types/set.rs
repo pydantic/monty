@@ -414,6 +414,7 @@ impl SetStorage {
         let Some(token) = heap.incr_recursion_depth_for_repr() else {
             return f.write_str("{...}");
         };
+        crate::defer_drop_immutable_heap!(token, heap);
 
         // frozenset needs type prefix: frozenset({...}), but set doesn't: {...}
         let needs_prefix = type_name != "set";
@@ -440,7 +441,6 @@ impl SetStorage {
             f.write_char(')')?;
         }
 
-        token.release(heap);
         Ok(())
     }
 

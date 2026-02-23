@@ -234,6 +234,7 @@ impl PyTrait for NamedTuple {
         let Some(token) = heap.incr_recursion_depth_for_repr() else {
             return f.write_str("...");
         };
+        crate::defer_drop_immutable_heap!(token, heap);
 
         // Format: type_name(field1=value1, field2=value2, ...)
         write!(f, "{}(", self.name.as_str(interns))?;
@@ -250,7 +251,6 @@ impl PyTrait for NamedTuple {
         }
 
         f.write_char(')')?;
-        token.release(heap);
         Ok(())
     }
 

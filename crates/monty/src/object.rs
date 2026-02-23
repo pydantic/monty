@@ -317,10 +317,9 @@ impl MontyObject {
         let Some(token) = heap.incr_recursion_depth_for_repr() else {
             return Self::Repr("<deeply nested>".to_owned());
         };
+        crate::defer_drop_immutable_heap!(token, heap);
 
-        let result = Self::from_value_inner_impl(object, heap, visited, interns);
-        token.release(heap);
-        result
+        Self::from_value_inner_impl(object, heap, visited, interns)
     }
 
     /// Implementation of from_value_inner without depth tracking boilerplate.
