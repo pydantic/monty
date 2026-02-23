@@ -1225,8 +1225,9 @@ impl<T: ResourceTracker> Heap<T> {
     /// # Panics
     /// Panics if the value ID is invalid or the value has already been freed.
     pub fn dec_ref(&mut self, id: HeapId) {
-        let mut work_stack = vec![id];
-        while let Some(current_id) = work_stack.pop() {
+        let mut current_id = id;
+        let mut work_stack = Vec::new();
+        loop {
             let slot = self
                 .entries
                 .get_mut(current_id.index())
@@ -1249,6 +1250,11 @@ impl<T: ResourceTracker> Heap<T> {
                     drop(data);
                 }
             }
+
+            let Some(next_id) = work_stack.pop() else {
+                break;
+            };
+            current_id = next_id;
         }
     }
 
