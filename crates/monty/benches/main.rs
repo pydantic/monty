@@ -137,6 +137,12 @@ const LIST_COMP: &str = "len([x * 2 for x in range(1000)])";
 /// Dict comprehension benchmark - creates 500 unique keys (i // 2 deduplicates pairs).
 const DICT_COMP: &str = "len({i // 2: i * 2 for i in range(1000)})";
 
+/// Empty tuple creation benchmark - creates 100,000 empty tuples in a list.
+const EMPTY_TUPLES: &str = "len([() for _ in range(100_000)])";
+
+/// 2-tuple creation benchmark - creates 100,000 2-tuples in a list.
+const PAIR_TUPLES: &str = "len([(i, i + 1) for i in range(100_000)])";
+
 /// Benchmarks end-to-end execution (parsing + running) using Monty.
 /// This is different from other benchmarks as it includes parsing in the loop.
 fn end_to_end_monty(bench: &mut Bencher) {
@@ -216,6 +222,14 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("dict_comp__monty", |b| run_monty(b, DICT_COMP, 500));
     #[cfg(not(codspeed))]
     c.bench_function("dict_comp__cpython", |b| run_cpython(b, DICT_COMP, 500));
+
+    c.bench_function("empty_tuples__monty", |b| run_monty(b, EMPTY_TUPLES, 100_000));
+    #[cfg(not(codspeed))]
+    c.bench_function("empty_tuples__cpython", |b| run_cpython(b, EMPTY_TUPLES, 100_000));
+
+    c.bench_function("pair_tuples__monty", |b| run_monty(b, PAIR_TUPLES, 100_000));
+    #[cfg(not(codspeed))]
+    c.bench_function("pair_tuples__cpython", |b| run_cpython(b, PAIR_TUPLES, 100_000));
 }
 
 // Use pprof flamegraph profiler when running locally (not on CodSpeed)

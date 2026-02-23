@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 def inner():
     raise_error('TypeError', 'nested error')
 

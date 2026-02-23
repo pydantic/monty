@@ -2,16 +2,90 @@ use std::borrow::Cow;
 
 use crate::exception_public::MontyException;
 
-/// Trait for handling output from the `print()` builtin function.
+/// Output handler for the `print()` builtin function.
 ///
-/// Implement this trait to capture or redirect print output from sandboxed Python code.
-/// The default implementation `StdPrint` writes to stdout.
-pub trait PrintWriter {
+/// Provides common output modes as enum variants to avoid trait object overhead
+/// in the typical cases (stdout, disabled, collect). For custom output handling,
+/// use the `Callback` variant with a [`PrintWriterCallback`] implementation.
+///
+/// # Variants
+/// - `Disabled` - Silently discards all output (useful for benchmarking or suppressing output)
+/// - `Stdout` - Writes to standard output (the default behavior)
+/// - `Collect` - Accumulates output into an owned `String` for programmatic access
+/// - `Callback` - Delegates to a user-provided [`PrintWriterCallback`] implementation
+pub enum PrintWriter<'a> {
+    /// Silently discard all output.
+    Disabled,
+    /// Write to standard output.
+    Stdout,
+    /// Collect all output into a string.
+    Collect(String),
+    /// Delegate to a custom callback.
+    Callback(&'a mut dyn PrintWriterCallback),
+}
+
+impl PrintWriter<'_> {
+    /// Called once for each formatted argument passed to `print()`.
+    ///
+    /// This method writes only the given argument's text, without adding
+    /// separators or a trailing newline. Separators (spaces) and the final
+    /// terminator (newline) are emitted via [`stdout_push`](Self::stdout_push).
+    pub fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
+        match self {
+            Self::Disabled => Ok(()),
+            Self::Stdout => {
+                print!("{output}");
+                Ok(())
+            }
+            Self::Collect(buf) => {
+                buf.push_str(&output);
+                Ok(())
+            }
+            Self::Callback(cb) => cb.stdout_write(output),
+        }
+    }
+
+    /// Appends a single character to the output.
+    ///
+    /// Generally called to add spaces (separators) and newlines (terminators)
+    /// within print output.
+    pub fn stdout_push(&mut self, end: char) -> Result<(), MontyException> {
+        match self {
+            Self::Disabled => Ok(()),
+            Self::Stdout => {
+                print!("{end}");
+                Ok(())
+            }
+            Self::Collect(buf) => {
+                buf.push(end);
+                Ok(())
+            }
+            Self::Callback(cb) => cb.stdout_push(end),
+        }
+    }
+
+    /// Returns the collected output if this is a `Collect` variant.
+    ///
+    /// Returns `None` for other variants.
+    #[must_use]
+    pub fn collected_output(&self) -> Option<&str> {
+        match self {
+            Self::Collect(buf) => Some(buf.as_str()),
+            _ => None,
+        }
+    }
+}
+
+/// Trait for custom output handling from the `print()` builtin function.
+///
+/// Implement this trait and pass it via [`PrintWriter::Callback`] to capture
+/// or redirect print output from sandboxed Python code.
+pub trait PrintWriterCallback {
     /// Called once for each formatted argument passed to `print()`.
     ///
     /// This method is responsible for writing only the given argument's text, and must
     /// not add separators or a trailing newline. Separators (such as spaces) and the
-    /// final terminator (such as a newline) are emitted via [`stdout_push`].
+    /// final terminator (such as a newline) are emitted via [`stdout_push`](Self::stdout_push).
     ///
     /// # Arguments
     /// * `output` - The formatted output string for a single argument (without
@@ -25,82 +99,4 @@ pub trait PrintWriter {
     /// # Arguments
     /// * `end` - The character to print after the formatted output.
     fn stdout_push(&mut self, end: char) -> Result<(), MontyException>;
-}
-
-/// Default `PrintWriter` that writes to stdout.
-///
-/// This is the default writer used when no custom writer is provided.
-#[derive(Debug)]
-pub struct StdPrint;
-
-impl PrintWriter for StdPrint {
-    fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
-        print!("{output}");
-        Ok(())
-    }
-
-    fn stdout_push(&mut self, end: char) -> Result<(), MontyException> {
-        print!("{end}");
-        Ok(())
-    }
-}
-
-/// A `PrintWriter` that collects all output into a string.
-///
-/// Uses interior mutability via `RefCell` to allow collecting output
-/// while being passed as a shared reference through the execution stack.
-///
-/// Useful for testing or capturing print output programmatically.
-#[derive(Debug, Default)]
-pub struct CollectStringPrint(String);
-
-impl CollectStringPrint {
-    /// Creates a new empty `CollectStringPrint`.
-    #[must_use]
-    pub fn new() -> Self {
-        Self(String::new())
-    }
-
-    /// Returns the collected output as a string slice.
-    ///
-    /// # Panics
-    /// Panics if the internal RefCell is currently borrowed mutably.
-    #[must_use]
-    pub fn output(&self) -> &str {
-        self.0.as_str()
-    }
-
-    /// Consumes the writer and returns the collected output.
-    #[must_use]
-    pub fn into_output(self) -> String {
-        self.0
-    }
-}
-
-impl PrintWriter for CollectStringPrint {
-    fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
-        self.0.push_str(&output);
-        Ok(())
-    }
-
-    fn stdout_push(&mut self, end: char) -> Result<(), MontyException> {
-        self.0.push(end);
-        Ok(())
-    }
-}
-
-/// `PrintWriter` that ignores all output.
-///
-/// Useful for suppressing print output during testing or benchmarking.
-#[derive(Debug, Default)]
-pub struct NoPrint;
-
-impl PrintWriter for NoPrint {
-    fn stdout_write(&mut self, _output: Cow<'_, str>) -> Result<(), MontyException> {
-        Ok(())
-    }
-
-    fn stdout_push(&mut self, _end: char) -> Result<(), MontyException> {
-        Ok(())
-    }
 }

@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 def level4():
     x = 1
     raise_error('RuntimeError', 'deep error')

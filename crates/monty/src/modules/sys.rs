@@ -51,7 +51,7 @@ pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -
     );
     // sys.version_info - named tuple (major=3, minor=14, micro=0, releaselevel='final', serial=0)
     let version_info = NamedTuple::new(
-        StaticStrings::SysVersionInfo.into(),
+        StaticStrings::SysVersionInfo,
         vec![
             StaticStrings::Major.into(),
             StaticStrings::Minor.into(),

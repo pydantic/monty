@@ -24,9 +24,9 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapId},
     intern::{Interns, StringId},
-    resource::ResourceTracker,
-    types::Type,
-    value::Value,
+    resource::{DepthGuard, ResourceError, ResourceTracker},
+    types::{AttrCallResult, Type},
+    value::{EitherStr, Value},
 };
 
 /// Python named tuple value stored on the heap.
@@ -48,9 +48,9 @@ use crate::{
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct NamedTuple {
     /// Type name for repr (e.g., "sys.version_info").
-    type_name: StringId,
+    name: EitherStr,
     /// Field names in order, e.g., `major`, `minor`, `micro`, `releaselevel`, `serial`.
-    field_names: Vec<StringId>,
+    field_names: Vec<EitherStr>,
     /// Values in order (same length as field_names).
     items: Vec<Value>,
     /// True if any item is a `Value::Ref`. Set at creation time since named tuples are immutable.
@@ -70,7 +70,7 @@ impl NamedTuple {
     ///
     /// Panics if `field_names.len() != items.len()`.
     #[must_use]
-    pub fn new(type_name: StringId, field_names: Vec<StringId>, items: Vec<Value>) -> Self {
+    pub fn new(name: impl Into<EitherStr>, field_names: Vec<EitherStr>, items: Vec<Value>) -> Self {
         assert_eq!(
             field_names.len(),
             items.len(),
@@ -78,7 +78,7 @@ impl NamedTuple {
         );
         let contains_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
         Self {
-            type_name,
+            name: name.into(),
             field_names,
             items,
             contains_refs,
@@ -87,8 +87,14 @@ impl NamedTuple {
 
     /// Returns the type name (e.g., "sys.version_info").
     #[must_use]
-    pub fn type_name(&self) -> StringId {
-        self.type_name
+    pub fn name<'a>(&'a self, interns: &'a Interns) -> &'a str {
+        self.name.as_str(interns)
+    }
+
+    /// Returns a reference to the field names.
+    #[must_use]
+    pub fn field_names(&self) -> &[EitherStr] {
+        &self.field_names
     }
 
     /// Returns a reference to the underlying items vector.
@@ -114,12 +120,17 @@ impl NamedTuple {
 
     /// Gets a field value by name (StringId).
     ///
+    /// Compares field names by actual string content, not just variant type.
+    /// This allows lookup to work regardless of whether the field name was
+    /// stored as an interned `StringId` or a heap-allocated `String`.
+    ///
     /// Returns `Some(value)` if the field exists, `None` otherwise.
     #[must_use]
-    pub fn get_by_name(&self, name_id: StringId) -> Option<&Value> {
+    pub fn get_by_name(&self, name_id: StringId, interns: &Interns) -> Option<&Value> {
+        let name_str = interns.get_str(name_id);
         self.field_names
             .iter()
-            .position(|&id| id == name_id)
+            .position(|field_name| field_name.as_str(interns) == name_str)
             .map(|idx| &self.items[idx])
     }
 
@@ -145,6 +156,7 @@ impl PyTrait for NamedTuple {
 
     fn py_estimate_size(&self) -> usize {
         std::mem::size_of::<Self>()
+            + self.name.py_estimate_size()
             + self.field_names.len() * std::mem::size_of::<StringId>()
             + self.items.len() * std::mem::size_of::<Value>()
     }
@@ -167,18 +179,27 @@ impl PyTrait for NamedTuple {
         }
     }
 
-    fn py_eq(&self, other: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> bool {
+    fn py_eq(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Result<bool, ResourceError> {
         // Compare only by items (not type_name) to match tuple semantics
         // This allows sys.version_info == (3, 14, 0, 'final', 0) to work
         if self.items.len() != other.items.len() {
-            return false;
+            return Ok(false);
         }
+        guard.increase_err()?;
         for (i1, i2) in self.items.iter().zip(&other.items) {
-            if !i1.py_eq(i2, heap, interns) {
-                return false;
+            if !i1.py_eq(i2, heap, guard, interns)? {
+                guard.decrease();
+                return Ok(false);
             }
         }
-        true
+        guard.decrease();
+        Ok(true)
     }
 
     /// Pushes all heap IDs contained in this named tuple onto the stack.
@@ -208,23 +229,44 @@ impl PyTrait for NamedTuple {
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
+        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result {
+        // Check depth limit before recursing
+        if !guard.increase() {
+            return f.write_str("...");
+        }
+
         // Format: type_name(field1=value1, field2=value2, ...)
-        f.write_str(interns.get_str(self.type_name))?;
-        f.write_char('(')?;
+        write!(f, "{}(", self.name.as_str(interns))?;
 
         let mut first = true;
-        for (name_id, value) in self.field_names.iter().zip(&self.items) {
+        for (field_name, value) in self.field_names.iter().zip(&self.items) {
             if !first {
                 f.write_str(", ")?;
             }
             first = false;
-            f.write_str(interns.get_str(*name_id))?;
+            f.write_str(field_name.as_str(interns))?;
             f.write_char('=')?;
-            value.py_repr_fmt(f, heap, heap_ids, interns)?;
+            value.py_repr_fmt(f, heap, heap_ids, guard, interns)?;
         }
 
-        f.write_char(')')
+        f.write_char(')')?;
+        guard.decrease();
+        Ok(())
+    }
+
+    fn py_getattr(
+        &self,
+        attr_id: StringId,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<Option<AttrCallResult>> {
+        if let Some(value) = self.get_by_name(attr_id, interns) {
+            Ok(Some(AttrCallResult::Value(value.clone_with_heap(heap))))
+        } else {
+            // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
+            Err(ExcType::attribute_error(self.name(interns), interns.get_str(attr_id)))
+        }
     }
 }

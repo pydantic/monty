@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::{
     exception_private::ExceptionRaise,
     heap::{Heap, HeapId},
@@ -106,13 +104,6 @@ pub struct Namespaces {
     /// When set, the next call to `take_ext_return_value` will return this error,
     /// allowing it to propagate through try/except blocks.
     ext_exception: Option<ExceptionRaise>,
-    /// Cached return values from user-defined functions that completed after internal external calls.
-    ///
-    /// Unlike `ext_return_values` which uses index-based lookup for external calls, this map
-    /// allows direct lookup by call position. This is needed because function returns may be
-    /// interspersed with external call returns, but we need to find the correct function return
-    /// by its exact call site position.
-    func_return_values: HashMap<CodeRange, Value>,
 }
 
 impl Namespaces {
@@ -126,7 +117,6 @@ impl Namespaces {
             ext_return_values: vec![],
             next_ext_return_value: 0,
             ext_exception: None,
-            func_return_values: HashMap::new(),
         }
     }
 
@@ -186,6 +176,45 @@ impl Namespaces {
         }
     }
 
+    /// Registers a pre-built namespace (e.g., from a coroutine) with memory and recursion tracking.
+    ///
+    /// This is similar to `new_namespace` but takes an already-populated `Vec<Value>` instead
+    /// of creating an empty one. Used when starting execution of a coroutine whose namespace
+    /// was pre-bound at call time.
+    ///
+    /// # Arguments
+    /// * `namespace` - The pre-built namespace values
+    /// * `heap` - The heap, used to access the resource tracker for memory accounting
+    ///
+    /// # Returns
+    /// * `Ok(NamespaceId)` - Index of the registered namespace
+    /// * `Err(ResourceError::Recursion)` - If adding this namespace would exceed recursion limit
+    /// * `Err(ResourceError::Memory)` - If adding this namespace would exceed memory limits
+    pub fn register_prebuilt(
+        &mut self,
+        namespace: Vec<Value>,
+        heap: &mut Heap<impl ResourceTracker>,
+    ) -> Result<NamespaceId, ResourceError> {
+        // Check recursion depth BEFORE memory allocation (fail fast)
+        let current_depth = self.stack.len() - 1;
+        heap.tracker().check_recursion_depth(current_depth)?;
+
+        // Track the memory used by this namespace's slots
+        let size = namespace.len() * std::mem::size_of::<Value>();
+        heap.tracker_mut().on_allocate(|| size)?;
+
+        // Try to reuse an existing slot, or push a new one
+        if let Some(reuse_id) = self.reuse_ids.pop() {
+            // Replace the old namespace with the new one
+            self.stack[reuse_id.index()] = Namespace(namespace);
+            Ok(reuse_id)
+        } else {
+            let idx = NamespaceId::new(self.stack.len());
+            self.stack.push(Namespace(namespace));
+            Ok(idx)
+        }
+    }
+
     /// Voids the most recently added namespace (after function returns),
     /// properly cleaning up any heap-allocated values.
     ///
@@ -223,10 +252,6 @@ impl Namespaces {
         }
         // Clean up any remaining return values from external function calls
         for (_, value) in std::mem::take(&mut self.ext_return_values) {
-            value.drop_with_heap(heap);
-        }
-        // Clean up any cached function return values
-        for value in std::mem::take(&mut self.func_return_values).into_values() {
             value.drop_with_heap(heap);
         }
         // Clear any pending exception

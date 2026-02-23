@@ -2,8 +2,9 @@
 
 use crate::{
     args::ArgValues,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::Heap,
+    heap::{Heap, HeapGuard},
     intern::Interns,
     resource::ResourceTracker,
     types::{MontyIter, PyTrait, Type},
@@ -17,14 +18,16 @@ use crate::{
 /// (use `''.join(seq)` instead for string concatenation).
 pub fn builtin_sum(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
     let (iterable, start) = args.get_one_two_args("sum", heap)?;
+    defer_drop_mut!(start, heap);
+
+    let iter = MontyIter::new(iterable, heap, interns)?;
+    defer_drop_mut!(iter, heap);
 
     // Get the start value, defaulting to 0
-    let mut accumulator = match start {
+    let accumulator = match start.take() {
         Some(v) => {
             // Reject string start values - Python explicitly forbids this
-            let is_str = matches!(v.py_type(heap), Type::Str);
-            if is_str {
-                iterable.drop_with_heap(heap);
+            if matches!(v.py_type(heap), Type::Str) {
                 v.drop_with_heap(heap);
                 return Err(SimpleException::new_msg(
                     ExcType::TypeError,
@@ -37,38 +40,27 @@ pub fn builtin_sum(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
         None => Value::Int(0),
     };
 
-    // Create iterator from the iterable
-    let mut iter = MontyIter::new(iterable, heap, interns)?;
+    // HeapGuard for accumulator: on success we extract it via into_inner(),
+    // on any error path it's dropped automatically
+    let mut acc_guard = HeapGuard::new(accumulator, heap);
+    let (accumulator, heap) = acc_guard.as_parts_mut();
 
     // Sum all items
     while let Some(item) = iter.for_next(heap, interns)? {
-        // Get item type before any operations (needed for error messages)
-        let item_type = item.py_type(heap);
+        defer_drop!(item, heap);
 
         // Try to add the item to accumulator
-        let add_result = accumulator.py_add(&item, heap, interns);
-        item.drop_with_heap(heap);
-
-        match add_result {
-            Ok(Some(new_value)) => {
-                accumulator.drop_with_heap(heap);
-                accumulator = new_value;
-            }
-            Ok(None) => {
-                // Types don't support addition - use binary_type_error for consistent messages
-                let acc_type = accumulator.py_type(heap);
-                accumulator.drop_with_heap(heap);
-                iter.drop_with_heap(heap);
-                return Err(ExcType::binary_type_error("+", acc_type, item_type));
-            }
-            Err(e) => {
-                accumulator.drop_with_heap(heap);
-                iter.drop_with_heap(heap);
-                return Err(e.into());
-            }
+        if let Some(new_value) = accumulator.py_add(item, heap, interns)? {
+            // Replace the old accumulator with the new value, dropping the old one
+            let old = std::mem::replace(accumulator, new_value);
+            old.drop_with_heap(heap);
+        } else {
+            // Types don't support addition
+            let acc_type = accumulator.py_type(heap);
+            let item_type = item.py_type(heap);
+            return Err(ExcType::binary_type_error("+", acc_type, item_type));
         }
     }
 
-    iter.drop_with_heap(heap);
-    Ok(accumulator)
+    Ok(acc_guard.into_inner())
 }

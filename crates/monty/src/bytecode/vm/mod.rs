@@ -3,6 +3,7 @@
 //! The VM uses a stack-based execution model with an operand stack for computation
 //! and a call stack for function frames. Each frame owns its instruction pointer (IP).
 
+mod async_exec;
 mod attr;
 mod binary;
 mod call;
@@ -10,25 +11,45 @@ mod collections;
 mod compare;
 mod exceptions;
 mod format;
+mod scheduler;
 
 use std::cmp::Ordering;
 
 use call::CallResult;
+use scheduler::Scheduler;
 
 use crate::{
+    MontyObject,
     args::ArgValues,
+    asyncio::{CallId, TaskId},
     bytecode::{code::Code, op::Opcode},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{Heap, HeapData, HeapId},
+    heap::{ContainsHeap, Heap, HeapData, HeapId},
     intern::{ExtFunctionId, FunctionId, Interns, StringId},
     io::PrintWriter,
     modules::BuiltinModule,
     namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
+    os::OsFunction,
     parse::CodeRange,
     resource::ResourceTracker,
     types::{LongInt, MontyIter, PyTrait, iter::advance_on_heap},
-    value::{BitwiseOp, Value},
+    value::{BitwiseOp, EitherStr, Value},
 };
+
+/// Result of executing Await opcode.
+///
+/// Indicates what the VM should do after awaiting a value:
+/// - `ValueReady`: the awaited value resolved immediately, push it
+/// - `FramePushed`: a new frame was pushed for coroutine execution
+/// - `Yield`: all tasks blocked, yield to caller with pending futures
+enum AwaitResult {
+    /// The awaited value resolved immediately (e.g., resolved ExternalFuture).
+    ValueReady(Value),
+    /// A new frame was pushed to execute a coroutine.
+    FramePushed,
+    /// All tasks are blocked - yield to caller with pending futures.
+    Yield(Vec<CallId>),
+}
 
 /// Tries an operation and handles exceptions, reloading cached frame state.
 ///
@@ -129,6 +150,79 @@ macro_rules! jump_relative {
     }};
 }
 
+/// Handles the result of a call operation that returns `CallResult`.
+///
+/// This macro eliminates the repetitive pattern of matching on `CallResult`
+/// variants that appears in LoadAttr, CallFunction, CallFunctionKw, CallAttr,
+/// CallAttrKw, and CallFunctionExtended opcodes.
+///
+/// Actions taken for each variant:
+/// - `Push(value)`: Push the value onto the stack
+/// - `FramePushed`: Reload the cached frame (a new frame was pushed)
+/// - `External(ext_id, args)`: Return `FrameExit::ExternalCall` to yield to host
+/// - `OsCall(func, args)`: Return `FrameExit::OsCall` to yield to host
+/// - `MethodCall(name, args)`: Return `FrameExit::MethodCall` to yield to host
+/// - `AwaitValue(value)`: Push value, then implicitly await it via `exec_get_awaitable`
+/// - `Err(err)`: Handle the exception via `catch_sync!`
+macro_rules! handle_call_result {
+    ($self:expr, $cached_frame:ident, $result:expr) => {
+        match $result {
+            Ok(CallResult::Push(result)) => $self.push(result),
+            Ok(CallResult::FramePushed) => reload_cache!($self, $cached_frame),
+            Ok(CallResult::External(ext_id, args)) => {
+                let call_id = $self.allocate_call_id();
+                // Sync cached IP back to frame before snapshot for resume
+                $self.current_frame_mut().ip = $cached_frame.ip;
+                return Ok(FrameExit::ExternalCall {
+                    ext_function_id: ext_id,
+                    args,
+                    call_id,
+                });
+            }
+            Ok(CallResult::OsCall(func, args)) => {
+                let call_id = $self.allocate_call_id();
+                // Sync cached IP back to frame before snapshot for resume
+                $self.current_frame_mut().ip = $cached_frame.ip;
+                return Ok(FrameExit::OsCall {
+                    function: func,
+                    args,
+                    call_id,
+                });
+            }
+            Ok(CallResult::MethodCall(method_name, args)) => {
+                let call_id = $self.allocate_call_id();
+                // Sync cached IP back to frame before snapshot for resume
+                $self.current_frame_mut().ip = $cached_frame.ip;
+                return Ok(FrameExit::MethodCall {
+                    method_name,
+                    args,
+                    call_id,
+                });
+            }
+            Ok(CallResult::AwaitValue(value)) => {
+                // Push the value and implicitly await it (used by asyncio.run())
+                $self.push(value);
+                $self.current_frame_mut().ip = $cached_frame.ip;
+                match $self.exec_get_awaitable() {
+                    Ok(AwaitResult::ValueReady(value)) => {
+                        $self.push(value);
+                    }
+                    Ok(AwaitResult::FramePushed) => {
+                        reload_cache!($self, $cached_frame);
+                    }
+                    Ok(AwaitResult::Yield(pending_calls)) => {
+                        return Ok(FrameExit::ResolveFutures(pending_calls));
+                    }
+                    Err(e) => {
+                        catch_sync!($self, $cached_frame, e);
+                    }
+                }
+            }
+            Err(err) => catch_sync!($self, $cached_frame, err),
+        }
+    };
+}
+
 /// Result of VM execution.
 pub enum FrameExit {
     /// Execution completed successfully with a return value.
@@ -137,13 +231,52 @@ pub enum FrameExit {
     /// Execution paused for an external function call.
     ///
     /// The caller should execute the external function and call `resume()`
-    /// with the result.
+    /// with the result. The `call_id` allows the host to use async resolution
+    /// by calling `run_pending()` instead of `run(result)`.
     ExternalCall {
         /// ID of the external function to call.
         ext_function_id: ExtFunctionId,
         /// Arguments for the external function (includes both positional and keyword args).
         args: ArgValues,
+        /// Unique ID for this call, used for async correlation.
+        call_id: CallId,
     },
+
+    /// Execution paused for an os function call.
+    ///
+    /// The caller should execute a function corresponding to the `os_call` and call `resume()`
+    /// with the result. The `call_id` allows the host to use async resolution
+    /// by calling `run_pending()` instead of `run(result)`.
+    OsCall {
+        /// ID of the os function to call.
+        function: OsFunction,
+        /// Arguments for the external function (includes both positional and keyword args).
+        args: ArgValues,
+        /// Unique ID for this call, used for async correlation.
+        call_id: CallId,
+    },
+
+    /// Execution paused for a dataclass method call.
+    ///
+    /// The caller should invoke the method on the original Python dataclass and call
+    /// `resume()` with the result. The `method_name` is the attribute name (e.g.
+    /// `"distance"`) and `args` includes the dataclass instance as the first argument
+    /// (`self`).
+    MethodCall {
+        /// Method name (e.g., "distance").
+        method_name: EitherStr,
+        /// Arguments including the dataclass instance as the first positional arg.
+        args: ArgValues,
+        /// Unique ID for this call, used for async correlation.
+        call_id: CallId,
+    },
+
+    /// All tasks are blocked waiting for external futures to resolve.
+    ///
+    /// The caller must resolve the pending CallIds before calling `resume()`.
+    /// This happens when await is called on an ExternalFuture that hasn't
+    /// been resolved yet, and there are no other ready tasks to switch to.
+    ResolveFutures(Vec<CallId>),
 }
 
 /// A single function activation record.
@@ -174,6 +307,10 @@ pub struct CallFrame<'code> {
 
     /// Call site position (for tracebacks).
     call_position: Option<CodeRange>,
+
+    /// When this frame returns (or exits with an exception) the VM should exit the run loop
+    /// and return to the caller. Supports `evaluate_function`.
+    should_return: bool,
 }
 
 impl<'code> CallFrame<'code> {
@@ -187,6 +324,7 @@ impl<'code> CallFrame<'code> {
             function_id: None,
             cells: Vec::new(),
             call_position: None,
+            should_return: false,
         }
     }
 
@@ -197,7 +335,7 @@ impl<'code> CallFrame<'code> {
         namespace_idx: NamespaceId,
         function_id: FunctionId,
         cells: Vec<HeapId>,
-        call_position: CodeRange,
+        call_position: Option<CodeRange>,
     ) -> Self {
         Self {
             code,
@@ -206,7 +344,8 @@ impl<'code> CallFrame<'code> {
             namespace_idx,
             function_id: Some(function_id),
             cells,
-            call_position: Some(call_position),
+            call_position,
+            should_return: false,
         }
     }
 }
@@ -262,6 +401,10 @@ pub struct SerializedFrame {
 impl CallFrame<'_> {
     /// Converts this frame to a serializable representation.
     fn serialize(&self) -> SerializedFrame {
+        assert!(
+            !self.should_return,
+            "cannot serialize frame marked for return - not yet supported"
+        );
         SerializedFrame {
             function_id: self.function_id,
             ip: self.ip,
@@ -301,6 +444,16 @@ pub struct VMSnapshot {
 
     /// IP of the instruction that caused the pause (for exception handling).
     instruction_ip: usize,
+
+    /// Counter for external call IDs when scheduler is not initialized.
+    next_call_id: u32,
+
+    /// Scheduler state for async execution (optional).
+    ///
+    /// Contains all task state, pending calls, and resolved futures.
+    /// This enables async execution to be paused and resumed across host calls.
+    /// None if no async operations have been performed yet.
+    scheduler: Option<Scheduler>,
 }
 
 // ============================================================================
@@ -312,7 +465,11 @@ pub struct VMSnapshot {
 /// Executes compiled bytecode using a stack-based execution model.
 /// The instruction pointer (IP) lives in each `CallFrame`, not here,
 /// to avoid sync bugs on call/return.
-pub struct VM<'a, T: ResourceTracker, P: PrintWriter> {
+///
+/// # Lifetimes
+/// * `'a` - Lifetime of the heap, namespaces, interns, and the print writer borrow
+/// * `'p` - Lifetime of the callback reference inside [`PrintWriter::Callback`]
+pub struct VM<'a, 'p, T: ResourceTracker> {
     /// Operand stack - values being computed.
     stack: Vec<Value>,
 
@@ -320,16 +477,16 @@ pub struct VM<'a, T: ResourceTracker, P: PrintWriter> {
     frames: Vec<CallFrame<'a>>,
 
     /// Heap for reference-counted objects.
-    heap: &'a mut Heap<T>,
+    pub(crate) heap: &'a mut Heap<T>,
 
     /// Namespace stack for variable storage.
     namespaces: &'a mut Namespaces,
 
     /// Interned strings/bytes.
-    interns: &'a Interns,
+    pub(crate) interns: &'a Interns,
 
-    /// Print output writer.
-    print_writer: &'a mut P,
+    /// Print output writer, borrowed so callers retain access to collected output.
+    pub(crate) print_writer: &'a mut PrintWriter<'p>,
 
     /// Stack of exceptions being handled for nested except blocks.
     ///
@@ -344,15 +501,33 @@ pub struct VM<'a, T: ResourceTracker, P: PrintWriter> {
     /// Updated at the start of each instruction before operands are fetched.
     /// This allows us to find the correct exception handler when an error occurs.
     instruction_ip: usize,
+
+    /// Counter for external call IDs when scheduler is not initialized.
+    ///
+    /// Used by `allocate_call_id()` when no scheduler exists (sync code paths).
+    /// When a scheduler is created, this counter is transferred to it.
+    next_call_id: u32,
+
+    /// Scheduler for async task management (lazy - only created when needed).
+    ///
+    /// Manages concurrent tasks, external call tracking, and task switching.
+    /// Created lazily on first async operation to avoid allocations for sync code.
+    scheduler: Option<Scheduler>,
+
+    /// Module-level code (for restoring main task frames).
+    ///
+    /// Stored here because the main task's frames have `function_id: None` and
+    /// need a reference to the module code when being restored after task switching.
+    module_code: Option<&'a Code>,
 }
 
-impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
+impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// Creates a new VM with the given runtime context.
     pub fn new(
         heap: &'a mut Heap<T>,
         namespaces: &'a mut Namespaces,
         interns: &'a Interns,
-        print_writer: &'a mut P,
+        print_writer: &'a mut PrintWriter<'p>,
     ) -> Self {
         Self {
             stack: Vec::with_capacity(64),
@@ -363,11 +538,110 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             print_writer,
             exception_stack: Vec::new(),
             instruction_ip: 0,
+            next_call_id: 0,
+            scheduler: None, // Lazy - no allocation for sync code
+            module_code: None,
+        }
+    }
+
+    /// Reconstructs a VM from a snapshot.
+    ///
+    /// The heap and namespaces must already be deserialized. `FunctionId` values
+    /// in frames are used to look up pre-compiled `Code` objects from the `Interns`.
+    /// The `module_code` is used for frames with `function_id = None`.
+    ///
+    /// # Arguments
+    /// * `snapshot` - The VM snapshot to restore
+    /// * `module_code` - Compiled module code (for frames with function_id = None)
+    /// * `heap` - The deserialized heap
+    /// * `namespaces` - The deserialized namespaces
+    /// * `interns` - Interns for looking up function code
+    /// * `print_writer` - Writer for print output
+    pub fn restore(
+        snapshot: VMSnapshot,
+        module_code: &'a Code,
+        heap: &'a mut Heap<T>,
+        namespaces: &'a mut Namespaces,
+        interns: &'a Interns,
+        print_writer: &'a mut PrintWriter<'p>,
+    ) -> Self {
+        // Reconstruct call frames from serialized form
+        let frames = snapshot
+            .frames
+            .into_iter()
+            .map(|sf| {
+                let code = match sf.function_id {
+                    Some(func_id) => &interns.get_function(func_id).code,
+                    None => module_code,
+                };
+                CallFrame {
+                    code,
+                    ip: sf.ip,
+                    stack_base: sf.stack_base,
+                    namespace_idx: sf.namespace_idx,
+                    function_id: sf.function_id,
+                    cells: sf.cells,
+                    call_position: sf.call_position,
+                    should_return: false,
+                }
+            })
+            .collect();
+
+        Self {
+            stack: snapshot.stack,
+            frames,
+            heap,
+            namespaces,
+            interns,
+            print_writer,
+            exception_stack: snapshot.exception_stack,
+            instruction_ip: snapshot.instruction_ip,
+            next_call_id: snapshot.next_call_id,
+            scheduler: snapshot.scheduler,
+            module_code: Some(module_code),
+        }
+    }
+    /// Consumes the VM and creates a snapshot for pause/resume if needed.
+    pub fn check_snapshot(mut self, result: &RunResult<FrameExit>) -> Option<VMSnapshot> {
+        if matches!(
+            result,
+            Ok(FrameExit::ExternalCall { .. }
+                | FrameExit::OsCall { .. }
+                | FrameExit::MethodCall { .. }
+                | FrameExit::ResolveFutures(_))
+        ) {
+            Some(self.snapshot())
+        } else {
+            self.cleanup();
+            None
+        }
+    }
+
+    /// Consumes the VM and creates a snapshot for pause/resume.
+    ///
+    /// **Ownership transfer:** This method takes `self` by value, consuming the VM.
+    /// The snapshot owns all Values (refcounts already correct from the live VM).
+    /// The heap and namespaces must be serialized alongside this snapshot.
+    ///
+    /// This is NOT a clone - it's a transfer. After calling this, the original VM
+    /// is gone and only the snapshot (+ serialized heap/namespaces) represents the state.
+    pub fn snapshot(self) -> VMSnapshot {
+        VMSnapshot {
+            // Move values directly - no clone, no refcount increment needed
+            // (the VM owned them, now the snapshot owns them)
+            stack: self.stack,
+            frames: self.frames.into_iter().map(|f| f.serialize()).collect(),
+            exception_stack: self.exception_stack,
+            instruction_ip: self.instruction_ip,
+            next_call_id: self.next_call_id,
+            scheduler: self.scheduler,
         }
     }
 
     /// Pushes an initial frame for module-level code and runs the VM.
     pub fn run_module(&mut self, code: &'a Code) -> Result<FrameExit, RunError> {
+        // Store module code for restoring main task frames during task switching
+        self.module_code = Some(code);
         self.frames.push(CallFrame::new_module(code, GLOBAL_NS_IDX));
         self.run()
     }
@@ -375,7 +649,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// Cleans up VM state before the VM is dropped.
     ///
     /// This method must be called before the VM goes out of scope to ensure
-    /// proper reference counting cleanup for any exception values.
+    /// proper reference counting cleanup for any exception values and scheduler state.
     pub fn cleanup(&mut self) {
         // Drop all exceptions in the exception stack
         for exc in self.exception_stack.drain(..) {
@@ -385,6 +659,66 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         for value in self.stack.drain(..) {
             value.drop_with_heap(self.heap);
         }
+        // Clean up current frames (main module frame after return, or any remaining frames)
+        self.cleanup_current_frames();
+        // Clean up task frame namespaces (scheduler doesn't have access to namespaces)
+        self.cleanup_all_task_frames();
+        // Clean up scheduler state (task stacks, pending calls, resolved values)
+        if let Some(scheduler) = &mut self.scheduler {
+            scheduler.cleanup(self.heap);
+        }
+    }
+
+    /// Cleans up frames stored in all scheduler tasks.
+    ///
+    /// Task frames reference namespaces and cells that need to be cleaned up
+    /// before the VM is dropped. This is separate from `scheduler.cleanup()`
+    /// because the scheduler doesn't have access to the VM's namespaces.
+    fn cleanup_all_task_frames(&mut self) {
+        let Some(scheduler) = &mut self.scheduler else {
+            return;
+        };
+        // Clean up each task's saved frames
+        for task_idx in 0..scheduler.task_count() {
+            let task_id = TaskId::new(u32::try_from(task_idx).expect("task_idx exceeds u32"));
+            let task = scheduler.get_task_mut(task_id);
+            for frame in std::mem::take(&mut task.frames) {
+                // Clean up cell references
+                for cell_id in frame.cells {
+                    self.heap.dec_ref(cell_id);
+                }
+                // Clean up the namespace (but not the global namespace)
+                if frame.namespace_idx != GLOBAL_NS_IDX {
+                    self.namespaces.drop_with_heap(frame.namespace_idx, self.heap);
+                }
+            }
+        }
+    }
+
+    /// Allocates a new `CallId` for an external function call.
+    ///
+    /// Works with or without a scheduler. If a scheduler exists, delegates to it.
+    /// Otherwise, uses the VM's `next_call_id` counter directly, avoiding
+    /// scheduler creation overhead for synchronous external calls.
+    fn allocate_call_id(&mut self) -> CallId {
+        if let Some(scheduler) = &mut self.scheduler {
+            scheduler.allocate_call_id()
+        } else {
+            let id = CallId::new(self.next_call_id);
+            self.next_call_id += 1;
+            id
+        }
+    }
+
+    /// Returns true if we're on the main task (or no async at all).
+    ///
+    /// This is used to determine whether a `ReturnValue` at the last frame means
+    /// module-level completion (return to host) or spawned task completion
+    /// (handle task completion and switch).
+    fn is_main_task(&self) -> bool {
+        self.scheduler
+            .as_ref()
+            .is_none_or(|s| s.current_task_id().is_none_or(TaskId::is_main))
     }
 
     /// Main execution loop.
@@ -404,7 +738,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         loop {
             // Check time limit and trigger GC if needed at each instruction.
             // For NoLimitTracker, these are inlined no-ops that compile away.
-            self.heap.tracker_mut().check_time()?;
+            self.heap.check_time()?;
 
             if self.heap.should_gc() {
                 // Sync IP before GC for safety
@@ -431,12 +765,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     value.drop_with_heap(self.heap);
                 }
                 Opcode::Dup => {
-                    // Copy without incrementing refcount first (avoids borrow conflict)
-                    let value = self.peek().copy_for_extend();
-                    // Now we can safely increment refcount and push
-                    if let Value::Ref(id) = &value {
-                        self.heap.inc_ref(*id);
-                    }
+                    let value = self.peek().clone_with_heap(self.heap);
                     self.push(value);
                 }
                 Opcode::Rot2 => {
@@ -455,13 +784,17 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 // Constants & Literals
                 Opcode::LoadConst => {
                     let idx = fetch_u16!(cached_frame);
-                    // Copy without incrementing refcount first (avoids borrow conflict)
-                    let value = cached_frame.code.constants().get(idx).copy_for_extend();
-                    // Now we can safely increment refcount and push
-                    if let Value::Ref(id) = &value {
-                        self.heap.inc_ref(*id);
+                    let value = cached_frame.code.constants().get(idx);
+                    // Handle InternLongInt specially - convert to heap-allocated LongInt
+                    if let Value::InternLongInt(long_int_id) = value {
+                        let bi = self.interns.get_long_int(*long_int_id).clone();
+                        match LongInt::new(bi).into_value(self.heap) {
+                            Ok(v) => self.push(v),
+                            Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
+                        }
+                    } else {
+                        self.push(value.clone_with_heap(self.heap));
                     }
-                    self.push(value);
                 }
                 Opcode::LoadNone => self.push(Value::None),
                 Opcode::LoadTrue => self.push(Value::Bool(true)),
@@ -532,14 +865,14 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::BinaryRShift => {
                     try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::RShift));
                 }
-                Opcode::BinaryMatMul => todo!("BinaryMatMul not implemented"),
+                Opcode::BinaryMatMul => try_catch_sync!(self, cached_frame, self.binary_matmul()),
                 // Comparison Operations
-                Opcode::CompareEq => self.compare_eq(),
-                Opcode::CompareNe => self.compare_ne(),
-                Opcode::CompareLt => self.compare_ord(Ordering::is_lt),
-                Opcode::CompareLe => self.compare_ord(Ordering::is_le),
-                Opcode::CompareGt => self.compare_ord(Ordering::is_gt),
-                Opcode::CompareGe => self.compare_ord(Ordering::is_ge),
+                Opcode::CompareEq => try_catch_sync!(self, cached_frame, self.compare_eq()),
+                Opcode::CompareNe => try_catch_sync!(self, cached_frame, self.compare_ne()),
+                Opcode::CompareLt => try_catch_sync!(self, cached_frame, self.compare_ord(Ordering::is_lt)),
+                Opcode::CompareLe => try_catch_sync!(self, cached_frame, self.compare_ord(Ordering::is_le)),
+                Opcode::CompareGt => try_catch_sync!(self, cached_frame, self.compare_ord(Ordering::is_gt)),
+                Opcode::CompareGe => try_catch_sync!(self, cached_frame, self.compare_ord(Ordering::is_ge)),
                 Opcode::CompareIs => self.compare_is(false),
                 Opcode::CompareIsNot => self.compare_is(true),
                 Opcode::CompareIn => try_catch_sync!(self, cached_frame, self.compare_in(false)),
@@ -743,31 +1076,20 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         catch_sync!(self, cached_frame, e);
                     }
                 }
-                Opcode::DeleteSubscr => {
-                    // TODO: Implement py_delitem on Value
-                    let index = self.pop();
-                    let obj = self.pop();
-                    obj.drop_with_heap(self.heap);
-                    index.drop_with_heap(self.heap);
-                    todo!("DeleteSubscr: py_delitem not yet implemented")
-                }
                 Opcode::LoadAttr => {
                     let name_idx = fetch_u16!(cached_frame);
                     let name_id = StringId::from_index(name_idx);
-                    try_catch_sync!(self, cached_frame, self.load_attr(name_id));
+                    handle_call_result!(self, cached_frame, self.load_attr(name_id));
                 }
                 Opcode::LoadAttrImport => {
                     let name_idx = fetch_u16!(cached_frame);
                     let name_id = StringId::from_index(name_idx);
-                    try_catch_sync!(self, cached_frame, self.load_attr_import(name_id));
+                    handle_call_result!(self, cached_frame, self.load_attr_import(name_id));
                 }
                 Opcode::StoreAttr => {
                     let name_idx = fetch_u16!(cached_frame);
                     let name_id = StringId::from_index(name_idx);
                     try_catch_sync!(self, cached_frame, self.store_attr(name_id));
-                }
-                Opcode::DeleteAttr => {
-                    todo!("DeleteAttr not implemented")
                 }
                 // Control Flow - use cached_frame.ip directly for jumps
                 Opcode::Jump => {
@@ -852,26 +1174,19 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Sync IP before call (call_function may access frame for traceback)
                     self.current_frame_mut().ip = cached_frame.ip;
 
-                    match self.exec_call_function(arg_count) {
-                        Ok(CallResult::Push(result)) => self.push(result),
-                        Ok(CallResult::FramePushed) => reload_cache!(self, cached_frame),
-                        Ok(CallResult::External(ext_id, args)) => {
-                            return Ok(FrameExit::ExternalCall {
-                                ext_function_id: ext_id,
-                                args,
-                            });
-                        }
-                        Err(err) => catch_sync!(self, cached_frame, err),
-                    }
+                    handle_call_result!(self, cached_frame, self.exec_call_function(arg_count));
                 }
                 Opcode::CallBuiltinFunction => {
                     // Fetch operands: builtin_id (u8) + arg_count (u8)
                     let builtin_id = fetch_u8!(cached_frame);
                     let arg_count = fetch_u8!(cached_frame) as usize;
 
+                    // Sync IP before call (builtins like map() may call evaluate_function
+                    // which pushes frames and runs a nested run() loop)
+                    self.current_frame_mut().ip = cached_frame.ip;
+
                     match self.exec_call_builtin_function(builtin_id, arg_count) {
                         Ok(result) => self.push(result),
-                        // IP sync deferred to error path (no frame push possible)
                         Err(err) => catch_sync!(self, cached_frame, err),
                     }
                 }
@@ -900,33 +1215,22 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Sync IP before call (call_function may access frame for traceback)
                     self.current_frame_mut().ip = cached_frame.ip;
 
-                    match self.exec_call_function_kw(pos_count, kwname_ids) {
-                        Ok(CallResult::Push(result)) => self.push(result),
-                        Ok(CallResult::FramePushed) => reload_cache!(self, cached_frame),
-                        Ok(CallResult::External(ext_id, args)) => {
-                            return Ok(FrameExit::ExternalCall {
-                                ext_function_id: ext_id,
-                                args,
-                            });
-                        }
-                        Err(err) => catch_sync!(self, cached_frame, err),
-                    }
+                    handle_call_result!(self, cached_frame, self.exec_call_function_kw(pos_count, kwname_ids));
                 }
-                Opcode::CallMethod => {
-                    // CallMethod: u16 name_id, u8 arg_count
+                Opcode::CallAttr => {
+                    // CallAttr: u16 name_id, u8 arg_count
                     // Stack: [obj, arg1, arg2, ..., argN] -> [result]
                     let name_idx = fetch_u16!(cached_frame);
                     let arg_count = fetch_u8!(cached_frame) as usize;
                     let name_id = StringId::from_index(name_idx);
 
-                    match self.exec_call_method(name_id, arg_count) {
-                        Ok(result) => self.push(result),
-                        // IP sync deferred to error path (no frame push possible)
-                        Err(err) => catch_sync!(self, cached_frame, err),
-                    }
+                    // Sync IP before call (may yield to host for OS/external calls)
+                    self.current_frame_mut().ip = cached_frame.ip;
+
+                    handle_call_result!(self, cached_frame, self.exec_call_attr(name_id, arg_count));
                 }
-                Opcode::CallMethodKw => {
-                    // CallMethodKw: u16 name_id, u8 pos_count, u8 kw_count, then kw_count u16 name indices
+                Opcode::CallAttrKw => {
+                    // CallAttrKw: u16 name_id, u8 pos_count, u8 kw_count, then kw_count u16 name indices
                     // Stack: [obj, pos_args..., kw_values...] -> [result]
                     let name_idx = fetch_u16!(cached_frame);
                     let pos_count = fetch_u8!(cached_frame) as usize;
@@ -939,11 +1243,14 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                         kwname_ids.push(StringId::from_index(fetch_u16!(cached_frame)));
                     }
 
-                    match self.exec_call_method_kw(name_id, pos_count, kwname_ids) {
-                        Ok(result) => self.push(result),
-                        // IP sync deferred to error path (no frame push possible)
-                        Err(err) => catch_sync!(self, cached_frame, err),
-                    }
+                    // Sync IP before call (may yield to host for OS/external calls)
+                    self.current_frame_mut().ip = cached_frame.ip;
+
+                    handle_call_result!(
+                        self,
+                        cached_frame,
+                        self.exec_call_attr_kw(name_id, pos_count, kwname_ids)
+                    );
                 }
                 Opcode::CallFunctionExtended => {
                     let flags = fetch_u8!(cached_frame);
@@ -952,17 +1259,18 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     // Sync IP before call
                     self.current_frame_mut().ip = cached_frame.ip;
 
-                    match self.exec_call_function_extended(has_kwargs) {
-                        Ok(CallResult::Push(result)) => self.push(result),
-                        Ok(CallResult::FramePushed) => reload_cache!(self, cached_frame),
-                        Ok(CallResult::External(ext_id, args)) => {
-                            return Ok(FrameExit::ExternalCall {
-                                ext_function_id: ext_id,
-                                args,
-                            });
-                        }
-                        Err(err) => catch_sync!(self, cached_frame, err),
-                    }
+                    handle_call_result!(self, cached_frame, self.exec_call_function_extended(has_kwargs));
+                }
+                Opcode::CallAttrExtended => {
+                    let name_idx = fetch_u16!(cached_frame);
+                    let flags = fetch_u8!(cached_frame);
+                    let name_id = StringId::from_index(name_idx);
+                    let has_kwargs = (flags & 0x01) != 0;
+
+                    // Sync IP before call (may yield to host for OS/external calls)
+                    self.current_frame_mut().ip = cached_frame.ip;
+
+                    handle_call_result!(self, cached_frame, self.exec_call_attr_extended(name_id, has_kwargs));
                 }
                 // Function Definition
                 Opcode::MakeFunction => {
@@ -1027,9 +1335,6 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     let error = self.make_exception(exc, true); // is_raise=true, hide caret
                     catch_sync!(self, cached_frame, error);
                 }
-                Opcode::RaiseFrom => {
-                    todo!("RaiseFrom")
-                }
                 Opcode::Reraise => {
                     // Pop the current exception from the stack to re-raise it
                     // If caught, handle_exception will push it back
@@ -1061,14 +1366,65 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::ReturnValue => {
                     let value = self.pop();
                     if self.frames.len() == 1 {
-                        // Module-level return - we're done
-                        return Ok(FrameExit::Return(value));
+                        // Last frame - check if this is main task or spawned task
+                        let is_main_task = self.is_main_task();
+
+                        if is_main_task {
+                            // Module-level return - we're done
+                            return Ok(FrameExit::Return(value));
+                        }
+
+                        // Spawned task completed - handle task completion
+                        let result = self.handle_task_completion(value);
+                        match result {
+                            Ok(AwaitResult::ValueReady(v)) => {
+                                self.push(v);
+                            }
+                            Ok(AwaitResult::FramePushed) => {
+                                // Switched to another task - reload cache
+                                reload_cache!(self, cached_frame);
+                            }
+                            Ok(AwaitResult::Yield(pending)) => {
+                                // All tasks blocked - return to host
+                                return Ok(FrameExit::ResolveFutures(pending));
+                            }
+                            Err(e) => {
+                                catch_sync!(self, cached_frame, e);
+                            }
+                        }
+                        continue;
                     }
                     // Pop current frame and push return value
-                    self.pop_frame();
+                    if self.pop_frame() {
+                        // This frame indicated evaluation should stop - return to host with value
+                        // e.g. `evaluate_function`
+                        return Ok(FrameExit::Return(value));
+                    }
                     self.push(value);
                     // Reload cache from parent frame
                     reload_cache!(self, cached_frame);
+                }
+                // Async/Await
+                Opcode::Await => {
+                    // Sync IP before exec (may push new frame for coroutine)
+                    self.current_frame_mut().ip = cached_frame.ip;
+                    let result = self.exec_get_awaitable();
+                    match result {
+                        Ok(AwaitResult::ValueReady(value)) => {
+                            self.push(value);
+                        }
+                        Ok(AwaitResult::FramePushed) => {
+                            // Reload cache after pushing a new frame
+                            reload_cache!(self, cached_frame);
+                        }
+                        Ok(AwaitResult::Yield(pending_calls)) => {
+                            // All tasks are blocked - return control to host
+                            return Ok(FrameExit::ResolveFutures(pending_calls));
+                        }
+                        Err(e) => {
+                            catch_sync!(self, cached_frame, e);
+                        }
+                    }
                 }
                 // Unpacking - route through exception handling
                 Opcode::UnpackSequence => {
@@ -1076,7 +1432,9 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                     try_catch_sync!(self, cached_frame, self.unpack_sequence(count));
                 }
                 Opcode::UnpackEx => {
-                    todo!("UnpackEx not implemented")
+                    let before = fetch_u8!(cached_frame) as usize;
+                    let after = fetch_u8!(cached_frame) as usize;
+                    try_catch_sync!(self, cached_frame, self.unpack_ex(before, after));
                 }
                 // Special
                 Opcode::Nop => {
@@ -1086,6 +1444,18 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
                 Opcode::LoadModule => {
                     let module_id = fetch_u8!(cached_frame);
                     try_catch_sync!(self, cached_frame, self.load_module(module_id));
+                }
+                Opcode::RaiseImportError => {
+                    // Fetch the module name from the constant pool and raise ModuleNotFoundError
+                    let const_idx = fetch_u16!(cached_frame);
+                    let module_name = cached_frame.code.constants().get(const_idx);
+                    // The constant should be an InternString from compile_import/compile_import_from
+                    let name_str = match module_name {
+                        Value::InternString(id) => self.interns.get_str(*id),
+                        _ => "<unknown>",
+                    };
+                    let error = ExcType::module_not_found_error(name_str);
+                    catch_sync!(self, cached_frame, error);
                 }
             }
         }
@@ -1104,8 +1474,11 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// Resumes execution after an external call completes.
     ///
     /// Pushes the return value onto the stack and continues execution.
-    pub fn resume(&mut self, result: Value) -> Result<FrameExit, RunError> {
-        self.push(result);
+    pub fn resume(&mut self, obj: MontyObject) -> Result<FrameExit, RunError> {
+        let value = obj
+            .to_value(self.heap, self.interns)
+            .map_err(|e| SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {e}"))))?;
+        self.push(value);
         self.run()
     }
 
@@ -1123,86 +1496,13 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         self.run()
     }
 
-    /// Consumes the VM and creates a snapshot for pause/resume.
-    ///
-    /// **Ownership transfer:** This method takes `self` by value, consuming the VM.
-    /// The snapshot owns all Values (refcounts already correct from the live VM).
-    /// The heap and namespaces must be serialized alongside this snapshot.
-    ///
-    /// This is NOT a clone - it's a transfer. After calling this, the original VM
-    /// is gone and only the snapshot (+ serialized heap/namespaces) represents the state.
-    pub fn into_snapshot(self) -> VMSnapshot {
-        VMSnapshot {
-            // Move values directly - no clone, no refcount increment needed
-            // (the VM owned them, now the snapshot owns them)
-            stack: self.stack,
-            frames: self.frames.into_iter().map(|f| f.serialize()).collect(),
-            exception_stack: self.exception_stack,
-            instruction_ip: self.instruction_ip,
-        }
-    }
-
-    /// Reconstructs a VM from a snapshot.
-    ///
-    /// The heap and namespaces must already be deserialized. `FunctionId` values
-    /// in frames are used to look up pre-compiled `Code` objects from the `Interns`.
-    /// The `module_code` is used for frames with `function_id = None`.
-    ///
-    /// # Arguments
-    /// * `snapshot` - The VM snapshot to restore
-    /// * `module_code` - Compiled module code (for frames with function_id = None)
-    /// * `heap` - The deserialized heap
-    /// * `namespaces` - The deserialized namespaces
-    /// * `interns` - Interns for looking up function code
-    /// * `print_writer` - Writer for print output
-    pub fn restore(
-        snapshot: VMSnapshot,
-        module_code: &'a Code,
-        heap: &'a mut Heap<T>,
-        namespaces: &'a mut Namespaces,
-        interns: &'a Interns,
-        print_writer: &'a mut P,
-    ) -> Self {
-        // Reconstruct call frames from serialized form
-        let frames = snapshot
-            .frames
-            .into_iter()
-            .map(|sf| {
-                let code = match sf.function_id {
-                    Some(func_id) => &interns.get_function(func_id).code,
-                    None => module_code,
-                };
-                CallFrame {
-                    code,
-                    ip: sf.ip,
-                    stack_base: sf.stack_base,
-                    namespace_idx: sf.namespace_idx,
-                    function_id: sf.function_id,
-                    cells: sf.cells,
-                    call_position: sf.call_position,
-                }
-            })
-            .collect();
-
-        Self {
-            stack: snapshot.stack,
-            frames,
-            heap,
-            namespaces,
-            interns,
-            print_writer,
-            exception_stack: snapshot.exception_stack,
-            instruction_ip: snapshot.instruction_ip,
-        }
-    }
-
     // ========================================================================
     // Stack Operations
     // ========================================================================
 
     /// Pushes a value onto the operand stack.
     #[inline]
-    pub(super) fn push(&mut self, value: Value) {
+    pub(crate) fn push(&mut self, value: Value) {
         self.stack.push(value);
     }
 
@@ -1249,7 +1549,11 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// Pops the current frame from the call stack.
     ///
     /// Cleans up the frame's stack region and namespace (except for global namespace).
-    pub(super) fn pop_frame(&mut self) {
+    /// Syncs `instruction_ip` to the parent frame's IP so that exception handling
+    /// looks up handlers in the correct frame's exception table.
+    ///
+    /// Returns `true` if this frame indicated evaluation should stop when popped.
+    pub(super) fn pop_frame(&mut self) -> bool {
         let frame = self.frames.pop().expect("no frame to pop");
         // Clean up frame's stack region
         while self.stack.len() > frame.stack_base {
@@ -1259,6 +1563,29 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         // Clean up the namespace (but not the global namespace)
         if frame.namespace_idx != GLOBAL_NS_IDX {
             self.namespaces.drop_with_heap(frame.namespace_idx, self.heap);
+        }
+        // Sync instruction_ip to the parent frame so exception table lookups
+        // target the correct frame after returning from a nested run() call.
+        if let Some(parent) = self.frames.last() {
+            self.instruction_ip = parent.ip;
+        }
+        frame.should_return
+    }
+
+    /// Cleans up all frames for the current task before switching tasks.
+    ///
+    /// Used when a task completes or fails and we need to switch to another task.
+    /// Properly cleans up each frame's namespace and cell references.
+    pub(super) fn cleanup_current_frames(&mut self) {
+        for frame in self.frames.drain(..) {
+            // Clean up cell references
+            for cell_id in frame.cells {
+                self.heap.dec_ref(cell_id);
+            }
+            // Clean up the namespace (but not the global namespace)
+            if frame.namespace_idx != GLOBAL_NS_IDX {
+                self.namespaces.drop_with_heap(frame.namespace_idx, self.heap);
+            }
         }
     }
 
@@ -1302,8 +1629,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
     /// or `NameError` if the name doesn't exist in any scope.
     fn load_local(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) -> RunResult<()> {
         let namespace = self.namespaces.get(cached_frame.namespace_idx);
-        // Copy without incrementing refcount first (avoids borrow conflict)
-        let value = namespace.get(NamespaceId::new(slot as usize)).copy_for_extend();
+        let value = namespace.get(NamespaceId::new(slot as usize));
 
         // Check for undefined value - raise appropriate error based on whether
         // this is a true local (assigned somewhere) or an undefined reference
@@ -1319,11 +1645,7 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
             return Err(err);
         }
 
-        // Now we can safely increment refcount and push
-        if let Value::Ref(id) = &value {
-            self.heap.inc_ref(*id);
-        }
-        self.push(value);
+        self.push(value.clone_with_heap(self.heap));
         Ok(())
     }
 
@@ -1433,5 +1755,13 @@ impl<'a, T: ResourceTracker, P: PrintWriter> VM<'a, T, P> {
         let value = self.pop();
         let cell_id = self.current_frame().cells[slot as usize];
         self.heap.set_cell_value(cell_id, value);
+    }
+}
+
+// `heap` is not a public field on VM, so this implementation needs to go here rather than in `heap.rs`
+impl<T: ResourceTracker> ContainsHeap for VM<'_, '_, T> {
+    type ResourceTracker = T;
+    fn heap_mut(&mut self) -> &mut Heap<T> {
+        self.heap
     }
 }

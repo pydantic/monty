@@ -3,10 +3,12 @@
 use crate::{
     ExcType,
     args::ArgValues,
+    defer_drop,
     exception_private::{RunResult, SimpleException},
-    heap::Heap,
+    heap::{Heap, HeapData},
     intern::Interns,
     resource::ResourceTracker,
+    types::AttrCallResult,
     value::Value,
 };
 
@@ -27,66 +29,48 @@ use crate::{
 /// getattr(module, 'function')   # Get module.function
 /// ```
 pub fn builtin_getattr(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let (mut positional, kwargs) = args.into_parts();
+    let positional = args.into_pos_only("getattr", heap)?;
+    defer_drop!(positional, heap);
 
-    let pos_count = positional.len();
-    let kw_count = kwargs.len();
-
-    // Check for unsupported kwargs
-    if !kwargs.is_empty() {
-        for (k, v) in kwargs {
-            k.drop_with_heap(heap);
-            v.drop_with_heap(heap);
-        }
-        for v in positional {
-            v.drop_with_heap(heap);
-        }
-        return Err(ExcType::type_error_arg_count("getattr", 2, pos_count + kw_count));
-    }
-
-    if !(2..=3).contains(&pos_count) {
-        for v in positional {
-            v.drop_with_heap(heap);
-        }
-        return Err(ExcType::type_error_arg_count("getattr", 2, pos_count));
-    }
-
-    let object = positional.next().expect("positional must have 2 or 3 arguments");
-    let name = positional.next().expect("positional must have 2 or 3 arguments");
-    let default = positional.next();
-
-    let Value::InternString(name_id) = name else {
-        object.drop_with_heap(heap);
-        name.drop_with_heap(heap);
-        if let Some(d) = default {
-            d.drop_with_heap(heap);
-        }
-        return Err(SimpleException::new_msg(ExcType::TypeError, "getattr(): attribute name must be string").into());
+    let (object, name, default) = match positional.as_slice() {
+        too_few @ ([] | [_]) => return Err(ExcType::type_error_at_least("getattr", 2, too_few.len())),
+        [object, name] => (object, name, None),
+        [object, name, default] => (object, name, Some(default)),
+        too_many => return Err(ExcType::type_error_at_most("getattr", 3, too_many.len())),
     };
 
-    name.drop_with_heap(heap);
-
-    match object.py_get_attr(name_id, heap, interns) {
-        Ok(value) => {
-            object.drop_with_heap(heap);
-
-            if let Some(d) = default {
-                d.drop_with_heap(heap);
-            }
-
-            Ok(value)
+    let name_id = match name {
+        Value::InternString(id) => *id,
+        Value::Ref(v) if matches!(heap.get(*v), HeapData::Str(_)) => {
+            // TODO: support arbitrary strings as attribute names, not just interned ones.
+            return Err(SimpleException::new_msg(
+                ExcType::TypeError,
+                "getattr(): attribute name must be interned string",
+            )
+            .into());
         }
-        Err(_) if default.is_some() => {
-            object.drop_with_heap(heap);
-            Ok(default.unwrap())
+        _ => {
+            return Err(
+                SimpleException::new_msg(ExcType::TypeError, "getattr(): attribute name must be string").into(),
+            );
+        }
+    };
+
+    match object.py_getattr(name_id, heap, interns) {
+        Ok(AttrCallResult::Value(value)) => Ok(value),
+        Ok(_) => {
+            // getattr() only retrieves attribute values — OS calls, external calls,
+            // method calls, and awaits are not supported here
+            //
+            // TODO: might need to support this case?
+            Err(SimpleException::new_msg(ExcType::TypeError, "getattr(): attribute is not a simple value").into())
         }
         Err(e) => {
-            object.drop_with_heap(heap);
             if let Some(d) = default {
-                d.drop_with_heap(heap);
+                Ok(d.clone_with_heap(heap))
+            } else {
+                Err(e)
             }
-
-            Err(e)
         }
     }
 }

@@ -2,10 +2,10 @@
 name = "monty"
 readme = "../../README.md"
 version = { workspace = true }
+license = { workspace = true }
 rust-version = { workspace = true }
 edition = { workspace = true }
 authors = { workspace = true }
-license = { workspace = true }
 description = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
@@ -29,6 +29,8 @@ hashbrown = "0.16.1"
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 num-integer = { workspace = true }
+smallvec = { version = "1.13", features = ["serde"] }
+itertools = "0.14.0"
 
 [features]
 # ref-count-return changes behavior to return information on reference counts to check they're correct
@@ -40,13 +42,17 @@ ref-count-return = []
 ref-count-panic = []
 
 [dev-dependencies]
-pyo3 = { version = "0.27.2", features = ["auto-initialize"] }
+pyo3 = { version = "0.28", features = ["auto-initialize"] }
 # Use codspeed-criterion-compat for CI benchmarks, real criterion for local flamegraphs
 codspeed-criterion-compat = "4.2.1"
 criterion = "0.5"
 datatest-stable = "0.2"
 serde_json = "1.0"
 pprof = { version = "0.15", features = ["flamegraph", "criterion"] }
+similar = "2.7.0"
+
+[build-dependencies]
+pyo3-build-config = { version = "0.28", features = ["resolve-config"] }
 
 [[bench]]
 name = "main"

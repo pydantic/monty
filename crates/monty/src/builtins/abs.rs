@@ -5,6 +5,7 @@ use num_traits::Signed;
 
 use crate::{
     args::ArgValues,
+    defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapData},
     resource::ResourceTracker,
@@ -18,8 +19,9 @@ use crate::{
 /// For `i64::MIN`, which overflows on negation, promotes to LongInt.
 pub fn builtin_abs(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("abs", heap)?;
+    defer_drop!(value, heap);
 
-    let result = match &value {
+    match value {
         Value::Int(n) => {
             // Handle potential overflow for i64::MIN → promote to LongInt
             if let Some(abs_val) = n.checked_abs() {
@@ -48,8 +50,5 @@ pub fn builtin_abs(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
             format!("bad operand type for abs(): '{}'", value.py_type(heap)),
         )
         .into()),
-    };
-
-    value.drop_with_heap(heap);
-    result
+    }
 }

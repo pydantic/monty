@@ -173,3 +173,17 @@ assert not isinstance([], (int, (str, bytes))), 'isinstance nested tuple no matc
 
 # NoneType capitalization
 assert repr(type(None)) == "<class 'NoneType'>", 'NoneType capitalized'
+
+# === type().__name__ ===
+assert type(42).__name__ == 'int', 'int type name'
+assert type('hello').__name__ == 'str', 'str type name'
+assert type(True).__name__ == 'bool', 'bool type name'
+assert type(None).__name__ == 'NoneType', 'NoneType name'
+assert type([1, 2]).__name__ == 'list', 'list type name'
+assert type({'a': 1}).__name__ == 'dict', 'dict type name'
+
+# type().__name__ for exceptions
+try:
+    raise ValueError('test')
+except ValueError as e:
+    assert type(e).__name__ == 'ValueError', 'exception type name'

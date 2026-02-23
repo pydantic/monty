@@ -20,14 +20,20 @@ except AttributeError:
 try:
     getattr()
     assert False, 'getattr() with no args should raise TypeError'
-except TypeError:
-    pass
+except TypeError as e:
+    assert str(e) == 'getattr expected at least 2 arguments, got 0', str(e)
+
+try:
+    getattr(kwarg=1)
+    assert False, 'getattr() with keyword arg should raise TypeError'
+except TypeError as e:
+    assert str(e) == 'getattr() takes no keyword arguments', str(e)
 
 try:
     getattr(s)
     assert False, 'getattr() with 1 arg should raise TypeError'
-except TypeError:
-    pass
+except TypeError as e:
+    assert str(e) == 'getattr expected at least 2 arguments, got 1', str(e)
 
 try:
     getattr(s, 'start', 'default', 'extra')

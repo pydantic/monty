@@ -12,6 +12,8 @@ dev = [
     "maturin>=1.9.4,<2.0",
     "mypy>=1.19.1",
     "ruff>=0.14.7",
+    "duckdb>=1.0.0",
+    "httpx>=0.28.1",
 ]
 
 # https://beta.ruff.rs/docs/configuration/
@@ -43,7 +45,7 @@ mccabe = { max-complexity = 14 }
 
 [tool.ruff.lint.isort]
 combine-as-imports = true
-known-first-party = ["monty"]
+known-first-party = ["pydantic_monty"]
 
 [tool.ruff.lint.per-file-ignores]
 "crates/monty/test_cases/*.py" = [
@@ -57,6 +59,7 @@ known-first-party = ["monty"]
     "F632", # ignore replace `is` with `==` - we have lots of these tests
     "F701", # break outside loop - needed for testing break error handling
     "F702", # continue not properly in loop - needed for testing continue error handling
+    "F704", # await outside function - needed for testing top-level async/await
     "F811", # Redefinition of unused variable
     "F821", # traceback undefined call test intentionally uses undefined name
     "F841", # unused variable - needed for testing exception variable cleanup
@@ -69,6 +72,9 @@ known-first-party = ["monty"]
     "F403", # unable to detect undefined names
     "F821", # Undefined name
 ]
+"crates/monty-type-checking/tests/good_types.py" = [
+    "F704", # await outside function - needed for testing top-level async/await
+]
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -78,7 +84,7 @@ quote-style = "single"
 pythonVersion = "3.14"
 typeCheckingMode = "strict"
 reportUnnecessaryTypeIgnoreComment = true
-include = ["scripts", "crates/monty/test_cases", "crates/monty-python", "crates/monty-type-checking"]
+include = ["scripts", "crates/monty/test_cases", "crates/monty-python", "crates/monty-type-checking", "examples"]
 exclude = [
     "crates/monty-type-checking/tests/bad_types.py",
     "crates/monty-type-checking/tests/reveal_types.py",
@@ -89,6 +95,7 @@ exclude = [
     "crates/monty/test_cases/loop__continue_in_function_error.py",
     "crates/monty/test_cases/loop__break_in_if_error.py",
     "crates/monty/test_cases/loop__continue_in_if_error.py",
+    "scripts/startup_performance.py",
 ]
 venv = ".venv"
 

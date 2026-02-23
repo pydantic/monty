@@ -1,5 +1,6 @@
 use std::{borrow::Cow, fmt};
 
+use num_bigint::BigInt;
 use ruff_python_ast::{
     self as ast, BoolOp, CmpOp, ConversionFlag as RuffConversionFlag, ElifElseClause, Expr as AstExpr,
     InterpolatedStringElement, Keyword, Number, Operator as AstOperator, ParameterWithDefault, Stmt, UnaryOp,
@@ -11,7 +12,6 @@ use ruff_text_size::{Ranged, TextRange};
 use crate::{
     StackFrame,
     args::{ArgExprs, Kwarg},
-    builtins::Builtins,
     exception_private::ExcType,
     exception_public::{CodeLoc, MontyException},
     expressions::{
@@ -19,8 +19,19 @@ use crate::{
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
-    value::Attr,
+    value::EitherStr,
 };
+
+/// Maximum nesting depth for AST structures during parsing.
+/// Matches CPython's limit of ~200 for nested parentheses.
+/// This prevents stack overflow from deeply nested structures like `((((x,),),),)`.
+#[cfg(not(debug_assertions))]
+pub const MAX_NESTING_DEPTH: u16 = 200;
+/// In debug builds, we use a lower limit because stack frames are much larger
+/// (no inlining, debug info, etc.). The limit is set conservatively to prevent
+/// stack overflow while still catching the error before the recursion limit.
+#[cfg(debug_assertions)]
+pub const MAX_NESTING_DEPTH: u16 = 35;
 
 /// A parameter in a function signature with optional default value.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -78,6 +89,8 @@ pub struct RawFunctionDef {
     pub signature: ParsedSignature,
     /// The unprepared function body (names not yet resolved).
     pub body: Vec<ParseNode>,
+    /// Whether this is an async function (`async def`).
+    pub is_async: bool,
 }
 
 /// Type alias for parsed AST nodes (output of the parser).
@@ -117,18 +130,26 @@ pub struct ParseResult {
 }
 
 pub(crate) fn parse(code: &str, filename: &str) -> Result<ParseResult, ParseError> {
-    let mut parser = Parser::new(code, filename);
-    match parse_module(code) {
-        Ok(parsed) => {
-            let module = parsed.into_syntax();
-            let nodes = parser.parse_statements(module.body)?;
-            Ok(ParseResult {
-                nodes,
-                interner: parser.interner,
-            })
-        }
-        Err(e) => Err(ParseError::syntax(e.to_string(), parser.convert_range(e.range()))),
-    }
+    parse_with_interner(code, filename, InternerBuilder::new(code))
+}
+
+/// Parses code using a caller-provided interner seed.
+///
+/// This enables incremental compilation flows (e.g. REPL) where existing
+/// interned IDs must remain stable across parse invocations.
+pub(crate) fn parse_with_interner(
+    code: &str,
+    filename: &str,
+    interner: InternerBuilder,
+) -> Result<ParseResult, ParseError> {
+    let mut parser = Parser::new(code, filename, interner);
+    let parsed = parse_module(code).map_err(|e| ParseError::syntax(e.to_string(), parser.convert_range(e.range())))?;
+    let module = parsed.into_syntax();
+    let nodes = parser.parse_statements(module.body)?;
+    Ok(ParseResult {
+        nodes,
+        interner: parser.interner,
+    })
 }
 
 /// Parser for converting ruff AST to Monty's intermediate ParseNode representation.
@@ -142,10 +163,14 @@ pub struct Parser<'a> {
     filename_id: StringId,
     /// String interner for names (variables, functions, etc).
     pub interner: InternerBuilder,
+    /// Remaining nesting depth budget for recursive structures.
+    /// Starts at MAX_NESTING_DEPTH and decrements on each nested level.
+    /// When it reaches zero, we return a "too many nested parentheses" error.
+    depth_remaining: u16,
 }
 
 impl<'a> Parser<'a> {
-    fn new(code: &'a str, filename: &'a str) -> Self {
+    fn new(code: &'a str, filename: &'a str, mut interner: InternerBuilder) -> Self {
         // Position of each line in the source code, to convert indexes to line number and column number
         let mut line_ends = vec![];
         for (i, c) in code.chars().enumerate() {
@@ -153,13 +178,13 @@ impl<'a> Parser<'a> {
                 line_ends.push(i);
             }
         }
-        let mut interner = InternerBuilder::new(code);
         let filename_id = interner.intern(filename);
         Self {
             line_ends,
             code,
             filename_id,
             interner,
+            depth_remaining: MAX_NESTING_DEPTH,
         }
     }
 
@@ -204,15 +229,15 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_statement(&mut self, statement: Stmt) -> Result<ParseNode, ParseError> {
+        self.decr_depth_remaining(|| statement.range())?;
+        let result = self.parse_statement_impl(statement);
+        self.depth_remaining += 1;
+        result
+    }
+
+    fn parse_statement_impl(&mut self, statement: Stmt) -> Result<ParseNode, ParseError> {
         match statement {
             Stmt::FunctionDef(function) => {
-                if function.is_async {
-                    return Err(ParseError::not_implemented(
-                        "async function definitions",
-                        self.convert_range(function.range),
-                    ));
-                }
-
                 let params = &function.parameters;
 
                 // Parse positional-only parameters (before /)
@@ -241,8 +266,14 @@ impl<'a> Parser<'a> {
                 let name = self.identifier(&function.name.id, function.name.range);
                 // Parse function body recursively
                 let body = self.parse_statements(function.body)?;
+                let is_async = function.is_async;
 
-                Ok(Node::FunctionDef(RawFunctionDef { name, signature, body }))
+                Ok(Node::FunctionDef(RawFunctionDef {
+                    name,
+                    signature,
+                    body,
+                    is_async,
+                }))
             }
             Stmt::ClassDef(c) => Err(ParseError::not_implemented(
                 "class definitions",
@@ -291,7 +322,11 @@ impl<'a> Parser<'a> {
                     or_else: self.parse_statements(orelse)?,
                 })
             }
-            Stmt::While(w) => Err(ParseError::not_implemented("while loops", self.convert_range(w.range))),
+            Stmt::While(ast::StmtWhile { test, body, orelse, .. }) => Ok(Node::While {
+                test: self.parse_expression(*test)?,
+                body: self.parse_statements(body)?,
+                or_else: self.parse_statements(orelse)?,
+            }),
             Stmt::If(ast::StmtIf {
                 test,
                 body,
@@ -486,7 +521,7 @@ impl<'a> Parser<'a> {
             // Attribute assignment like obj.attr = value (supports chained like a.b.c = value)
             AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => Ok(Node::AttrAssign {
                 object: self.parse_expression(*value)?,
-                attr: Attr::Interned(self.interner.intern(attr.id())),
+                attr: EitherStr::Interned(self.interner.intern(attr.id())),
                 target_position: self.convert_range(range),
                 value: self.parse_expression(rhs)?,
             }),
@@ -503,6 +538,19 @@ impl<'a> Parser<'a> {
                     object: self.parse_expression(rhs)?,
                 })
             }
+            // List unpacking like [a, b] = value or [a, *rest] = value
+            AstExpr::List(ast::ExprList { elts, range, .. }) => {
+                let targets_position = self.convert_range(range);
+                let targets = elts
+                    .into_iter()
+                    .map(|e| self.parse_unpack_target(e))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Node::UnpackAssign {
+                    targets,
+                    targets_position,
+                    object: self.parse_expression(rhs)?,
+                })
+            }
             // Simple identifier assignment like x = value
             _ => Ok(Node::Assign {
                 target: self.parse_identifier(lhs)?,
@@ -511,7 +559,18 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parses an expression from the ruff AST into Monty's ExprLoc representation.
+    ///
+    /// Includes depth tracking to prevent stack overflow from deeply nested structures.
+    /// Matches CPython's limit of 200 for nested parentheses.
     fn parse_expression(&mut self, expression: AstExpr) -> Result<ExprLoc, ParseError> {
+        self.decr_depth_remaining(|| expression.range())?;
+        let result = self.parse_expression_impl(expression);
+        self.depth_remaining += 1;
+        result
+    }
+
+    fn parse_expression_impl(&mut self, expression: AstExpr) -> Result<ExprLoc, ParseError> {
         match expression {
             AstExpr::BoolOp(ast::ExprBoolOp { op, values, range, .. }) => {
                 // Handle chained boolean operations like `a and b and c` by right-folding
@@ -538,10 +597,19 @@ impl<'a> Parser<'a> {
                 }
                 Ok(result)
             }
-            AstExpr::Named(n) => Err(ParseError::not_implemented(
-                "named expressions (walrus operator :=)",
-                self.convert_range(n.range),
-            )),
+            AstExpr::Named(ast::ExprNamed {
+                target, value, range, ..
+            }) => {
+                let target_ident = self.parse_identifier(*target)?;
+                let value_expr = self.parse_expression(*value)?;
+                Ok(ExprLoc::new(
+                    self.convert_range(range),
+                    Expr::Named {
+                        target: target_ident,
+                        value: Box::new(value_expr),
+                    },
+                ))
+            }
             AstExpr::BinOp(ast::ExprBinOp {
                 left, op, right, range, ..
             }) => {
@@ -710,10 +778,10 @@ impl<'a> Parser<'a> {
                     Expr::ListComp { elt, generators },
                 ))
             }
-            AstExpr::Await(a) => Err(ParseError::not_implemented(
-                "await expressions",
-                self.convert_range(a.range),
-            )),
+            AstExpr::Await(a) => {
+                let value = self.parse_expression(*a.value)?;
+                Ok(ExprLoc::new(self.convert_range(a.range), Expr::Await(Box::new(value))))
+            }
             AstExpr::Yield(y) => Err(ParseError::not_implemented(
                 "yield expressions",
                 self.convert_range(y.range),
@@ -728,14 +796,26 @@ impl<'a> Parser<'a> {
                 comparators,
                 range,
                 ..
-            }) => Ok(ExprLoc::new(
-                self.convert_range(range),
-                Expr::CmpOp {
-                    left: Box::new(self.parse_expression(*left)?),
-                    op: convert_compare_op(first(ops.into_vec(), self.convert_range(range))?),
-                    right: Box::new(self.parse_expression(first(comparators.into_vec(), self.convert_range(range))?)?),
-                },
-            )),
+            }) => {
+                let position = self.convert_range(range);
+                let ops_vec = ops.into_vec();
+                let comparators_vec = comparators.into_vec();
+
+                // Simple case: single comparison (most common)
+                if ops_vec.len() == 1 {
+                    return Ok(ExprLoc::new(
+                        position,
+                        Expr::CmpOp {
+                            left: Box::new(self.parse_expression(*left)?),
+                            op: convert_compare_op(ops_vec.into_iter().next().unwrap()),
+                            right: Box::new(self.parse_expression(comparators_vec.into_iter().next().unwrap())?),
+                        },
+                    ));
+                }
+
+                // Chain comparison: transform to nested And expressions
+                self.parse_chain_comparison(*left, ops_vec, comparators_vec, position)
+            }
             AstExpr::Call(ast::ExprCall {
                 func, arguments, range, ..
             }) => {
@@ -770,16 +850,11 @@ impl<'a> Parser<'a> {
                 let args = ArgExprs::new_with_var_kwargs(positional_args, var_args_expr, kwargs, var_kwargs);
                 match *func {
                     AstExpr::Name(ast::ExprName { id, range, .. }) => {
-                        let name = id.to_string();
-                        // Try to resolve the name as a builtin function or exception type.
-                        // If neither, treat it as a name to be looked up at runtime.
-                        let callable = if let Ok(builtin) = name.parse::<Builtins>() {
-                            Callable::Builtin(builtin)
-                        } else {
-                            // Name will be looked up in the namespace at runtime
-                            let ident = self.identifier(&id, range);
-                            Callable::Name(ident)
-                        };
+                        // Always create Callable::Name — builtin resolution happens in
+                        // the prepare phase with scope awareness, so local assignments
+                        // can shadow builtins.
+                        let ident = self.identifier(&id, range);
+                        let callable = Callable::Name(ident);
                         Ok(ExprLoc::new(
                             position,
                             Expr::Call {
@@ -794,7 +869,7 @@ impl<'a> Parser<'a> {
                             position,
                             Expr::AttrCall {
                                 object,
-                                attr: Attr::Interned(self.interner.intern(attr.id())),
+                                attr: EitherStr::Interned(self.interner.intern(attr.id())),
                                 args: Box::new(args),
                             },
                         ))
@@ -835,10 +910,18 @@ impl<'a> Parser<'a> {
             AstExpr::NumberLiteral(ast::ExprNumberLiteral { value, range, .. }) => {
                 let position = self.convert_range(range);
                 let const_value = match value {
-                    Number::Int(i) => match i.as_i64() {
-                        Some(i) => Literal::Int(i),
-                        None => return Err(ParseError::not_implemented("integers larger than 64 bits", position)),
-                    },
+                    Number::Int(i) => {
+                        if let Some(i) = i.as_i64() {
+                            Literal::Int(i)
+                        } else {
+                            // Integer too large for i64, parse string representation as BigInt
+                            // Handles radix prefixes (0x, 0o, 0b) and underscores
+                            let bi = parse_int_literal(&i.to_string())
+                                .ok_or_else(|| ParseError::syntax(format!("invalid integer literal: {i}"), position))?;
+                            let long_int_id = self.interner.intern_long_int(bi);
+                            Literal::LongInt(long_int_id)
+                        }
+                    }
                     Number::Float(f) => Literal::Float(f),
                     Number::Complex { .. } => return Err(ParseError::not_implemented("complex constants", position)),
                 };
@@ -862,7 +945,7 @@ impl<'a> Parser<'a> {
                     position,
                     Expr::AttrGet {
                         object,
-                        attr: Attr::Interned(self.interner.intern(attr.id())),
+                        attr: EitherStr::Interned(self.interner.intern(attr.id())),
                     },
                 ))
             }
@@ -881,14 +964,10 @@ impl<'a> Parser<'a> {
                 self.convert_range(s.range),
             )),
             AstExpr::Name(ast::ExprName { id, range, .. }) => {
-                let name = id.to_string();
                 let position = self.convert_range(range);
-                // Check if the name is a builtin function or exception type
-                let expr = if let Ok(builtin) = name.parse::<Builtins>() {
-                    Expr::Builtin(builtin)
-                } else {
-                    Expr::Name(self.identifier(&id, range))
-                };
+                // Always create Expr::Name — builtin resolution happens in the prepare
+                // phase with scope awareness, so local assignments can shadow builtins.
+                let expr = Expr::Name(self.identifier(&id, range));
                 Ok(ExprLoc::new(position, expr))
             }
             AstExpr::List(ast::ExprList { elts, range, .. }) => {
@@ -972,10 +1051,47 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parses a chain comparison expression like `a < b < c < d`.
+    ///
+    /// Chain comparisons evaluate each intermediate value only once and short-circuit
+    /// on the first false result. This creates an `Expr::ChainCmp` node which is
+    /// compiled to bytecode using stack manipulation (Dup, Rot) rather than
+    /// temporary variables, avoiding namespace pollution.
+    fn parse_chain_comparison(
+        &mut self,
+        left: AstExpr,
+        ops: Vec<CmpOp>,
+        comparators: Vec<AstExpr>,
+        position: CodeRange,
+    ) -> Result<ExprLoc, ParseError> {
+        let left_expr = self.parse_expression(left)?;
+        let comparisons = ops
+            .into_iter()
+            .zip(comparators)
+            .map(|(op, cmp)| Ok((convert_compare_op(op), self.parse_expression(cmp)?)))
+            .collect::<Result<Vec<_>, ParseError>>()?;
+
+        Ok(ExprLoc::new(
+            position,
+            Expr::ChainCmp {
+                left: Box::new(left_expr),
+                comparisons,
+            },
+        ))
+    }
+
     /// Parses an unpack target - either a single identifier or a nested tuple.
     ///
     /// Handles patterns like `a` (single variable), `a, b` (flat tuple), or `(a, b), c` (nested).
+    /// Includes depth tracking to prevent stack overflow from deeply nested structures.
     fn parse_unpack_target(&mut self, ast: AstExpr) -> Result<UnpackTarget, ParseError> {
+        self.decr_depth_remaining(|| ast.range())?;
+        let result = self.parse_unpack_target_impl(ast);
+        self.depth_remaining += 1;
+        result
+    }
+
+    fn parse_unpack_target_impl(&mut self, ast: AstExpr) -> Result<UnpackTarget, ParseError> {
         match ast {
             AstExpr::Name(ast::ExprName { id, range, .. }) => Ok(UnpackTarget::Name(self.identifier(&id, range))),
             AstExpr::Tuple(ast::ExprTuple { elts, range, .. }) => {
@@ -986,6 +1102,46 @@ impl<'a> Parser<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 if targets.is_empty() {
                     return Err(ParseError::syntax("empty tuple in unpack target", position));
+                }
+                // Validate at most one starred target
+                let starred_count = targets.iter().filter(|t| matches!(t, UnpackTarget::Starred(_))).count();
+                if starred_count > 1 {
+                    return Err(ParseError::syntax(
+                        "multiple starred expressions in assignment",
+                        position,
+                    ));
+                }
+                Ok(UnpackTarget::Tuple { targets, position })
+            }
+            AstExpr::Starred(ast::ExprStarred { value, range, .. }) => {
+                // Starred target must be a simple name
+                match *value {
+                    AstExpr::Name(ast::ExprName { id, range, .. }) => {
+                        Ok(UnpackTarget::Starred(self.identifier(&id, range)))
+                    }
+                    _ => Err(ParseError::syntax(
+                        "starred assignment target must be a name",
+                        self.convert_range(range),
+                    )),
+                }
+            }
+            AstExpr::List(ast::ExprList { elts, range, .. }) => {
+                // List unpacking target [a, b, *rest] - same as tuple
+                let position = self.convert_range(range);
+                let targets = elts
+                    .into_iter()
+                    .map(|e| self.parse_unpack_target(e))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if targets.is_empty() {
+                    return Err(ParseError::syntax("empty list in unpack target", position));
+                }
+                // Validate at most one starred target
+                let starred_count = targets.iter().filter(|t| matches!(t, UnpackTarget::Starred(_))).count();
+                if starred_count > 1 {
+                    return Err(ParseError::syntax(
+                        "multiple starred expressions in assignment",
+                        position,
+                    ));
                 }
                 Ok(UnpackTarget::Tuple { targets, position })
             }
@@ -1210,6 +1366,18 @@ impl<'a> Parser<'a> {
         // line_ends.len() gives the correct 0-indexed line number
         (self.line_ends.len(), line_start, None)
     }
+
+    /// Decrements the depth remaining for nested parentheses.
+    /// Returns an error if the depth remaining goes to zero.
+    fn decr_depth_remaining(&mut self, get_range: impl FnOnce() -> TextRange) -> Result<(), ParseError> {
+        if let Some(depth_remaining) = self.depth_remaining.checked_sub(1) {
+            self.depth_remaining = depth_remaining;
+            Ok(())
+        } else {
+            let position = self.convert_range(get_range());
+            Err(ParseError::syntax("too many nested parentheses", position))
+        }
+    }
 }
 
 fn first<T: fmt::Debug>(v: Vec<T>, position: CodeRange) -> Result<T, ParseError> {
@@ -1412,4 +1580,34 @@ impl ParseError {
             ),
         }
     }
+}
+
+/// Parses an integer literal string into a `BigInt`, handling radix prefixes and underscores.
+///
+/// Supports Python integer literal formats:
+/// - Decimal: `123`, `1_000_000`
+/// - Hexadecimal: `0x1a2b`, `0X1A2B`
+/// - Octal: `0o777`, `0O777`
+/// - Binary: `0b1010`, `0B1010`
+///
+/// Returns `None` if the string cannot be parsed.
+fn parse_int_literal(s: &str) -> Option<BigInt> {
+    // Remove underscores (Python allows them as digit separators)
+    let cleaned: String = s.chars().filter(|c| *c != '_').collect();
+    let cleaned = cleaned.as_str();
+
+    // Detect radix from prefix
+    if cleaned.len() >= 2 {
+        let prefix = &cleaned[..2];
+        let digits = &cleaned[2..];
+        match prefix.to_ascii_lowercase().as_str() {
+            "0x" => return BigInt::parse_bytes(digits.as_bytes(), 16),
+            "0o" => return BigInt::parse_bytes(digits.as_bytes(), 8),
+            "0b" => return BigInt::parse_bytes(digits.as_bytes(), 2),
+            _ => {}
+        }
+    }
+
+    // Default to decimal
+    cleaned.parse::<BigInt>().ok()
 }

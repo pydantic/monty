@@ -17,7 +17,7 @@ use pyo3::{
     intern,
     prelude::*,
     sync::PyOnceLock,
-    types::{PyDict, PyString, PyType},
+    types::{PyDict, PyList, PyString, PyType},
 };
 
 use crate::convert::{monty_to_py, py_to_monty};
@@ -36,7 +36,9 @@ pub fn is_dataclass(value: &Bound<'_, PyAny>) -> bool {
 ///
 /// Extracts field names in definition order (for repr) and all field values as attrs.
 /// The `type_id` is set to `id(type(dc))` in Python, allowing registry lookups by type identity.
-pub fn dataclass_to_monty(value: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
+/// The `dc_registry` is threaded through to `py_to_monty` so that nested dataclasses
+/// in field values are also auto-registered.
+pub fn dataclass_to_monty(value: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult<MontyObject> {
     let py = value.py();
 
     let dc_type = value.get_type();
@@ -65,8 +67,8 @@ pub fn dataclass_to_monty(value: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
         if field_type.is(field_type_marker) {
             let field_name_str = field_name_obj.cast::<PyString>()?.to_str()?.to_string();
             let field_value = value.getattr(field_name_obj.cast::<PyString>()?)?;
-            let field_name_monty = py_to_monty(&field_name_obj)?;
-            let field_value_monty = py_to_monty(&field_value)?;
+            let field_name_monty = py_to_monty(&field_name_obj, dc_registry)?;
+            let field_value_monty = py_to_monty(&field_value, dc_registry)?;
 
             field_names.push(field_name_str);
             attrs.push((field_name_monty, field_value_monty));
@@ -78,7 +80,6 @@ pub fn dataclass_to_monty(value: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
         type_id,
         field_names,
         attrs: attrs.into(),
-        methods: vec![],
         frozen,
     })
 }
@@ -95,11 +96,11 @@ pub fn dataclass_to_py(
     field_names: &[String],
     attrs: &DictPairs,
     frozen: bool,
-    dc_registry: &Bound<'_, PyDict>,
+    dc_registry: &DcRegistry,
 ) -> PyResult<Py<PyAny>> {
     // Try to use the original type from the dc_registry (keyed by type_id)
-    if let Some(original_type) = dc_registry.get_item(type_id)? {
-        let original_type: Bound<'_, PyType> = original_type.cast_into()?;
+    if let Some(original_type_py) = dc_registry.get(py, type_id)? {
+        let original_type = original_type_py.bind(py).cast::<PyType>()?;
         // Build kwargs dict from field names and values
         let kwargs = PyDict::new(py);
         for (key, value) in attrs {
@@ -119,6 +120,73 @@ pub fn dataclass_to_py(
         // Fall back to PyUnknownDataclass
         let dc = PyUnknownDataclass::new(py, name.to_string(), field_names.to_vec(), attrs, frozen, dc_registry)?;
         Ok(Py::new(py, dc)?.into_any())
+    }
+}
+
+/// Maps Python dataclass type identity (pointer address as `u64`) to the original
+/// Python type object (`Py<PyAny>`).
+///
+/// This registry enables round-trip reconstruction of dataclass types: when a
+/// dataclass passes through Monty, its type is stored here so that on output,
+/// `isinstance(result, OriginalClass)` works correctly.
+///
+/// Wraps a `Py<PyDict>` so that `clone_ref` produces a shared handle to the same
+/// underlying dict — all clones see the same data without needing `Arc<Mutex>`.
+/// The GIL already serializes access, making additional locking unnecessary.
+#[derive(Debug)]
+pub struct DcRegistry {
+    registry: Py<PyDict>,
+}
+
+impl DcRegistry {
+    /// Creates a new empty registry.
+    pub fn new(py: Python<'_>) -> Self {
+        Self {
+            registry: PyDict::new(py).unbind(),
+        }
+    }
+
+    /// Creates a `DcRegistry` from an optional Python list of dataclass types.
+    ///
+    /// Each type in the list is registered by its pointer identity, matching the key
+    /// format used by `dataclass_to_monty`.
+    pub fn from_list(py: Python<'_>, dataclass_registry: Option<&Bound<'_, PyList>>) -> PyResult<Self> {
+        let slf = Self::new(py);
+
+        if let Some(registry_list) = dataclass_registry {
+            for cls in registry_list {
+                slf.insert(&cls)?;
+            }
+        }
+        Ok(slf)
+    }
+
+    /// Creates a shared handle to this registry (cheap Python refcount bump).
+    ///
+    /// The clone points to the **same** underlying Python dict, so insertions
+    /// through any handle are visible to all others.
+    pub fn clone_ref(&self, py: Python<'_>) -> Self {
+        Self {
+            registry: self.registry.clone_ref(py),
+        }
+    }
+
+    /// Registers a Python type in the dataclass registry, keyed by pointer identity.
+    ///
+    /// This is idempotent — calling it multiple times with the same type is safe and
+    /// simply overwrites the existing entry. The key is the raw pointer address of the
+    /// type object, matching what `dataclass_to_monty` stores as `type_id` in
+    /// `MontyObject::Dataclass`. This allows `dataclass_to_py` to look up the original
+    /// Python class when reconstructing output values.
+    pub fn insert<T>(&self, obj: &Bound<'_, T>) -> PyResult<()> {
+        let py = obj.py();
+        let type_id = obj.as_ptr() as u64;
+        self.registry.bind(py).set_item(type_id, obj.as_any())
+    }
+
+    /// Looks up an original Python type by its pointer identity.
+    pub fn get(&self, py: Python<'_>, type_id: u64) -> PyResult<Option<Py<PyAny>>> {
+        Ok(self.registry.bind(py).get_item(type_id)?.map(Bound::unbind))
     }
 }
 
@@ -333,7 +401,7 @@ impl PyUnknownDataclass {
         field_names: Vec<String>,
         attrs: impl IntoIterator<Item = &'a (MontyObject, MontyObject)>,
         frozen: bool,
-        dc_registry: &Bound<'_, PyDict>,
+        dc_registry: &DcRegistry,
     ) -> PyResult<Self> {
         let dict = PyDict::new(py);
         for (k, v) in attrs {

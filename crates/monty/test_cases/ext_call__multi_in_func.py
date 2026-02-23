@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # Multiple external calls within user-defined functions
 
 

@@ -5,6 +5,7 @@ use num_traits::Signed;
 
 use crate::{
     args::ArgValues,
+    defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData},
     resource::ResourceTracker,
@@ -18,8 +19,9 @@ use crate::{
 /// Supports both i64 and BigInt integers.
 pub fn builtin_bin(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("bin", heap)?;
+    defer_drop!(value, heap);
 
-    let result = match &value {
+    match value {
         Value::Int(n) => {
             let abs_digits = format!("{:b}", n.unsigned_abs());
             let prefix = if *n < 0 { "-0b" } else { "0b" };
@@ -41,10 +43,7 @@ pub fn builtin_bin(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
             }
         }
         _ => Err(ExcType::type_error_not_integer(value.py_type(heap))),
-    };
-
-    value.drop_with_heap(heap);
-    result
+    }
 }
 
 /// Formats a BigInt as a binary string with '0b' prefix.

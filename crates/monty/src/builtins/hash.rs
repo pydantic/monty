@@ -2,6 +2,7 @@
 
 use crate::{
     args::ArgValues,
+    defer_drop,
     exception_private::{ExcType, RunResult},
     heap::Heap,
     intern::Interns,
@@ -16,14 +17,13 @@ use crate::{
 /// Raises TypeError for unhashable types like lists and dicts.
 pub fn builtin_hash(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
     let value = args.get_one_arg("hash", heap)?;
-    let result = match value.py_hash(heap, interns) {
+    defer_drop!(value, heap);
+    match value.py_hash(heap, interns) {
         Some(hash) => {
             // Python's hash() returns a signed integer; reinterpret bits for large values
             let hash_i64 = i64::from_ne_bytes(hash.to_ne_bytes());
             Ok(Value::Int(hash_i64))
         }
         None => Err(ExcType::type_error_unhashable(value.py_type(heap))),
-    };
-    value.drop_with_heap(heap);
-    result
+    }
 }

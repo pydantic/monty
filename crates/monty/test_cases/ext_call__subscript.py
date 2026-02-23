@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # External calls in subscript operations
 
 # External call as subscript index

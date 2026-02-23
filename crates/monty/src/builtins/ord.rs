@@ -2,6 +2,7 @@
 
 use crate::{
     args::ArgValues,
+    defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapData},
     intern::Interns,
@@ -15,8 +16,9 @@ use crate::{
 /// Returns the Unicode code point of a one-character string.
 pub fn builtin_ord(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
     let value = args.get_one_arg("ord", heap)?;
+    defer_drop!(value, heap);
 
-    let result = match &value {
+    match value {
         Value::InternString(string_id) => {
             let s = interns.get_str(*string_id);
             let mut chars = s.chars();
@@ -61,8 +63,5 @@ pub fn builtin_ord(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
             )
             .into())
         }
-    };
-
-    value.drop_with_heap(heap);
-    result
+    }
 }

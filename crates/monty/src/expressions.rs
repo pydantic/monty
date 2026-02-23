@@ -2,11 +2,11 @@ use crate::{
     args::ArgExprs,
     builtins::Builtins,
     fstring::FStringPart,
-    intern::{BytesId, StringId},
+    intern::{BytesId, LongIntId, StringId},
     namespace::NamespaceId,
     parse::{CodeRange, ParsedSignature, Try},
     signature::Signature,
-    value::{Attr, Marker, Value},
+    value::{EitherStr, Marker, Value},
 };
 
 /// Indicates which namespace a variable reference belongs to.
@@ -121,7 +121,7 @@ pub enum Expr {
     /// like `a.b.c.method()`.
     AttrCall {
         object: Box<ExprLoc>,
-        attr: Attr,
+        attr: EitherStr,
         /// same as above for Box
         args: Box<ArgExprs>,
     },
@@ -141,7 +141,7 @@ pub enum Expr {
     /// special attribute handling. Supports chained attribute access.
     AttrGet {
         object: Box<ExprLoc>,
-        attr: Attr,
+        attr: EitherStr,
     },
     Op {
         left: Box<ExprLoc>,
@@ -152,6 +152,18 @@ pub enum Expr {
         left: Box<ExprLoc>,
         op: CmpOperator,
         right: Box<ExprLoc>,
+    },
+    /// Chain comparison expression: `a < b < c < d`
+    ///
+    /// Unlike single comparisons, chain comparisons evaluate intermediate values
+    /// only once and short-circuit on the first false result. Compiled to bytecode
+    /// that uses stack manipulation (Dup, Rot) rather than temporary variables,
+    /// avoiding namespace pollution.
+    ChainCmp {
+        /// The leftmost operand in the chain.
+        left: Box<ExprLoc>,
+        /// Sequence of (operator, operand) pairs: `[(op1, b), (op2, c), ...]`
+        comparisons: Vec<(CmpOperator, ExprLoc)>,
     },
     List(Vec<ExprLoc>),
     Tuple(Vec<ExprLoc>),
@@ -181,6 +193,12 @@ pub enum Expr {
     UnaryPlus(Box<ExprLoc>),
     /// Unary bitwise NOT expression - inverts all bits of an integer.
     UnaryInvert(Box<ExprLoc>),
+    /// Await expression - suspends execution until the awaited value resolves.
+    ///
+    /// Can await `ExternalFuture`, `Coroutine`, or `GatherFuture` values.
+    /// Raises `TypeError` for non-awaitable values.
+    /// Unlike standard Python, `await` is allowed at module level (like Jupyter notebooks).
+    Await(Box<ExprLoc>),
     /// F-string expression containing literal and interpolated parts.
     ///
     /// At evaluation time, each part is processed in sequence:
@@ -248,11 +266,24 @@ pub enum Expr {
         /// The body is wrapped as `[Node::Return(body_expr)]` during preparation.
         func_def: Box<PreparedFunctionDef>,
     },
+    /// Named expression (walrus operator): `(target := value)`
+    ///
+    /// Evaluates `value`, assigns it to `target`, and returns the value as the
+    /// expression result. The target is treated as an assignment for scope analysis,
+    /// so it creates a local binding in the enclosing scope.
+    ///
+    /// Per PEP 572, in comprehensions the target binds in the enclosing scope,
+    /// not the comprehension's implicit scope.
+    Named {
+        target: Identifier,
+        value: Box<ExprLoc>,
+    },
 }
 
-/// Target for tuple unpacking - can be a single name or nested tuple.
+/// Target for tuple unpacking - can be a single name, nested tuple, or starred target.
 ///
 /// Supports recursive structures like `(a, b), c` or `a, (b, c)`.
+/// Also supports starred targets like `first, *rest = [1, 2, 3, 4]`.
 /// Used in assignment statements, for loop targets, and comprehension targets.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum UnpackTarget {
@@ -265,6 +296,10 @@ pub enum UnpackTarget {
         /// Source position covering all targets (for error caret placement)
         position: CodeRange,
     },
+    /// Starred target: `*rest` - captures remaining values into a list.
+    ///
+    /// Only one starred target is allowed per unpacking level.
+    Starred(Identifier),
 }
 
 /// A generator clause in a comprehension: `for target in iter [if cond1] [if cond2]...`
@@ -307,6 +342,9 @@ pub enum Literal {
     Str(StringId),
     /// An interned bytes literal. The BytesId references the bytes in the Interns table.
     Bytes(BytesId),
+    /// An interned long integer literal. The `LongIntId` references the value in the Interns table.
+    /// Used for integer literals that exceed the i64 range.
+    LongInt(LongIntId),
     /// A marker value (e.g., typing constructs like Any, Optional, etc.).
     Marker(Marker),
 }
@@ -325,6 +363,7 @@ impl From<Literal> for Value {
             Literal::Float(v) => Self::Float(v),
             Literal::Str(string_id) => Self::InternString(string_id),
             Literal::Bytes(bytes_id) => Self::InternBytes(bytes_id),
+            Literal::LongInt(long_int_id) => Self::InternLongInt(long_int_id),
             Literal::Marker(marker) => Self::Marker(marker),
         }
     }
@@ -397,7 +436,7 @@ pub enum Node<F> {
     /// Supports chained attribute access on the left-hand side.
     AttrAssign {
         object: ExprLoc,
-        attr: Attr,
+        attr: EitherStr,
         target_position: CodeRange,
         value: ExprLoc,
     },
@@ -405,6 +444,15 @@ pub enum Node<F> {
         /// Loop target - either a single identifier or tuple unpacking pattern.
         target: UnpackTarget,
         iter: ExprLoc,
+        body: Vec<Self>,
+        or_else: Vec<Self>,
+    },
+    /// While loop statement: `while test: body [else: orelse]`
+    ///
+    /// Executes body repeatedly while test is truthy. If the loop exits normally
+    /// (not via break), the else block runs.
+    While {
+        test: ExprLoc,
         body: Vec<Self>,
         or_else: Vec<Self>,
     },
@@ -512,6 +560,11 @@ pub struct PreparedFunctionDef {
     /// Each group contains only the parameters that have defaults, in declaration order.
     /// The counts in `signature` indicate how many defaults exist for each group.
     pub default_exprs: Vec<ExprLoc>,
+    /// Whether this is an async function (`async def`).
+    ///
+    /// When true, calling this function creates a `Coroutine` object instead of
+    /// immediately pushing a frame.
+    pub is_async: bool,
 }
 
 /// Type alias for prepared AST nodes (output of prepare phase).

@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # External function calls inside closures (nested functions with captured variables).
 
 

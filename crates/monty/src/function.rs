@@ -57,6 +57,12 @@ pub(crate) struct Function {
     /// At function definition time, this many default values are evaluated and stored
     /// in a separate defaults array. The signature indicates how these map to parameters.
     pub defaults_count: usize,
+    /// Whether this is an async function (`async def`).
+    ///
+    /// When true, calling this function creates a `Coroutine` object instead of
+    /// immediately pushing a frame. The coroutine captures the bound arguments
+    /// and starts execution only when awaited.
+    pub is_async: bool,
     /// Compiled bytecode for this function body.
     pub code: Code,
 }
@@ -74,6 +80,7 @@ impl Function {
     /// * `cell_var_count` - Number of cells to create for variables captured by nested functions
     /// * `cell_param_indices` - Maps cell indices to parameter indices for captured parameters
     /// * `defaults_count` - Number of default parameter values
+    /// * `is_async` - Whether this is an async function
     /// * `code` - The compiled bytecode for the function body
     #[expect(clippy::too_many_arguments)]
     pub fn new(
@@ -84,6 +91,7 @@ impl Function {
         cell_var_count: usize,
         cell_param_indices: Vec<Option<usize>>,
         defaults_count: usize,
+        is_async: bool,
         code: Code,
     ) -> Self {
         Self {
@@ -94,23 +102,18 @@ impl Function {
             cell_var_count,
             cell_param_indices,
             defaults_count,
+            is_async,
             code,
         }
     }
 
     /// Writes the Python repr() string for this function to a formatter.
-    pub fn py_repr_fmt<W: Write>(
-        &self,
-        f: &mut W,
-        interns: &Interns,
-        // TODO use actual heap_id
-        heap_id: usize,
-    ) -> std::fmt::Result {
+    pub fn py_repr_fmt<W: Write>(&self, f: &mut W, interns: &Interns, py_id: usize) -> std::fmt::Result {
         write!(
             f,
             "<function '{}' at 0x{:x}>",
             interns.get_str(self.name.name_id),
-            heap_id
+            py_id
         )
     }
 }

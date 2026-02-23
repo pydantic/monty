@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # === External calls in elif conditions ===
 
 # External call in elif condition - true

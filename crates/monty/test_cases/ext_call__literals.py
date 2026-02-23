@@ -1,4 +1,4 @@
-# mode: iter
+# call-external
 # External calls in list and dict literals
 
 # External call in list literal

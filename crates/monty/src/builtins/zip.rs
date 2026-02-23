@@ -2,11 +2,12 @@
 
 use crate::{
     args::ArgValues,
-    exception_private::{ExcType, RunResult, SimpleException},
+    defer_drop_mut,
+    exception_private::RunResult,
     heap::{Heap, HeapData},
     intern::Interns,
     resource::ResourceTracker,
-    types::{List, MontyIter, Tuple},
+    types::{List, MontyIter, allocate_tuple, tuple::TupleVec},
     value::Value,
 };
 
@@ -17,20 +18,10 @@ use crate::{
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
 pub fn builtin_zip(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
     let (positional, kwargs) = args.into_parts();
+    defer_drop_mut!(positional, heap);
 
-    // Check for unsupported kwargs (strict not yet implemented)
-    if !kwargs.is_empty() {
-        for (k, v) in kwargs {
-            k.drop_with_heap(heap);
-            v.drop_with_heap(heap);
-        }
-        for v in positional {
-            v.drop_with_heap(heap);
-        }
-        return Err(
-            SimpleException::new_msg(ExcType::TypeError, "zip() does not support keyword arguments yet").into(),
-        );
-    }
+    // TODO: support kwargs (strict)
+    kwargs.not_supported_yet("zip", heap)?;
 
     if positional.len() == 0 {
         // zip() with no arguments returns empty list
@@ -57,7 +48,7 @@ pub fn builtin_zip(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
 
     // Zip until shortest iterator is exhausted
     'outer: loop {
-        let mut tuple_items: Vec<Value> = Vec::with_capacity(iterators.len());
+        let mut tuple_items = TupleVec::with_capacity(iterators.len());
 
         for iter in &mut iterators {
             if let Some(item) = iter.for_next(heap, interns)? {
@@ -72,8 +63,8 @@ pub fn builtin_zip(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
         }
 
         // Create tuple from collected items
-        let tuple_id = heap.allocate(HeapData::Tuple(Tuple::new(tuple_items)))?;
-        result.push(Value::Ref(tuple_id));
+        let tuple_val = allocate_tuple(tuple_items, heap)?;
+        result.push(tuple_val);
     }
 
     // Clean up iterators

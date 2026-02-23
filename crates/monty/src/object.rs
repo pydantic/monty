@@ -13,17 +13,16 @@ use crate::{
     exception_private::{ExcType, SimpleException},
     heap::{Heap, HeapData, HeapId},
     intern::Interns,
-    resource::{ResourceError, ResourceTracker},
+    resource::{DepthGuard, ResourceError, ResourceTracker},
     types::{
-        LongInt, PyTrait, Type,
+        LongInt, NamedTuple, Path, PyTrait, Type, allocate_tuple,
         bytes::{Bytes, bytes_repr},
         dict::Dict,
         list::List,
         set::{FrozenSet, Set},
         str::{Str, StringRepr, string_repr_fmt},
-        tuple::Tuple,
     },
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// A Python value that can be passed to or returned from the interpreter.
@@ -90,6 +89,19 @@ pub enum MontyObject {
     List(Vec<Self>),
     /// Python tuple (immutable sequence).
     Tuple(Vec<Self>),
+    /// Python named tuple (immutable sequence with named fields).
+    ///
+    /// Named tuples behave like tuples but also support attribute access by field name.
+    /// The type_name is used in repr (e.g., "os.stat_result"), and field_names provides
+    /// the attribute names for each position.
+    NamedTuple {
+        /// Type name for repr (e.g., "os.stat_result").
+        type_name: String,
+        /// Field names in order.
+        field_names: Vec<String>,
+        /// Values in order (same length as field_names).
+        values: Vec<Self>,
+    },
     /// Python dictionary (insertion-ordered mapping).
     Dict(DictPairs),
     /// Python set (mutable, unordered collection of unique elements).
@@ -108,7 +120,15 @@ pub enum MontyObject {
     /// Returned by the `type()` builtin and can be compared with other types.
     Type(Type),
     BuiltinFunction(BuiltinsFunctions),
-    /// A dataclass instance with class name, field names, attributes, method names, and mutability.
+    /// Python `pathlib.Path` object (or technically a `PurePosixPath`).
+    ///
+    /// Represents a filesystem path. Can be used both as input (from host) and output.
+    Path(String),
+    /// A dataclass instance with class name, field names, attributes, and mutability.
+    ///
+    /// Method calls are detected lazily at runtime: when `call_attr` is invoked
+    /// on a dataclass and the attribute name is not found in `attrs`, it is
+    /// dispatched as a `MethodCall` to the host (provided the name is public).
     Dataclass {
         /// The class name (e.g., "Point", "User").
         name: String,
@@ -118,8 +138,6 @@ pub enum MontyObject {
         field_names: Vec<String>,
         /// All attribute name -> value mapping (includes fields and extra attrs).
         attrs: DictPairs,
-        /// Method names that trigger external function calls.
-        methods: Vec<String>,
         /// Whether this dataclass instance is immutable.
         frozen: bool,
     },
@@ -199,11 +217,24 @@ impl MontyObject {
                 Ok(Value::Ref(heap.allocate(HeapData::List(List::new(values)))?))
             }
             Self::Tuple(items) => {
-                let values: Vec<Value> = items
+                let values = items
                     .into_iter()
                     .map(|item| item.to_value(heap, interns))
                     .collect::<Result<_, _>>()?;
-                Ok(Value::Ref(heap.allocate(HeapData::Tuple(Tuple::new(values)))?))
+                allocate_tuple(values, heap).map_err(InvalidInputError::Resource)
+            }
+            Self::NamedTuple {
+                type_name,
+                field_names,
+                values,
+            } => {
+                let values: Vec<Value> = values
+                    .into_iter()
+                    .map(|item| item.to_value(heap, interns))
+                    .collect::<Result<_, _>>()?;
+                let field_name_strs: Vec<EitherStr> = field_names.into_iter().map(Into::into).collect();
+                let nt = NamedTuple::new(type_name, field_name_strs, values);
+                Ok(Value::Ref(heap.allocate(HeapData::NamedTuple(nt))?))
             }
             Self::Dict(map) => {
                 let pairs: Result<Vec<(Value, Value)>, InvalidInputError> = map
@@ -243,7 +274,6 @@ impl MontyObject {
                 type_id,
                 field_names,
                 attrs,
-                methods,
                 frozen,
             } => {
                 use crate::types::Dataclass;
@@ -254,11 +284,10 @@ impl MontyObject {
                     .collect();
                 let dict = Dict::from_pairs(pairs?, heap, interns)
                     .map_err(|_| InvalidInputError::invalid_type("unhashable dataclass attr keys"))?;
-                // Convert methods Vec to AHashSet
-                let methods_set: ahash::AHashSet<String> = methods.into_iter().collect();
-                let dc = Dataclass::new(name, type_id, field_names, dict, methods_set, frozen);
+                let dc = Dataclass::new(name, type_id, field_names, dict, frozen);
                 Ok(Value::Ref(heap.allocate(HeapData::Dataclass(dc))?))
             }
+            Self::Path(s) => Ok(Value::Ref(heap.allocate(HeapData::Path(Path::new(s)))?)),
             Self::Type(t) => Ok(Value::Builtin(Builtins::Type(t))),
             Self::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
             Self::Repr(_) => Err(InvalidInputError::invalid_type("Repr")),
@@ -268,7 +297,8 @@ impl MontyObject {
 
     fn from_value(object: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Self {
         let mut visited = AHashSet::new();
-        Self::from_value_inner(object, heap, &mut visited, interns)
+        let mut guard = DepthGuard::default();
+        Self::from_value_inner(object, heap, &mut visited, &mut guard, interns)
     }
 
     /// Internal helper for converting Value to MontyObject with cycle detection.
@@ -276,10 +306,31 @@ impl MontyObject {
     /// The `visited` set tracks HeapIds we're currently processing. When we encounter
     /// a HeapId already in the set, we've found a cycle and return `MontyObject::Cycle`
     /// with an appropriate placeholder string.
+    ///
+    /// The `guard` tracks recursion depth to prevent stack overflow on deeply nested structures.
     fn from_value_inner(
         object: &Value,
         heap: &Heap<impl ResourceTracker>,
         visited: &mut AHashSet<HeapId>,
+        guard: &mut DepthGuard,
+        interns: &Interns,
+    ) -> Self {
+        // Check depth limit before processing
+        if !guard.increase() {
+            return Self::Repr("<deeply nested>".to_owned());
+        }
+
+        let result = Self::from_value_inner_impl(object, heap, visited, guard, interns);
+        guard.decrease();
+        result
+    }
+
+    /// Implementation of from_value_inner without depth tracking boilerplate.
+    fn from_value_inner_impl(
+        object: &Value,
+        heap: &Heap<impl ResourceTracker>,
+        visited: &mut AHashSet<HeapId>,
+        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> Self {
         match object {
@@ -310,34 +361,37 @@ impl MontyObject {
                     HeapData::Str(s) => Self::String(s.as_str().to_owned()),
                     HeapData::Bytes(b) => Self::Bytes(b.as_slice().to_owned()),
                     HeapData::List(list) => Self::List(
-                        list.as_vec()
+                        list.as_slice()
                             .iter()
-                            .map(|obj| Self::from_value_inner(obj, heap, visited, interns))
+                            .map(|obj| Self::from_value_inner(obj, heap, visited, guard, interns))
                             .collect(),
                     ),
                     HeapData::Tuple(tuple) => Self::Tuple(
                         tuple
-                            .as_vec()
+                            .as_slice()
                             .iter()
-                            .map(|obj| Self::from_value_inner(obj, heap, visited, interns))
+                            .map(|obj| Self::from_value_inner(obj, heap, visited, guard, interns))
                             .collect(),
                     ),
-                    HeapData::NamedTuple(nt) => {
-                        // Convert NamedTuple to Tuple for now (MontyObject doesn't have a NamedTuple variant)
-                        // This preserves the tuple-like data while losing the named fields
-                        Self::Tuple(
-                            nt.as_vec()
-                                .iter()
-                                .map(|obj| Self::from_value_inner(obj, heap, visited, interns))
-                                .collect(),
-                        )
-                    }
+                    HeapData::NamedTuple(nt) => Self::NamedTuple {
+                        type_name: nt.name(interns).to_owned(),
+                        field_names: nt
+                            .field_names()
+                            .iter()
+                            .map(|field_name| field_name.as_str(interns).to_owned())
+                            .collect(),
+                        values: nt
+                            .as_vec()
+                            .iter()
+                            .map(|obj| Self::from_value_inner(obj, heap, visited, guard, interns))
+                            .collect(),
+                    },
                     HeapData::Dict(dict) => Self::Dict(DictPairs(
                         dict.into_iter()
                             .map(|(k, v)| {
                                 (
-                                    Self::from_value_inner(k, heap, visited, interns),
-                                    Self::from_value_inner(v, heap, visited, interns),
+                                    Self::from_value_inner(k, heap, visited, guard, interns),
+                                    Self::from_value_inner(v, heap, visited, guard, interns),
                                 )
                             })
                             .collect(),
@@ -345,28 +399,28 @@ impl MontyObject {
                     HeapData::Set(set) => Self::Set(
                         set.storage()
                             .iter()
-                            .map(|obj| Self::from_value_inner(obj, heap, visited, interns))
+                            .map(|obj| Self::from_value_inner(obj, heap, visited, guard, interns))
                             .collect(),
                     ),
                     HeapData::FrozenSet(frozenset) => Self::FrozenSet(
                         frozenset
                             .storage()
                             .iter()
-                            .map(|obj| Self::from_value_inner(obj, heap, visited, interns))
+                            .map(|obj| Self::from_value_inner(obj, heap, visited, guard, interns))
                             .collect(),
                     ),
                     // Cells are internal closure implementation details
                     HeapData::Cell(inner) => {
                         // Show the cell's contents
-                        Self::from_value_inner(inner, heap, visited, interns)
+                        Self::from_value_inner(inner, heap, visited, guard, interns)
                     }
                     HeapData::Closure(..) | HeapData::FunctionDefaults(..) => {
-                        Self::Repr(object.py_repr(heap, interns).into_owned())
+                        Self::Repr(object.py_repr(heap, guard, interns).into_owned())
                     }
                     HeapData::Range(range) => {
                         // Represent Range as a repr string since MontyObject doesn't have a Range variant
                         let mut s = String::new();
-                        let _ = range.py_repr_fmt(&mut s, heap, visited, interns);
+                        let _ = range.py_repr_fmt(&mut s, heap, visited, guard, interns);
                         Self::Repr(s)
                     }
                     HeapData::Exception(exc) => Self::Exception {
@@ -380,21 +434,17 @@ impl MontyObject {
                                 .into_iter()
                                 .map(|(k, v)| {
                                     (
-                                        Self::from_value_inner(k, heap, visited, interns),
-                                        Self::from_value_inner(v, heap, visited, interns),
+                                        Self::from_value_inner(k, heap, visited, guard, interns),
+                                        Self::from_value_inner(v, heap, visited, guard, interns),
                                     )
                                 })
                                 .collect(),
                         );
-                        // Convert methods set to sorted Vec for determinism
-                        let mut methods: Vec<String> = dc.methods().iter().cloned().collect();
-                        methods.sort();
                         Self::Dataclass {
-                            name: dc.name().to_owned(),
+                            name: dc.name(interns).to_owned(),
                             type_id: dc.type_id(),
                             field_names: dc.field_names().to_vec(),
                             attrs,
-                            methods,
                             frozen: dc.is_frozen(),
                         }
                     }
@@ -410,9 +460,20 @@ impl MontyObject {
                     HeapData::Slice(slice) => {
                         // Represent Slice as a repr string since MontyObject doesn't have a Slice variant
                         let mut s = String::new();
-                        let _ = slice.py_repr_fmt(&mut s, heap, visited, interns);
+                        let _ = slice.py_repr_fmt(&mut s, heap, visited, guard, interns);
                         Self::Repr(s)
                     }
+                    HeapData::Coroutine(coro) => {
+                        // Coroutines are represented as a repr string
+                        let func = interns.get_function(coro.func_id);
+                        let name = interns.get_str(func.name.name_id);
+                        Self::Repr(format!("<coroutine object {name}>"))
+                    }
+                    HeapData::GatherFuture(gather) => {
+                        // GatherFutures are represented as a repr string
+                        Self::Repr(format!("<gather({})>", gather.item_count()))
+                    }
+                    HeapData::Path(path) => Self::Path(path.as_str().to_owned()),
                 };
 
                 // Remove from visited set after processing
@@ -424,7 +485,7 @@ impl MontyObject {
             Value::Builtin(Builtins::Function(f)) => Self::BuiltinFunction(*f),
             #[cfg(feature = "ref-count-panic")]
             Value::Dereferenced => panic!("Dereferenced found while converting to MontyObject"),
-            _ => Self::Repr(object.py_repr(heap, interns).into_owned()),
+            _ => Self::Repr(object.py_repr(heap, guard, interns).into_owned()),
         }
     }
 
@@ -478,6 +539,26 @@ impl MontyObject {
                         f.write_str(", ")?;
                         item.repr_fmt(f)?;
                     }
+                }
+                f.write_char(')')
+            }
+            Self::NamedTuple {
+                type_name,
+                field_names,
+                values,
+            } => {
+                // Format: type_name(field1=value1, field2=value2, ...)
+                f.write_str(type_name)?;
+                f.write_char('(')?;
+                let mut first = true;
+                for (name, value) in field_names.iter().zip(values) {
+                    if !first {
+                        f.write_str(", ")?;
+                    }
+                    first = false;
+                    f.write_str(name)?;
+                    f.write_char('=')?;
+                    value.repr_fmt(f)?;
                 }
                 f.write_char(')')
             }
@@ -566,6 +647,7 @@ impl MontyObject {
                 }
                 f.write_char(')')
             }
+            Self::Path(p) => write!(f, "PosixPath('{p}')"),
             Self::Type(t) => write!(f, "<class '{t}'>"),
             Self::BuiltinFunction(func) => write!(f, "<built-in function {func}>"),
             Self::Repr(s) => write!(f, "Repr({})", StringRepr(s)),
@@ -595,10 +677,12 @@ impl MontyObject {
             Self::Bytes(b) => !b.is_empty(),
             Self::List(l) => !l.is_empty(),
             Self::Tuple(t) => !t.is_empty(),
+            Self::NamedTuple { values, .. } => !values.is_empty(),
             Self::Dict(d) => !d.is_empty(),
             Self::Set(s) => !s.is_empty(),
             Self::FrozenSet(fs) => !fs.is_empty(),
             Self::Exception { .. } => true,
+            Self::Path(_) => true,          // Path instances are always truthy
             Self::Dataclass { .. } => true, // Dataclass instances are always truthy
             Self::Type(_) | Self::BuiltinFunction(_) | Self::Repr(_) | Self::Cycle(_, _) => true,
         }
@@ -619,10 +703,12 @@ impl MontyObject {
             Self::Bytes(_) => "bytes",
             Self::List(_) => "list",
             Self::Tuple(_) => "tuple",
+            Self::NamedTuple { .. } => "namedtuple",
             Self::Dict(_) => "dict",
             Self::Set(_) => "set",
             Self::FrozenSet(_) => "frozenset",
             Self::Exception { .. } => "Exception",
+            Self::Path(_) => "PosixPath",
             Self::Dataclass { .. } => "dataclass",
             Self::Type(_) => "type",
             Self::BuiltinFunction(_) => "builtin_function_or_method",
@@ -659,6 +745,7 @@ impl Hash for MontyObject {
             Self::Float(f) => f.to_bits().hash(state),
             Self::String(string) => string.hash(state),
             Self::Bytes(bytes) => bytes.hash(state),
+            Self::Path(path) => path.hash(state),
             Self::Type(t) => t.to_string().hash(state),
             Self::Cycle(_, _) => panic!("cycle values are not hashable"),
             _ => panic!("{} python values are not hashable", self.type_name()),
@@ -682,6 +769,22 @@ impl PartialEq for MontyObject {
             (Self::Bytes(a), Self::Bytes(b)) => a == b,
             (Self::List(a), Self::List(b)) => a == b,
             (Self::Tuple(a), Self::Tuple(b)) => a == b,
+            (
+                Self::NamedTuple {
+                    type_name: a_type,
+                    field_names: a_fields,
+                    values: a_values,
+                },
+                Self::NamedTuple {
+                    type_name: b_type,
+                    field_names: b_fields,
+                    values: b_values,
+                },
+            ) => a_type == b_type && a_fields == b_fields && a_values == b_values,
+            // NamedTuple can compare with Tuple by values only (matching Python semantics)
+            (Self::NamedTuple { values, .. }, Self::Tuple(t)) | (Self::Tuple(t), Self::NamedTuple { values, .. }) => {
+                values == t
+            }
             (Self::Dict(a), Self::Dict(b)) => a == b,
             (Self::Set(a), Self::Set(b)) => a == b,
             (Self::FrozenSet(a), Self::FrozenSet(b)) => a == b,
@@ -701,7 +804,6 @@ impl PartialEq for MontyObject {
                     type_id: a_type_id,
                     field_names: a_field_names,
                     attrs: a_attrs,
-                    methods: a_methods,
                     frozen: a_frozen,
                 },
                 Self::Dataclass {
@@ -709,7 +811,6 @@ impl PartialEq for MontyObject {
                     type_id: b_type_id,
                     field_names: b_field_names,
                     attrs: b_attrs,
-                    methods: b_methods,
                     frozen: b_frozen,
                 },
             ) => {
@@ -717,9 +818,9 @@ impl PartialEq for MontyObject {
                     && a_type_id == b_type_id
                     && a_field_names == b_field_names
                     && a_attrs == b_attrs
-                    && a_methods == b_methods
                     && a_frozen == b_frozen
             }
+            (Self::Path(a), Self::Path(b)) => a == b,
             (Self::Repr(a), Self::Repr(b)) => a == b,
             (Self::Cycle(a, _), Self::Cycle(b, _)) => a == b,
             (Self::Type(a), Self::Type(b)) => a == b,
