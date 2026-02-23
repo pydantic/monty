@@ -1,8 +1,5 @@
-# Test that hashing deeply nested tuples doesn't crash (stack overflow).
-# The py_hash path recurses in Rust without a DepthGuard, so deeply
-# nested immutable containers can overflow the Rust call stack.
-# CPython handles this fine (its tuple hash is iterative in C).
-# Once fixed, Monty should either succeed or raise RecursionError.
+# Test that hashing deeply nested containers raises RecursionError instead
+# of crashing with a Rust stack overflow.
 
 # === Deep tuple hash ===
 x = (1,)

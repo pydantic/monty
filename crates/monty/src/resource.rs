@@ -175,6 +175,19 @@ impl ResourceError {
     }
 }
 
+impl ResourceError {
+    /// Converts this error into a **catchable** `RunError`.
+    ///
+    /// Unlike the `From<ResourceError>` impl (which produces `UncatchableExc` for
+    /// security — sandboxed code can't suppress resource limit violations), this
+    /// produces a catchable `Exc`. Use this for data-recursion paths (hash, repr)
+    /// where the recursion limit protects the Rust call stack rather than enforcing
+    /// sandbox limits, matching CPython's behavior where `RecursionError` is catchable.
+    pub(crate) fn into_catchable(self) -> RunError {
+        RunError::Exc(self.into_exception(None))
+    }
+}
+
 impl From<ResourceError> for RunError {
     fn from(err: ResourceError) -> Self {
         Self::UncatchableExc(err.into_exception(None))

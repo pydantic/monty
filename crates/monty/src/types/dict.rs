@@ -242,6 +242,7 @@ impl Dict {
     ) -> RunResult<Option<(Value, Value)>> {
         let hash = key
             .py_hash(heap, interns)
+            .map_err(ResourceError::into_catchable)?
             .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type(heap)))?;
 
         let entry = self.indices.entry(
@@ -363,6 +364,7 @@ impl Dict {
     ) -> RunResult<(Option<usize>, u64)> {
         let hash = key
             .py_hash(heap, interns)
+            .map_err(ResourceError::into_catchable)?
             .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type(heap)))?;
 
         // Dict keys are typically shallow (strings, ints, tuples of primitives),

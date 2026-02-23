@@ -106,10 +106,17 @@ impl SetStorage {
     /// The caller transfers ownership of `value`. If the value is already in
     /// the set, it will be dropped.
     fn add(&mut self, value: Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
-        let Some(hash) = value.py_hash(heap, interns) else {
-            let err = ExcType::type_error_unhashable_set_element(value.py_type(heap));
-            value.drop_with_heap(heap);
-            return Err(err);
+        let hash = match value.py_hash(heap, interns) {
+            Ok(Some(h)) => h,
+            Ok(None) => {
+                let err = ExcType::type_error_unhashable_set_element(value.py_type(heap));
+                value.drop_with_heap(heap);
+                return Err(err);
+            }
+            Err(e) => {
+                value.drop_with_heap(heap);
+                return Err(e.into_catchable());
+            }
         };
 
         // Check if value already exists.
@@ -137,6 +144,7 @@ impl SetStorage {
     fn remove(&mut self, value: &Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
         let hash = value
             .py_hash(heap, interns)
+            .map_err(ResourceError::into_catchable)?
             .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(heap)))?;
 
         let entry = self.indices.entry(
@@ -220,6 +228,7 @@ impl SetStorage {
     pub fn contains(&self, value: &Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
         let hash = value
             .py_hash(heap, interns)
+            .map_err(ResourceError::into_catchable)?
             .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(heap)))?;
 
         // Set values are typically shallow (strings, ints, tuples of primitives),
@@ -1006,14 +1015,23 @@ impl FrozenSet {
     /// Computes the hash of this frozenset.
     ///
     /// The hash is the XOR of all element hashes, making it order-independent.
-    pub fn compute_hash(&self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Option<u64> {
+    /// Checks recursion depth before recursing into element hashes.
+    pub fn compute_hash(
+        &self,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> Result<Option<u64>, ResourceError> {
+        let token = heap.incr_recursion_depth()?;
+        defer_drop!(token, heap);
         let mut hash: u64 = 0;
         for entry in &self.0.entries {
             // All elements must be hashable (enforced at construction)
-            let elem_hash = entry.value.py_hash(heap, interns)?;
-            hash ^= elem_hash;
+            match entry.value.py_hash(heap, interns)? {
+                Some(h) => hash ^= h,
+                None => return Ok(None),
+            }
         }
-        Some(hash)
+        Ok(Some(hash))
     }
 
     /// Creates a frozenset from a Set, consuming the Set's storage.

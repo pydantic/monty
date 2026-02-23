@@ -223,55 +223,70 @@ impl HeapData {
 
     /// Computes hash for immutable heap types that can be used as dict keys.
     ///
-    /// Returns Some(hash) for immutable types (Str, Bytes, Tuple of hashables).
-    /// Returns None for mutable types (List, Dict) which cannot be dict keys.
+    /// Returns `Ok(Some(hash))` for immutable types (Str, Bytes, Tuple of hashables).
+    /// Returns `Ok(None)` for mutable types (List, Dict) which cannot be dict keys.
+    /// Returns `Err(ResourceError::Recursion)` if the recursion limit is exceeded
+    /// while hashing deeply nested containers (e.g., tuples of tuples).
     ///
     /// This is called lazily when the value is first used as a dict key,
     /// avoiding unnecessary hash computation for values that are never used as keys.
-    fn compute_hash_if_immutable(&self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Option<u64> {
+    fn compute_hash_if_immutable(
+        &self,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> Result<Option<u64>, ResourceError> {
         match self {
             // Hash just the actual string or bytes content for consistency with Value::InternString/InternBytes
             // hence we don't include the discriminant
             Self::Str(s) => {
                 let mut hasher = DefaultHasher::new();
                 s.as_str().hash(&mut hasher);
-                Some(hasher.finish())
+                Ok(Some(hasher.finish()))
             }
             Self::Bytes(b) => {
                 let mut hasher = DefaultHasher::new();
                 b.as_slice().hash(&mut hasher);
-                Some(hasher.finish())
+                Ok(Some(hasher.finish()))
             }
             Self::FrozenSet(fs) => {
                 // FrozenSet hash is XOR of element hashes (order-independent)
+                // Recursion depth is checked inside compute_hash
                 fs.compute_hash(heap, interns)
             }
             Self::Tuple(t) => {
+                let token = heap.incr_recursion_depth()?;
+                crate::defer_drop!(token, heap);
                 let mut hasher = DefaultHasher::new();
                 discriminant(self).hash(&mut hasher);
                 // Tuple is hashable only if all elements are hashable
                 for obj in t.as_slice() {
-                    let h = obj.py_hash(heap, interns)?;
-                    h.hash(&mut hasher);
+                    match obj.py_hash(heap, interns)? {
+                        Some(h) => h.hash(&mut hasher),
+                        None => return Ok(None),
+                    }
                 }
-                Some(hasher.finish())
+                Ok(Some(hasher.finish()))
             }
             Self::NamedTuple(nt) => {
+                let token = heap.incr_recursion_depth()?;
+                crate::defer_drop!(token, heap);
                 let mut hasher = DefaultHasher::new();
                 discriminant(self).hash(&mut hasher);
                 // Hash only by elements (not type_name) to match equality semantics
                 for obj in nt.as_vec() {
-                    let h = obj.py_hash(heap, interns)?;
-                    h.hash(&mut hasher);
+                    match obj.py_hash(heap, interns)? {
+                        Some(h) => h.hash(&mut hasher),
+                        None => return Ok(None),
+                    }
                 }
-                Some(hasher.finish())
+                Ok(Some(hasher.finish()))
             }
             Self::Closure(f, _, _) | Self::FunctionDefaults(f, _) => {
                 let mut hasher = DefaultHasher::new();
                 discriminant(self).hash(&mut hasher);
                 // TODO, this is NOT proper hashing, we should somehow hash the function properly
                 f.hash(&mut hasher);
-                Some(hasher.finish())
+                Ok(Some(hasher.finish()))
             }
             Self::Range(range) => {
                 let mut hasher = DefaultHasher::new();
@@ -279,9 +294,10 @@ impl HeapData {
                 range.start.hash(&mut hasher);
                 range.stop.hash(&mut hasher);
                 range.step.hash(&mut hasher);
-                Some(hasher.finish())
+                Ok(Some(hasher.finish()))
             }
             // Dataclass hashability depends on the mutable flag
+            // Recursion depth is checked inside compute_hash
             Self::Dataclass(dc) => dc.compute_hash(heap, interns),
             // Slices are immutable and hashable (like in CPython)
             Self::Slice(slice) => {
@@ -290,14 +306,14 @@ impl HeapData {
                 slice.start.hash(&mut hasher);
                 slice.stop.hash(&mut hasher);
                 slice.step.hash(&mut hasher);
-                Some(hasher.finish())
+                Ok(Some(hasher.finish()))
             }
             // Path is immutable and hashable
             Self::Path(path) => {
                 let mut hasher = DefaultHasher::new();
                 discriminant(self).hash(&mut hasher);
                 path.as_str().hash(&mut hasher);
-                Some(hasher.finish())
+                Ok(Some(hasher.finish()))
             }
             // Mutable types, exceptions, iterators, modules, and async types cannot be hashed
             // (Cell is handled specially in get_or_compute_hash)
@@ -309,9 +325,9 @@ impl HeapData {
             | Self::Iter(_)
             | Self::Module(_)
             | Self::Coroutine(_)
-            | Self::GatherFuture(_) => None,
+            | Self::GatherFuture(_) => Ok(None),
             // LongInt is immutable and hashable
-            Self::LongInt(li) => Some(li.hash()),
+            Self::LongInt(li) => Ok(Some(li.hash())),
         }
     }
 }
@@ -1169,34 +1185,35 @@ impl<T: ResourceTracker> Heap<T> {
 
     /// Decrements the reference count and frees the value (plus children) once it hits zero.
     ///
-    /// When an value is freed, its slot ID is added to the free list for reuse by
-    /// future allocations. Uses recursion for child cleanup - avoiding repeated Vec
-    /// allocations and benefiting from call stack locality.
+    /// Uses an iterative work stack instead of recursion to avoid Rust stack overflow
+    /// when freeing deeply nested containers (e.g., a list nested 10,000 levels deep).
+    /// This is analogous to CPython's "trashcan" mechanism for safe deallocation.
     ///
     /// # Panics
     /// Panics if the value ID is invalid or the value has already been freed.
     pub fn dec_ref(&mut self, id: HeapId) {
-        let slot = self.entries.get_mut(id.index()).expect("Heap::dec_ref: slot missing");
-        let entry = slot.as_mut().expect("Heap::dec_ref: object already freed");
-        if entry.refcount.get() > 1 {
-            entry.refcount.update(|r| r - 1);
-        } else if let Some(value) = slot.take() {
-            // refcount == 1, free the value and add slot to free list for reuse
-            self.free_list.push(id);
+        let mut work_stack = vec![id];
+        while let Some(current_id) = work_stack.pop() {
+            let slot = self
+                .entries
+                .get_mut(current_id.index())
+                .expect("Heap::dec_ref: slot missing");
+            let entry = slot.as_mut().expect("Heap::dec_ref: object already freed");
+            if entry.refcount.get() > 1 {
+                entry.refcount.update(|r| r - 1);
+            } else if let Some(value) = slot.take() {
+                // refcount == 1, free the value and add slot to free list for reuse
+                self.free_list.push(current_id);
 
-            // Notify tracker of freed memory
-            if let Some(ref data) = value.data {
-                self.tracker.on_free(|| data.py_estimate_size());
-            }
+                // Notify tracker of freed memory
+                if let Some(ref data) = value.data {
+                    self.tracker.on_free(|| data.py_estimate_size());
+                }
 
-            // Collect child IDs and mark Values as Dereferenced (when ref-count-panic enabled)
-            if let Some(mut data) = value.data {
-                let mut child_ids = Vec::new();
-                data.py_dec_ref_ids(&mut child_ids);
-                drop(data);
-                // Recursively decrement children
-                for child_id in child_ids {
-                    self.dec_ref(child_id);
+                // Collect child IDs and push onto work stack for iterative processing
+                if let Some(mut data) = value.data {
+                    data.py_dec_ref_ids(&mut work_stack);
+                    drop(data);
                 }
             }
         }
@@ -1238,12 +1255,12 @@ impl<T: ResourceTracker> Heap<T> {
     /// Returns or computes the hash for the heap entry at the given ID.
     ///
     /// Hashes are computed lazily on first use and then cached. Returns
-    /// Some(hash) for immutable types (Str, Bytes, hashable Tuple), None
-    /// for mutable types (List, Dict).
+    /// `Ok(Some(hash))` for immutable types, `Ok(None)` for mutable types,
+    /// or `Err(ResourceError::Recursion)` if the recursion limit is exceeded.
     ///
     /// # Panics
     /// Panics if the value ID is invalid or the value has already been freed.
-    pub fn get_or_compute_hash(&mut self, id: HeapId, interns: &Interns) -> Option<u64> {
+    pub fn get_or_compute_hash(&mut self, id: HeapId, interns: &Interns) -> Result<Option<u64>, ResourceError> {
         let entry = self
             .entries
             .get_mut(id.index())
@@ -1252,8 +1269,8 @@ impl<T: ResourceTracker> Heap<T> {
             .expect("Heap::get_or_compute_hash: object already freed");
 
         match entry.hash_state {
-            HashState::Unhashable => return None,
-            HashState::Cached(hash) => return Some(hash),
+            HashState::Unhashable => return Ok(None),
+            HashState::Cached(hash) => return Ok(Some(hash)),
             HashState::Unknown => {}
         }
 
@@ -1263,14 +1280,16 @@ impl<T: ResourceTracker> Heap<T> {
             id.hash(&mut hasher);
             let hash = hasher.finish();
             entry.hash_state = HashState::Cached(hash);
-            return Some(hash);
+            return Ok(Some(hash));
         }
 
-        // Compute hash lazily - need to temporarily take data to avoid borrow conflict
+        // Compute hash lazily - need to temporarily take data to avoid borrow conflict.
+        // IMPORTANT: data must be restored to the entry on ALL paths (including errors)
+        // to avoid dropping HeapData containing Value::Ref without proper cleanup.
         let data = entry.data.take().expect("Heap::get_or_compute_hash: data borrowed");
         let hash = data.compute_hash_if_immutable(self, interns);
 
-        // Restore data and cache the hash if computed
+        // Restore data before handling the result
         let entry = self
             .entries
             .get_mut(id.index())
@@ -1278,11 +1297,14 @@ impl<T: ResourceTracker> Heap<T> {
             .as_mut()
             .expect("Heap::get_or_compute_hash: object freed during compute");
         entry.data = Some(data);
+
+        // Now handle the result and cache if successful
+        let hash = hash?;
         entry.hash_state = match hash {
             Some(value) => HashState::Cached(value),
             None => HashState::Unhashable,
         };
-        hash
+        Ok(hash)
     }
 
     /// Calls an attribute on the heap entry, returning an `AttrCallResult` that may signal

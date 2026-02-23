@@ -147,9 +147,14 @@ impl Dataclass {
 
     /// Computes the hash for this dataclass if it's frozen.
     ///
-    /// Returns Some(hash) for frozen (immutable) dataclasses, None for mutable ones.
+    /// Returns `Ok(Some(hash))` for frozen (immutable) dataclasses, `Ok(None)` for mutable ones.
+    /// Returns `Err(ResourceError::Recursion)` if the recursion limit is exceeded.
     /// The hash is computed from the class name and declared field values only.
-    pub fn compute_hash(&self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Option<u64> {
+    pub fn compute_hash(
+        &self,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> Result<Option<u64>, ResourceError> {
         use std::{
             collections::hash_map::DefaultHasher,
             hash::{Hash, Hasher},
@@ -157,9 +162,11 @@ impl Dataclass {
 
         // Only frozen (immutable) dataclasses are hashable
         if !self.frozen {
-            return None;
+            return Ok(None);
         }
 
+        let token = heap.incr_recursion_depth()?;
+        defer_drop!(token, heap);
         let mut hasher = DefaultHasher::new();
         // Hash the class name
         self.name.hash(&mut hasher);
@@ -167,11 +174,13 @@ impl Dataclass {
         for field_name in &self.field_names {
             field_name.hash(&mut hasher);
             if let Some(value) = self.attrs.get_by_str(field_name, heap, interns) {
-                let value_hash = value.py_hash(heap, interns)?;
-                value_hash.hash(&mut hasher);
+                match value.py_hash(heap, interns)? {
+                    Some(h) => h.hash(&mut hasher),
+                    None => return Ok(None),
+                }
             }
         }
-        Some(hasher.finish())
+        Ok(Some(hasher.finish()))
     }
 }
 
