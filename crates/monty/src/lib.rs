@@ -23,6 +23,7 @@ mod repl;
 mod resource;
 mod run;
 mod signature;
+mod sorting;
 mod types;
 mod value;
 
@@ -35,7 +36,8 @@ pub use crate::{
     object::{DictPairs, InvalidInputError, MontyObject},
     os::{OsFunction, dir_stat, file_stat, stat_result, symlink_stat},
     repl::{
-        MontyRepl, ReplContinuationMode, ReplFutureSnapshot, ReplProgress, ReplSnapshot, detect_repl_continuation_mode,
+        MontyRepl, ReplContinuationMode, ReplFutureSnapshot, ReplProgress, ReplSnapshot, ReplStartError,
+        detect_repl_continuation_mode,
     },
     resource::{
         DEFAULT_MAX_RECURSION_DEPTH, LimitedTracker, NoLimitTracker, ResourceError, ResourceLimits, ResourceTracker,

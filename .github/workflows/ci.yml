@@ -179,6 +179,10 @@ jobs:
       - if: steps.cache-rust.outputs.cache-hit != 'true'
         run: cargo install cargo-fuzz
 
+      # venv is not used by the fuzz target but cargo config expects it
+      - name: Set up empty venv
+        run: python -m venv .venv
+
       - name: Run ${{ matrix.target }} fuzzer
         run: |
           # Use --sanitizer none to avoid ASAN/SanitizerCoverage linking issues on CI

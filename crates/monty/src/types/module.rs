@@ -2,10 +2,10 @@
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapGuard, HeapId},
     intern::{Interns, StringId},
-    io::PrintWriter,
     resource::ResourceTracker,
     types::{AttrCallResult, Dict, PyTrait},
     value::{EitherStr, Value},
@@ -71,8 +71,7 @@ impl Module {
     /// Looks up an attribute by name in the module's attribute dictionary.
     ///
     /// Returns `Some(value)` if the attribute exists, `None` otherwise.
-    /// The returned value is copied without incrementing refcount - caller must
-    /// call `heap.inc_ref()` if the value is a `Value::Ref`.
+    /// The returned value is cloned with proper refcount handling.
     pub fn get_attr(
         &self,
         attr_value: &Value,
@@ -85,7 +84,7 @@ impl Module {
             .get(attr_value, heap, interns)
             .ok()
             .flatten()
-            .map(Value::copy_for_extend)
+            .map(|v| v.clone_with_heap(heap))
     }
 
     /// Returns whether this module has any heap references in its attributes.
@@ -129,12 +128,12 @@ impl Module {
     pub fn py_call_attr_raw(
         &self,
         _self_id: HeapId,
-        heap: &mut Heap<impl ResourceTracker>,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-        _print_writer: &mut PrintWriter<'_>,
     ) -> RunResult<AttrCallResult> {
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
         let mut args_guard = HeapGuard::new(args, heap);
 
         let attr_key = match attr {
@@ -157,7 +156,7 @@ impl Module {
             }
             None => Err(ExcType::attribute_error_module(
                 interns.get_str(self.name),
-                attr.as_str(interns),
+                attr.as_str(vm.interns),
             )),
         }
     }

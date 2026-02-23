@@ -282,6 +282,26 @@ lst = ['10', '2', '1', '100']
 lst.sort(key=int, reverse=True)
 assert lst == ['100', '10', '2', '1'], 'sort numeric strings by int reverse'
 
+# user-defined key function
+
+
+def last_char(s):
+    return s[-1]
+
+
+lst = ['cherry', 'banana', 'apple']
+lst.sort(key=last_char)
+assert lst == ['banana', 'apple', 'cherry'], 'sort by last char'
+
+
+# key function might raise exception
+lst = ['']
+try:
+    lst.sort(key=last_char)
+except IndexError:
+    pass  # expected since last_char('') raises IndexError
+
+
 # === List assignment (setitem) ===
 # Basic assignment
 lst = [1, 2, 3]

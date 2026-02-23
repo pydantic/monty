@@ -45,8 +45,30 @@ assert list(map(pow, [2, 3], [3, 2, 1, 0])) == [8, 9], 'map stops at shortest it
 
 assert list(map(pow, [2], [3, 4, 5])) == [8], 'map with single item in shortest'
 
-map()
-# Raise=TypeError('map() must have at least two arguments.')
 
-map(None)
-# Raise=TypeError('map() must have at least two arguments.')
+def f(x):
+    return x * 2
+
+
+assert list(map(f, [1, 2, 3])) == [2, 4, 6], 'map with custom function'
+
+
+def raise_exception(x):
+    raise ValueError('Intentional error')
+
+
+try:
+    list(map(raise_exception, [1, 2, 3]))
+    assert False, 'should have failed with exception'
+except ValueError as e:
+    assert str(e) == 'Intentional error', 'map with function that raises exception'
+
+try:
+    map()
+except TypeError as e:
+    assert str(e) == 'map() must have at least two arguments.', 'map with no arguments'
+
+try:
+    map(None)
+except TypeError as e:
+    assert str(e) == 'map() must have at least two arguments.', 'map with only function argument'

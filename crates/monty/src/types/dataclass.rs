@@ -5,11 +5,11 @@ use ahash::AHashSet;
 use super::{Dict, PyTrait};
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapId},
     intern::{Interns, StringId},
-    io::PrintWriter,
     resource::{DepthGuard, ResourceError, ResourceTracker},
     types::{AttrCallResult, Type},
     value::{EitherStr, Value},
@@ -288,24 +288,23 @@ impl PyTrait for Dataclass {
     fn py_call_attr_raw(
         &mut self,
         self_id: HeapId,
-        heap: &mut Heap<impl ResourceTracker>,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-        _print_writer: &mut PrintWriter<'_>,
     ) -> RunResult<AttrCallResult> {
-        let attr_str = attr.as_str(interns);
+        let attr_str = attr.as_str(vm.interns);
         // Only public methods (no underscore prefix = no dunders, no private)
-        if !attr_str.starts_with('_') && self.attrs.get_by_str(attr_str, heap, interns).is_none() {
+        if !attr_str.starts_with('_') && self.attrs.get_by_str(attr_str, vm.heap, vm.interns).is_none() {
             // Clone self and prepend to args for the method call
             // inc_ref works even when data is taken out (refcount metadata is separate)
-            heap.inc_ref(self_id);
+            vm.heap.inc_ref(self_id);
             let self_arg = Value::Ref(self_id);
             let args_with_self = args.prepend(self_arg);
             Ok(AttrCallResult::MethodCall(attr.clone(), args_with_self))
         } else {
             // Not a method call — delegate to standard attr dispatch
-            self.py_call_attr(heap, attr, args, interns).map(AttrCallResult::Value)
+            self.py_call_attr(vm.heap, attr, args, vm.interns)
+                .map(AttrCallResult::Value)
         }
     }
 

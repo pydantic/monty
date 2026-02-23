@@ -5,7 +5,7 @@
 
 use monty::{
     ExternalResult, MontyObject, MontyRepl, NoLimitTracker, PrintWriter, ReplContinuationMode, ReplProgress,
-    detect_repl_continuation_mode,
+    ReplStartError, detect_repl_continuation_mode,
 };
 
 fn init_repl(code: &str, external_functions: Vec<String>) -> (MontyRepl<NoLimitTracker>, MontyObject) {
@@ -231,6 +231,50 @@ async def main():
     assert_eq!(value, MontyObject::Int(42));
     assert_eq!(repl.feed_no_print("final_value = 42").unwrap(), MontyObject::None);
     assert_eq!(repl.feed_no_print("final_value").unwrap(), MontyObject::Int(42));
+}
+
+#[test]
+fn repl_start_runtime_error_preserves_repl_state() {
+    // Simulate an agent loop: create variables, then a later snippet raises.
+    // The REPL must survive so subsequent snippets can access prior variables.
+    let (repl, _) = init_repl("x = 10", vec![]);
+
+    // Snippet that sets a new variable then raises — returned via ReplStartError.
+    let err = repl
+        .start("y = 20\nraise ValueError('boom')", &mut PrintWriter::Stdout)
+        .expect_err("expected ReplStartError");
+    let ReplStartError { mut repl, error } = *err;
+    assert_eq!(error.exc_type(), monty::ExcType::ValueError);
+    assert_eq!(error.message(), Some("boom"));
+
+    // Variables from BEFORE the error snippet survive.
+    assert_eq!(repl.feed_no_print("x").unwrap(), MontyObject::Int(10));
+    // Variable assigned BEFORE the raise within the erroring snippet also survives.
+    assert_eq!(repl.feed_no_print("y").unwrap(), MontyObject::Int(20));
+    // New snippets continue to work normally.
+    assert_eq!(repl.feed_no_print("x + y + 12").unwrap(), MontyObject::Int(42));
+}
+
+#[test]
+fn repl_start_runtime_error_during_external_call_preserves_repl_state() {
+    // An external function returns an error, which should come back as ReplStartError
+    // with the REPL session preserved.
+    let (repl, _) = init_repl("z = 99", vec!["ext_fn".to_owned()]);
+
+    let progress = repl.start("ext_fn(1)", &mut PrintWriter::Stdout).unwrap();
+    let (_function_name, _args, _kwargs, _call_id, _, state) =
+        progress.into_function_call().expect("expected function call");
+
+    // Resume with an exception from the external function.
+    let exc = monty::MontyException::new(monty::ExcType::RuntimeError, Some("ext failed".to_string()));
+    let err = state
+        .run(ExternalResult::Error(exc), &mut PrintWriter::Stdout)
+        .expect_err("expected ReplStartError");
+    let ReplStartError { mut repl, error } = *err;
+    assert_eq!(error.exc_type(), monty::ExcType::RuntimeError);
+
+    // Variable from before the error is still accessible.
+    assert_eq!(repl.feed_no_print("z").unwrap(), MontyObject::Int(99));
 }
 
 #[test]

@@ -10,6 +10,7 @@ mod bin;
 mod chr;
 mod divmod;
 mod enumerate;
+mod filter;
 mod hash;
 mod hex;
 mod id;
@@ -36,10 +37,8 @@ use strum::{Display, EnumString, FromRepr, IntoStaticStr};
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     exception_private::{ExcType, RunResult},
-    heap::Heap,
-    intern::Interns,
-    io::PrintWriter,
     resource::ResourceTracker,
     types::Type,
     value::Value,
@@ -67,17 +66,11 @@ impl Builtins {
     /// * `args` - The arguments to pass to the callable
     /// * `interns` - String storage for looking up interned names in error messages
     /// * `print` - The print for print output
-    pub fn call(
-        self,
-        heap: &mut Heap<impl ResourceTracker>,
-        args: ArgValues,
-        interns: &Interns,
-        print: &mut PrintWriter<'_>,
-    ) -> RunResult<Value> {
+    pub fn call(self, vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
         match self {
-            Self::Function(b) => b.call(heap, args, interns, print),
-            Self::ExcType(exc) => exc.call(heap, args, interns),
-            Self::Type(t) => t.call(heap, args, interns),
+            Self::Function(b) => b.call(vm, args),
+            Self::ExcType(exc) => exc.call(vm.heap, args, vm.interns),
+            Self::Type(t) => t.call(vm.heap, args, vm.interns),
         }
     }
 
@@ -167,7 +160,7 @@ pub enum BuiltinsFunctions {
     Enumerate,
     // Eval,
     // Exec,
-    // Filter,
+    Filter,
     // float - handled by Type enum
     // Format,
     // frozenset - handled by Type enum
@@ -222,41 +215,36 @@ impl BuiltinsFunctions {
     ///
     /// The `interns` parameter provides access to interned string content for py_str and py_repr.
     /// The `print` parameter is used for print output.
-    pub(crate) fn call(
-        self,
-        heap: &mut Heap<impl ResourceTracker>,
-        args: ArgValues,
-        interns: &Interns,
-        print_writer: &mut PrintWriter<'_>,
-    ) -> RunResult<Value> {
+    pub(crate) fn call(self, vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
         match self {
-            Self::Abs => abs::builtin_abs(heap, args),
-            Self::All => all::builtin_all(heap, args, interns),
-            Self::Any => any::builtin_any(heap, args, interns),
-            Self::Bin => bin::builtin_bin(heap, args),
-            Self::Chr => chr::builtin_chr(heap, args),
-            Self::Divmod => divmod::builtin_divmod(heap, args),
-            Self::Enumerate => enumerate::builtin_enumerate(heap, args, interns),
-            Self::Hash => hash::builtin_hash(heap, args, interns),
-            Self::Hex => hex::builtin_hex(heap, args),
-            Self::Id => id::builtin_id(heap, args),
-            Self::Isinstance => isinstance::builtin_isinstance(heap, args),
-            Self::Len => len::builtin_len(heap, args, interns),
-            Self::Map => map::builtin_map(heap, args, interns, print_writer),
-            Self::Max => min_max::builtin_max(heap, args, interns),
-            Self::Min => min_max::builtin_min(heap, args, interns),
-            Self::Next => next::builtin_next(heap, args, interns),
-            Self::Oct => oct::builtin_oct(heap, args),
-            Self::Ord => ord::builtin_ord(heap, args, interns),
-            Self::Pow => pow::builtin_pow(heap, args),
-            Self::Print => print::builtin_print(heap, args, interns, print_writer),
-            Self::Repr => repr::builtin_repr(heap, args, interns),
-            Self::Reversed => reversed::builtin_reversed(heap, args, interns),
-            Self::Round => round::builtin_round(heap, args),
-            Self::Sorted => sorted::builtin_sorted(heap, args, interns),
-            Self::Sum => sum::builtin_sum(heap, args, interns),
-            Self::Type => type_::builtin_type(heap, args),
-            Self::Zip => zip::builtin_zip(heap, args, interns),
+            Self::Abs => abs::builtin_abs(vm.heap, args),
+            Self::All => all::builtin_all(vm.heap, args, vm.interns),
+            Self::Any => any::builtin_any(vm.heap, args, vm.interns),
+            Self::Bin => bin::builtin_bin(vm.heap, args),
+            Self::Chr => chr::builtin_chr(vm.heap, args),
+            Self::Divmod => divmod::builtin_divmod(vm.heap, args),
+            Self::Enumerate => enumerate::builtin_enumerate(vm.heap, args, vm.interns),
+            Self::Filter => filter::builtin_filter(vm, args),
+            Self::Hash => hash::builtin_hash(vm.heap, args, vm.interns),
+            Self::Hex => hex::builtin_hex(vm.heap, args),
+            Self::Id => id::builtin_id(vm.heap, args),
+            Self::Isinstance => isinstance::builtin_isinstance(vm.heap, args),
+            Self::Len => len::builtin_len(vm.heap, args, vm.interns),
+            Self::Map => map::builtin_map(vm, args),
+            Self::Max => min_max::builtin_max(vm.heap, args, vm.interns),
+            Self::Min => min_max::builtin_min(vm.heap, args, vm.interns),
+            Self::Next => next::builtin_next(vm.heap, args, vm.interns),
+            Self::Oct => oct::builtin_oct(vm.heap, args),
+            Self::Ord => ord::builtin_ord(vm.heap, args, vm.interns),
+            Self::Pow => pow::builtin_pow(vm.heap, args),
+            Self::Print => print::builtin_print(vm.heap, args, vm.interns, vm.print_writer),
+            Self::Repr => repr::builtin_repr(vm.heap, args, vm.interns),
+            Self::Reversed => reversed::builtin_reversed(vm.heap, args, vm.interns),
+            Self::Round => round::builtin_round(vm.heap, args),
+            Self::Sorted => sorted::builtin_sorted(vm, args),
+            Self::Sum => sum::builtin_sum(vm.heap, args, vm.interns),
+            Self::Type => type_::builtin_type(vm.heap, args),
+            Self::Zip => zip::builtin_zip(vm.heap, args, vm.interns),
         }
     }
 }

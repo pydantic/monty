@@ -15,10 +15,10 @@ use super::Type;
 use crate::{
     ResourceError,
     args::ArgValues,
+    bytecode::VM,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapId},
     intern::{ExtFunctionId, Interns, StringId},
-    io::PrintWriter,
     os::OsFunction,
     resource::{DepthGuard, ResourceTracker},
     value::{EitherStr, Value},
@@ -340,8 +340,6 @@ pub trait PyTrait {
     /// # Arguments
     /// * `self_id` - The heap ID of this value, needed by types that must reference themselves
     ///   (e.g. dataclass method calls prepend `self` to args)
-    /// * `print_writer` - Output writer, needed by types whose attribute methods call builtins
-    ///   that produce output (e.g. `list.sort(key=...)` with `print`-like key functions)
     ///
     /// # Returns
     ///
@@ -353,13 +351,11 @@ pub trait PyTrait {
     fn py_call_attr_raw(
         &mut self,
         _self_id: HeapId,
-        heap: &mut Heap<impl ResourceTracker>,
+        vm: &mut VM<impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-        _print_writer: &mut PrintWriter<'_>,
     ) -> RunResult<AttrCallResult> {
-        let value = self.py_call_attr(heap, attr, args, interns)?;
+        let value = self.py_call_attr(vm.heap, attr, args, vm.interns)?;
         Ok(AttrCallResult::Value(value))
     }
 

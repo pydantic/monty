@@ -100,14 +100,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let mut list_ref_guard = HeapGuard::new(this.pop(), this);
         let (list_ref, this) = list_ref_guard.as_parts();
 
-        // Two-phase approach to avoid borrow conflicts:
-        // Phase 1: Copy items without refcount changes
         let copied_items: Vec<Value> = match iterable {
             Value::Ref(id) => match this.heap.get(*id) {
-                HeapData::List(list) => list.as_slice().iter().map(Value::copy_for_extend).collect(),
-                HeapData::Tuple(tuple) => tuple.as_slice().iter().map(Value::copy_for_extend).collect(),
-                HeapData::Set(set) => set.storage().iter().map(Value::copy_for_extend).collect(),
-                HeapData::Dict(dict) => dict.iter().map(|(k, _)| Value::copy_for_extend(k)).collect(),
+                HeapData::List(list) => list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect(),
+                HeapData::Tuple(tuple) => tuple.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect(),
+                HeapData::Set(set) => set.storage().iter().map(|v| v.clone_with_heap(this.heap)).collect(),
+                HeapData::Dict(dict) => dict.iter().map(|(k, _)| k.clone_with_heap(this.heap)).collect(),
                 HeapData::Str(s) => {
                     // Need to allocate strings for each character
                     let chars: Vec<char> = s.as_str().chars().collect();
@@ -136,13 +134,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 return Err(ExcType::type_error_not_iterable(type_));
             }
         };
-
-        // Phase 2: Increment refcounts now that the borrow has ended
-        for item in &copied_items {
-            if let Value::Ref(id) = item {
-                this.heap.inc_ref(*id);
-            }
-        }
 
         // Check if any copied items are refs (for updating contains_refs)
         let has_refs = copied_items.iter().any(|v| matches!(v, Value::Ref(_)));
@@ -178,23 +169,15 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let list_ref = this.pop();
         defer_drop!(list_ref, this);
 
-        // Phase 1: Copy items without refcount changes
         let copied_items: SmallVec<_> = if let Value::Ref(id) = list_ref {
             if let HeapData::List(list) = this.heap.get(*id) {
-                list.as_slice().iter().map(Value::copy_for_extend).collect()
+                list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect()
             } else {
                 return Err(RunError::internal("ListToTuple: expected list"));
             }
         } else {
             return Err(RunError::internal("ListToTuple: expected list ref"));
         };
-
-        // Phase 2: Increment refcounts now that the borrow has ended
-        for item in &copied_items {
-            if let Value::Ref(id) = item {
-                this.heap.inc_ref(*id);
-            }
-        }
 
         // list_ref is dropped by the guard at scope exit; allocate the tuple
         let value = allocate_tuple(copied_items, this.heap)?;
@@ -225,13 +208,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             this.interns.get_str(StringId::from_index(func_name_id)).to_string()
         };
 
-        // Two-phase approach: copy items first, then inc refcounts
-        // Phase 1: Copy key-value pairs without refcount changes
-        // Check that mapping is a dict (Ref pointing to Dict)
+        // Check that mapping is a dict (Ref pointing to Dict) and clone key-value pairs
         let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
             if let HeapData::Dict(dict) = this.heap.get(*id) {
                 dict.iter()
-                    .map(|(k, v)| (Value::copy_for_extend(k), Value::copy_for_extend(v)))
+                    .map(|(k, v)| (k.clone_with_heap(this.heap), v.clone_with_heap(this.heap)))
                     .collect()
             } else {
                 let type_name = mapping.py_type(this.heap).to_string();
@@ -241,16 +222,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             let type_name = mapping.py_type(this.heap).to_string();
             return Err(ExcType::type_error_kwargs_not_mapping(&func_name, &type_name));
         };
-
-        // Phase 2: Increment refcounts now that the borrow has ended
-        for (key, value) in &copied_items {
-            if let Value::Ref(id) = key {
-                this.heap.inc_ref(*id);
-            }
-            if let Value::Ref(id) = value {
-                this.heap.inc_ref(*id);
-            }
-        }
 
         // Merge into the dict, validating string keys
         let dict_id = if let Value::Ref(id) = dict_ref {
@@ -448,23 +419,21 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                         if list_len != count {
                             return Err(unpack_size_error(count, list_len));
                         }
-                        list.as_slice().iter().map(Value::copy_for_extend).collect()
+                        list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect()
                     }
                     HeapData::Tuple(tuple) => {
                         let tuple_len = tuple.as_slice().len();
                         if tuple_len != count {
                             return Err(unpack_size_error(count, tuple_len));
                         }
-                        tuple.as_slice().iter().map(Value::copy_for_extend).collect()
+                        tuple.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect()
                     }
                     HeapData::Str(s) => {
                         let str_len = s.as_str().chars().count();
                         if str_len != count {
                             return Err(unpack_size_error(count, str_len));
                         }
-                        // Collect characters first to avoid borrow conflict with heap
                         let chars: Vec<char> = s.as_str().chars().collect();
-                        // Allocate each character as a new string
                         let mut items = Vec::with_capacity(chars.len());
                         for c in chars {
                             items.push(allocate_char(c, this.heap)?);
@@ -487,16 +456,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 return Err(unpack_type_error(type_name));
             }
         };
-
-        // IMPORTANT: Increment refcounts BEFORE dropping the container.
-        // The container holds references to its items. If we drop the container first,
-        // it decrements the item refcounts, potentially freeing them before we can
-        // increment the refcounts for our copies.
-        for item in &items {
-            if let Value::Ref(id) = item {
-                this.heap.inc_ref(*id);
-            }
-        }
 
         // Push items in reverse order so first item is on top
         for item in items.into_iter().rev() {
@@ -534,9 +493,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 for c in chars {
                     items.push(allocate_char(c, this.heap)?);
                 }
-                // String items are newly allocated, push and return
-                this.push_unpack_ex_results(&items, before, after)?;
-                return Ok(());
+                items
             }
             Value::Ref(heap_id) => {
                 match this.heap.get(*heap_id) {
@@ -545,14 +502,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                         if list_len < min_items {
                             return Err(unpack_ex_too_few_error(min_items, list_len));
                         }
-                        list.as_slice().iter().map(Value::copy_for_extend).collect()
+                        list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect()
                     }
                     HeapData::Tuple(tuple) => {
                         let tuple_len = tuple.as_slice().len();
                         if tuple_len < min_items {
                             return Err(unpack_ex_too_few_error(min_items, tuple_len));
                         }
-                        tuple.as_slice().iter().map(Value::copy_for_extend).collect()
+                        tuple.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect()
                     }
                     HeapData::Str(s) => {
                         // Collect chars once to avoid double iteration over UTF-8 data
@@ -564,9 +521,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                         for c in chars {
                             items.push(allocate_char(c, this.heap)?);
                         }
-                        // String items are newly allocated, push and return
-                        this.push_unpack_ex_results(&items, before, after)?;
-                        return Ok(());
+                        items
                     }
                     other => {
                         let type_name = other.py_type(this.heap);
@@ -580,59 +535,31 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
         };
 
-        // Increment refcounts BEFORE dropping the container.
-        // Items were copied with copy_for_extend (no refcount change).
-        // We need to increment for:
-        // - Each item going to the "before" targets
-        // - Each item going to the "middle" list
-        // - Each item going to the "after" targets
-        // That's one increment per item.
-        for item in &items {
-            if let Value::Ref(id) = item {
-                this.heap.inc_ref(*id);
-            }
-        }
-
-        // Now push the results
-        this.push_unpack_ex_results(&items, before, after)?;
-        Ok(())
+        this.push_unpack_ex_results(items, before, after)
     }
 
     /// Helper to push unpacked items with starred target onto the stack.
     ///
     /// Takes a slice of items and creates the middle list.
-    fn push_unpack_ex_results(&mut self, items: &[Value], before: usize, after: usize) -> Result<(), RunError> {
-        let total = items.len();
+    fn push_unpack_ex_results(&mut self, items: Vec<Value>, before: usize, after: usize) -> Result<(), RunError> {
+        let this = self;
 
-        // Collect results: before items, middle list, after items
-        let mut results = Vec::with_capacity(before + 1 + after);
+        defer_drop_mut!(items, this);
 
-        // Before items
-        for item in items.iter().take(before) {
-            results.push(item.copy_for_extend());
+        // Items get pushed onto the stack backwards, so a lot of .rev() calls
+
+        for item in items.drain(items.len() - after..).rev() {
+            this.push(item);
         }
 
         // Middle items as a list (starred target)
-        // Items already have their refcount incremented in unpack_ex (for list/tuple)
-        // or are freshly allocated (for strings), so no additional inc_ref needed here.
-        let middle_start = before;
-        let middle_end = total - after;
-        let mut middle = Vec::with_capacity(middle_end - middle_start);
-        for item in &items[middle_start..middle_end] {
-            middle.push(item.copy_for_extend());
-        }
-        let middle_list = List::new(middle);
-        let list_id = self.heap.allocate(HeapData::List(middle_list))?;
-        results.push(Value::Ref(list_id));
+        let middle_list: Vec<Value> = items.drain(before..).collect();
+        let list_id = this.heap.allocate(HeapData::List(List::new(middle_list)))?;
+        this.push(Value::Ref(list_id));
 
-        // After items
-        for item in items.iter().skip(total - after) {
-            results.push(item.copy_for_extend());
-        }
-
-        // Push in reverse order so first item is on top
-        for item in results.into_iter().rev() {
-            self.push(item);
+        // Before items
+        for item in items.drain(..).rev() {
+            this.push(item);
         }
 
         Ok(())

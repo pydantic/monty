@@ -1,18 +1,19 @@
-use std::{cmp::Ordering, fmt::Write};
+use std::fmt::Write;
 
 use ahash::AHashSet;
+use itertools::Itertools;
 use smallvec::SmallVec;
 
 use super::{AttrCallResult, MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
-    builtins::Builtins,
+    bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings},
-    io::PrintWriter,
     resource::{DepthGuard, ResourceError, ResourceTracker},
+    sorting::{apply_permutation, sort_indices},
     types::Type,
     value::{EitherStr, Value},
 };
@@ -436,17 +437,16 @@ impl PyTrait for List {
     fn py_call_attr_raw(
         &mut self,
         _self_id: HeapId,
-        heap: &mut Heap<impl ResourceTracker>,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-        print_writer: &mut PrintWriter<'_>,
     ) -> RunResult<AttrCallResult> {
         if attr.static_string() == Some(StaticStrings::Sort) {
-            do_list_sort(self, args, heap, interns, print_writer)?;
+            do_list_sort(self, args, vm)?;
             return Ok(AttrCallResult::Value(Value::None));
         }
-        self.py_call_attr(heap, attr, args, interns).map(AttrCallResult::Value)
+        self.py_call_attr(vm.heap, attr, args, vm.interns)
+            .map(AttrCallResult::Value)
     }
 }
 
@@ -493,8 +493,7 @@ fn call_list_method(
             list.items.reverse();
             Ok(Value::None)
         }
-        // Note: list.sort is handled by call_list_attr_raw which intercepts it
-        // before reaching this function, because sort needs PrintWriter for key functions
+        // Note: list.sort is handled by py_call_attr_raw which intercepts it
         _ => {
             args.drop_with_heap(heap);
             Err(ExcType::attribute_error(Type::List, method.into()))
@@ -715,37 +714,14 @@ fn normalize_list_index(index: i64, len: usize) -> usize {
 }
 
 /// Performs an in-place sort on a list with optional key function and reverse flag.
-///
-/// This is called from `call_list_attr_raw` when `list.sort()` is invoked.
-/// The function lives here to keep list-related logic together.
-///
-/// Uses a staged approach to avoid borrow checker issues:
-/// 1. Parse and validate arguments
-/// 2. Extract items from the list (temporarily empties it)
-/// 3. Compute key values if a key function is provided
-/// 4. Sort indices based on items or key values
-/// 5. Rearrange items in sorted order and put back into the list
-///
-/// # Arguments
-/// * `list` - The list to sort (data already taken out of the heap via `take_data!`)
-/// * `args` - The method arguments (keyword-only: `key` and `reverse`)
-/// * `heap` - The heap for memory management
-/// * `interns` - Interned strings for comparisons
-/// * `print_writer` - Output writer (needed for builtin function calls)
-fn do_list_sort(
-    list: &mut List,
-    args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-    print_writer: &mut PrintWriter<'_>,
-) -> Result<(), RunError> {
+fn do_list_sort(list: &mut List, args: ArgValues, vm: &mut VM<impl ResourceTracker>) -> Result<(), RunError> {
     // Parse keyword-only arguments: key and reverse
-    let (key_arg, reverse_arg) = args.extract_two_kwargs_only("list.sort", "key", "reverse", heap, interns)?;
+    let (key_arg, reverse_arg) = args.extract_two_kwargs_only("list.sort", "key", "reverse", vm.heap, vm.interns)?;
 
     // Convert reverse to bool (default false)
     let reverse = if let Some(v) = reverse_arg {
-        let result = v.py_bool(heap, interns);
-        v.drop_with_heap(heap);
+        let result = v.py_bool(vm.heap, vm.interns);
+        v.drop_with_heap(vm.heap);
         result
     } else {
         false
@@ -754,184 +730,45 @@ fn do_list_sort(
     // Handle key function (None means no key function)
     let key_fn = match key_arg {
         Some(v) if matches!(v, Value::None) => {
-            v.drop_with_heap(heap);
+            v.drop_with_heap(vm.heap);
             None
         }
         other => other,
     };
+    defer_drop!(key_fn, vm);
 
-    // Step 1: Extract items from the list (temporarily empties it)
-    let mut items: Vec<Value> = list.as_vec_mut().drain(..).collect();
+    // Step 1: Borrow from the list for in-place sorting
+    let items = list.as_vec_mut();
 
-    // Step 2: Compute key values if key function provided
-    let key_values: Option<Vec<Value>> = if let Some(ref key) = key_fn {
-        let mut keys: Vec<Value> = Vec::with_capacity(items.len());
-        for item in &items {
-            let elem = item.clone_with_heap(heap);
-            match call_key_function(key, elem, heap, interns, print_writer) {
-                Ok(key_value) => keys.push(key_value),
-                Err(e) => {
-                    // Clean up and restore items to list on error
-                    for k in keys {
-                        k.drop_with_heap(heap);
-                    }
-                    if let Some(k) = key_fn {
-                        k.drop_with_heap(heap);
-                    }
-                    // Restore items to the list
-                    for item in items {
-                        list.as_vec_mut().push(item);
-                    }
-                    return Err(e);
-                }
-            }
-        }
-        Some(keys)
+    // 2. Compute key values if a key function was provided, otherwise we'll sort by the items themselves
+    let mut keys_guard;
+    let (compare_values, vm) = if let Some(f) = key_fn {
+        let keys: Vec<Value> = Vec::with_capacity(items.len());
+        // Use a HeapGuard to ensure that if key function evaluation fails partway through,
+        // we clean up any keys that were successfully computed
+        keys_guard = HeapGuard::new(keys, vm);
+        let (keys, vm) = keys_guard.as_parts_mut();
+        items
+            .iter()
+            .map(|item| {
+                let item = item.clone_with_heap(vm.heap);
+                vm.evaluate_function("sorted() key argument", f, ArgValues::One(item))
+            })
+            .process_results(|keys_iter| keys.extend(keys_iter))?;
+        keys_guard.as_parts()
     } else {
-        None
+        (&*items, vm)
     };
 
-    // Drop the key function - we're done with it
-    if let Some(k) = key_fn {
-        k.drop_with_heap(heap);
-    }
-
-    // Step 3: Sort indices based on items or key values
-    let len = items.len();
+    // 3. Sort indices by comparing key values (or items themselves if no key)
+    let len = compare_values.len();
     let mut indices: Vec<usize> = (0..len).collect();
-    let mut sort_error: Option<RunError> = None;
-    // Create a guard for py_cmp calls. We use a RefCell to allow mutable borrows inside the closure.
-    let guard = std::cell::RefCell::new(DepthGuard::default());
 
-    if let Some(ref keys) = key_values {
-        indices.sort_by(|&a, &b| {
-            if sort_error.is_some() {
-                return Ordering::Equal;
-            }
-            if let Err(e) = heap.check_time() {
-                sort_error = Some(e.into());
-                return Ordering::Equal;
-            }
-            match keys[a].py_cmp(&keys[b], heap, &mut guard.borrow_mut(), interns) {
-                Ok(Some(ord)) => {
-                    if reverse {
-                        ord.reverse()
-                    } else {
-                        ord
-                    }
-                }
-                Ok(None) => {
-                    sort_error = Some(ExcType::type_error(format!(
-                        "'<' not supported between instances of '{}' and '{}'",
-                        keys[a].py_type(heap),
-                        keys[b].py_type(heap)
-                    )));
-                    Ordering::Equal
-                }
-                Err(e) => {
-                    sort_error = Some(e.into());
-                    Ordering::Equal
-                }
-            }
-        });
-    } else {
-        indices.sort_by(|&a, &b| {
-            if sort_error.is_some() {
-                return Ordering::Equal;
-            }
-            if let Err(e) = heap.check_time() {
-                sort_error = Some(e.into());
-                return Ordering::Equal;
-            }
-            match items[a].py_cmp(&items[b], heap, &mut guard.borrow_mut(), interns) {
-                Ok(Some(ord)) => {
-                    if reverse {
-                        ord.reverse()
-                    } else {
-                        ord
-                    }
-                }
-                Ok(None) => {
-                    sort_error = Some(ExcType::type_error(format!(
-                        "'<' not supported between instances of '{}' and '{}'",
-                        items[a].py_type(heap),
-                        items[b].py_type(heap)
-                    )));
-                    Ordering::Equal
-                }
-                Err(e) => {
-                    sort_error = Some(e.into());
-                    Ordering::Equal
-                }
-            }
-        });
-    }
+    sort_indices(&mut indices, compare_values, reverse, vm.heap, vm.interns)?;
 
-    // Clean up key values
-    if let Some(keys) = key_values {
-        for k in keys {
-            k.drop_with_heap(heap);
-        }
-    }
-
-    // Check for sort error
-    if let Some(err) = sort_error {
-        // Restore items to list before returning error
-        for item in items {
-            list.as_vec_mut().push(item);
-        }
-        return Err(err);
-    }
-
-    // Step 4: Rearrange items in sorted order using index permutation
-    let mut sorted_items: Vec<Value> = Vec::with_capacity(len);
-    for &i in &indices {
-        // Move the value out, replacing with Undefined as placeholder
-        sorted_items.push(std::mem::replace(&mut items[i], Value::Undefined));
-    }
-
-    // Put sorted items back into the list
-    for item in sorted_items {
-        list.as_vec_mut().push(item);
-    }
-
-    // items now contains Undefined values - no cleanup needed
+    // 4. Rearrange items in-place according to the sorted permutation
+    apply_permutation(items, &mut indices);
     Ok(())
-}
-
-/// Calls a key function on a single element for sorting.
-///
-/// Currently supports builtin functions directly. User-defined functions return
-/// an error since they would require VM frame management for proper execution.
-fn call_key_function(
-    key_fn: &Value,
-    elem: Value,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-    print_writer: &mut PrintWriter<'_>,
-) -> Result<Value, RunError> {
-    match key_fn {
-        Value::Builtin(Builtins::Function(builtin)) => {
-            let args = ArgValues::One(elem);
-            builtin.call(heap, args, interns, print_writer)
-        }
-        Value::Builtin(Builtins::Type(t)) => {
-            // Type constructors (int, str, float, etc.) are callable key functions
-            let args = ArgValues::One(elem);
-            t.call(heap, args, interns)
-        }
-        Value::DefFunction(_) | Value::ExtFunction(_) | Value::Ref(_) => {
-            // User-defined or external functions require VM frame management
-            elem.drop_with_heap(heap);
-            Err(ExcType::type_error(
-                "list.sort() key argument must be a builtin function (user-defined functions not yet supported)",
-            ))
-        }
-        _ => {
-            elem.drop_with_heap(heap);
-            Err(ExcType::type_error("list.sort() key must be callable or None"))
-        }
-    }
 }
 
 /// Writes a formatted sequence of values to a formatter.

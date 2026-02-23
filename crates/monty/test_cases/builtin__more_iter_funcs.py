@@ -65,6 +65,34 @@ assert sorted([3, 1, 2, 1, 3]) == [1, 1, 2, 3, 3], 'sorted with duplicates'
 # sorted with range
 assert sorted(range(5, 0, -1)) == [1, 2, 3, 4, 5], 'sorted range'
 
+# === sorted() with reverse ===
+assert sorted([3, 1, 2], reverse=True) == [3, 2, 1], 'sorted reverse=True'
+assert sorted([3, 1, 2], reverse=False) == [1, 2, 3], 'sorted reverse=False'
+assert sorted(['c', 'a', 'b'], reverse=True) == ['c', 'b', 'a'], 'sorted strings reverse'
+assert sorted([], reverse=True) == [], 'sorted empty reverse'
+assert sorted([5], reverse=True) == [5], 'sorted single reverse'
+assert sorted([3, 1, 2], reverse=0) == [1, 2, 3], 'sorted reverse=0 (falsy)'
+assert sorted([3, 1, 2], reverse=1) == [3, 2, 1], 'sorted reverse=1 (truthy)'
+
+# === sorted() with key ===
+assert sorted([3, -1, 2, -4], key=abs) == [-1, 2, 3, -4], 'sorted key=abs'
+assert sorted(['banana', 'apple', 'cherry'], key=len) == ['apple', 'banana', 'cherry'], 'sorted key=len'
+assert sorted([3, 1, 2], key=None) == [1, 2, 3], 'sorted key=None same as no key'
+
+
+def negate(x):
+    return -x
+
+
+assert sorted([1, -2, 3], key=negate) == [3, 1, -2], 'sorted key=user-defined function'
+
+# === sorted() with key and reverse ===
+assert sorted([3, -1, 2, -4], key=abs, reverse=True) == [-4, 3, 2, -1], 'sorted key=abs reverse=True'
+assert sorted(['banana', 'apple', 'cherry'], key=len, reverse=True) == ['banana', 'cherry', 'apple'], (
+    'sorted key=len reverse=True'
+)
+assert sorted([3, 1, 2], key=None, reverse=True) == [3, 2, 1], 'sorted key=None reverse=True'
+
 # === reversed() ===
 # Basic reversed operations
 assert list(reversed([1, 2, 3])) == [3, 2, 1], 'reversed list'

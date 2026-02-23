@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    cell::Cell,
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
@@ -15,9 +16,9 @@ use smallvec::SmallVec;
 use crate::{
     args::ArgValues,
     asyncio::{Coroutine, GatherFuture, GatherItem},
+    bytecode::VM,
     exception_private::{ExcType, RunResult, SimpleException},
     intern::{FunctionId, Interns, StringId},
-    io::PrintWriter,
     resource::{DepthGuard, ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
     types::{
         AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait,
@@ -751,23 +752,23 @@ impl PyTrait for HeapData {
     fn py_call_attr_raw(
         &mut self,
         self_id: HeapId,
-        heap: &mut Heap<impl ResourceTracker>,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-        print_writer: &mut PrintWriter<'_>,
     ) -> RunResult<AttrCallResult> {
         match self {
             // List intercepts sort for key function support via PrintWriter
-            Self::List(l) => l.py_call_attr_raw(self_id, heap, attr, args, interns, print_writer),
+            Self::List(l) => l.py_call_attr_raw(self_id, vm, attr, args),
             // Dataclass detects public method calls and returns MethodCall
-            Self::Dataclass(dc) => dc.py_call_attr_raw(self_id, heap, attr, args, interns, print_writer),
+            Self::Dataclass(dc) => dc.py_call_attr_raw(self_id, vm, attr, args),
             // Path has special handling for OS calls (exists, read_text, etc.)
-            Self::Path(p) => p.py_call_attr_raw(self_id, heap, attr, args, interns, print_writer),
+            Self::Path(p) => p.py_call_attr_raw(self_id, vm, attr, args),
             // Module has special handling for OS calls (os.getenv, etc.)
-            Self::Module(m) => m.py_call_attr_raw(self_id, heap, attr, args, interns, print_writer),
+            Self::Module(m) => m.py_call_attr_raw(self_id, vm, attr, args),
             // All other types use the default implementation (wrap py_call_attr)
-            _ => self.py_call_attr(heap, attr, args, interns).map(AttrCallResult::Value),
+            _ => self
+                .py_call_attr(vm.heap, attr, args, vm.interns)
+                .map(AttrCallResult::Value),
         }
     }
 
@@ -887,7 +888,7 @@ impl HashState {
 /// for `inc_ref`/`dec_ref` during the borrow.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct HeapValue {
-    refcount: usize,
+    refcount: Cell<usize>,
     /// The payload data. Temporarily `None` while borrowed via `with_entry_mut`/`call_attr`.
     data: Option<HeapData>,
     /// Current hashing status / cached hash value
@@ -1079,7 +1080,7 @@ impl<T: ResourceTracker> Heap<T> {
 
         let hash_state = HashState::for_data(&data);
         let new_entry = HeapValue {
-            refcount: 1,
+            refcount: Cell::new(1),
             data: Some(data),
             hash_state,
         };
@@ -1116,14 +1117,14 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// # Panics
     /// Panics if the value ID is invalid or the value has already been freed.
-    pub fn inc_ref(&mut self, id: HeapId) {
+    pub fn inc_ref(&self, id: HeapId) {
         let value = self
             .entries
-            .get_mut(id.index())
+            .get(id.index())
             .expect("Heap::inc_ref: slot missing")
-            .as_mut()
+            .as_ref()
             .expect("Heap::inc_ref: object already freed");
-        value.refcount += 1;
+        value.refcount.update(|r| r + 1);
     }
 
     /// Decrements the reference count and frees the value (plus children) once it hits zero.
@@ -1137,8 +1138,8 @@ impl<T: ResourceTracker> Heap<T> {
     pub fn dec_ref(&mut self, id: HeapId) {
         let slot = self.entries.get_mut(id.index()).expect("Heap::dec_ref: slot missing");
         let entry = slot.as_mut().expect("Heap::dec_ref: object already freed");
-        if entry.refcount > 1 {
-            entry.refcount -= 1;
+        if entry.refcount.get() > 1 {
+            entry.refcount.update(|r| r - 1);
         } else if let Some(value) = slot.take() {
             // refcount == 1, free the value and add slot to free list for reuse
             self.free_list.push(id);
@@ -1259,20 +1260,23 @@ impl<T: ResourceTracker> Heap<T> {
     /// - `ExternalCall(id, args)` - Method needs external function call
     /// - `MethodCall(name, args)` - Dataclass method call; VM should yield to host
     pub fn call_attr_raw(
-        &mut self,
+        // FIXME: this is pretty awkward - the `take_data!` pattern is probably a code
+        // smell. We need the full VM here to enable method implementations to enter
+        // user-defined functions.
+        vm: &mut VM<'_, '_, T>,
         id: HeapId,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-        print_writer: &mut PrintWriter<'_>,
     ) -> RunResult<AttrCallResult> {
         // Take data out so the borrow of self.entries ends
-        let mut data = take_data!(self, id, "call_attr");
+        let heap = &mut *vm.heap;
+        let mut data = take_data!(heap, id, "call_attr");
 
-        let result = data.py_call_attr_raw(id, self, attr, args, interns, print_writer);
+        let result = data.py_call_attr_raw(id, vm, attr, args);
 
         // Restore data
-        restore_data!(self, id, data, "call_attr_raw");
+        let heap = &mut *vm.heap;
+        restore_data!(heap, id, data, "call_attr_raw");
         result
     }
 
@@ -1341,6 +1345,7 @@ impl<T: ResourceTracker> Heap<T> {
             .as_ref()
             .expect("Heap::get_refcount: object already freed")
             .refcount
+            .get()
     }
 
     /// Returns the number of live (non-freed) values on the heap.
@@ -1359,24 +1364,13 @@ impl<T: ResourceTracker> Heap<T> {
 
     /// Gets the value inside a cell, cloning it with proper refcount handling.
     ///
-    /// Uses `clone_with_heap` to properly handle all value types including closures,
-    /// which need their captured cell refcounts incremented.
-    ///
     /// # Panics
     /// Panics if the ID is invalid, the value has been freed, or the entry is not a Cell.
-    pub fn get_cell_value(&mut self, id: HeapId) -> Value {
-        // Take the data out to avoid borrow conflicts when cloning
-        let data = take_data!(self, id, "get_cell_value");
-
-        let result = match &data {
-            HeapData::Cell(cell) => cell.0.clone_with_heap(self),
+    pub fn get_cell_value(&self, id: HeapId) -> Value {
+        match self.get(id) {
+            HeapData::Cell(c) => c.0.clone_with_heap(self),
             _ => panic!("Heap::get_cell_value: entry is not a Cell"),
-        };
-
-        // Restore data before returning
-        restore_data!(self, id, data, "get_cell_value");
-
-        result
+        }
     }
 
     /// Sets the value inside a cell, properly dropping the old value.
@@ -1384,17 +1378,12 @@ impl<T: ResourceTracker> Heap<T> {
     /// # Panics
     /// Panics if the ID is invalid, the value has been freed, or the entry is not a Cell.
     pub fn set_cell_value(&mut self, id: HeapId, value: Value) {
-        // Take the data out to avoid borrow conflicts
-        let mut data = take_data!(self, id, "set_cell_value");
+        // The guard will clean up the new value if we panic, or the old value if we swap
+        let mut guard = HeapGuard::new(value, self);
+        let (value, this) = guard.as_parts_mut();
 
-        match &mut data {
-            HeapData::Cell(cell) => {
-                // Swap in the new value
-                let old = std::mem::replace(&mut cell.0, value);
-                // Restore data first, then drop old value
-                restore_data!(self, id, data, "set_cell_value");
-                old.drop_with_heap(self);
-            }
+        match &mut this.get_mut(id) {
+            HeapData::Cell(c) => std::mem::swap(&mut c.0, value),
             _ => panic!("Heap::set_cell_value: entry is not a Cell"),
         }
     }
@@ -1408,28 +1397,11 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// Returns `true` if successful, `false` if the source ID is not a List.
     pub fn iadd_extend_list(&mut self, source_id: HeapId, dest: &mut Vec<Value>) -> bool {
-        // Take the source data temporarily
-        let source_data = take_data!(self, source_id, "iadd_extend_list");
-
-        if let HeapData::List(list) = &source_data {
-            // Copy items and track which refs need incrementing
-            let items: Vec<Value> = list.as_slice().iter().map(Value::copy_for_extend).collect();
-            let ref_ids: Vec<HeapId> = items.iter().filter_map(Value::ref_id).collect();
-
-            // Restore source data before mutating heap (inc_ref needs it)
-            restore_data!(self, source_id, source_data, "iadd_extend_list");
-
-            // Now increment refcounts
-            for id in ref_ids {
-                self.inc_ref(id);
-            }
-
-            // Extend destination
+        if let HeapData::List(list) = self.get(source_id) {
+            let items: Vec<Value> = list.as_slice().iter().map(|v| v.clone_with_heap(self)).collect();
             dest.extend(items);
             true
         } else {
-            // Not a list, restore and return false
-            restore_data!(self, source_id, source_data, "iadd_extend_list");
             false
         }
     }
@@ -1516,117 +1488,45 @@ impl<T: ResourceTracker> Heap<T> {
     /// * `Ok(None)` - If the heap entry is not a sequence type
     /// * `Err` - If allocation fails due to resource limits
     pub fn mult_sequence(&mut self, id: HeapId, count: usize) -> RunResult<Option<Value>> {
-        // Take the data out to avoid borrow conflicts
-        let data = take_data!(self, id, "mult_sequence");
-
-        match &data {
+        match self.get(id) {
             HeapData::Str(s) => {
                 check_repeat_size(s.len(), count, &self.tracker)?;
-                let repeated = s.as_str().repeat(count);
-                restore_data!(self, id, data, "mult_sequence");
-                Ok(Some(Value::Ref(self.allocate(HeapData::Str(repeated.into()))?)))
+                Ok(Some(Value::Ref(
+                    self.allocate(HeapData::Str(s.as_str().repeat(count).into()))?,
+                )))
             }
             HeapData::Bytes(b) => {
                 check_repeat_size(b.len(), count, &self.tracker)?;
-                let repeated = b.as_slice().repeat(count);
-                restore_data!(self, id, data, "mult_sequence");
-                Ok(Some(Value::Ref(self.allocate(HeapData::Bytes(repeated.into()))?)))
+                Ok(Some(Value::Ref(
+                    self.allocate(HeapData::Bytes(b.as_slice().repeat(count).into()))?,
+                )))
             }
             HeapData::List(list) => {
-                if count == 0 {
-                    restore_data!(self, id, data, "mult_sequence");
-                    Ok(Some(Value::Ref(self.allocate(HeapData::List(List::new(Vec::new())))?)))
-                } else {
-                    // Pre-check memory limit for large results
-                    check_repeat_size(list.len().saturating_mul(size_of::<Value>()), count, &self.tracker)?;
-
-                    // Copy items and track which refs need incrementing
-                    let items: Vec<Value> = list.as_slice().iter().map(Value::copy_for_extend).collect();
-                    let ref_ids: Vec<HeapId> = items.iter().filter_map(Value::ref_id).collect();
-                    let original_len = items.len();
-
-                    // Restore data before heap operations
-                    restore_data!(self, id, data, "mult_sequence");
-
-                    // Now increment refcounts for each copy we'll make
-                    // We need (count) copies of each ref
-                    for ref_id in &ref_ids {
-                        for _ in 0..count {
-                            self.inc_ref(*ref_id);
-                        }
-                    }
-
-                    // Build the repeated list with overflow check
-                    let capacity = original_len
-                        .checked_mul(count)
-                        .ok_or_else(ExcType::overflow_repeat_count)?;
-                    let mut result = Vec::with_capacity(capacity);
-                    for _ in 0..count {
-                        self.check_time()?;
-                        for item in &items {
-                            result.push(item.copy_for_extend());
-                        }
-                    }
-
-                    // Manually forget the items vec to avoid Drop panic
-                    // The values have been copied to result with proper refcounts
-                    std::mem::forget(items);
-
-                    Ok(Some(Value::Ref(self.allocate(HeapData::List(List::new(result)))?)))
+                check_repeat_size(list.len().saturating_mul(size_of::<Value>()), count, &self.tracker)?;
+                let mut result = Vec::with_capacity(list.as_slice().len() * count);
+                for _ in 0..count {
+                    result.extend(list.as_slice().iter().map(|v| v.clone_with_heap(self)));
+                    self.check_time()?;
                 }
+                Ok(Some(Value::Ref(self.allocate(HeapData::List(List::new(result)))?)))
             }
             HeapData::Tuple(tuple) => {
                 if count == 0 {
-                    restore_data!(self, id, data, "mult_sequence");
-                    // Use empty tuple singleton
-                    Ok(Some(self.get_empty_tuple()))
-                } else {
-                    // Pre-check memory limit for large results
-                    check_repeat_size(
-                        tuple.as_slice().len().saturating_mul(size_of::<Value>()),
-                        count,
-                        &self.tracker,
-                    )?;
-
-                    // Copy items and track which refs need incrementing
-                    let items: Vec<Value> = tuple.as_slice().iter().map(Value::copy_for_extend).collect();
-                    let ref_ids: Vec<HeapId> = items.iter().filter_map(Value::ref_id).collect();
-                    let original_len = items.len();
-
-                    // Restore data before heap operations
-                    restore_data!(self, id, data, "mult_sequence");
-
-                    // Now increment refcounts for each copy we'll make
-                    // We need (count) copies of each ref
-                    for ref_id in &ref_ids {
-                        for _ in 0..count {
-                            self.inc_ref(*ref_id);
-                        }
-                    }
-
-                    // Build the repeated tuple with overflow check
-                    let capacity = original_len
-                        .checked_mul(count)
-                        .ok_or_else(ExcType::overflow_repeat_count)?;
-                    let mut result = SmallVec::with_capacity(capacity);
-                    for _ in 0..count {
-                        self.check_time()?;
-                        for item in &items {
-                            result.push(item.copy_for_extend());
-                        }
-                    }
-
-                    // Manually forget the items vec to avoid Drop panic
-                    std::mem::forget(items);
-
-                    Ok(Some(allocate_tuple(result, self)?))
+                    return Ok(Some(self.get_empty_tuple()));
                 }
+                check_repeat_size(
+                    tuple.as_slice().len().saturating_mul(size_of::<Value>()),
+                    count,
+                    &self.tracker,
+                )?;
+                let mut result = SmallVec::with_capacity(tuple.as_slice().len() * count);
+                for _ in 0..count {
+                    result.extend(tuple.as_slice().iter().map(|v| v.clone_with_heap(self)));
+                    self.check_time()?;
+                }
+                Ok(Some(allocate_tuple(result, self)?))
             }
-            _ => {
-                // Dicts, Cells, Callables, Functions and Closures don't support multiplication
-                restore_data!(self, id, data, "mult_sequence");
-                Ok(None)
-            }
+            _ => Ok(None),
         }
     }
 

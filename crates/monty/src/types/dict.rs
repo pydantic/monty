@@ -348,21 +348,10 @@ impl Dict {
                     return Err(ExcType::type_error_not_iterable(v.py_type(heap)));
                 };
 
-                // Copy all key-value pairs first (without incrementing refcounts)
                 let pairs: Vec<(Value, Value)> = dict
                     .iter()
-                    .map(|(k, v)| (k.copy_for_extend(), v.copy_for_extend()))
+                    .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)))
                     .collect();
-
-                // Now we can drop the borrow and increment refcounts
-                for (k, v) in &pairs {
-                    if let Value::Ref(key_id) = k {
-                        heap.inc_ref(*key_id);
-                    }
-                    if let Value::Ref(val_id) = v {
-                        heap.inc_ref(*val_id);
-                    }
-                }
 
                 let new_dict = Self::from_pairs(pairs, heap, interns)?;
                 let result = heap.allocate(HeapData::Dict(new_dict))?;
@@ -545,15 +534,8 @@ impl PyTrait for Dict {
     }
 
     fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Value> {
-        // Use copy_for_extend to avoid borrow conflict, then increment refcount
-        let result = self.get(key, heap, interns)?.map(Value::copy_for_extend);
-        match result {
-            Some(value) => {
-                if let Value::Ref(id) = &value {
-                    heap.inc_ref(*id);
-                }
-                Ok(value)
-            }
+        match self.get(key, heap, interns)? {
+            Some(value) => Ok(value.clone_with_heap(heap)),
             None => Err(ExcType::key_error(key, heap, interns)),
         }
     }
@@ -737,25 +719,13 @@ fn dict_update(
     if let Value::Ref(id) = other_value
         && let HeapData::Dict(src_dict) = heap.get(*id)
     {
-        // Get key-value pairs from the source dict
-        let pairs: Vec<(Value, Value)> = {
-            src_dict
-                .iter()
-                .map(|(k, v)| (k.copy_for_extend(), v.copy_for_extend()))
-                .collect()
-        };
+        // Clone key-value pairs from the source dict
+        let pairs: Vec<(Value, Value)> = src_dict
+            .iter()
+            .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)))
+            .collect();
 
-        // Increment refcounts after releasing the borrow
-        for (k, v) in &pairs {
-            if let Value::Ref(key_id) = k {
-                heap.inc_ref(*key_id);
-            }
-            if let Value::Ref(val_id) = v {
-                heap.inc_ref(*val_id);
-            }
-        }
-
-        // Now set each pair
+        // Set each pair in the target dict
         for (key, value) in pairs {
             if let Some(old_value) = dict.set(key, value, heap, interns)? {
                 old_value.drop_with_heap(heap);

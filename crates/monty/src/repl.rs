@@ -328,16 +328,21 @@ impl<T: ResourceTracker> MontyRepl<T> {
     /// Starts executing a new snippet and returns suspendable REPL progress.
     ///
     /// This is the REPL equivalent of `MontyRun::start`: execution may complete,
-    /// or suspend at external calls / OS calls / unresolved futures. Resume with the
-    /// returned state object and eventually recover the updated REPL from
-    /// `ReplProgress::into_complete`.
+    /// suspend at external calls / OS calls / unresolved futures, or raise a Python
+    /// exception. Resume with the returned state object and eventually recover the
+    /// updated REPL from `ReplProgress::into_complete`.
     ///
     /// Unlike `MontyRepl::feed`, this method consumes `self` so runtime state can be
     /// safely moved into snapshot objects for serialization and cross-process resume.
     ///
+    /// On a Python-level runtime exception the REPL is **not** destroyed: it is
+    /// returned inside `ReplStartError` so the caller can continue feeding
+    /// subsequent snippets against the same heap and namespace state.
+    ///
     /// # Errors
-    /// Returns `MontyException` for syntax/compile/runtime failures.
-    pub fn start(self, code: &str, print: &mut PrintWriter<'_>) -> Result<ReplProgress<T>, MontyException> {
+    /// Returns `Err(Box<ReplStartError>)` for syntax, compile-time, or runtime
+    /// failures — the REPL session is always preserved inside the error.
+    pub fn start(self, code: &str, print: &mut PrintWriter<'_>) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         let mut this = self;
         if code.is_empty() {
             return Ok(ReplProgress::Complete {
@@ -347,13 +352,16 @@ impl<T: ResourceTracker> MontyRepl<T> {
         }
 
         let input_script_name = this.next_input_script_name();
-        let executor = ReplExecutor::new_repl_snippet(
+        let executor = match ReplExecutor::new_repl_snippet(
             code.to_owned(),
             &input_script_name,
             this.external_function_names.clone(),
             this.global_name_map.clone(),
             &this.interns,
-        )?;
+        ) {
+            Ok(exec) => exec,
+            Err(error) => return Err(Box::new(ReplStartError { repl: this, error })),
+        };
 
         this.ensure_global_namespace_size(executor.namespace_size);
 
@@ -368,7 +376,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
     }
 
     /// Starts snippet execution with `PrintWriter::Stdout` and no additional host output wiring.
-    pub fn start_no_print(self, code: &str) -> Result<ReplProgress<T>, MontyException> {
+    pub fn start_no_print(self, code: &str) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         self.start(code, &mut PrintWriter::Stdout)
     }
 
@@ -525,6 +533,20 @@ pub enum ReplProgress<T: ResourceTracker> {
     },
 }
 
+/// Error returned when a REPL snippet raises a Python exception during `start()` or `resume()`.
+///
+/// Unlike syntax/compile errors which consume the REPL, runtime errors preserve
+/// the full session state so the caller can inspect the error and continue feeding
+/// subsequent snippets. Any global mutations that occurred before the exception
+/// remain visible in the returned `repl`.
+#[derive(Debug)]
+pub struct ReplStartError<T: ResourceTracker> {
+    /// REPL session state after the failed snippet — ready for further use.
+    pub repl: MontyRepl<T>,
+    /// The Python exception that was raised.
+    pub error: MontyException,
+}
+
 impl<T: ResourceTracker> ReplProgress<T> {
     /// Consumes the progress and returns external function call info and state.
     ///
@@ -621,7 +643,7 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
         self,
         result: impl Into<ExternalResult>,
         print: &mut PrintWriter<'_>,
-    ) -> Result<ReplProgress<T>, MontyException> {
+    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         let Self {
             mut repl,
             executor,
@@ -659,7 +681,7 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
     /// Continues snippet execution by pushing an unresolved `ExternalFuture`.
     ///
     /// This is the REPL-aware async pattern equivalent to `Snapshot::run_pending`.
-    pub fn run_pending(self, print: &mut PrintWriter<'_>) -> Result<ReplProgress<T>, MontyException> {
+    pub fn run_pending(self, print: &mut PrintWriter<'_>) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         self.run(MontyFuture, print)
     }
 }
@@ -692,13 +714,14 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
     /// Supports incremental resolution: callers can provide only a subset of
     /// pending call IDs and continue resolving over multiple resumes.
     ///
-    /// # Errors
-    /// Returns `MontyException` if an unknown call ID is provided.
+    /// All errors — including API misuse (unknown `call_id`) and Python-level
+    /// runtime failures — are returned as `Err(Box<ReplStartError>)` so the REPL
+    /// session is always preserved.
     pub fn resume(
         self,
         results: Vec<(u32, ExternalResult)>,
         print: &mut PrintWriter<'_>,
-    ) -> Result<ReplProgress<T>, MontyException> {
+    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         let Self {
             mut repl,
             executor,
@@ -722,18 +745,22 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
 
         if let Some(call_id) = invalid_call_id {
             vm.cleanup();
-            #[cfg(feature = "ref-count-panic")]
-            repl.namespaces.drop_global_with_heap(&mut repl.heap);
-            return Err(MontyException::runtime_error(format!(
+            let error = MontyException::runtime_error(format!(
                 "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
-            )));
+            ));
+            return Err(Box::new(ReplStartError { repl, error }));
         }
 
         for (call_id, ext_result) in results {
             match ext_result {
-                ExternalResult::Return(obj) => vm.resolve_future(call_id, obj).map_err(|e| {
-                    MontyException::runtime_error(format!("Invalid return type for call {call_id}: {e}"))
-                })?,
+                ExternalResult::Return(obj) => {
+                    if let Err(e) = vm.resolve_future(call_id, obj) {
+                        vm.cleanup();
+                        let error =
+                            MontyException::runtime_error(format!("Invalid return type for call {call_id}: {e}"));
+                        return Err(Box::new(ReplStartError { repl, error }));
+                    }
+                }
                 ExternalResult::Error(exc) => vm.fail_future(call_id, RunError::from(exc)),
                 ExternalResult::Future => {}
             }
@@ -741,9 +768,8 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
 
         if let Some(error) = vm.take_failed_task_error() {
             vm.cleanup();
-            #[cfg(feature = "ref-count-panic")]
-            repl.namespaces.drop_global_with_heap(&mut repl.heap);
-            return Err(error.into_python_exception(&executor.interns, &executor.code));
+            let error = error.into_python_exception(&executor.interns, &executor.code);
+            return Err(Box::new(ReplStartError { repl, error }));
         }
 
         let main_task_ready = vm.prepare_current_task_after_resolve();
@@ -752,9 +778,8 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
             Ok(loaded) => loaded,
             Err(e) => {
                 vm.cleanup();
-                #[cfg(feature = "ref-count-panic")]
-                repl.namespaces.drop_global_with_heap(&mut repl.heap);
-                return Err(e.into_python_exception(&executor.interns, &executor.code));
+                let error = e.into_python_exception(&executor.interns, &executor.code);
+                return Err(Box::new(ReplStartError { repl, error }));
             }
         };
 
@@ -783,12 +808,13 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
 ///
 /// This mirrors `handle_vm_result` but preserves REPL heap/namespaces on
 /// completion by returning `ReplProgress::Complete { repl, value }`.
+/// On runtime errors, the REPL is preserved inside a `ReplStartError`.
 fn handle_repl_vm_result<T: ResourceTracker>(
     result: RunResult<FrameExit>,
     vm_state: Option<VMSnapshot>,
     executor: ReplExecutor,
     mut repl: MontyRepl<T>,
-) -> Result<ReplProgress<T>, MontyException> {
+) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
     macro_rules! new_repl_snapshot {
         ($call_id: expr) => {
             ReplSnapshot {
@@ -867,10 +893,14 @@ fn handle_repl_vm_result<T: ResourceTracker>(
             }))
         }
         Err(err) => {
-            #[cfg(feature = "ref-count-panic")]
-            repl.namespaces.drop_global_with_heap(&mut repl.heap);
-
-            Err(err.into_python_exception(&executor.interns, &executor.code))
+            let error = err.into_python_exception(&executor.interns, &executor.code);
+            // Commit compiler metadata even on runtime errors, matching feed() behavior.
+            // Snippets can create new variables or functions before raising, and those
+            // values may reference FunctionId/StringId values from the new tables.
+            let ReplExecutor { name_map, interns, .. } = executor;
+            repl.global_name_map = name_map;
+            repl.interns = interns;
+            Err(Box::new(ReplStartError { repl, error }))
         }
     }
 }
