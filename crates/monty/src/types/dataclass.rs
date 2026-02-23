@@ -9,7 +9,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapId},
-    intern::{Interns, StringId},
+    intern::Interns,
     resource::{DepthGuard, ResourceError, ResourceTracker},
     types::{AttrCallResult, Type},
     value::{EitherStr, Value},
@@ -310,11 +310,11 @@ impl PyTrait for Dataclass {
 
     fn py_getattr(
         &self,
-        attr_id: StringId,
+        attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<Option<AttrCallResult>> {
-        let attr_name = interns.get_str(attr_id);
+        let attr_name = attr.as_str(interns);
         match self.attrs.get_by_str(attr_name, heap, interns) {
             Some(value) => Ok(Some(AttrCallResult::Value(value.clone_with_heap(heap)))),
             // we use name here, not `self.py_type(heap)` hence returning a Ok(None)

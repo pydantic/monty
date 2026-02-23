@@ -18,7 +18,7 @@ use crate::{
     asyncio::{Coroutine, GatherFuture, GatherItem},
     bytecode::VM,
     exception_private::{ExcType, RunResult, SimpleException},
-    intern::{FunctionId, Interns, StringId},
+    intern::{FunctionId, Interns},
     resource::{DepthGuard, ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
     types::{
         AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait,
@@ -769,17 +769,17 @@ impl PyTrait for HeapData {
 
     fn py_getattr(
         &self,
-        attr_id: StringId,
+        attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<Option<AttrCallResult>> {
         match self {
-            Self::Dataclass(dc) => dc.py_getattr(attr_id, heap, interns),
-            Self::Module(m) => Ok(m.py_getattr(attr_id, heap, interns)),
-            Self::NamedTuple(nt) => nt.py_getattr(attr_id, heap, interns),
-            Self::Slice(s) => s.py_getattr(attr_id, heap, interns),
-            Self::Exception(exc) => exc.py_getattr(attr_id, heap, interns),
-            Self::Path(p) => p.py_getattr(attr_id, heap, interns),
+            Self::Dataclass(dc) => dc.py_getattr(attr, heap, interns),
+            Self::Module(m) => Ok(m.py_getattr(attr, heap, interns)),
+            Self::NamedTuple(nt) => nt.py_getattr(attr, heap, interns),
+            Self::Slice(s) => s.py_getattr(attr, heap, interns),
+            Self::Exception(exc) => exc.py_getattr(attr, heap, interns),
+            Self::Path(p) => p.py_getattr(attr, heap, interns),
             // All other types don't support attribute access via py_getattr
             _ => Ok(None),
         }

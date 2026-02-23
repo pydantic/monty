@@ -18,7 +18,7 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapId},
-    intern::{ExtFunctionId, Interns, StringId},
+    intern::{ExtFunctionId, Interns},
     os::OsFunction,
     resource::{DepthGuard, ResourceTracker},
     value::{EitherStr, Value},
@@ -423,7 +423,7 @@ pub trait PyTrait {
     /// attribute access and a generic `AttributeError` should be raised by the caller.
     fn py_getattr(
         &self,
-        _attr_id: StringId,
+        _attr: &EitherStr,
         _heap: &mut Heap<impl ResourceTracker>,
         _interns: &Interns,
     ) -> RunResult<Option<AttrCallResult>> {

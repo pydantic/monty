@@ -12,10 +12,10 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings, StringId},
+    intern::{Interns, StaticStrings},
     resource::{DepthGuard, ResourceError, ResourceTracker},
     types::{AttrCallResult, PyTrait, Type},
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// Python slice object representing start:stop:step indices.
@@ -228,15 +228,24 @@ impl PyTrait for Slice {
 
     fn py_getattr(
         &self,
-        attr_id: StringId,
+        attr: &EitherStr,
         _heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
+        interns: &Interns,
     ) -> RunResult<Option<AttrCallResult>> {
-        // Slice attributes are computed values (Int or None), return Cow::Owned
-        match StaticStrings::from_string_id(attr_id) {
-            Some(StaticStrings::Start) => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.start)))),
-            Some(StaticStrings::Stop) => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.stop)))),
-            Some(StaticStrings::Step) => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.step)))),
+        // Fast path: interned strings can be matched by ID without string comparison
+        if let Some(ss) = attr.static_string() {
+            return match ss {
+                StaticStrings::Start => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.start)))),
+                StaticStrings::Stop => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.stop)))),
+                StaticStrings::Step => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.step)))),
+                _ => Ok(None),
+            };
+        }
+        // Slow path: heap-allocated strings need string comparison
+        match attr.as_str(interns) {
+            "start" => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.start)))),
+            "stop" => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.stop)))),
+            "step" => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.step)))),
             _ => Ok(None),
         }
     }

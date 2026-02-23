@@ -118,7 +118,7 @@ impl NamedTuple {
         self.contains_refs
     }
 
-    /// Gets a field value by name (StringId).
+    /// Gets a field value by name.
     ///
     /// Compares field names by actual string content, not just variant type.
     /// This allows lookup to work regardless of whether the field name was
@@ -126,8 +126,7 @@ impl NamedTuple {
     ///
     /// Returns `Some(value)` if the field exists, `None` otherwise.
     #[must_use]
-    pub fn get_by_name(&self, name_id: StringId, interns: &Interns) -> Option<&Value> {
-        let name_str = interns.get_str(name_id);
+    pub fn get_by_name(&self, name_str: &str, interns: &Interns) -> Option<&Value> {
         self.field_names
             .iter()
             .position(|field_name| field_name.as_str(interns) == name_str)
@@ -258,15 +257,16 @@ impl PyTrait for NamedTuple {
 
     fn py_getattr(
         &self,
-        attr_id: StringId,
+        attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<Option<AttrCallResult>> {
-        if let Some(value) = self.get_by_name(attr_id, interns) {
+        let attr_name = attr.as_str(interns);
+        if let Some(value) = self.get_by_name(attr_name, interns) {
             Ok(Some(AttrCallResult::Value(value.clone_with_heap(heap))))
         } else {
             // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
-            Err(ExcType::attribute_error(self.name(interns), interns.get_str(attr_id)))
+            Err(ExcType::attribute_error(self.name(interns), attr_name))
         }
     }
 }

@@ -5,7 +5,7 @@ use crate::{
     args::ArgValues,
     defer_drop,
     exception_private::{RunResult, SimpleException},
-    heap::{Heap, HeapData},
+    heap::Heap,
     intern::Interns,
     resource::ResourceTracker,
     types::{AttrCallResult, PyTrait},
@@ -14,9 +14,9 @@ use crate::{
 
 /// Implementation of the getattr() builtin function.
 ///
-/// Returns the value of the named attribute of an object
-/// If the attribute doesn't exist and a default is provided, returns the default
-/// If no default is provided and the attribute doesn't exist, raises AttributeError
+/// Returns the value of the named attribute of an object.
+/// If the attribute doesn't exist and a default is provided, returns the default.
+/// If no default is provided and the attribute doesn't exist, raises AttributeError.
 ///
 /// Note: name must be a string. Per Python docs, "Since private name mangling happens
 /// at compilation time, one must manually mangle a private attribute's (attributes with
@@ -39,27 +39,14 @@ pub fn builtin_getattr(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, i
         too_many => return Err(ExcType::type_error_at_most("getattr", 3, too_many.len())),
     };
 
-    let name_id = match name {
-        Value::InternString(id) => *id,
-        Value::Ref(v) if matches!(heap.get(*v), HeapData::Str(_)) => {
-            // TODO: support arbitrary strings as attribute names, not just interned ones.
-            return Err(SimpleException::new_msg(
-                ExcType::TypeError,
-                "getattr(): attribute name must be interned string",
-            )
-            .into());
-        }
-        _ => {
-            let ty = name.py_type(heap);
-            return Err(SimpleException::new_msg(
-                ExcType::TypeError,
-                format!("attribute name must be string, not '{ty}'"),
-            )
-            .into());
-        }
+    let Some(attr) = name.as_either_str(heap) else {
+        let ty = name.py_type(heap);
+        return Err(
+            SimpleException::new_msg(ExcType::TypeError, format!("attribute name must be string, not '{ty}'")).into(),
+        );
     };
 
-    match object.py_getattr(name_id, heap, interns) {
+    match object.py_getattr(&attr, heap, interns) {
         Ok(AttrCallResult::Value(value)) => Ok(value),
         Ok(_) => {
             // getattr() only retrieves attribute values — OS calls, external calls,

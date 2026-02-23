@@ -1717,11 +1717,12 @@ impl Value {
     /// Gets an attribute from this value.
     ///
     /// Dispatches to `py_getattr` on the underlying types where appropriate.
+    /// Accepts `EitherStr` to support both interned and heap-allocated attribute names.
     ///
     /// Returns `AttributeError` for other types or unknown attributes.
     pub fn py_getattr(
         &self,
-        name_id: StringId,
+        attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<AttrCallResult> {
@@ -1729,14 +1730,18 @@ impl Value {
             Self::Ref(heap_id) => {
                 // Use with_entry_mut to get access to both data and heap without borrow conflicts.
                 // This allows py_getattr to allocate (for computed attributes) while we hold the data.
-                let opt_result = heap.with_entry_mut(*heap_id, |heap, data| data.py_getattr(name_id, heap, interns))?;
+                let opt_result = heap.with_entry_mut(*heap_id, |heap, data| data.py_getattr(attr, heap, interns))?;
                 if let Some(call_result) = opt_result {
                     return Ok(call_result);
                 }
             }
             Self::Builtin(Builtins::Type(t)) => {
                 // Handle type object attributes like __name__
-                if name_id == StaticStrings::DunderName {
+                let is_dunder_name = attr.static_string().map_or_else(
+                    || attr.as_str(interns) == "__name__",
+                    |ss| ss == StaticStrings::DunderName,
+                );
+                if is_dunder_name {
                     let name_str = t.to_string();
                     let str_id = heap.allocate(HeapData::Str(Str::from(name_str)))?;
                     return Ok(AttrCallResult::Value(Self::Ref(str_id)));
@@ -1745,7 +1750,7 @@ impl Value {
             _ => {}
         }
         let type_name = self.py_type(heap);
-        Err(ExcType::attribute_error(type_name, interns.get_str(name_id)))
+        Err(ExcType::attribute_error(type_name, attr.as_str(interns)))
     }
 
     /// Sets an attribute on this value.
