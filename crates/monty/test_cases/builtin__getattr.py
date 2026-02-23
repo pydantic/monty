@@ -38,20 +38,20 @@ except TypeError as e:
 try:
     getattr(s, 'start', 'default', 'extra')
     assert False, 'getattr() with 4 args should raise TypeError'
-except TypeError:
-    pass
+except TypeError as e:
+    assert str(e) == 'getattr expected at most 3 arguments, got 4', str(e)
 
 try:
     getattr(s, 123)
     assert False, 'getattr() with non-string name should raise TypeError'
 except TypeError as e:
-    assert 'attribute name must be string' in str(e), 'Error message should mention string requirement'
+    assert str(e) == "attribute name must be string, not 'int'", str(e)
 
 try:
     getattr(s, None)
     assert False, 'getattr() with None name should raise TypeError'
-except TypeError:
-    pass
+except TypeError as e:
+    assert str(e) == "attribute name must be string, not 'NoneType'", str(e)
 
 try:
     raise ValueError('test error')

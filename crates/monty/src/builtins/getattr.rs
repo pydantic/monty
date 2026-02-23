@@ -8,7 +8,7 @@ use crate::{
     heap::{Heap, HeapData},
     intern::Interns,
     resource::ResourceTracker,
-    types::AttrCallResult,
+    types::{AttrCallResult, PyTrait},
     value::Value,
 };
 
@@ -50,9 +50,12 @@ pub fn builtin_getattr(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, i
             .into());
         }
         _ => {
-            return Err(
-                SimpleException::new_msg(ExcType::TypeError, "getattr(): attribute name must be string").into(),
-            );
+            let ty = name.py_type(heap);
+            return Err(SimpleException::new_msg(
+                ExcType::TypeError,
+                format!("attribute name must be string, not '{ty}'"),
+            )
+            .into());
         }
     };
 
