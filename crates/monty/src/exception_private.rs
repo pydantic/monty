@@ -1380,7 +1380,7 @@ pub(crate) enum RunError {
     Internal(Cow<'static, str>),
     /// Catchable Python exception (e.g., ValueError, TypeError).
     Exc(ExceptionRaise),
-    /// Uncatchable Python exception from resource limits (MemoryError, TimeoutError, RecursionError).
+    /// Uncatchable Python exception from resource limits (MemoryError, TimeoutError).
     ///
     /// These exceptions display with proper tracebacks like normal Python exceptions,
     /// but cannot be caught by try/except blocks. This prevents untrusted code from

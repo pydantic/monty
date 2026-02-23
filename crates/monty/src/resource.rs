@@ -177,7 +177,14 @@ impl ResourceError {
 
 impl From<ResourceError> for RunError {
     fn from(err: ResourceError) -> Self {
-        Self::UncatchableExc(err.into_exception(None))
+        // RecursionError is catchable in CPython, so it must be catchable here too.
+        // Other resource errors (memory, time, allocation) remain uncatchable to prevent
+        // untrusted code from suppressing resource limit violations.
+        if matches!(err, ResourceError::Recursion { .. }) {
+            Self::Exc(err.into_exception(None))
+        } else {
+            Self::UncatchableExc(err.into_exception(None))
+        }
     }
 }
 
