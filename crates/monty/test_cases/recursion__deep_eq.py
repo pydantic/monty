@@ -2,7 +2,7 @@
 # Monty raises RecursionError at depth limit, CPython handles in C code
 a = []
 b = []
-for _ in range(50):  # Use lower depth that works for both
+for _ in range(30):  # Use lower depth that works within unified recursion limit
     a = [a]
     b = [b]
 
@@ -13,10 +13,10 @@ assert result == True, 'structurally equal nested lists should be equal'
 
 # Test non-equal nested lists
 c = []
-for _ in range(50):
+for _ in range(30):
     c = [c]
 c = [1]  # Make the innermost different
-for _ in range(49):
+for _ in range(29):
     c = [c]
 
 result2 = a == c

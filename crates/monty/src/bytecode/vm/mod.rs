@@ -566,7 +566,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
         print_writer: &'a mut PrintWriter<'p>,
     ) -> Self {
         // Reconstruct call frames from serialized form
-        let frames = snapshot
+        let frames: Vec<CallFrame<'_>> = snapshot
             .frames
             .into_iter()
             .map(|sf| {
@@ -586,6 +586,16 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 }
             })
             .collect();
+
+        // Restore recursion depth to match the number of active non-global namespace
+        // frames. During serialization, recursion_depth is transient (defaults to 0),
+        // but cleanup paths call decr_recursion_depth for each non-global frame.
+        let current_frame_depth = frames.iter().filter(|f| f.namespace_idx != GLOBAL_NS_IDX).count();
+        let scheduler_frame_depth = snapshot
+            .scheduler
+            .as_ref()
+            .map_or(0, Scheduler::count_non_global_frames);
+        heap.set_recursion_depth(current_frame_depth + scheduler_frame_depth);
 
         Self {
             stack: snapshot.stack,

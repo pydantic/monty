@@ -15,7 +15,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings, StringId},
-    resource::{DepthGuard, ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker},
     types::Type,
     value::{EitherStr, Value},
 };
@@ -55,8 +55,7 @@ impl Str {
             None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
             Some(v) => {
                 defer_drop!(v, heap);
-                let mut guard = DepthGuard::default();
-                let s = v.py_str(heap, &mut guard, interns).into_owned();
+                let s = v.py_str(heap, interns).into_owned();
                 allocate_string(s, heap)
             }
         }
@@ -243,7 +242,6 @@ impl PyTrait for Str {
         &self,
         other: &Self,
         _heap: &mut Heap<impl ResourceTracker>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> Result<bool, ResourceError> {
         Ok(self.0 == other.0)
@@ -263,18 +261,12 @@ impl PyTrait for Str {
         f: &mut impl Write,
         _heap: &Heap<impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> fmt::Result {
         string_repr_fmt(&self.0, f)
     }
 
-    fn py_str(
-        &self,
-        _heap: &Heap<impl ResourceTracker>,
-        _guard: &mut DepthGuard,
-        _interns: &Interns,
-    ) -> Cow<'static, str> {
+    fn py_str(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Cow<'static, str> {
         self.0.clone().into()
     }
 

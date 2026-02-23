@@ -19,7 +19,7 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcType, RunResult, SimpleException},
     intern::{FunctionId, Interns, StringId},
-    resource::{DepthGuard, ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
+    resource::{ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
     types::{
         AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait,
         Range, Set, Slice, Str, Tuple, Type, allocate_tuple,
@@ -412,15 +412,14 @@ impl PyTrait for HeapData {
         &self,
         other: &Self,
         heap: &mut Heap<impl ResourceTracker>,
-        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> Result<bool, ResourceError> {
         match (self, other) {
-            (Self::Str(a), Self::Str(b)) => a.py_eq(b, heap, guard, interns),
-            (Self::Bytes(a), Self::Bytes(b)) => a.py_eq(b, heap, guard, interns),
-            (Self::List(a), Self::List(b)) => a.py_eq(b, heap, guard, interns),
-            (Self::Tuple(a), Self::Tuple(b)) => a.py_eq(b, heap, guard, interns),
-            (Self::NamedTuple(a), Self::NamedTuple(b)) => a.py_eq(b, heap, guard, interns),
+            (Self::Str(a), Self::Str(b)) => a.py_eq(b, heap, interns),
+            (Self::Bytes(a), Self::Bytes(b)) => a.py_eq(b, heap, interns),
+            (Self::List(a), Self::List(b)) => a.py_eq(b, heap, interns),
+            (Self::Tuple(a), Self::Tuple(b)) => a.py_eq(b, heap, interns),
+            (Self::NamedTuple(a), Self::NamedTuple(b)) => a.py_eq(b, heap, interns),
             // NamedTuple can compare with Tuple by elements (matching CPython behavior)
             (Self::NamedTuple(nt), Self::Tuple(t)) | (Self::Tuple(t), Self::NamedTuple(nt)) => {
                 let nt_items = nt.as_vec();
@@ -428,31 +427,31 @@ impl PyTrait for HeapData {
                 if nt_items.len() != t_items.len() {
                     return Ok(false);
                 }
-                guard.increase_err()?;
+                let token = heap.incr_recursion_depth()?;
                 for (a, b) in nt_items.iter().zip(t_items.iter()) {
-                    if !a.py_eq(b, heap, guard, interns)? {
-                        guard.decrease();
+                    if !a.py_eq(b, heap, interns)? {
+                        token.release(heap);
                         return Ok(false);
                     }
                 }
-                guard.decrease();
+                token.release(heap);
                 Ok(true)
             }
-            (Self::Dict(a), Self::Dict(b)) => a.py_eq(b, heap, guard, interns),
-            (Self::Set(a), Self::Set(b)) => a.py_eq(b, heap, guard, interns),
-            (Self::FrozenSet(a), Self::FrozenSet(b)) => a.py_eq(b, heap, guard, interns),
+            (Self::Dict(a), Self::Dict(b)) => a.py_eq(b, heap, interns),
+            (Self::Set(a), Self::Set(b)) => a.py_eq(b, heap, interns),
+            (Self::FrozenSet(a), Self::FrozenSet(b)) => a.py_eq(b, heap, interns),
             (Self::Closure(a_id, a_cells, _), Self::Closure(b_id, b_cells, _)) => {
                 Ok(*a_id == *b_id && a_cells == b_cells)
             }
             (Self::FunctionDefaults(a_id, _), Self::FunctionDefaults(b_id, _)) => Ok(*a_id == *b_id),
-            (Self::Range(a), Self::Range(b)) => a.py_eq(b, heap, guard, interns),
-            (Self::Dataclass(a), Self::Dataclass(b)) => a.py_eq(b, heap, guard, interns),
+            (Self::Range(a), Self::Range(b)) => a.py_eq(b, heap, interns),
+            (Self::Dataclass(a), Self::Dataclass(b)) => a.py_eq(b, heap, interns),
             // LongInt equality
             (Self::LongInt(a), Self::LongInt(b)) => Ok(a == b),
             // Slice equality
-            (Self::Slice(a), Self::Slice(b)) => a.py_eq(b, heap, guard, interns),
+            (Self::Slice(a), Self::Slice(b)) => a.py_eq(b, heap, interns),
             // Path equality
-            (Self::Path(a), Self::Path(b)) => a.py_eq(b, heap, guard, interns),
+            (Self::Path(a), Self::Path(b)) => a.py_eq(b, heap, interns),
             // Cells, Exceptions, Iterators, Modules, and async types compare by identity only (handled at Value level via HeapId comparison)
             (Self::Cell(_), Self::Cell(_))
             | (Self::Exception(_), Self::Exception(_))
@@ -547,27 +546,26 @@ impl PyTrait for HeapData {
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result {
         match self {
-            Self::Str(s) => s.py_repr_fmt(f, heap, heap_ids, guard, interns),
-            Self::Bytes(b) => b.py_repr_fmt(f, heap, heap_ids, guard, interns),
-            Self::List(l) => l.py_repr_fmt(f, heap, heap_ids, guard, interns),
-            Self::Tuple(t) => t.py_repr_fmt(f, heap, heap_ids, guard, interns),
-            Self::NamedTuple(nt) => nt.py_repr_fmt(f, heap, heap_ids, guard, interns),
-            Self::Dict(d) => d.py_repr_fmt(f, heap, heap_ids, guard, interns),
-            Self::Set(s) => s.py_repr_fmt(f, heap, heap_ids, guard, interns),
-            Self::FrozenSet(fs) => fs.py_repr_fmt(f, heap, heap_ids, guard, interns),
+            Self::Str(s) => s.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::Bytes(b) => b.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::List(l) => l.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::Tuple(t) => t.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::NamedTuple(nt) => nt.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::Dict(d) => d.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::Set(s) => s.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::FrozenSet(fs) => fs.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Closure(f_id, _, _) | Self::FunctionDefaults(f_id, _) => {
                 interns.get_function(*f_id).py_repr_fmt(f, interns, 0)
             }
             // Cell repr shows the contained value's type
             Self::Cell(v) => write!(f, "<cell: {} object>", v.py_type(heap)),
-            Self::Range(r) => r.py_repr_fmt(f, heap, heap_ids, guard, interns),
-            Self::Slice(s) => s.py_repr_fmt(f, heap, heap_ids, guard, interns),
+            Self::Range(r) => r.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::Slice(s) => s.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Exception(e) => e.py_repr_fmt(f),
-            Self::Dataclass(dc) => dc.py_repr_fmt(f, heap, heap_ids, guard, interns),
+            Self::Dataclass(dc) => dc.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Iter(_) => write!(f, "<iterator>"),
             Self::LongInt(li) => write!(f, "{li}"),
             Self::Module(m) => write!(f, "<module '{}'>", interns.get_str(m.name())),
@@ -577,19 +575,14 @@ impl PyTrait for HeapData {
                 write!(f, "<coroutine object {name}>")
             }
             Self::GatherFuture(gather) => write!(f, "<gather({})>", gather.item_count()),
-            Self::Path(p) => p.py_repr_fmt(f, heap, heap_ids, guard, interns),
+            Self::Path(p) => p.py_repr_fmt(f, heap, heap_ids, interns),
         }
     }
 
-    fn py_str(
-        &self,
-        heap: &Heap<impl ResourceTracker>,
-        guard: &mut DepthGuard,
-        interns: &Interns,
-    ) -> Cow<'static, str> {
+    fn py_str(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Cow<'static, str> {
         match self {
             // Strings return their value directly without quotes
-            Self::Str(s) => s.py_str(heap, guard, interns),
+            Self::Str(s) => s.py_str(heap, interns),
             // LongInt returns its string representation
             Self::LongInt(li) => Cow::Owned(li.to_string()),
             // Exceptions return just the message (or empty string if no message)
@@ -597,7 +590,7 @@ impl PyTrait for HeapData {
             // Paths return the path string without the PosixPath() wrapper
             Self::Path(p) => Cow::Owned(p.as_str().to_owned()),
             // All other types use repr
-            _ => self.py_repr(heap, guard, interns),
+            _ => self.py_repr(heap, interns),
         }
     }
 
@@ -860,6 +853,35 @@ pub struct HeapValue {
     hash_state: HashState,
 }
 
+/// Zero-size token returned by [`Heap::incr_recursion_depth`].
+///
+/// Represents one level of recursion depth that must be released when the
+/// recursive operation completes. There are two ways to release the token:
+///
+/// - **`DropWithHeap`** — for `&mut Heap` paths (e.g., `py_eq`). Compatible with
+///   `defer_drop!` and `HeapGuard` for automatic cleanup on all code paths.
+/// - **`release()`** — for `&Heap` paths (e.g., `py_repr_fmt`) where mutable
+///   access is not available.
+pub(crate) struct RecursionToken;
+
+impl RecursionToken {
+    /// Release this token, decrementing the recursion depth via an immutable heap reference.
+    ///
+    /// Use this in contexts that only have `&Heap` (e.g., `py_repr_fmt`, `py_str`).
+    #[inline]
+    #[expect(clippy::unused_self)]
+    pub fn release(self, heap: &Heap<impl ResourceTracker>) {
+        heap.decr_recursion_depth();
+    }
+}
+
+impl DropWithHeap for RecursionToken {
+    #[inline]
+    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
+        heap.decr_recursion_depth();
+    }
+}
+
 /// Reference-counted arena that backs all heap-only runtime values.
 ///
 /// Uses a free list to reuse slots from freed values, keeping memory usage
@@ -884,6 +906,11 @@ pub(crate) struct Heap<T: ResourceTracker> {
     may_have_cycles: bool,
     /// Number of GC applicable allocations since the last GC.
     allocations_since_gc: u32,
+    /// Current recursion depth — incremented on function calls and data structure traversals.
+    ///
+    /// Uses `Cell` for interior mutability so that methods with only `&Heap`
+    /// (like `py_repr_fmt`) can still increment/decrement the depth counter.
+    recursion_depth: Cell<usize>,
 }
 
 impl<T: ResourceTracker + serde::Serialize> serde::Serialize for Heap<T> {
@@ -916,6 +943,7 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
             tracker: fields.tracker,
             may_have_cycles: fields.may_have_cycles,
             allocations_since_gc: fields.allocations_since_gc,
+            recursion_depth: Cell::new(0),
         })
     }
 }
@@ -963,6 +991,7 @@ impl<T: ResourceTracker> Heap<T> {
             tracker,
             may_have_cycles: false,
             allocations_since_gc: 0,
+            recursion_depth: Cell::new(0),
         };
         // TBC: should the empty tuple contribute to the resource limits?
         // If not, can just place it in `entries` directly without going through `allocate()`.
@@ -995,6 +1024,52 @@ impl<T: ResourceTracker> Heap<T> {
     #[inline]
     pub fn check_time(&self) -> Result<(), ResourceError> {
         self.tracker.check_time()
+    }
+
+    /// Increments the recursion depth and checks the limit via the `ResourceTracker`.
+    ///
+    /// Returns `Ok(RecursionToken)` if within limits. The caller must ensure the
+    /// token is released on all code paths — either via `defer_drop!`/`HeapGuard`
+    /// (for `&mut Heap` contexts) or via `RecursionToken::release()` (for `&Heap` contexts).
+    ///
+    /// Returns `Err(ResourceError::Recursion)` if the limit would be exceeded.
+    #[inline]
+    pub fn incr_recursion_depth(&self) -> Result<RecursionToken, ResourceError> {
+        let depth = self.recursion_depth.get();
+        self.tracker.check_recursion_depth(depth)?;
+        self.recursion_depth.set(depth + 1);
+        Ok(RecursionToken)
+    }
+
+    /// Increments the recursion depth, returning `Some(RecursionToken)` if within
+    /// limits, or `None` if the limit is exceeded.
+    ///
+    /// Use this in repr-like contexts where exceeding the limit should produce
+    /// truncated output (e.g., `[...]`) rather than an error.
+    #[inline]
+    pub fn incr_recursion_depth_for_repr(&self) -> Option<RecursionToken> {
+        self.incr_recursion_depth().ok()
+    }
+
+    /// Decrements the recursion depth.
+    ///
+    /// Called internally by `RecursionToken` — prefer releasing the token
+    /// rather than calling this directly.
+    #[inline]
+    pub(crate) fn decr_recursion_depth(&self) {
+        let depth = self.recursion_depth.get();
+        debug_assert!(depth > 0, "decr_recursion_depth called when depth is 0");
+        self.recursion_depth.set(depth - 1);
+    }
+
+    /// Sets the recursion depth to an explicit value.
+    ///
+    /// Used after deserialization to restore the recursion depth to match
+    /// the number of active (non-global) namespace frames that were serialized.
+    /// Without this, `decr_recursion_depth` would underflow when cleaning up
+    /// deserialized frames since `recursion_depth` defaults to 0 on deserialization.
+    pub(crate) fn set_recursion_depth(&self, depth: usize) {
+        self.recursion_depth.set(depth);
     }
 
     /// Number of entries in the heap

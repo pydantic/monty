@@ -10,7 +10,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapId},
     intern::{Interns, StringId},
-    resource::{DepthGuard, ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker},
     types::{AttrCallResult, Type},
     value::{EitherStr, Value},
 };
@@ -196,11 +196,10 @@ impl PyTrait for Dataclass {
         &self,
         other: &Self,
         heap: &mut Heap<impl ResourceTracker>,
-        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> Result<bool, ResourceError> {
         // Dataclasses are equal if they have the same name and equal attrs
-        Ok(self.name == other.name && self.attrs.py_eq(&other.attrs, heap, guard, interns)?)
+        Ok(self.name == other.name && self.attrs.py_eq(&other.attrs, heap, interns)?)
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
@@ -218,13 +217,12 @@ impl PyTrait for Dataclass {
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result {
         // Check depth limit before recursing
-        if !guard.increase() {
+        let Some(token) = heap.incr_recursion_depth_for_repr() else {
             return f.write_str("...");
-        }
+        };
 
         // Format: ClassName(field1=value1, field2=value2, ...)
         // Only declared fields are shown, not dynamically added attributes
@@ -244,7 +242,7 @@ impl PyTrait for Dataclass {
 
             // Look up value in attrs
             if let Some(value) = self.attrs.get_by_str(field_name, heap, interns) {
-                value.py_repr_fmt(f, heap, heap_ids, guard, interns)?;
+                value.py_repr_fmt(f, heap, heap_ids, interns)?;
             } else {
                 // Field not found - shouldn't happen for well-formed dataclasses
                 f.write_str("<?>")?;
@@ -252,7 +250,7 @@ impl PyTrait for Dataclass {
         }
 
         f.write_char(')')?;
-        guard.decrease();
+        token.release(heap);
         Ok(())
     }
 

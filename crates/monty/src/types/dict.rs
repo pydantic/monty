@@ -15,7 +15,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings},
-    resource::{DepthGuard, ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker},
     types::Type,
     value::{EitherStr, Value},
 };
@@ -244,14 +244,9 @@ impl Dict {
             .py_hash(heap, interns)
             .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type(heap)))?;
 
-        // Create a guard for key equality comparisons.
-        let mut guard = DepthGuard::default();
         let entry = self.indices.entry(
             hash,
-            |v| {
-                key.py_eq(&self.entries[*v].key, heap, &mut guard, interns)
-                    .unwrap_or(false)
-            },
+            |v| key.py_eq(&self.entries[*v].key, heap, interns).unwrap_or(false),
             |index| self.entries[*index].hash,
         );
 
@@ -370,16 +365,13 @@ impl Dict {
             .py_hash(heap, interns)
             .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type(heap)))?;
 
-        // Create a guard for key equality comparisons. Dict keys are typically
-        // shallow (strings, ints, tuples of primitives), so recursion errors
-        // are unlikely. If one occurs, treat it as "not equal" - the key lookup
-        // fails but doesn't crash.
-        let mut guard = DepthGuard::default();
+        // Dict keys are typically shallow (strings, ints, tuples of primitives),
+        // so recursion errors are unlikely. If one occurs, treat it as "not equal" -
+        // the key lookup fails but doesn't crash.
         let opt_index = self
             .indices
             .find(hash, |v| {
-                key.py_eq(&self.entries[*v].key, heap, &mut guard, interns)
-                    .unwrap_or(false)
+                key.py_eq(&self.entries[*v].key, heap, interns).unwrap_or(false)
             })
             .copied();
         Ok((opt_index, hash))
@@ -447,28 +439,25 @@ impl PyTrait for Dict {
         &self,
         other: &Self,
         heap: &mut Heap<impl ResourceTracker>,
-        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> Result<bool, ResourceError> {
         if self.len() != other.len() {
             return Ok(false);
         }
 
-        guard.increase_err()?;
+        let token = heap.incr_recursion_depth()?;
+        defer_drop!(token, heap);
         // Check that all keys in self exist in other with equal values
         for entry in &self.entries {
             heap.check_time()?;
             if let Ok(Some(other_v)) = other.get(&entry.key, heap, interns) {
-                if !entry.value.py_eq(other_v, heap, guard, interns)? {
-                    guard.decrease();
+                if !entry.value.py_eq(other_v, heap, interns)? {
                     return Ok(false);
                 }
             } else {
-                guard.decrease();
                 return Ok(false);
             }
         }
-        guard.decrease();
         Ok(true)
     }
 
@@ -500,7 +489,6 @@ impl PyTrait for Dict {
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result {
         if self.is_empty() {
@@ -508,9 +496,9 @@ impl PyTrait for Dict {
         }
 
         // Check depth limit before recursing
-        if !guard.increase() {
+        let Some(token) = heap.incr_recursion_depth_for_repr() else {
             return f.write_str("{...}");
-        }
+        };
 
         f.write_char('{')?;
         let mut first = true;
@@ -523,13 +511,13 @@ impl PyTrait for Dict {
                 f.write_str(", ")?;
             }
             first = false;
-            entry.key.py_repr_fmt(f, heap, heap_ids, guard, interns)?;
+            entry.key.py_repr_fmt(f, heap, heap_ids, interns)?;
             f.write_str(": ")?;
-            entry.value.py_repr_fmt(f, heap, heap_ids, guard, interns)?;
+            entry.value.py_repr_fmt(f, heap, heap_ids, interns)?;
         }
         f.write_char('}')?;
 
-        guard.decrease();
+        token.release(heap);
         Ok(())
     }
 

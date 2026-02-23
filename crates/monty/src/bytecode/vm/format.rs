@@ -5,7 +5,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunError, SimpleException},
     fstring::{ParsedFormatSpec, ascii_escape, decode_format_spec, format_string, format_with_spec},
-    resource::{DepthGuard, ResourceTracker},
+    resource::ResourceTracker,
     types::{PyTrait, str::allocate_string},
     value::Value,
 };
@@ -15,11 +15,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn build_fstring(&mut self, count: usize) -> Result<(), RunError> {
         let parts = self.pop_n(count);
         let mut result = String::new();
-        let mut guard = DepthGuard::default();
 
         for part in parts {
             // Each part should be a string (interned or heap-allocated)
-            let part_str = part.py_str(self.heap, &mut guard, self.interns);
+            let part_str = part.py_str(self.heap, self.interns);
             result.push_str(&part_str);
             part.drop_with_heap(self.heap);
         }
@@ -62,36 +61,34 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
             let spec = this.get_format_spec(spec_value, value)?;
 
-            let mut guard = DepthGuard::default();
             match conversion {
                 // No conversion - format original value
-                0 => format_with_spec(value, &spec, this.heap, &mut guard, this.interns)?,
+                0 => format_with_spec(value, &spec, this.heap, this.interns)?,
                 // !s - convert to str, format as string
                 1 => {
-                    let s = value.py_str(this.heap, &mut guard, this.interns);
+                    let s = value.py_str(this.heap, this.interns);
                     format_string(&s, &spec)?
                 }
                 // !r - convert to repr, format as string
                 2 => {
-                    let s = value.py_repr(this.heap, &mut guard, this.interns);
+                    let s = value.py_repr(this.heap, this.interns);
                     format_string(&s, &spec)?
                 }
                 // !a - convert to ascii, format as string
                 3 => {
-                    let s = ascii_escape(&value.py_repr(this.heap, &mut guard, this.interns));
+                    let s = ascii_escape(&value.py_repr(this.heap, this.interns));
                     format_string(&s, &spec)?
                 }
-                _ => format_with_spec(value, &spec, this.heap, &mut guard, this.interns)?,
+                _ => format_with_spec(value, &spec, this.heap, this.interns)?,
             }
         } else {
             // No format spec - just convert based on conversion flag
-            let mut guard = DepthGuard::default();
             match conversion {
-                0 => value.py_str(this.heap, &mut guard, this.interns).into_owned(),
-                1 => value.py_str(this.heap, &mut guard, this.interns).into_owned(),
-                2 => value.py_repr(this.heap, &mut guard, this.interns).into_owned(),
-                3 => ascii_escape(&value.py_repr(this.heap, &mut guard, this.interns)),
-                _ => value.py_str(this.heap, &mut guard, this.interns).into_owned(),
+                0 => value.py_str(this.heap, this.interns).into_owned(),
+                1 => value.py_str(this.heap, this.interns).into_owned(),
+                2 => value.py_repr(this.heap, this.interns).into_owned(),
+                3 => ascii_escape(&value.py_repr(this.heap, this.interns)),
+                _ => value.py_str(this.heap, this.interns).into_owned(),
             }
         };
 
@@ -113,8 +110,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
             _ => {
                 // Dynamic format spec - parse the string
-                let mut guard = DepthGuard::default();
-                let spec_str = spec_value.py_str(self.heap, &mut guard, self.interns);
+                let spec_str = spec_value.py_str(self.heap, self.interns);
                 spec_str.parse::<ParsedFormatSpec>().map_err(|invalid| {
                     // Only fetch type in error path
                     let value_type = value_for_error.py_type(self.heap);

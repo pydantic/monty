@@ -159,9 +159,7 @@ impl Namespaces {
         heap: &mut Heap<impl ResourceTracker>,
     ) -> Result<NamespaceId, ResourceError> {
         // Check recursion depth BEFORE memory allocation (fail fast)
-        // Depth excludes global namespace (stack[0]), so current depth = stack.len() - 1
-        let current_depth = self.stack.len() - 1;
-        heap.tracker().check_recursion_depth(current_depth)?;
+        let _token = heap.incr_recursion_depth()?;
 
         // Track the memory used by this namespace's slots
         let size = namespace_size * std::mem::size_of::<Value>();
@@ -196,8 +194,7 @@ impl Namespaces {
         heap: &mut Heap<impl ResourceTracker>,
     ) -> Result<NamespaceId, ResourceError> {
         // Check recursion depth BEFORE memory allocation (fail fast)
-        let current_depth = self.stack.len() - 1;
-        heap.tracker().check_recursion_depth(current_depth)?;
+        let _token = heap.incr_recursion_depth()?;
 
         // Track the memory used by this namespace's slots
         let size = namespace.len() * std::mem::size_of::<Value>();
@@ -225,6 +222,9 @@ impl Namespaces {
     /// # Panics
     /// Panics if attempting to pop the global namespace (index 0).
     pub fn drop_with_heap(&mut self, namespace_id: NamespaceId, heap: &mut Heap<impl ResourceTracker>) {
+        // Decrement recursion depth (balances incr_recursion_depth in new_namespace/register_prebuilt)
+        heap.decr_recursion_depth();
+
         let namespace = &mut self.stack[namespace_id.index()];
         // Track the freed memory for this namespace
         let size = namespace.0.len() * std::mem::size_of::<Value>();

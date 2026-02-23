@@ -15,7 +15,7 @@ use crate::{
     heap::{Heap, HeapData},
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
-    resource::{DepthGuard, ResourceTracker},
+    resource::ResourceTracker,
     types::{
         AttrCallResult, PyTrait, Str, Type, allocate_tuple,
         str::{StringRepr, string_repr_fmt},
@@ -313,8 +313,7 @@ impl ExcType {
     /// For string keys, uses the raw string value without extra quoting.
     #[must_use]
     pub(crate) fn key_error(key: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunError {
-        let mut guard = DepthGuard::default();
-        let key_str = key.py_str(heap, &mut guard, interns).into_owned();
+        let key_str = key.py_str(heap, interns).into_owned();
         SimpleException::new_msg(Self::KeyError, key_str).into()
     }
 

@@ -225,6 +225,18 @@ impl Scheduler {
         self.tasks.len()
     }
 
+    /// Counts the number of non-global namespace frames across all tasks.
+    ///
+    /// Used after deserialization to restore `Heap::recursion_depth` so that
+    /// cleanup paths that call `decr_recursion_depth` don't underflow.
+    pub fn count_non_global_frames(&self) -> usize {
+        self.tasks
+            .iter()
+            .flat_map(|task| &task.frames)
+            .filter(|frame| frame.namespace_idx != GLOBAL_NS_IDX)
+            .count()
+    }
+
     /// Returns a reference to a task by ID.
     ///
     /// # Panics

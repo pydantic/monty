@@ -21,10 +21,11 @@ use ahash::AHashSet;
 
 use super::PyTrait;
 use crate::{
+    defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapId},
     intern::{Interns, StringId},
-    resource::{DepthGuard, ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker},
     types::{AttrCallResult, Type},
     value::{EitherStr, Value},
 };
@@ -183,7 +184,6 @@ impl PyTrait for NamedTuple {
         &self,
         other: &Self,
         heap: &mut Heap<impl ResourceTracker>,
-        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> Result<bool, ResourceError> {
         // Compare only by items (not type_name) to match tuple semantics
@@ -191,14 +191,13 @@ impl PyTrait for NamedTuple {
         if self.items.len() != other.items.len() {
             return Ok(false);
         }
-        guard.increase_err()?;
+        let token = heap.incr_recursion_depth()?;
+        defer_drop!(token, heap);
         for (i1, i2) in self.items.iter().zip(&other.items) {
-            if !i1.py_eq(i2, heap, guard, interns)? {
-                guard.decrease();
+            if !i1.py_eq(i2, heap, interns)? {
                 return Ok(false);
             }
         }
-        guard.decrease();
         Ok(true)
     }
 
@@ -229,13 +228,12 @@ impl PyTrait for NamedTuple {
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result {
         // Check depth limit before recursing
-        if !guard.increase() {
+        let Some(token) = heap.incr_recursion_depth_for_repr() else {
             return f.write_str("...");
-        }
+        };
 
         // Format: type_name(field1=value1, field2=value2, ...)
         write!(f, "{}(", self.name.as_str(interns))?;
@@ -248,11 +246,11 @@ impl PyTrait for NamedTuple {
             first = false;
             f.write_str(field_name.as_str(interns))?;
             f.write_char('=')?;
-            value.py_repr_fmt(f, heap, heap_ids, guard, interns)?;
+            value.py_repr_fmt(f, heap, heap_ids, interns)?;
         }
 
         f.write_char(')')?;
-        guard.decrease();
+        token.release(heap);
         Ok(())
     }
 
