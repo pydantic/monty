@@ -513,7 +513,7 @@ jobs:
           key: ${{ matrix.settings.target }}-cargo-${{ matrix.settings.host }}
       # venv is not used by the build-js jobs
       - name: Set up empty venv
-        run: python -m venv .venv
+        run: python3 -m venv .venv
       - uses: mlugg/setup-zig@v2
         if: ${{ contains(matrix.settings.target, 'musl') }}
         with:
