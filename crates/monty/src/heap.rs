@@ -648,6 +648,10 @@ impl PyTrait for HeapData {
             (Self::List(a), Self::List(b)) => a.py_add(b, heap, interns),
             (Self::Tuple(a), Self::Tuple(b)) => a.py_add(b, heap, interns),
             (Self::Dict(a), Self::Dict(b)) => a.py_add(b, heap, interns),
+            (Self::LongInt(a), Self::LongInt(b)) => {
+                let bi = a.inner() + b.inner();
+                Ok(LongInt::new(bi).into_value(heap).map(Some)?)
+            }
             // Cells and Dataclasses don't support arithmetic operations
             _ => Ok(None),
         }
@@ -666,6 +670,10 @@ impl PyTrait for HeapData {
             (Self::Dict(a), Self::Dict(b)) => a.py_sub(b, heap),
             (Self::Set(a), Self::Set(b)) => a.py_sub(b, heap),
             (Self::FrozenSet(a), Self::FrozenSet(b)) => a.py_sub(b, heap),
+            (Self::LongInt(a), Self::LongInt(b)) => {
+                let bi = a.inner() - b.inner();
+                Ok(LongInt::new(bi).into_value(heap).map(Some)?)
+            }
             // Cells don't support arithmetic operations
             _ => Ok(None),
         }
@@ -1414,15 +1422,11 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// Returns `Ok(None)` if the heap entry is neither a LongInt nor a sequence type.
     pub fn mult_ref_by_i64(&mut self, id: HeapId, int_val: i64) -> RunResult<Option<Value>> {
-        let data = take_data!(self, id, "mult_ref_by_i64");
-
-        if let HeapData::LongInt(li) = &data {
+        if let HeapData::LongInt(li) = self.get(id) {
             check_mult_size(li.bits(), i64_bits(int_val), &self.tracker)?;
             let result = LongInt::new(li.inner().clone()) * LongInt::from(int_val);
-            restore_data!(self, id, data, "mult_ref_by_i64");
             Ok(Some(result.into_value(self)?))
         } else {
-            restore_data!(self, id, data, "mult_ref_by_i64");
             let count = i64_to_repeat_count(int_val)?;
             self.mult_sequence(id, count)
         }
@@ -1430,47 +1434,26 @@ impl<T: ResourceTracker> Heap<T> {
 
     /// Multiplies two heap-allocated values.
     ///
-    /// Uses `with_two` to take both entries out once, then matches on the pair:
-    /// - `LongInt * LongInt`: integer multiplication with size pre-check
-    /// - `LongInt * sequence` or `sequence * LongInt`: sequence repetition
-    /// - Anything else: returns `Ok(None)` for unsupported type combinations
+    /// Returns Ok(None) for unsupported type combinations.
     pub fn mult_heap_values(&mut self, id1: HeapId, id2: HeapId) -> RunResult<Option<Value>> {
-        // Extract the information we need from a single lookup of both values
-        enum MultKind {
-            LongInts { a_bits: u64, b_bits: u64 },
-            SeqTimesLong { seq_id: HeapId, count: usize },
-            Unsupported,
-        }
-
-        let kind = self.with_two(id1, id2, |_heap, left, right| match (left, right) {
-            (HeapData::LongInt(a), HeapData::LongInt(b)) => Ok(MultKind::LongInts {
-                a_bits: a.bits(),
-                b_bits: b.bits(),
-            }),
-            (_, HeapData::LongInt(li)) => {
-                longint_to_repeat_count(li).map(|c| MultKind::SeqTimesLong { seq_id: id1, count: c })
+        let (seq_id, count) = match (self.get(id1), self.get(id2)) {
+            (HeapData::LongInt(a), HeapData::LongInt(b)) => {
+                check_mult_size(a.bits(), b.bits(), &self.tracker)?;
+                let result = LongInt::new(a.inner() * b.inner());
+                return Ok(Some(result.into_value(self)?));
             }
             (HeapData::LongInt(li), _) => {
-                longint_to_repeat_count(li).map(|c| MultKind::SeqTimesLong { seq_id: id2, count: c })
+                let count = longint_to_repeat_count(li)?;
+                (id2, count)
             }
-            _ => Ok(MultKind::Unsupported),
-        })?;
+            (_, HeapData::LongInt(li)) => {
+                let count = longint_to_repeat_count(li)?;
+                (id1, count)
+            }
+            _ => return Ok(None),
+        };
 
-        match kind {
-            MultKind::LongInts { a_bits, b_bits } => {
-                check_mult_size(a_bits, b_bits, &self.tracker)?;
-                Ok(self.with_two(id1, id2, |heap, left, right| {
-                    if let (HeapData::LongInt(a), HeapData::LongInt(b)) = (left, right) {
-                        let result = LongInt::new(a.inner() * b.inner());
-                        result.into_value(heap).map(Some)
-                    } else {
-                        Ok(None)
-                    }
-                })?)
-            }
-            MultKind::SeqTimesLong { seq_id, count } => self.mult_sequence(seq_id, count),
-            MultKind::Unsupported => Ok(None),
-        }
+        self.mult_sequence(seq_id, count)
     }
 
     /// Multiplies (repeats) a sequence by an integer count.

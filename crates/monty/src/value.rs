@@ -292,13 +292,11 @@ impl PyTrait for Value {
                 }
             }
             // Ref vs Ref comparison: handles LongInt and Str
-            (Self::Ref(id1), Self::Ref(id2)) => {
-                Ok(heap.with_two(*id1, *id2, |_heap, left, right| match (left, right) {
-                    (HeapData::LongInt(a), HeapData::LongInt(b)) => a.inner().partial_cmp(b.inner()),
-                    (HeapData::Str(a), HeapData::Str(b)) => a.as_str().partial_cmp(b.as_str()),
-                    _ => None,
-                }))
-            }
+            (Self::Ref(id1), Self::Ref(id2)) => match (heap.get(*id1), heap.get(*id2)) {
+                (HeapData::LongInt(a), HeapData::LongInt(b)) => Ok(a.inner().partial_cmp(b.inner())),
+                (HeapData::Str(a), HeapData::Str(b)) => Ok(a.as_str().partial_cmp(b.as_str())),
+                _ => Ok(None),
+            },
             // Interned string comparisons
             (Self::InternString(s1), Self::InternString(s2)) => {
                 Ok(interns.get_str(*s1).partial_cmp(interns.get_str(*s2)))
@@ -445,18 +443,9 @@ impl PyTrait for Value {
                 }
             }
             // Int + LongInt
-            (Self::Int(a), Self::Ref(id)) => {
+            (Self::Int(i), Self::Ref(id)) | (Self::Ref(id), Self::Int(i)) => {
                 if let HeapData::LongInt(li) = heap.get(*id) {
-                    let result = LongInt::from(*a) + LongInt::new(li.inner().clone());
-                    result.into_value(heap).map(Some)
-                } else {
-                    Ok(None)
-                }
-            }
-            // LongInt + Int
-            (Self::Ref(id), Self::Int(b)) => {
-                if let HeapData::LongInt(li) = heap.get(*id) {
-                    let result = LongInt::new(li.inner().clone()) + LongInt::from(*b);
+                    let result = LongInt::new(li.inner() + i);
                     result.into_value(heap).map(Some)
                 } else {
                     Ok(None)
@@ -467,21 +456,7 @@ impl PyTrait for Value {
             (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 + b))),
             (Self::Float(a), Self::Int(b)) => Ok(Some(Self::Float(a + *b as f64))),
             (Self::Ref(id1), Self::Ref(id2)) => {
-                // Check if both are LongInts
-                let is_longint1 = matches!(heap.get(*id1), HeapData::LongInt(_));
-                let is_longint2 = matches!(heap.get(*id2), HeapData::LongInt(_));
-                if is_longint1 && is_longint2 {
-                    heap.with_two(*id1, *id2, |heap, left, right| {
-                        if let (HeapData::LongInt(a), HeapData::LongInt(b)) = (left, right) {
-                            let result = LongInt::new(a.inner() + b.inner());
-                            result.into_value(heap).map(Some)
-                        } else {
-                            Ok(None)
-                        }
-                    })
-                } else {
-                    heap.with_two(*id1, *id2, |heap, left, right| left.py_add(right, heap, interns))
-                }
+                heap.with_two(*id1, *id2, |heap, left, right| left.py_add(right, heap, interns))
             }
             (Self::InternString(s1), Self::InternString(s2)) => {
                 let concat = format!("{}{}", interns.get_str(*s1), interns.get_str(*s2));
@@ -574,22 +549,7 @@ impl PyTrait for Value {
                 }
             }
             // LongInt - LongInt
-            (Self::Ref(id1), Self::Ref(id2)) => {
-                let is_longint1 = matches!(heap.get(*id1), HeapData::LongInt(_));
-                let is_longint2 = matches!(heap.get(*id2), HeapData::LongInt(_));
-                if is_longint1 && is_longint2 {
-                    heap.with_two(*id1, *id2, |heap, left, right| {
-                        if let (HeapData::LongInt(a), HeapData::LongInt(b)) = (left, right) {
-                            let result = LongInt::new(a.inner() - b.inner());
-                            result.into_value(heap).map(Some)
-                        } else {
-                            Ok(None)
-                        }
-                    })
-                } else {
-                    Ok(None)
-                }
-            }
+            (Self::Ref(id1), Self::Ref(id2)) => heap.with_two(*id1, *id2, |heap, left, right| left.py_sub(right, heap)),
             // Float - Float
             (Self::Float(a), Self::Float(b)) => Ok(Some(Self::Float(a - b))),
             // Int - Float and Float - Int
@@ -642,26 +602,7 @@ impl PyTrait for Value {
                 Ok(Some(LongInt::new(bi).into_value(heap)?))
             }
             // LongInt % LongInt
-            (Self::Ref(id1), Self::Ref(id2)) => {
-                let is_longint1 = matches!(heap.get(*id1), HeapData::LongInt(_));
-                let is_longint2 = matches!(heap.get(*id2), HeapData::LongInt(_));
-                if is_longint1 && is_longint2 {
-                    // Check for zero division first
-                    if matches!(heap.get(*id2), HeapData::LongInt(li) if li.is_zero()) {
-                        return Err(ExcType::zero_division().into());
-                    }
-                    Ok(heap.with_two(*id1, *id2, |heap, left, right| {
-                        if let (HeapData::LongInt(a), HeapData::LongInt(b)) = (left, right) {
-                            let bi = a.inner().mod_floor(b.inner());
-                            LongInt::new(bi).into_value(heap).map(Some)
-                        } else {
-                            Ok(None)
-                        }
-                    })?)
-                } else {
-                    Ok(None)
-                }
-            }
+            (Self::Ref(id1), Self::Ref(id2)) => heap.with_two(*id1, *id2, |heap, left, right| left.py_mod(right, heap)),
             (Self::Float(v1), Self::Float(v2)) => {
                 if *v2 == 0.0 {
                     Err(ExcType::zero_division().into())
@@ -939,30 +880,19 @@ impl PyTrait for Value {
                     Ok(None)
                 }
             }
-            // LongInt / LongInt or LongInt / Float or Float / LongInt
-            (Self::Ref(id1), Self::Ref(id2)) => {
-                let is_longint1 = matches!(heap.get(*id1), HeapData::LongInt(_));
-                let is_longint2 = matches!(heap.get(*id2), HeapData::LongInt(_));
-                if is_longint1 && is_longint2 {
-                    // Check for zero division first
-                    if matches!(heap.get(*id2), HeapData::LongInt(li) if li.is_zero()) {
-                        return Err(ExcType::zero_division().into());
+            // LongInt / LongInt
+            (Self::Ref(id1), Self::Ref(id2)) => match (heap.get(*id1), heap.get(*id2)) {
+                (HeapData::LongInt(li1), HeapData::LongInt(li2)) => {
+                    if li2.is_zero() {
+                        Err(ExcType::zero_division().into())
+                    } else {
+                        let a_f64 = li1.to_f64().unwrap_or(f64::INFINITY);
+                        let b_f64 = li2.to_f64().unwrap_or(f64::INFINITY);
+                        Ok(Some(Self::Float(a_f64 / b_f64)))
                     }
-                    Ok(
-                        heap.with_two(*id1, *id2, |_heap, left, right| -> RunResult<Option<Self>> {
-                            if let (HeapData::LongInt(a), HeapData::LongInt(b)) = (left, right) {
-                                let a_f64 = a.to_f64().unwrap_or(f64::INFINITY);
-                                let b_f64 = b.to_f64().unwrap_or(f64::INFINITY);
-                                Ok(Some(Self::Float(a_f64 / b_f64)))
-                            } else {
-                                Ok(None)
-                            }
-                        })?,
-                    )
-                } else {
-                    Ok(None)
                 }
-            }
+                _ => Ok(None),
+            },
             // LongInt / Float
             (Self::Ref(id), Self::Float(b)) => {
                 if let HeapData::LongInt(li) = heap.get(*id) {
@@ -1100,26 +1030,17 @@ impl PyTrait for Value {
                 }
             }
             // LongInt // LongInt
-            (Self::Ref(id1), Self::Ref(id2)) => {
-                let is_longint1 = matches!(heap.get(*id1), HeapData::LongInt(_));
-                let is_longint2 = matches!(heap.get(*id2), HeapData::LongInt(_));
-                if is_longint1 && is_longint2 {
-                    // Check for zero division first
-                    if matches!(heap.get(*id2), HeapData::LongInt(li) if li.is_zero()) {
-                        return Err(ExcType::zero_division().into());
+            (Self::Ref(id1), Self::Ref(id2)) => match (heap.get(*id1), heap.get(*id2)) {
+                (HeapData::LongInt(li1), HeapData::LongInt(li2)) => {
+                    if li2.is_zero() {
+                        Err(ExcType::zero_division().into())
+                    } else {
+                        let bi = li1.inner().div_floor(li2.inner());
+                        Ok(Some(LongInt::new(bi).into_value(heap)?))
                     }
-                    Ok(heap.with_two(*id1, *id2, |heap, left, right| {
-                        if let (HeapData::LongInt(a), HeapData::LongInt(b)) = (left, right) {
-                            let bi = a.inner().div_floor(b.inner());
-                            LongInt::new(bi).into_value(heap).map(Some)
-                        } else {
-                            Ok(None)
-                        }
-                    })?)
-                } else {
-                    Ok(None)
                 }
-            }
+                _ => Ok(None),
+            },
             // Float floor division returns float
             (Self::Float(a), Self::Float(b)) => {
                 if *b == 0.0 {
