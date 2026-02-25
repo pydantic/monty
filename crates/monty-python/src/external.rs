@@ -6,7 +6,6 @@
 
 use ::monty::{ExternalResult, MontyObject};
 use pyo3::{
-    exceptions::PyKeyError,
     prelude::*,
     types::{PyDict, PyTuple},
 };
@@ -131,10 +130,11 @@ impl<'a, 'py> ExternalFunctionRegistry<'a, 'py> {
         kwargs: &[(MontyObject, MontyObject)],
     ) -> PyResult<MontyObject> {
         // Look up the callable
-        let callable = self
-            .functions
-            .get_item(function_name)?
-            .ok_or_else(|| PyKeyError::new_err(format!("External function '{function_name}' not found")))?;
+        let callable = self.functions.get_item(function_name)?.ok_or_else(|| {
+            pyo3::exceptions::PyLookupError::new_err(format!(
+                "Unable to find '{function_name}' in external functions dict"
+            ))
+        })?;
 
         // Convert positional arguments to Python objects
         let py_args: PyResult<Vec<Py<PyAny>>> = args

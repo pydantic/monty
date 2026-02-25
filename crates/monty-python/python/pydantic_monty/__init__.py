@@ -114,6 +114,22 @@ async def run_monty_async(
                                 progress = await run_in_pool(partial(progress.resume, exception=exc))
                             else:
                                 progress = await run_in_pool(partial(progress.resume, return_value=result))
+                    # Handle dataclass method calls (first arg is the instance)
+                    elif progress.is_method_call:
+                        self_obj = progress.args[0]
+                        method = getattr(self_obj, progress.function_name)
+                        remaining_args = progress.args[1:]
+                        try:
+                            result = method(*remaining_args, **progress.kwargs)
+                        except Exception as exc:
+                            progress = await run_in_pool(partial(progress.resume, exception=exc))
+                        else:
+                            if inspect.iscoroutine(result):
+                                call_id = progress.call_id
+                                tasks[call_id] = asyncio.create_task(_run_external_function(call_id, result))
+                                progress = await run_in_pool(partial(progress.resume, future=...))
+                            else:
+                                progress = await run_in_pool(partial(progress.resume, return_value=result))
                     # Handle external function calls
                     elif ext_function := external_functions.get(progress.function_name):
                         try:
@@ -128,7 +144,7 @@ async def run_monty_async(
                             else:
                                 progress = await run_in_pool(partial(progress.resume, return_value=result))
                     else:
-                        e = KeyError(f'Function {progress.function_name} not found')
+                        e = LookupError(f"Unable to find '{progress.function_name}' in external functions dict")
                         progress = await run_in_pool(partial(progress.resume, exception=e))
                 else:
                     assert isinstance(progress, MontyFutureSnapshot), f'Unexpected progress type {progress!r}'

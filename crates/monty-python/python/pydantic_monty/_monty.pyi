@@ -260,6 +260,10 @@ class MontySnapshot:
         """Whether this snapshot is for an OS function call (e.g., Path.stat)."""
 
     @property
+    def is_method_call(self) -> bool:
+        """Whether this snapshot is for a dataclass method call (first arg is `self`)."""
+
+    @property
     def function_name(self) -> str | OsFunction:
         """The name of the function being called (external function or OS function like 'Path.stat').
 

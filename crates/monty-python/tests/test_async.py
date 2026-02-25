@@ -101,8 +101,8 @@ async def test_run_monty_async_function_not_found():
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         await run_monty_async(m, external_functions={})
     inner = exc_info.value.exception()
-    assert isinstance(inner, KeyError)
-    assert inner.args[0] == snapshot("'Function missing_func not found'")
+    assert isinstance(inner, LookupError)
+    assert inner.args[0] == snapshot("Unable to find 'missing_func' in external functions dict")
 
 
 async def test_run_monty_async_sync_exception():

@@ -1,18 +1,33 @@
 import asyncio
+import re
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import logfire
-from pydantic_ai import Agent
+import pydantic_core
+from devtools import debug
+from pydantic_ai import Agent, ModelRequest, ModelRequestNode, UserPromptPart
+from pydantic_graph import End
+
+from pydantic_monty import Monty, MontyError, MontyRuntimeError, run_monty_async
+
+from .browser import start_browser
+from .external_functions import beautiful_soup
 
 logfire.configure()
+logfire.instrument_pydantic_ai()
 
 THIS_DIR = Path(__file__).parent
-stubs = THIS_DIR / 'stubs.pyi'
+stubs_file = THIS_DIR / 'stubs.pyi'
+
+stubs = stubs_file.read_text()
 
 scrape_agent = Agent(
     'gateway/anthropic:claude-sonnet-4-5',
     instructions=f"""
-You MUST return only python code to execute the task you are working on.
+You MUST return markdown with either an explanation of the result or a comment and python code to execute
+in a "```python" code block.
 
 The runtime uses a restricted Python subset:
 - you cannot use the standard library except builtin functions and the following modules: `sys`, `typing`, `asyncio`
@@ -45,7 +60,7 @@ r3 = await get_data(id=3)
 You can use the following types functions and types:
 
 ```python
-{stubs.read_text()}
+{stubs}
 ```
 """,
 )
@@ -59,8 +74,7 @@ urls = {
 
 async def main(model: str):
     url = urls[model]
-    result = await scrape_agent.run(
-        f"""
+    prompt = f"""
 Get structured information including pricing data for all models from the following URL:
 
 {url}
@@ -70,9 +84,99 @@ the functions provided or return a small snippet of the HTML to process.
 
 Ignore any deprecated models.
 """
-    )
-    print(result.output)
+
+    print_output: list[str] = []
+
+    def monty_print(_: Literal['stdout'], content: str):
+        print_output.append(content)
+
+    async with start_browser() as browser:
+        async with scrape_agent.iter(prompt) as agent_run:
+            node = agent_run.next_node
+            while True:
+                while not isinstance(node, End):
+                    node = await agent_run.next(node)
+
+                extracted = ExtractCode.extract(node.data.output)
+                logfire.info(f'{extracted}')
+                if extracted.comment:
+                    print(f'LLM: {extracted.comment}')
+
+                if not extracted.code:
+                    print('done')
+                    break
+
+                try:
+                    m = Monty(
+                        extracted.code,
+                        external_functions=['open_page', 'beautiful_soup'],
+                        type_check=True,
+                        type_check_stubs=stubs,
+                    )
+                except MontyError as e:
+                    msg = f'Error Preparing Code: {e}'
+                    node = await agent_run.next(new_node(msg))
+                    continue
+
+                try:
+                    output = await run_monty_async(
+                        m,
+                        external_functions={
+                            'open_page': browser.open_page,
+                            'beautiful_soup': beautiful_soup,
+                        },
+                        print_callback=monty_print,
+                    )
+                except MontyRuntimeError as e:
+                    msg = f'Error running code: {e.display()}'
+                else:
+                    msg = pydantic_core.to_json(output).decode()
+
+                if print_output:
+                    msg += f'\n\nPrint Output:\n---\n{"".join(print_output)}\n---'
+                    print_output.clear()
+                node = await agent_run.next(new_node(msg))
+        debug(node)
+
+
+def new_node(msg: str) -> ModelRequestNode[None, str]:
+    return ModelRequestNode(request=ModelRequest(parts=[UserPromptPart(content=msg)]))
+
+
+@dataclass
+class ExtractCode:
+    """Extract Python code from an LLM response.
+
+    Priority:
+    1. First ```python code fence
+    2. First code fence of any language
+    3. Entire response as-is
+    """
+
+    code: str | None
+    """Code extract from response.
+
+    First ```(python|py) code fence, or first unexplained
+
+    """
+    comment: str | None
+
+    @classmethod
+    def extract(cls, response: str) -> ExtractCode:
+        # Try ```python or ```py fences first
+        m = re.search(r'```(?:python|py)\s*\n(.*?)```', response, re.DOTALL)
+        if not m:
+            # Try any code fence
+            m = re.search(r'```\w*\s*\n(.*?)```', response, re.DOTALL)
+
+        if m:
+            code = m.group(1).strip()
+            # Extract comment as text before the code fence
+            comment = response[: m.start()].strip() or None
+            return cls(code=code, comment=comment)
+
+        return cls(code=None, comment=response.strip())
 
 
 if __name__ == '__main__':
-    asyncio.run(main('openai'))
+    asyncio.run(main('anthropic'))

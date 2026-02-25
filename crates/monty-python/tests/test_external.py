@@ -158,7 +158,7 @@ def test_external_function_raises_exception():
 
 
 def test_external_function_wrong_name_raises():
-    """Test that calling a missing external function raises KeyError."""
+    """Test that calling a missing external function raises LookupError."""
     m = pydantic_monty.Monty('foo()', external_functions=['foo'])
 
     def bar(*args: Any, **kwargs: Any) -> int:
@@ -167,9 +167,8 @@ def test_external_function_wrong_name_raises():
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         m.run(external_functions={'bar': bar})
     inner = exc_info.value.exception()
-    assert isinstance(inner, KeyError)
-    # KeyError wraps the message in quotes
-    assert inner.args[0] == snapshot('"External function \'foo\' not found"')
+    assert isinstance(inner, LookupError)
+    assert inner.args[0] == snapshot("Unable to find 'foo' in external functions dict")
 
 
 def test_external_function_exception_caught_by_try_except():

@@ -479,13 +479,14 @@ impl EitherProgress {
                     kwargs,
                     state,
                     call_id,
-                    ..
+                    method_call,
                 } => Self::function_snapshot(
                     py,
                     function_name,
                     &args,
                     &kwargs,
                     call_id,
+                    method_call,
                     EitherSnapshot::NoLimit(state),
                     script_name,
                     print_callback,
@@ -524,13 +525,14 @@ impl EitherProgress {
                     kwargs,
                     state,
                     call_id,
-                    ..
+                    method_call,
                 } => Self::function_snapshot(
                     py,
                     function_name,
                     &args,
                     &kwargs,
                     call_id,
+                    method_call,
                     EitherSnapshot::Limited(state),
                     script_name,
                     print_callback,
@@ -571,6 +573,7 @@ impl EitherProgress {
         args: &[MontyObject],
         kwargs: &[(MontyObject, MontyObject)],
         call_id: u32,
+        method_call: bool,
         snapshot: EitherSnapshot,
         script_name: String,
         print_callback: Option<Py<PyAny>>,
@@ -588,6 +591,7 @@ impl EitherProgress {
             print_callback,
             script_name,
             is_os_function: false,
+            is_method_call: method_call,
             function_name,
             args: PyTuple::new(py, items?)?.unbind(),
             kwargs: dict.unbind(),
@@ -621,6 +625,7 @@ impl EitherProgress {
             print_callback,
             script_name,
             is_os_function: true,
+            is_method_call: false,
             function_name: function.to_string(),
             args: PyTuple::new(py, items?)?.unbind(),
             kwargs: dict.unbind(),
@@ -926,6 +931,10 @@ pub struct PyMontySnapshot {
     #[pyo3(get)]
     pub is_os_function: bool,
 
+    /// Whether this call is a dataclass method call (first arg is `self`)
+    #[pyo3(get)]
+    pub is_method_call: bool,
+
     /// The name of the function being called.
     #[pyo3(get)]
     pub function_name: String,
@@ -1051,6 +1060,7 @@ impl PyMontySnapshot {
             snapshot: &'a EitherSnapshot,
             script_name: &'a str,
             is_os_function: bool,
+            is_method_call: bool,
             function_name: &'a str,
             args: Vec<MontyObject>,
             kwargs: Vec<(MontyObject, MontyObject)>,
@@ -1084,6 +1094,7 @@ impl PyMontySnapshot {
             snapshot: &snapshot,
             script_name: &self.script_name,
             is_os_function: self.is_os_function,
+            is_method_call: self.is_method_call,
             function_name: &self.function_name,
             args,
             kwargs,
@@ -1121,6 +1132,8 @@ impl PyMontySnapshot {
             snapshot: EitherSnapshot,
             script_name: String,
             is_os_function: bool,
+            #[serde(default)]
+            is_method_call: bool,
             function_name: String,
             args: Vec<MontyObject>,
             kwargs: Vec<(MontyObject, MontyObject)>,
@@ -1153,6 +1166,7 @@ impl PyMontySnapshot {
             dc_registry,
             script_name: serialized.script_name,
             is_os_function: serialized.is_os_function,
+            is_method_call: serialized.is_method_call,
             function_name: serialized.function_name,
             args: PyTuple::new(py, args)?.unbind(),
             kwargs: kwargs_dict.unbind(),

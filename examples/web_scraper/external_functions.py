@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup, Tag as BsTag
 from .browser import PwPage, pw_pages
 
 
-def open_page(
+async def open_page(
     url: str,
     wait_until: Literal['commit', 'domcontentloaded', 'load', 'networkidle'] = 'networkidle',
 ) -> Page:

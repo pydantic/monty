@@ -5,7 +5,7 @@ from .browser import PwPage as PwPage
 from dataclasses import dataclass, field
 from typing import Literal
 
-def open_page(url: str, wait_until: Literal['commit', 'domcontentloaded', 'load', 'networkidle'] = 'networkidle') -> Page:
+async def open_page(url: str, wait_until: Literal['commit', 'domcontentloaded', 'load', 'networkidle'] = 'networkidle') -> Page:
     """Open a URL in a headless browser and return a `Page`.
 
     Use this to load a web page so you can inspect its HTML content.
