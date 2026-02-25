@@ -18,6 +18,7 @@ use crate::{
     builtins::Builtins,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId},
+    heap_data::HeapDataMut,
     intern::{BytesId, ExtFunctionId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker, check_div_size, check_lshift_size, check_pow_size, check_repeat_size},
@@ -675,7 +676,7 @@ impl PyTrait for Value {
                 Ok(result)
             }
             (Self::Ref(id1), Self::InternString(string_id)) => {
-                if let HeapData::Str(s1) = heap.get_mut(*id1) {
+                if let HeapDataMut::Str(s1) = heap.get_mut(*id1) {
                     s1.as_string_mut().push_str(interns.get_str(*string_id));
                     Ok(true)
                 } else {
@@ -708,7 +709,7 @@ impl PyTrait for Value {
                 Ok(result)
             }
             (Self::Ref(id1), Self::InternBytes(bytes_id)) => {
-                if let HeapData::Bytes(b1) = heap.get_mut(*id1) {
+                if let HeapDataMut::Bytes(b1) = heap.get_mut(*id1) {
                     b1.as_vec_mut().extend_from_slice(interns.get_bytes(*bytes_id));
                     Ok(true)
                 } else {
@@ -716,7 +717,7 @@ impl PyTrait for Value {
                 }
             }
             (Self::Ref(id), Self::Ref(_)) => {
-                heap.with_entry_mut(*id, |heap, data| data.py_iadd(other, heap, Some(*id), interns))
+                heap.with_entry_mut(*id, |heap, mut data| data.py_iadd(other, heap, Some(*id), interns))
             }
             _ => {
                 // Drop other if it's a Ref (ensure proper refcounting for unsupported type combinations)
@@ -1376,7 +1377,7 @@ impl PyTrait for Value {
         match self {
             Self::Ref(id) => {
                 let id = *id;
-                heap.with_entry_mut(id, |heap, data| data.py_setitem(key, value, heap, interns))
+                heap.with_entry_mut(id, |heap, mut data| data.py_setitem(key, value, heap, interns))
             }
             _ => Err(ExcType::type_error(format!(
                 "'{}' object does not support item assignment",
@@ -1560,7 +1561,7 @@ impl Value {
                 // This allows iterating over container elements while calling py_eq
                 // (which needs &mut Heap for comparing nested heap values).
                 heap.with_entry_mut(*heap_id, |heap, data| match data {
-                    HeapData::List(list) => {
+                    HeapDataMut::List(list) => {
                         for el in list.as_slice() {
                             if item.py_eq(el, heap, interns)? {
                                 return Ok(true);
@@ -1568,7 +1569,7 @@ impl Value {
                         }
                         Ok(false)
                     }
-                    HeapData::Tuple(tuple) => {
+                    HeapDataMut::Tuple(tuple) => {
                         for el in tuple.as_slice() {
                             if item.py_eq(el, heap, interns)? {
                                 return Ok(true);
@@ -1576,11 +1577,11 @@ impl Value {
                         }
                         Ok(false)
                     }
-                    HeapData::Dict(dict) => dict.get(item, heap, interns).map(|m| m.is_some()),
-                    HeapData::Set(set) => set.contains(item, heap, interns),
-                    HeapData::FrozenSet(fset) => fset.contains(item, heap, interns),
-                    HeapData::Str(s) => str_contains(s.as_str(), item, heap, interns),
-                    HeapData::Range(range) => {
+                    HeapDataMut::Dict(dict) => dict.get(item, heap, interns).map(|m| m.is_some()),
+                    HeapDataMut::Set(set) => set.contains(item, heap, interns),
+                    HeapDataMut::FrozenSet(fset) => fset.contains(item, heap, interns),
+                    HeapDataMut::Str(s) => str_contains(s.as_str(), item, heap, interns),
+                    HeapDataMut::Range(range) => {
                         // Range containment is O(1) - check bounds and step alignment
                         let n = match item {
                             Self::Int(i) => *i,
@@ -1689,7 +1690,7 @@ impl Value {
             if is_dataclass {
                 let name_value = Self::InternString(name_id);
                 heap.with_entry_mut(heap_id, |heap, data| {
-                    if let HeapData::Dataclass(dc) = data {
+                    if let HeapDataMut::Dataclass(dc) = data {
                         match dc.set_attr(name_value, value, heap, interns) {
                             Ok(old_value) => {
                                 if let Some(old) = old_value {

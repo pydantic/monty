@@ -908,7 +908,9 @@ mod tests {
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
-        let result = heap.with_entry_mut(list_id, |heap, data| data.py_setitem(key, new_value, heap, &interns));
+        let result = heap.with_entry_mut(list_id, |heap, mut data| {
+            data.py_setitem(key, new_value, heap, &interns)
+        });
 
         assert!(result.is_ok());
 
@@ -935,7 +937,9 @@ mod tests {
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
-        let result = heap.with_entry_mut(list_id, |heap, data| data.py_setitem(key, new_value, heap, &interns));
+        let result = heap.with_entry_mut(list_id, |heap, mut data| {
+            data.py_setitem(key, new_value, heap, &interns)
+        });
 
         assert!(result.is_ok());
 
@@ -960,7 +964,9 @@ mod tests {
         heap.inc_ref(index_id);
 
         // This should fail with IndexError because i64::MAX is out of bounds for a 1-element list
-        let result = heap.with_entry_mut(list_id, |heap, data| data.py_setitem(key, new_value, heap, &interns));
+        let result = heap.with_entry_mut(list_id, |heap, mut data| {
+            data.py_setitem(key, new_value, heap, &interns)
+        });
 
         assert!(result.is_err());
 

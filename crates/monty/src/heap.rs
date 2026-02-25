@@ -4,7 +4,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem::{ManuallyDrop, discriminant, size_of},
+    mem::{ManuallyDrop, size_of},
     ptr::addr_of,
     vec,
 };
@@ -18,7 +18,8 @@ use crate::{
     asyncio::{Coroutine, GatherFuture, GatherItem},
     bytecode::VM,
     exception_private::{ExcType, RunResult, SimpleException},
-    intern::{FunctionId, Interns},
+    heap_data::{CellValue, Closure, FunctionDefaults, HeapDataMut},
+    intern::Interns,
     resource::{ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
     types::{
         AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait,
@@ -120,51 +121,6 @@ pub(crate) enum HeapData {
     Path(Path),
 }
 
-/// Thin wrapper around `Value` which is used in the `Cell` variant above.
-///
-/// The inner value is the cell's mutable payload.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
-#[repr(transparent)]
-pub(crate) struct CellValue(pub(crate) Value);
-
-impl std::ops::Deref for CellValue {
-    type Target = Value;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-/// A closure: a function that captures variables from enclosing scopes.
-///
-/// Contains a reference to the function definition, a vector of captured cell HeapIds,
-/// and evaluated default values (if any). When the closure is called, these cells are
-/// passed to the RunFrame for variable access. When the closure is dropped, we must
-/// decrement the ref count on each captured cell and each default value.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Closure {
-    /// The function definition being captured.
-    pub func_id: FunctionId,
-    /// Captured cells from enclosing scopes.
-    pub cells: Vec<HeapId>,
-    /// Evaluated default parameter values (if any).
-    pub defaults: Vec<Value>,
-}
-
-/// A function with evaluated default parameter values (non-closure).
-///
-/// Contains a reference to the function definition and the evaluated default values.
-/// When the function is called, defaults are cloned for missing optional parameters.
-/// When dropped, we must decrement the ref count on each default value.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct FunctionDefaults {
-    /// The function definition being captured.
-    pub func_id: FunctionId,
-    /// Evaluated default parameter values (if any).
-    pub defaults: Vec<Value>,
-}
-
 impl HeapData {
     /// Returns whether this heap data type can participate in reference cycles.
     ///
@@ -175,7 +131,7 @@ impl HeapData {
     /// This optimization allows programs that allocate many leaf objects (like strings)
     /// to avoid triggering unnecessary GC cycles.
     #[inline]
-    pub fn is_gc_tracked(&self) -> bool {
+    fn is_gc_tracked(&self) -> bool {
         matches!(
             self,
             Self::List(_)
@@ -203,7 +159,7 @@ impl HeapData {
     /// Note: This is separate from `is_gc_tracked()` - a container may be GC-tracked
     /// (capable of holding refs) but not currently contain any refs.
     #[inline]
-    pub fn has_refs(&self) -> bool {
+    fn has_refs(&self) -> bool {
         match self {
             Self::List(list) => list.contains_refs(),
             Self::Tuple(tuple) => tuple.contains_refs(),
@@ -252,120 +208,33 @@ impl HeapData {
         matches!(self, Self::Coroutine(_))
     }
 
-    /// Computes hash for immutable heap types that can be used as dict keys.
+    /// Re-cast this as `HeapDataMut` for mutation.
     ///
-    /// Returns `Ok(Some(hash))` for immutable types (Str, Bytes, Tuple of hashables).
-    /// Returns `Ok(None)` for mutable types (List, Dict) which cannot be dict keys.
-    /// Returns `Err(ResourceError::Recursion)` if the recursion limit is exceeded
-    /// while hashing deeply nested containers (e.g., tuples of tuples).
-    ///
-    /// This is called lazily when the value is first used as a dict key,
-    /// avoiding unnecessary hash computation for values that are never used as keys.
-    fn compute_hash_if_immutable(
-        &self,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> Result<Option<u64>, ResourceError> {
+    /// This is an important part of the Heap invariants: we never allow `&mut HeapData` to
+    /// outside of this module to prevent heap data changing type during execution.
+    fn to_mut(&mut self) -> HeapDataMut<'_> {
         match self {
-            // Hash just the actual string or bytes content for consistency with Value::InternString/InternBytes
-            // hence we don't include the discriminant
-            Self::Str(s) => {
-                let mut hasher = DefaultHasher::new();
-                s.as_str().hash(&mut hasher);
-                Ok(Some(hasher.finish()))
-            }
-            Self::Bytes(b) => {
-                let mut hasher = DefaultHasher::new();
-                b.as_slice().hash(&mut hasher);
-                Ok(Some(hasher.finish()))
-            }
-            Self::FrozenSet(fs) => {
-                // FrozenSet hash is XOR of element hashes (order-independent)
-                // Recursion depth is checked inside compute_hash
-                fs.compute_hash(heap, interns)
-            }
-            Self::Tuple(t) => {
-                let token = heap.incr_recursion_depth()?;
-                crate::defer_drop!(token, heap);
-                let mut hasher = DefaultHasher::new();
-                discriminant(self).hash(&mut hasher);
-                // Tuple is hashable only if all elements are hashable
-                for obj in t.as_slice() {
-                    match obj.py_hash(heap, interns)? {
-                        Some(h) => h.hash(&mut hasher),
-                        None => return Ok(None),
-                    }
-                }
-                Ok(Some(hasher.finish()))
-            }
-            Self::NamedTuple(nt) => {
-                let token = heap.incr_recursion_depth()?;
-                crate::defer_drop!(token, heap);
-                let mut hasher = DefaultHasher::new();
-                discriminant(self).hash(&mut hasher);
-                // Hash only by elements (not type_name) to match equality semantics
-                for obj in nt.as_vec() {
-                    match obj.py_hash(heap, interns)? {
-                        Some(h) => h.hash(&mut hasher),
-                        None => return Ok(None),
-                    }
-                }
-                Ok(Some(hasher.finish()))
-            }
-            Self::Closure(closure) => {
-                let mut hasher = DefaultHasher::new();
-                discriminant(self).hash(&mut hasher);
-                // TODO, this is NOT proper hashing, we should somehow hash the function properly
-                closure.func_id.hash(&mut hasher);
-                Ok(Some(hasher.finish()))
-            }
-            Self::FunctionDefaults(fd) => {
-                let mut hasher = DefaultHasher::new();
-                discriminant(self).hash(&mut hasher);
-                // TODO, this is NOT proper hashing, we should somehow hash the function properly
-                fd.func_id.hash(&mut hasher);
-                Ok(Some(hasher.finish()))
-            }
-            Self::Range(range) => {
-                let mut hasher = DefaultHasher::new();
-                discriminant(self).hash(&mut hasher);
-                range.start.hash(&mut hasher);
-                range.stop.hash(&mut hasher);
-                range.step.hash(&mut hasher);
-                Ok(Some(hasher.finish()))
-            }
-            // Dataclass hashability depends on the mutable flag
-            // Recursion depth is checked inside compute_hash
-            Self::Dataclass(dc) => dc.compute_hash(heap, interns),
-            // Slices are immutable and hashable (like in CPython)
-            Self::Slice(slice) => {
-                let mut hasher = DefaultHasher::new();
-                discriminant(self).hash(&mut hasher);
-                slice.start.hash(&mut hasher);
-                slice.stop.hash(&mut hasher);
-                slice.step.hash(&mut hasher);
-                Ok(Some(hasher.finish()))
-            }
-            // Path is immutable and hashable
-            Self::Path(path) => {
-                let mut hasher = DefaultHasher::new();
-                discriminant(self).hash(&mut hasher);
-                path.as_str().hash(&mut hasher);
-                Ok(Some(hasher.finish()))
-            }
-            // Mutable types, exceptions, iterators, modules, and async types cannot be hashed
-            // (Cell is handled specially in get_or_compute_hash)
-            Self::List(_)
-            | Self::Dict(_)
-            | Self::Set(_)
-            | Self::Cell(_)
-            | Self::Exception(_)
-            | Self::Iter(_)
-            | Self::Module(_)
-            | Self::Coroutine(_)
-            | Self::GatherFuture(_) => Ok(None),
-            // LongInt is immutable and hashable
-            Self::LongInt(li) => Ok(Some(li.hash())),
+            Self::Str(s) => HeapDataMut::Str(s),
+            Self::Bytes(b) => HeapDataMut::Bytes(b),
+            Self::List(l) => HeapDataMut::List(l),
+            Self::Tuple(t) => HeapDataMut::Tuple(t),
+            Self::NamedTuple(nt) => HeapDataMut::NamedTuple(nt),
+            Self::Dict(d) => HeapDataMut::Dict(d),
+            Self::Set(s) => HeapDataMut::Set(s),
+            Self::FrozenSet(fs) => HeapDataMut::FrozenSet(fs),
+            Self::Closure(closure) => HeapDataMut::Closure(closure),
+            Self::FunctionDefaults(fd) => HeapDataMut::FunctionDefaults(fd),
+            Self::Cell(cell) => HeapDataMut::Cell(cell),
+            Self::Range(r) => HeapDataMut::Range(r),
+            Self::Slice(s) => HeapDataMut::Slice(s),
+            Self::Exception(e) => HeapDataMut::Exception(e),
+            Self::Dataclass(dc) => HeapDataMut::Dataclass(dc),
+            Self::Iter(iter) => HeapDataMut::Iter(iter),
+            Self::LongInt(li) => HeapDataMut::LongInt(li),
+            Self::Module(m) => HeapDataMut::Module(m),
+            Self::Coroutine(coro) => HeapDataMut::Coroutine(coro),
+            Self::GatherFuture(gather) => HeapDataMut::GatherFuture(gather),
+            Self::Path(p) => HeapDataMut::Path(p),
         }
     }
 }
@@ -1288,7 +1157,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// # Panics
     /// Panics if the value ID is invalid, the value has already been freed,
     /// or the data is currently borrowed via `with_entry_mut`/`call_attr`.
-    pub fn get_mut(&mut self, id: HeapId) -> &mut HeapData {
+    pub fn get_mut(&mut self, id: HeapId) -> HeapDataMut<'_> {
         self.entries
             .get_mut(id.index())
             .expect("Heap::get_mut: slot missing")
@@ -1297,6 +1166,7 @@ impl<T: ResourceTracker> Heap<T> {
             .data
             .as_mut()
             .expect("Heap::get_mut: data currently borrowed")
+            .to_mut()
     }
 
     /// Returns or computes the hash for the heap entry at the given ID.
@@ -1333,8 +1203,8 @@ impl<T: ResourceTracker> Heap<T> {
         // Compute hash lazily - need to temporarily take data to avoid borrow conflict.
         // IMPORTANT: data must be restored to the entry on ALL paths (including errors)
         // to avoid dropping HeapData containing Value::Ref without proper cleanup.
-        let data = entry.data.take().expect("Heap::get_or_compute_hash: data borrowed");
-        let hash = data.compute_hash_if_immutable(self, interns);
+        let mut data = entry.data.take().expect("Heap::get_or_compute_hash: data borrowed");
+        let hash = data.to_mut().compute_hash_if_immutable(self, interns);
 
         // Restore data before handling the result
         let entry = self
@@ -1397,12 +1267,12 @@ impl<T: ResourceTracker> Heap<T> {
     /// The data is automatically restored after the closure completes.
     pub fn with_entry_mut<F, R>(&mut self, id: HeapId, f: F) -> R
     where
-        F: FnOnce(&mut Self, &mut HeapData) -> R,
+        F: FnOnce(&mut Self, HeapDataMut) -> R,
     {
         // Take data out in a block so the borrow of self.entries ends
         let mut data = take_data!(self, id, "with_entry_mut");
 
-        let result = f(self, &mut data);
+        let result = f(self, data.to_mut());
 
         // Restore data
         restore_data!(self, id, data, "with_entry_mut");
@@ -1491,8 +1361,8 @@ impl<T: ResourceTracker> Heap<T> {
         let mut guard = HeapGuard::new(value, self);
         let (value, this) = guard.as_parts_mut();
 
-        match &mut this.get_mut(id) {
-            HeapData::Cell(c) => std::mem::swap(&mut c.0, value),
+        match this.get_mut(id) {
+            HeapDataMut::Cell(c) => std::mem::swap(&mut c.0, value),
             _ => panic!("Heap::set_cell_value: entry is not a Cell"),
         }
     }
