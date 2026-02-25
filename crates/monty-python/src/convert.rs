@@ -112,10 +112,9 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
         let path_str: String = obj.str()?.extract()?;
         Ok(MontyObject::Path(path_str))
     } else if let Ok(name) = obj.get_type().qualname() {
-        let msg = if let Ok(module) = obj.get_type().module() {
-            format!("Cannot convert {module}.{name} to Monty value")
-        } else {
-            format!("Cannot convert {name} to Monty value")
+        let msg = match obj.get_type().module() {
+            Ok(module) => format!("Cannot convert {module}.{name} to Monty value"),
+            Err(_) => format!("Cannot convert {name} to Monty value"),
         };
         Err(PyTypeError::new_err(msg))
     } else {

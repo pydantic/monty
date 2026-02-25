@@ -1,5 +1,7 @@
 import asyncio
 import re
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -19,9 +21,23 @@ logfire.configure()
 logfire.instrument_pydantic_ai()
 
 THIS_DIR = Path(__file__).parent
-stubs_file = THIS_DIR / 'stubs.pyi'
 
-stubs = stubs_file.read_text()
+
+def _generate_stubs() -> str:
+    """Generate type stubs for external_functions.py using stubgen."""
+    with logfire.span('generating stubs'):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subprocess.run(
+                ['uv', 'run', 'stubgen', 'external_functions.py', '--include-docstrings', '-o', tmpdir],
+                capture_output=True,
+                text=True,
+                cwd=THIS_DIR,
+                check=True,
+            )
+            return (Path(tmpdir) / 'external_functions.pyi').read_text()
+
+
+stubs = _generate_stubs()
 
 scrape_agent = Agent(
     'gateway/anthropic:claude-sonnet-4-5',

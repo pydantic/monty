@@ -1132,7 +1132,6 @@ impl PyMontySnapshot {
             snapshot: EitherSnapshot,
             script_name: String,
             is_os_function: bool,
-            #[serde(default)]
             is_method_call: bool,
             function_name: String,
             args: Vec<MontyObject>,

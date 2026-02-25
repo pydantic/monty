@@ -909,6 +909,46 @@ def test_method_on_nested_dataclass_in_tuple():
     assert result == snapshot(15)
 
 
+def test_dataclass_private_fields_skipped():
+    """Private fields (starting with _) are excluded from conversion."""
+
+    @dataclass
+    class WithPrivate:
+        name: str
+        _internal: int = 0
+
+    m = pydantic_monty.Monty('repr(x)', inputs=['x'])
+    result = m.run(inputs={'x': WithPrivate(name='Alice', _internal=42)})
+    assert result == snapshot("WithPrivate(name='Alice')")
+
+
+def test_dataclass_private_fields_skipped_no_default():
+    """Private fields without defaults cause TypeError on reconstruction (field is missing)."""
+
+    @dataclass
+    class WithPrivateNoDefault:
+        name: str
+        _secret: str
+
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    with pytest.raises(TypeError):
+        m.run(inputs={'x': WithPrivateNoDefault(name='Alice', _secret='hidden')})
+
+
+def test_dataclass_private_field_not_accessible_in_monty():
+    """Private fields are not accessible inside Monty expressions."""
+
+    @dataclass
+    class WithPrivate:
+        name: str
+        _internal: int = 0
+
+    m = pydantic_monty.Monty('x._internal', inputs=['x'])
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run(inputs={'x': WithPrivate(name='Alice', _internal=42)})
+    assert isinstance(exc_info.value.exception(), AttributeError)
+
+
 def test_method_on_nested_dataclass_field():
     """Method call on a dataclass that is a field of another dataclass (d.c.method())."""
 
