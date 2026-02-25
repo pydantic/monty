@@ -179,9 +179,8 @@ jobs:
       - if: steps.cache-rust.outputs.cache-hit != 'true'
         run: cargo install cargo-fuzz
 
-      # venv is not used by the fuzz target but cargo config expects it
-      - name: Set up empty venv
-        run: python -m venv .venv
+      # don't use .venv python in CI
+      - run: rm .cargo/config.toml
 
       - name: Run ${{ matrix.target }} fuzzer
         run: |
@@ -511,9 +510,8 @@ jobs:
             .cargo-cache
             target/
           key: ${{ matrix.settings.target }}-cargo-${{ matrix.settings.host }}
-      # venv is not used by the build-js jobs
-      - name: Set up empty venv
-        run: python3 -m venv .venv
+      # don't use .venv python in CI
+      - run: rm .cargo/config.toml
       - uses: mlugg/setup-zig@v2
         if: ${{ contains(matrix.settings.target, 'musl') }}
         with:
