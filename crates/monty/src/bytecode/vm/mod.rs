@@ -1576,15 +1576,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
         if !self.frames.is_empty()
             && let Err(e) = self.heap.incr_recursion_depth()
         {
-            // Clean up the frame's stack region before returning the error
-            while self.stack.len() > frame.stack_base {
-                let value = self.stack.pop().unwrap();
-                value.drop_with_heap(self.heap);
-            }
-            // Clean up the namespace (but not the global namespace)
-            if frame.namespace_idx != GLOBAL_NS_IDX {
-                self.namespaces.drop_with_heap(frame.namespace_idx, self.heap);
-            }
+            self.cleanup_frame_state(&frame);
             return Err(e.into());
         }
         self.frames.push(frame);
@@ -1601,15 +1593,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// Returns `true` if this frame indicated evaluation should stop when popped.
     pub(super) fn pop_frame(&mut self) -> bool {
         let frame = self.frames.pop().expect("no frame to pop");
-        // Clean up frame's stack region
-        while self.stack.len() > frame.stack_base {
-            let value = self.stack.pop().unwrap();
-            value.drop_with_heap(self.heap);
-        }
-        // Clean up the namespace (but not the global namespace)
-        if frame.namespace_idx != GLOBAL_NS_IDX {
-            self.namespaces.drop_with_heap(frame.namespace_idx, self.heap);
-        }
+        self.cleanup_frame_state(&frame);
         // Sync instruction_ip to the parent frame so exception table lookups
         // target the correct frame after returning from a nested run() call.
         if let Some(parent) = self.frames.last() {
@@ -1620,6 +1604,18 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
             self.heap.decr_recursion_depth();
         }
         frame.should_return
+    }
+
+    fn cleanup_frame_state(&mut self, frame: &CallFrame<'_>) {
+        // Clean up frame's stack region
+        self.stack
+            .drain(frame.stack_base..)
+            .for_each(|value| value.drop_with_heap(self.heap));
+
+        // Clean up the namespace (but not the global namespace)
+        if frame.namespace_idx != GLOBAL_NS_IDX {
+            self.namespaces.drop_with_heap(frame.namespace_idx, self.heap);
+        }
     }
 
     /// Cleans up all frames for the current task before switching tasks.
