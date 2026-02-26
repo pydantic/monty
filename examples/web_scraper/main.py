@@ -72,6 +72,12 @@ You can use the following types functions and types:
 
 IMPORTANT: you MUST must call the `record_model_info` function to record information about every model you find,
 returning data about models as text is not helpful.
+
+`record_model_info` dict argument schema:
+
+```json
+{RecordModels.record_model_info_schema()}
+```
 """,
 )
 
@@ -118,32 +124,33 @@ Ignore any deprecated models.
                     print('done')
                     break
 
-                try:
-                    m = Monty(
-                        extracted.code,
-                        external_functions=['open_page', 'beautiful_soup', 'record_model_info'],
-                        type_check=True,
-                        type_check_stubs=stubs,
-                    )
-                except MontyError as e:
-                    msg = f'Error Preparing Code: {e}'
-                    node = await agent_run.next(new_node(msg))
-                    continue
+                with logfire.span('running monty'):
+                    try:
+                        m = Monty(
+                            extracted.code,
+                            external_functions=['open_page', 'beautiful_soup', 'record_model_info'],
+                            type_check=True,
+                            type_check_stubs=stubs,
+                        )
+                    except MontyError as e:
+                        msg = f'Error Preparing Code: {e}'
+                        node = await agent_run.next(new_node(msg))
+                        continue
 
-                try:
-                    output = await run_monty_async(
-                        m,
-                        external_functions={
-                            'open_page': browser.open_page,
-                            'beautiful_soup': beautiful_soup,
-                            'record_model_info': record_models.record_model_info,
-                        },
-                        print_callback=monty_print,
-                    )
-                except MontyRuntimeError as e:
-                    msg = f'Error running code: {e.display()}'
-                else:
-                    msg = pydantic_core.to_json(output).decode()
+                    try:
+                        output = await run_monty_async(
+                            m,
+                            external_functions={
+                                'open_page': browser.open_page,
+                                'beautiful_soup': beautiful_soup,
+                                'record_model_info': record_models.record_model_info,
+                            },
+                            print_callback=monty_print,
+                        )
+                    except MontyRuntimeError as e:
+                        msg = f'Error running code: {e.display()}'
+                    else:
+                        msg = pydantic_core.to_json(output).decode()
 
                 if print_output:
                     msg += f'\n\nPrint Output:\n---\n{"".join(print_output)}\n---'

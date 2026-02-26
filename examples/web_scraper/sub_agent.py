@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from textwrap import indent
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -61,18 +60,14 @@ class RecordModels:
 
     @classmethod
     def record_model_info_stub(cls) -> str:
-        s = json.dumps(ModelInfo.model_json_schema(), indent=2)
-        assert isinstance(RecordModels.record_model_info.__doc__, str)
-
         return f'''\
 def record_model_info(model_information: dict[str, Any]) -> str:
     """Record information about a model.
 
     NOTE: this method takes a python dict argument, not JSON.
-
-    The input should have the following schema:
-    ```json
-    {indent(s, prefix='    ')}
-    ```
     """
 '''
+
+    @classmethod
+    def record_model_info_schema(cls) -> str:
+        return json.dumps(ModelInfo.model_json_schema(), indent=2)
