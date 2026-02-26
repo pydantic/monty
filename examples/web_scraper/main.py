@@ -9,6 +9,7 @@ from typing import Literal
 import logfire
 import pydantic_core
 from pydantic_ai import Agent, ModelRequest, ModelRequestNode, UserPromptPart
+from pydantic_ai.models.anthropic import AnthropicModelSettings
 from pydantic_graph import End
 
 from pydantic_monty import Monty, MontyError, MontyRuntimeError, run_monty_async
@@ -44,6 +45,7 @@ stubs = f"""
 
 scrape_agent = Agent(
     'gateway/anthropic:claude-sonnet-4-5',
+    model_settings=AnthropicModelSettings(anthropic_thinking={'type': 'enabled', 'budget_tokens': 1024}),
     instructions=f"""
 You MUST return markdown with either a comment and python code to execute
 in a "```python" code block, or an explanation of your process to end.
@@ -51,6 +53,8 @@ in a "```python" code block, or an explanation of your process to end.
 You MUST return only one code block to execute. DO NOT return multiple code blocks.
 
 You MUST use the `record_model_info` function to record information about every model you find.
+
+If you do NOT call `record_model_info`, you MUST include an explanation of you decided not to call it.
 
 The runtime uses a restricted Python subset:
 - you cannot use the standard library except builtin functions and the following modules: `sys`, `typing`, `asyncio`

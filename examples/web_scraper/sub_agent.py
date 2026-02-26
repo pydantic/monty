@@ -81,4 +81,5 @@ def record_model_info(model_information: ModelInfoDict) -> str:
 
     NOTE: this method takes a python dict argument, not JSON.
     """
+    ...
 '''
