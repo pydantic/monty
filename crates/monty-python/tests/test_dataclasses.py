@@ -176,8 +176,10 @@ def test_dataclass_type_raises():
 
     m = pydantic_monty.Monty('x', inputs=['x'])
     m.register_dataclass(MyClass)
-    with pytest.raises(TypeError, match='Cannot convert type to Monty value'):
+    with pytest.raises(TypeError) as exc_info:
         m.run(inputs={'x': MyClass})
+
+    assert str(exc_info.value) == snapshot('Cannot convert builtins.type to Monty value')
 
 
 # === Field access ===
