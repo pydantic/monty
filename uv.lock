@@ -777,9 +777,6 @@ wheels = [
 name = "monty-workspace"
 version = "0"
 source = { virtual = "." }
-dependencies = [
-    { name = "pydantic-ai-slim", extra = ["anthropic"] },
-]
 
 [package.dev-dependencies]
 dev = [
@@ -792,11 +789,11 @@ dev = [
     { name = "maturin" },
     { name = "mypy" },
     { name = "playwright" },
+    { name = "pydantic-ai-slim", extra = ["anthropic"] },
     { name = "ruff" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pydantic-ai-slim", extras = ["anthropic"], specifier = ">=1.63.0" }]
 
 [package.metadata.requires-dev]
 dev = [
@@ -809,6 +806,7 @@ dev = [
     { name = "maturin", specifier = ">=1.9.4,<2.0" },
     { name = "mypy", specifier = ">=1.19.1" },
     { name = "playwright", specifier = ">=1.58.0" },
+    { name = "pydantic-ai-slim", extras = ["anthropic"], specifier = ">=1.63.0" },
     { name = "ruff", specifier = ">=0.14.7" },
 ]
 

@@ -2,9 +2,6 @@
 name = "monty-workspace"
 version = "0"
 requires-python = ">=3.10"
-dependencies = [
-    "pydantic-ai-slim[anthropic]>=1.63.0",
-]
 
 [tool.uv.workspace]
 members = ["crates/monty-python"]
@@ -21,6 +18,7 @@ dev = [
     "beautifulsoup4>=4.14.3",
     "logfire>=4.25.0",
     "devtools>=0.12.2",
+    "pydantic-ai-slim[anthropic]>=1.63.0",
 ]
 
 # https://beta.ruff.rs/docs/configuration/
