@@ -60,6 +60,8 @@ class RecordModels:
     @classmethod
     def record_model_info_stub(cls) -> str:
         return f'''\
+from typing import TypedDict, NotRequired
+
 class ModelInfoDict(TypedDict):
     unique_id: str
     """Unique identifier for the model."""

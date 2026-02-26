@@ -37,16 +37,16 @@ def _generate_stubs() -> str:
 
 
 stubs = f"""
-{_generate_stubs()}
-
 {RecordModels.record_model_info_stub()}
+
+{_generate_stubs()}
 """
 
 scrape_agent = Agent(
     'gateway/anthropic:claude-sonnet-4-5',
     instructions=f"""
-You MUST return markdown with either an explanation of your process or a comment and python code to execute
-in a "```python" code block.
+You MUST return markdown with either a comment and python code to execute
+in a "```python" code block, or an explanation of your process to end.
 
 You MUST return only one code block to execute. DO NOT return multiple code blocks.
 
@@ -69,9 +69,6 @@ You can use the following types functions and types:
 ```python
 {stubs}
 ```
-
-IMPORTANT: you MUST must call the `record_model_info` function to record information about every model you find,
-returning data about models as text is not helpful.
 """,
 )
 
@@ -132,7 +129,7 @@ Ignore any deprecated models.
                     continue
 
                 try:
-                    with logfire.span('prepare monty'):
+                    with logfire.span('running monty'):
                         output = await run_monty_async(
                             m,
                             external_functions={
