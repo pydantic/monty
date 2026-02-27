@@ -9,7 +9,6 @@ from typing import Literal
 import logfire
 import pydantic_core
 from pydantic_ai import Agent, ModelRequest, ModelRequestNode, UserPromptPart
-from pydantic_ai.models.anthropic import AnthropicModelSettings
 from pydantic_graph import End
 
 from pydantic_monty import Monty, MontyError, MontyRuntimeError, run_monty_async
@@ -70,11 +69,7 @@ You can use the following types functions and types:
 ```
 """
 
-scrape_agent = Agent(
-    'gateway/anthropic:claude-sonnet-4-5',
-    model_settings=AnthropicModelSettings(anthropic_thinking={'type': 'enabled', 'budget_tokens': 1024}),
-    instructions=instrunctions,
-)
+scrape_agent = Agent('gateway/anthropic:claude-sonnet-4-5', instructions=instrunctions)
 
 urls = {
     'openai': 'https://developers.openai.com/api/docs/pricing',
