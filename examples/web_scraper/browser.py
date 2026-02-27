@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, AsyncIterator, Literal
 
 from playwright.async_api import Browser as PwBrowser, Page as PwPage, async_playwright
@@ -24,7 +24,6 @@ async def start_browser() -> AsyncIterator[Browser]:
 @dataclass
 class Browser:
     _pw_browser: PwBrowser
-    _pages: dict[int, PwPage] = field(default_factory=dict)
 
     async def open_page(
         self,
