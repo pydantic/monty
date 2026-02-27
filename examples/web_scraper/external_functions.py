@@ -23,7 +23,7 @@ async def open_page(
             `'load'` — after the `load` event,
             `'networkidle'` — after there are no network connections for 500ms.
     """
-    raise NotImplementedError('this is here just to generate stubs')
+    raise NotImplementedError('this is here just to generate stubs, see _generate_stubs in main.py')
 
 
 @dataclass
