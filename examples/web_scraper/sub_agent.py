@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from textwrap import indent
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -60,26 +62,18 @@ class RecordModels:
     @classmethod
     def record_model_info_stub(cls) -> str:
         return f'''\
-from typing import TypedDict, NotRequired
+from typing import Any
 
-class ModelInfoDict(TypedDict):
-    unique_id: str
-    """Unique identifier for the model."""
-    name: str
-    """Name of the model."""
-    description: NotRequired[str | None]
-    """Description of the model."""
-    input_mtok: float
-    """Input tokens per million tokens."""
-    output_mtok: float
-    """Output tokens per million tokens."""
-    attributes: NotRequired[dict[str, float | str] | None]
-    """Any other attributes of the model."""
-
-def record_model_info(model_information: ModelInfoDict) -> str:
+def record_model_info(model_information: dict[str, Any]) -> str:
     """Record information about a model.
 
     NOTE: this method takes a python dict argument, not JSON.
+
+    The dict should have this schema:
+
+    ```json
+    {indent(json.dumps(ModelInfo.model_json_schema(), indent=2), prefix='    ')}
+    ```
     """
     ...
 '''

@@ -42,11 +42,7 @@ stubs = f"""
 
 {_generate_stubs()}
 """
-
-scrape_agent = Agent(
-    'gateway/anthropic:claude-sonnet-4-5',
-    model_settings=AnthropicModelSettings(anthropic_thinking={'type': 'enabled', 'budget_tokens': 1024}),
-    instructions=f"""
+instrunctions = f"""
 You MUST return markdown with either a comment and python code to execute
 in a "```python" code block, or an explanation of your process to end.
 
@@ -54,13 +50,12 @@ You MUST return only one code block to execute. DO NOT return multiple code bloc
 
 You MUST use the `record_model_info` function to record information about every model you find.
 
-If you do NOT call `record_model_info`, you MUST include an explanation of you decided not to call it.
-
 The runtime uses a restricted Python subset:
 - you cannot use the standard library except builtin functions and the following modules: `sys`, `typing`, `asyncio`
-- this means `json`, `collections`, `json`, `re`, `math`, `datetime`, `itertools`, `functools`, etc. are NOT available — use plain dicts, lists, and builtins instead
+- this means `json`, `collections`, `json`, `re`, `math`, `datetime`, `itertools`, `functools`, etc. are NOT available  use plain dicts, lists, and builtins instead
 - you cannot use third party libraries
 - you cannot define classes
+- the python executor is NOT a REPL, you must define all values each time you call python
 
 The last expression evaluated is the return value.
 
@@ -73,7 +68,12 @@ You can use the following types functions and types:
 ```python
 {stubs}
 ```
-""",
+"""
+
+scrape_agent = Agent(
+    'gateway/anthropic:claude-sonnet-4-5',
+    model_settings=AnthropicModelSettings(anthropic_thinking={'type': 'enabled', 'budget_tokens': 1024}),
+    instructions=instrunctions,
 )
 
 urls = {
@@ -157,7 +157,7 @@ Ignore any deprecated models.
 
 
 def new_node(msg: str) -> ModelRequestNode[None, str]:
-    return ModelRequestNode(request=ModelRequest(parts=[UserPromptPart(content=msg)]))
+    return ModelRequestNode(request=ModelRequest(instructions=instrunctions, parts=[UserPromptPart(content=msg)]))
 
 
 @dataclass
