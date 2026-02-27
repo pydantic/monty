@@ -13,7 +13,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::Interns,
-    resource::{DepthGuard, ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker},
     types::{PyTrait, Type},
     value::Value,
 };
@@ -246,7 +246,6 @@ impl PyTrait for Range {
         &self,
         other: &Self,
         _heap: &mut Heap<impl ResourceTracker>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> Result<bool, ResourceError> {
         // Compare ranges by their actual sequences, not parameters.
@@ -272,7 +271,6 @@ impl PyTrait for Range {
         f: &mut impl Write,
         _heap: &Heap<impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> std::fmt::Result {
         if self.step == 1 {

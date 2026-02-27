@@ -7,6 +7,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, SimpleException},
     heap::{HeapData, HeapGuard},
+    heap_data::HeapDataMut,
     intern::StringId,
     resource::ResourceTracker,
     types::{Dict, List, PyTrait, Set, Slice, Type, allocate_tuple, slice::value_to_option_i64, str::allocate_char},
@@ -140,7 +141,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Extend the list
         if let Value::Ref(id) = list_ref
-            && let HeapData::List(list) = this.heap.get_mut(*id)
+            && let HeapDataMut::List(list) = this.heap.get_mut(*id)
         {
             // Update contains_refs before extending
             if has_refs {
@@ -258,7 +259,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
             // Use with_entry_mut to avoid borrow conflict: takes data out temporarily
             let result = this.heap.with_entry_mut(dict_id, |heap, data| {
-                if let HeapData::Dict(dict) = data {
+                if let HeapDataMut::Dict(dict) = data {
                     dict.set(key, value, heap, this.interns)
                 } else {
                     Err(RunError::internal("DictMerge: entry is not a Dict"))
@@ -300,7 +301,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Append to the list using with_entry_mut to handle proper contains_refs tracking
         self.heap.with_entry_mut(list_id, |heap, data| {
-            if let HeapData::List(list) = data {
+            if let HeapDataMut::List(list) = data {
                 list.append(heap, value);
                 Ok(())
             } else {
@@ -328,7 +329,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Add to the set using with_entry_mut to avoid borrow conflicts
         self.heap.with_entry_mut(set_id, |heap, data| {
-            if let HeapData::Set(set) = data {
+            if let HeapDataMut::Set(set) = data {
                 set.add(value, heap, self.interns)
             } else {
                 value.drop_with_heap(heap);
@@ -359,7 +360,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Set item in the dict using with_entry_mut to avoid borrow conflicts
         let old_value = self.heap.with_entry_mut(dict_id, |heap, data| {
-            if let HeapData::Dict(dict) = data {
+            if let HeapDataMut::Dict(dict) = data {
                 dict.set(key, value, heap, self.interns)
             } else {
                 key.drop_with_heap(heap);

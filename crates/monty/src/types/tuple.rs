@@ -36,7 +36,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings},
-    resource::{DepthGuard, ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker},
     types::Type,
     value::{EitherStr, Value},
 };
@@ -201,22 +201,20 @@ impl PyTrait for Tuple {
         &self,
         other: &Self,
         heap: &mut Heap<impl ResourceTracker>,
-        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> Result<bool, ResourceError> {
         if self.items.len() != other.items.len() {
             return Ok(false);
         }
-        guard.increase_err()?;
+        let token = heap.incr_recursion_depth()?;
+        defer_drop!(token, heap);
 
         for (i1, i2) in self.items.iter().zip(&other.items) {
             heap.check_time()?;
-            if !i1.py_eq(i2, heap, guard, interns)? {
-                guard.decrease();
+            if !i1.py_eq(i2, heap, interns)? {
                 return Ok(false);
             }
         }
-        guard.decrease();
         Ok(true)
     }
 
@@ -281,10 +279,9 @@ impl PyTrait for Tuple {
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result {
-        repr_sequence_fmt('(', ')', &self.items, f, heap, heap_ids, guard, interns)
+        repr_sequence_fmt('(', ')', &self.items, f, heap, heap_ids, interns)
     }
 }
 
@@ -317,10 +314,9 @@ fn tuple_index(
         other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
     };
 
-    let mut guard = DepthGuard::default();
     // Search for the value in the specified range
     for (i, item) in tuple.as_slice()[start..end].iter().enumerate() {
-        if value.py_eq(item, heap, &mut guard, interns)? {
+        if value.py_eq(item, heap, interns)? {
             let idx = i64::try_from(start + i).expect("index exceeds i64::MAX");
             return Ok(Value::Int(idx));
         }
@@ -341,10 +337,9 @@ fn tuple_count(
     let value = args.get_one_arg("tuple.count", heap)?;
     defer_drop!(value, heap);
 
-    let mut guard = DepthGuard::default();
     let mut count = 0usize;
     for item in tuple.as_slice() {
-        if value.py_eq(item, heap, &mut guard, interns)? {
+        if value.py_eq(item, heap, interns)? {
             count += 1;
         }
     }

@@ -20,7 +20,7 @@ use crate::{
     heap::{Heap, HeapId},
     intern::{ExtFunctionId, Interns},
     os::OsFunction,
-    resource::{DepthGuard, ResourceTracker},
+    resource::ResourceTracker,
     value::{EitherStr, Value},
 };
 
@@ -106,8 +106,7 @@ pub trait PyTrait {
     /// computation for dict key lookups.
     ///
     /// The `interns` parameter provides access to interned string content.
-    /// The `guard` parameter tracks recursion depth to prevent stack overflow
-    /// on deeply nested structures.
+    /// Recursion depth is tracked via `heap.incr_recursion_depth()`.
     ///
     /// Returns `Ok(true)` if equal, `Ok(false)` if not equal, or
     /// `Err(ResourceError::Recursion)` if maximum depth is exceeded.
@@ -115,7 +114,6 @@ pub trait PyTrait {
         &self,
         other: &Self,
         heap: &mut Heap<impl ResourceTracker>,
-        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> Result<bool, ResourceError>;
 
@@ -126,8 +124,7 @@ pub trait PyTrait {
     /// computation for dict key lookups.
     ///
     /// The `interns` parameter provides access to interned string content.
-    /// The `guard` parameter tracks recursion depth to prevent stack overflow
-    /// on deeply nested structures.
+    /// Recursion depth is tracked via `heap.incr_recursion_depth()`.
     ///
     /// Returns `Ok(Some(Ordering))` for comparable values, `Ok(None)` if not comparable,
     /// or `Err(ResourceError::Recursion)` if maximum depth is exceeded.
@@ -135,7 +132,6 @@ pub trait PyTrait {
         &self,
         _other: &Self,
         _heap: &mut Heap<impl ResourceTracker>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> Result<Option<Ordering>, ResourceError> {
         Ok(None)
@@ -166,49 +162,37 @@ pub trait PyTrait {
     /// visited heap IDs. When a cycle is detected (ID already in `heap_ids`), implementations
     /// should write an ellipsis (e.g., `[...]` for lists, `{...}` for dicts).
     ///
+    /// Recursion depth is tracked via `heap.incr_recursion_depth_for_repr()`.
+    ///
     /// # Arguments
     /// * `f` - The formatter to write to
     /// * `heap` - The heap for resolving value references
     /// * `heap_ids` - Set of heap IDs currently being repr'd (for cycle detection)
-    /// * `guard` - Recursion depth tracker to prevent stack overflow on deeply nested structures
     /// * `interns` - The interned strings table for looking up string/bytes literals
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result;
 
     /// Returns the Python `repr()` string for this value.
     ///
     /// Convenience wrapper around `py_repr_fmt` that returns an owned string.
-    /// Creates a new `DepthGuard` internally to track recursion depth.
-    fn py_repr(
-        &self,
-        heap: &Heap<impl ResourceTracker>,
-        guard: &mut DepthGuard,
-        interns: &Interns,
-    ) -> Cow<'static, str> {
+    fn py_repr(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Cow<'static, str> {
         let mut s = String::new();
         let mut heap_ids = AHashSet::new();
         // Unwrap is safe: writing to String never fails
-        self.py_repr_fmt(&mut s, heap, &mut heap_ids, guard, interns).unwrap();
+        self.py_repr_fmt(&mut s, heap, &mut heap_ids, interns).unwrap();
         Cow::Owned(s)
     }
 
     /// Returns the Python `str()` string for this value.
     ///
-    /// The `guard` parameter tracks recursion depth to prevent stack overflow
-    /// on deeply nested structures.
-    fn py_str(
-        &self,
-        heap: &Heap<impl ResourceTracker>,
-        guard: &mut DepthGuard,
-        interns: &Interns,
-    ) -> Cow<'static, str> {
-        self.py_repr(heap, guard, interns)
+    /// Recursion depth is tracked via the heap's recursion depth counter.
+    fn py_str(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Cow<'static, str> {
+        self.py_repr(heap, interns)
     }
 
     /// Python addition (`__add__`).

@@ -7,7 +7,7 @@ use crate::{
     heap::{Heap, HeapData},
     intern::Interns,
     io::PrintWriter,
-    resource::{DepthGuard, ResourceTracker},
+    resource::ResourceTracker,
     types::PyTrait,
     value::Value,
 };
@@ -35,7 +35,6 @@ pub fn builtin_print(
 
     // Print positional args with separator, dropping each value after use
     let mut first = true;
-    let mut guard = DepthGuard::default();
     for value in positional.as_slice() {
         if first {
             first = false;
@@ -44,7 +43,7 @@ pub fn builtin_print(
         } else {
             print.stdout_push(' ')?;
         }
-        print.stdout_write(value.py_str(heap, &mut guard, interns))?;
+        print.stdout_write(value.py_str(heap, interns))?;
     }
 
     // Append end string

@@ -11,6 +11,7 @@ mod exception_public;
 mod expressions;
 mod fstring;
 mod function;
+mod heap_data;
 mod intern;
 mod io;
 mod modules;

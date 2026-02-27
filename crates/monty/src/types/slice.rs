@@ -13,7 +13,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
-    resource::{DepthGuard, ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker},
     types::{AttrCallResult, PyTrait, Type},
     value::{EitherStr, Value},
 };
@@ -194,7 +194,6 @@ impl PyTrait for Slice {
         &self,
         other: &Self,
         _heap: &mut Heap<impl ResourceTracker>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> Result<bool, ResourceError> {
         Ok(self.start == other.start && self.stop == other.stop && self.step == other.step)
@@ -210,7 +209,6 @@ impl PyTrait for Slice {
         f: &mut impl Write,
         _heap: &Heap<impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> std::fmt::Result {
         f.write_str("slice(")?;

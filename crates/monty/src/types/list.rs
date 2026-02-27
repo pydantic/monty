@@ -12,7 +12,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings},
-    resource::{DepthGuard, ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker},
     sorting::{apply_permutation, sort_indices},
     types::Type,
     value::{EitherStr, Value},
@@ -305,22 +305,20 @@ impl PyTrait for List {
         &self,
         other: &Self,
         heap: &mut Heap<impl ResourceTracker>,
-        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> Result<bool, ResourceError> {
         if self.items.len() != other.items.len() {
             return Ok(false);
         }
-        guard.increase_err()?;
+        let token = heap.incr_recursion_depth()?;
+        defer_drop!(token, heap);
 
         for (i1, i2) in self.items.iter().zip(&other.items) {
             heap.check_time()?;
-            if !i1.py_eq(i2, heap, guard, interns)? {
-                guard.decrease();
+            if !i1.py_eq(i2, heap, interns)? {
                 return Ok(false);
             }
         }
-        guard.decrease();
         Ok(true)
     }
 
@@ -347,10 +345,9 @@ impl PyTrait for List {
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result {
-        repr_sequence_fmt('[', ']', &self.items, f, heap, heap_ids, guard, interns)
+        repr_sequence_fmt('[', ']', &self.items, f, heap, heap_ids, interns)
     }
 
     fn py_add(
@@ -577,10 +574,9 @@ fn list_remove(
 
     // Find the first matching element
     let mut found_idx = None;
-    let mut guard = DepthGuard::default();
     for (i, item) in list.items.iter().enumerate() {
         heap.check_time()?;
-        if value.py_eq(item, heap, &mut guard, interns)? {
+        if value.py_eq(item, heap, interns)? {
             found_idx = Some(i);
             break;
         }
@@ -666,10 +662,9 @@ fn list_index(
     };
 
     // Search for the value in the specified range
-    let mut guard = DepthGuard::default();
     for (i, item) in list.items[start..end].iter().enumerate() {
         heap.check_time()?;
-        if value.py_eq(item, heap, &mut guard, interns)? {
+        if value.py_eq(item, heap, interns)? {
             let idx = i64::try_from(start + i).expect("index exceeds i64::MAX");
             return Ok(Value::Int(idx));
         }
@@ -690,11 +685,10 @@ fn list_count(
     let value = args.get_one_arg("list.count", heap)?;
     defer_drop!(value, heap);
 
-    let mut guard = DepthGuard::default();
     let mut count: usize = 0;
     for item in &list.items {
         heap.check_time()?;
-        if value.py_eq(item, heap, &mut guard, interns)? {
+        if value.py_eq(item, heap, interns)? {
             count += 1;
         }
     }
@@ -783,9 +777,7 @@ fn do_list_sort(list: &mut List, args: ArgValues, vm: &mut VM<impl ResourceTrack
 /// * `f` - The formatter to write to
 /// * `heap` - The heap for resolving value references
 /// * `heap_ids` - Set of heap IDs being repr'd (for cycle detection)
-/// * `guard` - Recursion depth tracker to prevent stack overflow on deeply nested structures
 /// * `interns` - The interned strings table for looking up string/bytes literals
-#[expect(clippy::too_many_arguments)]
 pub(crate) fn repr_sequence_fmt(
     start: char,
     end: char,
@@ -793,30 +785,29 @@ pub(crate) fn repr_sequence_fmt(
     f: &mut impl Write,
     heap: &Heap<impl ResourceTracker>,
     heap_ids: &mut AHashSet<HeapId>,
-    guard: &mut DepthGuard,
     interns: &Interns,
 ) -> std::fmt::Result {
     // Check depth limit before recursing
-    if !guard.increase() {
+    let Some(token) = heap.incr_recursion_depth_for_repr() else {
         return f.write_str("...");
-    }
+    };
+    crate::defer_drop_immutable_heap!(token, heap);
 
     f.write_char(start)?;
     let mut iter = items.iter();
     if let Some(first) = iter.next() {
-        first.py_repr_fmt(f, heap, heap_ids, guard, interns)?;
+        first.py_repr_fmt(f, heap, heap_ids, interns)?;
         for item in iter {
             if heap.check_time().is_err() {
                 f.write_str(", ...[timeout]")?;
                 break;
             }
             f.write_str(", ")?;
-            item.py_repr_fmt(f, heap, heap_ids, guard, interns)?;
+            item.py_repr_fmt(f, heap, heap_ids, interns)?;
         }
     }
     f.write_char(end)?;
 
-    guard.decrease();
     Ok(())
 }
 
@@ -917,7 +908,9 @@ mod tests {
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
-        let result = heap.with_entry_mut(list_id, |heap, data| data.py_setitem(key, new_value, heap, &interns));
+        let result = heap.with_entry_mut(list_id, |heap, mut data| {
+            data.py_setitem(key, new_value, heap, &interns)
+        });
 
         assert!(result.is_ok());
 
@@ -944,7 +937,9 @@ mod tests {
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
-        let result = heap.with_entry_mut(list_id, |heap, data| data.py_setitem(key, new_value, heap, &interns));
+        let result = heap.with_entry_mut(list_id, |heap, mut data| {
+            data.py_setitem(key, new_value, heap, &interns)
+        });
 
         assert!(result.is_ok());
 
@@ -969,7 +964,9 @@ mod tests {
         heap.inc_ref(index_id);
 
         // This should fail with IndexError because i64::MAX is out of bounds for a 1-element list
-        let result = heap.with_entry_mut(list_id, |heap, data| data.py_setitem(key, new_value, heap, &interns));
+        let result = heap.with_entry_mut(list_id, |heap, mut data| {
+            data.py_setitem(key, new_value, heap, &interns)
+        });
 
         assert!(result.is_err());
 

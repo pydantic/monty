@@ -17,7 +17,7 @@ use crate::{
     heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     os::OsFunction,
-    resource::{DepthGuard, ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker},
     types::{AttrCallResult, PyTrait, Str, Type, allocate_tuple},
     value::{EitherStr, Value},
 };
@@ -462,7 +462,6 @@ impl PyTrait for Path {
         &self,
         other: &Self,
         _heap: &mut Heap<impl ResourceTracker>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> Result<bool, ResourceError> {
         Ok(self.path == other.path)
@@ -478,7 +477,6 @@ impl PyTrait for Path {
         f: &mut impl Write,
         _heap: &Heap<impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> std::fmt::Result {
         // Format like: PosixPath('/usr/bin')

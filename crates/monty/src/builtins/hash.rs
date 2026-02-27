@@ -18,7 +18,7 @@ use crate::{
 pub fn builtin_hash(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
     let value = args.get_one_arg("hash", heap)?;
     defer_drop!(value, heap);
-    match value.py_hash(heap, interns) {
+    match value.py_hash(heap, interns)? {
         Some(hash) => {
             // Python's hash() returns a signed integer; reinterpret bits for large values
             let hash_i64 = i64::from_ne_bytes(hash.to_ne_bytes());

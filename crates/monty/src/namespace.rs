@@ -158,11 +158,6 @@ impl Namespaces {
         namespace_size: usize,
         heap: &mut Heap<impl ResourceTracker>,
     ) -> Result<NamespaceId, ResourceError> {
-        // Check recursion depth BEFORE memory allocation (fail fast)
-        // Depth excludes global namespace (stack[0]), so current depth = stack.len() - 1
-        let current_depth = self.stack.len() - 1;
-        heap.tracker().check_recursion_depth(current_depth)?;
-
         // Track the memory used by this namespace's slots
         let size = namespace_size * std::mem::size_of::<Value>();
         heap.tracker_mut().on_allocate(|| size)?;
@@ -195,10 +190,6 @@ impl Namespaces {
         namespace: Vec<Value>,
         heap: &mut Heap<impl ResourceTracker>,
     ) -> Result<NamespaceId, ResourceError> {
-        // Check recursion depth BEFORE memory allocation (fail fast)
-        let current_depth = self.stack.len() - 1;
-        heap.tracker().check_recursion_depth(current_depth)?;
-
         // Track the memory used by this namespace's slots
         let size = namespace.len() * std::mem::size_of::<Value>();
         heap.tracker_mut().on_allocate(|| size)?;
