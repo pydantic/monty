@@ -318,41 +318,45 @@ impl Dict {
         self.entries.get(index).map(|e| &e.key)
     }
 
-    /// Creates a dict from the `dict()` constructor call.
+    /// Creates a dict from the `dict([mapping_or_pairs], **kwargs)` constructor call.
     ///
-    /// - `dict()` with no args returns an empty dict
-    /// - `dict(dict)` returns a shallow copy of the dict
+    /// Supported forms:
+    /// - `dict()` returns an empty dict.
+    /// - `dict(existing_dict)` returns a shallow copy of the dict.
+    /// - `dict(iterable_of_pairs)` consumes `(key, value)` pairs from the iterable.
+    /// - `dict(**kwargs)` inserts keyword arguments as string keys.
     ///
-    /// Note: Full Python semantics also support dict(iterable) where iterable
-    /// yields (key, value) pairs, and dict(**kwargs) for keyword arguments.
+    /// Keyword arguments are applied after the optional positional source, matching
+    /// CPython precedence (`dict([('a', 1)], a=2)` yields `{'a': 2}`).
+    ///
+    /// For now, only real `dict` values use mapping-copy semantics; other values
+    /// are interpreted as iterables of pairs.
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("dict", heap)?;
-        match value {
-            None => {
-                let heap_id = heap.allocate(HeapData::Dict(Self::new()))?;
-                Ok(Value::Ref(heap_id))
+        let dict = Self::new();
+        let mut dict_guard = HeapGuard::new(dict, heap);
+
+        {
+            let (dict, heap) = dict_guard.as_parts_mut();
+            let (pos_iter, kwargs) = args.into_parts();
+            defer_drop_mut!(pos_iter, heap);
+            let mut kwargs_guard = HeapGuard::new(kwargs, heap);
+
+            if let Some(other_value) = pos_iter.next() {
+                let other_value_guard = HeapGuard::new(other_value, kwargs_guard.heap());
+                if pos_iter.len() != 0 {
+                    return Err(ExcType::type_error_at_most("dict", 1, pos_iter.len() + 1));
+                }
+                let other_value = other_value_guard.into_inner();
+                dict_merge_from_value(dict, other_value, kwargs_guard.heap(), interns)?;
             }
-            Some(v) => {
-                defer_drop!(v, heap);
-                let Value::Ref(id) = v else {
-                    return Err(ExcType::type_error_not_iterable(v.py_type(heap)));
-                };
 
-                // Check if it's a dict and get key-value pairs
-                let HeapData::Dict(dict) = heap.get(*id) else {
-                    return Err(ExcType::type_error_not_iterable(v.py_type(heap)));
-                };
-
-                let pairs: Vec<(Value, Value)> = dict
-                    .iter()
-                    .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)))
-                    .collect();
-
-                let new_dict = Self::from_pairs(pairs, heap, interns)?;
-                let result = heap.allocate(HeapData::Dict(new_dict))?;
-                Ok(Value::Ref(result))
-            }
+            let kwargs = kwargs_guard.into_inner();
+            dict_merge_from_kwargs(dict, kwargs, heap, interns)?;
         }
+
+        let dict = dict_guard.into_inner();
+        let heap_id = heap.allocate(HeapData::Dict(dict))?;
+        Ok(Value::Ref(heap_id))
     }
 
     fn find_index_hash(
@@ -690,51 +694,72 @@ fn dict_update(
     defer_drop_mut!(pos_iter, heap);
     let mut kwargs_guard = HeapGuard::new(kwargs, heap);
 
-    let Some(other_value) = pos_iter.next() else {
-        // No positional argument - just process kwargs
-        let (kwargs, heap) = kwargs_guard.into_parts();
-        return dict_update_from_kwargs(dict, kwargs, heap, interns);
-    };
-    let mut other_value_guard = HeapGuard::new(other_value, kwargs_guard.heap());
-    let (other_value, heap) = other_value_guard.as_parts();
-
-    // Check no extra positional arguments
-    if pos_iter.len() != 0 {
-        return Err(ExcType::type_error_at_most("dict.update", 1, 2));
-    }
-
-    // Check if it's a dict first
-    if let Value::Ref(id) = other_value
-        && let HeapData::Dict(src_dict) = heap.get(*id)
-    {
-        // Clone key-value pairs from the source dict
-        let pairs: Vec<(Value, Value)> = src_dict
-            .iter()
-            .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)))
-            .collect();
-
-        // Set each pair in the target dict
-        for (key, value) in pairs {
-            if let Some(old_value) = dict.set(key, value, heap, interns)? {
-                old_value.drop_with_heap(heap);
-            }
+    if let Some(other_value) = pos_iter.next() {
+        let other_value_guard = HeapGuard::new(other_value, kwargs_guard.heap());
+        if pos_iter.len() != 0 {
+            return Err(ExcType::type_error_at_most("dict.update", 1, pos_iter.len() + 1));
         }
-
-        // Process kwargs after the dict update
-        drop(other_value_guard);
-        let (kwargs, heap) = kwargs_guard.into_parts();
-        return dict_update_from_kwargs(dict, kwargs, heap, interns);
+        let other_value = other_value_guard.into_inner();
+        dict_merge_from_value(dict, other_value, kwargs_guard.heap(), interns)?;
     }
 
-    // Try as an iterable of pairs
-    let other_value = other_value_guard.into_inner();
-    let heap = kwargs_guard.heap();
-    let iter = MontyIter::new(other_value, heap, interns)?;
-    let mut iter_guard = HeapGuard::new(iter, heap);
-    let (iter, heap) = iter_guard.as_parts_mut();
+    let kwargs = kwargs_guard.into_inner();
+    dict_merge_from_kwargs(dict, kwargs, heap, interns)?;
+    Ok(Value::None)
+}
+
+/// Merges key-value pairs from either a dict or an iterable of 2-item pairs.
+///
+/// This is shared between `dict()` construction and `dict.update()` so both
+/// entry points follow identical positional-source semantics.
+fn dict_merge_from_value(
+    dict: &mut Dict,
+    other_value: Value,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<()> {
+    let mut other_value_guard = HeapGuard::new(other_value, heap);
+    {
+        let (other_value, heap) = other_value_guard.as_parts();
+        if let Value::Ref(id) = other_value
+            && let HeapData::Dict(src_dict) = heap.get(*id)
+        {
+            // Clone key-value pairs from the source dict.
+            let pairs: Vec<(Value, Value)> = src_dict
+                .iter()
+                .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)))
+                .collect();
+
+            // Apply pairs into the target dict.
+            for (key, value) in pairs {
+                if let Some(old_value) = dict.set(key, value, heap, interns)? {
+                    old_value.drop_with_heap(heap);
+                }
+            }
+            return Ok(());
+        }
+    }
+
+    // Non-dict values are interpreted as iterable-of-pairs.
+    let (other_value, heap) = other_value_guard.into_parts();
+    dict_merge_from_iterable_pairs(dict, other_value, heap, interns)
+}
+
+/// Merges key-value pairs from an iterable of 2-item iterables.
+///
+/// Each item from `iterable` is treated as `(key, value)`. Items with length 0, 1,
+/// or greater than 2 raise the same TypeError messages used by `dict.update()`.
+fn dict_merge_from_iterable_pairs(
+    dict: &mut Dict,
+    iterable: Value,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<()> {
+    let iter = MontyIter::new(iterable, heap, interns)?;
+    defer_drop_mut!(iter, heap);
 
     while let Some(item) = iter.for_next(heap, interns)? {
-        // Each item should be a pair (iterable of 2 elements)
+        // Each item should be a pair (iterable of 2 elements).
         let pair_iter = MontyIter::new(item, heap, interns)?;
         defer_drop_mut!(pair_iter, heap);
 
@@ -767,23 +792,23 @@ fn dict_update(
         }
     }
 
-    // Process kwargs after the iterable update
-    drop(iter_guard);
-    let (kwargs, heap) = kwargs_guard.into_parts();
-    dict_update_from_kwargs(dict, kwargs, heap, interns)
+    Ok(())
 }
 
-/// Helper to update a dict from keyword arguments.
-fn dict_update_from_kwargs(
+/// Merges keyword arguments into a dict.
+///
+/// This helper drains `kwargs` safely on error so all values are dropped
+/// correctly, then inserts each key-value pair into `dict`.
+fn dict_merge_from_kwargs(
     dict: &mut Dict,
     kwargs: KwargsValues,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
-) -> RunResult<Value> {
-    // Use while let to allow draining on error
+) -> RunResult<()> {
+    // Use while-let to allow draining remaining kwargs on error.
     let mut kwargs_iter = kwargs.into_iter();
     while let Some((key, value)) = kwargs_iter.next() {
-        // Drop key, value, and remaining kwargs before propagating error
+        // Drop remaining kwargs before propagating an insertion error.
         match dict.set(key, value, heap, interns) {
             Ok(Some(old_value)) => old_value.drop_with_heap(heap),
             Ok(None) => {}
@@ -796,7 +821,7 @@ fn dict_update_from_kwargs(
             }
         }
     }
-    Ok(Value::None)
+    Ok(())
 }
 
 /// Implements Python's `dict.setdefault(key[, default])` method.
