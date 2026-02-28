@@ -327,8 +327,10 @@ fn executor_iter_resource_limit_on_resume() {
 
     // First function call should succeed with generous limit
     let limits = ResourceLimits::new().max_allocations(5);
-    let call = run
+    let progress = run
         .start(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout)
+        .unwrap();
+    let call = resolve_name_lookups(progress)
         .unwrap()
         .into_function_call()
         .expect("function call");
@@ -1306,8 +1308,10 @@ fn assert_repr_timeout(code: &str, label: &str) {
 
     // Phase 1: build the large object with no time limit
     let limits = ResourceLimits::new();
-    let mut call = run
+    let progress = run
         .start(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout)
+        .unwrap();
+    let mut call = resolve_name_lookups(progress)
         .unwrap()
         .into_function_call()
         .expect("interrupt call");
