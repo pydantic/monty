@@ -6,8 +6,8 @@ use std::{
 
 use clap::Parser;
 use monty::{
-    MontyObject, MontyRepl, MontyRun, NoLimitTracker, PrintWriter, ReplContinuationMode, RunProgress,
-    detect_repl_continuation_mode,
+    LimitedTracker, MontyObject, MontyRepl, MontyRun, NoLimitTracker, PrintWriter, ReplContinuationMode,
+    ResourceLimits, ResourceTracker, RunProgress, detect_repl_continuation_mode,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 // disabled due to format failing on https://github.com/pydantic/monty/pull/75 where CI and local wanted imports ordered differently
@@ -51,6 +51,61 @@ struct Cli {
 
     /// Python file to execute.
     file: Option<String>,
+
+    /// Maximum number of heap allocations before execution is terminated.
+    #[arg(long)]
+    max_allocations: Option<usize>,
+
+    /// Maximum execution time in seconds (e.g. `0.5` for 500ms).
+    #[arg(long)]
+    max_duration: Option<f64>,
+
+    /// Maximum heap memory (e.g. `1024`, `512KB`, `10MB`, `1GB`).
+    #[arg(long, value_parser = parse_memory_size)]
+    max_memory: Option<usize>,
+
+    /// Run garbage collection every N allocations.
+    #[arg(long)]
+    gc_interval: Option<usize>,
+
+    /// Maximum call-stack depth (defaults to 1000 when any limit is set).
+    #[arg(long)]
+    max_recursion_depth: Option<usize>,
+}
+
+impl Cli {
+    /// Builds `ResourceLimits` from the parsed CLI arguments.
+    ///
+    /// Returns `None` when no resource flags were provided, which lets the
+    /// caller fall back to `NoLimitTracker` for zero-overhead execution.
+    fn resource_limits(&self) -> Option<ResourceLimits> {
+        if self.max_allocations.is_none()
+            && self.max_duration.is_none()
+            && self.max_memory.is_none()
+            && self.gc_interval.is_none()
+            && self.max_recursion_depth.is_none()
+        {
+            return None;
+        }
+
+        let mut limits = ResourceLimits::new();
+        if let Some(n) = self.max_allocations {
+            limits = limits.max_allocations(n);
+        }
+        if let Some(secs) = self.max_duration {
+            limits = limits.max_duration(Duration::from_secs_f64(secs));
+        }
+        if let Some(bytes) = self.max_memory {
+            limits = limits.max_memory(bytes);
+        }
+        if let Some(interval) = self.gc_interval {
+            limits = limits.gc_interval(interval);
+        }
+        if let Some(depth) = self.max_recursion_depth {
+            limits = limits.max_recursion_depth(Some(depth));
+        }
+        Some(limits)
+    }
 }
 
 const EXT_FUNCTIONS: bool = false;
@@ -59,6 +114,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     let type_check_enabled = cli.type_check;
+    let limits = cli.resource_limits();
 
     if let Some(cmd) = cli.command {
         if cli.file.is_some() {
@@ -66,9 +122,9 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
         return if cli.interactive {
-            run_repl("<string>", cmd)
+            dispatch_repl("<string>", cmd, limits)
         } else {
-            run_script("<string>", cmd, type_check_enabled)
+            dispatch_script("<string>", cmd, type_check_enabled, limits)
         };
     }
 
@@ -81,13 +137,39 @@ fn main() -> ExitCode {
             }
         };
         return if cli.interactive {
-            run_repl(file_path, code)
+            dispatch_repl(file_path, code, limits)
         } else {
-            run_script(file_path, code, type_check_enabled)
+            dispatch_script(file_path, code, type_check_enabled, limits)
         };
     }
 
-    run_repl("repl.py", String::new())
+    dispatch_repl("repl.py", String::new(), limits)
+}
+
+/// Dispatches script execution with either `LimitedTracker` or `NoLimitTracker`.
+///
+/// This top-level branch avoids threading generics through the entire call chain
+/// while still keeping the zero-overhead `NoLimitTracker` path when no limits are set.
+fn dispatch_script(
+    file_path: &str,
+    code: String,
+    type_check_enabled: bool,
+    limits: Option<ResourceLimits>,
+) -> ExitCode {
+    if let Some(limits) = limits {
+        run_script(file_path, code, type_check_enabled, LimitedTracker::new(limits))
+    } else {
+        run_script(file_path, code, type_check_enabled, NoLimitTracker)
+    }
+}
+
+/// Dispatches REPL startup with either `LimitedTracker` or `NoLimitTracker`.
+fn dispatch_repl(file_path: &str, code: String, limits: Option<ResourceLimits>) -> ExitCode {
+    if let Some(limits) = limits {
+        run_repl(file_path, code, LimitedTracker::new(limits))
+    } else {
+        run_repl(file_path, code, NoLimitTracker)
+    }
 }
 
 /// Executes a Python file in one-shot CLI mode.
@@ -99,7 +181,7 @@ fn main() -> ExitCode {
 ///
 /// Returns `ExitCode::SUCCESS` for successful execution and
 /// `ExitCode::FAILURE` for parse/type/runtime failures.
-fn run_script(file_path: &str, code: String, type_check_enabled: bool) -> ExitCode {
+fn run_script(file_path: &str, code: String, type_check_enabled: bool, tracker: impl ResourceTracker) -> ExitCode {
     if type_check_enabled {
         let start = Instant::now();
         if let Some(failure) = type_check(&SourceFile::new(&code, file_path), None).unwrap() {
@@ -131,7 +213,7 @@ fn run_script(file_path: &str, code: String, type_check_enabled: bool) -> ExitCo
 
     if EXT_FUNCTIONS {
         let start = Instant::now();
-        let progress = match runner.start(inputs, NoLimitTracker, &mut PrintWriter::Stdout) {
+        let progress = match runner.start(inputs, tracker, &mut PrintWriter::Stdout) {
             Ok(p) => p,
             Err(err) => {
                 let elapsed = start.elapsed();
@@ -163,7 +245,7 @@ fn run_script(file_path: &str, code: String, type_check_enabled: bool) -> ExitCo
         }
     } else {
         let start = Instant::now();
-        let value = match runner.run_no_limits(inputs) {
+        let value = match runner.run(inputs, tracker, &mut PrintWriter::Stdout) {
             Ok(p) => p,
             Err(err) => {
                 let elapsed = start.elapsed();
@@ -193,7 +275,7 @@ fn run_script(file_path: &str, code: String, type_check_enabled: bool) -> ExitCo
 ///
 /// Returns `ExitCode::SUCCESS` on EOF or `exit`, and `ExitCode::FAILURE` on
 /// initialization or I/O errors.
-fn run_repl(file_path: &str, code: String) -> ExitCode {
+fn run_repl(file_path: &str, code: String, tracker: impl ResourceTracker) -> ExitCode {
     let input_names = vec![];
     let inputs = vec![];
     let ext_functions = vec!["add_ints".to_owned()];
@@ -204,7 +286,7 @@ fn run_repl(file_path: &str, code: String) -> ExitCode {
         input_names,
         ext_functions,
         inputs,
-        NoLimitTracker,
+        tracker,
         &mut PrintWriter::Stdout,
     ) {
         Ok(v) => v,
@@ -294,7 +376,7 @@ fn run_repl(file_path: &str, code: String) -> ExitCode {
 }
 
 /// Executes one collected REPL snippet, printing the result or error.
-fn execute_repl_snippet(repl: &mut MontyRepl<NoLimitTracker>, snippet: &str) {
+fn execute_repl_snippet(repl: &mut MontyRepl<impl ResourceTracker>, snippet: &str) {
     match repl.feed_no_print(snippet) {
         Ok(output) => {
             if output != MontyObject::None {
@@ -315,7 +397,7 @@ fn execute_repl_snippet(repl: &mut MontyRepl<NoLimitTracker>, snippet: &str) {
 ///
 /// Returns an error string for unsupported suspend points (OS calls or async
 /// futures) or invalid external-function dispatch.
-fn run_until_complete(mut progress: RunProgress<NoLimitTracker>) -> Result<MontyObject, String> {
+fn run_until_complete(mut progress: RunProgress<impl ResourceTracker>) -> Result<MontyObject, String> {
     loop {
         match progress {
             RunProgress::Complete(value) => return Ok(value),
@@ -433,4 +515,35 @@ fn sig_digits_after_decimal(value: f64) -> usize {
         digits as usize
     };
     5usize.saturating_sub(before)
+}
+
+/// Parses a memory size string with optional unit suffix.
+///
+/// Accepts plain byte counts (`1024`) or values with a case-insensitive suffix:
+/// `KB` (kilobytes), `MB` (megabytes), `GB` (gigabytes). The numeric part must
+/// be a valid `usize`.
+///
+/// # Examples
+///
+/// - `"512"` → 512
+/// - `"512KB"` → 524_288
+/// - `"10MB"` → 10_485_760
+/// - `"1GB"` → 1_073_741_824
+fn parse_memory_size(s: &str) -> Result<usize, String> {
+    let s = s.trim();
+    let (num_str, multiplier) = if let Some(n) = s.strip_suffix("GB").or_else(|| s.strip_suffix("gb")) {
+        (n.trim(), 1024 * 1024 * 1024)
+    } else if let Some(n) = s.strip_suffix("MB").or_else(|| s.strip_suffix("mb")) {
+        (n.trim(), 1024 * 1024)
+    } else if let Some(n) = s.strip_suffix("KB").or_else(|| s.strip_suffix("kb")) {
+        (n.trim(), 1024)
+    } else {
+        (s, 1)
+    };
+
+    let value: usize = num_str.parse().map_err(|e| format!("invalid memory size '{s}': {e}"))?;
+
+    value
+        .checked_mul(multiplier)
+        .ok_or_else(|| format!("memory size '{s}' overflows"))
 }
