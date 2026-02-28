@@ -104,6 +104,16 @@ def make_empty() -> Empty:
     return Empty()
 
 
+# Non-function constants for NameLookup tests.
+# These mirror the values in the Rust test runner's NameLookup handler.
+CONST_INT = 42
+CONST_STR = 'hello'
+CONST_FLOAT = 3.14
+CONST_BOOL = True
+CONST_LIST = [1, 2, 3]
+CONST_NONE = None
+
+
 async def async_call(x: object) -> object:
     """Async function that returns its argument.
 

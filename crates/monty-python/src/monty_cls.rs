@@ -389,18 +389,17 @@ impl PyMonty {
                         .map_err(|e| MontyError::new_err(py, e))?;
                 }
                 RunProgress::NameLookup(lookup) => {
-                    let result = if let Some(ext_fns) = external_functions {
-                        if let Some(value) = ext_fns.get_item(&lookup.name)? {
-                            if value.is_callable() {
-                                NameLookupResult::Value(MontyObject::Function {
-                                    name: lookup.name.clone(),
-                                    docstring: String::new(),
-                                })
-                            } else {
-                                NameLookupResult::Value(py_to_monty(&value, &self.dc_registry)?)
+                    let result: NameLookupResult = if let Some(ext_fns) = external_functions
+                        && let Some(value) = ext_fns.get_item(&lookup.name)?
+                    {
+                        if value.is_callable() {
+                            MontyObject::Function {
+                                name: lookup.name.clone(),
+                                docstring: String::new(),
                             }
+                            .into()
                         } else {
-                            NameLookupResult::Undefined
+                            py_to_monty(&value, &self.dc_registry)?.into()
                         }
                     } else {
                         NameLookupResult::Undefined

@@ -1485,6 +1485,7 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
             }
             RunProgress::NameLookup(lookup) => {
                 let result = match lookup.name.as_str() {
+                    // External functions — resolved as callable Function objects
                     "add_ints" | "concat_strings" | "return_value" | "get_list" | "raise_error" | "make_point"
                     | "make_mutable_point" | "make_user" | "make_empty" | "async_call" => {
                         NameLookupResult::Value(MontyObject::Function {
@@ -1492,6 +1493,19 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                             docstring: String::new(),
                         })
                     }
+                    // Non-function constants — resolved as plain values
+                    "CONST_INT" => NameLookupResult::Value(MontyObject::Int(42)),
+                    "CONST_STR" => NameLookupResult::Value(MontyObject::String("hello".to_string())),
+                    #[expect(clippy::approx_constant, reason = "3.14 is the intended test value")]
+                    "CONST_FLOAT" => NameLookupResult::Value(MontyObject::Float(3.14)),
+                    "CONST_BOOL" => NameLookupResult::Value(MontyObject::Bool(true)),
+                    "CONST_LIST" => NameLookupResult::Value(MontyObject::List(vec![
+                        MontyObject::Int(1),
+                        MontyObject::Int(2),
+                        MontyObject::Int(3),
+                    ])),
+                    "CONST_NONE" => NameLookupResult::Value(MontyObject::None),
+                    // Unknown names → NameError
                     _ => NameLookupResult::Undefined,
                 };
                 progress = lookup.resume(result, &mut PrintWriter::Stdout)?;
