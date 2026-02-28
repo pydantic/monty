@@ -88,6 +88,13 @@ lint-rs:  ## Lint Rust code with clippy and import checks
 	cargo clippy --workspace --tests --all-features -- -D warnings
 	uv run scripts/check_imports.py
 
+.PHONY: lint-rs-local
+lint-rs-local:  ## Lint Rust code in nested checkouts with local clippy config and system Python
+	@cargo clippy --version
+	PYO3_PYTHON="$${PYO3_PYTHON:-$$(command -v python3)}" CLIPPY_CONF_DIR="$(CURDIR)" cargo clippy --workspace --tests --bench main -- -D warnings
+	PYO3_PYTHON="$${PYO3_PYTHON:-$$(command -v python3)}" CLIPPY_CONF_DIR="$(CURDIR)" cargo clippy --workspace --tests --all-features -- -D warnings
+	PYO3_PYTHON="$${PYO3_PYTHON:-$$(command -v python3)}" CLIPPY_CONF_DIR="$(CURDIR)" uv run scripts/check_imports.py
+
 .PHONY: clippy-fix
 clippy-fix: ## Fix Rust code with clippy
 	cargo clippy --workspace --tests --bench main --all-features --fix --allow-dirty

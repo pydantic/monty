@@ -1,3 +1,11 @@
+//! Argument containers and helpers for Monty runtime calls.
+//!
+//! This module converts between parser/runtime argument forms (`ExprLoc`,
+//! `Identifier`, `Value`) and host-facing forms (`MontyObject`) while
+//! preserving reference-count and resource-tracking behaviour
+//! (`ResourceTracker`). It also provides parsing/validation utilities that
+//! surface `ParseError` for malformed argument syntax.
+
 use std::vec::IntoIter;
 
 use crate::{
@@ -7,6 +15,7 @@ use crate::{
     heap::{ContainsHeap, DropWithHeap, Heap, HeapGuard},
     intern::{Interns, StringId},
     parse::ParseError,
+    runtime_id::RuntimeValueId,
     types::{Dict, dict::DictIntoIter},
     value::Value,
 };
@@ -25,6 +34,13 @@ pub(crate) enum ArgValues {
     ArgsKargs { args: Vec<Value>, kwargs: KwargsValues },
 }
 
+/// Host-facing external call arguments plus stable runtime IDs.
+pub(crate) struct HostCallArgs {
+    pub args: Vec<MontyObject>,
+    pub kwargs: Vec<(MontyObject, MontyObject)>,
+    pub arg_runtime_ids: Vec<RuntimeValueId>,
+    pub kwarg_runtime_ids: Vec<(RuntimeValueId, RuntimeValueId)>,
+}
 impl ArgValues {
     /// Checks that zero arguments were passed.
     ///
@@ -262,26 +278,54 @@ impl ArgValues {
         ExcType::type_error_no_kwargs(method_name)
     }
 
-    /// Converts the arguments into a Vec of MontyObjects.
+    /// Converts arguments into host values and their runtime IDs.
     ///
-    /// This is used when passing arguments to external functions.
-    pub fn into_py_objects(
+    /// The runtime IDs are host-facing instrumentation metadata used to track
+    /// value identity continuity across suspend/resume and snapshot boundaries.
+    pub fn into_py_objects_with_runtime_ids(
         self,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>) {
+    ) -> HostCallArgs {
         match self {
-            Self::Empty => (vec![], vec![]),
-            Self::One(a) => (vec![MontyObject::new(a, heap, interns)], vec![]),
-            Self::Two(a1, a2) => (
-                vec![MontyObject::new(a1, heap, interns), MontyObject::new(a2, heap, interns)],
-                vec![],
-            ),
-            Self::Kwargs(kwargs) => (vec![], kwargs.into_py_objects(heap, interns)),
-            Self::ArgsKargs { args, kwargs } => (
-                args.into_iter().map(|v| MontyObject::new(v, heap, interns)).collect(),
-                kwargs.into_py_objects(heap, interns),
-            ),
+            Self::Empty => HostCallArgs::empty(),
+            Self::One(a) => {
+                let (args, arg_runtime_ids) = build_args_with_runtime_ids([a], heap, interns);
+                HostCallArgs {
+                    args,
+                    kwargs: vec![],
+                    arg_runtime_ids,
+                    kwarg_runtime_ids: vec![],
+                }
+            }
+            Self::Two(a1, a2) => {
+                let (args, arg_runtime_ids) = build_args_with_runtime_ids([a1, a2], heap, interns);
+                HostCallArgs {
+                    args,
+                    kwargs: vec![],
+                    arg_runtime_ids,
+                    kwarg_runtime_ids: vec![],
+                }
+            }
+            Self::Kwargs(kwargs) => {
+                let (kwargs, kwarg_runtime_ids) = kwargs.into_py_objects_with_runtime_ids(heap, interns);
+                HostCallArgs {
+                    args: vec![],
+                    kwargs,
+                    arg_runtime_ids: vec![],
+                    kwarg_runtime_ids,
+                }
+            }
+            Self::ArgsKargs { args, kwargs } => {
+                let (args, arg_runtime_ids) = build_args_with_runtime_ids(args, heap, interns);
+                let (kwargs, kwarg_runtime_ids) = kwargs.into_py_objects_with_runtime_ids(heap, interns);
+                HostCallArgs {
+                    args,
+                    kwargs,
+                    arg_runtime_ids,
+                    kwarg_runtime_ids,
+                }
+            }
         }
     }
 
@@ -299,21 +343,20 @@ impl ArgValues {
     }
 }
 
-impl DropWithHeap for ArgValues {
+impl DropWithHeap for KwargsValuesIter {
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         match self {
             Self::Empty => {}
-            Self::One(v) => v.drop_with_heap(heap),
-            Self::Two(v1, v2) => {
-                v1.drop_with_heap(heap);
-                v2.drop_with_heap(heap);
+            Self::Inline(iter) => {
+                for (_, v) in iter {
+                    v.drop_with_heap(heap);
+                }
             }
-            Self::Kwargs(kwargs) => {
-                kwargs.drop_with_heap(heap);
-            }
-            Self::ArgsKargs { args, kwargs } => {
-                args.drop_with_heap(heap);
-                kwargs.drop_with_heap(heap);
+            Self::Dict(iter) => {
+                for (k, v) in iter {
+                    k.drop_with_heap(heap);
+                    v.drop_with_heap(heap);
+                }
             }
         }
     }
@@ -346,50 +389,43 @@ impl ArgPosIter {
     }
 }
 
-impl Iterator for ArgPosIter {
-    type Item = Value;
+impl Iterator for KwargsValuesIter {
+    type Item = (Value, Value);
 
-    #[inline]
-    fn next(&mut self) -> Option<Value> {
+    fn next(&mut self) -> Option<Self::Item> {
         match self {
             Self::Empty => None,
-            Self::One(_) => {
-                let Self::One(v) = std::mem::replace(self, Self::Empty) else {
-                    unreachable!()
-                };
-                Some(v)
-            }
-            Self::Two(_) => {
-                let Self::Two([v1, v2]) = std::mem::replace(self, Self::Empty) else {
-                    unreachable!()
-                };
-                *self = Self::One(v2);
-                Some(v1)
-            }
-            Self::Vec(iter) => iter.next(),
+            Self::Inline(iter) => iter.next().map(|(k, v)| (Value::InternString(k), v)),
+            Self::Dict(iter) => iter.next(),
         }
     }
 
-    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         match self {
             Self::Empty => (0, Some(0)),
-            Self::One(_) => (1, Some(1)),
-            Self::Two(_) => (2, Some(2)),
-            Self::Vec(iter) => iter.size_hint(),
+            Self::Inline(iter) => iter.size_hint(),
+            Self::Dict(iter) => iter.size_hint(),
         }
     }
 }
 
-impl ExactSizeIterator for ArgPosIter {}
+impl ExactSizeIterator for KwargsValuesIter {}
 
-impl DropWithHeap for ArgPosIter {
+impl DropWithHeap for KwargsValuesIter {
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         match self {
             Self::Empty => {}
-            Self::One(v1) => v1.drop_with_heap(heap),
-            Self::Two(v12) => v12.drop_with_heap(heap),
-            Self::Vec(iter) => iter.drop_with_heap(heap),
+            Self::Inline(iter) => {
+                for (_, v) in iter {
+                    v.drop_with_heap(heap);
+                }
+            }
+            Self::Dict(iter) => {
+                for (k, v) in iter {
+                    k.drop_with_heap(heap);
+                    v.drop_with_heap(heap);
+                }
+            }
         }
     }
 }
@@ -422,28 +458,22 @@ impl KwargsValues {
         self.len() == 0
     }
 
-    /// Converts the arguments into a Vec of MontyObjects.
-    ///
-    /// This is used when passing arguments to external functions.
-    fn into_py_objects(
+    /// Converts kwargs into host values and runtime IDs.
+    fn into_py_objects_with_runtime_ids(
         self,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> Vec<(MontyObject, MontyObject)> {
+    ) -> (Vec<HostKwarg>, Vec<HostKwargRuntimeIds>) {
         match self {
-            Self::Empty => vec![],
+            Self::Empty => (vec![], vec![]),
             Self::Inline(kvs) => kvs
                 .into_iter()
-                .map(|(k, v)| {
-                    let key = MontyObject::String(interns.get_str(k).to_owned());
-                    let value = MontyObject::new(v, heap, interns);
-                    (key, value)
-                })
-                .collect(),
+                .map(|(k, v)| build_kwarg_pair(Value::InternString(k), v, heap, interns))
+                .unzip(),
             Self::Dict(dict) => dict
                 .into_iter()
-                .map(|(k, v)| (MontyObject::new(k, heap, interns), MontyObject::new(v, heap, interns)))
-                .collect(),
+                .map(|(k, v)| build_kwarg_pair(k, v, heap, interns))
+                .unzip(),
         }
     }
 
@@ -462,18 +492,17 @@ impl KwargsValues {
     }
 }
 
-impl DropWithHeap for KwargsValues {
-    /// Properly drops all values in the arguments, decrementing reference counts.
+impl DropWithHeap for KwargsValuesIter {
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         match self {
             Self::Empty => {}
-            Self::Inline(kvs) => {
-                for (_, v) in kvs {
+            Self::Inline(iter) => {
+                for (_, v) in iter {
                     v.drop_with_heap(heap);
                 }
             }
-            Self::Dict(dict) => {
-                for (k, v) in dict {
+            Self::Dict(iter) => {
+                for (k, v) in iter {
                     k.drop_with_heap(heap);
                     v.drop_with_heap(heap);
                 }
@@ -495,6 +524,20 @@ impl IntoIterator for KwargsValues {
     }
 }
 
+fn build_args_with_runtime_ids(
+    values: impl IntoIterator<Item = Value>,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> (Vec<MontyObject>, Vec<RuntimeValueId>) {
+    values
+        .into_iter()
+        .map(|value| {
+            let runtime_id = runtime_value_id(&value);
+            let py_object = MontyObject::new(value, heap, interns);
+            (py_object, runtime_id)
+        })
+        .unzip()
+}
 /// Iterator over keyword argument (key, value) pairs.
 ///
 /// For `Inline` kwargs, converts `StringId` keys to `Value::InternString`.
@@ -667,3 +710,36 @@ impl ArgExprs {
         Ok(())
     }
 }
+
+fn build_kwarg_pair(
+    key: Value,
+    value: Value,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> ((MontyObject, MontyObject), (RuntimeValueId, RuntimeValueId)) {
+    let key_runtime_id = runtime_value_id(&key);
+    let value_runtime_id = runtime_value_id(&value);
+    let key_py = MontyObject::new(key, heap, interns);
+    let value_py = MontyObject::new(value, heap, interns);
+    ((key_py, value_py), (key_runtime_id, value_runtime_id))
+}
+
+impl HostCallArgs {
+    #[inline]
+    fn empty() -> Self {
+        Self {
+            args: vec![],
+            kwargs: vec![],
+            arg_runtime_ids: vec![],
+            kwarg_runtime_ids: vec![],
+        }
+    }
+}
+
+fn runtime_value_id(value: &Value) -> RuntimeValueId {
+    RuntimeValueId::new(value.id())
+}
+
+type HostKwarg = (MontyObject, MontyObject);
+
+type HostKwargRuntimeIds = (RuntimeValueId, RuntimeValueId);
