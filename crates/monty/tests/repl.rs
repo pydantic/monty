@@ -13,8 +13,9 @@ use monty::{
 fn resolve_name_lookup<T: monty::ResourceTracker>(
     progress: ReplProgress<T>,
 ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
-    let (name, state) = progress.into_name_lookup().expect("expected NameLookup");
-    state.run(
+    let lookup = progress.into_name_lookup().expect("expected NameLookup");
+    let name = lookup.name.clone();
+    lookup.resume(
         NameLookupResult::Value(MontyObject::Function {
             name,
             docstring: String::new(),
@@ -187,12 +188,11 @@ fn repl_start_external_call_resumes_to_updated_repl() {
     let progress = resolve_name_lookup(progress).unwrap();
 
     // Now we get the FunctionCall
-    let (function_name, args, _kwargs, _call_id, _, state) =
-        progress.into_function_call().expect("expected function call");
-    assert_eq!(function_name, "ext_fn");
-    assert_eq!(args, vec![MontyObject::Int(41)]);
+    let call = progress.into_function_call().expect("expected function call");
+    assert_eq!(call.function_name, "ext_fn");
+    assert_eq!(call.args, vec![MontyObject::Int(41)]);
 
-    let progress = state.run(MontyObject::Int(41), &mut PrintWriter::Stdout).unwrap();
+    let progress = call.resume(MontyObject::Int(41), &mut PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
     assert_eq!(value, MontyObject::Int(42));
     assert_eq!(repl.feed_no_print("x = 5").unwrap(), MontyObject::None);
@@ -210,11 +210,10 @@ fn repl_progress_dump_load_roundtrip() {
     let bytes = progress.dump().unwrap();
     let loaded: ReplProgress<NoLimitTracker> = ReplProgress::load(&bytes).unwrap();
 
-    let (_function_name, args, _kwargs, _call_id, _, state) =
-        loaded.into_function_call().expect("expected function call");
-    assert_eq!(args, vec![MontyObject::Int(20)]);
+    let call = loaded.into_function_call().expect("expected function call");
+    assert_eq!(call.args, vec![MontyObject::Int(20)]);
 
-    let progress = state.run(MontyObject::Int(20), &mut PrintWriter::Stdout).unwrap();
+    let progress = call.resume(MontyObject::Int(20), &mut PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
     assert_eq!(value, MontyObject::Int(42));
     assert_eq!(repl.feed_no_print("z = 1").unwrap(), MontyObject::None);
@@ -234,10 +233,10 @@ async def main():
     let progress = repl.start("await main()", &mut PrintWriter::Stdout).unwrap();
     // First resolve the NameLookup for "foo"
     let progress = resolve_name_lookup(progress).unwrap();
-    let (_function_name, _args, _kwargs, call_id, _, state) =
-        progress.into_function_call().expect("expected function call");
+    let call = progress.into_function_call().expect("expected function call");
+    let call_id = call.call_id;
 
-    let progress = state.run_pending(&mut PrintWriter::Stdout).unwrap();
+    let progress = call.resume_pending(&mut PrintWriter::Stdout).unwrap();
     let bytes = progress.dump().unwrap();
     let loaded: ReplProgress<NoLimitTracker> = ReplProgress::load(&bytes).unwrap();
     let state = loaded.into_resolve_futures().expect("expected resolve futures");
@@ -285,13 +284,12 @@ fn repl_start_runtime_error_during_external_call_preserves_repl_state() {
 
     let progress = repl.start("ext_fn(1)", &mut PrintWriter::Stdout).unwrap();
     let progress = resolve_name_lookup(progress).unwrap();
-    let (_function_name, _args, _kwargs, _call_id, _, state) =
-        progress.into_function_call().expect("expected function call");
+    let call = progress.into_function_call().expect("expected function call");
 
     // Resume with an exception from the external function.
     let exc = monty::MontyException::new(monty::ExcType::RuntimeError, Some("ext failed".to_string()));
-    let err = state
-        .run(ExternalResult::Error(exc), &mut PrintWriter::Stdout)
+    let err = call
+        .resume(ExternalResult::Error(exc), &mut PrintWriter::Stdout)
         .expect_err("expected ReplStartError");
     let ReplStartError { mut repl, error } = *err;
     assert_eq!(error.exc_type(), monty::ExcType::RuntimeError);
@@ -328,16 +326,15 @@ fn repl_dataclass_method_call_yields_function_call_with_method_flag() {
 
     // Calling point.sum() should yield a FunctionCall with method_call=true
     let progress = repl.start("point.sum()", &mut PrintWriter::Stdout).unwrap();
-    let (function_name, args, _kwargs, _call_id, method_call, state) =
-        progress.into_function_call().expect("expected method call");
+    let call = progress.into_function_call().expect("expected method call");
 
-    assert_eq!(function_name, "sum");
-    assert!(method_call, "should be a method call");
+    assert_eq!(call.function_name, "sum");
+    assert!(call.method_call, "should be a method call");
     // First arg should be the dataclass instance (self)
-    assert!(matches!(&args[0], MontyObject::Dataclass { name, .. } if name == "Point"));
+    assert!(matches!(&call.args[0], MontyObject::Dataclass { name, .. } if name == "Point"));
 
     // Resume with a return value (sum of x + y = 3)
-    let progress = state.run(MontyObject::Int(3), &mut PrintWriter::Stdout).unwrap();
+    let progress = call.resume(MontyObject::Int(3), &mut PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
     assert_eq!(value, MontyObject::Int(3));
 

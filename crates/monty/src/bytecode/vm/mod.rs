@@ -336,7 +336,7 @@ pub struct CallFrame<'code> {
 
     /// Namespace index for this frame's locals.
     ///
-    /// Exposed as `pub(crate)` so that `NameLookupSnapshot` (in `run.rs` and `repl.rs`)
+    /// Exposed as `pub(crate)` so that `NameLookup` (in `run_progress.rs` and `repl.rs`)
     /// can determine which namespace to cache resolved names into.
     pub(crate) namespace_idx: NamespaceId,
 
@@ -500,7 +500,7 @@ pub struct VMSnapshot {
 impl VMSnapshot {
     /// Returns the namespace index of the current (topmost) call frame.
     ///
-    /// This is used by `NameLookupSnapshot` to determine which namespace to cache
+    /// This is used by `NameLookup` to determine which namespace to cache
     /// resolved values into when the lookup originated from a function scope
     /// (i.e., `is_global` is false).
     pub fn current_namespace_idx(&self) -> NamespaceId {

@@ -16,10 +16,11 @@ use monty::{
 fn resolve_name_lookups<T: monty::ResourceTracker>(
     mut progress: RunProgress<T>,
 ) -> Result<RunProgress<T>, monty::MontyException> {
-    while let RunProgress::NameLookup { name, state } = progress {
-        progress = state.run(
+    while let RunProgress::NameLookup(lookup) = progress {
+        let name = lookup.name.clone();
+        progress = lookup.resume(
             NameLookupResult::Value(MontyObject::Function {
-                name: name.clone(),
+                name,
                 docstring: String::new(),
             }),
             &mut PrintWriter::Stdout,
@@ -326,16 +327,16 @@ fn executor_iter_resource_limit_on_resume() {
 
     // First function call should succeed with generous limit
     let limits = ResourceLimits::new().max_allocations(5);
-    let (name, args, _kwargs, _call_id, _, state) = run
+    let call = run
         .start(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout)
         .unwrap()
         .into_function_call()
         .expect("function call");
-    assert_eq!(name, "foo");
-    assert_eq!(args, vec![MontyObject::Int(1)]);
+    assert_eq!(call.function_name, "foo");
+    assert_eq!(call.args, vec![MontyObject::Int(1)]);
 
     // Resume - should fail due to allocation limit during the for loop
-    let result = state.run(MontyObject::None, &mut PrintWriter::Stdout);
+    let result = call.resume(MontyObject::None, &mut PrintWriter::Stdout);
     assert!(result.is_err(), "should exceed allocation limit on resume");
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
@@ -398,31 +399,31 @@ fn executor_iter_resource_limit_multiple_function_calls() {
     let progress = run
         .start(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout)
         .unwrap();
-    let (name, args, _kwargs, _call_id, _, state) = resolve_name_lookups(progress)
+    let call = resolve_name_lookups(progress)
         .unwrap()
         .into_function_call()
         .expect("first call");
-    assert_eq!(name, "foo");
-    assert_eq!(args, vec![MontyObject::Int(1)]);
+    assert_eq!(call.function_name, "foo");
+    assert_eq!(call.args, vec![MontyObject::Int(1)]);
 
-    let progress = state.run(MontyObject::None, &mut PrintWriter::Stdout).unwrap();
-    let (name, args, _kwargs, _call_id, _, state) = resolve_name_lookups(progress)
+    let progress = call.resume(MontyObject::None, &mut PrintWriter::Stdout).unwrap();
+    let call = resolve_name_lookups(progress)
         .unwrap()
         .into_function_call()
         .expect("second call");
-    assert_eq!(name, "bar");
-    assert_eq!(args, vec![MontyObject::Int(2)]);
+    assert_eq!(call.function_name, "bar");
+    assert_eq!(call.args, vec![MontyObject::Int(2)]);
 
-    let progress = state.run(MontyObject::None, &mut PrintWriter::Stdout).unwrap();
-    let (name, args, _kwargs, _call_id, _, state) = resolve_name_lookups(progress)
+    let progress = call.resume(MontyObject::None, &mut PrintWriter::Stdout).unwrap();
+    let call = resolve_name_lookups(progress)
         .unwrap()
         .into_function_call()
         .expect("third call");
-    assert_eq!(name, "baz");
-    assert_eq!(args, vec![MontyObject::Int(3)]);
+    assert_eq!(call.function_name, "baz");
+    assert_eq!(call.args, vec![MontyObject::Int(3)]);
 
-    let result = state
-        .run(MontyObject::None, &mut PrintWriter::Stdout)
+    let result = call
+        .resume(MontyObject::None, &mut PrintWriter::Stdout)
         .unwrap()
         .into_complete()
         .expect("complete");
@@ -1305,18 +1306,18 @@ fn assert_repr_timeout(code: &str, label: &str) {
 
     // Phase 1: build the large object with no time limit
     let limits = ResourceLimits::new();
-    let (name, _args, _kwargs, _call_id, _, mut state) = run
+    let mut call = run
         .start(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout)
         .unwrap()
         .into_function_call()
         .expect("interrupt call");
-    assert_eq!(name, "interrupt");
+    assert_eq!(call.function_name, "interrupt");
 
     // Phase 2: set a short time limit and resume — repr() should timeout
-    state.tracker_mut().set_max_duration(Duration::from_millis(10));
+    call.tracker_mut().set_max_duration(Duration::from_millis(10));
 
     let start = Instant::now();
-    let result = state.run(MontyObject::None, &mut PrintWriter::Stdout);
+    let result = call.resume(MontyObject::None, &mut PrintWriter::Stdout);
     let elapsed = start.elapsed();
 
     let exc = result.unwrap_err();

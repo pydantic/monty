@@ -16,11 +16,9 @@ fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
     let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     match progress {
-        RunProgress::OsCall {
-            function, args, state, ..
-        } => {
+        RunProgress::OsCall(call) => {
             // Resume with a mock result appropriate for the function type.
-            let mock_result = match function {
+            let mock_result = match call.function {
                 OsFunction::Exists | OsFunction::IsFile | OsFunction::IsDir | OsFunction::IsSymlink => {
                     MontyObject::Bool(true)
                 }
@@ -39,7 +37,9 @@ fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
                 OsFunction::Getenv => MontyObject::String("mock_env_value".to_owned()),
                 OsFunction::GetEnviron => MontyObject::Dict(vec![].into()),
             };
-            let _ = state.run(mock_result, &mut PrintWriter::Stdout);
+            let function = call.function;
+            let args = call.args.clone();
+            let _ = call.resume(mock_result, &mut PrintWriter::Stdout);
             (function, args)
         }
         _ => panic!("expected OsCall, got {progress:?}"),
@@ -52,10 +52,10 @@ fn run_oscall_with_result(code: &str, mock_result: MontyObject) -> (OsFunction, 
     let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     match progress {
-        RunProgress::OsCall {
-            function, args, state, ..
-        } => {
-            let resumed = state.run(mock_result, &mut PrintWriter::Stdout).unwrap();
+        RunProgress::OsCall(call) => {
+            let function = call.function;
+            let args = call.args.clone();
+            let resumed = call.resume(mock_result, &mut PrintWriter::Stdout).unwrap();
             let final_result = resumed.into_complete().expect("expected Complete after resume");
             (function, args, final_result)
         }

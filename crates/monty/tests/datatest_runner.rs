@@ -16,8 +16,8 @@ use std::{
 
 use ahash::AHashMap;
 use monty::{
-    ExcType, ExternalResult, LimitedTracker, MontyException, MontyFuture, MontyObject, MontyRun, NameLookupResult,
-    OsFunction, PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
+    ExcType, ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRun, NameLookupResult, OsFunction,
+    PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
 };
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
@@ -1441,31 +1441,24 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
 
         match progress {
             RunProgress::Complete(result) => return Ok(result),
-            RunProgress::FunctionCall {
-                function_name,
-                args,
-                kwargs,
-                call_id,
-                method_call,
-                state,
-            } => {
+            RunProgress::FunctionCall(call) => {
                 // Method calls on dataclasses are dispatched to the host.
                 // Dispatch known methods; return AttributeError for unknown ones.
-                if method_call {
-                    let result = dispatch_method_call(&function_name, &args, &kwargs);
-                    progress = state.run(result, &mut PrintWriter::Stdout)?;
+                if call.method_call {
+                    let result = dispatch_method_call(&call.function_name, &call.args, &call.kwargs);
+                    progress = call.resume(result, &mut PrintWriter::Stdout)?;
                     continue;
                 }
-                let dispatch_result = dispatch_external_call(&function_name, args);
+                let dispatch_result = dispatch_external_call(&call.function_name, call.args.clone());
                 match dispatch_result {
                     DispatchResult::Sync(return_value) => {
-                        progress = state.run(return_value, &mut PrintWriter::Stdout)?;
+                        progress = call.resume(return_value, &mut PrintWriter::Stdout)?;
                     }
                     DispatchResult::Async(result_value) => {
                         // Store the result for later resolution
-                        pending_results.push((call_id, result_value));
+                        pending_results.push((call.call_id, result_value));
                         // Continue execution with a pending future
-                        progress = state.run(MontyFuture, &mut PrintWriter::Stdout)?;
+                        progress = call.resume_pending(&mut PrintWriter::Stdout)?;
                     }
                 }
             }
@@ -1490,28 +1483,22 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
 
                 progress = state.resume(results, &mut PrintWriter::Stdout)?;
             }
-            RunProgress::NameLookup { name, state } => {
-                let result = match name.as_str() {
+            RunProgress::NameLookup(lookup) => {
+                let result = match lookup.name.as_str() {
                     "add_ints" | "concat_strings" | "return_value" | "get_list" | "raise_error" | "make_point"
                     | "make_mutable_point" | "make_user" | "make_empty" | "async_call" => {
                         NameLookupResult::Value(MontyObject::Function {
-                            name: name.clone(),
+                            name: lookup.name.clone(),
                             docstring: String::new(),
                         })
                     }
                     _ => NameLookupResult::Undefined,
                 };
-                progress = state.run(result, &mut PrintWriter::Stdout)?;
+                progress = lookup.resume(result, &mut PrintWriter::Stdout)?;
             }
-            RunProgress::OsCall {
-                function,
-                args,
-                kwargs,
-                state,
-                ..
-            } => {
-                let result = dispatch_os_call(function, &args, &kwargs);
-                progress = state.run(result, &mut PrintWriter::Stdout)?;
+            RunProgress::OsCall(call) => {
+                let result = dispatch_os_call(call.function, &call.args, &call.kwargs);
+                progress = call.resume(result, &mut PrintWriter::Stdout)?;
             }
         }
     }

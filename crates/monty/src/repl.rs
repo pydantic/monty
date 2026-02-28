@@ -24,7 +24,7 @@ use crate::{
     parse::{parse, parse_with_interner},
     prepare::{prepare, prepare_with_existing_names},
     resource::ResourceTracker,
-    run::{ExternalResult, MontyFuture},
+    run_progress::{ExternalResult, NameLookupResult},
     value::Value,
 };
 
@@ -485,53 +485,27 @@ impl<T: ResourceTracker> Drop for MontyRepl<T> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ReplProgress and per-variant structs
+// ---------------------------------------------------------------------------
+
 /// Result of a single suspendable REPL snippet execution.
 ///
 /// This mirrors `RunProgress` but returns the updated `MontyRepl` on completion
 /// so callers can continue feeding additional snippets without replaying prior code.
+/// Each variant (except `Complete`) wraps a dedicated struct with only the relevant
+/// resume methods.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
 pub enum ReplProgress<T: ResourceTracker> {
     /// Execution paused at an external function call or dataclass method call.
-    FunctionCall {
-        /// The name of the function or method being called.
-        function_name: String,
-        /// The positional arguments passed to the function.
-        args: Vec<MontyObject>,
-        /// The keyword arguments passed to the function (key, value pairs).
-        kwargs: Vec<(MontyObject, MontyObject)>,
-        /// Unique identifier for this call (used for async correlation).
-        call_id: u32,
-        /// Whether this is a dataclass method call (first arg is `self`).
-        method_call: bool,
-        /// Repl execution state that can be resumed.
-        state: ReplSnapshot<T>,
-    },
+    FunctionCall(ReplFunctionCall<T>),
     /// Execution paused for an OS-level operation.
-    OsCall {
-        /// The OS function to execute.
-        function: OsFunction,
-        /// The positional arguments for the OS function.
-        args: Vec<MontyObject>,
-        /// The keyword arguments passed to the function (key, value pairs).
-        kwargs: Vec<(MontyObject, MontyObject)>,
-        /// Unique identifier for this call (used for async correlation).
-        call_id: u32,
-        /// Repl execution state that can be resumed.
-        state: ReplSnapshot<T>,
-    },
+    OsCall(ReplOsCall<T>),
     /// All async tasks are blocked waiting for external futures to resolve.
-    ResolveFutures(ReplFutureSnapshot<T>),
+    ResolveFutures(ReplResolveFutures<T>),
     /// Execution paused for an unresolved name lookup.
-    ///
-    /// The host should check if the name corresponds to a known external function or
-    /// value. Return the appropriate `NameLookupResult` to continue.
-    NameLookup {
-        /// The name being looked up.
-        name: String,
-        /// The execution state for resuming after name resolution.
-        state: ReplNameLookupSnapshot<T>,
-    },
+    NameLookup(ReplNameLookup<T>),
     /// Snippet execution completed with the updated REPL and result value.
     Complete {
         /// Updated REPL session state to continue feeding snippets.
@@ -556,48 +530,29 @@ pub struct ReplStartError<T: ResourceTracker> {
 }
 
 impl<T: ResourceTracker> ReplProgress<T> {
-    /// Consumes the progress and returns external function call info and state.
-    ///
-    /// Returns `(function_name, positional_args, keyword_args, call_id, method_call, state)`.
+    /// Consumes the progress and returns the `ReplFunctionCall` struct.
     #[must_use]
-    #[expect(clippy::type_complexity)]
-    pub fn into_function_call(
-        self,
-    ) -> Option<(
-        String,
-        Vec<MontyObject>,
-        Vec<(MontyObject, MontyObject)>,
-        u32,
-        bool,
-        ReplSnapshot<T>,
-    )> {
+    pub fn into_function_call(self) -> Option<ReplFunctionCall<T>> {
         match self {
-            Self::FunctionCall {
-                function_name,
-                args,
-                kwargs,
-                call_id,
-                method_call,
-                state,
-            } => Some((function_name, args, kwargs, call_id, method_call, state)),
+            Self::FunctionCall(call) => Some(call),
             _ => None,
         }
     }
 
-    /// Consumes the progress and returns pending futures state.
+    /// Consumes the progress and returns the `ReplResolveFutures` struct.
     #[must_use]
-    pub fn into_resolve_futures(self) -> Option<ReplFutureSnapshot<T>> {
+    pub fn into_resolve_futures(self) -> Option<ReplResolveFutures<T>> {
         match self {
             Self::ResolveFutures(state) => Some(state),
             _ => None,
         }
     }
 
-    /// Consumes the progress and returns name lookup info and state.
+    /// Consumes the progress and returns the `ReplNameLookup` struct.
     #[must_use]
-    pub fn into_name_lookup(self) -> Option<(String, ReplNameLookupSnapshot<T>)> {
+    pub fn into_name_lookup(self) -> Option<ReplNameLookup<T>> {
         match self {
-            Self::NameLookup { name, state } => Some((name, state)),
+            Self::NameLookup(lookup) => Some(lookup),
             _ => None,
         }
     }
@@ -632,44 +587,156 @@ impl<T: ResourceTracker + serde::de::DeserializeOwned> ReplProgress<T> {
     }
 }
 
-/// REPL execution state that can be resumed after an external call.
+// ---------------------------------------------------------------------------
+// ReplFunctionCall
+// ---------------------------------------------------------------------------
+
+/// REPL execution paused at an external function call or dataclass method call.
 ///
-/// This is the REPL-aware counterpart to `Snapshot`. Resuming continues the
-/// same snippet and ultimately returns `ReplProgress::Complete` with the
-/// updated REPL session.
+/// Resume with `resume(result, print)` to provide the return value and continue,
+/// or `resume_pending(print)` to push an `ExternalFuture` for async resolution.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
-pub struct ReplSnapshot<T: ResourceTracker> {
-    /// Persistent REPL session state while this snippet is suspended.
-    repl: MontyRepl<T>,
-    /// Compiled snippet and intern/function tables for this execution.
-    executor: ReplExecutor,
-    /// VM stack/frame state at suspension.
-    vm_state: VMSnapshot,
-    /// call_id used when resuming with an unresolved future.
-    pending_call_id: u32,
+pub struct ReplFunctionCall<T: ResourceTracker> {
+    /// The name of the function or method being called.
+    pub function_name: String,
+    /// The positional arguments passed to the function.
+    pub args: Vec<MontyObject>,
+    /// The keyword arguments passed to the function (key, value pairs).
+    pub kwargs: Vec<(MontyObject, MontyObject)>,
+    /// Unique identifier for this call (used for async correlation).
+    pub call_id: u32,
+    /// Whether this is a dataclass method call (first arg is `self`).
+    pub method_call: bool,
+    /// Internal REPL execution snapshot.
+    snapshot: ReplSnapshot<T>,
 }
 
-impl<T: ResourceTracker> ReplSnapshot<T> {
-    /// Continues snippet execution with an external result.
-    ///
-    /// # Arguments
-    /// * `result` - Return value, raised exception, or pending future marker
-    /// * `print` - Writer used for Python `print()`
-    pub fn run(
+impl<T: ResourceTracker> ReplFunctionCall<T> {
+    /// Resumes snippet execution with an external result.
+    pub fn resume(
         self,
         result: impl Into<ExternalResult>,
         print: &mut PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+        self.snapshot.run(result, print)
+    }
+
+    /// Resumes execution by pushing an `ExternalFuture` for async resolution.
+    ///
+    /// Uses `self.call_id` internally — no need to pass it again.
+    pub fn resume_pending(self, print: &mut PrintWriter<'_>) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+        self.snapshot.run(ExternalResult::Future(self.call_id), print)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ReplOsCall
+// ---------------------------------------------------------------------------
+
+/// REPL execution paused for an OS-level operation.
+///
+/// Resume with `resume(result, print)` to provide the OS call result and continue.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
+pub struct ReplOsCall<T: ResourceTracker> {
+    /// The OS function to execute.
+    pub function: OsFunction,
+    /// The positional arguments for the OS function.
+    pub args: Vec<MontyObject>,
+    /// The keyword arguments passed to the function (key, value pairs).
+    pub kwargs: Vec<(MontyObject, MontyObject)>,
+    /// Unique identifier for this call (used for async correlation).
+    pub call_id: u32,
+    /// Internal REPL execution snapshot.
+    snapshot: ReplSnapshot<T>,
+}
+
+impl<T: ResourceTracker> ReplOsCall<T> {
+    /// Resumes snippet execution with the OS call result.
+    pub fn resume(
+        self,
+        result: impl Into<ExternalResult>,
+        print: &mut PrintWriter<'_>,
+    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+        self.snapshot.run(result, print)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ReplNameLookup
+// ---------------------------------------------------------------------------
+
+/// REPL execution paused for an unresolved name lookup.
+///
+/// The host should check if the name corresponds to a known external function or
+/// value. Call `resume(result, print)` with the appropriate `NameLookupResult`.
+/// The namespace slot and scope are managed internally.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
+pub struct ReplNameLookup<T: ResourceTracker> {
+    /// The name being looked up.
+    pub name: String,
+    /// The namespace slot where the resolved value should be cached.
+    namespace_slot: u16,
+    /// Whether this is a global slot or a local/function slot.
+    is_global: bool,
+    /// Internal REPL execution snapshot.
+    snapshot: ReplSnapshot<T>,
+}
+
+impl<T: ResourceTracker> ReplNameLookup<T> {
+    /// Resumes execution after name resolution.
+    ///
+    /// Caches the resolved value in the namespace slot before restoring the VM,
+    /// then either pushes the value onto the stack or raises `NameError`.
+    pub fn resume(
+        self,
+        result: NameLookupResult,
+        print: &mut PrintWriter<'_>,
+    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         let Self {
+            name,
+            namespace_slot,
+            is_global,
+            snapshot,
+        } = self;
+
+        let ReplSnapshot {
             mut repl,
             executor,
             vm_state,
-            pending_call_id,
-        } = self;
+        } = snapshot;
 
-        let ext_result = result.into();
+        // Resolve the name lookup result BEFORE restoring the VM, since the VM
+        // borrows heap/namespaces mutably and we need direct access for caching.
+        let resolved_value = match result {
+            NameLookupResult::Value(obj) => {
+                let value = match obj.to_value(&mut repl.heap, &executor.interns) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let error = MontyException::runtime_error(format!("invalid name lookup result: {e}"));
+                        return Err(Box::new(ReplStartError { repl, error }));
+                    }
+                };
 
+                // Cache in the appropriate namespace slot based on scope.
+                let ns_slot = NamespaceId::new(namespace_slot as usize);
+                let ns_idx = if is_global {
+                    GLOBAL_NS_IDX
+                } else {
+                    vm_state.current_namespace_idx()
+                };
+                let namespace = repl.namespaces.get_mut(ns_idx);
+                let old = mem::replace(namespace.get_mut(ns_slot), value.clone_with_heap(&repl.heap));
+                old.drop_with_heap(&mut repl.heap);
+
+                Some(value)
+            }
+            NameLookupResult::Undefined => None,
+        };
+
+        // Now restore the VM (borrows heap and namespaces)
         let mut vm = VM::restore(
             vm_state,
             &executor.module_code,
@@ -679,36 +746,30 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
             print,
         );
 
-        let vm_result = match ext_result {
-            ExternalResult::Return(obj) => vm.resume(obj),
-            ExternalResult::Error(exc) => vm.resume_with_exception(exc.into()),
-            ExternalResult::Future => {
-                let call_id = CallId::new(pending_call_id);
-                vm.add_pending_call(call_id);
-                vm.push(Value::ExternalFuture(call_id));
-                vm.run()
-            }
+        // Resume execution: either push the resolved value or raise NameError
+        // through the VM so that traceback information is properly captured.
+        let vm_result = if let Some(value) = resolved_value {
+            vm.push(value);
+            vm.run()
+        } else {
+            let err: RunError = ExcType::name_error(&name).into();
+            vm.resume_with_exception(err)
         };
-
         let vm_state = vm.check_snapshot(&vm_result);
-
         handle_repl_vm_result(vm_result, vm_state, executor, repl)
-    }
-
-    /// Continues snippet execution by pushing an unresolved `ExternalFuture`.
-    ///
-    /// This is the REPL-aware async pattern equivalent to `Snapshot::run_pending`.
-    pub fn run_pending(self, print: &mut PrintWriter<'_>) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
-        self.run(MontyFuture, print)
     }
 }
 
+// ---------------------------------------------------------------------------
+// ReplResolveFutures
+// ---------------------------------------------------------------------------
+
 /// REPL execution state blocked on unresolved external futures.
 ///
-/// This is the REPL-aware counterpart to `FutureSnapshot`.
+/// This is the REPL-aware counterpart to `ResolveFutures`.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
-pub struct ReplFutureSnapshot<T: ResourceTracker> {
+pub struct ReplResolveFutures<T: ResourceTracker> {
     /// Persistent REPL session state while this snippet is suspended.
     repl: MontyRepl<T>,
     /// Compiled snippet and intern/function tables for this execution.
@@ -719,7 +780,7 @@ pub struct ReplFutureSnapshot<T: ResourceTracker> {
     pending_call_ids: Vec<u32>,
 }
 
-impl<T: ResourceTracker> ReplFutureSnapshot<T> {
+impl<T: ResourceTracker> ReplResolveFutures<T> {
     /// Returns unresolved call IDs for this suspended state.
     #[must_use]
     pub fn pending_call_ids(&self) -> &[u32] {
@@ -779,7 +840,7 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
                     }
                 }
                 ExternalResult::Error(exc) => vm.fail_future(call_id, RunError::from(exc)),
-                ExternalResult::Future => {}
+                ExternalResult::Future(_) => {}
             }
         }
 
@@ -821,76 +882,40 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
     }
 }
 
-/// REPL execution state that can be resumed after an unresolved name lookup.
+// ---------------------------------------------------------------------------
+// ReplSnapshot (pub(crate))
+// ---------------------------------------------------------------------------
+
+/// REPL execution state that can be resumed after an external call.
 ///
-/// This is the REPL-aware counterpart to `NameLookupSnapshot`. When the host resolves
-/// the name, execution continues and the resolved value is cached in the namespace slot.
+/// This is the REPL-aware counterpart to `Snapshot`. It is `pub(crate)` —
+/// callers interact with the per-variant structs (`ReplFunctionCall`, etc.).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
-pub struct ReplNameLookupSnapshot<T: ResourceTracker> {
+pub(crate) struct ReplSnapshot<T: ResourceTracker> {
     /// Persistent REPL session state while this snippet is suspended.
     repl: MontyRepl<T>,
     /// Compiled snippet and intern/function tables for this execution.
     executor: ReplExecutor,
     /// VM stack/frame state at suspension.
     vm_state: VMSnapshot,
-    /// The namespace slot where the resolved value should be cached.
-    namespace_slot: u16,
-    /// Whether this is a global slot or a local/function slot.
-    is_global: bool,
-    /// The name being looked up (for error messages).
-    name: String,
 }
 
-impl<T: ResourceTracker> ReplNameLookupSnapshot<T> {
-    /// Continues execution with the name lookup result.
-    ///
-    /// - `NameLookupResult::Value(obj)`: Caches the value in the namespace slot and pushes
-    ///   it onto the stack, then continues execution.
-    /// - `NameLookupResult::Undefined`: Raises `NameError: name 'X' is not defined`.
-    pub fn run(
+impl<T: ResourceTracker> ReplSnapshot<T> {
+    /// Continues snippet execution with an external result.
+    fn run(
         self,
-        result: crate::run::NameLookupResult,
+        result: impl Into<ExternalResult>,
         print: &mut PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         let Self {
             mut repl,
             executor,
             vm_state,
-            namespace_slot,
-            is_global,
-            name,
         } = self;
 
-        // Resolve the name lookup result BEFORE restoring the VM, since the VM
-        // borrows heap/namespaces mutably and we need direct access for caching.
-        let resolved_value = match result {
-            crate::run::NameLookupResult::Value(obj) => {
-                let value = match obj.to_value(&mut repl.heap, &executor.interns) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        let error = MontyException::runtime_error(format!("invalid name lookup result: {e}"));
-                        return Err(Box::new(ReplStartError { repl, error }));
-                    }
-                };
+        let ext_result = result.into();
 
-                // Cache in the appropriate namespace slot based on scope.
-                let ns_slot = NamespaceId::new(namespace_slot as usize);
-                let ns_idx = if is_global {
-                    GLOBAL_NS_IDX
-                } else {
-                    vm_state.current_namespace_idx()
-                };
-                let namespace = repl.namespaces.get_mut(ns_idx);
-                let old = mem::replace(namespace.get_mut(ns_slot), value.clone_with_heap(&repl.heap));
-                old.drop_with_heap(&mut repl.heap);
-
-                Some(value)
-            }
-            crate::run::NameLookupResult::Undefined => None,
-        };
-
-        // Now restore the VM (borrows heap and namespaces)
         let mut vm = VM::restore(
             vm_state,
             &executor.module_code,
@@ -900,19 +925,26 @@ impl<T: ResourceTracker> ReplNameLookupSnapshot<T> {
             print,
         );
 
-        // Resume execution: either push the resolved value or raise NameError
-        // through the VM so that traceback information is properly captured.
-        let vm_result = if let Some(value) = resolved_value {
-            vm.push(value);
-            vm.run()
-        } else {
-            let err: RunError = ExcType::name_error(&name).into();
-            vm.resume_with_exception(err)
+        let vm_result = match ext_result {
+            ExternalResult::Return(obj) => vm.resume(obj),
+            ExternalResult::Error(exc) => vm.resume_with_exception(exc.into()),
+            ExternalResult::Future(raw_call_id) => {
+                let call_id = CallId::new(raw_call_id);
+                vm.add_pending_call(call_id);
+                vm.push(Value::ExternalFuture(call_id));
+                vm.run()
+            }
         };
+
         let vm_state = vm.check_snapshot(&vm_result);
+
         handle_repl_vm_result(vm_result, vm_state, executor, repl)
     }
 }
+
+// ---------------------------------------------------------------------------
+// handle_repl_vm_result
+// ---------------------------------------------------------------------------
 
 /// Handles a `FrameExit` result and converts it to REPL progress.
 ///
@@ -926,12 +958,11 @@ fn handle_repl_vm_result<T: ResourceTracker>(
     mut repl: MontyRepl<T>,
 ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
     macro_rules! new_repl_snapshot {
-        ($call_id: expr) => {
+        () => {
             ReplSnapshot {
                 repl,
                 executor,
-                vm_state: vm_state.expect("snapshot should exist for ExternalCall"),
-                pending_call_id: $call_id.raw(),
+                vm_state: vm_state.expect("snapshot should exist"),
             }
         };
     }
@@ -952,14 +983,14 @@ fn handle_repl_vm_result<T: ResourceTracker>(
             let function_name = executor.interns.get_str(function_name_id).to_owned();
             let (args_py, kwargs_py) = args.into_py_objects(&mut repl.heap, &executor.interns);
 
-            Ok(ReplProgress::FunctionCall {
+            Ok(ReplProgress::FunctionCall(ReplFunctionCall {
                 function_name,
                 args: args_py,
                 kwargs: kwargs_py,
                 call_id: call_id.raw(),
                 method_call: false,
-                state: new_repl_snapshot!(call_id),
-            })
+                snapshot: new_repl_snapshot!(),
+            }))
         }
         Ok(FrameExit::OsCall {
             function,
@@ -968,13 +999,13 @@ fn handle_repl_vm_result<T: ResourceTracker>(
         }) => {
             let (args_py, kwargs_py) = args.into_py_objects(&mut repl.heap, &executor.interns);
 
-            Ok(ReplProgress::OsCall {
+            Ok(ReplProgress::OsCall(ReplOsCall {
                 function,
                 args: args_py,
                 kwargs: kwargs_py,
                 call_id: call_id.raw(),
-                state: new_repl_snapshot!(call_id),
-            })
+                snapshot: new_repl_snapshot!(),
+            }))
         }
         Ok(FrameExit::MethodCall {
             method_name,
@@ -984,18 +1015,18 @@ fn handle_repl_vm_result<T: ResourceTracker>(
             let function_name = method_name.into_string(&executor.interns);
             let (args_py, kwargs_py) = args.into_py_objects(&mut repl.heap, &executor.interns);
 
-            Ok(ReplProgress::FunctionCall {
+            Ok(ReplProgress::FunctionCall(ReplFunctionCall {
                 function_name,
                 args: args_py,
                 kwargs: kwargs_py,
                 call_id: call_id.raw(),
                 method_call: true,
-                state: new_repl_snapshot!(call_id),
-            })
+                snapshot: new_repl_snapshot!(),
+            }))
         }
         Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
             let pending_call_ids: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
-            Ok(ReplProgress::ResolveFutures(ReplFutureSnapshot {
+            Ok(ReplProgress::ResolveFutures(ReplResolveFutures {
                 repl,
                 executor,
                 vm_state: vm_state.expect("snapshot should exist for ResolveFutures"),
@@ -1008,17 +1039,12 @@ fn handle_repl_vm_result<T: ResourceTracker>(
             is_global,
         }) => {
             let name = executor.interns.get_str(name_id).to_owned();
-            Ok(ReplProgress::NameLookup {
-                name: name.clone(),
-                state: ReplNameLookupSnapshot {
-                    repl,
-                    executor,
-                    vm_state: vm_state.expect("snapshot should exist for NameLookup"),
-                    namespace_slot,
-                    is_global,
-                    name,
-                },
-            })
+            Ok(ReplProgress::NameLookup(ReplNameLookup {
+                name,
+                namespace_slot,
+                is_global,
+                snapshot: new_repl_snapshot!(),
+            }))
         }
         Err(err) => {
             let error = err.into_python_exception(&executor.interns, &executor.code);

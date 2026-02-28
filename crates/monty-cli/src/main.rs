@@ -392,15 +392,10 @@ fn run_until_complete(mut progress: RunProgress<impl ResourceTracker>) -> Result
     loop {
         match progress {
             RunProgress::Complete(value) => return Ok(value),
-            RunProgress::FunctionCall {
-                function_name,
-                args,
-                state,
-                ..
-            } => {
-                let return_value = resolve_external_call(&function_name, &args)?;
-                progress = state
-                    .run(return_value, &mut PrintWriter::Stdout)
+            RunProgress::FunctionCall(call) => {
+                let return_value = resolve_external_call(&call.function_name, &call.args)?;
+                progress = call
+                    .resume(return_value, &mut PrintWriter::Stdout)
                     .map_err(|err| format!("{err}"))?;
             }
             RunProgress::ResolveFutures(state) => {
@@ -409,8 +404,8 @@ fn run_until_complete(mut progress: RunProgress<impl ResourceTracker>) -> Result
                     state.pending_call_ids()
                 ));
             }
-            RunProgress::NameLookup { name, state } => {
-                let result = if name == "add_ints" {
+            RunProgress::NameLookup(lookup) => {
+                let result = if lookup.name == "add_ints" {
                     NameLookupResult::Value(MontyObject::Function {
                         name: "add_ints".to_string(),
                         docstring: String::new(),
@@ -418,12 +413,15 @@ fn run_until_complete(mut progress: RunProgress<impl ResourceTracker>) -> Result
                 } else {
                     NameLookupResult::Undefined
                 };
-                progress = state
-                    .run(result, &mut PrintWriter::Stdout)
+                progress = lookup
+                    .resume(result, &mut PrintWriter::Stdout)
                     .map_err(|err| format!("{err}"))?;
             }
-            RunProgress::OsCall { function, args, .. } => {
-                return Err(format!("OS calls not supported in CLI: {function:?}({args:?})"));
+            RunProgress::OsCall(call) => {
+                return Err(format!(
+                    "OS calls not supported in CLI: {:?}({:?})",
+                    call.function, call.args
+                ));
             }
         }
     }

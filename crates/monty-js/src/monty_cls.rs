@@ -45,8 +45,8 @@
 use std::borrow::Cow;
 
 use monty::{
-    ExcType, ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRepl as CoreMontyRepl, MontyRun,
-    NameLookupResult, NoLimitTracker, PrintWriter, PrintWriterCallback, ResourceTracker, RunProgress, Snapshot,
+    ExcType, ExternalResult, FunctionCall, LimitedTracker, MontyException, MontyObject, MontyRepl as CoreMontyRepl,
+    MontyRun, NameLookupResult, NoLimitTracker, PrintWriter, PrintWriterCallback, ResourceTracker, RunProgress,
 };
 use monty_type_checking::{type_check, SourceFile};
 use napi::bindgen_prelude::*;
@@ -254,29 +254,23 @@ impl Monty {
                         RunProgress::Complete(result) => {
                             return Ok(Either::A(monty_to_js(&result, env)?));
                         }
-                        RunProgress::FunctionCall {
-                            function_name,
-                            args,
-                            kwargs,
-                            state,
-                            ..
-                        } => {
+                        RunProgress::FunctionCall(call) => {
                             let return_value = call_external_function(
                                 env,
                                 external_functions.as_ref(),
-                                &function_name,
-                                &args,
-                                &kwargs,
+                                &call.function_name,
+                                &call.args,
+                                &call.kwargs,
                             )?;
 
-                            progress = match state.run(return_value, &mut print_output) {
+                            progress = match call.resume(return_value, &mut print_output) {
                                 Ok(p) => p,
                                 Err(exc) => return Ok(Either::B(JsMontyException::new(exc))),
                             };
                         }
-                        RunProgress::NameLookup { name, state } => {
-                            let result = resolve_name_lookup(external_functions.as_ref(), &name)?;
-                            progress = match state.run(result, &mut print_output) {
+                        RunProgress::NameLookup(lookup) => {
+                            let result = resolve_name_lookup(external_functions.as_ref(), &lookup.name)?;
+                            progress = match lookup.resume(result, &mut print_output) {
                                 Ok(p) => p,
                                 Err(exc) => return Ok(Either::B(JsMontyException::new(exc))),
                             };
@@ -286,9 +280,10 @@ impl Monty {
                                 "Async futures are not supported in synchronous run(). Use start() for async execution.",
                             ));
                         }
-                        RunProgress::OsCall { function, .. } => {
+                        RunProgress::OsCall(call) => {
                             return Err(Error::from_reason(format!(
-                                "OS calls are not supported: {function:?}",
+                                "OS calls are not supported: {:?}",
+                                call.function,
                             )));
                         }
                     }
@@ -662,16 +657,16 @@ fn extract_input_values_in_order(
 // EitherSnapshot - Internal enum to handle generic resource tracker types
 // =============================================================================
 
-/// Runtime execution snapshot, holds multiple resource tracker types since napi structs can't be generic.
+/// Runtime execution snapshot, holds a `FunctionCall` for either resource tracker variant
+/// since napi structs can't be generic.
 ///
 /// Used internally by `MontySnapshot` to store execution state.
 /// The `Done` variant indicates the snapshot has been consumed.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 enum EitherSnapshot {
-    NoLimit(Snapshot<NoLimitTracker>),
-    Limited(Snapshot<LimitedTracker>),
-    /// Done is used when taking the snapshot to run it.
-    /// Should only be set after execution is complete.
+    NoLimit(FunctionCall<NoLimitTracker>),
+    Limited(FunctionCall<LimitedTracker>),
+    /// Sentinel indicating the snapshot has been consumed via `resume()`.
     Done,
 }
 
@@ -814,15 +809,15 @@ impl MontySnapshot {
 
         // Resume execution based on the snapshot type
         match snapshot {
-            EitherSnapshot::NoLimit(state) => {
-                let progress = match state.run(external_result, &mut print_writer) {
+            EitherSnapshot::NoLimit(call) => {
+                let progress = match call.resume(external_result, &mut print_writer) {
                     Ok(p) => p,
                     Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
                 };
                 Ok(progress_to_result(progress, print_callback, self.script_name.clone()))
             }
-            EitherSnapshot::Limited(state) => {
-                let progress = match state.run(external_result, &mut print_writer) {
+            EitherSnapshot::Limited(call) => {
+                let progress = match call.resume(external_result, &mut print_writer) {
                     Ok(p) => p,
                     Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
                 };
@@ -992,16 +987,13 @@ where
 
     match progress {
         RunProgress::Complete(result) => Either3::B(MontyComplete { output_value: result }),
-        RunProgress::FunctionCall {
-            function_name,
-            args,
-            kwargs,
-            state,
-            ..
-        } => {
+        RunProgress::FunctionCall(call) => {
+            let function_name = call.function_name.clone();
+            let args = call.args.clone();
+            let kwargs = call.kwargs.clone();
             // Store args/kwargs as MontyObject directly for serialization
             Either3::A(MontySnapshot {
-                snapshot: EitherSnapshot::from_snapshot(state),
+                snapshot: EitherSnapshot::from_snapshot(call),
                 script_name,
                 function_name,
                 args,
@@ -1009,14 +1001,14 @@ where
                 print_callback,
             })
         }
-        RunProgress::NameLookup { .. } => {
+        RunProgress::NameLookup(_) => {
             unreachable!("NameLookup should have been resolved by resolve_name_lookups_loop")
         }
         RunProgress::ResolveFutures(_) => {
             panic!("Async futures (ResolveFutures) are not yet supported in the JS bindings")
         }
-        RunProgress::OsCall { function, .. } => {
-            panic!("OS calls are not yet supported in the JS bindings: {function:?}")
+        RunProgress::OsCall(call) => {
+            panic!("OS calls are not yet supported in the JS bindings: {:?}", call.function)
         }
     }
 }
@@ -1030,33 +1022,33 @@ fn resolve_name_lookups_loop<T: ResourceTracker>(
 ) -> std::result::Result<RunProgress<T>, MontyException> {
     loop {
         match progress {
-            RunProgress::NameLookup { name, state } => {
+            RunProgress::NameLookup(lookup) => {
                 let result = NameLookupResult::Value(MontyObject::Function {
-                    name,
+                    name: lookup.name.clone(),
                     docstring: String::new(),
                 });
-                progress = state.run(result, &mut PrintWriter::Stdout)?;
+                progress = lookup.resume(result, &mut PrintWriter::Stdout)?;
             }
             other => return Ok(other),
         }
     }
 }
 
-/// Trait to convert a typed `Snapshot` into `EitherSnapshot`.
+/// Trait to convert a typed `FunctionCall` into `EitherSnapshot`.
 trait FromSnapshot<T: ResourceTracker> {
     /// Wraps a function-call snapshot.
-    fn from_snapshot(snapshot: Snapshot<T>) -> Self;
+    fn from_snapshot(call: FunctionCall<T>) -> Self;
 }
 
 impl FromSnapshot<NoLimitTracker> for EitherSnapshot {
-    fn from_snapshot(snapshot: Snapshot<NoLimitTracker>) -> Self {
-        Self::NoLimit(snapshot)
+    fn from_snapshot(call: FunctionCall<NoLimitTracker>) -> Self {
+        Self::NoLimit(call)
     }
 }
 
 impl FromSnapshot<LimitedTracker> for EitherSnapshot {
-    fn from_snapshot(snapshot: Snapshot<LimitedTracker>) -> Self {
-        Self::Limited(snapshot)
+    fn from_snapshot(call: FunctionCall<LimitedTracker>) -> Self {
+        Self::Limited(call)
     }
 }
 
