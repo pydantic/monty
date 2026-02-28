@@ -4,6 +4,8 @@
 //! is compiled and executed against persistent heap/namespace state without
 //! replaying previously executed snippets.
 
+use std::mem;
+
 use ahash::AHashMap;
 use ruff_python_ast::token::TokenKind;
 use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErrorType, parse_module};
@@ -14,7 +16,7 @@ use crate::{
     bytecode::{Code, Compiler, FrameExit, VM, VMSnapshot},
     exception_private::{RunError, RunResult},
     heap::{DropWithHeap, Heap},
-    intern::{ExtFunctionId, InternerBuilder, Interns},
+    intern::{InternerBuilder, Interns},
     io::PrintWriter,
     namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
     object::MontyObject,
@@ -44,8 +46,6 @@ struct ReplExecutor {
     module_code: Code,
     /// Interned strings and compiled functions for this snippet/module.
     interns: Interns,
-    /// IDs to create values in the namespace representing external functions.
-    external_function_ids: Vec<ExtFunctionId>,
     /// Source code used for traceback/error rendering.
     code: String,
 }
@@ -55,19 +55,11 @@ impl ReplExecutor {
     ///
     /// This is equivalent to normal module compilation but scoped to REPL
     /// infrastructure so `run.rs` can remain unchanged.
-    fn new(
-        code: String,
-        script_name: &str,
-        input_names: Vec<String>,
-        external_functions: Vec<String>,
-    ) -> Result<Self, MontyException> {
+    fn new(code: String, script_name: &str, input_names: Vec<String>) -> Result<Self, MontyException> {
         let parse_result = parse(&code, script_name).map_err(|e| e.into_python_exc(script_name, &code))?;
-        let prepared = prepare(parse_result, input_names, &external_functions)
-            .map_err(|e| e.into_python_exc(script_name, &code))?;
+        let prepared = prepare(parse_result, input_names).map_err(|e| e.into_python_exc(script_name, &code))?;
 
-        let external_function_ids = (0..external_functions.len()).map(ExtFunctionId::new).collect();
-
-        let mut interns = Interns::new(prepared.interner, Vec::new(), external_functions);
+        let mut interns = Interns::new(prepared.interner, Vec::new());
         let namespace_size_u16 = u16::try_from(prepared.namespace_size).expect("module namespace size exceeds u16");
         let compile_result = Compiler::compile_module(&prepared.nodes, &interns, namespace_size_u16)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
@@ -78,7 +70,6 @@ impl ReplExecutor {
             name_map: prepared.name_map,
             module_code: compile_result.code,
             interns,
-            external_function_ids,
             code,
         })
     }
@@ -93,7 +84,6 @@ impl ReplExecutor {
     fn new_repl_snippet(
         code: String,
         script_name: &str,
-        external_functions: Vec<String>,
         existing_name_map: AHashMap<String, NamespaceId>,
         existing_interns: &Interns,
     ) -> Result<Self, MontyException> {
@@ -103,10 +93,8 @@ impl ReplExecutor {
         let prepared = prepare_with_existing_names(parse_result, existing_name_map)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
 
-        let external_function_ids = (0..external_functions.len()).map(ExtFunctionId::new).collect();
-
         let existing_functions = existing_interns.functions_clone();
-        let mut interns = Interns::new(prepared.interner, Vec::new(), external_functions);
+        let mut interns = Interns::new(prepared.interner, Vec::new());
         let namespace_size_u16 = u16::try_from(prepared.namespace_size).expect("module namespace size exceeds u16");
         let compile_result =
             Compiler::compile_module_with_functions(&prepared.nodes, &interns, namespace_size_u16, existing_functions)
@@ -118,7 +106,6 @@ impl ReplExecutor {
             name_map: prepared.name_map,
             module_code: compile_result.code,
             interns,
-            external_function_ids,
             code,
         })
     }
@@ -132,17 +119,11 @@ impl ReplExecutor {
         inputs: Vec<MontyObject>,
         heap: &mut Heap<impl ResourceTracker>,
     ) -> Result<Namespaces, MontyException> {
-        let Some(extra) = self
-            .namespace_size
-            .checked_sub(self.external_function_ids.len() + inputs.len())
-        else {
+        let Some(extra) = self.namespace_size.checked_sub(inputs.len()) else {
             return Err(MontyException::runtime_error("too many inputs for namespace"));
         };
 
         let mut namespace = Vec::with_capacity(self.namespace_size);
-        for f_id in &self.external_function_ids {
-            namespace.push(Value::ExtFunction(*f_id));
-        }
         for input in inputs {
             namespace.push(
                 input
@@ -169,10 +150,10 @@ fn frame_exit_to_object(
     match frame_exit_result? {
         FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, heap, interns)),
         FrameExit::ExternalCall {
-            ext_function_id, args, ..
+            function_name_id, args, ..
         } => {
             args.drop_with_heap(heap);
-            let function_name = interns.get_external_function_name(ext_function_id);
+            let function_name = interns.get_str(function_name_id);
             Err(ExcType::not_implemented(format!(
                 "External function '{function_name}' not implemented with standard execution"
             ))
@@ -195,6 +176,10 @@ fn frame_exit_to_object(
         }
         FrameExit::ResolveFutures(_) => {
             Err(ExcType::not_implemented("async futures not supported by standard execution.").into())
+        }
+        FrameExit::NameLookup { name_id, .. } => {
+            let name = interns.get_str(name_id);
+            Err(ExcType::name_error(name).into())
         }
     }
 }
@@ -266,8 +251,6 @@ pub struct MontyRepl<T: ResourceTracker> {
     /// Counter for generated `<python-input-N>` snippet filenames.
     #[serde(default)]
     next_input_id: u64,
-    /// External function names declared for this session.
-    external_function_names: Vec<String>,
     /// Stable mapping of global variable names to namespace slot IDs.
     global_name_map: AHashMap<String, NamespaceId>,
     /// Persistent intern table across snippets so intern/function IDs remain valid.
@@ -295,18 +278,26 @@ impl<T: ResourceTracker> MontyRepl<T> {
         code: String,
         script_name: &str,
         input_names: Vec<String>,
-        external_function_names: Vec<String>,
         inputs: Vec<MontyObject>,
         resource_tracker: T,
         print: &mut PrintWriter<'_>,
     ) -> Result<(Self, MontyObject), MontyException> {
-        let executor = ReplExecutor::new(code, script_name, input_names, external_function_names.clone())?;
+        let executor = ReplExecutor::new(code, script_name, input_names)?;
 
         let mut heap = Heap::new(executor.namespace_size, resource_tracker);
         let mut namespaces = executor.prepare_namespaces(inputs, &mut heap)?;
 
         let mut vm = VM::new(&mut heap, &mut namespaces, &executor.interns, print);
-        let frame_exit_result = vm.run_module(&executor.module_code);
+        let mut frame_exit_result = vm.run_module(&executor.module_code);
+
+        // Handle NameLookup exits by raising NameError through the VM so that
+        // traceback information is properly captured.
+        while let Ok(FrameExit::NameLookup { name_id, .. }) = &frame_exit_result {
+            let name = executor.interns.get_str(*name_id);
+            let err = ExcType::name_error(name);
+            frame_exit_result = vm.resume_with_exception(err.into());
+        }
+
         vm.cleanup();
 
         let output = frame_exit_to_object(frame_exit_result, &mut heap, &executor.interns)
@@ -315,7 +306,6 @@ impl<T: ResourceTracker> MontyRepl<T> {
         let repl = Self {
             script_name: script_name.to_owned(),
             next_input_id: 0,
-            external_function_names,
             global_name_map: executor.name_map,
             interns: executor.interns,
             heap,
@@ -355,7 +345,6 @@ impl<T: ResourceTracker> MontyRepl<T> {
         let executor = match ReplExecutor::new_repl_snippet(
             code.to_owned(),
             &input_script_name,
-            this.external_function_names.clone(),
             this.global_name_map.clone(),
             &this.interns,
         ) {
@@ -399,7 +388,6 @@ impl<T: ResourceTracker> MontyRepl<T> {
         let executor = ReplExecutor::new_repl_snippet(
             code.to_owned(),
             &input_script_name,
-            self.external_function_names.clone(),
             self.global_name_map.clone(),
             &self.interns,
         )?;
@@ -416,7 +404,17 @@ impl<T: ResourceTracker> MontyRepl<T> {
         self.ensure_global_namespace_size(namespace_size);
 
         let mut vm = VM::new(&mut self.heap, &mut self.namespaces, &interns, print);
-        let frame_exit_result = vm.run_module(&module_code);
+        let mut frame_exit_result = vm.run_module(&module_code);
+
+        // Handle NameLookup exits by raising NameError through the VM so that
+        // traceback information is properly captured. In the non-iterative REPL path,
+        // there's no host to resolve names, so all NameLookup exits become NameErrors.
+        while let Ok(FrameExit::NameLookup { name_id, .. }) = &frame_exit_result {
+            let name = interns.get_str(*name_id);
+            let err = ExcType::name_error(name);
+            frame_exit_result = vm.resume_with_exception(err.into());
+        }
+
         vm.cleanup();
 
         // Commit compiler metadata even on runtime errors.
@@ -524,6 +522,16 @@ pub enum ReplProgress<T: ResourceTracker> {
     },
     /// All async tasks are blocked waiting for external futures to resolve.
     ResolveFutures(ReplFutureSnapshot<T>),
+    /// Execution paused for an unresolved name lookup.
+    ///
+    /// The host should check if the name corresponds to a known external function or
+    /// value. Return the appropriate `NameLookupResult` to continue.
+    NameLookup {
+        /// The name being looked up.
+        name: String,
+        /// The execution state for resuming after name resolution.
+        state: ReplNameLookupSnapshot<T>,
+    },
     /// Snippet execution completed with the updated REPL and result value.
     Complete {
         /// Updated REPL session state to continue feeding snippets.
@@ -581,6 +589,15 @@ impl<T: ResourceTracker> ReplProgress<T> {
     pub fn into_resolve_futures(self) -> Option<ReplFutureSnapshot<T>> {
         match self {
             Self::ResolveFutures(state) => Some(state),
+            _ => None,
+        }
+    }
+
+    /// Consumes the progress and returns name lookup info and state.
+    #[must_use]
+    pub fn into_name_lookup(self) -> Option<(String, ReplNameLookupSnapshot<T>)> {
+        match self {
+            Self::NameLookup { name, state } => Some((name, state)),
             _ => None,
         }
     }
@@ -804,6 +821,99 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
     }
 }
 
+/// REPL execution state that can be resumed after an unresolved name lookup.
+///
+/// This is the REPL-aware counterpart to `NameLookupSnapshot`. When the host resolves
+/// the name, execution continues and the resolved value is cached in the namespace slot.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
+pub struct ReplNameLookupSnapshot<T: ResourceTracker> {
+    /// Persistent REPL session state while this snippet is suspended.
+    repl: MontyRepl<T>,
+    /// Compiled snippet and intern/function tables for this execution.
+    executor: ReplExecutor,
+    /// VM stack/frame state at suspension.
+    vm_state: VMSnapshot,
+    /// The namespace slot where the resolved value should be cached.
+    namespace_slot: u16,
+    /// Whether this is a global slot or a local/function slot.
+    is_global: bool,
+    /// The name being looked up (for error messages).
+    name: String,
+}
+
+impl<T: ResourceTracker> ReplNameLookupSnapshot<T> {
+    /// Continues execution with the name lookup result.
+    ///
+    /// - `NameLookupResult::Value(obj)`: Caches the value in the namespace slot and pushes
+    ///   it onto the stack, then continues execution.
+    /// - `NameLookupResult::Undefined`: Raises `NameError: name 'X' is not defined`.
+    pub fn run(
+        self,
+        result: crate::run::NameLookupResult,
+        print: &mut PrintWriter<'_>,
+    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+        let Self {
+            mut repl,
+            executor,
+            vm_state,
+            namespace_slot,
+            is_global,
+            name,
+        } = self;
+
+        // Resolve the name lookup result BEFORE restoring the VM, since the VM
+        // borrows heap/namespaces mutably and we need direct access for caching.
+        let resolved_value = match result {
+            crate::run::NameLookupResult::Value(obj) => {
+                let value = match obj.to_value(&mut repl.heap, &executor.interns) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let error = MontyException::runtime_error(format!("invalid name lookup result: {e}"));
+                        return Err(Box::new(ReplStartError { repl, error }));
+                    }
+                };
+
+                // Cache in the appropriate namespace slot based on scope.
+                let ns_slot = NamespaceId::new(namespace_slot as usize);
+                let ns_idx = if is_global {
+                    GLOBAL_NS_IDX
+                } else {
+                    vm_state.current_namespace_idx()
+                };
+                let namespace = repl.namespaces.get_mut(ns_idx);
+                let old = mem::replace(namespace.get_mut(ns_slot), value.clone_with_heap(&repl.heap));
+                old.drop_with_heap(&mut repl.heap);
+
+                Some(value)
+            }
+            crate::run::NameLookupResult::Undefined => None,
+        };
+
+        // Now restore the VM (borrows heap and namespaces)
+        let mut vm = VM::restore(
+            vm_state,
+            &executor.module_code,
+            &mut repl.heap,
+            &mut repl.namespaces,
+            &executor.interns,
+            print,
+        );
+
+        // Resume execution: either push the resolved value or raise NameError
+        // through the VM so that traceback information is properly captured.
+        let vm_result = if let Some(value) = resolved_value {
+            vm.push(value);
+            vm.run()
+        } else {
+            let err: RunError = ExcType::name_error(&name).into();
+            vm.resume_with_exception(err)
+        };
+        let vm_state = vm.check_snapshot(&vm_result);
+        handle_repl_vm_result(vm_result, vm_state, executor, repl)
+    }
+}
+
 /// Handles a `FrameExit` result and converts it to REPL progress.
 ///
 /// This mirrors `handle_vm_result` but preserves REPL heap/namespaces on
@@ -835,11 +945,11 @@ fn handle_repl_vm_result<T: ResourceTracker>(
             Ok(ReplProgress::Complete { repl, value: output })
         }
         Ok(FrameExit::ExternalCall {
-            ext_function_id,
+            function_name_id,
             args,
             call_id,
         }) => {
-            let function_name = executor.interns.get_external_function_name(ext_function_id);
+            let function_name = executor.interns.get_str(function_name_id).to_owned();
             let (args_py, kwargs_py) = args.into_py_objects(&mut repl.heap, &executor.interns);
 
             Ok(ReplProgress::FunctionCall {
@@ -891,6 +1001,24 @@ fn handle_repl_vm_result<T: ResourceTracker>(
                 vm_state: vm_state.expect("snapshot should exist for ResolveFutures"),
                 pending_call_ids,
             }))
+        }
+        Ok(FrameExit::NameLookup {
+            name_id,
+            namespace_slot,
+            is_global,
+        }) => {
+            let name = executor.interns.get_str(name_id).to_owned();
+            Ok(ReplProgress::NameLookup {
+                name: name.clone(),
+                state: ReplNameLookupSnapshot {
+                    repl,
+                    executor,
+                    vm_state: vm_state.expect("snapshot should exist for NameLookup"),
+                    namespace_slot,
+                    is_global,
+                    name,
+                },
+            })
         }
         Err(err) => {
             let error = err.into_python_exception(&executor.interns, &executor.code);

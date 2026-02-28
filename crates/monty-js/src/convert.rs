@@ -96,6 +96,9 @@ pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<JsMontyObject<
         } => create_js_dataclass(name, *type_id, field_names, attrs, *frozen, env)?,
         MontyObject::Path(p) => env.create_string(p)?.into_unknown(env)?,
         MontyObject::Repr(s) | MontyObject::Cycle(_, s) => env.create_string(s)?.into_unknown(env)?,
+        // Function objects are internal to the name lookup protocol and should not normally
+        // appear as final output values. If they do, represent as a string with the function name.
+        MontyObject::Function { name, .. } => env.create_string(name)?.into_unknown(env)?,
     };
     Ok(JsMontyObject(unknown))
 }

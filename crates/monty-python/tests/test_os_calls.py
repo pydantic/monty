@@ -254,7 +254,7 @@ def test_os_call_vs_external_function():
     assert result1.is_os_function is True
 
     # External function
-    m2 = pydantic_monty.Monty('my_func()', external_functions=['my_func'])
+    m2 = pydantic_monty.Monty('my_func()')
     result2 = m2.start()
     assert isinstance(result2, pydantic_monty.MontySnapshot)
     assert result2.is_os_function is False
@@ -349,7 +349,7 @@ def test_os_not_provided_error_ext_func():
     """Error is raised when OS call is made without os."""
     import pytest
 
-    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp").exists()', external_functions=['x'])
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp").exists()')
     # When no external functions and no os, run() takes the fast path
     # and OS calls raise NotImplementedError inside Monty
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:

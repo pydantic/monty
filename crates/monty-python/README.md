@@ -55,7 +55,7 @@ assert result == 3
 import pydantic_monty
 
 # Code that calls an external function
-m = pydantic_monty.Monty('double(x)', inputs=['x'], external_functions=['double'])
+m = pydantic_monty.Monty('double(x)', inputs=['x'])
 
 # Provide the external function implementation at runtime
 result = m.run(inputs={'x': 5}, external_functions={'double': lambda x: x * 2})
@@ -76,7 +76,7 @@ data = fetch(url)
 len(data)
 """
 
-m = pydantic_monty.Monty(code, inputs=['url'], external_functions=['fetch'])
+m = pydantic_monty.Monty(code, inputs=['url'])
 
 # Start execution - pauses when fetch() is called
 result = m.start(inputs={'url': 'https://example.com'})
@@ -120,7 +120,7 @@ Execution state can also be serialized mid-flight:
 ```python
 import pydantic_monty
 
-m = pydantic_monty.Monty('fetch(url)', inputs=['url'], external_functions=['fetch'])
+m = pydantic_monty.Monty('fetch(url)', inputs=['url'])
 progress = m.start(inputs={'url': 'https://example.com'})
 
 # Serialize the execution state

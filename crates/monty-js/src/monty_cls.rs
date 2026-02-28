@@ -1,7 +1,8 @@
 //! The main `Monty` class and iterative execution support for the TypeScript/JavaScript bindings.
 //!
-//! Provides a sandboxed Python interpreter that can be configured with inputs,
-//! external functions, and resource limits. Supports both immediate execution
+//! Provides a sandboxed Python interpreter that can be configured with inputs
+//! and resource limits. External functions are provided at runtime via
+//! `RunOptions` or `StartOptions`. Supports both immediate execution
 //! via `run()` and iterative execution via `start()`/`resume()`.
 //!
 //! ## Quick Start
@@ -31,9 +32,7 @@
 //! ```
 //!
 //! ```typescript
-//! const m = new Monty('result = external_func(1, 2)', {
-//!   externalFunctions: ['external_func']
-//! });
+//! const m = new Monty('result = external_func(1, 2)');
 //!
 //! let progress = m.start();
 //! while (progress instanceof MontySnapshot) {
@@ -47,7 +46,7 @@ use std::borrow::Cow;
 
 use monty::{
     ExcType, ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRepl as CoreMontyRepl, MontyRun,
-    NoLimitTracker, PrintWriter, PrintWriterCallback, ResourceTracker, RunProgress, Snapshot,
+    NameLookupResult, NoLimitTracker, PrintWriter, PrintWriterCallback, ResourceTracker, RunProgress, Snapshot,
 };
 use monty_type_checking::{type_check, SourceFile};
 use napi::bindgen_prelude::*;
@@ -76,8 +75,6 @@ pub struct Monty {
     script_name: String,
     /// Names of input variables expected by the code.
     input_names: Vec<String>,
-    /// Names of external functions the code can call.
-    external_function_names: Vec<String>,
 }
 
 /// Options for creating a new Monty instance.
@@ -88,8 +85,6 @@ pub struct MontyOptions {
     pub script_name: Option<String>,
     /// List of input variable names available in the code.
     pub inputs: Option<Vec<String>>,
-    /// List of external function names the code can call.
-    pub external_functions: Option<Vec<String>>,
     /// Whether to perform type checking on the code. Default: false
     pub type_check: Option<bool>,
     /// Optional code to prepend before type checking.
@@ -140,7 +135,6 @@ impl Monty {
         let ResolvedMontyOptions {
             script_name,
             input_names,
-            external_function_names,
             do_type_check,
             type_check_prefix_code,
         } = resolve_monty_options(options);
@@ -153,7 +147,7 @@ impl Monty {
         }
 
         // Create the runner (parses the code)
-        let runner = match MontyRun::new(code, &script_name, input_names.clone(), external_function_names.clone()) {
+        let runner = match MontyRun::new(code, &script_name, input_names.clone()) {
             Ok(r) => r,
             Err(exc) => return Ok(Either3::B(JsMontyException::new(exc))),
         };
@@ -162,7 +156,6 @@ impl Monty {
             runner,
             script_name,
             input_names,
-            external_function_names,
         }))
     }
 
@@ -178,6 +171,10 @@ impl Monty {
     }
 
     /// Executes the code and returns the result, or an exception object if execution fails.
+    ///
+    /// If runtime `externalFunctions` are provided, the start/resume loop is used
+    /// to dispatch external function calls and name lookups. Otherwise, code is
+    /// executed directly.
     ///
     /// @param options - Execution options (inputs, limits, externalFunctions)
     /// @returns The result of the last expression, or a MontyException if execution fails
@@ -201,8 +198,9 @@ impl Monty {
             None => PrintWriter::Stdout,
         };
 
-        // If we have external functions declared, use the start/resume loop
-        if !self.external_function_names.is_empty() {
+        // If we have runtime external functions, use the start/resume loop
+        // to handle both FunctionCall and NameLookup dispatching
+        if external_functions.is_some() {
             return self.run_with_external_functions(
                 env,
                 input_values,
@@ -227,6 +225,10 @@ impl Monty {
     }
 
     /// Internal helper to run code with external function callbacks.
+    ///
+    /// Handles both `FunctionCall` and `NameLookup` dispatch in a loop.
+    /// For `NameLookup`, checks the runtime external functions map: if the name
+    /// is found, resolves it as a `Function`; otherwise returns `Undefined`.
     fn run_with_external_functions<'env>(
         &self,
         env: &'env Env,
@@ -268,6 +270,13 @@ impl Monty {
                             )?;
 
                             progress = match state.run(return_value, &mut print_output) {
+                                Ok(p) => p,
+                                Err(exc) => return Ok(Either::B(JsMontyException::new(exc))),
+                            };
+                        }
+                        RunProgress::NameLookup { name, state } => {
+                            let result = resolve_name_lookup(external_functions.as_ref(), &name)?;
+                            progress = match state.run(result, &mut print_output) {
                                 Ok(p) => p,
                                 Err(exc) => return Ok(Either::B(JsMontyException::new(exc))),
                             };
@@ -355,7 +364,6 @@ impl Monty {
             runner: self.runner.clone(),
             script_name: self.script_name.clone(),
             input_names: self.input_names.clone(),
-            external_function_names: self.external_function_names.clone(),
         };
         let bytes =
             postcard::to_allocvec(&serialized).map_err(|e| Error::from_reason(format!("Serialization failed: {e}")))?;
@@ -375,7 +383,6 @@ impl Monty {
             runner: serialized.runner,
             script_name: serialized.script_name,
             input_names: serialized.input_names,
-            external_function_names: serialized.external_function_names,
         })
     }
 
@@ -391,12 +398,6 @@ impl Monty {
         self.input_names.clone()
     }
 
-    /// Returns the external function names.
-    #[napi(getter)]
-    pub fn external_functions(&self) -> Vec<String> {
-        self.external_function_names.clone()
-    }
-
     /// Returns a string representation of the Monty instance.
     #[napi]
     pub fn repr(&self) -> String {
@@ -410,9 +411,6 @@ impl Monty {
         );
         if !self.input_names.is_empty() {
             write!(s, ", inputs={:?}", self.input_names).unwrap();
-        }
-        if !self.external_function_names.is_empty() {
-            write!(s, ", externalFunctions={:?}", self.external_function_names).unwrap();
         }
         s.push(')');
         s
@@ -486,7 +484,6 @@ impl MontyRepl {
         let ResolvedMontyOptions {
             script_name,
             input_names,
-            external_function_names,
             do_type_check,
             type_check_prefix_code,
         } = resolve_monty_options(options);
@@ -515,7 +512,6 @@ impl MontyRepl {
                 code,
                 &script_name,
                 input_names,
-                external_function_names,
                 input_values,
                 tracker,
                 &mut print_writer,
@@ -531,7 +527,6 @@ impl MontyRepl {
                 code,
                 &script_name,
                 input_names,
-                external_function_names,
                 input_values,
                 NoLimitTracker,
                 &mut print_writer,
@@ -608,7 +603,6 @@ impl MontyRepl {
 struct ResolvedMontyOptions {
     script_name: String,
     input_names: Vec<String>,
-    external_function_names: Vec<String>,
     do_type_check: bool,
     type_check_prefix_code: Option<String>,
 }
@@ -618,7 +612,6 @@ fn resolve_monty_options(options: Option<MontyOptions>) -> ResolvedMontyOptions 
     let options = options.unwrap_or(MontyOptions {
         script_name: None,
         inputs: None,
-        external_functions: None,
         type_check: None,
         type_check_prefix_code: None,
     });
@@ -626,7 +619,6 @@ fn resolve_monty_options(options: Option<MontyOptions>) -> ResolvedMontyOptions 
     ResolvedMontyOptions {
         script_name: options.script_name.unwrap_or_else(|| "main.py".to_string()),
         input_names: options.inputs.unwrap_or_default(),
-        external_function_names: options.external_functions.unwrap_or_default(),
         do_type_check: options.type_check.unwrap_or(false),
         type_check_prefix_code: options.type_check_prefix_code,
     }
@@ -973,6 +965,11 @@ impl PrintWriterCallback for CallbackStringPrint<'_> {
 
 /// Converts a `RunProgress` to either a `MontySnapshot`, `MontyComplete`, or `JsMontyException`.
 ///
+/// NameLookup events are auto-resolved by treating unresolved names as external functions.
+/// This allows the `start()`/`resume()` path to work without upfront declaration of
+/// external function names — the host will handle the actual function calls when they
+/// arrive as `FunctionCall` events via `MontySnapshot`.
+///
 /// # Panics
 /// Panics if the progress is `ResolveFutures` - async futures are not yet supported in the JS bindings.
 fn progress_to_result<T>(
@@ -984,6 +981,15 @@ where
     T: ResourceTracker + serde::Serialize + serde::de::DeserializeOwned,
     EitherSnapshot: FromSnapshot<T>,
 {
+    // Auto-resolve NameLookup events before converting to JS objects.
+    // In the start/resume path, all unresolved names are assumed to be external
+    // functions — the host provides the actual implementation via resume().
+    let progress = resolve_name_lookups_loop(progress);
+    let progress = match progress {
+        Ok(p) => p,
+        Err(exc) => return Either3::C(JsMontyException::new(exc)),
+    };
+
     match progress {
         RunProgress::Complete(result) => Either3::B(MontyComplete { output_value: result }),
         RunProgress::FunctionCall {
@@ -1003,6 +1009,9 @@ where
                 print_callback,
             })
         }
+        RunProgress::NameLookup { .. } => {
+            unreachable!("NameLookup should have been resolved by resolve_name_lookups_loop")
+        }
         RunProgress::ResolveFutures(_) => {
             panic!("Async futures (ResolveFutures) are not yet supported in the JS bindings")
         }
@@ -1012,8 +1021,30 @@ where
     }
 }
 
-/// Trait to convert a typed Snapshot into EitherSnapshot.
+/// Auto-resolves NameLookup events by treating unresolved names as external functions.
+///
+/// Loops until the progress is no longer a NameLookup, caching each resolved name
+/// as a `MontyObject::Function` in the VM's namespace.
+fn resolve_name_lookups_loop<T: ResourceTracker>(
+    mut progress: RunProgress<T>,
+) -> std::result::Result<RunProgress<T>, MontyException> {
+    loop {
+        match progress {
+            RunProgress::NameLookup { name, state } => {
+                let result = NameLookupResult::Value(MontyObject::Function {
+                    name,
+                    docstring: String::new(),
+                });
+                progress = state.run(result, &mut PrintWriter::Stdout)?;
+            }
+            other => return Ok(other),
+        }
+    }
+}
+
+/// Trait to convert a typed `Snapshot` into `EitherSnapshot`.
 trait FromSnapshot<T: ResourceTracker> {
+    /// Wraps a function-call snapshot.
     fn from_snapshot(snapshot: Snapshot<T>) -> Self;
 }
 
@@ -1046,7 +1077,6 @@ struct SerializedMonty {
     runner: MontyRun,
     script_name: String,
     input_names: Vec<String>,
-    external_function_names: Vec<String>,
 }
 
 /// Serialization wrapper for `MontyRepl` using borrowed references.
@@ -1207,4 +1237,21 @@ fn extract_js_exception(exception_obj: Object<'_>) -> MontyException {
     let msg = message.ok();
 
     MontyException::new(exc_type, msg)
+}
+
+/// Resolves a name lookup against the runtime external functions map.
+///
+/// If the name exists as a property on the external functions object, returns
+/// `NameLookupResult::Value` with a `Function` object. Otherwise returns
+/// `NameLookupResult::Undefined` so the VM raises `NameError`.
+fn resolve_name_lookup(external_functions: Option<&Object<'_>>, name: &str) -> Result<NameLookupResult> {
+    if let Some(functions) = external_functions {
+        if functions.has_named_property(name)? {
+            return Ok(NameLookupResult::Value(MontyObject::Function {
+                name: name.to_string(),
+                docstring: String::new(),
+            }));
+        }
+    }
+    Ok(NameLookupResult::Undefined)
 }

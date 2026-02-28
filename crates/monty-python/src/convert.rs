@@ -225,6 +225,9 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) 
         // Output-only types - convert to string representation
         MontyObject::Repr(s) => Ok(PyString::new(py, s).into_any().unbind()),
         MontyObject::Cycle(_, placeholder) => Ok(PyString::new(py, placeholder).into_any().unbind()),
+        // Function objects are internal to the name lookup protocol and should not normally
+        // appear as final output values. If they do, represent as a string with the function name.
+        MontyObject::Function { name, .. } => Ok(PyString::new(py, name).into_any().unbind()),
     }
 }
 

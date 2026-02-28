@@ -35,12 +35,15 @@ test('monty dump load preserves inputs', (t) => {
   t.is(m2.run({ inputs: { x: 1, y: 2 } }), 3)
 })
 
-test('monty dump load preserves external functions', (t) => {
-  const m = new Monty('func()', { externalFunctions: ['func'] })
+test('monty dump load preserves code execution', (t) => {
+  const m = new Monty('func()')
   const data = m.dump()
 
   const m2 = Monty.load(data)
-  t.deepEqual(m2.externalFunctions, ['func'])
+  // After load, the instance can be used with start/resume
+  const progress = m2.start()
+  t.true(progress instanceof MontySnapshot)
+  t.is((progress as MontySnapshot).functionName, 'func')
 })
 
 test('monty dump produces same result on multiple calls', (t) => {
@@ -72,7 +75,7 @@ test('monty dump load various outputs', (t) => {
 // =============================================================================
 
 test('snapshot dump load roundtrip', (t) => {
-  const m = new Monty('func(1, 2)', { externalFunctions: ['func'] })
+  const m = new Monty('func(1, 2)')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
 
@@ -91,7 +94,7 @@ test('snapshot dump load roundtrip', (t) => {
 })
 
 test('snapshot dump load preserves script name', (t) => {
-  const m = new Monty('func()', { scriptName: 'test.py', externalFunctions: ['func'] })
+  const m = new Monty('func()', { scriptName: 'test.py' })
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
 
@@ -101,7 +104,7 @@ test('snapshot dump load preserves script name', (t) => {
 })
 
 test('snapshot dump load with kwargs', (t) => {
-  const m = new Monty('func(a=1, b="hello")', { externalFunctions: ['func'] })
+  const m = new Monty('func(a=1, b="hello")')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
 
@@ -113,7 +116,7 @@ test('snapshot dump load with kwargs', (t) => {
 })
 
 test('snapshot dump after resume fails', (t) => {
-  const m = new Monty('func()', { externalFunctions: ['func'] })
+  const m = new Monty('func()')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
   const snapshot = progress as MontySnapshot
@@ -125,7 +128,7 @@ test('snapshot dump after resume fails', (t) => {
 })
 
 test('snapshot dump load multiple calls', (t) => {
-  const m = new Monty('a() + b()', { externalFunctions: ['a', 'b'] })
+  const m = new Monty('a() + b()')
 
   // First call
   let progress = m.start() as MontySnapshot
@@ -150,7 +153,7 @@ test('snapshot dump load multiple calls', (t) => {
 })
 
 test('snapshot dump load with limits', (t) => {
-  const m = new Monty('func()', { externalFunctions: ['func'] })
+  const m = new Monty('func()')
   const limits: ResourceLimits = { maxAllocations: 1000 }
   const progress = m.start({ limits })
   t.true(progress instanceof MontySnapshot)

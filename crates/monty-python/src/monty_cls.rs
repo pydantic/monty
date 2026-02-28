@@ -6,8 +6,8 @@ use std::{
 
 // Use `::monty` to refer to the external crate (not the pymodule)
 use ::monty::{
-    ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRepl as CoreMontyRepl, MontyRun, NoLimitTracker,
-    PrintWriter, PrintWriterCallback, ResourceTracker, RunProgress, Snapshot,
+    ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRepl as CoreMontyRepl, MontyRun,
+    NameLookupResult, NoLimitTracker, PrintWriter, PrintWriterCallback, ResourceTracker, RunProgress, Snapshot,
 };
 use monty::{ExcType, FutureSnapshot, OsFunction};
 use monty_type_checking::{SourceFile, type_check};
@@ -42,8 +42,6 @@ pub struct PyMonty {
     script_name: String,
     /// Names of input variables expected by the code.
     input_names: Vec<String>,
-    /// Names of external functions the code can call.
-    external_function_names: Vec<String>,
     /// Registry of dataclass types for reconstructing original types on output.
     ///
     /// Maps type pointer identity (`u64`) to the original Python type, allowing
@@ -58,39 +56,33 @@ impl PyMonty {
     /// # Arguments
     /// * `code` - Python code to execute
     /// * `inputs` - List of input variable names available in the code
-    /// * `external_functions` - List of external function names the code can call
     /// * `type_check` - Whether to perform type checking on the code
     /// * `type_check_stubs` - Prefix code to be executed before type checking
     /// * `dataclass_registry` - Registry of dataclass types for reconstructing original types on output.
     #[new]
-    #[pyo3(signature = (code, *, script_name="main.py", inputs=None, external_functions=None, type_check=false, type_check_stubs=None, dataclass_registry=None))]
-    #[expect(clippy::too_many_arguments)]
+    #[pyo3(signature = (code, *, script_name="main.py", inputs=None, type_check=false, type_check_stubs=None, dataclass_registry=None))]
     fn new(
         py: Python<'_>,
         code: String,
         script_name: &str,
         inputs: Option<&Bound<'_, PyList>>,
-        external_functions: Option<&Bound<'_, PyList>>,
         type_check: bool,
         type_check_stubs: Option<&str>,
         dataclass_registry: Option<&Bound<'_, PyList>>,
     ) -> PyResult<Self> {
         let input_names = list_str(inputs, "inputs")?;
-        let external_function_names = list_str(external_functions, "external_functions")?;
 
         if type_check {
             py_type_check(py, &code, script_name, type_check_stubs)?;
         }
 
         // Create the snapshot (parses the code)
-        let runner = MontyRun::new(code, script_name, input_names.clone(), external_function_names.clone())
-            .map_err(|e| MontyError::new_err(py, e))?;
+        let runner = MontyRun::new(code, script_name, input_names.clone()).map_err(|e| MontyError::new_err(py, e))?;
 
         Ok(Self {
             runner,
             script_name: script_name.to_string(),
             input_names,
-            external_function_names,
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
         })
     }
@@ -238,7 +230,6 @@ impl PyMonty {
             runner: self.runner.clone(),
             script_name: self.script_name.clone(),
             input_names: self.input_names.clone(),
-            external_function_names: self.external_function_names.clone(),
         };
         let bytes = postcard::to_allocvec(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(PyBytes::new(py, &bytes))
@@ -270,7 +261,6 @@ impl PyMonty {
             runner: serialized.runner,
             script_name: serialized.script_name,
             input_names: serialized.input_names,
-            external_function_names: serialized.external_function_names,
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
         })
     }
@@ -285,9 +275,6 @@ impl PyMonty {
         );
         if !self.input_names.is_empty() {
             write!(s, ", inputs={:?}", self.input_names).unwrap();
-        }
-        if !self.external_function_names.is_empty() {
-            write!(s, ", external_functions={:?}", self.external_function_names).unwrap();
         }
         s.push(')');
         s
@@ -367,7 +354,7 @@ impl PyMonty {
         // and need to be dispatched to the host.
         let has_dataclass_inputs = || input_values.iter().any(contains_dataclass);
 
-        if self.external_function_names.is_empty() && os.is_none() && !has_dataclass_inputs() {
+        if external_functions.is_none() && os.is_none() && !has_dataclass_inputs() {
             return match py.detach(|| self.runner.run(input_values, tracker, &mut print_output)) {
                 Ok(v) => monty_to_py(py, &v, &self.dc_registry),
                 Err(err) => Err(MontyError::new_err(py, err)),
@@ -404,6 +391,28 @@ impl PyMonty {
 
                     progress = py
                         .detach(|| state.run(return_value, &mut print_output))
+                        .map_err(|e| MontyError::new_err(py, e))?;
+                }
+                RunProgress::NameLookup { name, state } => {
+                    let result = if let Some(ext_fns) = external_functions {
+                        if let Some(value) = ext_fns.get_item(&name)? {
+                            if value.is_callable() {
+                                NameLookupResult::Value(MontyObject::Function {
+                                    name: name.clone(),
+                                    docstring: String::new(),
+                                })
+                            } else {
+                                NameLookupResult::Value(py_to_monty(&value, &self.dc_registry)?)
+                            }
+                        } else {
+                            NameLookupResult::Undefined
+                        }
+                    } else {
+                        NameLookupResult::Undefined
+                    };
+
+                    progress = py
+                        .detach(|| state.run(result, &mut print_output))
                         .map_err(|e| MontyError::new_err(py, e))?;
                 }
                 RunProgress::ResolveFutures { .. } => {
@@ -463,6 +472,12 @@ enum EitherProgress {
 }
 
 impl EitherProgress {
+    /// Converts a `RunProgress` into the appropriate Python object (snapshot or complete).
+    ///
+    /// NameLookup events are auto-resolved by treating unresolved names as external functions.
+    /// This allows the `start()`/`resume()` path to work without upfront declaration of
+    /// external function names — the host will handle the actual function calls when they
+    /// arrive as `FunctionCall` events.
     fn progress_or_complete(
         self,
         py: Python<'_>,
@@ -470,7 +485,12 @@ impl EitherProgress {
         print_callback: Option<Py<PyAny>>,
         dc_registry: DcRegistry,
     ) -> PyResult<Bound<'_, PyAny>> {
-        match self {
+        // Auto-resolve any NameLookup events before converting to Python objects.
+        // In the start/resume path, all unresolved names are assumed to be external
+        // functions — the host provides the actual implementation via resume().
+        let resolved = self.resolve_name_lookups(py)?;
+
+        match resolved {
             Self::NoLimit(p) => match p {
                 RunProgress::Complete(result) => PyMontyComplete::create(py, &result, &dc_registry),
                 RunProgress::FunctionCall {
@@ -516,6 +536,9 @@ impl EitherProgress {
                     print_callback,
                     dc_registry,
                 ),
+                RunProgress::NameLookup { .. } => {
+                    unreachable!("NameLookup should have been resolved by resolve_name_lookups")
+                }
             },
             Self::Limited(p) => match p {
                 RunProgress::Complete(result) => PyMontyComplete::create(py, &result, &dc_registry),
@@ -562,7 +585,47 @@ impl EitherProgress {
                     print_callback,
                     dc_registry,
                 ),
+                RunProgress::NameLookup { .. } => {
+                    unreachable!("NameLookup should have been resolved by resolve_name_lookups")
+                }
             },
+        }
+    }
+
+    /// Auto-resolves NameLookup events by treating unresolved names as external functions.
+    ///
+    /// When the start/resume path encounters an unresolved name, it assumes the name refers
+    /// to an external function and provides a `MontyObject::Function` value. The VM caches
+    /// this in the namespace slot so subsequent accesses don't trigger another NameLookup.
+    /// When the function is actually called, it yields a `FunctionCall` for the host to handle.
+    fn resolve_name_lookups(self, py: Python<'_>) -> PyResult<Self> {
+        let mut current = self;
+        loop {
+            match current {
+                Self::NoLimit(RunProgress::NameLookup { name, state }) => {
+                    let result = NameLookupResult::Value(MontyObject::Function {
+                        name,
+                        docstring: String::new(),
+                    });
+                    current = Self::NoLimit(
+                        state
+                            .run(result, &mut PrintWriter::Stdout)
+                            .map_err(|e| MontyError::new_err(py, e))?,
+                    );
+                }
+                Self::Limited(RunProgress::NameLookup { name, state }) => {
+                    let result = NameLookupResult::Value(MontyObject::Function {
+                        name,
+                        docstring: String::new(),
+                    });
+                    current = Self::Limited(
+                        state
+                            .run(result, &mut PrintWriter::Stdout)
+                            .map_err(|e| MontyError::new_err(py, e))?,
+                    );
+                }
+                other => return Ok(other),
+            }
         }
     }
 
@@ -684,21 +747,19 @@ impl PyMontyRepl {
     /// # Returns
     /// `(repl, output)` where `output` is the initial execution result.
     #[staticmethod]
-    #[pyo3(signature = (code, *, script_name="main.py", inputs=None, external_functions=None, start_inputs=None, limits=None, print_callback=None, dataclass_registry=None))]
+    #[pyo3(signature = (code, *, script_name="main.py", inputs=None, start_inputs=None, limits=None, print_callback=None, dataclass_registry=None))]
     #[expect(clippy::too_many_arguments)]
     fn create(
         py: Python<'_>,
         code: String,
         script_name: &str,
         inputs: Option<&Bound<'_, PyList>>,
-        external_functions: Option<&Bound<'_, PyList>>,
         start_inputs: Option<&Bound<'_, PyDict>>,
         limits: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         dataclass_registry: Option<&Bound<'_, PyList>>,
     ) -> PyResult<(Self, Py<PyAny>)> {
         let input_names = list_str(inputs, "inputs")?;
-        let external_function_names = list_str(external_functions, "external_functions")?;
         let dc_registry = DcRegistry::from_list(py, dataclass_registry)?;
         let input_values = Self::extract_repl_input_values(&input_names, start_inputs, &dc_registry)?;
         let print_callback = print_callback.map(|c| c.clone().unbind());
@@ -709,7 +770,6 @@ impl PyMontyRepl {
             code,
             script_name.clone(),
             input_names,
-            external_function_names,
             input_values,
             limits,
             print_callback_for_create,
@@ -809,13 +869,11 @@ impl PyMontyRepl {
     /// Creates a core REPL and returns both the stored REPL state enum and initial output.
     ///
     /// This helper centralizes REPL bootstrapping for `create()`.
-    #[expect(clippy::too_many_arguments)]
     fn create_repl(
         py: Python<'_>,
         code: String,
         script_name: String,
         input_names: Vec<String>,
-        external_function_names: Vec<String>,
         input_values: Vec<MontyObject>,
         limits: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Py<PyAny>>,
@@ -838,7 +896,6 @@ impl PyMontyRepl {
                         code,
                         &script_name,
                         input_names,
-                        external_function_names,
                         input_values,
                         tracker,
                         print_writer.take(),
@@ -855,7 +912,6 @@ impl PyMontyRepl {
                         code,
                         &script_name,
                         input_names,
-                        external_function_names,
                         input_values,
                         tracker,
                         print_writer.take(),
@@ -1463,5 +1519,4 @@ struct SerializedMonty {
     runner: MontyRun,
     script_name: String,
     input_names: Vec<String>,
-    external_function_names: Vec<String>,
 }

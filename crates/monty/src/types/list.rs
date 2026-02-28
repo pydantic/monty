@@ -869,12 +869,16 @@ mod tests {
     use num_bigint::BigInt;
 
     use super::*;
-    use crate::{intern::InternerBuilder, resource::NoLimitTracker, types::LongInt};
+    use crate::{
+        intern::{InternerBuilder, Interns},
+        resource::NoLimitTracker,
+        types::LongInt,
+    };
 
     /// Creates a minimal Interns for testing.
-    fn create_test_interns() -> crate::intern::Interns {
+    fn create_test_interns() -> Interns {
         let interner = InternerBuilder::new("");
-        crate::intern::Interns::new(interner, vec![], vec![])
+        Interns::new(interner, vec![])
     }
 
     /// Creates a heap with a list and a LongInt index, bypassing into_value() demotion.

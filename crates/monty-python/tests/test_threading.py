@@ -88,7 +88,7 @@ for i in range(100_000):
     x += 1
 x
 """
-    m = pydantic_monty.Monty(code, external_functions=['double'])
+    m = pydantic_monty.Monty(code)
     start = time.perf_counter()
     result = m.run(external_functions={'double': double})
     diff = time.perf_counter() - start
@@ -114,7 +114,7 @@ for i in range(200_000):
     x += 1
 double(x)
 """
-    m = pydantic_monty.Monty(code, external_functions=['double'])
+    m = pydantic_monty.Monty(code)
     start = time.perf_counter()
     progress = m.start()
     diff = time.perf_counter() - start
@@ -140,7 +140,7 @@ for i in range(200_000):
     x += 1
 x
 """
-    m = pydantic_monty.Monty(code, external_functions=['double'])
+    m = pydantic_monty.Monty(code)
     progress = m.start()
     assert isinstance(progress, pydantic_monty.MontySnapshot)
     start = time.perf_counter()

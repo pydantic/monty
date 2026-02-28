@@ -141,6 +141,19 @@ pub enum MontyObject {
         /// Whether this dataclass instance is immutable.
         frozen: bool,
     },
+    /// An external function provided by the host.
+    ///
+    /// Returned by the host in response to a `NameLookup` to provide a callable
+    /// that the VM can invoke. When called, the VM yields `FunctionCall` to the host.
+    ///
+    /// The function is converted to `Value::ExtFunction(StringId)` internally,
+    /// where the name is interned for efficient storage and lookup.
+    Function {
+        /// The function name (used for repr, error messages, and as the interned key).
+        name: String,
+        /// Optional docstring for the function.
+        docstring: String,
+    },
     /// Fallback for values that cannot be represented as other variants.
     ///
     /// Contains the `repr()` string of the original value.
@@ -163,6 +176,7 @@ impl fmt::Display for MontyObject {
             Self::String(s) => f.write_str(s),
             Self::Cycle(_, placeholder) => f.write_str(placeholder),
             Self::Type(t) => write!(f, "<class '{t}'>"),
+            Self::Function { name, .. } => write!(f, "<function '{name}' external>"),
             _ => self.repr_fmt(f),
         }
     }
@@ -290,6 +304,12 @@ impl MontyObject {
             Self::Path(s) => Ok(Value::Ref(heap.allocate(HeapData::Path(Path::new(s)))?)),
             Self::Type(t) => Ok(Value::Builtin(Builtins::Type(t))),
             Self::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
+            Self::Function { name, .. } => {
+                // Intern the function name and create an ExtFunction value.
+                // We look up the name in the existing interns to find/create a StringId.
+                let string_id = interns.get_string_id_by_name(&name);
+                Ok(Value::ExtFunction(string_id))
+            }
             Self::Repr(_) => Err(InvalidInputError::invalid_type("Repr")),
             Self::Cycle(_, _) => Err(InvalidInputError::invalid_type("Cycle")),
         }
@@ -646,6 +666,7 @@ impl MontyObject {
             Self::Path(p) => write!(f, "PosixPath('{p}')"),
             Self::Type(t) => write!(f, "<class '{t}'>"),
             Self::BuiltinFunction(func) => write!(f, "<built-in function {func}>"),
+            Self::Function { name, .. } => write!(f, "<function '{name}' external>"),
             Self::Repr(s) => write!(f, "Repr({})", StringRepr(s)),
             Self::Cycle(_, placeholder) => f.write_str(placeholder),
         }
@@ -680,7 +701,9 @@ impl MontyObject {
             Self::Exception { .. } => true,
             Self::Path(_) => true,          // Path instances are always truthy
             Self::Dataclass { .. } => true, // Dataclass instances are always truthy
-            Self::Type(_) | Self::BuiltinFunction(_) | Self::Repr(_) | Self::Cycle(_, _) => true,
+            Self::Type(_) | Self::BuiltinFunction(_) | Self::Function { .. } | Self::Repr(_) | Self::Cycle(_, _) => {
+                true
+            }
         }
     }
 
@@ -708,6 +731,7 @@ impl MontyObject {
             Self::Dataclass { .. } => "dataclass",
             Self::Type(_) => "type",
             Self::BuiltinFunction(_) => "builtin_function_or_method",
+            Self::Function { .. } => "function",
             Self::Repr(_) => "repr",
             Self::Cycle(_, _) => "cycle",
         }
@@ -817,6 +841,16 @@ impl PartialEq for MontyObject {
                     && a_frozen == b_frozen
             }
             (Self::Path(a), Self::Path(b)) => a == b,
+            (
+                Self::Function {
+                    name: a_name,
+                    docstring: a_doc,
+                },
+                Self::Function {
+                    name: b_name,
+                    docstring: b_doc,
+                },
+            ) => a_name == b_name && a_doc == b_doc,
             (Self::Repr(a), Self::Repr(b)) => a == b,
             (Self::Cycle(a, _), Self::Cycle(b, _)) => a == b,
             (Self::Type(a), Self::Type(b)) => a == b,

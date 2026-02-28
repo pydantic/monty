@@ -340,11 +340,6 @@ export class Monty {
     return this._native.inputs
   }
 
-  /** Returns the external function names. */
-  get externalFunctions(): string[] {
-    return this._native.externalFunctions
-  }
-
   /** Returns a string representation of the Monty instance. */
   repr(): string {
     return this._native.repr()
@@ -547,7 +542,6 @@ export interface RunMontyAsyncOptions {
  * @example
  * const m = new Monty('result = await fetch_data(url)', {
  *   inputs: ['url'],
- *   externalFunctions: ['fetch_data']
  * });
  *
  * const result = await runMontyAsync(m, {

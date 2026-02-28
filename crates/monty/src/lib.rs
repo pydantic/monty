@@ -37,11 +37,14 @@ pub use crate::{
     object::{DictPairs, InvalidInputError, MontyObject},
     os::{OsFunction, dir_stat, file_stat, stat_result, symlink_stat},
     repl::{
-        MontyRepl, ReplContinuationMode, ReplFutureSnapshot, ReplProgress, ReplSnapshot, ReplStartError,
-        detect_repl_continuation_mode,
+        MontyRepl, ReplContinuationMode, ReplFutureSnapshot, ReplNameLookupSnapshot, ReplProgress, ReplSnapshot,
+        ReplStartError, detect_repl_continuation_mode,
     },
     resource::{
         DEFAULT_MAX_RECURSION_DEPTH, LimitedTracker, NoLimitTracker, ResourceError, ResourceLimits, ResourceTracker,
     },
-    run::{ExternalResult, FutureSnapshot, MontyFuture, MontyRun, RunProgress, Snapshot},
+    run::{
+        ExternalResult, FutureSnapshot, MontyFuture, MontyRun, NameLookupResult, NameLookupSnapshot, RunProgress,
+        Snapshot,
+    },
 };

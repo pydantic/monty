@@ -18,7 +18,7 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapId},
-    intern::{ExtFunctionId, Interns},
+    intern::{Interns, StringId},
     os::OsFunction,
     resource::ResourceTracker,
     value::{EitherStr, Value},
@@ -57,7 +57,7 @@ pub enum AttrCallResult {
     /// Used when attribute methods delegate to registered external functions.
     /// Currently unused - will be used when types need to call external functions from attribute methods.
     #[expect(dead_code)]
-    ExternalCall(ExtFunctionId, ArgValues),
+    ExternalCall(StringId, ArgValues),
 
     /// Dataclass method call — VM should yield `FrameExit::MethodCall` to host.
     ///

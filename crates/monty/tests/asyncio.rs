@@ -3,7 +3,10 @@
 //! These tests verify the behavior of the async execution model, specifically around
 //! resolving external futures incrementally via `FutureSnapshot::resume()`.
 
-use monty::{ExcType, ExternalResult, MontyException, MontyObject, MontyRun, NoLimitTracker, PrintWriter, RunProgress};
+use monty::{
+    ExcType, ExternalResult, MontyException, MontyObject, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter,
+    RunProgress,
+};
 
 /// Helper to create a MontyRun for async external function tests.
 ///
@@ -19,13 +22,7 @@ async def main():
 
 await main()
 ";
-    MontyRun::new(
-        code.to_owned(),
-        "test.py",
-        vec![],
-        vec!["foo".to_owned(), "bar".to_owned()],
-    )
-    .unwrap()
+    MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap()
 }
 
 /// Helper to create a MontyRun for async external function tests with three functions.
@@ -39,13 +36,23 @@ async def main():
 
 await main()
 ";
-    MontyRun::new(
-        code.to_owned(),
-        "test.py",
-        vec![],
-        vec!["foo".to_owned(), "bar".to_owned(), "baz".to_owned()],
-    )
-    .unwrap()
+    MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap()
+}
+
+/// Resolves consecutive `NameLookup` yields by providing a `Function` object for each name.
+fn resolve_name_lookups<T: monty::ResourceTracker>(
+    mut progress: RunProgress<T>,
+) -> Result<RunProgress<T>, monty::MontyException> {
+    while let RunProgress::NameLookup { name, state } = progress {
+        progress = state.run(
+            NameLookupResult::Value(MontyObject::Function {
+                name: name.clone(),
+                docstring: String::new(),
+            }),
+            &mut PrintWriter::Stdout,
+        )?;
+    }
+    Ok(progress)
 }
 
 /// Helper to drive execution through external calls until we get ResolveFutures.
@@ -59,6 +66,17 @@ fn drive_to_resolve_futures<T: monty::ResourceTracker>(
 
     loop {
         match progress {
+            RunProgress::NameLookup { name, state } => {
+                progress = state
+                    .run(
+                        NameLookupResult::Value(MontyObject::Function {
+                            name: name.clone(),
+                            docstring: String::new(),
+                        }),
+                        &mut PrintWriter::Stdout,
+                    )
+                    .unwrap();
+            }
             RunProgress::FunctionCall { call_id, state, .. } => {
                 collected_call_ids.push(call_id);
                 progress = state.run_pending(&mut PrintWriter::Stdout).unwrap();
@@ -342,7 +360,7 @@ async def main():
 
 await main()
 ";
-    MontyRun::new(code.to_owned(), "test.py", vec![], vec!["foo".to_owned()]).unwrap()
+    MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap()
 }
 
 /// Helper to create a runner with sequential awaits (not gather).
@@ -355,13 +373,7 @@ async def main():
 
 await main()
 ";
-    MontyRun::new(
-        code.to_owned(),
-        "test.py",
-        vec![],
-        vec!["foo".to_owned(), "bar".to_owned()],
-    )
-    .unwrap()
+    MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap()
 }
 
 // === Test: Single external await success (non-gather baseline) ===
@@ -472,6 +484,7 @@ fn single_external_await_type_error() {
 fn sequential_awaits_second_fails() {
     let runner = create_sequential_awaits_runner();
     let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
 
     // First external call (foo)
     let RunProgress::FunctionCall { call_id, state, .. } = progress else {
@@ -487,6 +500,7 @@ fn sequential_awaits_second_fails() {
     // Resolve foo successfully
     let results = vec![(foo_call_id, ExternalResult::Return(MontyObject::Int(10)))];
     let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
 
     // Second external call (bar)
     let RunProgress::FunctionCall { call_id, state, .. } = progress else {
@@ -519,6 +533,7 @@ fn sequential_awaits_second_fails() {
 fn sequential_awaits_first_fails() {
     let runner = create_sequential_awaits_runner();
     let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
 
     // First external call (foo)
     let RunProgress::FunctionCall { call_id, state, .. } = progress else {
@@ -756,6 +771,17 @@ fn drive_collecting_calls<T: monty::ResourceTracker>(
 
     loop {
         match progress {
+            RunProgress::NameLookup { name, state } => {
+                progress = state
+                    .run(
+                        NameLookupResult::Value(MontyObject::Function {
+                            name: name.clone(),
+                            docstring: String::new(),
+                        }),
+                        &mut PrintWriter::Stdout,
+                    )
+                    .unwrap();
+            }
             RunProgress::FunctionCall {
                 call_id,
                 function_name,
@@ -808,13 +834,7 @@ async def main():
 await main()
 ";
 
-    let runner = MontyRun::new(
-        code.to_owned(),
-        "test.py",
-        vec![],
-        vec!["get_lat_lng".to_owned(), "get_temp".to_owned(), "get_desc".to_owned()],
-    )
-    .unwrap();
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
 
     let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
@@ -884,13 +904,7 @@ async def main():
 await main()
 ";
 
-    let runner = MontyRun::new(
-        code.to_owned(),
-        "test.py",
-        vec![],
-        vec!["step1".to_owned(), "step2".to_owned(), "step3".to_owned()],
-    )
-    .unwrap();
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
 
     let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 

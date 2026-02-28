@@ -35,7 +35,7 @@ def test_monty_dump_load_preserves_inputs():
 
 
 def test_monty_dump_load_preserves_external_functions():
-    m = pydantic_monty.Monty('func()', external_functions=['func'])
+    m = pydantic_monty.Monty('func()')
     data = m.dump()
 
     m2 = pydantic_monty.Monty.load(data)
@@ -50,7 +50,7 @@ def test_monty_load_invalid_data():
 
 
 def test_progress_dump_load_roundtrip():
-    m = pydantic_monty.Monty('func(1, 2)', external_functions=['func'])
+    m = pydantic_monty.Monty('func(1, 2)')
     progress = m.start()
     assert isinstance(progress, pydantic_monty.MontySnapshot)
 
@@ -69,7 +69,7 @@ def test_progress_dump_load_roundtrip():
 
 
 def test_progress_dump_load_preserves_script_name():
-    m = pydantic_monty.Monty('func()', script_name='test.py', external_functions=['func'])
+    m = pydantic_monty.Monty('func()', script_name='test.py')
     progress = m.start()
     assert isinstance(progress, pydantic_monty.MontySnapshot)
 
@@ -79,7 +79,7 @@ def test_progress_dump_load_preserves_script_name():
 
 
 def test_progress_dump_load_with_kwargs():
-    m = pydantic_monty.Monty('func(a=1, b="hello")', external_functions=['func'])
+    m = pydantic_monty.Monty('func(a=1, b="hello")')
     progress = m.start()
     assert isinstance(progress, pydantic_monty.MontySnapshot)
 
@@ -91,7 +91,7 @@ def test_progress_dump_load_with_kwargs():
 
 
 def test_progress_dump_after_resume_fails():
-    m = pydantic_monty.Monty('func()', external_functions=['func'])
+    m = pydantic_monty.Monty('func()')
     progress = m.start()
     assert isinstance(progress, pydantic_monty.MontySnapshot)
 
@@ -108,7 +108,7 @@ def test_progress_load_invalid_data():
 
 
 def test_progress_dump_load_multiple_calls():
-    m = pydantic_monty.Monty('a() + b()', external_functions=['a', 'b'])
+    m = pydantic_monty.Monty('a() + b()')
 
     # First call
     progress = m.start()
@@ -140,7 +140,7 @@ def test_progress_load_with_print_callback():
     def callback(stream: str, text: str) -> None:
         output.append((stream, text))
 
-    m = pydantic_monty.Monty('print("before"); func(); print("after")', external_functions=['func'])
+    m = pydantic_monty.Monty('print("before"); func(); print("after")')
     progress = m.start(print_callback=callback)
     assert isinstance(progress, pydantic_monty.MontySnapshot)
     assert output == snapshot([('stdout', 'before'), ('stdout', '\n')])
@@ -156,7 +156,7 @@ def test_progress_load_with_print_callback():
 
 
 def test_progress_load_without_print_callback():
-    m = pydantic_monty.Monty('func()', external_functions=['func'])
+    m = pydantic_monty.Monty('func()')
     progress = m.start()
     assert isinstance(progress, pydantic_monty.MontySnapshot)
 
@@ -187,7 +187,7 @@ def test_monty_dump_load_various_outputs(code: str, expected: Any):
 
 
 def test_progress_dump_load_with_limits():
-    m = pydantic_monty.Monty('func()', external_functions=['func'])
+    m = pydantic_monty.Monty('func()')
     limits = pydantic_monty.ResourceLimits(max_allocations=1000)
     progress = m.start(limits=limits)
     assert isinstance(progress, pydantic_monty.MontySnapshot)
@@ -217,7 +217,7 @@ def test_monty_load_dataclass():
 
 
 def test_progress_dump_load_dataclass():
-    m = pydantic_monty.Monty('func()', external_functions=['func'])
+    m = pydantic_monty.Monty('func()')
     progress = m.start()
     assert isinstance(progress, pydantic_monty.MontySnapshot)
 
@@ -243,7 +243,6 @@ def test_progress_dump_load_unknown_dataclass():
     m = pydantic_monty.Monty(
         'external_call()\nx',
         inputs=['x'],
-        external_functions=['external_call'],
     )
     progress = m.start(inputs={'x': Person(name='Bob', age=25)})
     assert isinstance(progress, pydantic_monty.MontySnapshot)

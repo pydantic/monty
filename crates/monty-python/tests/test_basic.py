@@ -36,15 +36,13 @@ def test_repr_with_inputs():
 
 
 def test_repr_with_external_functions():
-    m = pydantic_monty.Monty('foo()', external_functions=['foo'])
-    assert repr(m) == snapshot('Monty(<1 line of code>, script_name=\'main.py\', external_functions=["foo"])')
+    m = pydantic_monty.Monty('foo()')
+    assert repr(m) == snapshot("Monty(<1 line of code>, script_name='main.py')")
 
 
 def test_repr_with_inputs_and_external_functions():
-    m = pydantic_monty.Monty('foo(x)', inputs=['x'], external_functions=['foo'])
-    assert repr(m) == snapshot(
-        'Monty(<1 line of code>, script_name=\'main.py\', inputs=["x"], external_functions=["foo"])'
-    )
+    m = pydantic_monty.Monty('foo(x)', inputs=['x'])
+    assert repr(m) == snapshot('Monty(<1 line of code>, script_name=\'main.py\', inputs=["x"])')
 
 
 def test_multiline_code():

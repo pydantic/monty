@@ -90,7 +90,6 @@ for member in team_members:
 m = pydantic_monty.Monty(
     code,
     inputs=['prompt'],
-    external_functions=['get_team_members', 'get_expenses', 'get_custom_budget'],
     script_name='expense.py',
     type_check=True,
     type_check_stubs=type_definitions,

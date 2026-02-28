@@ -46,9 +46,7 @@ const m4 = new Monty('x + y', { inputs: ['x', 'y'] })
 assert(m4.inputs.length === 2, 'inputs array populated')
 assert(m4.inputs[0] === 'x', 'first input correct')
 
-const m5 = new Monty('foo()', { externalFunctions: ['foo'] })
-assert(m5.externalFunctions.length === 1, 'external functions array populated')
-assert(m5.externalFunctions[0] === 'foo', 'external function name correct')
+// External functions are no longer declared in the constructor - they are resolved at runtime via start/resume
 
 const m6 = new Monty('1', { scriptName: 'custom.py' })
 assert(m6.scriptName === 'custom.py', 'custom script name')
@@ -91,7 +89,7 @@ try {
 
 console.log('\n=== External Functions (start/resume) ===')
 
-const m9 = new Monty('foo(42)', { externalFunctions: ['foo'] })
+const m9 = new Monty('foo(42)')
 const result9 = m9.start()
 assert(result9 instanceof MontySnapshot, 'start returns MontySnapshot')
 if (!(result9 instanceof MontySnapshot)) throw new Error('Expected MontySnapshot')
@@ -106,7 +104,7 @@ assert(complete1.output === 'result', 'complete has correct output')
 
 console.log('\n=== External Functions with kwargs ===')
 
-const m10 = new Monty('bar(1, 2, x=3, y=4)', { externalFunctions: ['bar'] })
+const m10 = new Monty('bar(1, 2, x=3, y=4)')
 const result10 = m10.start()
 if (!(result10 instanceof MontySnapshot)) throw new Error('Expected MontySnapshot')
 assert(result10.args[0] === 1, 'positional arg 1')
@@ -117,7 +115,7 @@ result10.resume({ returnValue: null })
 
 console.log('\n=== Multiple External Calls ===')
 
-const m11 = new Monty('a = get_a()\nb = get_b()\na + b', { externalFunctions: ['get_a', 'get_b'] })
+const m11 = new Monty('a = get_a()\nb = get_b()\na + b')
 let state: MontySnapshot | MontyComplete = m11.start()
 
 assert(state instanceof MontySnapshot, 'first call returns snapshot')
@@ -143,7 +141,7 @@ assert(loaded.run({ inputs: { x: 10 } }) === 11, 'loaded instance works')
 
 console.log('\n=== Snapshot Serialization ===')
 
-const m13 = new Monty('ext(x) + 1', { inputs: ['x'], externalFunctions: ['ext'] })
+const m13 = new Monty('ext(x) + 1', { inputs: ['x'] })
 const snap = m13.start({ inputs: { x: 5 } }) as MontySnapshot
 const snapDumped = snap.dump()
 assert(snapDumped instanceof Buffer, 'snapshot dump returns Buffer')

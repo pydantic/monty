@@ -16,8 +16,8 @@ use std::{
 
 use ahash::AHashMap;
 use monty::{
-    ExcType, ExternalResult, LimitedTracker, MontyException, MontyFuture, MontyObject, MontyRun, OsFunction,
-    PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
+    ExcType, ExternalResult, LimitedTracker, MontyException, MontyFuture, MontyObject, MontyRun, NameLookupResult,
+    OsFunction, PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
 };
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
@@ -227,22 +227,6 @@ fn parse_ref_counts(s: &str) -> AHashMap<String, usize> {
     }
     counts
 }
-
-/// External function names available in iter mode tests.
-///
-/// These functions are provided by the test runner when a test uses `# call-external`.
-const ITER_EXT_FUNCTIONS: &[&str] = &[
-    "add_ints",           // (a, b) -> a + b (integers)
-    "concat_strings",     // (a, b) -> a + b (strings)
-    "return_value",       // (x) -> x (identity)
-    "get_list",           // () -> [1, 2, 3]
-    "raise_error",        // (exc_type: str, message: str) -> raises exception
-    "make_point",         // () -> Dataclass Point(x=1, y=2) (immutable)
-    "make_mutable_point", // () -> Dataclass Point(x=1, y=2) (mutable)
-    "make_user",          // (name) -> Dataclass User(name=name, active=True) (immutable)
-    "make_empty",         // () -> Dataclass Empty() (immutable, no fields)
-    "async_call",         // (x) -> async: returns x (coroutine that returns its argument)
-];
 
 /// Python implementations of external functions for running iter mode tests in CPython.
 ///
@@ -1115,7 +1099,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<()
     // Handle ref-count-return tests separately since they need run_ref_counts()
     #[cfg(feature = "ref-count-return")]
     if let Expectation::RefCounts(expected) = expectation {
-        match MontyRun::new(code.to_owned(), &test_name, vec![], vec![]) {
+        match MontyRun::new(code.to_owned(), &test_name, vec![]) {
             Ok(ex) => {
                 let result = ex.run_ref_counts(vec![]);
                 match result {
@@ -1165,7 +1149,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<()
         }
     }
 
-    match MontyRun::new(code.to_owned(), &test_name, vec![], vec![]) {
+    match MontyRun::new(code.to_owned(), &test_name, vec![]) {
         Ok(ex) => {
             let limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
             let result = ex.run(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout);
@@ -1309,9 +1293,7 @@ fn try_run_iter_test(path: &Path, code: &str, expectation: &Expectation) -> Resu
         });
     }
 
-    let ext_functions: Vec<String> = ITER_EXT_FUNCTIONS.iter().copied().map(str::to_string).collect();
-
-    let exec = match MontyRun::new(code.to_owned(), &test_name, vec![], ext_functions) {
+    let exec = match MontyRun::new(code.to_owned(), &test_name, vec![]) {
         Ok(e) => e,
         Err(parse_err) => {
             if let Expectation::Raise(expected) = expectation {
@@ -1507,6 +1489,19 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                 );
 
                 progress = state.resume(results, &mut PrintWriter::Stdout)?;
+            }
+            RunProgress::NameLookup { name, state } => {
+                let result = match name.as_str() {
+                    "add_ints" | "concat_strings" | "return_value" | "get_list" | "raise_error" | "make_point"
+                    | "make_mutable_point" | "make_user" | "make_empty" | "async_call" => {
+                        NameLookupResult::Value(MontyObject::Function {
+                            name: name.clone(),
+                            docstring: String::new(),
+                        })
+                    }
+                    _ => NameLookupResult::Undefined,
+                };
+                progress = state.run(result, &mut PrintWriter::Stdout)?;
             }
             RunProgress::OsCall {
                 function,

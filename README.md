@@ -105,7 +105,6 @@ prompt: str = ''
 m = pydantic_monty.Monty(
     code,
     inputs=['prompt'],
-    external_functions=['call_llm'],
     script_name='agent.py',
     type_check=True,
     type_check_stubs=type_definitions,
@@ -151,7 +150,7 @@ data = fetch(url)
 len(data)
 """
 
-m = pydantic_monty.Monty(code, inputs=['url'], external_functions=['fetch'])
+m = pydantic_monty.Monty(code, inputs=['url'])
 
 # Start execution - pauses when fetch() is called
 result = m.start(inputs={'url': 'https://example.com'})
@@ -190,7 +189,7 @@ print(m2.run(inputs={'x': 41}))
 #> 42
 
 # Serialize execution state mid-flight
-m = pydantic_monty.Monty('fetch(url)', inputs=['url'], external_functions=['fetch'])
+m = pydantic_monty.Monty('fetch(url)', inputs=['url'])
 progress = m.start(inputs={'url': 'https://example.com'})
 state = progress.dump()
 
@@ -215,7 +214,7 @@ def fib(n):
 fib(x)
 "#;
 
-let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()], vec![]).unwrap();
+let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()]).unwrap();
 let result = runner.run(vec![MontyObject::Int(10)], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 assert_eq!(result, MontyObject::Int(55));
 ```
@@ -228,7 +227,7 @@ assert_eq!(result, MontyObject::Int(55));
 use monty::{MontyRun, MontyObject, NoLimitTracker, PrintWriter};
 
 // Serialize parsed code
-let runner = MontyRun::new("x + 1".to_owned(), "main.py", vec!["x".to_owned()], vec![]).unwrap();
+let runner = MontyRun::new("x + 1".to_owned(), "main.py", vec!["x".to_owned()]).unwrap();
 let bytes = runner.dump().unwrap();
 
 // Later, restore and run

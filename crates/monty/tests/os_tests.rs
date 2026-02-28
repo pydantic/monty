@@ -12,7 +12,7 @@ use monty::{MontyObject, MontyRun, NoLimitTracker, OsFunction, PrintWriter, RunP
 /// Returns the `OsFunction` and positional arguments from the call.
 /// The state is resumed with a mock result to properly clean up ref counts.
 fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
     let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     match progress {
@@ -48,7 +48,7 @@ fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
 
 /// Helper to run code, provide an OS call result, and get the final value.
 fn run_oscall_with_result(code: &str, mock_result: MontyObject) -> (OsFunction, Vec<MontyObject>, MontyObject) {
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
     let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
     match progress {

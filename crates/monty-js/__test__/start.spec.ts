@@ -42,7 +42,7 @@ test('start returns complete for various types', (t) => {
 // =============================================================================
 
 test('start with external function returns progress', (t) => {
-  const m = new Monty('func()', { externalFunctions: ['func'] })
+  const m = new Monty('func()')
   const result = m.start()
   t.true(result instanceof MontySnapshot)
   const snapshot = result as MontySnapshot
@@ -53,14 +53,14 @@ test('start with external function returns progress', (t) => {
 })
 
 test('start custom script name', (t) => {
-  const m = new Monty('func()', { scriptName: 'custom.py', externalFunctions: ['func'] })
+  const m = new Monty('func()', { scriptName: 'custom.py' })
   const result = m.start()
   t.true(result instanceof MontySnapshot)
   t.is((result as MontySnapshot).scriptName, 'custom.py')
 })
 
 test('start progress with args', (t) => {
-  const m = new Monty('func(1, 2, 3)', { externalFunctions: ['func'] })
+  const m = new Monty('func(1, 2, 3)')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
   const snapshot = progress as MontySnapshot
@@ -70,7 +70,7 @@ test('start progress with args', (t) => {
 })
 
 test('start progress with kwargs', (t) => {
-  const m = new Monty('func(a=1, b="two")', { externalFunctions: ['func'] })
+  const m = new Monty('func(a=1, b="two")')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
   const snapshot = progress as MontySnapshot
@@ -80,7 +80,7 @@ test('start progress with kwargs', (t) => {
 })
 
 test('start progress with mixed args kwargs', (t) => {
-  const m = new Monty('func(1, 2, x="hello", y=True)', { externalFunctions: ['func'] })
+  const m = new Monty('func(1, 2, x="hello", y=True)')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
   const snapshot = progress as MontySnapshot
@@ -94,7 +94,7 @@ test('start progress with mixed args kwargs', (t) => {
 // =============================================================================
 
 test('progress resume returns complete', (t) => {
-  const m = new Monty('func()', { externalFunctions: ['func'] })
+  const m = new Monty('func()')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
   const snapshot = progress as MontySnapshot
@@ -108,7 +108,7 @@ test('progress resume returns complete', (t) => {
 })
 
 test('resume with none', (t) => {
-  const m = new Monty('func()', { externalFunctions: ['func'] })
+  const m = new Monty('func()')
   const snapshot = m.start() as MontySnapshot
 
   const result = snapshot.resume({ returnValue: null })
@@ -117,7 +117,7 @@ test('resume with none', (t) => {
 })
 
 test('resume complex return value', (t) => {
-  const m = new Monty('func()', { externalFunctions: ['func'] })
+  const m = new Monty('func()')
   const snapshot = m.start() as MontySnapshot
 
   const complexValue = { a: [1, 2, 3], b: { nested: true } }
@@ -137,7 +137,7 @@ test('resume complex return value', (t) => {
 // =============================================================================
 
 test('multiple external calls', (t) => {
-  const m = new Monty('a() + b()', { externalFunctions: ['a', 'b'] })
+  const m = new Monty('a() + b()')
 
   // First call
   let progress = m.start()
@@ -156,7 +156,7 @@ test('multiple external calls', (t) => {
 })
 
 test('chain of external calls', (t) => {
-  const m = new Monty('c() + c() + c()', { externalFunctions: ['c'] })
+  const m = new Monty('c() + c() + c()')
 
   let callCount = 0
   let progress: MontySnapshot | MontyComplete = m.start()
@@ -177,7 +177,7 @@ test('chain of external calls', (t) => {
 // =============================================================================
 
 test('start with inputs', (t) => {
-  const m = new Monty('process(x)', { inputs: ['x'], externalFunctions: ['process'] })
+  const m = new Monty('process(x)', { inputs: ['x'] })
   const progress = m.start({ inputs: { x: 100 } })
   t.true(progress instanceof MontySnapshot)
   const snapshot = progress as MontySnapshot
@@ -198,7 +198,7 @@ test('start with limits', (t) => {
 // =============================================================================
 
 test('resume cannot be called twice', (t) => {
-  const m = new Monty('func()', { externalFunctions: ['func'] })
+  const m = new Monty('func()')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
   const snapshot = progress as MontySnapshot
@@ -223,7 +223,7 @@ except ValueError:
     caught = True
 caught
 `
-  const m = new Monty(code, { externalFunctions: ['external_func'] })
+  const m = new Monty(code)
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
   const snapshot = progress as MontySnapshot
@@ -235,7 +235,7 @@ caught
 })
 
 test('resume exception propagates uncaught', (t) => {
-  const m = new Monty('external_func()', { externalFunctions: ['external_func'] })
+  const m = new Monty('external_func()')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
   const snapshot = progress as MontySnapshot
@@ -263,7 +263,7 @@ except ValueError:
     outer_caught = True
 (outer_caught, finally_ran)
 `
-  const m = new Monty(code, { externalFunctions: ['external_func'] })
+  const m = new Monty(code)
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
   const snapshot = progress as MontySnapshot
@@ -281,7 +281,7 @@ except ValueError:
 // =============================================================================
 
 test('invalid resume args', (t) => {
-  const m = new Monty('func()', { externalFunctions: ['func'] })
+  const m = new Monty('func()')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
   const snapshot = progress as MontySnapshot
@@ -296,7 +296,7 @@ test('invalid resume args', (t) => {
 // =============================================================================
 
 test('start can reuse monty instance', (t) => {
-  const m = new Monty('func(x)', { inputs: ['x'], externalFunctions: ['func'] })
+  const m = new Monty('func(x)', { inputs: ['x'] })
 
   // First run
   const progress1 = m.start({ inputs: { x: 1 } })
@@ -320,7 +320,7 @@ test('start can reuse monty instance', (t) => {
 // =============================================================================
 
 test('progress repr', (t) => {
-  const m = new Monty('func(1, x=2)', { externalFunctions: ['func'] })
+  const m = new Monty('func(1, x=2)')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
   const repr = (progress as MontySnapshot).repr()

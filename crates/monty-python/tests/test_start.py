@@ -14,7 +14,7 @@ def test_start_no_external_functions_returns_complete():
 
 
 def test_start_with_external_function_returns_progress():
-    m = pydantic_monty.Monty('func()', external_functions=['func'])
+    m = pydantic_monty.Monty('func()')
     result = m.start()
     assert isinstance(result, pydantic_monty.MontySnapshot)
     assert result.script_name == snapshot('main.py')
@@ -24,14 +24,14 @@ def test_start_with_external_function_returns_progress():
 
 
 def test_start_custom_script_name():
-    m = pydantic_monty.Monty('func()', script_name='custom.py', external_functions=['func'])
+    m = pydantic_monty.Monty('func()', script_name='custom.py')
     result = m.start()
     assert isinstance(result, pydantic_monty.MontySnapshot)
     assert result.script_name == snapshot('custom.py')
 
 
 def test_start_progress_resume_returns_complete():
-    m = pydantic_monty.Monty('func()', external_functions=['func'])
+    m = pydantic_monty.Monty('func()')
     progress = m.start()
     assert isinstance(progress, pydantic_monty.MontySnapshot)
     assert progress.function_name == snapshot('func')
@@ -44,7 +44,7 @@ def test_start_progress_resume_returns_complete():
 
 
 def test_start_progress_with_args():
-    m = pydantic_monty.Monty('func(1, 2, 3)', external_functions=['func'])
+    m = pydantic_monty.Monty('func(1, 2, 3)')
     progress = m.start()
     assert isinstance(progress, pydantic_monty.MontySnapshot)
     assert progress.function_name == snapshot('func')
@@ -53,7 +53,7 @@ def test_start_progress_with_args():
 
 
 def test_start_progress_with_kwargs():
-    m = pydantic_monty.Monty('func(a=1, b="two")', external_functions=['func'])
+    m = pydantic_monty.Monty('func(a=1, b="two")')
     progress = m.start()
     assert isinstance(progress, pydantic_monty.MontySnapshot)
     assert progress.function_name == snapshot('func')
@@ -62,7 +62,7 @@ def test_start_progress_with_kwargs():
 
 
 def test_start_progress_with_mixed_args_kwargs():
-    m = pydantic_monty.Monty('func(1, 2, x="hello", y=True)', external_functions=['func'])
+    m = pydantic_monty.Monty('func(1, 2, x="hello", y=True)')
     progress = m.start()
     assert isinstance(progress, pydantic_monty.MontySnapshot)
     assert progress.function_name == snapshot('func')
@@ -71,7 +71,7 @@ def test_start_progress_with_mixed_args_kwargs():
 
 
 def test_start_multiple_external_calls():
-    m = pydantic_monty.Monty('a() + b()', external_functions=['a', 'b'])
+    m = pydantic_monty.Monty('a() + b()')
 
     # First call
     progress = m.start()
@@ -90,7 +90,7 @@ def test_start_multiple_external_calls():
 
 
 def test_start_chain_of_external_calls():
-    m = pydantic_monty.Monty('c() + c() + c()', external_functions=['c'])
+    m = pydantic_monty.Monty('c() + c() + c()')
 
     call_count = 0
     progress: pydantic_monty.MontySnapshot | pydantic_monty.MontyFutureSnapshot | pydantic_monty.MontyComplete = (
@@ -109,7 +109,7 @@ def test_start_chain_of_external_calls():
 
 
 def test_start_with_inputs():
-    m = pydantic_monty.Monty('process(x)', inputs=['x'], external_functions=['process'])
+    m = pydantic_monty.Monty('process(x)', inputs=['x'])
     progress = m.start(inputs={'x': 100})
     assert isinstance(progress, pydantic_monty.MontySnapshot)
     assert progress.function_name == snapshot('process')
@@ -137,7 +137,7 @@ def test_start_with_print_callback():
 
 
 def test_start_resume_cannot_be_called_twice():
-    m = pydantic_monty.Monty('func()', external_functions=['func'])
+    m = pydantic_monty.Monty('func()')
     progress = m.start()
     assert isinstance(progress, pydantic_monty.MontySnapshot)
 
@@ -151,7 +151,7 @@ def test_start_resume_cannot_be_called_twice():
 
 
 def test_start_complex_return_value():
-    m = pydantic_monty.Monty('func()', external_functions=['func'])
+    m = pydantic_monty.Monty('func()')
     progress = m.start()
     assert isinstance(progress, pydantic_monty.MontySnapshot)
 
@@ -161,7 +161,7 @@ def test_start_complex_return_value():
 
 
 def test_start_resume_with_none():
-    m = pydantic_monty.Monty('func()', external_functions=['func'])
+    m = pydantic_monty.Monty('func()')
     progress = m.start()
     assert isinstance(progress, pydantic_monty.MontySnapshot)
 
@@ -171,7 +171,7 @@ def test_start_resume_with_none():
 
 
 def test_progress_repr():
-    m = pydantic_monty.Monty('func(1, x=2)', external_functions=['func'])
+    m = pydantic_monty.Monty('func(1, x=2)')
     progress = m.start()
     assert isinstance(progress, pydantic_monty.MontySnapshot)
     assert repr(progress) == snapshot(
@@ -187,7 +187,7 @@ def test_complete_repr():
 
 
 def test_start_can_reuse_monty_instance():
-    m = pydantic_monty.Monty('func(x)', inputs=['x'], external_functions=['func'])
+    m = pydantic_monty.Monty('func(x)', inputs=['x'])
 
     # First run
     progress1 = m.start(inputs={'x': 1})
@@ -233,7 +233,7 @@ except ValueError:
     caught = True
 caught
 """
-    m = pydantic_monty.Monty(code, external_functions=['external_func'])
+    m = pydantic_monty.Monty(code)
     progress = m.start()
     assert isinstance(progress, pydantic_monty.MontySnapshot)
 
@@ -246,7 +246,7 @@ caught
 def test_start_progress_resume_exception_propagates_uncaught():
     """Test that uncaught exceptions from resume() propagate to caller."""
     code = 'external_func()'
-    m = pydantic_monty.Monty(code, external_functions=['external_func'])
+    m = pydantic_monty.Monty(code)
     progress = m.start()
     assert isinstance(progress, pydantic_monty.MontySnapshot)
 
@@ -260,7 +260,7 @@ def test_start_progress_resume_exception_propagates_uncaught():
 
 def test_resume_none():
     code = 'external_func()'
-    m = pydantic_monty.Monty(code, external_functions=['external_func'])
+    m = pydantic_monty.Monty(code)
     progress = m.start()
     assert isinstance(progress, pydantic_monty.MontySnapshot)
     result = progress.resume(return_value=None)
@@ -271,7 +271,7 @@ def test_resume_none():
 def test_invalid_resume_args():
     """Test that resume() with no args returns None."""
     code = 'external_func()'
-    m = pydantic_monty.Monty(code, external_functions=['external_func'])
+    m = pydantic_monty.Monty(code)
     progress = m.start()
     assert isinstance(progress, pydantic_monty.MontySnapshot)
 
@@ -307,7 +307,7 @@ except ValueError:
     outer_caught = True
 (outer_caught, finally_ran)
 """
-    m = pydantic_monty.Monty(code, external_functions=['external_func'])
+    m = pydantic_monty.Monty(code)
     progress = m.start()
     assert isinstance(progress, pydantic_monty.MontySnapshot)
 

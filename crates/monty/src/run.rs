@@ -7,7 +7,7 @@ use crate::{
     bytecode::{Code, Compiler, FrameExit, VM, VMSnapshot},
     exception_private::RunResult,
     heap::{DropWithHeap, Heap},
-    intern::{ExtFunctionId, Interns},
+    intern::Interns,
     io::PrintWriter,
     namespace::Namespaces,
     object::MontyObject,
@@ -29,7 +29,7 @@ use crate::{
 /// ```
 /// use monty::{MontyRun, MontyObject};
 ///
-/// let runner = MontyRun::new("x + 1".to_owned(), "test.py", vec!["x".to_owned()], vec![]).unwrap();
+/// let runner = MontyRun::new("x + 1".to_owned(), "test.py", vec!["x".to_owned()]).unwrap();
 /// let result = runner.run_no_limits(vec![MontyObject::Int(41)]).unwrap();
 /// assert_eq!(result, MontyObject::Int(42));
 /// ```
@@ -52,13 +52,8 @@ impl MontyRun {
     ///
     /// # Errors
     /// Returns `MontyException` if the code cannot be parsed.
-    pub fn new(
-        code: String,
-        script_name: &str,
-        input_names: Vec<String>,
-        external_functions: Vec<String>,
-    ) -> Result<Self, MontyException> {
-        Executor::new(code, script_name, input_names, external_functions).map(|executor| Self { executor })
+    pub fn new(code: String, script_name: &str, input_names: Vec<String>) -> Result<Self, MontyException> {
+        Executor::new(code, script_name, input_names).map(|executor| Self { executor })
     }
 
     /// Returns the code that was parsed to create this snapshot.
@@ -232,6 +227,17 @@ pub enum RunProgress<T: ResourceTracker> {
     ///
     /// access the pending call ids with `.pending_call_ids()`
     ResolveFutures(FutureSnapshot<T>),
+    /// Execution paused for an unresolved name lookup.
+    ///
+    /// The host should check if the name corresponds to a known external function or
+    /// value. Return `NameLookupResult::Value(obj)` to cache it in the namespace and
+    /// continue, or `NameLookupResult::Undefined` to raise `NameError`.
+    NameLookup {
+        /// The name being looked up.
+        name: String,
+        /// The execution state for resuming after name resolution.
+        state: NameLookupSnapshot<T>,
+    },
     /// Execution completed with a final result.
     Complete(MontyObject),
 }
@@ -333,6 +339,113 @@ pub struct Snapshot<T: ResourceTracker> {
     /// The call_id from the most recent FunctionCall that created this Snapshot.
     /// Used by `run_pending()` to push the correct `ExternalFuture`.
     pending_call_id: u32,
+}
+
+/// Result of a name lookup from the host.
+///
+/// When the VM encounters an unresolved name, the host provides one of these:
+/// - `Value(obj)`: The name resolves to this value (cached in the namespace for future access)
+/// - `Undefined`: The name is truly undefined, causing `NameError`
+#[derive(Debug)]
+pub enum NameLookupResult {
+    /// The name resolves to this value.
+    Value(MontyObject),
+    /// The name is undefined - VM will raise `NameError`.
+    Undefined,
+}
+
+/// Execution state that can be resumed after a name lookup.
+///
+/// This struct owns all runtime state while waiting for the host to resolve a name.
+/// Use `run(result)` to provide the resolution and continue execution.
+///
+/// # Type Parameters
+/// * `T` - Resource tracker implementation
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
+pub struct NameLookupSnapshot<T: ResourceTracker> {
+    /// The executor containing compiled code and interns.
+    executor: Executor,
+    /// The VM state at the point of the name lookup.
+    vm_state: VMSnapshot,
+    /// The heap containing all allocated objects.
+    heap: Heap<T>,
+    /// The namespaces containing all variable bindings.
+    namespaces: Namespaces,
+    /// The namespace slot where the resolved value should be cached.
+    namespace_slot: u16,
+    /// Whether this is a global slot or a local/function slot.
+    is_global: bool,
+    /// The name being looked up (for error messages).
+    name: String,
+}
+
+impl<T: ResourceTracker> NameLookupSnapshot<T> {
+    /// Continues execution with the name lookup result.
+    ///
+    /// - `NameLookupResult::Value(obj)`: Caches the value in the namespace slot and pushes
+    ///   it onto the stack, then continues execution.
+    /// - `NameLookupResult::Undefined`: Raises `NameError: name 'X' is not defined`.
+    ///
+    /// # Arguments
+    /// * `result` - The resolved value or Undefined
+    /// * `print` - Writer for print output
+    pub fn run(
+        mut self,
+        result: NameLookupResult,
+        print: &mut PrintWriter<'_>,
+    ) -> Result<RunProgress<T>, MontyException> {
+        // Resolve the name lookup result BEFORE restoring the VM, since the VM
+        // borrows heap/namespaces mutably and we need direct access for caching.
+        let resolved_value = match result {
+            NameLookupResult::Value(obj) => {
+                let value = obj
+                    .to_value(&mut self.heap, &self.executor.interns)
+                    .map_err(|e| MontyException::runtime_error(format!("invalid name lookup result: {e}")))?;
+
+                // Cache the resolved value in the appropriate namespace slot.
+                // For global lookups (module-level code), cache in the global namespace.
+                // For local lookups (inside functions), cache in the function's local namespace
+                // using the slot index from the VM snapshot's current frame.
+                let ns_slot = crate::namespace::NamespaceId::new(self.namespace_slot as usize);
+                let ns_idx = if self.is_global {
+                    crate::namespace::GLOBAL_NS_IDX
+                } else {
+                    // For local lookups, we need the namespace index from the VM's current frame.
+                    // The VM snapshot captures the frame stack, so we extract it from there.
+                    self.vm_state.current_namespace_idx()
+                };
+                let namespace = self.namespaces.get_mut(ns_idx);
+                let old = std::mem::replace(namespace.get_mut(ns_slot), value.clone_with_heap(&self.heap));
+                old.drop_with_heap(&mut self.heap);
+
+                Some(value)
+            }
+            NameLookupResult::Undefined => None,
+        };
+
+        // Now restore the VM (borrows heap and namespaces)
+        let mut vm = VM::restore(
+            self.vm_state,
+            &self.executor.module_code,
+            &mut self.heap,
+            &mut self.namespaces,
+            &self.executor.interns,
+            print,
+        );
+
+        // Resume execution: either push the resolved value or raise NameError
+        // through the VM so that traceback information is properly captured.
+        let vm_result = if let Some(value) = resolved_value {
+            vm.push(value);
+            vm.run()
+        } else {
+            let err = crate::ExcType::name_error(&self.name);
+            vm.resume_with_exception(err.into())
+        };
+        let vm_state = vm.check_snapshot(&vm_result);
+        handle_vm_result(vm_result, vm_state, self.executor, self.heap, self.namespaces)
+    }
 }
 
 #[derive(Debug)]
@@ -653,11 +766,11 @@ fn handle_vm_result<T: ResourceTracker>(
             Ok(RunProgress::Complete(obj))
         }
         Ok(FrameExit::ExternalCall {
-            ext_function_id,
+            function_name_id,
             args,
             call_id,
         }) => {
-            let function_name = executor.interns.get_external_function_name(ext_function_id);
+            let function_name = executor.interns.get_str(function_name_id).to_owned();
             let (args_py, kwargs_py) = args.into_py_objects(&mut heap, &executor.interns);
 
             Ok(RunProgress::FunctionCall {
@@ -711,6 +824,25 @@ fn handle_vm_result<T: ResourceTracker>(
                 pending_call_ids,
             }))
         }
+        Ok(FrameExit::NameLookup {
+            name_id,
+            namespace_slot,
+            is_global,
+        }) => {
+            let name = executor.interns.get_str(name_id).to_owned();
+            Ok(RunProgress::NameLookup {
+                name: name.clone(),
+                state: NameLookupSnapshot {
+                    executor,
+                    vm_state: vm_state.expect("snapshot should exist for NameLookup"),
+                    heap,
+                    namespaces,
+                    namespace_slot,
+                    is_global,
+                    name,
+                },
+            })
+        }
         Err(err) => {
             #[cfg(feature = "ref-count-panic")]
             namespaces.drop_global_with_heap(&mut heap);
@@ -735,8 +867,6 @@ struct Executor {
     module_code: Code,
     /// Interned strings used for looking up names and filenames during execution.
     interns: Interns,
-    /// IDs to create values to inject into the the namespace to represent external functions.
-    external_function_ids: Vec<ExtFunctionId>,
     /// Source code for error reporting (extracting preview lines for tracebacks).
     code: String,
     /// Estimated heap capacity for pre-allocation on subsequent runs.
@@ -752,7 +882,6 @@ impl Clone for Executor {
             name_map: self.name_map.clone(),
             module_code: self.module_code.clone(),
             interns: self.interns.clone(),
-            external_function_ids: self.external_function_ids.clone(),
             code: self.code.clone(),
             heap_capacity: AtomicUsize::new(self.heap_capacity.load(Ordering::Relaxed)),
         }
@@ -760,22 +889,13 @@ impl Clone for Executor {
 }
 
 impl Executor {
-    /// Creates a new executor with the given code, filename, input names, and external functions.
-    fn new(
-        code: String,
-        script_name: &str,
-        input_names: Vec<String>,
-        external_functions: Vec<String>,
-    ) -> Result<Self, MontyException> {
+    /// Creates a new executor with the given code, filename, and input names.
+    fn new(code: String, script_name: &str, input_names: Vec<String>) -> Result<Self, MontyException> {
         let parse_result = parse(&code, script_name).map_err(|e| e.into_python_exc(script_name, &code))?;
-        let prepared = prepare(parse_result, input_names, &external_functions)
-            .map_err(|e| e.into_python_exc(script_name, &code))?;
-
-        // Incrementing order matches the indexes used in intern::Interns::get_external_function_name
-        let external_function_ids = (0..external_functions.len()).map(ExtFunctionId::new).collect();
+        let prepared = prepare(parse_result, input_names).map_err(|e| e.into_python_exc(script_name, &code))?;
 
         // Create interns with empty functions (functions will be set after compilation)
-        let mut interns = Interns::new(prepared.interner, Vec::new(), external_functions);
+        let mut interns = Interns::new(prepared.interner, Vec::new());
 
         // Compile the module to bytecode, which also compiles all nested functions
         let namespace_size_u16 = u16::try_from(prepared.namespace_size).expect("module namespace size exceeds u16");
@@ -791,7 +911,6 @@ impl Executor {
             name_map: prepared.name_map,
             module_code: compile_result.code,
             interns,
-            external_function_ids,
             code,
             heap_capacity: AtomicUsize::new(prepared.namespace_size),
         })
@@ -819,7 +938,16 @@ impl Executor {
 
         // Create and run VM
         let mut vm = VM::new(&mut heap, &mut namespaces, &self.interns, print);
-        let frame_exit_result = vm.run_module(&self.module_code);
+        let mut frame_exit_result = vm.run_module(&self.module_code);
+
+        // Handle NameLookup exits by raising NameError through the VM so that
+        // traceback information is properly captured. In the non-iterative path,
+        // there's no host to resolve names, so all NameLookup exits become NameErrors.
+        while let Ok(FrameExit::NameLookup { name_id, .. }) = &frame_exit_result {
+            let name = self.interns.get_str(*name_id);
+            let err = ExcType::name_error(name);
+            frame_exit_result = vm.resume_with_exception(err.into());
+        }
 
         // Clean up VM state before it goes out of scope
         vm.cleanup();
@@ -899,22 +1027,20 @@ impl Executor {
     ///
     /// Converts each `MontyObject` input to a `Value`, allocating on the heap if needed.
     /// Returns the prepared Namespaces or an error if there are too many inputs or invalid input types.
+    /// Prepares the namespace for execution.
+    ///
+    /// Fills input values into the first N slots, then fills remaining slots with `Undefined`.
+    /// External function names are no longer pre-populated; they are resolved lazily
+    /// via `NameLookup` at runtime when the code first accesses them.
     fn prepare_namespaces(
         &self,
         inputs: Vec<MontyObject>,
         heap: &mut Heap<impl ResourceTracker>,
     ) -> Result<Namespaces, MontyException> {
-        let Some(extra) = self
-            .namespace_size
-            .checked_sub(self.external_function_ids.len() + inputs.len())
-        else {
+        let Some(extra) = self.namespace_size.checked_sub(inputs.len()) else {
             return Err(MontyException::runtime_error("too many inputs for namespace"));
         };
-        // register external functions in the namespace first, matching the logic in prepare
         let mut namespace: Vec<Value> = Vec::with_capacity(self.namespace_size);
-        for f_id in &self.external_function_ids {
-            namespace.push(Value::ExtFunction(*f_id));
-        }
         // Convert each MontyObject to a Value, propagating any invalid input errors
         for input in inputs {
             namespace.push(
@@ -938,10 +1064,10 @@ fn frame_exit_to_object(
     match frame_exit_result? {
         FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, heap, interns)),
         FrameExit::ExternalCall {
-            ext_function_id, args, ..
+            function_name_id, args, ..
         } => {
             args.drop_with_heap(heap);
-            let function_name = interns.get_external_function_name(ext_function_id);
+            let function_name = interns.get_str(function_name_id);
             Err(ExcType::not_implemented(format!(
                 "External function '{function_name}' not implemented with standard execution"
             ))
@@ -964,6 +1090,10 @@ fn frame_exit_to_object(
         }
         FrameExit::ResolveFutures(_) => {
             Err(ExcType::not_implemented("async futures not supported by standard execution.").into())
+        }
+        FrameExit::NameLookup { name_id, .. } => {
+            let name = interns.get_str(name_id);
+            Err(ExcType::name_error(name).into())
         }
     }
 }

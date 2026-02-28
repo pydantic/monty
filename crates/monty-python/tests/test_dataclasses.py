@@ -417,7 +417,7 @@ except AttributeError:
     caught = 'attr'
 caught
 """
-    m = pydantic_monty.Monty(code, external_functions=['fail'])
+    m = pydantic_monty.Monty(code)
 
     def fail() -> NoReturn:
         raise FrozenInstanceError('cannot assign to field')
@@ -429,7 +429,7 @@ caught
 
 def test_frozen_instance_error_from_external_function_propagates():
     """FrozenInstanceError from external function propagates to Python."""
-    m = pydantic_monty.Monty('fail()', external_functions=['fail'])
+    m = pydantic_monty.Monty('fail()')
 
     def fail() -> NoReturn:
         raise FrozenInstanceError('test frozen error')

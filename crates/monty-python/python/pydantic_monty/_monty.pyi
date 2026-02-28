@@ -37,7 +37,6 @@ class Monty:
         *,
         script_name: str = 'main.py',
         inputs: list[str] | None = None,
-        external_functions: list[str] | None = None,
         type_check: bool = False,
         type_check_stubs: str | None = None,
         dataclass_registry: list[type] | None = None,
@@ -49,7 +48,6 @@ class Monty:
             code: Python code to execute
             script_name: Name used in tracebacks and error messages
             inputs: List of input variable names available in the code
-            external_functions: List of external function names the code can call
             type_check: Whether to perform type checking on the code (default: True)
             type_check_stubs: Optional code to prepend before type checking,
                 e.g. with input variable declarations or external function signatures
@@ -95,7 +93,7 @@ class Monty:
         Arguments:
             inputs: Dict of input variable values (must match names from __init__)
             limits: Optional resource limits configuration
-            external_functions: Dict of external function callbacks (must match names from __init__)
+            external_functions: Dict of external function callbacks
             print_callback: Optional callback for print output
             os: Optional callback for OS calls.
                 Called with (function_name, args) where function_name is like 'Path.exists'
@@ -204,7 +202,6 @@ class MontyRepl:
         *,
         script_name: str = 'main.py',
         inputs: list[str] | None = None,
-        external_functions: list[str] | None = None,
         start_inputs: dict[str, Any] | None = None,
         limits: ResourceLimits | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
