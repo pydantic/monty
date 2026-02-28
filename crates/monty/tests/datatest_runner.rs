@@ -1466,6 +1466,7 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                 call_id,
                 method_call,
                 state,
+                ..
             } => {
                 // Method calls on dataclasses are dispatched to the host.
                 // Dispatch known methods; return AttributeError for unknown ones.

@@ -21,8 +21,10 @@ use crate::{
     os::OsFunction,
     parse::{parse, parse_with_interner},
     prepare::{prepare, prepare_with_existing_names},
+    progress_runtime_ids::{RuntimeIdCardinality, RuntimeIdSlices, checked_runtime_id_payload},
     resource::ResourceTracker,
     run::{ExternalResult, MontyFuture},
+    runtime_id::RuntimeValueId,
     value::Value,
 };
 
@@ -491,8 +493,8 @@ impl<T: ResourceTracker> Drop for MontyRepl<T> {
 ///
 /// This mirrors `RunProgress` but returns the updated `MontyRepl` on completion
 /// so callers can continue feeding additional snippets without replaying prior code.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
+#[derive(Debug, serde::Serialize)]
+#[serde(bound(serialize = "T: serde::Serialize"))]
 pub enum ReplProgress<T: ResourceTracker> {
     /// Execution paused at an external function call or dataclass method call.
     FunctionCall {
@@ -500,8 +502,14 @@ pub enum ReplProgress<T: ResourceTracker> {
         function_name: String,
         /// The positional arguments passed to the function.
         args: Vec<MontyObject>,
+        /// Stable runtime IDs for `args`, preserving positional order.
+        #[serde(default)]
+        arg_runtime_ids: Vec<RuntimeValueId>,
         /// The keyword arguments passed to the function (key, value pairs).
         kwargs: Vec<(MontyObject, MontyObject)>,
+        /// Stable runtime IDs for keyword `(key, value)` pairs, preserving order.
+        #[serde(default)]
+        kwarg_runtime_ids: Vec<(RuntimeValueId, RuntimeValueId)>,
         /// Unique identifier for this call (used for async correlation).
         call_id: u32,
         /// Whether this is a dataclass method call (first arg is `self`).
@@ -515,8 +523,14 @@ pub enum ReplProgress<T: ResourceTracker> {
         function: OsFunction,
         /// The positional arguments for the OS function.
         args: Vec<MontyObject>,
+        /// Stable runtime IDs for `args`, preserving positional order.
+        #[serde(default)]
+        arg_runtime_ids: Vec<RuntimeValueId>,
         /// The keyword arguments passed to the function (key, value pairs).
         kwargs: Vec<(MontyObject, MontyObject)>,
+        /// Stable runtime IDs for keyword `(key, value)` pairs, preserving order.
+        #[serde(default)]
+        kwarg_runtime_ids: Vec<(RuntimeValueId, RuntimeValueId)>,
         /// Unique identifier for this call (used for async correlation).
         call_id: u32,
         /// Repl execution state that can be resumed.
@@ -531,6 +545,115 @@ pub enum ReplProgress<T: ResourceTracker> {
         /// Final result produced by the snippet.
         value: MontyObject,
     },
+}
+
+#[derive(serde::Deserialize)]
+#[serde(bound(deserialize = "T: serde::de::DeserializeOwned"))]
+enum ReplProgressUnchecked<T: ResourceTracker> {
+    FunctionCall {
+        function_name: String,
+        args: Vec<MontyObject>,
+        #[serde(default)]
+        arg_runtime_ids: Vec<RuntimeValueId>,
+        kwargs: Vec<(MontyObject, MontyObject)>,
+        #[serde(default)]
+        kwarg_runtime_ids: Vec<(RuntimeValueId, RuntimeValueId)>,
+        call_id: u32,
+        method_call: bool,
+        state: ReplSnapshot<T>,
+    },
+    OsCall {
+        function: OsFunction,
+        args: Vec<MontyObject>,
+        #[serde(default)]
+        arg_runtime_ids: Vec<RuntimeValueId>,
+        kwargs: Vec<(MontyObject, MontyObject)>,
+        #[serde(default)]
+        kwarg_runtime_ids: Vec<(RuntimeValueId, RuntimeValueId)>,
+        call_id: u32,
+        state: ReplSnapshot<T>,
+    },
+    ResolveFutures(ReplFutureSnapshot<T>),
+    Complete {
+        repl: MontyRepl<T>,
+        value: MontyObject,
+    },
+}
+
+impl<T: ResourceTracker> ReplProgressUnchecked<T> {
+    fn into_checked(self) -> Result<ReplProgress<T>, String> {
+        match self {
+            Self::FunctionCall {
+                function_name,
+                args,
+                arg_runtime_ids,
+                kwargs,
+                kwarg_runtime_ids,
+                call_id,
+                method_call,
+                state,
+            } => {
+                let cardinality =
+                    RuntimeIdCardinality::new(args.len(), arg_runtime_ids.len(), kwargs.len(), kwarg_runtime_ids.len());
+                crate::progress_runtime_ids::validate_runtime_id_cardinality(
+                    "ReplProgress::FunctionCall",
+                    &cardinality,
+                )?;
+                let checked_payload = checked_runtime_id_payload(args, arg_runtime_ids, kwargs, kwarg_runtime_ids);
+
+                Ok(ReplProgress::FunctionCall {
+                    function_name,
+                    args: checked_payload.args,
+                    arg_runtime_ids: checked_payload.arg_runtime_ids,
+                    kwargs: checked_payload.kwargs,
+                    kwarg_runtime_ids: checked_payload.kwarg_runtime_ids,
+                    call_id,
+                    method_call,
+                    state,
+                })
+            }
+            Self::OsCall {
+                function,
+                args,
+                arg_runtime_ids,
+                kwargs,
+                kwarg_runtime_ids,
+                call_id,
+                state,
+            } => {
+                let cardinality =
+                    RuntimeIdCardinality::new(args.len(), arg_runtime_ids.len(), kwargs.len(), kwarg_runtime_ids.len());
+                crate::progress_runtime_ids::validate_runtime_id_cardinality("ReplProgress::OsCall", &cardinality)?;
+                let checked_payload = checked_runtime_id_payload(args, arg_runtime_ids, kwargs, kwarg_runtime_ids);
+
+                Ok(ReplProgress::OsCall {
+                    function,
+                    args: checked_payload.args,
+                    arg_runtime_ids: checked_payload.arg_runtime_ids,
+                    kwargs: checked_payload.kwargs,
+                    kwarg_runtime_ids: checked_payload.kwarg_runtime_ids,
+                    call_id,
+                    state,
+                })
+            }
+            Self::ResolveFutures(state) => Ok(ReplProgress::ResolveFutures(state)),
+            Self::Complete { repl, value } => Ok(ReplProgress::Complete { repl, value }),
+        }
+    }
+}
+
+impl<'de, T> serde::Deserialize<'de> for ReplProgress<T>
+where
+    T: ResourceTracker + serde::de::DeserializeOwned,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        <ReplProgressUnchecked<T> as serde::Deserialize>::deserialize(deserializer)?
+            .into_checked()
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 /// Error returned when a REPL snippet raises a Python exception during `start()` or `resume()`.
@@ -550,7 +673,17 @@ pub struct ReplStartError<T: ResourceTracker> {
 impl<T: ResourceTracker> ReplProgress<T> {
     /// Consumes the progress and returns external function call info and state.
     ///
-    /// Returns `(function_name, positional_args, keyword_args, call_id, method_call, state)`.
+    /// Returns:
+    /// (
+    ///   function_name,
+    ///   positional_args,
+    ///   keyword_args,
+    ///   positional_arg_runtime_ids,
+    ///   keyword_arg_runtime_ids,
+    ///   call_id,
+    ///   method_call,
+    ///   state,
+    /// ).
     #[must_use]
     #[expect(clippy::type_complexity)]
     pub fn into_function_call(
@@ -559,6 +692,8 @@ impl<T: ResourceTracker> ReplProgress<T> {
         String,
         Vec<MontyObject>,
         Vec<(MontyObject, MontyObject)>,
+        Vec<RuntimeValueId>,
+        Vec<(RuntimeValueId, RuntimeValueId)>,
         u32,
         bool,
         ReplSnapshot<T>,
@@ -567,11 +702,22 @@ impl<T: ResourceTracker> ReplProgress<T> {
             Self::FunctionCall {
                 function_name,
                 args,
+                arg_runtime_ids,
                 kwargs,
+                kwarg_runtime_ids,
                 call_id,
                 method_call,
                 state,
-            } => Some((function_name, args, kwargs, call_id, method_call, state)),
+            } => Some((
+                function_name,
+                args,
+                kwargs,
+                arg_runtime_ids,
+                kwarg_runtime_ids,
+                call_id,
+                method_call,
+                state,
+            )),
             _ => None,
         }
     }
@@ -592,6 +738,15 @@ impl<T: ResourceTracker> ReplProgress<T> {
             Self::Complete { repl, value } => Some((repl, value)),
             _ => None,
         }
+    }
+
+    /// Returns runtime IDs for function-call or OS-call arguments.
+    ///
+    /// The first slice maps to positional args, and the second maps to keyword
+    /// `(key, value)` pairs in the same order as the exposed host payload.
+    #[must_use]
+    pub fn runtime_ids(&self) -> Option<RuntimeIdSlices<'_>> {
+        crate::progress_runtime_ids::progress_runtime_ids!(self)
     }
 }
 
@@ -809,19 +964,84 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
 /// This mirrors `handle_vm_result` but preserves REPL heap/namespaces on
 /// completion by returning `ReplProgress::Complete { repl, value }`.
 /// On runtime errors, the REPL is preserved inside a `ReplStartError`.
+struct HostArgs {
+    args: Vec<MontyObject>,
+    arg_runtime_ids: Vec<RuntimeValueId>,
+    kwargs: Vec<(MontyObject, MontyObject)>,
+    kwarg_runtime_ids: Vec<(RuntimeValueId, RuntimeValueId)>,
+}
+
+impl HostArgs {
+    fn from_vm_args<T: ResourceTracker>(args: crate::args::ArgValues, heap: &mut Heap<T>, interns: &Interns) -> Self {
+        let host_args = args.into_py_objects_with_runtime_ids(heap, interns);
+        Self {
+            args: host_args.args,
+            arg_runtime_ids: host_args.arg_runtime_ids,
+            kwargs: host_args.kwargs,
+            kwarg_runtime_ids: host_args.kwarg_runtime_ids,
+        }
+    }
+
+    fn into_function_call_progress<T: ResourceTracker>(
+        self,
+        function_name: String,
+        call_id: u32,
+        method_call: bool,
+        state: ReplSnapshot<T>,
+    ) -> ReplProgress<T> {
+        ReplProgress::FunctionCall {
+            function_name,
+            args: self.args,
+            arg_runtime_ids: self.arg_runtime_ids,
+            kwargs: self.kwargs,
+            kwarg_runtime_ids: self.kwarg_runtime_ids,
+            call_id,
+            method_call,
+            state,
+        }
+    }
+
+    fn into_os_call_progress<T: ResourceTracker>(
+        self,
+        function: OsFunction,
+        call_id: u32,
+        state: ReplSnapshot<T>,
+    ) -> ReplProgress<T> {
+        ReplProgress::OsCall {
+            function,
+            args: self.args,
+            arg_runtime_ids: self.arg_runtime_ids,
+            kwargs: self.kwargs,
+            kwarg_runtime_ids: self.kwarg_runtime_ids,
+            call_id,
+            state,
+        }
+    }
+}
+
 fn handle_repl_vm_result<T: ResourceTracker>(
     result: RunResult<FrameExit>,
     vm_state: Option<VMSnapshot>,
     executor: ReplExecutor,
     mut repl: MontyRepl<T>,
 ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    fn missing_snapshot_error(context: &str) -> MontyException {
+        MontyException::runtime_error(format!("internal error: missing VM snapshot for {context}"))
+    }
+
     macro_rules! new_repl_snapshot {
-        ($call_id: expr) => {
-            ReplSnapshot {
-                repl,
-                executor,
-                vm_state: vm_state.expect("snapshot should exist for ExternalCall"),
-                pending_call_id: $call_id.raw(),
+        ($pending_call_id:expr, $context:expr) => {
+            match vm_state {
+                Some(vm_state) => Ok(ReplSnapshot {
+                    repl,
+                    executor,
+                    vm_state,
+                    pending_call_id: $pending_call_id,
+                }),
+                None => Err(Box::new(ReplStartError {
+                    repl,
+                    error: missing_snapshot_error($context),
+                })),
             }
         };
     }
@@ -840,31 +1060,18 @@ fn handle_repl_vm_result<T: ResourceTracker>(
             call_id,
         }) => {
             let function_name = executor.interns.get_external_function_name(ext_function_id);
-            let (args_py, kwargs_py) = args.into_py_objects(&mut repl.heap, &executor.interns);
-
-            Ok(ReplProgress::FunctionCall {
-                function_name,
-                args: args_py,
-                kwargs: kwargs_py,
-                call_id: call_id.raw(),
-                method_call: false,
-                state: new_repl_snapshot!(call_id),
-            })
+            let host_args = HostArgs::from_vm_args(args, &mut repl.heap, &executor.interns);
+            let state = new_repl_snapshot!(call_id.raw(), "external call")?;
+            Ok(host_args.into_function_call_progress(function_name, call_id.raw(), false, state))
         }
         Ok(FrameExit::OsCall {
             function,
             args,
             call_id,
         }) => {
-            let (args_py, kwargs_py) = args.into_py_objects(&mut repl.heap, &executor.interns);
-
-            Ok(ReplProgress::OsCall {
-                function,
-                args: args_py,
-                kwargs: kwargs_py,
-                call_id: call_id.raw(),
-                state: new_repl_snapshot!(call_id),
-            })
+            let host_args = HostArgs::from_vm_args(args, &mut repl.heap, &executor.interns);
+            let state = new_repl_snapshot!(call_id.raw(), "OS call")?;
+            Ok(host_args.into_os_call_progress(function, call_id.raw(), state))
         }
         Ok(FrameExit::MethodCall {
             method_name,
@@ -872,23 +1079,22 @@ fn handle_repl_vm_result<T: ResourceTracker>(
             call_id,
         }) => {
             let function_name = method_name.into_string(&executor.interns);
-            let (args_py, kwargs_py) = args.into_py_objects(&mut repl.heap, &executor.interns);
-
-            Ok(ReplProgress::FunctionCall {
-                function_name,
-                args: args_py,
-                kwargs: kwargs_py,
-                call_id: call_id.raw(),
-                method_call: true,
-                state: new_repl_snapshot!(call_id),
-            })
+            let host_args = HostArgs::from_vm_args(args, &mut repl.heap, &executor.interns);
+            let state = new_repl_snapshot!(call_id.raw(), "method call")?;
+            Ok(host_args.into_function_call_progress(function_name, call_id.raw(), true, state))
         }
         Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
             let pending_call_ids: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
+            let Some(vm_state) = vm_state else {
+                return Err(Box::new(ReplStartError {
+                    repl,
+                    error: missing_snapshot_error("ResolveFutures"),
+                }));
+            };
             Ok(ReplProgress::ResolveFutures(ReplFutureSnapshot {
                 repl,
                 executor,
-                vm_state: vm_state.expect("snapshot should exist for ResolveFutures"),
+                vm_state,
                 pending_call_ids,
             }))
         }

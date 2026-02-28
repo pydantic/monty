@@ -278,6 +278,14 @@ class MontySnapshot:
     def call_id(self) -> int:
         """The unique identifier for this external function call."""
 
+    @property
+    def arg_runtime_ids(self) -> list[int]:
+        """Stable runtime IDs for positional arguments in `args` order."""
+
+    @property
+    def kwarg_runtime_ids(self) -> list[tuple[int, int]]:
+        """Stable runtime IDs for keyword argument `(key, value)` pairs in `kwargs` order."""
+
     @overload
     def resume(self, *, return_value: Any) -> MontySnapshot | MontyFutureSnapshot | MontyComplete:
         """Resume execution with a return value from the external function.

@@ -47,6 +47,9 @@ pyo3 = { version = "0.28", features = ["auto-initialize"] }
 codspeed-criterion-compat = "4.2.1"
 criterion = "0.5"
 datatest-stable = "0.2"
+rstest = "0.26.1"
+rstest-bdd = "0.5.0"
+rstest-bdd-macros = { version = "0.5.0", features = ["compile-time-validation"] }
 serde_json = "1.0"
 pprof = { version = "0.15", features = ["flamegraph", "criterion"] }
 similar = "2.7.0"

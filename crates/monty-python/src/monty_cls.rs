@@ -463,6 +463,73 @@ enum EitherProgress {
 }
 
 impl EitherProgress {
+    fn handle_progress<T>(
+        py: Python<'_>,
+        progress: RunProgress<T>,
+        script_name: String,
+        print_callback: Option<Py<PyAny>>,
+        dc_registry: DcRegistry,
+        wrap_snapshot: impl FnOnce(Snapshot<T>) -> EitherSnapshot,
+        wrap_future_snapshot: impl FnOnce(FutureSnapshot<T>) -> EitherFutureSnapshot,
+    ) -> PyResult<Bound<'_, PyAny>>
+    where
+        T: ::monty::ResourceTracker,
+    {
+        match progress {
+            RunProgress::Complete(result) => PyMontyComplete::create(py, &result, &dc_registry),
+            RunProgress::FunctionCall {
+                function_name,
+                args,
+                arg_runtime_ids,
+                kwargs,
+                kwarg_runtime_ids,
+                call_id,
+                state,
+                ..
+            } => Self::function_snapshot(
+                py,
+                function_name,
+                &args,
+                &arg_runtime_ids,
+                &kwargs,
+                &kwarg_runtime_ids,
+                call_id,
+                wrap_snapshot(state),
+                script_name,
+                print_callback,
+                dc_registry,
+            ),
+            RunProgress::ResolveFutures(state) => Self::future_snapshot(
+                py,
+                wrap_future_snapshot(state),
+                script_name,
+                print_callback,
+                dc_registry,
+            ),
+            RunProgress::OsCall {
+                function,
+                args,
+                arg_runtime_ids,
+                kwargs,
+                kwarg_runtime_ids,
+                call_id,
+                state,
+            } => Self::os_function_snapshot(
+                py,
+                function,
+                &args,
+                &arg_runtime_ids,
+                &kwargs,
+                &kwarg_runtime_ids,
+                call_id,
+                wrap_snapshot(state),
+                script_name,
+                print_callback,
+                dc_registry,
+            ),
+        }
+    }
+
     fn progress_or_complete(
         self,
         py: Python<'_>,
@@ -471,96 +538,24 @@ impl EitherProgress {
         dc_registry: DcRegistry,
     ) -> PyResult<Bound<'_, PyAny>> {
         match self {
-            Self::NoLimit(p) => match p {
-                RunProgress::Complete(result) => PyMontyComplete::create(py, &result, &dc_registry),
-                RunProgress::FunctionCall {
-                    function_name,
-                    args,
-                    kwargs,
-                    state,
-                    call_id,
-                    ..
-                } => Self::function_snapshot(
-                    py,
-                    function_name,
-                    &args,
-                    &kwargs,
-                    call_id,
-                    EitherSnapshot::NoLimit(state),
-                    script_name,
-                    print_callback,
-                    dc_registry,
-                ),
-                RunProgress::ResolveFutures(state) => Self::future_snapshot(
-                    py,
-                    EitherFutureSnapshot::NoLimit(state),
-                    script_name,
-                    print_callback,
-                    dc_registry,
-                ),
-                RunProgress::OsCall {
-                    function,
-                    args,
-                    kwargs,
-                    call_id,
-                    state,
-                } => Self::os_function_snapshot(
-                    py,
-                    function,
-                    &args,
-                    &kwargs,
-                    call_id,
-                    EitherSnapshot::NoLimit(state),
-                    script_name,
-                    print_callback,
-                    dc_registry,
-                ),
-            },
-            Self::Limited(p) => match p {
-                RunProgress::Complete(result) => PyMontyComplete::create(py, &result, &dc_registry),
-                RunProgress::FunctionCall {
-                    function_name,
-                    args,
-                    kwargs,
-                    state,
-                    call_id,
-                    ..
-                } => Self::function_snapshot(
-                    py,
-                    function_name,
-                    &args,
-                    &kwargs,
-                    call_id,
-                    EitherSnapshot::Limited(state),
-                    script_name,
-                    print_callback,
-                    dc_registry,
-                ),
-                RunProgress::ResolveFutures(state) => Self::future_snapshot(
-                    py,
-                    EitherFutureSnapshot::Limited(state),
-                    script_name,
-                    print_callback,
-                    dc_registry,
-                ),
-                RunProgress::OsCall {
-                    function,
-                    args,
-                    kwargs,
-                    call_id,
-                    state,
-                } => Self::os_function_snapshot(
-                    py,
-                    function,
-                    &args,
-                    &kwargs,
-                    call_id,
-                    EitherSnapshot::Limited(state),
-                    script_name,
-                    print_callback,
-                    dc_registry,
-                ),
-            },
+            Self::NoLimit(progress) => Self::handle_progress(
+                py,
+                progress,
+                script_name,
+                print_callback,
+                dc_registry,
+                EitherSnapshot::NoLimit,
+                EitherFutureSnapshot::NoLimit,
+            ),
+            Self::Limited(progress) => Self::handle_progress(
+                py,
+                progress,
+                script_name,
+                print_callback,
+                dc_registry,
+                EitherSnapshot::Limited,
+                EitherFutureSnapshot::Limited,
+            ),
         }
     }
 
@@ -569,13 +564,23 @@ impl EitherProgress {
         py: Python<'py>,
         function_name: String,
         args: &[MontyObject],
+        arg_runtime_ids: &[::monty::RuntimeValueId],
         kwargs: &[(MontyObject, MontyObject)],
+        kwarg_runtime_ids: &[(::monty::RuntimeValueId, ::monty::RuntimeValueId)],
         call_id: u32,
         snapshot: EitherSnapshot,
         script_name: String,
         print_callback: Option<Py<PyAny>>,
         dc_registry: DcRegistry,
     ) -> PyResult<Bound<'py, PyAny>> {
+        validate_runtime_id_cardinality(
+            "MontySnapshot::FunctionCall",
+            args.len(),
+            kwargs.len(),
+            arg_runtime_ids.len(),
+            kwarg_runtime_ids.len(),
+        )?;
+
         let items: PyResult<Vec<Py<PyAny>>> = args.iter().map(|item| monty_to_py(py, item, &dc_registry)).collect();
 
         let dict = PyDict::new(py);
@@ -592,6 +597,11 @@ impl EitherProgress {
             args: PyTuple::new(py, items?)?.unbind(),
             kwargs: dict.unbind(),
             call_id,
+            arg_runtime_ids: arg_runtime_ids.iter().map(|id| id.raw()).collect(),
+            kwarg_runtime_ids: kwarg_runtime_ids
+                .iter()
+                .map(|(key_id, value_id)| (key_id.raw(), value_id.raw()))
+                .collect(),
             dc_registry,
         };
         slf.into_bound_py_any(py)
@@ -602,13 +612,23 @@ impl EitherProgress {
         py: Python<'py>,
         function: OsFunction,
         args: &[MontyObject],
+        arg_runtime_ids: &[::monty::RuntimeValueId],
         kwargs: &[(MontyObject, MontyObject)],
+        kwarg_runtime_ids: &[(::monty::RuntimeValueId, ::monty::RuntimeValueId)],
         call_id: u32,
         snapshot: EitherSnapshot,
         script_name: String,
         print_callback: Option<Py<PyAny>>,
         dc_registry: DcRegistry,
     ) -> PyResult<Bound<'py, PyAny>> {
+        validate_runtime_id_cardinality(
+            "MontySnapshot::OsCall",
+            args.len(),
+            kwargs.len(),
+            arg_runtime_ids.len(),
+            kwarg_runtime_ids.len(),
+        )?;
+
         let items: PyResult<Vec<Py<PyAny>>> = args.iter().map(|item| monty_to_py(py, item, &dc_registry)).collect();
 
         let dict = PyDict::new(py);
@@ -625,6 +645,11 @@ impl EitherProgress {
             args: PyTuple::new(py, items?)?.unbind(),
             kwargs: dict.unbind(),
             call_id,
+            arg_runtime_ids: arg_runtime_ids.iter().map(|id| id.raw()).collect(),
+            kwarg_runtime_ids: kwarg_runtime_ids
+                .iter()
+                .map(|(key_id, value_id)| (key_id.raw(), value_id.raw()))
+                .collect(),
             dc_registry,
         };
         slf.into_bound_py_any(py)
@@ -938,6 +963,12 @@ pub struct PyMontySnapshot {
     /// The unique identifier for this call
     #[pyo3(get)]
     pub call_id: u32,
+    /// Stable runtime IDs for positional arguments, preserving argument order.
+    #[pyo3(get)]
+    pub arg_runtime_ids: Vec<usize>,
+    /// Stable runtime IDs for keyword `(key, value)` pairs, preserving order.
+    #[pyo3(get)]
+    pub kwarg_runtime_ids: Vec<(usize, usize)>,
 }
 
 /// Extract an external result (object or exception) from a dictionary.
@@ -971,6 +1002,28 @@ fn extract_external_result(
         // wrong key in kwargs
         Err(PyTypeError::new_err(error_msg))
     }
+}
+
+fn validate_runtime_id_cardinality(
+    context: &str,
+    args_len: usize,
+    kwargs_len: usize,
+    arg_runtime_ids_len: usize,
+    kwarg_runtime_ids_len: usize,
+) -> PyResult<()> {
+    if arg_runtime_ids_len != args_len {
+        return Err(PyValueError::new_err(format!(
+            "{context} payload is malformed: arg_runtime_ids length ({arg_runtime_ids_len}) does not match args length ({args_len})"
+        )));
+    }
+
+    if kwarg_runtime_ids_len != kwargs_len {
+        return Err(PyValueError::new_err(format!(
+            "{context} payload is malformed: kwarg_runtime_ids length ({kwarg_runtime_ids_len}) does not match kwargs length ({kwargs_len})"
+        )));
+    }
+
+    Ok(())
 }
 
 #[pymethods]
@@ -1055,6 +1108,8 @@ impl PyMontySnapshot {
             args: Vec<MontyObject>,
             kwargs: Vec<(MontyObject, MontyObject)>,
             call_id: u32,
+            arg_runtime_ids: &'a [usize],
+            kwarg_runtime_ids: &'a [(usize, usize)],
         }
 
         let snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1088,6 +1143,8 @@ impl PyMontySnapshot {
             args,
             kwargs,
             call_id: self.call_id,
+            arg_runtime_ids: &self.arg_runtime_ids,
+            kwarg_runtime_ids: &self.kwarg_runtime_ids,
         };
         let bytes = postcard::to_allocvec(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(PyBytes::new(py, &bytes))
@@ -1125,12 +1182,24 @@ impl PyMontySnapshot {
             args: Vec<MontyObject>,
             kwargs: Vec<(MontyObject, MontyObject)>,
             call_id: u32,
+            #[serde(default)]
+            arg_runtime_ids: Vec<usize>,
+            #[serde(default)]
+            kwarg_runtime_ids: Vec<(usize, usize)>,
         }
 
         let bytes = data.as_bytes();
 
         let serialized: SerializedSnapshotOwned =
             postcard::from_bytes(bytes).map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        validate_runtime_id_cardinality(
+            "MontySnapshot::load",
+            serialized.args.len(),
+            serialized.kwargs.len(),
+            serialized.arg_runtime_ids.len(),
+            serialized.kwarg_runtime_ids.len(),
+        )?;
 
         let dc_registry = DcRegistry::from_list(py, dataclass_registry)?;
 
@@ -1157,6 +1226,8 @@ impl PyMontySnapshot {
             args: PyTuple::new(py, args)?.unbind(),
             kwargs: kwargs_dict.unbind(),
             call_id: serialized.call_id,
+            arg_runtime_ids: serialized.arg_runtime_ids,
+            kwarg_runtime_ids: serialized.kwarg_runtime_ids,
         })
     }
 

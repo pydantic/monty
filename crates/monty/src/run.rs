@@ -14,7 +14,9 @@ use crate::{
     os::OsFunction,
     parse::parse,
     prepare::prepare,
+    progress_runtime_ids::{RuntimeIdCardinality, RuntimeIdSlices, checked_runtime_id_payload},
     resource::{NoLimitTracker, ResourceTracker},
+    runtime_id::RuntimeValueId,
     value::Value,
 };
 
@@ -179,8 +181,8 @@ impl MontyRun {
 /// * `T` - Resource tracker implementation (e.g., `NoLimitTracker` or `LimitedTracker`)
 ///
 /// Serialization requires `T: Serialize + Deserialize`.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
+#[derive(Debug, serde::Serialize)]
+#[serde(bound(serialize = "T: serde::Serialize"))]
 pub enum RunProgress<T: ResourceTracker> {
     /// Execution paused at an external function call or dataclass method call.
     ///
@@ -198,8 +200,14 @@ pub enum RunProgress<T: ResourceTracker> {
         function_name: String,
         /// The positional arguments passed to the function.
         args: Vec<MontyObject>,
+        /// Stable runtime IDs for `args`, preserving positional order.
+        #[serde(default)]
+        arg_runtime_ids: Vec<RuntimeValueId>,
         /// The keyword arguments passed to the function (key, value pairs).
         kwargs: Vec<(MontyObject, MontyObject)>,
+        /// Stable runtime IDs for keyword `(key, value)` pairs, preserving order.
+        #[serde(default)]
+        kwarg_runtime_ids: Vec<(RuntimeValueId, RuntimeValueId)>,
         /// Unique identifier for this call (used for async correlation).
         call_id: u32,
         /// Whether this is a dataclass method call (first arg is `self`).
@@ -218,8 +226,14 @@ pub enum RunProgress<T: ResourceTracker> {
         function: OsFunction,
         /// The positional arguments for the OS function.
         args: Vec<MontyObject>,
+        /// Stable runtime IDs for `args`, preserving positional order.
+        #[serde(default)]
+        arg_runtime_ids: Vec<RuntimeValueId>,
         /// The keyword arguments passed to the function (key, value pairs).
         kwargs: Vec<(MontyObject, MontyObject)>,
+        /// Stable runtime IDs for keyword `(key, value)` pairs, preserving order.
+        #[serde(default)]
+        kwarg_runtime_ids: Vec<(RuntimeValueId, RuntimeValueId)>,
         /// Unique identifier for this call (used for async correlation).
         call_id: u32,
         /// The execution state that can be resumed with a return value.
@@ -236,31 +250,150 @@ pub enum RunProgress<T: ResourceTracker> {
     Complete(MontyObject),
 }
 
-impl<T: ResourceTracker> RunProgress<T> {
-    /// Consumes the `RunProgress` and returns external function call info and state.
-    ///
-    /// Returns (function_name, positional_args, keyword_args, call_id, method_call, state).
-    #[must_use]
-    #[expect(clippy::type_complexity)]
-    pub fn into_function_call(
-        self,
-    ) -> Option<(
-        String,
-        Vec<MontyObject>,
-        Vec<(MontyObject, MontyObject)>,
-        u32,
-        bool,
-        Snapshot<T>,
-    )> {
+#[derive(serde::Deserialize)]
+#[serde(bound(deserialize = "T: serde::de::DeserializeOwned"))]
+enum RunProgressUnchecked<T: ResourceTracker> {
+    FunctionCall {
+        function_name: String,
+        args: Vec<MontyObject>,
+        #[serde(default)]
+        arg_runtime_ids: Vec<RuntimeValueId>,
+        kwargs: Vec<(MontyObject, MontyObject)>,
+        #[serde(default)]
+        kwarg_runtime_ids: Vec<(RuntimeValueId, RuntimeValueId)>,
+        call_id: u32,
+        method_call: bool,
+        state: Snapshot<T>,
+    },
+    OsCall {
+        function: OsFunction,
+        args: Vec<MontyObject>,
+        #[serde(default)]
+        arg_runtime_ids: Vec<RuntimeValueId>,
+        kwargs: Vec<(MontyObject, MontyObject)>,
+        #[serde(default)]
+        kwarg_runtime_ids: Vec<(RuntimeValueId, RuntimeValueId)>,
+        call_id: u32,
+        state: Snapshot<T>,
+    },
+    ResolveFutures(FutureSnapshot<T>),
+    Complete(MontyObject),
+}
+
+impl<T: ResourceTracker> RunProgressUnchecked<T> {
+    fn into_checked(self) -> Result<RunProgress<T>, String> {
         match self {
             Self::FunctionCall {
                 function_name,
                 args,
+                arg_runtime_ids,
                 kwargs,
+                kwarg_runtime_ids,
                 call_id,
                 method_call,
                 state,
-            } => Some((function_name, args, kwargs, call_id, method_call, state)),
+            } => {
+                let cardinality =
+                    RuntimeIdCardinality::new(args.len(), arg_runtime_ids.len(), kwargs.len(), kwarg_runtime_ids.len());
+                crate::progress_runtime_ids::validate_runtime_id_cardinality(
+                    "RunProgress::FunctionCall",
+                    &cardinality,
+                )?;
+                let checked_payload = checked_runtime_id_payload(args, arg_runtime_ids, kwargs, kwarg_runtime_ids);
+
+                Ok(RunProgress::FunctionCall {
+                    function_name,
+                    args: checked_payload.args,
+                    arg_runtime_ids: checked_payload.arg_runtime_ids,
+                    kwargs: checked_payload.kwargs,
+                    kwarg_runtime_ids: checked_payload.kwarg_runtime_ids,
+                    call_id,
+                    method_call,
+                    state,
+                })
+            }
+            Self::OsCall {
+                function,
+                args,
+                arg_runtime_ids,
+                kwargs,
+                kwarg_runtime_ids,
+                call_id,
+                state,
+            } => {
+                let cardinality =
+                    RuntimeIdCardinality::new(args.len(), arg_runtime_ids.len(), kwargs.len(), kwarg_runtime_ids.len());
+                crate::progress_runtime_ids::validate_runtime_id_cardinality("RunProgress::OsCall", &cardinality)?;
+                let checked_payload = checked_runtime_id_payload(args, arg_runtime_ids, kwargs, kwarg_runtime_ids);
+
+                Ok(RunProgress::OsCall {
+                    function,
+                    args: checked_payload.args,
+                    arg_runtime_ids: checked_payload.arg_runtime_ids,
+                    kwargs: checked_payload.kwargs,
+                    kwarg_runtime_ids: checked_payload.kwarg_runtime_ids,
+                    call_id,
+                    state,
+                })
+            }
+            Self::ResolveFutures(state) => Ok(RunProgress::ResolveFutures(state)),
+            Self::Complete(value) => Ok(RunProgress::Complete(value)),
+        }
+    }
+}
+
+impl<'de, T> serde::Deserialize<'de> for RunProgress<T>
+where
+    T: ResourceTracker + serde::de::DeserializeOwned,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        <RunProgressUnchecked<T> as serde::Deserialize>::deserialize(deserializer)?
+            .into_checked()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug)]
+pub struct FunctionCallPayload<T: ResourceTracker> {
+    pub function_name: String,
+    pub args: Vec<MontyObject>,
+    pub kwargs: Vec<(MontyObject, MontyObject)>,
+    pub arg_runtime_ids: Vec<RuntimeValueId>,
+    pub kwarg_runtime_ids: Vec<(RuntimeValueId, RuntimeValueId)>,
+    pub call_id: u32,
+    pub method_call: bool,
+    pub state: Snapshot<T>,
+}
+
+impl<T: ResourceTracker> RunProgress<T> {
+    /// Consumes the `RunProgress` and returns external function call info and state.
+    ///
+    /// Returns [`FunctionCallPayload`] if this progress is a function call.
+    #[must_use]
+    pub fn into_function_call(self) -> Option<FunctionCallPayload<T>> {
+        match self {
+            Self::FunctionCall {
+                function_name,
+                args,
+                arg_runtime_ids,
+                kwargs,
+                kwarg_runtime_ids,
+                call_id,
+                method_call,
+                state,
+            } => Some(FunctionCallPayload {
+                function_name,
+                args,
+                kwargs,
+                arg_runtime_ids,
+                kwarg_runtime_ids,
+                call_id,
+                method_call,
+                state,
+            }),
             _ => None,
         }
     }
@@ -283,6 +416,15 @@ impl<T: ResourceTracker> RunProgress<T> {
             Self::ResolveFutures(state) => Some(state),
             _ => None,
         }
+    }
+
+    /// Returns runtime IDs for function-call or OS-call arguments.
+    ///
+    /// The first slice maps to positional args, and the second maps to keyword
+    /// `(key, value)` pairs in the same order as the exposed host payload.
+    #[must_use]
+    pub fn runtime_ids(&self) -> Option<RuntimeIdSlices<'_>> {
+        crate::progress_runtime_ids::progress_runtime_ids!(self)
     }
 }
 
@@ -621,10 +763,99 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
     }
 }
 
+struct FunctionCallProgressInput<T: ResourceTracker> {
+    function_name: String,
+    args: crate::args::ArgValues,
+    call_id: CallId,
+    method_call: bool,
+    executor: Executor,
+    vm_state: Option<VMSnapshot>,
+    heap: Heap<T>,
+    namespaces: Namespaces,
+}
+
+fn missing_snapshot_error(context: &str) -> MontyException {
+    MontyException::runtime_error(format!("internal error: missing VM snapshot for {context}"))
+}
+
 /// Handles a FrameExit result and converts it to RunProgress for FutureSnapshot.
 ///
 /// This is a standalone function to avoid partial move issues when destructuring FutureSnapshot.
-#[cfg_attr(not(feature = "ref-count-panic"), expect(unused_mut))]
+fn build_function_call_progress<T: ResourceTracker>(
+    input: FunctionCallProgressInput<T>,
+) -> Result<RunProgress<T>, MontyException> {
+    let FunctionCallProgressInput {
+        function_name,
+        args,
+        call_id,
+        method_call,
+        executor,
+        vm_state,
+        mut heap,
+        namespaces,
+    } = input;
+
+    let host_args = args.into_py_objects_with_runtime_ids(&mut heap, &executor.interns);
+    let pending_call_id = call_id.raw();
+    let vm_state = vm_state.ok_or_else(|| missing_snapshot_error("function call"))?;
+    let state = Snapshot {
+        executor,
+        vm_state,
+        heap,
+        namespaces,
+        pending_call_id,
+    };
+
+    Ok(RunProgress::FunctionCall {
+        function_name,
+        args: host_args.args,
+        arg_runtime_ids: host_args.arg_runtime_ids,
+        kwargs: host_args.kwargs,
+        kwarg_runtime_ids: host_args.kwarg_runtime_ids,
+        call_id: pending_call_id,
+        method_call,
+        state,
+    })
+}
+
+fn build_os_call_progress<T: ResourceTracker>(
+    function: OsFunction,
+    args: crate::args::ArgValues,
+    call_id: CallId,
+    executor: Executor,
+    vm_state: Option<VMSnapshot>,
+    mut heap: Heap<T>,
+    namespaces: Namespaces,
+) -> Result<RunProgress<T>, MontyException> {
+    let host_args = args.into_py_objects_with_runtime_ids(&mut heap, &executor.interns);
+    let pending_call_id = call_id.raw();
+    let vm_state = vm_state.ok_or_else(|| missing_snapshot_error("OS call"))?;
+    let state = Snapshot {
+        executor,
+        vm_state,
+        heap,
+        namespaces,
+        pending_call_id,
+    };
+
+    Ok(RunProgress::OsCall {
+        function,
+        args: host_args.args,
+        arg_runtime_ids: host_args.arg_runtime_ids,
+        kwargs: host_args.kwargs,
+        kwarg_runtime_ids: host_args.kwarg_runtime_ids,
+        call_id: pending_call_id,
+        state,
+    })
+}
+
+#[cfg_attr(
+    not(feature = "ref-count-panic"),
+    expect(
+        unused_mut,
+        reason = "mut bindings are required when the ref-count-panic feature is enabled"
+    )
+)]
 fn handle_vm_result<T: ResourceTracker>(
     result: RunResult<FrameExit>,
     vm_state: Option<VMSnapshot>,
@@ -632,18 +863,6 @@ fn handle_vm_result<T: ResourceTracker>(
     mut heap: Heap<T>,
     mut namespaces: Namespaces,
 ) -> Result<RunProgress<T>, MontyException> {
-    macro_rules! new_snapshot {
-        ($call_id: expr) => {
-            Snapshot {
-                executor,
-                vm_state: vm_state.expect("snapshot should exist for ExternalCall"),
-                heap,
-                namespaces,
-                pending_call_id: $call_id.raw(),
-            }
-        };
-    }
-
     match result {
         Ok(FrameExit::Return(value)) => {
             #[cfg(feature = "ref-count-panic")]
@@ -658,54 +877,45 @@ fn handle_vm_result<T: ResourceTracker>(
             call_id,
         }) => {
             let function_name = executor.interns.get_external_function_name(ext_function_id);
-            let (args_py, kwargs_py) = args.into_py_objects(&mut heap, &executor.interns);
-
-            Ok(RunProgress::FunctionCall {
+            build_function_call_progress(FunctionCallProgressInput {
                 function_name,
-                args: args_py,
-                kwargs: kwargs_py,
-                call_id: call_id.raw(),
+                args,
+                call_id,
                 method_call: false,
-                state: new_snapshot!(call_id),
+                executor,
+                vm_state,
+                heap,
+                namespaces,
             })
         }
         Ok(FrameExit::OsCall {
             function,
             args,
             call_id,
-        }) => {
-            let (args_py, kwargs_py) = args.into_py_objects(&mut heap, &executor.interns);
-
-            Ok(RunProgress::OsCall {
-                function,
-                args: args_py,
-                kwargs: kwargs_py,
-                call_id: call_id.raw(),
-                state: new_snapshot!(call_id),
-            })
-        }
+        }) => build_os_call_progress(function, args, call_id, executor, vm_state, heap, namespaces),
         Ok(FrameExit::MethodCall {
             method_name,
             args,
             call_id,
         }) => {
             let function_name = method_name.into_string(&executor.interns);
-            let (args_py, kwargs_py) = args.into_py_objects(&mut heap, &executor.interns);
-
-            Ok(RunProgress::FunctionCall {
+            build_function_call_progress(FunctionCallProgressInput {
                 function_name,
-                args: args_py,
-                kwargs: kwargs_py,
-                call_id: call_id.raw(),
+                args,
+                call_id,
                 method_call: true,
-                state: new_snapshot!(call_id),
+                executor,
+                vm_state,
+                heap,
+                namespaces,
             })
         }
         Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
             let pending_call_ids: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
+            let vm_state = vm_state.ok_or_else(|| missing_snapshot_error("ResolveFutures"))?;
             Ok(RunProgress::ResolveFutures(FutureSnapshot {
                 executor,
-                vm_state: vm_state.expect("snapshot should exist for ResolveFutures"),
+                vm_state,
                 heap,
                 namespaces,
                 pending_call_ids,

@@ -127,12 +127,15 @@ fn run_progress_dump_load_roundtrip() {
     let loaded: RunProgress<NoLimitTracker> = RunProgress::load(&bytes).unwrap();
 
     // Should still be at the external function call
-    let (fn_name, args, _, _call_id, _, state) = loaded.into_function_call().expect("should be at function call");
-    assert_eq!(fn_name, "ext_fn");
-    assert_eq!(args, vec![MontyObject::Int(42)]);
+    let function_call = loaded.into_function_call().expect("should be at function call");
+    assert_eq!(function_call.function_name, "ext_fn");
+    assert_eq!(function_call.args, vec![MontyObject::Int(42)]);
 
     // Resume execution with a return value
-    let result = state.run(MontyObject::Int(100), &mut PrintWriter::Stdout).unwrap();
+    let result = function_call
+        .state
+        .run(MontyObject::Int(100), &mut PrintWriter::Stdout)
+        .unwrap();
     assert_eq!(result.into_complete().unwrap(), MontyObject::Int(101)); // 100 + 1
 }
 
@@ -151,22 +154,28 @@ fn run_progress_dump_load_multiple_calls() {
     let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
     let bytes = progress.dump().unwrap();
     let loaded: RunProgress<NoLimitTracker> = RunProgress::load(&bytes).unwrap();
-    let (fn_name, args, _, _call_id, _, state) = loaded.into_function_call().unwrap();
-    assert_eq!(fn_name, "ext_fn");
-    assert_eq!(args, vec![MontyObject::Int(1)]);
+    let function_call = loaded.into_function_call().unwrap();
+    assert_eq!(function_call.function_name, "ext_fn");
+    assert_eq!(function_call.args, vec![MontyObject::Int(1)]);
 
     // Resume first call
-    let progress = state.run(MontyObject::Int(10), &mut PrintWriter::Stdout).unwrap();
+    let progress = function_call
+        .state
+        .run(MontyObject::Int(10), &mut PrintWriter::Stdout)
+        .unwrap();
 
     // Dump/load at second call
     let bytes = progress.dump().unwrap();
     let loaded: RunProgress<NoLimitTracker> = RunProgress::load(&bytes).unwrap();
-    let (fn_name, args, _, _call_id, _, state) = loaded.into_function_call().unwrap();
-    assert_eq!(fn_name, "ext_fn");
-    assert_eq!(args, vec![MontyObject::Int(2)]);
+    let function_call = loaded.into_function_call().unwrap();
+    assert_eq!(function_call.function_name, "ext_fn");
+    assert_eq!(function_call.args, vec![MontyObject::Int(2)]);
 
     // Resume second call to completion
-    let result = state.run(MontyObject::Int(20), &mut PrintWriter::Stdout).unwrap();
+    let result = function_call
+        .state
+        .run(MontyObject::Int(20), &mut PrintWriter::Stdout)
+        .unwrap();
     assert_eq!(result.into_complete().unwrap(), MontyObject::Int(30)); // 10 + 20
 }
 

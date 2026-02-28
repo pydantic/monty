@@ -304,16 +304,16 @@ fn executor_iter_resource_limit_on_resume() {
 
     // First function call should succeed with generous limit
     let limits = ResourceLimits::new().max_allocations(5);
-    let (name, args, _kwargs, _call_id, _, state) = run
+    let function_call = run
         .start(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout)
         .unwrap()
         .into_function_call()
         .expect("function call");
-    assert_eq!(name, "foo");
-    assert_eq!(args, vec![MontyObject::Int(1)]);
+    assert_eq!(function_call.function_name, "foo");
+    assert_eq!(function_call.args, vec![MontyObject::Int(1)]);
 
     // Resume - should fail due to allocation limit during the for loop
-    let result = state.run(MontyObject::None, &mut PrintWriter::Stdout);
+    let result = function_call.state.run(MontyObject::None, &mut PrintWriter::Stdout);
     assert!(result.is_err(), "should exceed allocation limit on resume");
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
@@ -379,31 +379,34 @@ fn executor_iter_resource_limit_multiple_function_calls() {
     // Very tight allocation limit - should still work for simple function calls
     let limits = ResourceLimits::new().max_allocations(100);
 
-    let (name, args, _kwargs, _call_id, _, state) = run
+    let first_call = run
         .start(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout)
         .unwrap()
         .into_function_call()
         .expect("first call");
-    assert_eq!(name, "foo");
-    assert_eq!(args, vec![MontyObject::Int(1)]);
+    assert_eq!(first_call.function_name, "foo");
+    assert_eq!(first_call.args, vec![MontyObject::Int(1)]);
 
-    let (name, args, _kwargs, _call_id, _, state) = state
+    let second_call = first_call
+        .state
         .run(MontyObject::None, &mut PrintWriter::Stdout)
         .unwrap()
         .into_function_call()
         .expect("second call");
-    assert_eq!(name, "bar");
-    assert_eq!(args, vec![MontyObject::Int(2)]);
+    assert_eq!(second_call.function_name, "bar");
+    assert_eq!(second_call.args, vec![MontyObject::Int(2)]);
 
-    let (name, args, _kwargs, _call_id, _, state) = state
+    let third_call = second_call
+        .state
         .run(MontyObject::None, &mut PrintWriter::Stdout)
         .unwrap()
         .into_function_call()
         .expect("third call");
-    assert_eq!(name, "baz");
-    assert_eq!(args, vec![MontyObject::Int(3)]);
+    assert_eq!(third_call.function_name, "baz");
+    assert_eq!(third_call.args, vec![MontyObject::Int(3)]);
 
-    let result = state
+    let result = third_call
+        .state
         .run(MontyObject::None, &mut PrintWriter::Stdout)
         .unwrap()
         .into_complete()
@@ -1287,14 +1290,15 @@ fn assert_repr_timeout(code: &str, label: &str) {
 
     // Phase 1: build the large object with no time limit
     let limits = ResourceLimits::new();
-    let (name, _args, _kwargs, _call_id, _, mut state) = run
+    let function_call = run
         .start(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout)
         .unwrap()
         .into_function_call()
         .expect("interrupt call");
-    assert_eq!(name, "interrupt");
+    assert_eq!(function_call.function_name, "interrupt");
 
     // Phase 2: set a short time limit and resume — repr() should timeout
+    let mut state = function_call.state;
     state.tracker_mut().set_max_duration(Duration::from_millis(10));
 
     let start = Instant::now();
