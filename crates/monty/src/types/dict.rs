@@ -322,9 +322,9 @@ impl Dict {
     ///
     /// - `dict()` with no args returns an empty dict
     /// - `dict(dict)` returns a shallow copy of the dict
+    /// - `dict(iterable)` where iterable yields (key, value) pairs
     ///
-    /// Note: Full Python semantics also support dict(iterable) where iterable
-    /// yields (key, value) pairs, and dict(**kwargs) for keyword arguments.
+    /// Note: Full Python semantics also support dict(**kwargs) for keyword arguments.
     pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
         let value = args.get_zero_one_arg("dict", heap)?;
         match value {
@@ -339,17 +339,64 @@ impl Dict {
                 };
 
                 // Check if it's a dict and get key-value pairs
-                let HeapData::Dict(dict) = heap.get(*id) else {
-                    return Err(ExcType::type_error_not_iterable(v.py_type(heap)));
-                };
+                if let HeapData::Dict(dict) = heap.get(*id) {
+                    let pairs: Vec<(Value, Value)> = dict
+                        .iter()
+                        .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)))
+                        .collect();
 
-                let pairs: Vec<(Value, Value)> = dict
-                    .iter()
-                    .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)))
-                    .collect();
+                    let new_dict = Self::from_pairs(pairs, heap, interns)?;
+                    let result = heap.allocate(HeapData::Dict(new_dict))?;
+                    return Ok(Value::Ref(result));
+                }
 
-                let new_dict = Self::from_pairs(pairs, heap, interns)?;
-                let result = heap.allocate(HeapData::Dict(new_dict))?;
+                // Try as an iterable of (key, value) pairs
+                let iter = MontyIter::new(v, heap, interns)?;
+                defer_drop_mut!(iter, heap);
+
+                let dict = Self::new();
+                let mut dict_guard = HeapGuard::new(dict, heap);
+
+                {
+                    let (dict, heap) = dict_guard.as_parts_mut();
+
+                    while let Some(item) = iter.for_next(heap, interns)? {
+                        // Each item should be a pair (iterable of 2 elements)
+                        let pair_iter = MontyIter::new(item, heap, interns)?;
+                        defer_drop_mut!(pair_iter, heap);
+
+                        let Some(key) = pair_iter.for_next(heap, interns)? else {
+                            return Err(ExcType::type_error(
+                                "dictionary constructor sequence element has length 0; 2 is required",
+                            ));
+                        };
+                        let mut key_guard = HeapGuard::new(key, heap);
+
+                        let Some(value) = pair_iter.for_next(key_guard.heap(), interns)? else {
+                            return Err(ExcType::type_error(
+                                "dictionary constructor sequence element has length 1; 2 is required",
+                            ));
+                        };
+                        let mut value_guard = HeapGuard::new(value, key_guard.heap());
+
+                        if let Some(extra) = pair_iter.for_next(value_guard.heap(), interns)? {
+                            extra.drop_with_heap(value_guard.heap());
+                            return Err(ExcType::type_error(
+                                "dictionary constructor sequence element has length > 2; 2 is required",
+                            ));
+                        }
+
+                        let value = value_guard.into_inner();
+                        let key = key_guard.into_inner();
+
+                        if let Some(old_value) = dict.set(key, value, heap, interns)? {
+                            old_value.drop_with_heap(heap);
+                        }
+                    }
+                }
+
+                let dict = dict_guard.into_inner();
+                let result = heap.allocate(HeapData::Dict(dict))?;
                 Ok(Value::Ref(result))
             }
         }
