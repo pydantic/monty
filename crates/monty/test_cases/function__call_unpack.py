@@ -14,3 +14,20 @@ assert f(key='before', **{'a': 1}) == ((), {'key': 'before', 'a': 1}), 'named be
 
 # === Mixed ===
 assert f(1, *[2, 3], **{'x': 4}) == ((1, 2, 3), {'x': 4}), 'mixed star and star-star'
+
+# === Builtin callable with GeneralizedCall (Callable::Builtin path) ===
+# max(*[1,2], *[3,4]) exercises the Callable::Builtin branch in compile_call GeneralizedCall
+result = max(*[1, 2], *[3, 4])
+assert result == 4, 'builtin max with multiple *args'
+
+result = min(*[5, 3], *[7, 1])
+assert result == 1, 'builtin min with multiple *args'
+
+# === Expression-based callable with GeneralizedCall (compile_call_args path) ===
+# funcs[0](*[1,2], *[3,4]) exercises the GeneralizedCall branch in compile_call_args
+funcs = [f]
+result = funcs[0](*[1, 2], *[3, 4])
+assert result == ((1, 2, 3, 4), {}), 'subscript call with multiple *args'
+
+result = funcs[0](**{'a': 1}, **{'b': 2})
+assert result == ((), {'a': 1, 'b': 2}), 'subscript call with multiple **kwargs'

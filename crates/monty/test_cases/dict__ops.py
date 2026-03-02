@@ -70,3 +70,11 @@ assert {**a, 'z': 3} == {'x': 1, 'y': 2, 'z': 3}, 'unpack then new key'
 assert {**{}} == {}, 'unpack empty dict'
 assert {**a, **b, 'w': 4} == {'x': 1, 'y': 99, 'z': 3, 'w': 4}, 'complex mixed'
 assert list({**a, 'z': 3}.keys()) == ['x', 'y', 'z'], 'insertion order preserved'
+
+# === Dict unpack TypeError for non-mapping heap ref ===
+# Unpacking a Ref that is NOT a dict (e.g. a list) should raise TypeError
+try:
+    x = {**[1, 2, 3]}
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "'list' object is not a mapping", f'wrong error: {e}'

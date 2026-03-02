@@ -237,3 +237,19 @@ assert d == {'x': 0, 'a': 1, 'b': 2, 'c': 3}, f'update with three **kwargs: {d}'
 d = {}
 d.update(a=1, **{'b': 2}, **{'c': 3})
 assert d == {'a': 1, 'b': 2, 'c': 3}, f'update named + multiple **kwargs: {d}'
+
+# === Positional args mixed with *unpack in method GeneralizedCall ===
+# This exercises the CallArg::Value path in compile_method_call GeneralizedCall branch
+my_list = [2, 3]
+my_list.insert(0, *[1])
+assert my_list == [1, 2, 3], 'insert: positional before star unpack'
+
+# Two positional values then unpack
+my_list2 = ['a', 'b', 'c', 'd']
+my_list2.insert(1, *['x'])
+assert my_list2 == ['a', 'x', 'b', 'c', 'd'], 'insert: positional index then star unpack'
+
+# === Mixed * and ** in method GeneralizedCall ===
+d = {}
+d.update(*[{'a': 1}], **{'b': 2})
+assert d == {'a': 1, 'b': 2}, 'update: star args + star-star kwargs'
