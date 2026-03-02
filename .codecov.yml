@@ -5,7 +5,10 @@ coverage:
   precision: 2
   # range: [90, 100]
   status:
-    patch: false
+    patch:
+      default:
+        target: 90%
+        threshold: 1%
     project: false
 
 comment:
