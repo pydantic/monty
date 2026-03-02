@@ -123,13 +123,21 @@ hs = 'hel' + 'lo'
 assert {*hs} == {'h', 'e', 'l', 'o'}, 'unpack heap string into set'
 
 
-# Non-iterable heap-allocated type (function) hits the `_` arm in set_extend
-def _set_unpack_not_iterable():
-    pass
+# Non-iterable heap-allocated Ref (closure) hits the inner `_` arm in set_extend.
+# A plain top-level function is Value::DefFunction (not a Ref), so a closure is
+# required to reach the Value::Ref(_) branch (HeapData that is not List/Tuple/Set/Dict/Str).
+def _make_set_unpack_closure():
+    _sentinel = 1
+
+    def _inner():
+        return _sentinel
+
+    return _inner
 
 
+_set_unpack_closure = _make_set_unpack_closure()
 try:
-    _x = {*_set_unpack_not_iterable}
-    assert False, 'expected TypeError for non-iterable heap type in set unpack'
+    _x = {*_set_unpack_closure}
+    assert False, 'expected TypeError for non-iterable heap closure in set unpack'
 except TypeError:
     pass
