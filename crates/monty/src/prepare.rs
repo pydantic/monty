@@ -2883,11 +2883,7 @@ fn collect_referenced_names_from_comprehension(
 }
 
 /// Collects referenced names from argument expressions.
-fn collect_referenced_names_from_args(
-    args: &ArgExprs,
-    referenced: &mut AHashSet<String>,
-    interner: &InternerBuilder,
-) {
+fn collect_referenced_names_from_args(args: &ArgExprs, referenced: &mut AHashSet<String>, interner: &InternerBuilder) {
     match args {
         ArgExprs::Empty => {}
         ArgExprs::One(e) => collect_referenced_names_from_expr(e, referenced, interner),
