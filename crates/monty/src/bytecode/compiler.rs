@@ -684,7 +684,9 @@ impl<'a> Compiler<'a> {
                     // Fast path: all values, single BuildList.
                     // SAFETY: has_unpack_seq(elements) is false, so every item is Value.
                     for item in elements {
-                        let SequenceItem::Value(e) = item else { unreachable!("list fast path: only Value items") };
+                        let SequenceItem::Value(e) = item else {
+                            unreachable!("list fast path: only Value items")
+                        };
                         self.compile_expr(e)?;
                     }
                     self.code.emit_u16(
@@ -715,7 +717,9 @@ impl<'a> Compiler<'a> {
                     // Fast path: all values, single BuildTuple.
                     // SAFETY: has_unpack_seq(elements) is false, so every item is Value.
                     for item in elements {
-                        let SequenceItem::Value(e) = item else { unreachable!("tuple fast path: only Value items") };
+                        let SequenceItem::Value(e) = item else {
+                            unreachable!("tuple fast path: only Value items")
+                        };
                         self.compile_expr(e)?;
                     }
                     self.code.emit_u16(
@@ -748,7 +752,9 @@ impl<'a> Compiler<'a> {
                     // Fast path: all pairs, single BuildDict.
                     // SAFETY: has_unpack_dict(dict_items) is false, so every item is Pair.
                     for item in dict_items {
-                        let DictItem::Pair(key, value) = item else { unreachable!("dict fast path: only Pair items") };
+                        let DictItem::Pair(key, value) = item else {
+                            unreachable!("dict fast path: only Pair items")
+                        };
                         self.compile_expr(key)?;
                         self.compile_expr(value)?;
                     }
@@ -779,7 +785,9 @@ impl<'a> Compiler<'a> {
                     // Fast path: all values, single BuildSet.
                     // SAFETY: has_unpack_seq(elements) is false, so every item is Value.
                     for item in elements {
-                        let SequenceItem::Value(e) = item else { unreachable!("set fast path: only Value items") };
+                        let SequenceItem::Value(e) = item else {
+                            unreachable!("set fast path: only Value items")
+                        };
                         self.compile_expr(e)?;
                     }
                     self.code.emit_u16(

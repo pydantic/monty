@@ -324,7 +324,9 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // SAFETY: the compiler always emits BuildDict before DictUpdate, so the
         // target is always a Value::Ref.  This is a VM invariant: reaching this else
         // arm means a compiler bug.
-        let Value::Ref(dict_id) = this.stack[dict_pos] else { unreachable!("DictUpdate: target is always a Ref — compiler invariant") };
+        let Value::Ref(dict_id) = this.stack[dict_pos] else {
+            unreachable!("DictUpdate: target is always a Ref — compiler invariant")
+        };
 
         for (key, value) in copied_items {
             let old = this.heap.with_entry_mut(dict_id, |heap, data| {
@@ -402,7 +404,9 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // SAFETY: the compiler always emits BuildSet before SetExtend, so the
         // target is always a Value::Ref.  This is a VM invariant: reaching this else
         // arm means a compiler bug.
-        let Value::Ref(set_id) = this.stack[set_pos] else { unreachable!("SetExtend: target is always a Ref — compiler invariant") };
+        let Value::Ref(set_id) = this.stack[set_pos] else {
+            unreachable!("SetExtend: target is always a Ref — compiler invariant")
+        };
 
         for item in copied_items {
             this.heap.with_entry_mut(set_id, |heap, data| {
