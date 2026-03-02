@@ -8,15 +8,16 @@ if TYPE_CHECKING:
 
 from ._monty import (
     Frame,
+    FunctionSnapshot,
+    FutureSnapshot,
     Monty,
     MontyComplete,
     MontyError,
-    MontyFutureSnapshot,
     MontyRepl,
     MontyRuntimeError,
-    MontySnapshot,
     MontySyntaxError,
     MontyTypingError,
+    NameLookupSnapshot,
     __version__,
 )
 from .os_access import AbstractFile, AbstractOS, CallbackFile, MemoryFile, OSAccess, OsFunction, StatResult
@@ -31,8 +32,9 @@ __all__ = (
     'Monty',
     'MontyRepl',
     'MontyComplete',
-    'MontySnapshot',
-    'MontyFutureSnapshot',
+    'FunctionSnapshot',
+    'NameLookupSnapshot',
+    'FutureSnapshot',
     'MontyError',
     'MontySyntaxError',
     'MontyRuntimeError',
@@ -97,7 +99,7 @@ async def run_monty_async(
             while True:
                 if isinstance(progress, MontyComplete):
                     return progress.output
-                elif isinstance(progress, MontySnapshot):
+                elif isinstance(progress, FunctionSnapshot):
                     # Handle OS function calls (e.g., Path.read_text, Path.exists)
                     if progress.is_os_function:
                         # When is_os_function is True, function_name is always an OsFunction
@@ -147,7 +149,7 @@ async def run_monty_async(
                         e = LookupError(f"Unable to find '{progress.function_name}' in external functions dict")
                         progress = await run_in_pool(partial(progress.resume, exception=e))
                 else:
-                    assert isinstance(progress, MontyFutureSnapshot), f'Unexpected progress type {progress!r}'
+                    assert isinstance(progress, FutureSnapshot), f'Unexpected progress type {progress!r}'
 
                     current_tasks: list[asyncio.Task[tuple[int, ExternalResult]]] = []
                     for call_id in progress.pending_call_ids:

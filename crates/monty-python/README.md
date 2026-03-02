@@ -82,7 +82,7 @@ m = pydantic_monty.Monty(code, inputs=['url'])
 result = m.start(inputs={'url': 'https://example.com'})
 
 print(type(result))
-#> <class 'pydantic_monty.MontySnapshot'>
+#> <class 'pydantic_monty.FunctionSnapshot'>
 print(result.function_name)  # fetch
 #> fetch
 print(result.args)
@@ -99,7 +99,7 @@ print(result.output)
 
 ### Serialization
 
-Both `Monty` and `MontySnapshot` can be serialized to bytes and restored later.
+Both `Monty` and `FunctionSnapshot` can be serialized to bytes and restored later.
 This allows caching parsed code or suspending execution across process boundaries:
 
 ```python
@@ -127,7 +127,7 @@ progress = m.start(inputs={'url': 'https://example.com'})
 state = progress.dump()
 
 # Later, restore and resume (e.g., in a different process)
-progress2 = pydantic_monty.MontySnapshot.load(state)
+progress2 = pydantic_monty.FunctionSnapshot.load(state)
 result = progress2.resume(return_value='response data')
 print(result.output)
 #> response data

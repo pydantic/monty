@@ -800,7 +800,7 @@ def test_method_no_args_raw():
     """Calling a dataclass method with no args (besides self), raw."""
     m = pydantic_monty.Monty('g.greet()', inputs=['g'], dataclass_registry=[Greeter])
     result = m.start(inputs={'g': Greeter(greeting='hello')})
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.script_name == snapshot('main.py')
     assert result.function_name == snapshot('greet')
     assert result.args == snapshot((Greeter(greeting='hello'),))
