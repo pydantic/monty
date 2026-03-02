@@ -85,10 +85,13 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         Ok(())
     }
 
-    /// Extends a list with items from an iterable.
+    /// Extends a list with items from an iterable, for PEP 448 `*expr` literal unpacking.
     ///
     /// Stack: [list, iterable] -> [list]
     /// Pops the iterable, extends the list in place, leaves list on stack.
+    ///
+    /// Raises `TypeError("Value after * must be an iterable, not {type}")` for non-iterables,
+    /// matching CPython's message for list/tuple literal unpacking (`[*x]`, `(*x,)`).
     ///
     /// Uses `HeapGuard` for `list_ref` because it is pushed back on success,
     /// and `defer_drop!` for `iterable` because it is always dropped.
@@ -118,7 +121,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 }
                 _ => {
                     let type_ = iterable.py_type(this.heap);
-                    return Err(ExcType::type_error_not_iterable(type_));
+                    return Err(ExcType::type_error_value_after_star(type_));
                 }
             },
             Value::InternString(id) => {
@@ -132,7 +135,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
             _ => {
                 let type_ = iterable.py_type(this.heap);
-                return Err(ExcType::type_error_not_iterable(type_));
+                return Err(ExcType::type_error_value_after_star(type_));
             }
         };
 
@@ -276,6 +279,145 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // Push dict_ref back on the stack (don't drop it)
         let (dict_ref, this) = dict_ref_guard.into_parts();
         this.push(dict_ref);
+        Ok(())
+    }
+
+    // ========================================================================
+    // PEP 448 Literal Building
+    // ========================================================================
+
+    /// Silently merges a mapping into the dict literal at `depth` on the stack.
+    ///
+    /// Used for `{**x, ...}` dict literals where later keys silently overwrite
+    /// earlier ones (unlike [`dict_merge`] which raises `TypeError` on duplicate keys
+    /// and is used for function-call `**kwargs`).
+    ///
+    /// Stack (depth = 0): `[..., dict, mapping]` → `[..., dict]`
+    ///
+    /// # Errors
+    ///
+    /// Returns `TypeError: '{type}' object is not a mapping` if the TOS is not a dict.
+    pub(super) fn dict_update(&mut self, depth: usize) -> Result<(), RunError> {
+        let this = self;
+
+        let mapping = this.pop();
+        defer_drop!(mapping, this);
+
+        // Clone all key/value pairs out of the mapping before mutating the target dict
+        let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
+            if let HeapData::Dict(dict) = this.heap.get(*id) {
+                dict.iter()
+                    .map(|(k, v)| (k.clone_with_heap(this.heap), v.clone_with_heap(this.heap)))
+                    .collect()
+            } else {
+                let type_ = mapping.py_type(this.heap);
+                return Err(ExcType::type_error_not_mapping(type_));
+            }
+        } else {
+            let type_ = mapping.py_type(this.heap);
+            return Err(ExcType::type_error_not_mapping(type_));
+        };
+
+        // The target dict sits at `depth` positions below TOS (which is now gone after pop)
+        let stack_len = this.stack.len();
+        let dict_pos = stack_len - 1 - depth;
+        let Value::Ref(dict_id) = this.stack[dict_pos] else {
+            for (k, v) in copied_items {
+                k.drop_with_heap(this.heap);
+                v.drop_with_heap(this.heap);
+            }
+            return Err(RunError::internal("DictUpdate: expected dict ref on stack"));
+        };
+
+        for (key, value) in copied_items {
+            let old = this.heap.with_entry_mut(dict_id, |heap, data| {
+                if let HeapDataMut::Dict(dict) = data {
+                    dict.set(key, value, heap, this.interns)
+                } else {
+                    Err(RunError::internal("DictUpdate: expected Dict on heap"))
+                }
+            })?;
+            // Silently drop any old value — PEP 448 dict literals allow duplicate keys
+            if let Some(old_val) = old {
+                old_val.drop_with_heap(this.heap);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Extends a set literal with all items from an iterable.
+    ///
+    /// Used for `{*x, ...}` set literals (PEP 448). Follows the same item-copying
+    /// pattern as [`list_extend`]; raises `TypeError` for non-iterable sources.
+    ///
+    /// Stack (depth = 0): `[..., set, iterable]` → `[..., set]`
+    ///
+    /// # Errors
+    ///
+    /// Returns `TypeError: '{type}' object is not iterable` if TOS is not iterable.
+    pub(super) fn set_extend(&mut self, depth: usize) -> Result<(), RunError> {
+        let this = self;
+
+        let iterable = this.pop();
+        defer_drop!(iterable, this);
+
+        // Clone items from the iterable (same sources as list_extend)
+        let copied_items: Vec<Value> = match iterable {
+            Value::Ref(id) => match this.heap.get(*id) {
+                HeapData::List(list) => list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect(),
+                HeapData::Tuple(tuple) => tuple.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect(),
+                HeapData::Set(set) => set.storage().iter().map(|v| v.clone_with_heap(this.heap)).collect(),
+                HeapData::Dict(dict) => dict.iter().map(|(k, _)| k.clone_with_heap(this.heap)).collect(),
+                HeapData::Str(s) => {
+                    let chars: Vec<char> = s.as_str().chars().collect();
+                    let mut items = Vec::with_capacity(chars.len());
+                    for c in chars {
+                        items.push(allocate_char(c, this.heap)?);
+                    }
+                    items
+                }
+                _ => {
+                    let type_ = iterable.py_type(this.heap);
+                    return Err(ExcType::type_error_not_iterable(type_));
+                }
+            },
+            Value::InternString(id) => {
+                let s = this.interns.get_str(*id);
+                let chars: Vec<char> = s.chars().collect();
+                let mut items = Vec::with_capacity(chars.len());
+                for c in chars {
+                    items.push(allocate_char(c, this.heap)?);
+                }
+                items
+            }
+            _ => {
+                let type_ = iterable.py_type(this.heap);
+                return Err(ExcType::type_error_not_iterable(type_));
+            }
+        };
+
+        // The target set sits at `depth` positions below TOS (which is now gone after pop)
+        let stack_len = this.stack.len();
+        let set_pos = stack_len - 1 - depth;
+        let Value::Ref(set_id) = this.stack[set_pos] else {
+            for v in copied_items {
+                v.drop_with_heap(this.heap);
+            }
+            return Err(RunError::internal("SetExtend: expected set ref on stack"));
+        };
+
+        for item in copied_items {
+            this.heap.with_entry_mut(set_id, |heap, data| {
+                if let HeapDataMut::Set(set) = data {
+                    set.add(item, heap, this.interns)
+                } else {
+                    item.drop_with_heap(heap);
+                    Err(RunError::internal("SetExtend: expected Set on heap"))
+                }
+            })?;
+        }
+
         Ok(())
     }
 

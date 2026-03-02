@@ -554,6 +554,34 @@ pub struct Kwarg {
     pub value: ExprLoc,
 }
 
+/// A positional argument item in a generalized function call (PEP 448).
+///
+/// Used in `ArgExprs::GeneralizedCall` when a call has multiple `*unpacks`
+/// or positional arguments after a `*unpack`. Each item is either a plain
+/// value or a `*expr` iterable to be unpacked into the argument tuple.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) enum CallArg {
+    /// A plain positional argument.
+    Value(ExprLoc),
+    /// A `*expr` unpack — the iterable is spread into consecutive arguments.
+    Unpack(ExprLoc),
+}
+
+/// A keyword argument item in a generalized function call (PEP 448).
+///
+/// Used in `ArgExprs::GeneralizedCall` when a call has multiple `**unpacks`
+/// or named kwargs interspersed with `**unpacks`. Duplicate keys from any
+/// combination raise `TypeError` (both `f(**a, **b)` with shared keys and
+/// `f(x=1, **{'x': 2})` are errors). This is enforced by `DictMerge` in
+/// the compiler.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) enum CallKwarg {
+    /// A named keyword argument: `key=value`.
+    Named(Kwarg),
+    /// A `**expr` unpack — the mapping's entries are merged into kwargs.
+    Unpack(ExprLoc),
+}
+
 /// Expressions that make up a function call's arguments.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ArgExprs {
@@ -568,9 +596,31 @@ pub enum ArgExprs {
         kwargs: Option<Vec<Kwarg>>,
         var_kwargs: Option<ExprLoc>,
     },
+    /// Generalized call with PEP 448 unpacking.
+    ///
+    /// Used when a call has multiple `*args` unpacks, positional arguments
+    /// after a `*unpack`, or multiple `**kwargs` unpacks. The compiler
+    /// builds the args tuple incrementally using `BuildList(0)` +
+    /// `ListAppend`/`ListExtend` + `ListToTuple`, and the kwargs dict
+    /// using `BuildDict(0)` + `DictMerge` (which raises `TypeError` on
+    /// duplicate keys).
+    GeneralizedCall {
+        args: Vec<CallArg>,
+        kwargs: Vec<CallKwarg>,
+    },
 }
 
 impl ArgExprs {
+    /// Creates a `GeneralizedCall` for PEP 448 calls with multiple unpacks.
+    ///
+    /// Use this when a function call has multiple `*args` unpacks, positional
+    /// arguments after a `*unpack`, or multiple `**kwargs` unpacks. The compiler
+    /// will emit `BuildList(0)` + `ListAppend`/`ListExtend` + `ListToTuple` for
+    /// the args tuple, and `BuildDict(0)` + `DictMerge` for the kwargs dict.
+    pub(crate) fn new_generalized(args: Vec<CallArg>, kwargs: Vec<CallKwarg>) -> Self {
+        Self::GeneralizedCall { args, kwargs }
+    }
+
     /// Creates a new `ArgExprs` with optional `*args` and `**kwargs` unpacking expressions.
     ///
     /// This is used when parsing function calls that may include `*expr` / `**expr`
@@ -662,6 +712,26 @@ impl ArgExprs {
                     kwargs,
                     var_kwargs,
                 }
+            }
+            Self::GeneralizedCall { args, kwargs } => {
+                let args = args
+                    .into_iter()
+                    .map(|arg| match arg {
+                        CallArg::Value(e) => Ok(CallArg::Value(f(e)?)),
+                        CallArg::Unpack(e) => Ok(CallArg::Unpack(f(e)?)),
+                    })
+                    .collect::<Result<Vec<_>, ParseError>>()?;
+                let kwargs = kwargs
+                    .into_iter()
+                    .map(|kwarg| match kwarg {
+                        CallKwarg::Named(kw) => Ok(CallKwarg::Named(Kwarg {
+                            key: kw.key,
+                            value: f(kw.value)?,
+                        })),
+                        CallKwarg::Unpack(e) => Ok(CallKwarg::Unpack(f(e)?)),
+                    })
+                    .collect::<Result<Vec<_>, ParseError>>()?;
+                Self::GeneralizedCall { args, kwargs }
             }
         };
         Ok(())

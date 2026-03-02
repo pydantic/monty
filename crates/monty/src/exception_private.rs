@@ -560,6 +560,17 @@ impl ExcType {
         .into()
     }
 
+    /// Creates a TypeError for `{**x}` dict-literal unpacking where `x` is not a mapping.
+    ///
+    /// Matches CPython's format: `'{type_name}' object is not a mapping`
+    ///
+    /// Note: this differs from [`type_error_kwargs_not_mapping`] which is used for
+    /// function-call `**kwargs` and includes the function name in the message.
+    #[must_use]
+    pub(crate) fn type_error_not_mapping(type_: Type) -> RunError {
+        SimpleException::new_msg(Self::TypeError, format!("'{type_}' object is not a mapping")).into()
+    }
+
     /// Creates a TypeError for **kwargs with non-string keys.
     ///
     /// Matches CPython's format: `{name}() keywords must be strings`
@@ -604,6 +615,21 @@ impl ExcType {
     #[must_use]
     pub(crate) fn type_error_not_iterable(type_: Type) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("'{type_}' object is not iterable")).into()
+    }
+
+    /// Creates a TypeError for non-iterable type in PEP 448 `*value` literal unpack.
+    ///
+    /// Used when `[*expr]`, `(*expr,)` literal unpack encounters a non-iterable — distinct
+    /// from [`type_error_not_iterable`] because CPython uses a different message for this context.
+    ///
+    /// Matches CPython's format: `TypeError: Value after * must be an iterable, not {type}`
+    #[must_use]
+    pub(crate) fn type_error_value_after_star(type_: Type) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("Value after * must be an iterable, not {type_}"),
+        )
+        .into()
     }
 
     /// Creates a TypeError for int() constructor with invalid type.

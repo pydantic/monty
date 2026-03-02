@@ -219,3 +219,21 @@ d = {}
 extra = {'b': 'from_dict'}
 d.update(a='original', **extra)
 assert d == {'a': 'original', 'b': 'from_dict'}, f'update with different kwargs: {d}'
+
+# ============================================================
+# PEP 448 generalized method calls (multiple * or **)
+# ============================================================
+
+# === Multiple **kwargs in method call ===
+d = {}
+d.update(**{'a': 1}, **{'b': 2})
+assert d == {'a': 1, 'b': 2}, f'update with multiple **kwargs: {d}'
+
+d = {'x': 0}
+d.update(**{'a': 1}, **{'b': 2}, **{'c': 3})
+assert d == {'x': 0, 'a': 1, 'b': 2, 'c': 3}, f'update with three **kwargs: {d}'
+
+# Mixed named kwargs and multiple **kwargs
+d = {}
+d.update(a=1, **{'b': 2}, **{'c': 3})
+assert d == {'a': 1, 'b': 2, 'c': 3}, f'update named + multiple **kwargs: {d}'

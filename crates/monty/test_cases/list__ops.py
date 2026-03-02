@@ -417,3 +417,12 @@ assert [].count([1]) == 0, 'count on empty list'
 assert [1, 2] in [[1, 2], [3, 4]], 'nested list in'
 assert [5, 6] not in [[1, 2], [3, 4]], 'nested list not in'
 assert [] in [[], [1]], 'empty list in list of lists'
+
+# === List unpacking (PEP 448) ===
+a = [1, 2]
+b = [3, 4]
+assert [*a] == [1, 2], 'single list unpack'
+assert [*a, *b] == [1, 2, 3, 4], 'double list unpack'
+assert [0, *a, 5] == [0, 1, 2, 5], 'mixed list unpack'
+assert [*[]] == [], 'unpack empty list'
+assert [*(1, 2)] == [1, 2], 'unpack tuple into list'

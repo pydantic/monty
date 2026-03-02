@@ -59,3 +59,12 @@ assert tuple({'a': 1, 'b': 2}) == ('a', 'b'), 'tuple from dict yields keys'
 assert tuple('héllo') == ('h', 'é', 'l', 'l', 'o'), 'tuple from string with accented char'
 assert tuple('日本') == ('日', '本'), 'tuple from string with CJK chars'
 assert tuple('a🎉b') == ('a', '🎉', 'b'), 'tuple from string with emoji'
+
+# === Tuple unpacking (PEP 448) ===
+a = (1, 2)
+b = (3, 4)
+assert (*a,) == (1, 2), 'single tuple unpack'
+assert (*a, *b) == (1, 2, 3, 4), 'double tuple unpack'
+assert (0, *a, 5) == (0, 1, 2, 5), 'mixed tuple unpack'
+assert (*(),) == (), 'unpack empty tuple'
+assert (*[1, 2],) == (1, 2), 'unpack list into tuple'

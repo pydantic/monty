@@ -1147,6 +1147,15 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                     let func_name_id = fetch_u16!(cached_frame);
                     try_catch_sync!(self, cached_frame, self.dict_merge(func_name_id));
                 }
+                // PEP 448 literal building
+                Opcode::DictUpdate => {
+                    let depth = fetch_u8!(cached_frame) as usize;
+                    try_catch_sync!(self, cached_frame, self.dict_update(depth));
+                }
+                Opcode::SetExtend => {
+                    let depth = fetch_u8!(cached_frame) as usize;
+                    try_catch_sync!(self, cached_frame, self.set_extend(depth));
+                }
                 // Comprehension Building - append/add/set items during iteration
                 Opcode::ListAppend => {
                     let depth = fetch_u8!(cached_frame) as usize;

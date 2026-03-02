@@ -98,6 +98,44 @@ pub enum Callable {
     Name(Identifier),
 }
 
+/// An item in a list, tuple, or set literal.
+///
+/// PEP 448 allows any number of `*expr` unpack items to appear alongside
+/// regular values in list/tuple/set literals (e.g., `[1, *a, 2]`).
+/// This enum represents either a plain value or an iterable to be unpacked.
+///
+/// Used in `Expr::List`, `Expr::Tuple`, and `Expr::Set` to represent each
+/// element of the literal. When the fast path is taken (no unpack items),
+/// only `Value` variants are present and the compiler emits a single
+/// `BuildList`/`BuildTuple`/`BuildSet` instruction. When any `Unpack` item
+/// is present, the compiler emits `Build*(0)` followed by per-item
+/// `ListAppend`/`SetAdd` and `ListExtend`/`SetExtend` instructions.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) enum SequenceItem {
+    /// A plain expression value in the literal.
+    Value(ExprLoc),
+    /// An `*expr` unpack — the iterable is expanded in-place.
+    Unpack(ExprLoc),
+}
+
+/// An item in a dict literal.
+///
+/// PEP 448 allows `**expr` unpack items to appear alongside normal key:value
+/// pairs in dict literals (e.g., `{'a': 1, **d, 'b': 2}`). Duplicate keys
+/// from later items silently overwrite earlier ones (unlike `**kwargs` in
+/// function calls, where duplicates raise `TypeError`).
+///
+/// Used in `Expr::Dict`. When no `Unpack` items are present the compiler
+/// emits a single `BuildDict` instruction. Otherwise it emits `BuildDict(0)`
+/// followed by per-item `DictSetItem` and `DictUpdate` instructions.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) enum DictItem {
+    /// A plain `key: value` pair.
+    Pair(ExprLoc, ExprLoc),
+    /// A `**expr` unpack — the mapping is merged in-place, later keys win.
+    Unpack(ExprLoc),
+}
+
 /// An expression in the AST.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Expr {
@@ -165,8 +203,17 @@ pub enum Expr {
         /// Sequence of (operator, operand) pairs: `[(op1, b), (op2, c), ...]`
         comparisons: Vec<(CmpOperator, ExprLoc)>,
     },
-    List(Vec<ExprLoc>),
-    Tuple(Vec<ExprLoc>),
+    /// List literal: `[a, *b, c]`
+    ///
+    /// Each element is a `SequenceItem` which may be a plain value or an `*unpack`.
+    /// When no unpack items are present (common case), the compiler emits a single
+    /// `BuildList(N)`. When any unpack is present it emits `BuildList(0)` followed
+    /// by per-item `ListAppend`/`ListExtend` instructions.
+    List(Vec<SequenceItem>),
+    /// Tuple literal: `(a, *b, c)` or `a, *b, c`
+    ///
+    /// Same compilation strategy as `List` but ends with `ListToTuple`.
+    Tuple(Vec<SequenceItem>),
     Subscript {
         object: Box<ExprLoc>,
         index: Box<ExprLoc>,
@@ -180,11 +227,18 @@ pub enum Expr {
         upper: Option<Box<ExprLoc>>,
         step: Option<Box<ExprLoc>>,
     },
-    Dict(Vec<(ExprLoc, ExprLoc)>),
-    /// Set literal expression: `{1, 2, 3}`.
+    /// Dict literal: `{'a': 1, **d, 'b': 2}`
+    ///
+    /// Each element is a `DictItem` which may be a plain `key: value` pair or a `**unpack`.
+    /// When no unpack items are present the compiler emits `BuildDict(N)`. Otherwise it
+    /// emits `BuildDict(0)` followed by per-item `DictSetItem`/`DictUpdate` instructions.
+    /// Duplicate keys from later items silently overwrite earlier ones.
+    Dict(Vec<DictItem>),
+    /// Set literal expression: `{1, *a, 2}`.
     ///
     /// Note: `{}` is always a dict, not an empty set. Use `set()` for empty sets.
-    Set(Vec<ExprLoc>),
+    /// Compilation strategy mirrors `List` but uses `SetAdd`/`SetExtend`.
+    Set(Vec<SequenceItem>),
     /// Unary `not` expression - evaluates to the boolean negation of the operand's truthiness.
     Not(Box<ExprLoc>),
     /// Unary minus expression - negates a numeric value.

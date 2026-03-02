@@ -58,3 +58,15 @@ assert d['self'] is d, 'getitem self'
 
 d = {}
 assert d.get('missing', d) is d, 'get default same dict'
+
+# === Dict unpacking (PEP 448) ===
+a = {'x': 1, 'y': 2}
+b = {'y': 99, 'z': 3}
+assert {**a} == {'x': 1, 'y': 2}, 'single unpack'
+assert {**a, **b} == {'x': 1, 'y': 99, 'z': 3}, 'double unpack, later wins'
+assert {**a, 'y': 0} == {'x': 1, 'y': 0}, 'literal overrides unpacked key'
+assert {'y': 0, **a} == {'y': 2, 'x': 1}, 'unpack overrides earlier literal'
+assert {**a, 'z': 3} == {'x': 1, 'y': 2, 'z': 3}, 'unpack then new key'
+assert {**{}} == {}, 'unpack empty dict'
+assert {**a, **b, 'w': 4} == {'x': 1, 'y': 99, 'z': 3, 'w': 4}, 'complex mixed'
+assert list({**a, 'z': 3}.keys()) == ['x', 'y', 'z'], 'insertion order preserved'

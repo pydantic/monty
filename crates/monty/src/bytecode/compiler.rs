@@ -16,13 +16,13 @@ use super::{
     op::Opcode,
 };
 use crate::{
-    args::{ArgExprs, Kwarg},
+    args::{ArgExprs, CallArg, CallKwarg, Kwarg},
     builtins::Builtins,
     exception_private::ExcType,
     exception_public::{MontyException, StackFrame},
     expressions::{
-        Callable, CmpOperator, Comprehension, Expr, ExprLoc, Identifier, Literal, NameScope, Node, Operator,
-        PreparedFunctionDef, PreparedNode, UnpackTarget,
+        Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, Literal, NameScope, Node, Operator,
+        PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
     function::Function,
@@ -665,44 +665,128 @@ impl<'a> Compiler<'a> {
             }
 
             Expr::List(elements) => {
-                for elem in elements {
-                    self.compile_expr(elem)?;
+                if has_unpack_seq(elements) {
+                    // Generalized path: build incrementally for PEP 448 *unpacks
+                    self.code.emit_u16(Opcode::BuildList, 0);
+                    for item in elements {
+                        match item {
+                            SequenceItem::Value(e) => {
+                                self.compile_expr(e)?;
+                                self.code.emit_u8(Opcode::ListAppend, 0);
+                            }
+                            SequenceItem::Unpack(e) => {
+                                self.compile_expr(e)?;
+                                self.code.emit(Opcode::ListExtend);
+                            }
+                        }
+                    }
+                } else {
+                    // Fast path: all values, single BuildList
+                    for item in elements {
+                        if let SequenceItem::Value(e) = item {
+                            self.compile_expr(e)?;
+                        }
+                    }
+                    self.code.emit_u16(
+                        Opcode::BuildList,
+                        u16::try_from(elements.len()).expect("elements count exceeds u16"),
+                    );
                 }
-                self.code.emit_u16(
-                    Opcode::BuildList,
-                    u16::try_from(elements.len()).expect("elements count exceeds u16"),
-                );
             }
 
             Expr::Tuple(elements) => {
-                for elem in elements {
-                    self.compile_expr(elem)?;
+                if has_unpack_seq(elements) {
+                    // Generalized path: build via list then convert for PEP 448 *unpacks
+                    self.code.emit_u16(Opcode::BuildList, 0);
+                    for item in elements {
+                        match item {
+                            SequenceItem::Value(e) => {
+                                self.compile_expr(e)?;
+                                self.code.emit_u8(Opcode::ListAppend, 0);
+                            }
+                            SequenceItem::Unpack(e) => {
+                                self.compile_expr(e)?;
+                                self.code.emit(Opcode::ListExtend);
+                            }
+                        }
+                    }
+                    self.code.emit(Opcode::ListToTuple);
+                } else {
+                    // Fast path: all values, single BuildTuple
+                    for item in elements {
+                        if let SequenceItem::Value(e) = item {
+                            self.compile_expr(e)?;
+                        }
+                    }
+                    self.code.emit_u16(
+                        Opcode::BuildTuple,
+                        u16::try_from(elements.len()).expect("elements count exceeds u16"),
+                    );
                 }
-                self.code.emit_u16(
-                    Opcode::BuildTuple,
-                    u16::try_from(elements.len()).expect("elements count exceeds u16"),
-                );
             }
 
-            Expr::Dict(pairs) => {
-                for (key, value) in pairs {
-                    self.compile_expr(key)?;
-                    self.compile_expr(value)?;
+            Expr::Dict(dict_items) => {
+                if has_unpack_dict(dict_items) {
+                    // Generalized path: build incrementally for PEP 448 **unpacks
+                    self.code.emit_u16(Opcode::BuildDict, 0);
+                    for item in dict_items {
+                        match item {
+                            DictItem::Pair(key, value) => {
+                                self.compile_expr(key)?;
+                                self.compile_expr(value)?;
+                                // depth=0: dict is at TOS after key/value are popped
+                                self.code.emit_u8(Opcode::DictSetItem, 0);
+                            }
+                            DictItem::Unpack(e) => {
+                                self.compile_expr(e)?;
+                                // depth=0: dict is directly below mapping on stack
+                                self.code.emit_u8(Opcode::DictUpdate, 0);
+                            }
+                        }
+                    }
+                } else {
+                    // Fast path: all pairs, single BuildDict
+                    for item in dict_items {
+                        if let DictItem::Pair(key, value) = item {
+                            self.compile_expr(key)?;
+                            self.compile_expr(value)?;
+                        }
+                    }
+                    self.code.emit_u16(
+                        Opcode::BuildDict,
+                        u16::try_from(dict_items.len()).expect("pairs count exceeds u16"),
+                    );
                 }
-                self.code.emit_u16(
-                    Opcode::BuildDict,
-                    u16::try_from(pairs.len()).expect("pairs count exceeds u16"),
-                );
             }
 
             Expr::Set(elements) => {
-                for elem in elements {
-                    self.compile_expr(elem)?;
+                if has_unpack_seq(elements) {
+                    // Generalized path: build incrementally for PEP 448 *unpacks
+                    self.code.emit_u16(Opcode::BuildSet, 0);
+                    for item in elements {
+                        match item {
+                            SequenceItem::Value(e) => {
+                                self.compile_expr(e)?;
+                                self.code.emit_u8(Opcode::SetAdd, 0);
+                            }
+                            SequenceItem::Unpack(e) => {
+                                self.compile_expr(e)?;
+                                self.code.emit_u8(Opcode::SetExtend, 0);
+                            }
+                        }
+                    }
+                } else {
+                    // Fast path: all values, single BuildSet
+                    for item in elements {
+                        if let SequenceItem::Value(e) = item {
+                            self.compile_expr(e)?;
+                        }
+                    }
+                    self.code.emit_u16(
+                        Opcode::BuildSet,
+                        u16::try_from(elements.len()).expect("elements count exceeds u16"),
+                    );
                 }
-                self.code.emit_u16(
-                    Opcode::BuildSet,
-                    u16::try_from(elements.len()).expect("elements count exceeds u16"),
-                );
             }
 
             Expr::Subscript { object, index } => {
@@ -1268,6 +1352,15 @@ impl<'a> Compiler<'a> {
                     );
                 }
             }
+            ArgExprs::GeneralizedCall { args, kwargs } => {
+                // PEP 448: generalized unpacking — multiple *args or **kwargs.
+                // Callable was already pushed above this match; delegate to the helper.
+                let func_name_id = match callable {
+                    Callable::Name(ident) => u16::try_from(ident.name_id.index()).expect("name index exceeds u16"),
+                    Callable::Builtin(_) => 0xFFFF,
+                };
+                self.compile_generalized_call_body(args, kwargs, func_name_id, call_pos)?;
+            }
         }
         Ok(())
     }
@@ -1380,6 +1473,11 @@ impl<'a> Compiler<'a> {
                     );
                 }
             }
+            ArgExprs::GeneralizedCall { args, kwargs } => {
+                // PEP 448: generalized unpacking — callable is already on the stack.
+                // Use 0xFFFF as func_name_id since we don't know the callee name here.
+                self.compile_generalized_call_body(args, kwargs, 0xFFFF, call_pos)?;
+            }
         }
         Ok(())
     }
@@ -1485,7 +1583,7 @@ impl<'a> Compiler<'a> {
                 Ok(Some(u8::try_from(args.len()).expect("argument count exceeds u8")))
             }
             // Kwargs or unpacking - fall back to standard path
-            ArgExprs::Kwargs(_) | ArgExprs::ArgsKargs { .. } => Ok(None),
+            ArgExprs::Kwargs(_) | ArgExprs::ArgsKargs { .. } | ArgExprs::GeneralizedCall { .. } => Ok(None),
         }
     }
 
@@ -1708,6 +1806,54 @@ impl<'a> Compiler<'a> {
                     &kwname_ids,
                 );
             }
+            ArgExprs::GeneralizedCall { args, kwargs } => {
+                // PEP 448: generalized unpacking on a method call.
+                // Receiver is already on the stack; build args tuple and kwargs dict,
+                // then emit CallAttrExtended.
+                let func_name_id = u16::try_from(name_id.index()).expect("name index exceeds u16");
+                let has_kwargs = !kwargs.is_empty();
+
+                // 1. Build args tuple
+                self.code.emit_u16(Opcode::BuildList, 0);
+                for arg in args {
+                    match arg {
+                        CallArg::Value(e) => {
+                            self.compile_expr(e)?;
+                            self.code.emit_u8(Opcode::ListAppend, 0);
+                        }
+                        CallArg::Unpack(e) => {
+                            self.compile_expr(e)?;
+                            self.code.emit(Opcode::ListExtend);
+                        }
+                    }
+                }
+                self.code.emit(Opcode::ListToTuple);
+
+                // 2. Build kwargs dict (if any)
+                if has_kwargs {
+                    self.code.emit_u16(Opcode::BuildDict, 0);
+                    for kwarg in kwargs {
+                        match kwarg {
+                            CallKwarg::Named(kw) => {
+                                let key_const = self.code.add_const(Value::InternString(kw.key.name_id));
+                                self.code.emit_u16(Opcode::LoadConst, key_const);
+                                self.compile_expr(&kw.value)?;
+                                self.code.emit_u16(Opcode::BuildDict, 1);
+                                self.code.emit_u16(Opcode::DictMerge, func_name_id);
+                            }
+                            CallKwarg::Unpack(e) => {
+                                self.compile_expr(e)?;
+                                self.code.emit_u16(Opcode::DictMerge, func_name_id);
+                            }
+                        }
+                    }
+                }
+
+                // 3. Emit CallAttrExtended
+                self.code.set_location(call_pos, None);
+                let flags = u8::from(has_kwargs);
+                self.code.emit_u16_u8(Opcode::CallAttrExtended, func_name_id, flags);
+            }
         }
         Ok(())
     }
@@ -1782,6 +1928,73 @@ impl<'a> Compiler<'a> {
         let name_idx = u16::try_from(name_id.index()).expect("name index exceeds u16");
         let flags = u8::from(has_kwargs);
         self.code.emit_u16_u8(Opcode::CallAttrExtended, name_idx, flags);
+        Ok(())
+    }
+
+    /// Shared body for PEP 448 generalized calls with multiple `*args` and/or `**kwargs`.
+    ///
+    /// Assumes the callable is already on the stack (pushed by the caller).
+    /// Emits:
+    ///   1. `BuildList(0)` + per-item `ListAppend`/`ListExtend` + `ListToTuple` for args.
+    ///   2. `BuildDict(0)` + per-item `BuildDict(1)+DictMerge`/`DictMerge` for kwargs (if any).
+    ///   3. `CallFunctionExtended(flags)`.
+    ///
+    /// `func_name_id` is used in `DictMerge` error messages; pass `0xFFFF` when unknown.
+    ///
+    /// Stack transition (callable already on stack):
+    ///   `[callable]` → `[callable, args_tuple]` → `[callable, args_tuple, kwargs_dict?]`
+    ///   → `[result]`
+    fn compile_generalized_call_body(
+        &mut self,
+        args: &[CallArg],
+        kwargs: &[CallKwarg],
+        func_name_id: u16,
+        call_pos: CodeRange,
+    ) -> Result<(), CompileError> {
+        // 1. Build args tuple
+        self.code.emit_u16(Opcode::BuildList, 0);
+        for arg in args {
+            match arg {
+                CallArg::Value(e) => {
+                    self.compile_expr(e)?;
+                    self.code.emit_u8(Opcode::ListAppend, 0);
+                }
+                CallArg::Unpack(e) => {
+                    self.compile_expr(e)?;
+                    self.code.emit(Opcode::ListExtend);
+                }
+            }
+        }
+        self.code.emit(Opcode::ListToTuple);
+
+        // 2. Build kwargs dict (if any)
+        let has_kwargs = !kwargs.is_empty();
+        if has_kwargs {
+            // Start with an empty dict, then merge each kwarg one at a time via DictMerge
+            // so that duplicates (including Named+Unpack ordering) raise TypeError correctly.
+            self.code.emit_u16(Opcode::BuildDict, 0);
+            for kwarg in kwargs {
+                match kwarg {
+                    CallKwarg::Named(kw) => {
+                        // Wrap key+value in a single-item dict, then merge into kwargs dict.
+                        let key_const = self.code.add_const(Value::InternString(kw.key.name_id));
+                        self.code.emit_u16(Opcode::LoadConst, key_const);
+                        self.compile_expr(&kw.value)?;
+                        self.code.emit_u16(Opcode::BuildDict, 1);
+                        self.code.emit_u16(Opcode::DictMerge, func_name_id);
+                    }
+                    CallKwarg::Unpack(e) => {
+                        self.compile_expr(e)?;
+                        self.code.emit_u16(Opcode::DictMerge, func_name_id);
+                    }
+                }
+            }
+        }
+
+        // 3. Emit the extended call
+        self.code.set_location(call_pos, None);
+        let flags = u8::from(has_kwargs);
+        self.code.emit_u8(Opcode::CallFunctionExtended, flags);
         Ok(())
     }
 
@@ -2916,4 +3129,21 @@ fn cmp_operator_to_opcode(op: &CmpOperator) -> Opcode {
         // ModEq is handled specially at the call site (needs constant operand)
         CmpOperator::ModEq(_) => unreachable!("ModEq handled at call site"),
     }
+}
+
+/// Returns `true` if any item in the sequence is a PEP 448 unpack (`*expr`).
+///
+/// Used to choose between the fast single-`Build*(N)` path and the generalized
+/// incremental `Build*(0)` + `ListAppend`/`ListExtend` (or `SetAdd`/`SetExtend`) path.
+/// Only the generalized path is needed when at least one `Unpack` variant is present.
+fn has_unpack_seq(items: &[SequenceItem]) -> bool {
+    items.iter().any(|i| matches!(i, SequenceItem::Unpack(_)))
+}
+
+/// Returns `true` if any item in the dict literal is a PEP 448 `**expr` unpack.
+///
+/// Used to choose between the fast single-`BuildDict(N)` path and the generalized
+/// incremental `BuildDict(0)` + `DictSetItem`/`DictUpdate` path.
+fn has_unpack_dict(items: &[DictItem]) -> bool {
+    items.iter().any(|i| matches!(i, DictItem::Unpack(_)))
 }

@@ -227,6 +227,25 @@ pub enum Opcode {
     /// when the mapping contains non-string keys.
     DictMerge,
 
+    /// Pop a mapping, silently merge into the dict at `depth`. Operand: u8 depth.
+    ///
+    /// Used for `**expr` unpack inside dict literals, where later keys overwrite earlier ones
+    /// (unlike `DictMerge` which raises `TypeError` on duplicate keys).
+    ///
+    /// Stack: [..., dict, iter1, ..., iterN, mapping] -> [..., dict, iter1, ..., iterN]
+    /// Pops mapping (TOS), merges into dict at stack position `len - 2 - depth`.
+    /// Raises `TypeError` if `mapping` is not a dict.
+    DictUpdate,
+    /// Pop an iterable, add all items to set at `depth`. Operand: u8 depth.
+    ///
+    /// Used for `*expr` unpack inside set literals (e.g., `{*a, 1}`).
+    /// Follows the same depth convention as `ListAppend`/`SetAdd`.
+    ///
+    /// Stack: [..., set, iter1, ..., iterN, iterable] -> [..., set, iter1, ..., iterN]
+    /// Pops iterable (TOS), adds each item to set at stack position `len - 2 - depth`.
+    /// Raises `TypeError` if iterable is not iterable.
+    SetExtend,
+
     // === Comprehension Building ===
     /// Append TOS to list for comprehension. Operand: u8 depth (number of iterators).
     ///
@@ -432,15 +451,15 @@ impl Opcode {
             BuildSet, BuildSlice, BuildTuple, CallAttr, CallAttrExtended, CallAttrKw, CallBuiltinFunction,
             CallBuiltinType, CallFunction, CallFunctionExtended, CallFunctionKw, CheckExcMatch, ClearException,
             CompareEq, CompareGe, CompareGt, CompareIn, CompareIs, CompareIsNot, CompareLe, CompareLt, CompareModEq,
-            CompareNe, CompareNotIn, DeleteLocal, DictMerge, DictSetItem, Dup, ForIter, FormatValue, GetIter,
-            InplaceAdd, InplaceAnd, InplaceDiv, InplaceFloorDiv, InplaceLShift, InplaceMod, InplaceMul, InplaceOr,
-            InplacePow, InplaceRShift, InplaceSub, InplaceXor, Jump, JumpIfFalse, JumpIfFalseOrPop, JumpIfTrue,
-            JumpIfTrueOrPop, ListAppend, ListExtend, ListToTuple, LoadAttr, LoadAttrImport, LoadCell, LoadConst,
-            LoadFalse, LoadGlobal, LoadGlobalCallable, LoadLocal, LoadLocal0, LoadLocal1, LoadLocal2, LoadLocal3,
-            LoadLocalCallable, LoadLocalCallableW, LoadLocalW, LoadModule, LoadNone, LoadSmallInt, LoadTrue,
-            MakeClosure, MakeFunction, Nop, Pop, Raise, RaiseImportError, Reraise, ReturnValue, Rot2, Rot3, SetAdd,
-            StoreAttr, StoreCell, StoreGlobal, StoreLocal, StoreLocalW, StoreSubscr, UnaryInvert, UnaryNeg, UnaryNot,
-            UnaryPos, UnpackEx, UnpackSequence,
+            CompareNe, CompareNotIn, DeleteLocal, DictMerge, DictSetItem, DictUpdate, Dup, ForIter, FormatValue,
+            GetIter, InplaceAdd, InplaceAnd, InplaceDiv, InplaceFloorDiv, InplaceLShift, InplaceMod, InplaceMul,
+            InplaceOr, InplacePow, InplaceRShift, InplaceSub, InplaceXor, Jump, JumpIfFalse, JumpIfFalseOrPop,
+            JumpIfTrue, JumpIfTrueOrPop, ListAppend, ListExtend, ListToTuple, LoadAttr, LoadAttrImport, LoadCell,
+            LoadConst, LoadFalse, LoadGlobal, LoadGlobalCallable, LoadLocal, LoadLocal0, LoadLocal1, LoadLocal2,
+            LoadLocal3, LoadLocalCallable, LoadLocalCallableW, LoadLocalW, LoadModule, LoadNone, LoadSmallInt,
+            LoadTrue, MakeClosure, MakeFunction, Nop, Pop, Raise, RaiseImportError, Reraise, ReturnValue, Rot2,
+            Rot3, SetAdd, SetExtend, StoreAttr, StoreCell, StoreGlobal, StoreLocal, StoreLocalW, StoreSubscr,
+            UnaryInvert, UnaryNeg, UnaryNot, UnaryPos, UnpackEx, UnpackSequence,
         };
         Some(match self {
             // Stack operations
@@ -526,6 +545,12 @@ impl Opcode {
 
             // Unpacking - depends on operand
             UnpackSequence | UnpackEx => return None,
+
+            // Dict/set literal extensions (PEP 448):
+            // DictUpdate: pop mapping, silently merge into dict below = -1
+            DictUpdate => -1,
+            // SetExtend: pop iterable, add all items to set below = -1
+            SetExtend => -1,
 
             // Special
             Nop => 0,

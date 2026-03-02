@@ -104,3 +104,12 @@ assert len(s) == 3, 'set literal deduplication'
 x = 5
 s = {x, x + 1, x + 2}
 assert len(s) == 3, 'set literal with expressions'
+
+# === Set unpacking (PEP 448) ===
+a = [1, 2]
+b = [3, 4]
+assert {*a} == {1, 2}, 'single set unpack from list'
+assert {*a, *b} == {1, 2, 3, 4}, 'double set unpack'
+assert {0, *a, 5} == {0, 1, 2, 5}, 'mixed set unpack'
+assert {*[]} == set(), 'unpack empty into set'
+assert {*(1, 2)} == {1, 2}, 'unpack tuple into set'

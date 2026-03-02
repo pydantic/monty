@@ -3,11 +3,11 @@ use std::collections::hash_map::Entry;
 use ahash::{AHashMap, AHashSet};
 
 use crate::{
-    args::ArgExprs,
+    args::{ArgExprs, CallArg, CallKwarg},
     builtins::Builtins,
     expressions::{
-        Callable, CmpOperator, Comprehension, Expr, ExprLoc, Identifier, Literal, NameScope, Node, Operator,
-        PreparedFunctionDef, PreparedNode, UnpackTarget,
+        Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, Literal, NameScope, Node, Operator,
+        PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
     fstring::{FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
@@ -670,36 +670,41 @@ impl<'i> Prepare<'i> {
                 Expr::AttrGet { object, attr }
             }
             Expr::List(elements) => {
-                let expressions = elements
+                let items = elements
                     .into_iter()
-                    .map(|e| self.prepare_expression(e))
+                    .map(|item| self.prepare_sequence_item(item))
                     .collect::<Result<_, ParseError>>()?;
-                Expr::List(expressions)
+                Expr::List(items)
             }
             Expr::Tuple(elements) => {
-                let expressions = elements
+                let items = elements
                     .into_iter()
-                    .map(|e| self.prepare_expression(e))
+                    .map(|item| self.prepare_sequence_item(item))
                     .collect::<Result<_, ParseError>>()?;
-                Expr::Tuple(expressions)
+                Expr::Tuple(items)
             }
             Expr::Subscript { object, index } => Expr::Subscript {
                 object: Box::new(self.prepare_expression(*object)?),
                 index: Box::new(self.prepare_expression(*index)?),
             },
-            Expr::Dict(pairs) => {
-                let prepared_pairs = pairs
+            Expr::Dict(dict_items) => {
+                let prepared = dict_items
                     .into_iter()
-                    .map(|(k, v)| Ok((self.prepare_expression(k)?, self.prepare_expression(v)?)))
+                    .map(|item| match item {
+                        DictItem::Pair(k, v) => {
+                            Ok(DictItem::Pair(self.prepare_expression(k)?, self.prepare_expression(v)?))
+                        }
+                        DictItem::Unpack(e) => Ok(DictItem::Unpack(self.prepare_expression(e)?)),
+                    })
                     .collect::<Result<_, ParseError>>()?;
-                Expr::Dict(prepared_pairs)
+                Expr::Dict(prepared)
             }
             Expr::Set(elements) => {
-                let expressions = elements
+                let items = elements
                     .into_iter()
-                    .map(|e| self.prepare_expression(e))
+                    .map(|item| self.prepare_sequence_item(item))
                     .collect::<Result<_, ParseError>>()?;
-                Expr::Set(expressions)
+                Expr::Set(items)
             }
             Expr::Not(operand) => Expr::Not(Box::new(self.prepare_expression(*operand)?)),
             Expr::UnaryMinus(operand) => Expr::UnaryMinus(Box::new(self.prepare_expression(*operand)?)),
@@ -841,6 +846,17 @@ impl<'i> Prepare<'i> {
         }
 
         Expr::Name(self.get_id(name).0)
+    }
+
+    /// Prepares a `SequenceItem` by recursively preparing its inner expression.
+    ///
+    /// Both `Value` and `Unpack` variants need their expressions prepared
+    /// (name resolution, scope analysis, builtin detection, etc.).
+    fn prepare_sequence_item(&mut self, item: SequenceItem) -> Result<SequenceItem, ParseError> {
+        match item {
+            SequenceItem::Value(e) => Ok(SequenceItem::Value(self.prepare_expression(e)?)),
+            SequenceItem::Unpack(e) => Ok(SequenceItem::Unpack(self.prepare_expression(e)?)),
+        }
     }
 
     /// Prepares a comprehension with scope isolation for loop variables.
@@ -2053,13 +2069,21 @@ fn collect_assigned_names_from_expr(expr: &ExprLoc, assigned_names: &mut AHashSe
         // Recurse into sub-expressions
         Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
             for item in items {
-                collect_assigned_names_from_expr(item, assigned_names, interner);
+                let expr = match item {
+                    SequenceItem::Value(e) | SequenceItem::Unpack(e) => e,
+                };
+                collect_assigned_names_from_expr(expr, assigned_names, interner);
             }
         }
-        Expr::Dict(pairs) => {
-            for (key, value) in pairs {
-                collect_assigned_names_from_expr(key, assigned_names, interner);
-                collect_assigned_names_from_expr(value, assigned_names, interner);
+        Expr::Dict(dict_items) => {
+            for item in dict_items {
+                match item {
+                    DictItem::Pair(key, value) => {
+                        collect_assigned_names_from_expr(key, assigned_names, interner);
+                        collect_assigned_names_from_expr(value, assigned_names, interner);
+                    }
+                    DictItem::Unpack(e) => collect_assigned_names_from_expr(e, assigned_names, interner),
+                }
             }
         }
         Expr::Op { left, right, .. } | Expr::CmpOp { left, right, .. } => {
@@ -2191,6 +2215,25 @@ fn collect_assigned_names_from_args(
             }
             if let Some(var_kwargs) = var_kwargs {
                 collect_assigned_names_from_expr(var_kwargs, assigned_names, interner);
+            }
+        }
+        ArgExprs::GeneralizedCall { args, kwargs } => {
+            for arg in args {
+                match arg {
+                    CallArg::Value(e) | CallArg::Unpack(e) => {
+                        collect_assigned_names_from_expr(e, assigned_names, interner);
+                    }
+                }
+            }
+            for kwarg in kwargs {
+                match kwarg {
+                    CallKwarg::Named(kw) => {
+                        collect_assigned_names_from_expr(&kw.value, assigned_names, interner);
+                    }
+                    CallKwarg::Unpack(e) => {
+                        collect_assigned_names_from_expr(e, assigned_names, interner);
+                    }
+                }
             }
         }
     }
@@ -2373,13 +2416,21 @@ fn collect_cell_vars_from_expr(
         // Recurse into sub-expressions
         Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
             for item in items {
-                collect_cell_vars_from_expr(item, our_locals, cell_vars, interner);
+                let expr = match item {
+                    SequenceItem::Value(e) | SequenceItem::Unpack(e) => e,
+                };
+                collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
             }
         }
-        Expr::Dict(pairs) => {
-            for (key, value) in pairs {
-                collect_cell_vars_from_expr(key, our_locals, cell_vars, interner);
-                collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+        Expr::Dict(dict_items) => {
+            for item in dict_items {
+                match item {
+                    DictItem::Pair(key, value) => {
+                        collect_cell_vars_from_expr(key, our_locals, cell_vars, interner);
+                        collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+                    }
+                    DictItem::Unpack(e) => collect_cell_vars_from_expr(e, our_locals, cell_vars, interner),
+                }
             }
         }
         Expr::Op { left, right, .. } | Expr::CmpOp { left, right, .. } => {
@@ -2463,7 +2514,6 @@ fn collect_cell_vars_from_args(
     cell_vars: &mut AHashSet<String>,
     interner: &InternerBuilder,
 ) {
-    use crate::args::ArgExprs;
     match args {
         ArgExprs::Empty => {}
         ArgExprs::One(arg) => collect_cell_vars_from_expr(arg, our_locals, cell_vars, interner),
@@ -2502,6 +2552,25 @@ fn collect_cell_vars_from_args(
             }
             if let Some(var_kwargs) = var_kwargs {
                 collect_cell_vars_from_expr(var_kwargs, our_locals, cell_vars, interner);
+            }
+        }
+        ArgExprs::GeneralizedCall { args, kwargs } => {
+            for arg in args {
+                match arg {
+                    CallArg::Value(e) | CallArg::Unpack(e) => {
+                        collect_cell_vars_from_expr(e, our_locals, cell_vars, interner);
+                    }
+                }
+            }
+            for kwarg in kwargs {
+                match kwarg {
+                    CallKwarg::Named(kw) => {
+                        collect_cell_vars_from_expr(&kw.value, our_locals, cell_vars, interner);
+                    }
+                    CallKwarg::Unpack(e) => {
+                        collect_cell_vars_from_expr(e, our_locals, cell_vars, interner);
+                    }
+                }
             }
         }
     }
@@ -2627,13 +2696,21 @@ fn collect_referenced_names_from_expr(
         Expr::Builtin(_) => {}
         Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
             for item in items {
-                collect_referenced_names_from_expr(item, referenced, interner);
+                let expr = match item {
+                    SequenceItem::Value(e) | SequenceItem::Unpack(e) => e,
+                };
+                collect_referenced_names_from_expr(expr, referenced, interner);
             }
         }
-        Expr::Dict(pairs) => {
-            for (key, value) in pairs {
-                collect_referenced_names_from_expr(key, referenced, interner);
-                collect_referenced_names_from_expr(value, referenced, interner);
+        Expr::Dict(dict_items) => {
+            for item in dict_items {
+                match item {
+                    DictItem::Pair(key, value) => {
+                        collect_referenced_names_from_expr(key, referenced, interner);
+                        collect_referenced_names_from_expr(value, referenced, interner);
+                    }
+                    DictItem::Unpack(e) => collect_referenced_names_from_expr(e, referenced, interner),
+                }
             }
         }
         Expr::Op { left, right, .. } | Expr::CmpOp { left, right, .. } => {
@@ -2807,11 +2884,10 @@ fn collect_referenced_names_from_comprehension(
 
 /// Collects referenced names from argument expressions.
 fn collect_referenced_names_from_args(
-    args: &crate::args::ArgExprs,
+    args: &ArgExprs,
     referenced: &mut AHashSet<String>,
     interner: &InternerBuilder,
 ) {
-    use crate::args::ArgExprs;
     match args {
         ArgExprs::Empty => {}
         ArgExprs::One(e) => collect_referenced_names_from_expr(e, referenced, interner),
@@ -2824,8 +2900,52 @@ fn collect_referenced_names_from_args(
                 collect_referenced_names_from_expr(e, referenced, interner);
             }
         }
-        ArgExprs::Kwargs(_) | ArgExprs::ArgsKargs { .. } => {
-            // TODO: handle kwargs when needed
+        ArgExprs::Kwargs(kwargs) => {
+            for kwarg in kwargs {
+                collect_referenced_names_from_expr(&kwarg.value, referenced, interner);
+            }
+        }
+        ArgExprs::ArgsKargs {
+            args,
+            kwargs,
+            var_args,
+            var_kwargs,
+        } => {
+            if let Some(args) = args {
+                for e in args {
+                    collect_referenced_names_from_expr(e, referenced, interner);
+                }
+            }
+            if let Some(kwargs) = kwargs {
+                for kwarg in kwargs {
+                    collect_referenced_names_from_expr(&kwarg.value, referenced, interner);
+                }
+            }
+            if let Some(e) = var_args {
+                collect_referenced_names_from_expr(e, referenced, interner);
+            }
+            if let Some(e) = var_kwargs {
+                collect_referenced_names_from_expr(e, referenced, interner);
+            }
+        }
+        ArgExprs::GeneralizedCall { args, kwargs } => {
+            for arg in args {
+                match arg {
+                    CallArg::Value(e) | CallArg::Unpack(e) => {
+                        collect_referenced_names_from_expr(e, referenced, interner);
+                    }
+                }
+            }
+            for kwarg in kwargs {
+                match kwarg {
+                    CallKwarg::Named(kw) => {
+                        collect_referenced_names_from_expr(&kw.value, referenced, interner);
+                    }
+                    CallKwarg::Unpack(e) => {
+                        collect_referenced_names_from_expr(e, referenced, interner);
+                    }
+                }
+            }
         }
     }
 }
