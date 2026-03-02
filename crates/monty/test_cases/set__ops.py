@@ -121,3 +121,15 @@ assert {*inner_set} == {1, 2, 3}, 'unpack set into set'
 # Heap-allocated Str (result of concat, not interned): covers HeapData::Str in set_extend
 hs = 'hel' + 'lo'
 assert {*hs} == {'h', 'e', 'l', 'o'}, 'unpack heap string into set'
+
+
+# Non-iterable heap-allocated type (function) hits the `_` arm in set_extend
+def _set_unpack_not_iterable():
+    pass
+
+
+try:
+    _x = {*_set_unpack_not_iterable}
+    assert False, 'expected TypeError for non-iterable heap type in set unpack'
+except TypeError:
+    pass

@@ -94,3 +94,110 @@ def outer_multi():
 
 
 assert outer_multi() == ((1, 2, 3, 4), {'x': 10, 'y': 20}), 'closure: multi-star call'
+
+
+# === Closure calling with keyword-only args (ArgExprs::Kwargs) ===
+# The outer-function assignment `_precomp = f(a=val_a, b=val_b)` exercises
+# collect_assigned_names_from_args for the Kwargs arm.  The inner body exercises
+# collect_cell_vars_from_args and collect_referenced_names_from_args for Kwargs.
+def outer_kwargs_call():
+    def f(**kwargs):
+        return kwargs
+
+    val_a = 10
+    val_b = 20
+    # Assignment RHS is a Kwargs call → triggers collect_assigned_names_from_args Kwargs arm
+    _precomp = f(a=val_a, b=val_b)
+
+    def inner():
+        # Kwargs call in inner body → collect_cell/referenced_names Kwargs arm
+        return f(a=val_a, b=val_b)
+
+    return inner()
+
+
+assert outer_kwargs_call() == {'a': 10, 'b': 20}, 'closure: keyword-only call'
+
+
+# === Closure calling with positional + *star (ArgsKargs with args=Some) ===
+# Exercises ArgsKargs branch where the positional-args field is non-None.
+def outer_argsstar():
+    def f(*args):
+        return list(args)
+
+    pos_val = 1
+    items = [2, 3]
+    # Assignment RHS has positional arg + star → ArgsKargs with args=Some([pos_val])
+    _precomp = f(pos_val, *items)
+
+    def inner():
+        return f(pos_val, *items)
+
+    return inner()
+
+
+assert outer_argsstar() == [1, 2, 3], 'closure: positional + *args'
+
+
+# === Closure calling with named kwarg + **kw (ArgsKargs with kwargs=Some) ===
+# Exercises ArgsKargs branch where the named-kwargs field is non-None.
+def outer_kwargsstar():
+    def f(**kwargs):
+        return kwargs
+
+    val = 1
+    extra = {'b': 2}
+    # Assignment RHS has named kwarg + double-star → ArgsKargs with kwargs=Some
+    _precomp = f(a=val, **extra)
+
+    def inner():
+        return f(a=val, **extra)
+
+    return inner()
+
+
+assert outer_kwargsstar() == {'a': 1, 'b': 2}, 'closure: named kwarg + **kw'
+
+
+# === Closure with GeneralizedCall and Named kwarg ===
+# Exercises the CallKwarg::Named arm in all three collect_*_names_from_args functions.
+def outer_generalized_named():
+    def f(*args, **kwargs):
+        return (args, kwargs)
+
+    a = [1, 2]
+    b = [3]
+    key_val = 99
+    # Assignment RHS has GeneralizedCall with Named kwarg → collect_assigned_names Named arm
+    _precomp = f(*a, *b, key=key_val)
+
+    def inner():
+        # Named kwarg in GeneralizedCall → collect_cell/referenced_names Named arm
+        return f(*a, *b, key=key_val)
+
+    return inner()
+
+
+assert outer_generalized_named() == ((1, 2, 3), {'key': 99}), 'closure: generalized call with named kwarg'
+
+
+# === Closure with GeneralizedCall and plain Value arg ===
+# Exercises the CallArg::Value path of the GeneralizedCall args loop,
+# covering the Value branch of the `CallArg::Value | CallArg::Unpack` OR-pattern.
+def outer_generalized_mixed():
+    def f(*args):
+        return list(args)
+
+    const = 0
+    items1 = [1, 2]
+    items2 = [3, 4]
+    # GeneralizedCall with Value(const) + Unpack(items1) + Unpack(items2)
+    _precomp = f(const, *items1, *items2)
+
+    def inner():
+        return f(const, *items1, *items2)
+
+    return inner()
+
+
+assert outer_generalized_mixed() == [0, 1, 2, 3, 4], 'closure: generalized call with value + unpack args'

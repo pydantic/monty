@@ -433,3 +433,15 @@ assert sorted([*{1, 2, 3}]) == [1, 2, 3], 'unpack set into list'
 # Heap-allocated Str (result of concat, not interned): covers HeapData::Str in list_extend
 hs = 'hel' + 'lo'
 assert [*hs] == ['h', 'e', 'l', 'l', 'o'], 'unpack heap string into list'
+
+
+# Non-iterable heap-allocated type (function) hits the `_` arm in list_extend
+def _list_unpack_not_iterable():
+    pass
+
+
+try:
+    _x = [*_list_unpack_not_iterable]
+    assert False, 'expected TypeError for non-iterable heap type in list unpack'
+except TypeError:
+    pass
