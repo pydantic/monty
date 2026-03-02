@@ -428,3 +428,8 @@ assert [*[]] == [], 'unpack empty list'
 assert [*(1, 2)] == [1, 2], 'unpack tuple into list'
 assert [*'abc'] == ['a', 'b', 'c'], 'unpack string into list'
 assert [*{'x': 1, 'y': 2}] == ['x', 'y'], 'unpack dict keys into list'
+# Heap-allocated set: covers the HeapData::Set arm in list_extend
+assert sorted([*{1, 2, 3}]) == [1, 2, 3], 'unpack set into list'
+# Heap-allocated Str (result of concat, not interned): covers HeapData::Str in list_extend
+hs = 'hel' + 'lo'
+assert [*hs] == ['h', 'e', 'l', 'l', 'o'], 'unpack heap string into list'

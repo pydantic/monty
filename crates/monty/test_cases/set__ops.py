@@ -115,3 +115,9 @@ assert {*[]} == set(), 'unpack empty into set'
 assert {*(1, 2)} == {1, 2}, 'unpack tuple into set'
 assert {*{'a': 1, 'b': 2}} == {'a', 'b'}, 'unpack dict keys into set'
 assert {*'aab'} == {'a', 'b'}, 'unpack string into set'
+# Heap-allocated set: covers the HeapData::Set arm in set_extend
+inner_set = {1, 2, 3}
+assert {*inner_set} == {1, 2, 3}, 'unpack set into set'
+# Heap-allocated Str (result of concat, not interned): covers HeapData::Str in set_extend
+hs = 'hel' + 'lo'
+assert {*hs} == {'h', 'e', 'l', 'o'}, 'unpack heap string into set'

@@ -31,3 +31,12 @@ assert result == ((1, 2, 3, 4), {}), 'subscript call with multiple *args'
 
 result = funcs[0](**{'a': 1}, **{'b': 2})
 assert result == ((), {'a': 1, 'b': 2}), 'subscript call with multiple **kwargs'
+
+# === Named kwarg in GeneralizedCall (compile_generalized_call_body Named path) ===
+# f(*[1,2], *[3], x=5): two *unpacks → GeneralizedCall; x=5 is a Named kwarg.
+# This exercises the CallKwarg::Named arm in compile_generalized_call_body.
+result = f(*[1, 2], *[3], x=5)
+assert result == ((1, 2, 3), {'x': 5}), 'named kwarg in multi-star GeneralizedCall'
+
+result = funcs[0](*[1, 2], *[3], x=5)
+assert result == ((1, 2, 3), {'x': 5}), 'subscript call: named kwarg in GeneralizedCall'
