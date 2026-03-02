@@ -250,13 +250,36 @@ impl Executor {
         let mut vm = VM::new(&mut heap, &mut namespaces, &self.interns, print);
         let mut frame_exit_result = vm.run_module(&self.module_code);
 
-        // Handle NameLookup exits by raising NameError through the VM so that
-        // traceback information is properly captured. In the non-iterative path,
-        // there's no host to resolve names, so all NameLookup exits become NameErrors.
-        while let Ok(FrameExit::NameLookup { name_id, .. }) = &frame_exit_result {
-            let name = self.interns.get_str(*name_id);
-            let err = ExcType::name_error(name);
-            frame_exit_result = vm.resume_with_exception(err.into());
+        // Handle NameLookup and ExternalCall exits by raising NameError through the VM
+        // so that traceback information is properly captured. In the non-iterative path,
+        // there's no host to resolve names or external functions, so these become NameErrors.
+        loop {
+            match frame_exit_result {
+                Ok(FrameExit::NameLookup { name_id, .. }) => {
+                    let name = self.interns.get_str(name_id);
+                    let err = ExcType::name_error(name);
+                    frame_exit_result = vm.resume_with_exception(err.into());
+                }
+                Ok(FrameExit::ExternalCall {
+                    function_name_id,
+                    args,
+                    name_load_ip,
+                    ..
+                }) => {
+                    // In standard execution, an ExtFunction from LoadGlobalCallable/
+                    // LoadLocalCallable means the name was undefined — raise NameError.
+                    // Restore the frame IP to the load instruction so the traceback
+                    // points to the name reference, not the call expression.
+                    if let Some(load_ip) = name_load_ip {
+                        vm.set_instruction_ip(load_ip);
+                    }
+                    let name = self.interns.get_str(function_name_id);
+                    args.drop_with_heap(vm.heap);
+                    let err = ExcType::name_error(name);
+                    frame_exit_result = vm.resume_with_exception(err.into());
+                }
+                _ => break,
+            }
         }
 
         // Clean up VM state before it goes out of scope

@@ -221,31 +221,20 @@ fn undefined_in_function_raises_name_error() {
 // Caching
 // ---------------------------------------------------------------------------
 
-/// A name resolved via `NameLookup` is cached in the namespace — using the same
-/// name twice should yield only one `NameLookup`.
+/// Function calls in call context bypass `NameLookup` entirely — they go
+/// directly to `FunctionCall` via `LoadGlobalCallable` + `ExtFunction`.
 #[test]
 fn resolved_name_is_cached() {
     let code = "a = ext(1); b = ext(2); a + b".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
     let mut progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
-    let mut lookup_count = 0;
+    let mut call_count = 0;
     loop {
         match progress {
-            RunProgress::NameLookup(lookup) => {
-                assert_eq!(lookup.name, "ext", "unexpected name lookup");
-                lookup_count += 1;
-                progress = lookup
-                    .resume(
-                        MontyObject::Function {
-                            name: "ext".to_string(),
-                            docstring: None,
-                        },
-                        &mut PrintWriter::Stdout,
-                    )
-                    .unwrap();
-            }
             RunProgress::FunctionCall(call) => {
+                assert_eq!(call.function_name, "ext");
+                call_count += 1;
                 let val: i64 = (&call.args[0]).try_into().unwrap();
                 progress = call
                     .resume(MontyObject::Int(val * 10), &mut PrintWriter::Stdout)
@@ -259,7 +248,7 @@ fn resolved_name_is_cached() {
             other => panic!("unexpected progress: {other:?}"),
         }
     }
-    assert_eq!(lookup_count, 1, "NameLookup should fire only once for a cached name");
+    assert_eq!(call_count, 2, "should get FunctionCall for each ext() call");
 }
 
 /// A non-function constant resolved once is also cached.
@@ -292,27 +281,19 @@ fn resolved_constant_is_cached() {
 // Multiple names
 // ---------------------------------------------------------------------------
 
-/// Different undefined names each get their own `NameLookup`, in access order.
+/// Different undefined names in call context each yield `FunctionCall` directly
+/// (via `LoadGlobalCallable`), not `NameLookup`.
 #[test]
 fn multiple_names_each_looked_up() {
     let code = "a = foo(1); b = bar(2); a + b".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
     let mut progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 
-    let mut looked_up_names = Vec::new();
+    let mut called_names = Vec::new();
     loop {
         match progress {
-            RunProgress::NameLookup(lookup) => {
-                let name = lookup.name.clone();
-                looked_up_names.push(name.clone());
-                progress = lookup
-                    .resume(
-                        MontyObject::Function { name, docstring: None },
-                        &mut PrintWriter::Stdout,
-                    )
-                    .unwrap();
-            }
             RunProgress::FunctionCall(call) => {
+                called_names.push(call.function_name.clone());
                 let val: i64 = (&call.args[0]).try_into().unwrap();
                 progress = call
                     .resume(MontyObject::Int(val * 100), &mut PrintWriter::Stdout)
@@ -326,10 +307,12 @@ fn multiple_names_each_looked_up() {
             other => panic!("unexpected progress: {other:?}"),
         }
     }
-    assert_eq!(looked_up_names, vec!["foo", "bar"]);
+    assert_eq!(called_names, vec!["foo", "bar"]);
 }
 
-/// Mix of function and non-function name lookups in the same execution.
+/// Mix of function calls and constant name lookups in the same execution.
+/// `ext` in call context goes directly to `FunctionCall` (no `NameLookup`).
+/// `OFFSET` in non-call context yields `NameLookup`.
 #[test]
 fn mixed_function_and_constant_lookups() {
     let code = "ext(OFFSET)".to_owned();
@@ -343,13 +326,13 @@ fn mixed_function_and_constant_lookups() {
                 let name = lookup.name.clone();
                 looked_up_names.push(name.clone());
                 let value = match name.as_str() {
-                    "ext" => MontyObject::Function { name, docstring: None },
                     "OFFSET" => MontyObject::Int(100),
-                    _ => panic!("unexpected name: {name}"),
+                    _ => panic!("unexpected name lookup: {name}"),
                 };
                 progress = lookup.resume(value, &mut PrintWriter::Stdout).unwrap();
             }
             RunProgress::FunctionCall(call) => {
+                // ext goes directly to FunctionCall via LoadGlobalCallable
                 assert_eq!(call.function_name, "ext");
                 assert_eq!(call.args, vec![MontyObject::Int(100)]);
                 progress = call.resume(MontyObject::Int(999), &mut PrintWriter::Stdout).unwrap();
@@ -361,8 +344,8 @@ fn mixed_function_and_constant_lookups() {
             other => panic!("unexpected progress: {other:?}"),
         }
     }
-    // 'ext' is looked up first (function position), then 'OFFSET' (argument)
-    assert_eq!(looked_up_names, vec!["ext", "OFFSET"]);
+    // Only 'OFFSET' yields NameLookup; 'ext' bypasses it via LoadGlobalCallable
+    assert_eq!(looked_up_names, vec!["OFFSET"]);
 }
 
 // ---------------------------------------------------------------------------

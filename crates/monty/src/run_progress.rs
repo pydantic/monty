@@ -672,6 +672,7 @@ pub(crate) fn handle_vm_result<T: ResourceTracker>(
             function_name_id,
             args,
             call_id,
+            ..
         }) => {
             let function_name = executor.interns.get_str(function_name_id).to_owned();
             let (args_py, kwargs_py) = args.into_py_objects(&mut heap, &executor.interns);

@@ -4,22 +4,9 @@
 //! only the newly fed snippet each time.
 
 use monty::{
-    ExternalResult, MontyObject, MontyRepl, NameLookupResult, NoLimitTracker, PrintWriter, ReplContinuationMode,
-    ReplProgress, ReplStartError, detect_repl_continuation_mode,
+    ExternalResult, MontyObject, MontyRepl, NoLimitTracker, PrintWriter, ReplContinuationMode, ReplProgress,
+    ReplStartError, detect_repl_continuation_mode,
 };
-
-/// Resolves a NameLookup by providing a Function object for the given name,
-/// then returns the next progress state.
-fn resolve_name_lookup<T: monty::ResourceTracker>(
-    progress: ReplProgress<T>,
-) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
-    let lookup = progress.into_name_lookup().expect("expected NameLookup");
-    let name = lookup.name.clone();
-    lookup.resume(
-        NameLookupResult::Value(MontyObject::Function { name, docstring: None }),
-        &mut PrintWriter::Stdout,
-    )
-}
 
 fn init_repl(code: &str) -> (MontyRepl<NoLimitTracker>, MontyObject) {
     MontyRepl::new(
@@ -180,11 +167,8 @@ fn repl_start_external_call_resumes_to_updated_repl() {
     let (repl, init_output) = init_repl("");
     assert_eq!(init_output, MontyObject::None);
 
-    // First, the VM yields NameLookup for the unresolved name "ext_fn"
+    // With LoadGlobalCallable, function calls go directly to FunctionCall
     let progress = repl.start("ext_fn(41) + 1", &mut PrintWriter::Stdout).unwrap();
-    let progress = resolve_name_lookup(progress).unwrap();
-
-    // Now we get the FunctionCall
     let call = progress.into_function_call().expect("expected function call");
     assert_eq!(call.function_name, "ext_fn");
     assert_eq!(call.args, vec![MontyObject::Int(41)]);
@@ -200,9 +184,8 @@ fn repl_start_external_call_resumes_to_updated_repl() {
 fn repl_progress_dump_load_roundtrip() {
     let (repl, _) = init_repl("");
 
-    // First resolve the NameLookup, then dump/load the FunctionCall snapshot
+    // With LoadGlobalCallable, ext_fn goes directly to FunctionCall
     let progress = repl.start("ext_fn(20) + 22", &mut PrintWriter::Stdout).unwrap();
-    let progress = resolve_name_lookup(progress).unwrap();
 
     let bytes = progress.dump().unwrap();
     let loaded: ReplProgress<NoLimitTracker> = ReplProgress::load(&bytes).unwrap();
@@ -228,8 +211,7 @@ async def main():
     );
 
     let progress = repl.start("await main()", &mut PrintWriter::Stdout).unwrap();
-    // First resolve the NameLookup for "foo"
-    let progress = resolve_name_lookup(progress).unwrap();
+    // With LoadGlobalCallable, foo() goes directly to FunctionCall
     let call = progress.into_function_call().expect("expected function call");
     let call_id = call.call_id;
 
@@ -280,7 +262,6 @@ fn repl_start_runtime_error_during_external_call_preserves_repl_state() {
     let (repl, _) = init_repl("z = 99");
 
     let progress = repl.start("ext_fn(1)", &mut PrintWriter::Stdout).unwrap();
-    let progress = resolve_name_lookup(progress).unwrap();
     let call = progress.into_function_call().expect("expected function call");
 
     // Resume with an exception from the external function.

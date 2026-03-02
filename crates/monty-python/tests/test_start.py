@@ -93,7 +93,7 @@ def test_start_chain_of_external_calls():
     m = pydantic_monty.Monty('c() + c() + c()')
 
     call_count = 0
-    progress: pydantic_monty.FunctionSnapshot | pydantic_monty.FutureSnapshot | pydantic_monty.MontyComplete = m.start()
+    progress = m.start()
 
     while isinstance(progress, pydantic_monty.FunctionSnapshot | pydantic_monty.FutureSnapshot):
         assert isinstance(progress, pydantic_monty.FunctionSnapshot), 'Expected FunctionSnapshot'
