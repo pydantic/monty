@@ -17,3 +17,4 @@
 /.playwright-mcp/
 /crates/fuzz/artifacts/
 /crates/fuzz/corpus/
+/.worktrees/
