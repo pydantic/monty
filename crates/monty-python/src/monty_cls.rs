@@ -469,7 +469,7 @@ impl EitherProgress {
         match self {
             Self::NoLimit(p) => match p {
                 RunProgress::Complete(result) => PyMontyComplete::create(py, &result, &dc_registry),
-                RunProgress::FunctionCall(call) => Self::function_call_snapshot(
+                RunProgress::FunctionCall(call) => PyFunctionSnapshot::function_call(
                     py,
                     call,
                     EitherFunctionSnapshot::wrap_fn_no_limit,
@@ -477,14 +477,14 @@ impl EitherProgress {
                     print_callback,
                     dc_registry,
                 ),
-                RunProgress::ResolveFutures(state) => Self::future_snapshot(
+                RunProgress::ResolveFutures(state) => PyFutureSnapshot::new_py_any(
                     py,
                     EitherFutureSnapshot::NoLimit(state),
                     script_name,
                     print_callback,
                     dc_registry,
                 ),
-                RunProgress::OsCall(call) => Self::os_call_snapshot(
+                RunProgress::OsCall(call) => PyFunctionSnapshot::os_call(
                     py,
                     call,
                     EitherFunctionSnapshot::wrap_os_no_limit,
@@ -492,7 +492,7 @@ impl EitherProgress {
                     print_callback,
                     dc_registry,
                 ),
-                RunProgress::NameLookup(lookup) => Self::name_lookup_snapshot(
+                RunProgress::NameLookup(lookup) => PyNameLookupSnapshot::new_py_any(
                     py,
                     lookup,
                     EitherLookupSnapshot::wrap_no_limit,
@@ -503,7 +503,7 @@ impl EitherProgress {
             },
             Self::Limited(p) => match p {
                 RunProgress::Complete(result) => PyMontyComplete::create(py, &result, &dc_registry),
-                RunProgress::FunctionCall(call) => Self::function_call_snapshot(
+                RunProgress::FunctionCall(call) => PyFunctionSnapshot::function_call(
                     py,
                     call,
                     EitherFunctionSnapshot::wrap_fn_limited,
@@ -511,14 +511,14 @@ impl EitherProgress {
                     print_callback,
                     dc_registry,
                 ),
-                RunProgress::ResolveFutures(state) => Self::future_snapshot(
+                RunProgress::ResolveFutures(state) => PyFutureSnapshot::new_py_any(
                     py,
                     EitherFutureSnapshot::Limited(state),
                     script_name,
                     print_callback,
                     dc_registry,
                 ),
-                RunProgress::OsCall(call) => Self::os_call_snapshot(
+                RunProgress::OsCall(call) => PyFunctionSnapshot::os_call(
                     py,
                     call,
                     EitherFunctionSnapshot::wrap_os_limited,
@@ -526,7 +526,7 @@ impl EitherProgress {
                     print_callback,
                     dc_registry,
                 ),
-                RunProgress::NameLookup(lookup) => Self::name_lookup_snapshot(
+                RunProgress::NameLookup(lookup) => PyNameLookupSnapshot::new_py_any(
                     py,
                     lookup,
                     EitherLookupSnapshot::wrap_limited,
@@ -536,125 +536,6 @@ impl EitherProgress {
                 ),
             },
         }
-    }
-
-    /// Creates a `PyFunctionSnapshot` for an external function call.
-    ///
-    /// Extracts display fields from the `FunctionCall` before moving it into
-    /// `EitherSnapshot` via the provided `wrap` closure.
-    fn function_call_snapshot<T: ResourceTracker>(
-        py: Python<'_>,
-        call: FunctionCall<T>,
-        wrap: fn(FunctionCall<T>) -> EitherFunctionSnapshot,
-        script_name: String,
-        print_callback: Option<Py<PyAny>>,
-        dc_registry: DcRegistry,
-    ) -> PyResult<Bound<'_, PyAny>> {
-        let function_name = call.function_name.clone();
-        let call_id = call.call_id;
-        let method_call = call.method_call;
-        let items: PyResult<Vec<Py<PyAny>>> = call
-            .args
-            .iter()
-            .map(|item| monty_to_py(py, item, &dc_registry))
-            .collect();
-        let dict = PyDict::new(py);
-        for (k, v) in &call.kwargs {
-            dict.set_item(monty_to_py(py, k, &dc_registry)?, monty_to_py(py, v, &dc_registry)?)?;
-        }
-
-        let slf = PyFunctionSnapshot {
-            snapshot: Mutex::new(wrap(call)),
-            print_callback,
-            script_name,
-            is_os_function: false,
-            is_method_call: method_call,
-            function_name,
-            args: PyTuple::new(py, items?)?.unbind(),
-            kwargs: dict.unbind(),
-            call_id,
-            dc_registry,
-        };
-        slf.into_bound_py_any(py)
-    }
-
-    /// Creates a `PyNameLookupSnapshot` for an external function call.
-    ///
-    /// Extracts display fields from the `FunctionCall` before moving it into
-    /// `EitherSnapshot` via the provided `wrap` closure.
-    fn name_lookup_snapshot<T: ResourceTracker>(
-        py: Python<'_>,
-        lookup: NameLookup<T>,
-        wrap: fn(NameLookup<T>) -> EitherLookupSnapshot,
-        script_name: String,
-        print_callback: Option<Py<PyAny>>,
-        dc_registry: DcRegistry,
-    ) -> PyResult<Bound<'_, PyAny>> {
-        let variable_name = lookup.name.clone();
-
-        let slf = PyNameLookupSnapshot {
-            snapshot: Mutex::new(wrap(lookup)),
-            print_callback,
-            dc_registry,
-            script_name,
-            variable_name,
-        };
-        slf.into_bound_py_any(py)
-    }
-
-    /// Creates a `PyFunctionSnapshot` for an OS-level call.
-    ///
-    /// Extracts display fields from the `OsCall` before moving it into
-    /// `EitherSnapshot` via the provided `wrap` closure.
-    fn os_call_snapshot<T: ResourceTracker>(
-        py: Python<'_>,
-        call: OsCall<T>,
-        wrap: fn(OsCall<T>) -> EitherFunctionSnapshot,
-        script_name: String,
-        print_callback: Option<Py<PyAny>>,
-        dc_registry: DcRegistry,
-    ) -> PyResult<Bound<'_, PyAny>> {
-        let function_name = call.function.to_string();
-        let call_id = call.call_id;
-        let items: PyResult<Vec<Py<PyAny>>> = call
-            .args
-            .iter()
-            .map(|item| monty_to_py(py, item, &dc_registry))
-            .collect();
-        let dict = PyDict::new(py);
-        for (k, v) in &call.kwargs {
-            dict.set_item(monty_to_py(py, k, &dc_registry)?, monty_to_py(py, v, &dc_registry)?)?;
-        }
-
-        let slf = PyFunctionSnapshot {
-            snapshot: Mutex::new(wrap(call)),
-            print_callback,
-            script_name,
-            is_os_function: true,
-            is_method_call: false,
-            function_name,
-            args: PyTuple::new(py, items?)?.unbind(),
-            kwargs: dict.unbind(),
-            call_id,
-            dc_registry,
-        };
-        slf.into_bound_py_any(py)
-    }
-
-    fn future_snapshot(
-        py: Python<'_>,
-        snapshot: EitherFutureSnapshot,
-        script_name: String,
-        print_callback: Option<Py<PyAny>>,
-        dc_registry: DcRegistry,
-    ) -> PyResult<Bound<'_, PyAny>> {
-        let slf = PyFutureSnapshot {
-            snapshot: Mutex::new(snapshot),
-            print_callback,
-            dc_registry,
-            script_name,
-        };
-        slf.into_bound_py_any(py)
     }
 }
 
@@ -972,6 +853,87 @@ pub struct PyFunctionSnapshot {
     pub call_id: u32,
 }
 
+impl PyFunctionSnapshot {
+    /// Creates a `PyFunctionSnapshot` for an external function call.
+    ///
+    /// Extracts display fields from the `FunctionCall` before moving it into
+    /// `EitherSnapshot` via the provided `wrap` closure.
+    fn function_call<T: ResourceTracker>(
+        py: Python<'_>,
+        call: FunctionCall<T>,
+        wrap: fn(FunctionCall<T>) -> EitherFunctionSnapshot,
+        script_name: String,
+        print_callback: Option<Py<PyAny>>,
+        dc_registry: DcRegistry,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let function_name = call.function_name.clone();
+        let call_id = call.call_id;
+        let method_call = call.method_call;
+        let items: PyResult<Vec<Py<PyAny>>> = call
+            .args
+            .iter()
+            .map(|item| monty_to_py(py, item, &dc_registry))
+            .collect();
+        let dict = PyDict::new(py);
+        for (k, v) in &call.kwargs {
+            dict.set_item(monty_to_py(py, k, &dc_registry)?, monty_to_py(py, v, &dc_registry)?)?;
+        }
+
+        let slf = Self {
+            snapshot: Mutex::new(wrap(call)),
+            print_callback,
+            script_name,
+            is_os_function: false,
+            is_method_call: method_call,
+            function_name,
+            args: PyTuple::new(py, items?)?.unbind(),
+            kwargs: dict.unbind(),
+            call_id,
+            dc_registry,
+        };
+        slf.into_bound_py_any(py)
+    }
+
+    /// Creates a `PyFunctionSnapshot` for an OS-level call.
+    ///
+    /// Extracts display fields from the `OsCall` before moving it into
+    /// `EitherSnapshot` via the provided `wrap` closure.
+    fn os_call<T: ResourceTracker>(
+        py: Python<'_>,
+        call: OsCall<T>,
+        wrap: fn(OsCall<T>) -> EitherFunctionSnapshot,
+        script_name: String,
+        print_callback: Option<Py<PyAny>>,
+        dc_registry: DcRegistry,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let function_name = call.function.to_string();
+        let call_id = call.call_id;
+        let items: PyResult<Vec<Py<PyAny>>> = call
+            .args
+            .iter()
+            .map(|item| monty_to_py(py, item, &dc_registry))
+            .collect();
+        let dict = PyDict::new(py);
+        for (k, v) in &call.kwargs {
+            dict.set_item(monty_to_py(py, k, &dc_registry)?, monty_to_py(py, v, &dc_registry)?)?;
+        }
+
+        let slf = Self {
+            snapshot: Mutex::new(wrap(call)),
+            print_callback,
+            script_name,
+            is_os_function: true,
+            is_method_call: false,
+            function_name,
+            args: PyTuple::new(py, items?)?.unbind(),
+            kwargs: dict.unbind(),
+            call_id,
+            dc_registry,
+        };
+        slf.into_bound_py_any(py)
+    }
+}
+
 #[pymethods]
 impl PyFunctionSnapshot {
     /// Resumes execution with either a return value, exception or future.
@@ -1221,6 +1183,32 @@ pub struct PyNameLookupSnapshot {
     pub variable_name: String,
 }
 
+impl PyNameLookupSnapshot {
+    /// Creates a `PyNameLookupSnapshot` for an external function call.
+    ///
+    /// Extracts display fields from the `FunctionCall` before moving it into
+    /// `EitherSnapshot` via the provided `wrap` closure.
+    fn new_py_any<T: ResourceTracker>(
+        py: Python<'_>,
+        lookup: NameLookup<T>,
+        wrap: fn(NameLookup<T>) -> EitherLookupSnapshot,
+        script_name: String,
+        print_callback: Option<Py<PyAny>>,
+        dc_registry: DcRegistry,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let variable_name = lookup.name.clone();
+
+        let slf = Self {
+            snapshot: Mutex::new(wrap(lookup)),
+            print_callback,
+            dc_registry,
+            script_name,
+            variable_name,
+        };
+        slf.into_bound_py_any(py)
+    }
+}
+
 #[pymethods]
 impl PyNameLookupSnapshot {
     /// Resumes execution with either a value or undefined
@@ -1386,6 +1374,24 @@ pub struct PyFutureSnapshot {
     /// Name of the script being executed
     #[pyo3(get)]
     pub script_name: String,
+}
+
+impl PyFutureSnapshot {
+    fn new_py_any(
+        py: Python<'_>,
+        snapshot: EitherFutureSnapshot,
+        script_name: String,
+        print_callback: Option<Py<PyAny>>,
+        dc_registry: DcRegistry,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let slf = Self {
+            snapshot: Mutex::new(snapshot),
+            print_callback,
+            dc_registry,
+            script_name,
+        };
+        slf.into_bound_py_any(py)
+    }
 }
 
 #[pymethods]
