@@ -46,10 +46,7 @@ fn resolve_name_lookups<T: monty::ResourceTracker>(
     while let RunProgress::NameLookup(lookup) = progress {
         let name = lookup.name.clone();
         progress = lookup.resume(
-            NameLookupResult::Value(MontyObject::Function {
-                name,
-                docstring: String::new(),
-            }),
+            NameLookupResult::Value(MontyObject::Function { name, docstring: None }),
             &mut PrintWriter::Stdout,
         )?;
     }
@@ -69,10 +66,7 @@ fn drive_to_resolve_futures<T: monty::ResourceTracker>(mut progress: RunProgress
                 let name = lookup.name.clone();
                 progress = lookup
                     .resume(
-                        NameLookupResult::Value(MontyObject::Function {
-                            name,
-                            docstring: String::new(),
-                        }),
+                        NameLookupResult::Value(MontyObject::Function { name, docstring: None }),
                         &mut PrintWriter::Stdout,
                     )
                     .unwrap();
@@ -594,10 +588,7 @@ fn drive_collecting_calls<T: monty::ResourceTracker>(
                 let name = lookup.name.clone();
                 progress = lookup
                     .resume(
-                        NameLookupResult::Value(MontyObject::Function {
-                            name,
-                            docstring: String::new(),
-                        }),
+                        NameLookupResult::Value(MontyObject::Function { name, docstring: None }),
                         &mut PrintWriter::Stdout,
                     )
                     .unwrap();

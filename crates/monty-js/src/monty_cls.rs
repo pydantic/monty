@@ -1025,7 +1025,7 @@ fn resolve_name_lookups_loop<T: ResourceTracker>(
             RunProgress::NameLookup(lookup) => {
                 let result = NameLookupResult::Value(MontyObject::Function {
                     name: lookup.name.clone(),
-                    docstring: String::new(),
+                    docstring: None,
                 });
                 progress = lookup.resume(result, &mut PrintWriter::Stdout)?;
             }
@@ -1241,7 +1241,7 @@ fn resolve_name_lookup(external_functions: Option<&Object<'_>>, name: &str) -> R
         if functions.has_named_property(name)? {
             return Ok(NameLookupResult::Value(MontyObject::Function {
                 name: name.to_string(),
-                docstring: String::new(),
+                docstring: None, // TODO, can we do better?
             }));
         }
     }

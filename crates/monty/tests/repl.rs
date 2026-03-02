@@ -16,10 +16,7 @@ fn resolve_name_lookup<T: monty::ResourceTracker>(
     let lookup = progress.into_name_lookup().expect("expected NameLookup");
     let name = lookup.name.clone();
     lookup.resume(
-        NameLookupResult::Value(MontyObject::Function {
-            name,
-            docstring: String::new(),
-        }),
+        NameLookupResult::Value(MontyObject::Function { name, docstring: None }),
         &mut PrintWriter::Stdout,
     )
 }

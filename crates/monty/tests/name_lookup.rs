@@ -34,7 +34,7 @@ fn resolve_as_functions(
     resolve_lookups_with(progress, |name| {
         NameLookupResult::Value(MontyObject::Function {
             name: name.to_string(),
-            docstring: String::new(),
+            docstring: None,
         })
     })
 }
@@ -239,7 +239,7 @@ fn resolved_name_is_cached() {
                     .resume(
                         MontyObject::Function {
                             name: "ext".to_string(),
-                            docstring: String::new(),
+                            docstring: None,
                         },
                         &mut PrintWriter::Stdout,
                     )
@@ -307,10 +307,7 @@ fn multiple_names_each_looked_up() {
                 looked_up_names.push(name.clone());
                 progress = lookup
                     .resume(
-                        MontyObject::Function {
-                            name,
-                            docstring: String::new(),
-                        },
+                        MontyObject::Function { name, docstring: None },
                         &mut PrintWriter::Stdout,
                     )
                     .unwrap();
@@ -346,10 +343,7 @@ fn mixed_function_and_constant_lookups() {
                 let name = lookup.name.clone();
                 looked_up_names.push(name.clone());
                 let value = match name.as_str() {
-                    "ext" => MontyObject::Function {
-                        name,
-                        docstring: String::new(),
-                    },
+                    "ext" => MontyObject::Function { name, docstring: None },
                     "OFFSET" => MontyObject::Int(100),
                     _ => panic!("unexpected name: {name}"),
                 };
@@ -392,4 +386,103 @@ fn range_builtin_no_lookup() {
         progress.into_complete().unwrap(),
         MontyObject::List(vec![MontyObject::Int(0), MontyObject::Int(1), MontyObject::Int(2)])
     );
+}
+
+// ---------------------------------------------------------------------------
+// Function passed as input (no NameLookup)
+// ---------------------------------------------------------------------------
+
+/// A function passed as an input is already in the namespace — calling it should
+/// yield a `FunctionCall` directly without any `NameLookup`.
+#[test]
+fn input_function_no_lookup() {
+    let runner = MontyRun::new("my_fn(10)".to_owned(), "test.py", vec!["my_fn".to_string()]).unwrap();
+
+    let progress = runner
+        .start(
+            vec![MontyObject::Function {
+                name: "my_fn".to_string(),
+                docstring: None,
+            }],
+            NoLimitTracker,
+            &mut PrintWriter::Stdout,
+        )
+        .unwrap();
+
+    // Should go straight to FunctionCall — no NameLookup
+    let call = progress
+        .into_function_call()
+        .expect("expected FunctionCall, not NameLookup");
+    assert_eq!(call.function_name, "my_fn");
+    assert_eq!(call.args, vec![MontyObject::Int(10)]);
+
+    let result = call.resume(MontyObject::Int(99), &mut PrintWriter::Stdout).unwrap();
+    assert_eq!(result.into_complete().unwrap(), MontyObject::Int(99));
+}
+
+/// A function input assigned to a new variable and called via the alias should
+/// still yield a `FunctionCall` without any `NameLookup`.
+#[test]
+fn input_function_reassigned_then_called() {
+    let runner = MontyRun::new(
+        "alias = my_fn; alias(5)".to_owned(),
+        "test.py",
+        vec!["my_fn".to_string()],
+    )
+    .unwrap();
+
+    let progress = runner
+        .start(
+            vec![MontyObject::Function {
+                name: "my_fn".to_string(),
+                docstring: None,
+            }],
+            NoLimitTracker,
+            &mut PrintWriter::Stdout,
+        )
+        .unwrap();
+
+    // No NameLookup — my_fn is an input, alias is a local assignment
+    let call = progress
+        .into_function_call()
+        .expect("expected FunctionCall, not NameLookup");
+    assert_eq!(call.function_name, "my_fn");
+    assert_eq!(call.args, vec![MontyObject::Int(5)]);
+
+    let result = call.resume(MontyObject::Int(50), &mut PrintWriter::Stdout).unwrap();
+    assert_eq!(result.into_complete().unwrap(), MontyObject::Int(50));
+}
+
+/// A function input used alongside a name-looked-up constant: the function should
+/// not trigger NameLookup but the constant should.
+#[test]
+fn input_function_with_looked_up_arg() {
+    let runner = MontyRun::new("my_fn(OFFSET)".to_owned(), "test.py", vec!["my_fn".to_string()]).unwrap();
+
+    let mut progress = runner
+        .start(
+            vec![MontyObject::Function {
+                name: "my_fn".to_string(),
+                docstring: None,
+            }],
+            NoLimitTracker,
+            &mut PrintWriter::Stdout,
+        )
+        .unwrap();
+
+    // OFFSET is undefined — should yield NameLookup (my_fn should NOT)
+    let lookup = match progress {
+        RunProgress::NameLookup(l) => l,
+        other => panic!("expected NameLookup for 'OFFSET', got {other:?}"),
+    };
+    assert_eq!(lookup.name, "OFFSET");
+    progress = lookup.resume(MontyObject::Int(42), &mut PrintWriter::Stdout).unwrap();
+
+    // Now should be at FunctionCall for my_fn(42)
+    let call = progress.into_function_call().expect("expected FunctionCall");
+    assert_eq!(call.function_name, "my_fn");
+    assert_eq!(call.args, vec![MontyObject::Int(42)]);
+
+    let result = call.resume(MontyObject::Int(100), &mut PrintWriter::Stdout).unwrap();
+    assert_eq!(result.into_complete().unwrap(), MontyObject::Int(100));
 }

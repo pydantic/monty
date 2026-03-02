@@ -408,7 +408,7 @@ fn run_until_complete(mut progress: RunProgress<impl ResourceTracker>) -> Result
                 let result = if lookup.name == "add_ints" {
                     NameLookupResult::Value(MontyObject::Function {
                         name: "add_ints".to_string(),
-                        docstring: String::new(),
+                        docstring: None,
                     })
                 } else {
                     NameLookupResult::Undefined

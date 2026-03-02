@@ -1490,7 +1490,7 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                     | "make_mutable_point" | "make_user" | "make_empty" | "async_call" => {
                         NameLookupResult::Value(MontyObject::Function {
                             name: lookup.name.clone(),
-                            docstring: String::new(),
+                            docstring: None,
                         })
                     }
                     // Non-function constants — resolved as plain values

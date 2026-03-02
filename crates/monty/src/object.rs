@@ -152,7 +152,7 @@ pub enum MontyObject {
         /// The function name (used for repr, error messages, and as the interned key).
         name: String,
         /// Optional docstring for the function.
-        docstring: String,
+        docstring: Option<String>,
     },
     /// Fallback for values that cannot be represented as other variants.
     ///

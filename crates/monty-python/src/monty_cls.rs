@@ -22,7 +22,7 @@ use pyo3::{
 use send_wrapper::SendWrapper;
 
 use crate::{
-    convert::{monty_to_py, py_to_monty},
+    convert::{get_docstring, monty_to_py, py_to_monty},
     dataclass::DcRegistry,
     exceptions::{MontyError, MontyTypingError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
@@ -392,15 +392,10 @@ impl PyMonty {
                     let result: NameLookupResult = if let Some(ext_fns) = external_functions
                         && let Some(value) = ext_fns.get_item(&lookup.name)?
                     {
-                        if value.is_callable() {
-                            MontyObject::Function {
-                                name: lookup.name.clone(),
-                                docstring: String::new(),
-                            }
-                            .into()
-                        } else {
-                            py_to_monty(&value, &self.dc_registry)?.into()
-                        }
+                        NameLookupResult::Value(MontyObject::Function {
+                            name: lookup.name.clone(),
+                            docstring: get_docstring(&value),
+                        })
                     } else {
                         NameLookupResult::Undefined
                     };
@@ -549,12 +544,13 @@ impl EitherProgress {
     /// When the function is actually called, it yields a `FunctionCall` for the host to handle.
     fn resolve_name_lookups(self, py: Python<'_>) -> PyResult<Self> {
         let mut current = self;
+
         loop {
             match current {
                 Self::NoLimit(RunProgress::NameLookup(lookup)) => {
                     let result = NameLookupResult::Value(MontyObject::Function {
                         name: lookup.name.clone(),
-                        docstring: String::new(),
+                        docstring: None, // TODO
                     });
                     current = Self::NoLimit(
                         lookup
@@ -565,7 +561,7 @@ impl EitherProgress {
                 Self::Limited(RunProgress::NameLookup(lookup)) => {
                     let result = NameLookupResult::Value(MontyObject::Function {
                         name: lookup.name.clone(),
-                        docstring: String::new(),
+                        docstring: None, // TODO
                     });
                     current = Self::Limited(
                         lookup
