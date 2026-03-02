@@ -681,11 +681,11 @@ impl<'a> Compiler<'a> {
                         }
                     }
                 } else {
-                    // Fast path: all values, single BuildList
+                    // Fast path: all values, single BuildList.
+                    // SAFETY: has_unpack_seq(elements) is false, so every item is Value.
                     for item in elements {
-                        if let SequenceItem::Value(e) = item {
-                            self.compile_expr(e)?;
-                        }
+                        let SequenceItem::Value(e) = item else { unreachable!("list fast path: only Value items") };
+                        self.compile_expr(e)?;
                     }
                     self.code.emit_u16(
                         Opcode::BuildList,
@@ -712,11 +712,11 @@ impl<'a> Compiler<'a> {
                     }
                     self.code.emit(Opcode::ListToTuple);
                 } else {
-                    // Fast path: all values, single BuildTuple
+                    // Fast path: all values, single BuildTuple.
+                    // SAFETY: has_unpack_seq(elements) is false, so every item is Value.
                     for item in elements {
-                        if let SequenceItem::Value(e) = item {
-                            self.compile_expr(e)?;
-                        }
+                        let SequenceItem::Value(e) = item else { unreachable!("tuple fast path: only Value items") };
+                        self.compile_expr(e)?;
                     }
                     self.code.emit_u16(
                         Opcode::BuildTuple,
@@ -745,12 +745,12 @@ impl<'a> Compiler<'a> {
                         }
                     }
                 } else {
-                    // Fast path: all pairs, single BuildDict
+                    // Fast path: all pairs, single BuildDict.
+                    // SAFETY: has_unpack_dict(dict_items) is false, so every item is Pair.
                     for item in dict_items {
-                        if let DictItem::Pair(key, value) = item {
-                            self.compile_expr(key)?;
-                            self.compile_expr(value)?;
-                        }
+                        let DictItem::Pair(key, value) = item else { unreachable!("dict fast path: only Pair items") };
+                        self.compile_expr(key)?;
+                        self.compile_expr(value)?;
                     }
                     self.code.emit_u16(
                         Opcode::BuildDict,
@@ -776,11 +776,11 @@ impl<'a> Compiler<'a> {
                         }
                     }
                 } else {
-                    // Fast path: all values, single BuildSet
+                    // Fast path: all values, single BuildSet.
+                    // SAFETY: has_unpack_seq(elements) is false, so every item is Value.
                     for item in elements {
-                        if let SequenceItem::Value(e) = item {
-                            self.compile_expr(e)?;
-                        }
+                        let SequenceItem::Value(e) = item else { unreachable!("set fast path: only Value items") };
+                        self.compile_expr(e)?;
                     }
                     self.code.emit_u16(
                         Opcode::BuildSet,

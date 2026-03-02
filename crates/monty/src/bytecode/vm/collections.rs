@@ -321,20 +321,19 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // The target dict sits at `depth` positions below TOS (which is now gone after pop)
         let stack_len = this.stack.len();
         let dict_pos = stack_len - 1 - depth;
-        let Value::Ref(dict_id) = this.stack[dict_pos] else {
-            for (k, v) in copied_items {
-                k.drop_with_heap(this.heap);
-                v.drop_with_heap(this.heap);
-            }
-            return Err(RunError::internal("DictUpdate: expected dict ref on stack"));
-        };
+        // SAFETY: the compiler always emits BuildDict before DictUpdate, so the
+        // target is always a Value::Ref.  This is a VM invariant: reaching this else
+        // arm means a compiler bug.
+        let Value::Ref(dict_id) = this.stack[dict_pos] else { unreachable!("DictUpdate: target is always a Ref — compiler invariant") };
 
         for (key, value) in copied_items {
             let old = this.heap.with_entry_mut(dict_id, |heap, data| {
                 if let HeapDataMut::Dict(dict) = data {
                     dict.set(key, value, heap, this.interns)
                 } else {
-                    Err(RunError::internal("DictUpdate: expected Dict on heap"))
+                    // SAFETY: dict_id was obtained from a Value::Ref on the stack that
+                    // was created by BuildDict; it always refers to a HeapData::Dict.
+                    unreachable!("DictUpdate: heap entry is always a Dict — compiler invariant")
                 }
             })?;
             // Silently drop any old value — PEP 448 dict literals allow duplicate keys
@@ -400,20 +399,19 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // The target set sits at `depth` positions below TOS (which is now gone after pop)
         let stack_len = this.stack.len();
         let set_pos = stack_len - 1 - depth;
-        let Value::Ref(set_id) = this.stack[set_pos] else {
-            for v in copied_items {
-                v.drop_with_heap(this.heap);
-            }
-            return Err(RunError::internal("SetExtend: expected set ref on stack"));
-        };
+        // SAFETY: the compiler always emits BuildSet before SetExtend, so the
+        // target is always a Value::Ref.  This is a VM invariant: reaching this else
+        // arm means a compiler bug.
+        let Value::Ref(set_id) = this.stack[set_pos] else { unreachable!("SetExtend: target is always a Ref — compiler invariant") };
 
         for item in copied_items {
             this.heap.with_entry_mut(set_id, |heap, data| {
                 if let HeapDataMut::Set(set) = data {
                     set.add(item, heap, this.interns)
                 } else {
-                    item.drop_with_heap(heap);
-                    Err(RunError::internal("SetExtend: expected Set on heap"))
+                    // SAFETY: set_id was obtained from a Value::Ref on the stack that
+                    // was created by BuildSet; it always refers to a HeapData::Set.
+                    unreachable!("SetExtend: heap entry is always a Set — compiler invariant")
                 }
             })?;
         }
