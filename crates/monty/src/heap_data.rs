@@ -32,6 +32,7 @@ pub(crate) enum HeapDataMut<'a> {
     Tuple(&'a mut Tuple),
     NamedTuple(&'a mut NamedTuple),
     Dict(&'a mut Dict),
+    Counter(&'a mut crate::types::Counter),
     Set(&'a mut Set),
     FrozenSet(&'a mut FrozenSet),
     Closure(&'a mut Closure),
@@ -248,6 +249,7 @@ impl HeapDataMut<'_> {
             // (Cell is handled specially in get_or_compute_hash)
             Self::List(_)
             | Self::Dict(_)
+            | Self::Counter(_)
             | Self::Set(_)
             | Self::Cell(_)
             | Self::Exception(_)
@@ -274,6 +276,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Tuple(t) => t.py_type(heap),
             Self::NamedTuple(nt) => nt.py_type(heap),
             Self::Dict(d) => d.py_type(heap),
+            Self::Counter(c) => c.py_type(heap),
             Self::Set(s) => s.py_type(heap),
             Self::FrozenSet(fs) => fs.py_type(heap),
             Self::Closure(_) | Self::FunctionDefaults(_) => Type::Function,
@@ -299,6 +302,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Tuple(t) => t.py_estimate_size(),
             Self::NamedTuple(nt) => nt.py_estimate_size(),
             Self::Dict(d) => d.py_estimate_size(),
+            Self::Counter(c) => c.py_estimate_size(),
             Self::Set(s) => s.py_estimate_size(),
             Self::FrozenSet(fs) => fs.py_estimate_size(),
             // TODO: should include size of captured cells and defaults
@@ -334,6 +338,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Tuple(t) => t.py_len(heap, interns),
             Self::NamedTuple(nt) => nt.py_len(heap, interns),
             Self::Dict(d) => d.py_len(heap, interns),
+            Self::Counter(c) => c.py_len(heap, interns),
             Self::Set(s) => s.py_len(heap, interns),
             Self::FrozenSet(fs) => fs.py_len(heap, interns),
             Self::Range(r) => Some(r.len()),
@@ -365,6 +370,7 @@ impl PyTrait for HeapDataMut<'_> {
             (Self::List(a), Self::List(b)) => a.py_eq(b, heap, interns),
             (Self::Tuple(a), Self::Tuple(b)) => a.py_eq(b, heap, interns),
             (Self::NamedTuple(a), Self::NamedTuple(b)) => a.py_eq(b, heap, interns),
+            (Self::Counter(a), Self::Counter(b)) => a.py_eq(b, heap, interns),
             // NamedTuple can compare with Tuple by elements (matching CPython behavior)
             (Self::NamedTuple(nt), Self::Tuple(t)) | (Self::Tuple(t), Self::NamedTuple(nt)) => {
                 let nt_items = nt.as_vec();
@@ -413,6 +419,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Tuple(t) => t.py_dec_ref_ids(stack),
             Self::NamedTuple(nt) => nt.py_dec_ref_ids(stack),
             Self::Dict(d) => d.py_dec_ref_ids(stack),
+            Self::Counter(c) => c.py_dec_ref_ids(stack),
             Self::Set(s) => s.py_dec_ref_ids(stack),
             Self::FrozenSet(fs) => fs.py_dec_ref_ids(stack),
             Self::Closure(closure) => {
@@ -466,6 +473,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Tuple(t) => t.py_bool(heap, interns),
             Self::NamedTuple(nt) => nt.py_bool(heap, interns),
             Self::Dict(d) => d.py_bool(heap, interns),
+            Self::Counter(c) => c.py_bool(heap, interns),
             Self::Set(s) => s.py_bool(heap, interns),
             Self::FrozenSet(fs) => fs.py_bool(heap, interns),
             Self::Closure(_) | Self::FunctionDefaults(_) => true,
@@ -497,6 +505,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Tuple(t) => t.py_repr_fmt(f, heap, heap_ids, interns),
             Self::NamedTuple(nt) => nt.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Dict(d) => d.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::Counter(c) => c.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Set(s) => s.py_repr_fmt(f, heap, heap_ids, interns),
             Self::FrozenSet(fs) => fs.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Closure(closure) => interns.get_function(closure.func_id).py_repr_fmt(f, interns, 0),

@@ -727,6 +727,11 @@ impl IterValue {
                 len: Some(dict.len()),
                 checks_mutation: true,
             }),
+            HeapData::Counter(counter) => Some(Self::HeapRef {
+                heap_id,
+                len: Some(counter.dict.len()),
+                checks_mutation: true,
+            }),
             HeapData::Set(set) => Some(Self::HeapRef {
                 heap_id,
                 len: Some(set.len()),

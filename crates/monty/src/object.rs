@@ -345,7 +345,7 @@ impl MontyObject {
                     return match heap.get(*id) {
                         HeapData::List(_) => Self::Cycle(*id, "[...]".to_owned()),
                         HeapData::Tuple(_) | HeapData::NamedTuple(_) => Self::Cycle(*id, "(...)".to_owned()),
-                        HeapData::Dict(_) => Self::Cycle(*id, "{...}".to_owned()),
+                        HeapData::Dict(_) | HeapData::Counter(_) => Self::Cycle(*id, "{...}".to_owned()),
                         _ => Self::Cycle(*id, "...".to_owned()),
                     };
                 }
@@ -384,6 +384,17 @@ impl MontyObject {
                     },
                     HeapData::Dict(dict) => Self::Dict(DictPairs(
                         dict.into_iter()
+                            .map(|(k, v)| {
+                                (
+                                    Self::from_value_inner(k, heap, visited, interns),
+                                    Self::from_value_inner(v, heap, visited, interns),
+                                )
+                            })
+                            .collect(),
+                    )),
+                    HeapData::Counter(counter) => Self::Dict(DictPairs(
+                        (&counter.dict)
+                            .into_iter()
                             .map(|(k, v)| {
                                 (
                                     Self::from_value_inner(k, heap, visited, interns),

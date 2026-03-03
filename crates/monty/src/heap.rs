@@ -56,6 +56,7 @@ pub(crate) enum HeapData {
     Tuple(Tuple),
     NamedTuple(NamedTuple),
     Dict(Dict),
+    Counter(crate::types::Counter),
     Set(Set),
     FrozenSet(FrozenSet),
     Closure(Closure),
@@ -165,6 +166,7 @@ impl HeapData {
             Self::Tuple(tuple) => tuple.contains_refs(),
             Self::NamedTuple(nt) => nt.contains_refs(),
             Self::Dict(dict) => dict.has_refs(),
+            Self::Counter(counter) => counter.dict.has_refs(),
             Self::Set(set) => set.has_refs(),
             Self::FrozenSet(fset) => fset.has_refs(),
             // Closures always have refs when they have captured cells (HeapIds)
@@ -220,6 +222,7 @@ impl HeapData {
             Self::Tuple(t) => HeapDataMut::Tuple(t),
             Self::NamedTuple(nt) => HeapDataMut::NamedTuple(nt),
             Self::Dict(d) => HeapDataMut::Dict(d),
+            Self::Counter(c) => HeapDataMut::Counter(c),
             Self::Set(s) => HeapDataMut::Set(s),
             Self::FrozenSet(fs) => HeapDataMut::FrozenSet(fs),
             Self::Closure(closure) => HeapDataMut::Closure(closure),
@@ -252,6 +255,7 @@ impl PyTrait for HeapData {
             Self::Tuple(t) => t.py_type(heap),
             Self::NamedTuple(nt) => nt.py_type(heap),
             Self::Dict(d) => d.py_type(heap),
+            Self::Counter(c) => c.py_type(heap),
             Self::Set(s) => s.py_type(heap),
             Self::FrozenSet(fs) => fs.py_type(heap),
             Self::Closure(_) | Self::FunctionDefaults(_) => Type::Function,
@@ -277,6 +281,7 @@ impl PyTrait for HeapData {
             Self::Tuple(t) => t.py_estimate_size(),
             Self::NamedTuple(nt) => nt.py_estimate_size(),
             Self::Dict(d) => d.py_estimate_size(),
+            Self::Counter(c) => c.py_estimate_size(),
             Self::Set(s) => s.py_estimate_size(),
             Self::FrozenSet(fs) => fs.py_estimate_size(),
             // TODO: should include size of captured cells and defaults
@@ -312,6 +317,7 @@ impl PyTrait for HeapData {
             Self::Tuple(t) => PyTrait::py_len(t, heap, interns),
             Self::NamedTuple(nt) => PyTrait::py_len(nt, heap, interns),
             Self::Dict(d) => PyTrait::py_len(d, heap, interns),
+            Self::Counter(c) => PyTrait::py_len(c, heap, interns),
             Self::Set(s) => PyTrait::py_len(s, heap, interns),
             Self::FrozenSet(fs) => PyTrait::py_len(fs, heap, interns),
             Self::Range(r) => Some(r.len()),
@@ -343,6 +349,7 @@ impl PyTrait for HeapData {
             (Self::List(a), Self::List(b)) => a.py_eq(b, heap, interns),
             (Self::Tuple(a), Self::Tuple(b)) => a.py_eq(b, heap, interns),
             (Self::NamedTuple(a), Self::NamedTuple(b)) => a.py_eq(b, heap, interns),
+            (Self::Counter(a), Self::Counter(b)) => a.py_eq(b, heap, interns),
             // NamedTuple can compare with Tuple by elements (matching CPython behavior)
             (Self::NamedTuple(nt), Self::Tuple(t)) | (Self::Tuple(t), Self::NamedTuple(nt)) => {
                 let nt_items = nt.as_vec();
@@ -391,6 +398,7 @@ impl PyTrait for HeapData {
             Self::Tuple(t) => t.py_dec_ref_ids(stack),
             Self::NamedTuple(nt) => nt.py_dec_ref_ids(stack),
             Self::Dict(d) => d.py_dec_ref_ids(stack),
+            Self::Counter(c) => c.py_dec_ref_ids(stack),
             Self::Set(s) => s.py_dec_ref_ids(stack),
             Self::FrozenSet(fs) => fs.py_dec_ref_ids(stack),
             Self::Closure(closure) => {
@@ -444,6 +452,7 @@ impl PyTrait for HeapData {
             Self::Tuple(t) => t.py_bool(heap, interns),
             Self::NamedTuple(nt) => nt.py_bool(heap, interns),
             Self::Dict(d) => d.py_bool(heap, interns),
+            Self::Counter(c) => c.py_bool(heap, interns),
             Self::Set(s) => s.py_bool(heap, interns),
             Self::FrozenSet(fs) => fs.py_bool(heap, interns),
             Self::Closure(_) | Self::FunctionDefaults(_) => true,
@@ -475,6 +484,7 @@ impl PyTrait for HeapData {
             Self::Tuple(t) => t.py_repr_fmt(f, heap, heap_ids, interns),
             Self::NamedTuple(nt) => nt.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Dict(d) => d.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::Counter(c) => c.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Set(s) => s.py_repr_fmt(f, heap, heap_ids, interns),
             Self::FrozenSet(fs) => fs.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Closure(closure) => interns.get_function(closure.func_id).py_repr_fmt(f, interns, 0),
@@ -750,6 +760,7 @@ impl HashState {
             // Mutable containers, exceptions, iterators, modules, and async types are unhashable
             HeapData::List(_)
             | HeapData::Dict(_)
+            | HeapData::Counter(_)
             | HeapData::Set(_)
             | HeapData::Exception(_)
             | HeapData::Iter(_)
@@ -1647,6 +1658,20 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
                 return;
             }
             for (k, v) in dict {
+                if let Value::Ref(id) = k {
+                    work_list.push(*id);
+                }
+                if let Value::Ref(id) = v {
+                    work_list.push(*id);
+                }
+            }
+        }
+        HeapData::Counter(counter) => {
+            // Counter is dict-backed; traverse key/value refs from the underlying dict.
+            if !counter.dict.has_refs() {
+                return;
+            }
+            for (k, v) in &counter.dict {
                 if let Value::Ref(id) = k {
                     work_list.push(*id);
                 }
