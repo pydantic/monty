@@ -6,7 +6,7 @@ use std::{
 
 // Use `::monty` to refer to the external crate (not the pymodule)
 use ::monty::{
-    ExternalResult, FunctionCall, LimitedTracker, MontyException, MontyObject, MontyRepl as CoreMontyRepl, MontyRun,
+    ExtFunctionResult, FunctionCall, LimitedTracker, MontyException, MontyObject, MontyRepl as CoreMontyRepl, MontyRun,
     NameLookupResult, NoLimitTracker, OsCall, PrintWriter, PrintWriterCallback, ResolveFutures, ResourceTracker,
     RunProgress,
 };
@@ -409,7 +409,7 @@ impl PyMonty {
                     return Err(PyRuntimeError::new_err("async futures not supported with `Monty.run`"));
                 }
                 RunProgress::OsCall(call) => {
-                    let result: ExternalResult = if let Some(os_callback) = os {
+                    let result: ExtFunctionResult = if let Some(os_callback) = os {
                         // Convert args to Python
                         let py_args: Vec<Py<PyAny>> = call
                             .args
@@ -1668,7 +1668,7 @@ fn extract_external_result(
     error_msg: &'static str,
     dc_registry: &DcRegistry,
     call_id: u32,
-) -> PyResult<ExternalResult> {
+) -> PyResult<ExtFunctionResult> {
     if dict.len() != 1 {
         Err(PyTypeError::new_err(error_msg))
     } else if let Some(rv) = dict.get_item(intern!(py, "return_value"))? {
@@ -1680,7 +1680,7 @@ fn extract_external_result(
         Ok(exc_py_to_monty(py, &py_err).into())
     } else if let Some(exc) = dict.get_item(intern!(py, "future"))? {
         if exc.eq(py.Ellipsis()).unwrap_or_default() {
-            Ok(ExternalResult::Future(call_id))
+            Ok(ExtFunctionResult::Future(call_id))
         } else {
             Err(PyTypeError::new_err(
                 "Value for the 'future' key must be Ellipsis (...)",

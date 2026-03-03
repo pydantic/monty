@@ -16,7 +16,7 @@ use std::{
 
 use ahash::AHashMap;
 use monty::{
-    ExcType, ExternalResult, LimitedTracker, MontyException, MontyObject, MontyRun, NameLookupResult, OsFunction,
+    ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, MontyRun, NameLookupResult, OsFunction,
     PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
 };
 use pyo3::{prelude::*, types::PyDict};
@@ -273,7 +273,7 @@ fn ensure_python_modules_imported() {
 /// asynchronous calls (return a future that needs later resolution).
 enum DispatchResult {
     /// Synchronous result - pass directly to `state.run()`.
-    Sync(ExternalResult),
+    Sync(ExtFunctionResult),
     /// Asynchronous call - use `state.run_pending()` and resolve later.
     /// Contains the value to resolve the future with.
     Async(MontyObject),
@@ -416,7 +416,7 @@ fn dispatch_method_call(
     method_name: &str,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
-) -> ExternalResult {
+) -> ExtFunctionResult {
     let class_name = match args.first() {
         Some(MontyObject::Dataclass { name, .. }) => name.as_str(),
         _ => "<unknown>",
@@ -779,7 +779,7 @@ fn dispatch_os_call(
     function: OsFunction,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
-) -> ExternalResult {
+) -> ExtFunctionResult {
     // Handle GetEnviron first as it takes no path argument
     if function == OsFunction::GetEnviron {
         // Return the virtual environment as a dict
@@ -1464,13 +1464,13 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
             }
             RunProgress::ResolveFutures(state) => {
                 // Resolve all pending futures that we have results for
-                let results: Vec<(u32, ExternalResult)> = state
+                let results: Vec<(u32, ExtFunctionResult)> = state
                     .pending_call_ids()
                     .iter()
                     .filter_map(|p| {
                         pending_results.iter().position(|(id, _)| id == p).map(|idx| {
                             let (call_id, value) = pending_results.remove(idx);
-                            (call_id, ExternalResult::Return(value))
+                            (call_id, ExtFunctionResult::Return(value))
                         })
                     })
                     .collect();

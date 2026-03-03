@@ -45,7 +45,7 @@
 use std::borrow::Cow;
 
 use monty::{
-    ExcType, ExternalResult, FunctionCall, LimitedTracker, MontyException, MontyObject, MontyRepl as CoreMontyRepl,
+    ExcType, ExtFunctionResult, FunctionCall, LimitedTracker, MontyException, MontyObject, MontyRepl as CoreMontyRepl,
     MontyRun, NameLookupResult, NoLimitTracker, PrintWriter, PrintWriterCallback, ResourceTracker, RunProgress,
 };
 use monty_type_checking::{type_check, SourceFile};
@@ -773,11 +773,11 @@ impl MontySnapshot {
         let external_result = match (options.return_value, options.exception) {
             (Some(value), None) => {
                 let monty_value = js_to_monty(value, *env)?;
-                ExternalResult::Return(monty_value)
+                ExtFunctionResult::Return(monty_value)
             }
             (None, Some(exc)) => {
                 let monty_exc = MontyException::new(string_to_exc_type(&exc.r#type)?, Some(exc.message));
-                ExternalResult::Error(monty_exc)
+                ExtFunctionResult::Error(monty_exc)
             }
             (Some(_), Some(_)) => {
                 return Err(Error::from_reason(
@@ -1119,7 +1119,7 @@ fn call_external_function(
     function_name: &str,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
-) -> Result<ExternalResult> {
+) -> Result<ExtFunctionResult> {
     // Get the external functions dict, or error if not provided
     let functions = external_functions.ok_or_else(|| {
         Error::from_reason(format!(
@@ -1134,7 +1134,7 @@ fn call_external_function(
             ExcType::KeyError,
             Some(format!("\"External function '{function_name}' not found\"")),
         );
-        return Ok(ExternalResult::Error(exc));
+        return Ok(ExtFunctionResult::Error(exc));
     }
 
     let callable: Unknown = functions.get_named_property(function_name)?;
@@ -1196,23 +1196,23 @@ fn call_external_function(
                     ExcType::RuntimeError,
                     Some("External function call failed and exception could not be retrieved".to_string()),
                 );
-                return Ok(ExternalResult::Error(exc));
+                return Ok(ExtFunctionResult::Error(exc));
             }
             let exception_obj = Object::from_raw(env.raw(), exception_raw);
             let exc = extract_js_exception(exception_obj);
-            return Ok(ExternalResult::Error(exc));
+            return Ok(ExtFunctionResult::Error(exc));
         }
 
         // Generic error
         let exc = MontyException::new(ExcType::RuntimeError, Some("External function call failed".to_string()));
-        return Ok(ExternalResult::Error(exc));
+        return Ok(ExtFunctionResult::Error(exc));
     }
 
     // Convert the result back to Monty format
     // SAFETY: [DH] - result_raw is valid on success
     let result = unsafe { Unknown::from_raw_unchecked(env.raw(), result_raw) };
     let monty_result = js_to_monty(result, *env)?;
-    Ok(ExternalResult::Return(monty_result))
+    Ok(ExtFunctionResult::Return(monty_result))
 }
 
 /// Extracts exception info from a JS exception object.

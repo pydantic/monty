@@ -45,5 +45,7 @@ pub use crate::{
         DEFAULT_MAX_RECURSION_DEPTH, LimitedTracker, NoLimitTracker, ResourceError, ResourceLimits, ResourceTracker,
     },
     run::MontyRun,
-    run_progress::{ExternalResult, FunctionCall, NameLookup, NameLookupResult, OsCall, ResolveFutures, RunProgress},
+    run_progress::{
+        ExtFunctionResult, FunctionCall, NameLookup, NameLookupResult, OsCall, ResolveFutures, RunProgress,
+    },
 };

@@ -24,7 +24,7 @@ use crate::{
     parse::{parse, parse_with_interner},
     prepare::{prepare, prepare_with_existing_names},
     resource::ResourceTracker,
-    run_progress::{ExternalResult, NameLookupResult},
+    run_progress::{ExtFunctionResult, NameLookupResult},
     value::Value,
 };
 
@@ -616,7 +616,7 @@ impl<T: ResourceTracker> ReplFunctionCall<T> {
     /// Resumes snippet execution with an external result.
     pub fn resume(
         self,
-        result: impl Into<ExternalResult>,
+        result: impl Into<ExtFunctionResult>,
         print: &mut PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         self.snapshot.run(result, print)
@@ -626,7 +626,7 @@ impl<T: ResourceTracker> ReplFunctionCall<T> {
     ///
     /// Uses `self.call_id` internally — no need to pass it again.
     pub fn resume_pending(self, print: &mut PrintWriter<'_>) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
-        self.snapshot.run(ExternalResult::Future(self.call_id), print)
+        self.snapshot.run(ExtFunctionResult::Future(self.call_id), print)
     }
 }
 
@@ -656,7 +656,7 @@ impl<T: ResourceTracker> ReplOsCall<T> {
     /// Resumes snippet execution with the OS call result.
     pub fn resume(
         self,
-        result: impl Into<ExternalResult>,
+        result: impl Into<ExtFunctionResult>,
         print: &mut PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         self.snapshot.run(result, print)
@@ -797,7 +797,7 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
     /// session is always preserved.
     pub fn resume(
         self,
-        results: Vec<(u32, ExternalResult)>,
+        results: Vec<(u32, ExtFunctionResult)>,
         print: &mut PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         let Self {
@@ -831,7 +831,7 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
 
         for (call_id, ext_result) in results {
             match ext_result {
-                ExternalResult::Return(obj) => {
+                ExtFunctionResult::Return(obj) => {
                     if let Err(e) = vm.resolve_future(call_id, obj) {
                         vm.cleanup();
                         let error =
@@ -839,8 +839,11 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
                         return Err(Box::new(ReplStartError { repl, error }));
                     }
                 }
-                ExternalResult::Error(exc) => vm.fail_future(call_id, RunError::from(exc)),
-                ExternalResult::Future(_) => {}
+                ExtFunctionResult::Error(exc) => vm.fail_future(call_id, RunError::from(exc)),
+                ExtFunctionResult::Future(_) => {}
+                ExtFunctionResult::NotFound(function_name) => {
+                    vm.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name));
+                }
             }
         }
 
@@ -905,7 +908,7 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
     /// Continues snippet execution with an external result.
     fn run(
         self,
-        result: impl Into<ExternalResult>,
+        result: impl Into<ExtFunctionResult>,
         print: &mut PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         let Self {
@@ -926,13 +929,16 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
         );
 
         let vm_result = match ext_result {
-            ExternalResult::Return(obj) => vm.resume(obj),
-            ExternalResult::Error(exc) => vm.resume_with_exception(exc.into()),
-            ExternalResult::Future(raw_call_id) => {
+            ExtFunctionResult::Return(obj) => vm.resume(obj),
+            ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
+            ExtFunctionResult::Future(raw_call_id) => {
                 let call_id = CallId::new(raw_call_id);
                 vm.add_pending_call(call_id);
                 vm.push(Value::ExternalFuture(call_id));
                 vm.run()
+            }
+            ExtFunctionResult::NotFound(function_name) => {
+                vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
             }
         };
 

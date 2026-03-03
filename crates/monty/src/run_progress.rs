@@ -187,7 +187,7 @@ impl<T: ResourceTracker> FunctionCall<T> {
     /// * `print` — Writer for `print()` output.
     pub fn resume(
         self,
-        result: impl Into<ExternalResult>,
+        result: impl Into<ExtFunctionResult>,
         print: &mut PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         self.snapshot.run(result, print)
@@ -205,7 +205,7 @@ impl<T: ResourceTracker> FunctionCall<T> {
     /// # Arguments
     /// * `print` — Writer for print output.
     pub fn resume_pending(self, print: &mut PrintWriter<'_>) -> Result<RunProgress<T>, MontyException> {
-        self.snapshot.run(ExternalResult::Future(self.call_id), print)
+        self.snapshot.run(ExtFunctionResult::Future(self.call_id), print)
     }
 }
 
@@ -259,7 +259,7 @@ impl<T: ResourceTracker> OsCall<T> {
     /// * `print` — Writer for `print()` output.
     pub fn resume(
         self,
-        result: impl Into<ExternalResult>,
+        result: impl Into<ExtFunctionResult>,
         print: &mut PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         self.snapshot.run(result, print)
@@ -437,7 +437,7 @@ impl<T: ResourceTracker> ResolveFutures<T> {
     /// Returns `Err(MontyException)` if any `call_id` in `results` is not in the pending set.
     pub fn resume(
         self,
-        results: Vec<(u32, ExternalResult)>,
+        results: Vec<(u32, ExtFunctionResult)>,
         print: &mut PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         let Self {
@@ -476,11 +476,14 @@ impl<T: ResourceTracker> ResolveFutures<T> {
 
         for (call_id, ext_result) in results {
             match ext_result {
-                ExternalResult::Return(obj) => vm.resolve_future(call_id, obj).map_err(|e| {
+                ExtFunctionResult::Return(obj) => vm.resolve_future(call_id, obj).map_err(|e| {
                     MontyException::runtime_error(format!("Invalid return type for call {call_id}: {e}"))
                 })?,
-                ExternalResult::Error(exc) => vm.fail_future(call_id, RunError::from(exc)),
-                ExternalResult::Future(_) => {}
+                ExtFunctionResult::Error(exc) => vm.fail_future(call_id, exc.into()),
+                ExtFunctionResult::Future(_) => {}
+                ExtFunctionResult::NotFound(function_name) => {
+                    vm.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name));
+                }
             }
         }
 
@@ -553,7 +556,7 @@ impl<T: ResourceTracker> Snapshot<T> {
     /// Continues execution with the return value or exception from the external call.
     pub(crate) fn run(
         mut self,
-        result: impl Into<ExternalResult>,
+        result: impl Into<ExtFunctionResult>,
         print: &mut PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         let ext_result = result.into();
@@ -568,13 +571,16 @@ impl<T: ResourceTracker> Snapshot<T> {
         );
 
         let vm_result = match ext_result {
-            ExternalResult::Return(obj) => vm.resume(obj),
-            ExternalResult::Error(exc) => vm.resume_with_exception(exc.into()),
-            ExternalResult::Future(raw_call_id) => {
+            ExtFunctionResult::Return(obj) => vm.resume(obj),
+            ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
+            ExtFunctionResult::Future(raw_call_id) => {
                 let call_id = CallId::new(raw_call_id);
                 vm.add_pending_call(call_id);
                 vm.push(Value::ExternalFuture(call_id));
                 vm.run()
+            }
+            ExtFunctionResult::NotFound(function_name) => {
+                vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
             }
         };
 
@@ -604,7 +610,7 @@ impl From<MontyObject> for NameLookupResult {
 
 /// Return value or exception from an external function.
 #[derive(Debug)]
-pub enum ExternalResult {
+pub enum ExtFunctionResult {
     /// Continues execution with the return value from the external function.
     Return(MontyObject),
     /// Continues execution with the exception raised by the external function.
@@ -615,15 +621,24 @@ pub enum ExternalResult {
     /// snapshot. It is used to track the pending future so it can be resolved
     /// later via `ResolveFutures::resume()`.
     Future(u32),
+    /// The function was not found, should result in a `NameError` exception.
+    NotFound(String),
 }
 
-impl From<MontyObject> for ExternalResult {
+impl ExtFunctionResult {
+    pub(crate) fn not_found_exc(function_name: &str) -> RunError {
+        let msg = format!("name '{function_name}' is not defined");
+        MontyException::new(ExcType::NameError, Some(msg)).into()
+    }
+}
+
+impl From<MontyObject> for ExtFunctionResult {
     fn from(value: MontyObject) -> Self {
         Self::Return(value)
     }
 }
 
-impl From<MontyException> for ExternalResult {
+impl From<MontyException> for ExtFunctionResult {
     fn from(exception: MontyException) -> Self {
         Self::Error(exception)
     }

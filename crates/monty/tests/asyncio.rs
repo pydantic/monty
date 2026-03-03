@@ -4,7 +4,7 @@
 //! resolving external futures incrementally via `ResolveFutures::resume()`.
 
 use monty::{
-    ExcType, ExternalResult, MontyException, MontyObject, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter,
+    ExcType, ExtFunctionResult, MontyException, MontyObject, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter,
     ResolveFutures, RunProgress,
 };
 
@@ -100,8 +100,8 @@ fn resume_with_all_call_ids() {
 
     // Resume with all results at once
     let results = vec![
-        (call_ids[0], ExternalResult::Return(MontyObject::Int(10))),
-        (call_ids[1], ExternalResult::Return(MontyObject::Int(32))),
+        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(10))),
+        (call_ids[1], ExtFunctionResult::Return(MontyObject::Int(32))),
     ];
 
     let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
@@ -119,14 +119,14 @@ fn resume_with_partial_results() {
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
     // Resume with only the first result
-    let results = vec![(call_ids[0], ExternalResult::Return(MontyObject::Int(10)))];
+    let results = vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::Int(10)))];
     let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
 
     // Should still need more futures resolved
     let state = progress.into_resolve_futures().expect("should still need futures");
 
     // Resume with the second result
-    let results = vec![(call_ids[1], ExternalResult::Return(MontyObject::Int(32)))];
+    let results = vec![(call_ids[1], ExtFunctionResult::Return(MontyObject::Int(32)))];
     let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
 
     let result = progress.into_complete().expect("should complete");
@@ -143,7 +143,7 @@ fn resume_with_unknown_call_id() {
     let (state, _call_ids) = drive_to_resolve_futures(progress);
 
     // Resume with an unknown call_id
-    let results = vec![(9999, ExternalResult::Return(MontyObject::Int(10)))];
+    let results = vec![(9999, ExtFunctionResult::Return(MontyObject::Int(10)))];
     let result = state.resume(results, &mut PrintWriter::Stdout);
 
     assert!(result.is_err(), "should error on unknown call_id");
@@ -166,7 +166,7 @@ fn resume_with_empty_results() {
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
     // Resume with empty results - should still be blocked
-    let results: Vec<(u32, ExternalResult)> = vec![];
+    let results: Vec<(u32, ExtFunctionResult)> = vec![];
     let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
 
     // Should still need futures resolved
@@ -174,8 +174,8 @@ fn resume_with_empty_results() {
 
     // Now resolve everything
     let results = vec![
-        (call_ids[0], ExternalResult::Return(MontyObject::Int(10))),
-        (call_ids[1], ExternalResult::Return(MontyObject::Int(32))),
+        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(10))),
+        (call_ids[1], ExtFunctionResult::Return(MontyObject::Int(32))),
     ];
     let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
     let result = progress.into_complete().expect("should complete");
@@ -193,10 +193,10 @@ fn resume_with_error_result() {
 
     // Resume with one success and one error
     let results = vec![
-        (call_ids[0], ExternalResult::Return(MontyObject::Int(10))),
+        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(10))),
         (
             call_ids[1],
-            ExternalResult::Error(MontyException::new(ExcType::ValueError, Some("test error".to_string()))),
+            ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, Some("test error".to_string()))),
         ),
     ];
 
@@ -220,8 +220,8 @@ fn resume_with_reversed_order() {
 
     // Resume with results in reverse order - should still work
     let results = vec![
-        (call_ids[1], ExternalResult::Return(MontyObject::Int(32))), // bar() = 32
-        (call_ids[0], ExternalResult::Return(MontyObject::Int(10))), // foo() = 10
+        (call_ids[1], ExtFunctionResult::Return(MontyObject::Int(32))), // bar() = 32
+        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(10))), // foo() = 10
     ];
 
     let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
@@ -240,15 +240,15 @@ fn three_way_gather_incremental() {
     assert_eq!(call_ids.len(), 3, "should have 3 pending calls");
 
     // Resolve one at a time
-    let results = vec![(call_ids[0], ExternalResult::Return(MontyObject::Int(100)))];
+    let results = vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::Int(100)))];
     let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
     let state = progress.into_resolve_futures().expect("need more");
 
-    let results = vec![(call_ids[1], ExternalResult::Return(MontyObject::Int(200)))];
+    let results = vec![(call_ids[1], ExtFunctionResult::Return(MontyObject::Int(200)))];
     let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
     let state = progress.into_resolve_futures().expect("need more");
 
-    let results = vec![(call_ids[2], ExternalResult::Return(MontyObject::Int(300)))];
+    let results = vec![(call_ids[2], ExtFunctionResult::Return(MontyObject::Int(300)))];
     let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
 
     let result = progress.into_complete().expect("should complete");
@@ -266,9 +266,9 @@ fn resume_with_duplicate_call_id() {
 
     // Include duplicate - second value should be ignored
     let results = vec![
-        (call_ids[0], ExternalResult::Return(MontyObject::Int(10))),
-        (call_ids[0], ExternalResult::Return(MontyObject::Int(99))), // duplicate - ignored!
-        (call_ids[1], ExternalResult::Return(MontyObject::Int(32))),
+        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(10))),
+        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(99))), // duplicate - ignored!
+        (call_ids[1], ExtFunctionResult::Return(MontyObject::Int(32))),
     ];
 
     let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
@@ -289,11 +289,11 @@ fn gather_error_propagated_as_exception() {
     let results = vec![
         (
             call_ids[0],
-            ExternalResult::Error(MontyException::new(ExcType::ValueError, Some("foo error".to_string()))),
+            ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, Some("foo error".to_string()))),
         ),
         (
             call_ids[1],
-            ExternalResult::Error(MontyException::new(
+            ExtFunctionResult::Error(MontyException::new(
                 ExcType::RuntimeError,
                 Some("bar error".to_string()),
             )),
@@ -340,7 +340,7 @@ fn sequential_awaits_second_fails() {
     assert_eq!(state.pending_call_ids(), vec![foo_call_id]);
 
     // Resolve foo successfully
-    let results = vec![(foo_call_id, ExternalResult::Return(MontyObject::Int(10)))];
+    let results = vec![(foo_call_id, ExtFunctionResult::Return(MontyObject::Int(10)))];
     let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
     let progress = resolve_name_lookups(progress).unwrap();
 
@@ -358,7 +358,7 @@ fn sequential_awaits_second_fails() {
     // Fail bar with an exception
     let results = vec![(
         bar_call_id,
-        ExternalResult::Error(MontyException::new(ExcType::ValueError, Some("bar failed".to_string()))),
+        ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, Some("bar failed".to_string()))),
     )];
 
     let result = state.resume(results, &mut PrintWriter::Stdout);
@@ -389,7 +389,7 @@ fn sequential_awaits_first_fails() {
     // Fail foo with an exception - bar should never be called
     let results = vec![(
         foo_call_id,
-        ExternalResult::Error(MontyException::new(
+        ExtFunctionResult::Error(MontyException::new(
             ExcType::RuntimeError,
             Some("foo failed early".to_string()),
         )),
@@ -416,7 +416,7 @@ fn gather_first_external_fails_immediately() {
     // Resolve first call with error, second with success
     let results = vec![(
         call_ids[0],
-        ExternalResult::Error(MontyException::new(ExcType::ValueError, Some("foo failed".to_string()))),
+        ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, Some("foo failed".to_string()))),
     )];
 
     let result = state.resume(results, &mut PrintWriter::Stdout);
@@ -440,7 +440,7 @@ fn gather_second_external_fails() {
     // Resolve second call with error
     let results = vec![(
         call_ids[1],
-        ExternalResult::Error(MontyException::new(
+        ExtFunctionResult::Error(MontyException::new(
             ExcType::RuntimeError,
             Some("bar failed".to_string()),
         )),
@@ -466,11 +466,11 @@ fn gather_both_fail() {
     let results = vec![
         (
             call_ids[0],
-            ExternalResult::Error(MontyException::new(ExcType::ValueError, Some("foo failed".to_string()))),
+            ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, Some("foo failed".to_string()))),
         ),
         (
             call_ids[1],
-            ExternalResult::Error(MontyException::new(
+            ExtFunctionResult::Error(MontyException::new(
                 ExcType::RuntimeError,
                 Some("bar failed".to_string()),
             )),
@@ -492,15 +492,15 @@ fn three_way_gather_partial_error() {
 
     // First and third succeed, second fails
     let results = vec![
-        (call_ids[0], ExternalResult::Return(MontyObject::Int(100))),
+        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(100))),
         (
             call_ids[1],
-            ExternalResult::Error(MontyException::new(
+            ExtFunctionResult::Error(MontyException::new(
                 ExcType::TypeError,
                 Some("bar type error".to_string()),
             )),
         ),
-        (call_ids[2], ExternalResult::Return(MontyObject::Int(300))),
+        (call_ids[2], ExtFunctionResult::Return(MontyObject::Int(300))),
     ];
 
     let result = state.resume(results, &mut PrintWriter::Stdout);
@@ -519,14 +519,14 @@ fn incremental_resolution_error_on_second_round() {
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
     // First resolve one successfully
-    let results = vec![(call_ids[0], ExternalResult::Return(MontyObject::Int(100)))];
+    let results = vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::Int(100)))];
     let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
     let state = progress.into_resolve_futures().expect("need more");
 
     // Then fail the second
     let results = vec![(
         call_ids[1],
-        ExternalResult::Error(MontyException::new(
+        ExtFunctionResult::Error(MontyException::new(
             ExcType::ValueError,
             Some("delayed failure".to_string()),
         )),
@@ -549,8 +549,8 @@ fn gather_three_all_at_once_mixed() {
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
     let results = vec![
-        (call_ids[0], ExternalResult::Return(MontyObject::Int(100))),
-        (call_ids[1], ExternalResult::Return(MontyObject::Int(200))),
+        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(100))),
+        (call_ids[1], ExtFunctionResult::Return(MontyObject::Int(200))),
     ];
 
     let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
@@ -558,7 +558,7 @@ fn gather_three_all_at_once_mixed() {
 
     let results = vec![(
         call_ids[2],
-        ExternalResult::Error(MontyException::new(
+        ExtFunctionResult::Error(MontyException::new(
             ExcType::RuntimeError,
             Some("baz failed".to_string()),
         )),
@@ -654,9 +654,9 @@ await main()
     }
 
     // Resolve all 3 get_lat_lng calls: each returns 100
-    let results: Vec<(u32, ExternalResult)> = calls
+    let results: Vec<(u32, ExtFunctionResult)> = calls
         .iter()
-        .map(|(id, _)| (*id, ExternalResult::Return(MontyObject::Int(100))))
+        .map(|(id, _)| (*id, ExtFunctionResult::Return(MontyObject::Int(100))))
         .collect();
 
     let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
@@ -673,11 +673,11 @@ await main()
     assert_eq!(desc_calls.len(), 3, "should have 3 get_desc calls");
 
     // Resolve all inner calls: get_temp returns 10, get_desc returns 1
-    let results: Vec<(u32, ExternalResult)> = calls
+    let results: Vec<(u32, ExtFunctionResult)> = calls
         .iter()
         .map(|(id, name)| {
             let val = if name == "get_temp" { 10 } else { 1 };
-            (*id, ExternalResult::Return(MontyObject::Int(val)))
+            (*id, ExtFunctionResult::Return(MontyObject::Int(val)))
         })
         .collect();
 
@@ -719,7 +719,7 @@ await main()
     assert_eq!(calls.len(), 2, "should have 2 step1 calls");
 
     // Resolve only the FIRST step1 call
-    let results = vec![(calls[0].0, ExternalResult::Return(MontyObject::Int(100)))];
+    let results = vec![(calls[0].0, ExtFunctionResult::Return(MontyObject::Int(100)))];
     let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
 
     // First task proceeds to inner gather (step2 + step3), second task still blocked
@@ -729,14 +729,14 @@ await main()
     assert_eq!(new_calls.len(), 2, "should have 2 inner calls from first task");
 
     // Now resolve the second step1 call AND the first task's inner calls
-    let mut results: Vec<(u32, ExternalResult)> = vec![
+    let mut results: Vec<(u32, ExtFunctionResult)> = vec![
         // Second task's step1
-        (calls[1].0, ExternalResult::Return(MontyObject::Int(200))),
+        (calls[1].0, ExtFunctionResult::Return(MontyObject::Int(200))),
     ];
     // First task's inner calls
     for (id, name) in &new_calls {
         let val = if name == "step2" { 10 } else { 1 };
-        results.push((*id, ExternalResult::Return(MontyObject::Int(val))));
+        results.push((*id, ExtFunctionResult::Return(MontyObject::Int(val))));
     }
 
     let progress = state.resume(results, &mut PrintWriter::Stdout).unwrap();
@@ -746,11 +746,11 @@ await main()
     assert_eq!(final_calls.len(), 2, "should have 2 inner calls from second task");
 
     // Resolve second task's inner calls
-    let results: Vec<(u32, ExternalResult)> = final_calls
+    let results: Vec<(u32, ExtFunctionResult)> = final_calls
         .iter()
         .map(|(id, name)| {
             let val = if name == "step2" { 20 } else { 2 };
-            (*id, ExternalResult::Return(MontyObject::Int(val)))
+            (*id, ExtFunctionResult::Return(MontyObject::Int(val)))
         })
         .collect();
 

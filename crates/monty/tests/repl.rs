@@ -4,7 +4,7 @@
 //! only the newly fed snippet each time.
 
 use monty::{
-    ExternalResult, MontyObject, MontyRepl, NoLimitTracker, PrintWriter, ReplContinuationMode, ReplProgress,
+    ExtFunctionResult, MontyObject, MontyRepl, NoLimitTracker, PrintWriter, ReplContinuationMode, ReplProgress,
     ReplStartError, detect_repl_continuation_mode,
 };
 
@@ -223,7 +223,7 @@ async def main():
 
     let progress = state
         .resume(
-            vec![(call_id, ExternalResult::Return(MontyObject::Int(41)))],
+            vec![(call_id, ExtFunctionResult::Return(MontyObject::Int(41)))],
             &mut PrintWriter::Stdout,
         )
         .unwrap();
@@ -267,7 +267,7 @@ fn repl_start_runtime_error_during_external_call_preserves_repl_state() {
     // Resume with an exception from the external function.
     let exc = monty::MontyException::new(monty::ExcType::RuntimeError, Some("ext failed".to_string()));
     let err = call
-        .resume(ExternalResult::Error(exc), &mut PrintWriter::Stdout)
+        .resume(ExtFunctionResult::Error(exc), &mut PrintWriter::Stdout)
         .expect_err("expected ReplStartError");
     let ReplStartError { mut repl, error } = *err;
     assert_eq!(error.exc_type(), monty::ExcType::RuntimeError);
