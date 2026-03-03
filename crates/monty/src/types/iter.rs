@@ -33,7 +33,7 @@
 use crate::{
     args::ArgValues,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     heap_data::HeapDataMut,
     intern::{BytesId, Interns, StringId},
     resource::ResourceTracker,
@@ -116,7 +116,7 @@ impl MontyIter {
     }
 
     /// Drops the iterator and its held value properly.
-    pub fn drop_with_heap(self, heap: &mut Heap<impl ResourceTracker>) {
+    pub fn drop_with_heap(self, heap: &mut impl ContainsHeap) {
         self.value.drop_with_heap(heap);
     }
 
@@ -756,7 +756,7 @@ impl IterValue {
 
 impl DropWithHeap for MontyIter {
     #[inline]
-    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
+    fn drop_with_concrete_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
         Self::drop_with_heap(self, heap);
     }
 }

@@ -706,7 +706,7 @@ fn do_list_sort(list: &mut List, args: ArgValues, vm: &mut VM<impl ResourceTrack
     // Convert reverse to bool (default false)
     let reverse = if let Some(v) = reverse_arg {
         let result = v.py_bool(vm.heap, vm.interns);
-        v.drop_with_heap(vm.heap);
+        v.drop_with_heap(vm);
         result
     } else {
         false
@@ -715,7 +715,7 @@ fn do_list_sort(list: &mut List, args: ArgValues, vm: &mut VM<impl ResourceTrack
     // Handle key function (None means no key function)
     let key_fn = match key_arg {
         Some(v) if matches!(v, Value::None) => {
-            v.drop_with_heap(vm.heap);
+            v.drop_with_heap(vm);
             None
         }
         other => other,
@@ -736,7 +736,7 @@ fn do_list_sort(list: &mut List, args: ArgValues, vm: &mut VM<impl ResourceTrack
         items
             .iter()
             .map(|item| {
-                let item = item.clone_with_heap(vm.heap);
+                let item = item.clone_with_heap(vm);
                 vm.evaluate_function("sorted() key argument", f, ArgValues::One(item))
             })
             .process_results(|keys_iter| keys.extend(keys_iter))?;

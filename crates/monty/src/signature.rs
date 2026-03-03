@@ -659,7 +659,7 @@ struct NamespaceGuard<'a> {
 }
 
 impl DropWithHeap for NamespaceGuard<'_> {
-    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
+    fn drop_with_concrete_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
         for value in self.namespace.drain(..) {
             value.drop_with_heap(heap);
         }

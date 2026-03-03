@@ -28,7 +28,7 @@ pub fn builtin_sum(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunRes
         Some(v) => {
             // Reject string start values - Python explicitly forbids this
             if matches!(v.py_type(vm.heap), Type::Str) {
-                v.drop_with_heap(vm.heap);
+                v.drop_with_heap(vm);
                 return Err(SimpleException::new_msg(
                     ExcType::TypeError,
                     "sum() can't sum strings [use ''.join(seq) instead]",
@@ -53,7 +53,7 @@ pub fn builtin_sum(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunRes
         if let Some(new_value) = accumulator.py_add(item, vm.heap, vm.interns)? {
             // Replace the old accumulator with the new value, dropping the old one
             let old = std::mem::replace(accumulator, new_value);
-            old.drop_with_heap(vm.heap);
+            old.drop_with_heap(vm);
         } else {
             // Types don't support addition
             let acc_type = accumulator.py_type(vm.heap);

@@ -298,7 +298,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             _ => {
                 // Non-heap values without method support
                 let type_name = obj.py_type(this.heap);
-                args.drop_with_heap(this.heap);
+                args.drop_with_heap(this);
                 Err(ExcType::attribute_error(type_name, this.interns.get_str(name_id)))
             }
         }
@@ -384,7 +384,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 self.call_heap_callable(*heap_id, args)
             }
             _ => {
-                args.drop_with_heap(self.heap);
+                args.drop_with_heap(self);
                 let ty = callable.py_type(self.heap);
                 Err(ExcType::type_error(format!("'{ty}' object is not callable")))
             }
@@ -396,16 +396,15 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let (func_id, cells, defaults) = match self.heap.get(heap_id) {
             HeapData::Closure(closure) => {
                 let cloned_cells = closure.cells.clone();
-                let cloned_defaults: Vec<Value> =
-                    closure.defaults.iter().map(|v| v.clone_with_heap(self.heap)).collect();
+                let cloned_defaults: Vec<Value> = closure.defaults.iter().map(|v| v.clone_with_heap(self)).collect();
                 (closure.func_id, cloned_cells, cloned_defaults)
             }
             HeapData::FunctionDefaults(fd) => {
-                let cloned_defaults: Vec<Value> = fd.defaults.iter().map(|v| v.clone_with_heap(self.heap)).collect();
+                let cloned_defaults: Vec<Value> = fd.defaults.iter().map(|v| v.clone_with_heap(self)).collect();
                 (fd.func_id, Vec::new(), cloned_defaults)
             }
             _ => {
-                args.drop_with_heap(self.heap);
+                args.drop_with_heap(self);
                 return Err(ExcType::type_error("object is not callable"));
             }
         };
@@ -484,7 +483,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let HeapData::Tuple(tuple) = self.heap.get(*id) else {
             unreachable!("CallFunctionExtended: args_tuple must be a Tuple")
         };
-        tuple.as_slice().iter().map(|v| v.clone_with_heap(self.heap)).collect()
+        tuple.as_slice().iter().map(|v| v.clone_with_heap(self)).collect()
     }
 
     /// Builds `ArgValues` with kwargs for `CallFunctionExtended`.
@@ -557,7 +556,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let HeapData::Tuple(tuple) = self.heap.get(*id) else {
             unreachable!("CallAttrExtended: args_tuple must be a Tuple")
         };
-        tuple.as_slice().iter().map(|v| v.clone_with_heap(self.heap)).collect()
+        tuple.as_slice().iter().map(|v| v.clone_with_heap(self)).collect()
     }
 
     /// Builds `ArgValues` with kwargs for `CallAttrExtended`.
@@ -733,7 +732,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             if let Err(e) = bind_result {
                 self.namespaces.drop_with_heap(namespace_idx, self.heap);
                 for default in defaults {
-                    default.drop_with_heap(self.heap);
+                    default.drop_with_heap(self);
                 }
                 return Err(e);
             }

@@ -239,8 +239,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 _ => false,
             };
             if !is_string {
-                key.drop_with_heap(this.heap);
-                value.drop_with_heap(this.heap);
+                key.drop_with_heap(this);
+                value.drop_with_heap(this);
                 return Err(ExcType::type_error_kwargs_nonstring_key());
             }
 
@@ -268,7 +268,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
             // If set returned Some, the key already existed (duplicate kwarg)
             if let Some(old_value) = result? {
-                old_value.drop_with_heap(this.heap);
+                old_value.drop_with_heap(this);
                 return Err(ExcType::type_error_multiple_values(&func_name, &key_str));
             }
         }
@@ -295,7 +295,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Get the list reference
         let Value::Ref(list_id) = self.stack[list_pos] else {
-            value.drop_with_heap(self.heap);
+            value.drop_with_heap(self);
             return Err(RunError::internal("ListAppend: expected list ref on stack"));
         };
 
@@ -323,7 +323,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Get the set reference
         let Value::Ref(set_id) = self.stack[set_pos] else {
-            value.drop_with_heap(self.heap);
+            value.drop_with_heap(self);
             return Err(RunError::internal("SetAdd: expected set ref on stack"));
         };
 
@@ -353,8 +353,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Get the dict reference
         let Value::Ref(dict_id) = self.stack[dict_pos] else {
-            key.drop_with_heap(self.heap);
-            value.drop_with_heap(self.heap);
+            key.drop_with_heap(self);
+            value.drop_with_heap(self);
             return Err(RunError::internal("DictSetItem: expected dict ref on stack"));
         };
 
@@ -371,7 +371,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Drop old value if key already existed
         if let Some(old) = old_value {
-            old.drop_with_heap(self.heap);
+            old.drop_with_heap(self);
         }
 
         Ok(())

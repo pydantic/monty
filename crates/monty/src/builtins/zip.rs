@@ -37,7 +37,7 @@ pub fn builtin_zip(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunRes
             Err(e) => {
                 // Clean up already-created iterators
                 for iter in iterators {
-                    iter.drop_with_heap(vm.heap);
+                    iter.drop_with_heap(vm);
                 }
                 return Err(e);
             }
@@ -56,7 +56,7 @@ pub fn builtin_zip(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunRes
             } else {
                 // This iterator is exhausted - drop partial tuple items and stop
                 for item in tuple_items {
-                    item.drop_with_heap(vm.heap);
+                    item.drop_with_heap(vm);
                 }
                 break 'outer;
             }
@@ -69,7 +69,7 @@ pub fn builtin_zip(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunRes
 
     // Clean up iterators
     for iter in iterators {
-        iter.drop_with_heap(vm.heap);
+        iter.drop_with_heap(vm);
     }
 
     let heap_id = vm.heap.allocate(HeapData::List(List::new(result)))?;

@@ -17,7 +17,7 @@ use crate::{
     asyncio::CallId,
     builtins::Builtins,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{Heap, HeapData, HeapId},
+    heap::{ContainsHeap, Heap, HeapData, HeapId},
     heap_data::HeapDataMut,
     intern::{BytesId, ExtFunctionId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
@@ -1853,15 +1853,19 @@ impl Value {
     /// For heap-allocated values (Ref variant), this increments the reference count
     /// and returns a new reference to the same heap value.
     ///
+    /// Takes `ContainsHeap` to allow directly passing the `VM` in many contexts. Where
+    /// borrow checking creates conflicts, it may be preferred to pass `&Heap` directly
+    /// (e.g. as `vm.heap` / `self.heap` etc.).
+    ///
     /// # Important
     /// This method MUST be used instead of the derived `Clone` implementation to ensure
     /// proper reference counting. Using `.clone()` directly will bypass reference counting
     /// and cause memory leaks or double-frees.
     #[must_use]
-    pub fn clone_with_heap(&self, heap: &Heap<impl ResourceTracker>) -> Self {
+    pub fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
         match self {
             Self::Ref(id) => {
-                heap.inc_ref(*id);
+                heap.heap().inc_ref(*id);
                 Self::Ref(*id)
             }
             // Immediate values can be copied without heap interaction
@@ -1876,24 +1880,28 @@ impl Value {
     /// the count reaches zero. For Closure variants, this decrements ref counts on all
     /// captured cells.
     ///
+    /// Takes `ContainsHeap` to allow directly passing the `VM` in many contexts. Where
+    /// borrow checking creates conflicts, it may be preferred to pass `&mut Heap` directly
+    /// (e.g. as `vm.heap` / `self.heap` etc.).
+    ///
     /// # Important
     /// This method MUST be called before overwriting a namespace slot or discarding
     /// a value to prevent memory leaks.
     #[cfg(not(feature = "ref-count-panic"))]
     #[inline]
-    pub fn drop_with_heap(self, heap: &mut Heap<impl ResourceTracker>) {
+    pub fn drop_with_heap(self, heap: &mut impl ContainsHeap) {
         if let Self::Ref(id) = self {
-            heap.dec_ref(id);
+            heap.heap_mut().dec_ref(id);
         }
     }
     /// With `ref-count-panic` enabled, `Ref` variants are replaced with `Dereferenced` and
     /// the original is forgotten to prevent the Drop impl from panicking. Non-Ref variants
     /// are left unchanged since they don't trigger the Drop panic.
     #[cfg(feature = "ref-count-panic")]
-    pub fn drop_with_heap(mut self, heap: &mut Heap<impl ResourceTracker>) {
+    pub fn drop_with_heap(mut self, heap: &mut impl ContainsHeap) {
         let old = std::mem::replace(&mut self, Self::Dereferenced);
         if let Self::Ref(id) = &old {
-            heap.dec_ref(*id);
+            heap.heap_mut().dec_ref(*id);
             std::mem::forget(old);
         }
     }

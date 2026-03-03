@@ -378,7 +378,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         }
 
         // Mark task as completed and store result in task state
-        let task_result = result.clone_with_heap(self.heap);
+        let task_result = result.clone_with_heap(self);
         self.scheduler_mut().complete_task(task_id, task_result);
 
         // If task belongs to a gather, store result and check if gather is complete
@@ -389,7 +389,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             {
                 gather.results[idx] = Some(result);
             } else {
-                result.drop_with_heap(self.heap);
+                result.drop_with_heap(self);
             }
 
             // Extract gather metadata - clone task_ids since we need to check completion
@@ -475,7 +475,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
         } else {
             // Drop the result (it's stored in the task state now)
-            result.drop_with_heap(self.heap);
+            result.drop_with_heap(self);
         }
 
         // Gather not complete or no gather - switch to next task
@@ -723,7 +723,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Extract coroutine data
         let func_id = coro.func_id;
-        let namespace_values: Vec<Value> = coro.namespace.iter().map(|v| v.clone_with_heap(self.heap)).collect();
+        let namespace_values: Vec<Value> = coro.namespace.iter().map(|v| v.clone_with_heap(self)).collect();
         let frame_cells: Vec<HeapId> = coro.frame_cells.clone();
 
         // Increment refcounts for shared cell references

@@ -779,10 +779,10 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 // ============================================================
                 Opcode::Pop => {
                     let value = self.pop();
-                    value.drop_with_heap(self.heap);
+                    value.drop_with_heap(self);
                 }
                 Opcode::Dup => {
-                    let value = self.peek().clone_with_heap(self.heap);
+                    let value = self.peek().clone_with_heap(self);
                     self.push(value);
                 }
                 Opcode::Rot2 => {
@@ -810,7 +810,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                             Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                         }
                     } else {
-                        self.push(value.clone_with_heap(self.heap));
+                        self.push(value.clone_with_heap(self));
                     }
                 }
                 Opcode::LoadNone => self.push(Value::None),
@@ -903,7 +903,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 Opcode::UnaryNot => {
                     let value = self.pop();
                     let result = !value.py_bool(self.heap, self.interns);
-                    value.drop_with_heap(self.heap);
+                    value.drop_with_heap(self);
                     self.push(Value::Bool(result));
                 }
                 Opcode::UnaryNeg => {
@@ -928,20 +928,20 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                         Value::Ref(id) => {
                             if let HeapData::LongInt(li) = self.heap.get(id) {
                                 let negated = -LongInt::new(li.inner().clone());
-                                value.drop_with_heap(self.heap);
+                                value.drop_with_heap(self);
                                 match negated.into_value(self.heap) {
                                     Ok(v) => self.push(v),
                                     Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                                 }
                             } else {
                                 let value_type = value.py_type(self.heap);
-                                value.drop_with_heap(self.heap);
+                                value.drop_with_heap(self);
                                 catch_sync!(self, cached_frame, ExcType::unary_type_error("-", value_type));
                             }
                         }
                         _ => {
                             let value_type = value.py_type(self.heap);
-                            value.drop_with_heap(self.heap);
+                            value.drop_with_heap(self);
                             catch_sync!(self, cached_frame, ExcType::unary_type_error("-", value_type));
                         }
                     }
@@ -958,13 +958,13 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                                 self.push(value);
                             } else {
                                 let value_type = value.py_type(self.heap);
-                                value.drop_with_heap(self.heap);
+                                value.drop_with_heap(self);
                                 catch_sync!(self, cached_frame, ExcType::unary_type_error("+", value_type));
                             }
                         }
                         _ => {
                             let value_type = value.py_type(self.heap);
-                            value.drop_with_heap(self.heap);
+                            value.drop_with_heap(self);
                             catch_sync!(self, cached_frame, ExcType::unary_type_error("+", value_type));
                         }
                     }
@@ -979,20 +979,20 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                             if let HeapData::LongInt(li) = self.heap.get(id) {
                                 // LongInt bitwise NOT: ~x = -(x + 1)
                                 let inverted = -(li.inner() + 1i32);
-                                value.drop_with_heap(self.heap);
+                                value.drop_with_heap(self);
                                 match LongInt::new(inverted).into_value(self.heap) {
                                     Ok(v) => self.push(v),
                                     Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                                 }
                             } else {
                                 let value_type = value.py_type(self.heap);
-                                value.drop_with_heap(self.heap);
+                                value.drop_with_heap(self);
                                 catch_sync!(self, cached_frame, ExcType::unary_type_error("~", value_type));
                             }
                         }
                         _ => {
                             let value_type = value.py_type(self.heap);
-                            value.drop_with_heap(self.heap);
+                            value.drop_with_heap(self);
                             catch_sync!(self, cached_frame, ExcType::unary_type_error("~", value_type));
                         }
                     }
@@ -1075,8 +1075,8 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                     let index = self.pop();
                     let obj = self.pop();
                     let result = obj.py_getitem(&index, self.heap, self.interns);
-                    obj.drop_with_heap(self.heap);
-                    index.drop_with_heap(self.heap);
+                    obj.drop_with_heap(self);
+                    index.drop_with_heap(self);
                     match result {
                         Ok(v) => self.push(v),
                         Err(e) => catch_sync!(self, cached_frame, e),
@@ -1088,7 +1088,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                     let mut obj = self.pop();
                     let value = self.pop();
                     let result = obj.py_setitem(index, value, self.heap, self.interns);
-                    obj.drop_with_heap(self.heap);
+                    obj.drop_with_heap(self);
                     if let Err(e) = result {
                         catch_sync!(self, cached_frame, e);
                     }
@@ -1119,7 +1119,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                     if cond.py_bool(self.heap, self.interns) {
                         jump_relative!(cached_frame.ip, offset);
                     }
-                    cond.drop_with_heap(self.heap);
+                    cond.drop_with_heap(self);
                 }
                 Opcode::JumpIfFalse => {
                     let offset = fetch_i16!(cached_frame);
@@ -1127,7 +1127,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                     if !cond.py_bool(self.heap, self.interns) {
                         jump_relative!(cached_frame.ip, offset);
                     }
-                    cond.drop_with_heap(self.heap);
+                    cond.drop_with_heap(self);
                 }
                 Opcode::JumpIfTrueOrPop => {
                     let offset = fetch_i16!(cached_frame);
@@ -1135,14 +1135,14 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                         jump_relative!(cached_frame.ip, offset);
                     } else {
                         let value = self.pop();
-                        value.drop_with_heap(self.heap);
+                        value.drop_with_heap(self);
                     }
                 }
                 Opcode::JumpIfFalseOrPop => {
                     let offset = fetch_i16!(cached_frame);
                     if self.peek().py_bool(self.heap, self.interns) {
                         let value = self.pop();
-                        value.drop_with_heap(self.heap);
+                        value.drop_with_heap(self);
                     } else {
                         jump_relative!(cached_frame.ip, offset);
                     }
@@ -1173,13 +1173,13 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                         Ok(None) => {
                             // Iterator exhausted - pop it and jump to end
                             let iter = self.pop();
-                            iter.drop_with_heap(self.heap);
+                            iter.drop_with_heap(self);
                             jump_relative!(cached_frame.ip, offset);
                         }
                         Err(e) => {
                             // Error during iteration (e.g., dict size changed)
                             let iter = self.pop();
-                            iter.drop_with_heap(self.heap);
+                            iter.drop_with_heap(self);
                             catch_sync!(self, cached_frame, e);
                         }
                     }
@@ -1373,7 +1373,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                     // Pop the current exception from the stack
                     // This restores the previous exception context (if any)
                     if let Some(exc) = self.exception_stack.pop() {
-                        exc.drop_with_heap(self.heap);
+                        exc.drop_with_heap(self);
                     }
                 }
                 Opcode::CheckExcMatch => {
@@ -1381,7 +1381,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                     let exc_type = self.pop();
                     let exception = self.peek();
                     let result = self.check_exc_match(exception, &exc_type);
-                    exc_type.drop_with_heap(self.heap);
+                    exc_type.drop_with_heap(self);
                     let result = result?;
                     self.push(Value::Bool(result));
                 }
@@ -1611,7 +1611,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
         // Clean up frame's stack region
         self.stack
             .drain(frame.stack_base..)
-            .for_each(|value| value.drop_with_heap(self.heap));
+            .for_each(|value| value.drop_with_heap(&mut *self.heap));
 
         // Clean up the namespace (but not the global namespace)
         if frame.namespace_idx != GLOBAL_NS_IDX {
@@ -1692,7 +1692,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
             return Err(err);
         }
 
-        self.push(value.clone_with_heap(self.heap));
+        self.push(value.clone_with_heap(self));
         Ok(())
     }
 
@@ -1729,7 +1729,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
         let namespace = self.namespaces.get_mut(cached_frame.namespace_idx);
         let ns_slot = NamespaceId::new(slot as usize);
         let old_value = std::mem::replace(namespace.get_mut(ns_slot), value);
-        old_value.drop_with_heap(self.heap);
+        old_value.drop_with_heap(self);
     }
 
     /// Deletes a local variable (sets it to Undefined).
@@ -1737,7 +1737,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
         let namespace = self.namespaces.get_mut(cached_frame.namespace_idx);
         let ns_slot = NamespaceId::new(slot as usize);
         let old_value = std::mem::replace(namespace.get_mut(ns_slot), Value::Undefined);
-        old_value.drop_with_heap(self.heap);
+        old_value.drop_with_heap(self);
     }
 
     /// Loads a global variable and pushes it onto the stack.
@@ -1746,9 +1746,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     fn load_global(&mut self, slot: u16) -> RunResult<()> {
         let namespace = self.namespaces.get(GLOBAL_NS_IDX);
         // Copy without incrementing refcount first (avoids borrow conflict)
-        let value = namespace
-            .get(NamespaceId::new(slot as usize))
-            .clone_with_heap(self.heap);
+        let value = namespace.get(NamespaceId::new(slot as usize)).clone_with_heap(self);
 
         // Check for undefined value - raise NameError if so
         if matches!(value, Value::Undefined) {
@@ -1767,7 +1765,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
         let namespace = self.namespaces.get_mut(GLOBAL_NS_IDX);
         let ns_slot = NamespaceId::new(slot as usize);
         let old_value = std::mem::replace(namespace.get_mut(ns_slot), value);
-        old_value.drop_with_heap(self.heap);
+        old_value.drop_with_heap(self);
     }
 
     /// Loads from a closure cell and pushes onto the stack.
@@ -1808,6 +1806,9 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
 // `heap` is not a public field on VM, so this implementation needs to go here rather than in `heap.rs`
 impl<T: ResourceTracker> ContainsHeap for VM<'_, '_, T> {
     type ResourceTracker = T;
+    fn heap(&self) -> &Heap<T> {
+        self.heap
+    }
     fn heap_mut(&mut self) -> &mut Heap<T> {
         self.heap
     }

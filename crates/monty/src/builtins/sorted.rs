@@ -40,7 +40,7 @@ pub fn builtin_sorted(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> Run
             items
                 .iter()
                 .map(|item| {
-                    let item = item.clone_with_heap(vm.heap);
+                    let item = item.clone_with_heap(vm);
                     vm.evaluate_function("sorted() key argument", f, ArgValues::One(item))
                 })
                 .process_results(|keys_iter| keys.extend(keys_iter))?;

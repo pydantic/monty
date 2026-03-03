@@ -49,10 +49,10 @@ pub fn builtin_filter(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> Run
             item.py_bool(vm.heap, vm.interns)
         } else {
             // Clone for predicate call - the clone is consumed by evaluate_function
-            let item_for_predicate = item.clone_with_heap(vm.heap);
+            let item_for_predicate = item.clone_with_heap(vm);
             let result = vm.evaluate_function("filter()", function, ArgValues::One(item_for_predicate))?;
             let is_truthy = result.py_bool(vm.heap, vm.interns);
-            result.drop_with_heap(vm.heap);
+            result.drop_with_heap(vm);
             is_truthy
         };
 

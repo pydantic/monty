@@ -20,7 +20,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             // Each part should be a string (interned or heap-allocated)
             let part_str = part.py_str(self.heap, self.interns);
             result.push_str(&part_str);
-            part.drop_with_heap(self.heap);
+            part.drop_with_heap(self);
         }
 
         let value = allocate_string(result, self.heap)?;

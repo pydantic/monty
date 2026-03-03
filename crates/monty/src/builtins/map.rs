@@ -64,7 +64,7 @@ pub fn builtin_map(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunRes
         [single] => {
             while let Some(arg1) = first_iter.for_next(vm.heap, vm.interns)? {
                 let Some(arg2) = single.for_next(vm.heap, vm.interns)? else {
-                    arg1.drop_with_heap(vm.heap);
+                    arg1.drop_with_heap(vm);
                     break;
                 };
                 let args = ArgValues::Two(arg1, arg2);
@@ -79,7 +79,7 @@ pub fn builtin_map(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunRes
                 if let Some(item) = iter.for_next(vm.heap, vm.interns)? {
                     items.push(item);
                 } else {
-                    items.drop_with_heap(vm.heap);
+                    items.drop_with_heap(vm);
                     break 'outer;
                 }
             }

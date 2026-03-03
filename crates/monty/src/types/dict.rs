@@ -647,7 +647,7 @@ impl PyTrait for Dict {
 }
 
 impl DropWithHeap for Dict {
-    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
+    fn drop_with_concrete_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
         for entry in self.entries {
             entry.key.drop_with_heap(heap);
             entry.value.drop_with_heap(heap);
