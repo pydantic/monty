@@ -65,6 +65,7 @@
 /// - `expandtabs(tabsize=8)` - Tab expansion
 /// - `translate(table[, delete])` - Character translation
 /// - `maketrans(frm, to)` - Create translation table (staticmethod)
+use std::cmp::Ordering;
 use std::fmt::Write;
 
 use ahash::AHashSet;
@@ -292,6 +293,15 @@ impl PyTrait for Bytes {
     /// Bytes don't contain nested heap references.
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // No-op: bytes don't hold Value references
+    }
+
+    fn py_cmp(
+        &self,
+        other: &Self,
+        _heap: &mut Heap<impl ResourceTracker>,
+        _interns: &Interns,
+    ) -> Result<Option<Ordering>, ResourceError> {
+        Ok(Some(self.0.cmp(&other.0)))
     }
 
     fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
