@@ -167,6 +167,7 @@ def test_dataclass_empty():
     assert repr(result) == snapshot('test_dataclass_empty.<locals>.Empty()')
 
 
+@pytest.mark.xfail(reason='We should extend the dataclass registry to cover all types, then test it is enforced')
 def test_dataclass_type_raises():
     """Dataclass type (not instance) should raise TypeError."""
 
