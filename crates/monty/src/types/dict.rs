@@ -14,7 +14,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -647,7 +647,7 @@ impl PyTrait for Dict {
 }
 
 impl DropWithHeap for Dict {
-    fn drop_with_concrete_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         for entry in self.entries {
             entry.key.drop_with_heap(heap);
             entry.value.drop_with_heap(heap);

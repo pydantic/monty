@@ -9,7 +9,7 @@ use crate::{
     defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     expressions::Identifier,
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard},
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard},
     intern::{Interns, StringId},
     resource::ResourceTracker,
     types::{Dict, allocate_tuple},
@@ -659,7 +659,7 @@ struct NamespaceGuard<'a> {
 }
 
 impl DropWithHeap for NamespaceGuard<'_> {
-    fn drop_with_concrete_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         for value in self.namespace.drain(..) {
             value.drop_with_heap(heap);
         }

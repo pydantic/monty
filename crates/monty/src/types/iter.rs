@@ -756,7 +756,7 @@ impl IterValue {
 
 impl DropWithHeap for MontyIter {
     #[inline]
-    fn drop_with_concrete_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         Self::drop_with_heap(self, heap);
     }
 }
