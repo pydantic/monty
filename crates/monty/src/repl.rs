@@ -93,8 +93,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
     pub fn feed_start(
         self,
         code: &str,
-        input_names: Vec<String>,
-        inputs: Vec<MontyObject>,
+        inputs: Vec<(String, MontyObject)>,
         print: &mut PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         let mut this = self;
@@ -104,6 +103,8 @@ impl<T: ResourceTracker> MontyRepl<T> {
                 value: MontyObject::None,
             });
         }
+
+        let (input_names, input_values): (Vec<_>, Vec<_>) = inputs.into_iter().unzip();
 
         let input_script_name = this.next_input_script_name();
         let executor = match ReplExecutor::new_repl_snippet(
@@ -118,7 +119,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
         };
 
         this.ensure_global_namespace_size(executor.namespace_size);
-        if let Err(error) = this.inject_inputs(inputs, &executor) {
+        if let Err(error) = this.inject_inputs(input_values, &executor) {
             return Err(Box::new(ReplStartError { repl: this, error }));
         }
 
@@ -145,13 +146,14 @@ impl<T: ResourceTracker> MontyRepl<T> {
     pub fn feed_run(
         &mut self,
         code: &str,
-        input_names: Vec<String>,
-        inputs: Vec<MontyObject>,
+        inputs: Vec<(String, MontyObject)>,
         print: &mut PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
         if code.is_empty() {
             return Ok(MontyObject::None);
         }
+
+        let (input_names, input_values): (Vec<_>, Vec<_>) = inputs.into_iter().unzip();
 
         let input_script_name = self.next_input_script_name();
         let executor = ReplExecutor::new_repl_snippet(
@@ -174,7 +176,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
         self.ensure_global_namespace_size(namespace_size);
 
         // Inject input values into their pre-assigned namespace slots.
-        for (name, obj) in input_names.iter().zip(inputs) {
+        for (name, obj) in input_names.iter().zip(input_values) {
             let slot = name_map[name];
             let value = obj
                 .to_value(&mut self.heap, &interns)

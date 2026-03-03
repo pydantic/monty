@@ -358,7 +358,7 @@ fn run_repl(file_path: &str, code: &str, tracker: impl ResourceTracker) -> ExitC
 
 /// Executes one collected REPL snippet, printing the result or error.
 fn execute_repl_snippet(repl: &mut MontyRepl<impl ResourceTracker>, snippet: &str) {
-    match repl.feed_run(snippet, vec![], vec![], &mut PrintWriter::Stdout) {
+    match repl.feed_run(snippet, vec![], &mut PrintWriter::Stdout) {
         Ok(output) => {
             if output != MontyObject::None {
                 println!("{output}");
