@@ -3,9 +3,10 @@ use std::fmt::Write;
 use ahash::AHashSet;
 use hashbrown::HashTable;
 
-use super::{MontyIter, PyTrait};
+use super::{MontyIter, PyTrait, py_trait::AttrCallResult};
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapId},
@@ -635,12 +636,14 @@ impl PyTrait for Set {
 
     fn py_call_attr(
         &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
+        _self_id: HeapId,
+        vm: &mut VM<impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
-        match attr.static_string() {
+    ) -> RunResult<AttrCallResult> {
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
+        let value = match attr.static_string() {
             Some(StaticStrings::Add) => {
                 let value = args.get_one_arg("set.add", heap)?;
                 self.add(value, heap, interns)?;
@@ -719,9 +722,10 @@ impl PyTrait for Set {
             }
             _ => {
                 args.drop_with_heap(heap);
-                Err(ExcType::attribute_error(Type::Set, attr.as_str(interns)))
+                return Err(ExcType::attribute_error(Type::Set, attr.as_str(interns)));
             }
-        }
+        };
+        value.map(AttrCallResult::Value)
     }
 
     fn py_sub(
@@ -1137,12 +1141,14 @@ impl PyTrait for FrozenSet {
 
     fn py_call_attr(
         &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
+        _self_id: HeapId,
+        vm: &mut VM<impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
-        match attr.static_string() {
+    ) -> RunResult<AttrCallResult> {
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
+        let value = match attr.static_string() {
             Some(StaticStrings::Copy) => {
                 args.check_zero_args("frozenset.copy", heap)?;
                 let copy = self.copy(heap);
@@ -1206,9 +1212,10 @@ impl PyTrait for FrozenSet {
             }
             _ => {
                 args.drop_with_heap(heap);
-                Err(ExcType::attribute_error(Type::FrozenSet, attr.as_str(interns)))
+                return Err(ExcType::attribute_error(Type::FrozenSet, attr.as_str(interns)));
             }
-        }
+        };
+        value.map(AttrCallResult::Value)
     }
 
     fn py_sub(

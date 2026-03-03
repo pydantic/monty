@@ -8,9 +8,10 @@ use ahash::AHashSet;
 use hashbrown::{HashTable, hash_table::Entry};
 use smallvec::smallvec;
 
-use super::{List, MontyIter, PyTrait, allocate_tuple};
+use super::{List, MontyIter, PyTrait, allocate_tuple, py_trait::AttrCallResult};
 use crate::{
     args::{ArgValues, KwargsValues},
+    bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
@@ -548,17 +549,19 @@ impl PyTrait for Dict {
 
     fn py_call_attr(
         &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
+        _self_id: HeapId,
+        vm: &mut VM<impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
+    ) -> RunResult<AttrCallResult> {
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
         let Some(method) = attr.static_string() else {
             args.drop_with_heap(heap);
             return Err(ExcType::attribute_error(Type::Dict, attr.as_str(interns)));
         };
 
-        match method {
+        let value = match method {
             StaticStrings::Get => {
                 // dict.get() accepts 1 or 2 arguments
                 let (key, default) = args.get_one_two_args("get", heap)?;
@@ -636,9 +639,10 @@ impl PyTrait for Dict {
             StaticStrings::Fromkeys => dict_fromkeys(args, heap, interns),
             _ => {
                 args.drop_with_heap(heap);
-                Err(ExcType::attribute_error(Type::Dict, attr.as_str(interns)))
+                return Err(ExcType::attribute_error(Type::Dict, attr.as_str(interns)));
             }
-        }
+        };
+        value.map(AttrCallResult::Value)
     }
 }
 

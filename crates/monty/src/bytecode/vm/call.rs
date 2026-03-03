@@ -268,7 +268,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Calls an attribute on an object.
     ///
     /// For heap-allocated objects (`Value::Ref`), dispatches to the type's
-    /// attribute call implementation via `heap.call_attr_raw()`, which may return
+    /// attribute call implementation via `Heap::call_attr()`, which may return
     /// `AttrCallResult::OsCall`, `AttrCallResult::ExternalCall`, or
     /// `AttrCallResult::MethodCall` for operations that require host involvement.
     ///
@@ -281,7 +281,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         match obj {
             Value::Ref(heap_id) => {
                 defer_drop!(obj, this);
-                let result = Heap::call_attr_raw(this, heap_id, &attr, args);
+                let result = Heap::call_attr(this, heap_id, &attr, args);
                 result.map(Into::into)
             }
             Value::InternString(string_id) => {

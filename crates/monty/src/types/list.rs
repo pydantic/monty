@@ -413,28 +413,12 @@ impl PyTrait for List {
         Ok(true)
     }
 
+    /// Intercepts `sort` to call `do_list_sort` (which needs `PrintWriter` for key functions),
+    /// and delegates all other methods to `call_list_method`.
     fn py_call_attr(
         &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
-        attr: &EitherStr,
-        args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
-        let args_guard = HeapGuard::new(args, heap);
-        let Some(method) = attr.static_string() else {
-            return Err(ExcType::attribute_error(Type::List, attr.as_str(interns)));
-        };
-
-        let (args, heap) = args_guard.into_parts();
-        call_list_method(self, method, args, heap, interns)
-    }
-
-    /// Intercepts `sort` to call `do_list_sort` (which needs `PrintWriter` for key functions),
-    /// and delegates all other methods to `py_call_attr`.
-    fn py_call_attr_raw(
-        &mut self,
         _self_id: HeapId,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
+        vm: &mut VM<impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<AttrCallResult> {
@@ -442,8 +426,15 @@ impl PyTrait for List {
             do_list_sort(self, args, vm)?;
             return Ok(AttrCallResult::Value(Value::None));
         }
-        self.py_call_attr(vm.heap, attr, args, vm.interns)
-            .map(AttrCallResult::Value)
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
+        let args_guard = HeapGuard::new(args, heap);
+        let Some(method) = attr.static_string() else {
+            return Err(ExcType::attribute_error(Type::List, attr.as_str(interns)));
+        };
+
+        let (args, heap) = args_guard.into_parts();
+        call_list_method(self, method, args, heap, interns).map(AttrCallResult::Value)
     }
 }
 
@@ -490,7 +481,7 @@ fn call_list_method(
             list.items.reverse();
             Ok(Value::None)
         }
-        // Note: list.sort is handled by py_call_attr_raw which intercepts it
+        // Note: list.sort is handled by py_call_attr which intercepts it before reaching here
         _ => {
             args.drop_with_heap(heap);
             Err(ExcType::attribute_error(Type::List, method.into()))

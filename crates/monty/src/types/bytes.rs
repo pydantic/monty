@@ -70,9 +70,10 @@ use std::fmt::Write;
 use ahash::AHashSet;
 use smallvec::smallvec;
 
-use super::{MontyIter, PyTrait, Type, str::Str};
+use super::{MontyIter, PyTrait, Type, py_trait::AttrCallResult, str::Str};
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
@@ -312,17 +313,19 @@ impl PyTrait for Bytes {
 
     fn py_call_attr(
         &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
+        _self_id: HeapId,
+        vm: &mut VM<impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
+    ) -> RunResult<AttrCallResult> {
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
         let Some(method) = attr.static_string() else {
             args.drop_with_heap(heap);
             return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(interns)));
         };
 
-        call_bytes_method_impl(self.as_slice(), method, args, heap, interns)
+        call_bytes_method_impl(self.as_slice(), method, args, heap, interns).map(AttrCallResult::Value)
     }
 }
 

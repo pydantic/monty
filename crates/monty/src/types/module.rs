@@ -125,7 +125,7 @@ impl Module {
     ///
     /// Returns `AttrCallResult` because module functions may need OS operations
     /// (e.g., `os.getenv()`) that require host involvement.
-    pub fn py_call_attr_raw(
+    pub fn py_call_attr(
         &self,
         _self_id: HeapId,
         vm: &mut VM<'_, '_, impl ResourceTracker>,

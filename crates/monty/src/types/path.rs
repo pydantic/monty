@@ -491,20 +491,36 @@ impl PyTrait for Path {
         std::mem::size_of::<Self>() + self.path.capacity()
     }
 
+    /// Handles attribute calls on Path objects, including both pure methods (no I/O)
+    /// and OS methods that require host system access.
+    ///
+    /// OS methods (exists, read_text, etc.) are detected via `OsFunction::try_from`
+    /// and returned as `AttrCallResult::OsCall` for the VM to yield to the host.
+    /// Pure methods (is_absolute, joinpath, etc.) are handled directly.
     fn py_call_attr(
         &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
+        _self_id: HeapId,
+        vm: &mut VM<impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
+    ) -> RunResult<AttrCallResult> {
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
         let Some(method) = attr.static_string() else {
             args.drop_with_heap(heap);
             return Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)));
         };
 
-        match method {
-            // Pure methods (no I/O)
+        // Check if this is an OS method that requires host system access
+        if let Ok(os_fn) = OsFunction::try_from(method) {
+            // Package path as first argument for OS call (as Path, not string)
+            let path_arg = Value::Ref(heap.allocate(HeapData::Path(self.clone()))?);
+            let os_args = prepend_path_arg(path_arg, args);
+            return Ok(AttrCallResult::OsCall(os_fn, os_args));
+        }
+
+        // Pure methods (no I/O)
+        let value = match method {
             StaticStrings::IsAbsolute => {
                 args.check_zero_args("is_absolute", heap)?;
                 Ok(Value::Bool(self.is_absolute()))
@@ -551,35 +567,10 @@ impl PyTrait for Path {
             }
             _ => {
                 args.drop_with_heap(heap);
-                Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)))
+                return Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)));
             }
-        }
-    }
-
-    fn py_call_attr_raw(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
-        let Some(method) = attr.static_string() else {
-            return self
-                .py_call_attr(vm.heap, attr, args, vm.interns)
-                .map(AttrCallResult::Value);
         };
-
-        // Check if this is an OS method that requires host system access
-        if let Ok(os_fn) = OsFunction::try_from(method) {
-            // Package path as first argument for OS call (as Path, not string)
-            let path_arg = Value::Ref(vm.heap.allocate(HeapData::Path(self.clone()))?);
-            let os_args = prepend_path_arg(path_arg, args);
-            return Ok(AttrCallResult::OsCall(os_fn, os_args));
-        }
-
-        // Fall back to py_call_attr for pure methods
-        self.py_call_attr(vm.heap, attr, args, vm.interns)
-            .map(AttrCallResult::Value)
+        value.map(AttrCallResult::Value)
     }
 
     fn py_getattr(

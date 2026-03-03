@@ -263,55 +263,44 @@ impl PyTrait for Dataclass {
         Ok(())
     }
 
-    fn py_call_attr(
-        &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
-        attr: &EitherStr,
-        args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
-        // Public method calls are intercepted by py_call_attr_raw before reaching
-        // this method. This path is reached for:
-        // - Private/dunder attributes that aren't in attrs (AttributeError)
-        // - Attributes that exist in attrs but aren't callable (TypeError)
-        let method_name = attr.as_str(interns);
-        defer_drop!(args, heap);
-
-        // If the attribute exists in attrs, it's a data value (not callable)
-        if let Some(value) = self.attrs.get_by_str(method_name, heap, interns) {
-            let type_name = value.py_type(heap);
-            Err(ExcType::type_error_not_callable_object(type_name))
-        } else {
-            // Attribute doesn't exist — use the class name (e.g., "Point") not "Dataclass"
-            Err(ExcType::attribute_error(self.name(interns), method_name))
-        }
-    }
-
     /// Performs lazy method detection for dataclass instances.
     ///
     /// If the attribute is a public name (no leading underscore) not found in the
     /// dataclass's attrs dict, returns `MethodCall` so the VM yields to the host.
-    /// Otherwise falls through to `py_call_attr`.
-    fn py_call_attr_raw(
+    /// Otherwise handles the call directly:
+    /// - Attributes that exist in attrs but aren't callable produce `TypeError`
+    /// - Private/dunder attributes that aren't in attrs produce `AttributeError`
+    fn py_call_attr(
         &mut self,
         self_id: HeapId,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
+        vm: &mut VM<impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<AttrCallResult> {
-        let attr_str = attr.as_str(vm.interns);
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
+        let attr_str = attr.as_str(interns);
         // Only public methods (no underscore prefix = no dunders, no private)
-        if !attr_str.starts_with('_') && self.attrs.get_by_str(attr_str, vm.heap, vm.interns).is_none() {
+        if !attr_str.starts_with('_') && self.attrs.get_by_str(attr_str, heap, interns).is_none() {
             // Clone self and prepend to args for the method call
             // inc_ref works even when data is taken out (refcount metadata is separate)
-            vm.heap.inc_ref(self_id);
+            heap.inc_ref(self_id);
             let self_arg = Value::Ref(self_id);
             let args_with_self = args.prepend(self_arg);
             Ok(AttrCallResult::MethodCall(attr.clone(), args_with_self))
         } else {
-            // Not a method call — delegate to standard attr dispatch
-            self.py_call_attr(vm.heap, attr, args, vm.interns)
-                .map(AttrCallResult::Value)
+            // Not a method call — handle directly
+            let method_name = attr.as_str(interns);
+            defer_drop!(args, heap);
+
+            // If the attribute exists in attrs, it's a data value (not callable)
+            if let Some(value) = self.attrs.get_by_str(method_name, heap, interns) {
+                let type_name = value.py_type(heap);
+                Err(ExcType::type_error_not_callable_object(type_name))
+            } else {
+                // Attribute doesn't exist — use the class name (e.g., "Point") not "Dataclass"
+                Err(ExcType::attribute_error(self.name(interns), method_name))
+            }
         }
     }
 

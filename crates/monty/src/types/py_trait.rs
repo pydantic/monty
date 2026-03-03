@@ -24,7 +24,7 @@ use crate::{
     value::{EitherStr, Value},
 };
 
-/// Result of calling an attribute method via `py_call_attr_raw`.
+/// Result of calling an attribute method via `py_call_attr`.
 ///
 /// This enum enables attribute methods to signal different outcomes to the VM:
 /// - `Value`: The call completed synchronously with a return value
@@ -32,8 +32,8 @@ use crate::{
 /// - `ExternalCall`: The method needs to call an external function
 ///
 /// This unifies the pattern where `call_function` returns `CallResult` to indicate
-/// different outcomes. Types that only support synchronous attribute calls can
-/// use the default `py_call_attr_raw` implementation which wraps `py_call_attr`.
+/// different outcomes. Types that only support synchronous attribute calls should
+/// wrap their return value with `AttrCallResult::Value`.
 ///
 /// # Future Extensibility
 ///
@@ -62,7 +62,7 @@ pub enum AttrCallResult {
     /// Dataclass method call — VM should yield `FrameExit::MethodCall` to host.
     ///
     /// Carries the method name (e.g. `"distance"`) and args with self prepended.
-    /// This is detected by `call_dataclass_attr_raw` when a public attribute name is not
+    /// This is detected by `Dataclass::py_call_attr` when a public attribute name is not
     /// found in the dataclass's attrs dict.
     MethodCall(EitherStr, ArgValues),
     /// The method returned a value that should be implicitly awaited.
@@ -296,30 +296,17 @@ pub trait PyTrait {
         Ok(None)
     }
 
-    /// Calls an attribute method on this value (e.g., `list.append()`).
-    ///
-    /// Returns an error if the attribute doesn't exist or the arguments are invalid.
-    /// Generic over ResourceTracker to work with any heap configuration.
-    fn py_call_attr(
-        &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
-        attr: &EitherStr,
-        _args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
-        Err(ExcType::attribute_error(self.py_type(heap), attr.as_str(interns)))
-    }
-
-    /// Calls an attribute method, returning an `AttrCallResult` that may signal OS, external,
-    /// or method calls.
+    /// Calls an attribute method on this value (e.g., `list.append()`), returning an
+    /// `AttrCallResult` that may signal OS, external, or method calls.
     ///
     /// This method enables types to signal that they need operations the VM cannot perform
     /// directly (OS operations, external function calls, dataclass method calls). The VM
     /// converts the result to the appropriate `FrameExit` variant.
     ///
-    /// The default implementation wraps `py_call_attr` in `AttrCallResult::Value`. Types that
-    /// need to perform OS/external operations, intercept specific methods (e.g. `list.sort`),
-    /// or detect method calls (e.g. dataclass methods) should override this method.
+    /// Types that only support synchronous attribute calls should wrap their return value
+    /// with `AttrCallResult::Value`. Types that need to perform OS/external operations,
+    /// intercept specific methods (e.g. `list.sort`), or detect method calls (e.g. dataclass
+    /// methods) should return the appropriate `AttrCallResult` variant.
     ///
     /// # Arguments
     /// * `self_id` - The heap ID of this value, needed by types that must reference themselves
@@ -332,15 +319,14 @@ pub trait PyTrait {
     /// - `Ok(AttrCallResult::ExternalCall(id, args))` - Method needs external function call
     /// - `Ok(AttrCallResult::MethodCall(attr, args))` - Dataclass method call; VM yields to host
     /// - `Err(e)` - Method call failed with error
-    fn py_call_attr_raw(
+    fn py_call_attr(
         &mut self,
         _self_id: HeapId,
         vm: &mut VM<impl ResourceTracker>,
         attr: &EitherStr,
-        args: ArgValues,
+        _args: ArgValues,
     ) -> RunResult<AttrCallResult> {
-        let value = self.py_call_attr(vm.heap, attr, args, vm.interns)?;
-        Ok(AttrCallResult::Value(value))
+        Err(ExcType::attribute_error(self.py_type(vm.heap), attr.as_str(vm.interns)))
     }
 
     /// Estimates the memory size in bytes of this value.

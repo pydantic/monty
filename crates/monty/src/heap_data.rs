@@ -637,45 +637,23 @@ impl PyTrait for HeapDataMut<'_> {
 
     fn py_call_attr(
         &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
-        attr: &EitherStr,
-        args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
-        match self {
-            Self::Str(s) => s.py_call_attr(heap, attr, args, interns),
-            Self::Bytes(b) => b.py_call_attr(heap, attr, args, interns),
-            Self::List(l) => l.py_call_attr(heap, attr, args, interns),
-            Self::Tuple(t) => t.py_call_attr(heap, attr, args, interns),
-            Self::Dict(d) => d.py_call_attr(heap, attr, args, interns),
-            Self::Set(s) => s.py_call_attr(heap, attr, args, interns),
-            Self::FrozenSet(fs) => fs.py_call_attr(heap, attr, args, interns),
-            Self::Dataclass(dc) => dc.py_call_attr(heap, attr, args, interns),
-            Self::Path(p) => p.py_call_attr(heap, attr, args, interns),
-            _ => Err(ExcType::attribute_error(self.py_type(heap), attr.as_str(interns))),
-        }
-    }
-
-    fn py_call_attr_raw(
-        &mut self,
         self_id: HeapId,
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<AttrCallResult> {
         match self {
-            // List intercepts sort for key function support via PrintWriter
-            Self::List(l) => l.py_call_attr_raw(self_id, vm, attr, args),
-            // Dataclass detects public method calls and returns MethodCall
-            Self::Dataclass(dc) => dc.py_call_attr_raw(self_id, vm, attr, args),
-            // Path has special handling for OS calls (exists, read_text, etc.)
-            Self::Path(p) => p.py_call_attr_raw(self_id, vm, attr, args),
-            // Module has special handling for OS calls (os.getenv, etc.)
-            Self::Module(m) => m.py_call_attr_raw(self_id, vm, attr, args),
-            // All other types use the default implementation (wrap py_call_attr)
-            _ => self
-                .py_call_attr(vm.heap, attr, args, vm.interns)
-                .map(AttrCallResult::Value),
+            Self::Str(s) => s.py_call_attr(self_id, vm, attr, args),
+            Self::Bytes(b) => b.py_call_attr(self_id, vm, attr, args),
+            Self::List(l) => l.py_call_attr(self_id, vm, attr, args),
+            Self::Tuple(t) => t.py_call_attr(self_id, vm, attr, args),
+            Self::Dict(d) => d.py_call_attr(self_id, vm, attr, args),
+            Self::Set(s) => s.py_call_attr(self_id, vm, attr, args),
+            Self::FrozenSet(fs) => fs.py_call_attr(self_id, vm, attr, args),
+            Self::Dataclass(dc) => dc.py_call_attr(self_id, vm, attr, args),
+            Self::Path(p) => p.py_call_attr(self_id, vm, attr, args),
+            Self::Module(m) => m.py_call_attr(self_id, vm, attr, args),
+            _ => Err(ExcType::attribute_error(self.py_type(vm.heap), attr.as_str(vm.interns))),
         }
     }
 
