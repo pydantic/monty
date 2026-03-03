@@ -147,10 +147,11 @@ pub enum MontyObject {
     /// Returned by the host in response to a `NameLookup` to provide a callable
     /// that the VM can invoke. When called, the VM yields `FunctionCall` to the host.
     ///
-    /// The function is converted to `Value::ExtFunction(StringId)` internally,
-    /// where the name is interned for efficient storage and lookup.
+    /// If the name matches an interned string, the function is stored as
+    /// `Value::ExtFunction(StringId)`. Otherwise it is stored on the heap as
+    /// `HeapData::ExtFunction(String)`.
     Function {
-        /// The function name (used for repr, error messages, and as the interned key).
+        /// The function name (used for repr, error messages, and function call identification).
         name: String,
         /// Optional docstring for the function.
         docstring: Option<String>,
@@ -306,12 +307,15 @@ impl MontyObject {
             Self::Type(t) => Ok(Value::Builtin(Builtins::Type(t))),
             Self::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
             Self::Function { name, .. } => {
-                // Intern the function name and create an ExtFunction value.
-                // We look up the name in the existing interns to find/create a StringId.
-                let string_id = interns
-                    .get_string_id_by_name(&name)
-                    .ok_or_else(|| InvalidInputError::invalid_type(format!("String '{name}' was never interned")))?;
-                Ok(Value::ExtFunction(string_id))
+                // Try to intern the function name. If the name is already interned
+                // (common case: the function has the same name as the variable it was
+                // assigned to), use the lightweight `Value::ExtFunction(StringId)`.
+                // Otherwise, allocate a `HeapData::ExtFunction(String)` on the heap.
+                if let Some(string_id) = interns.get_string_id_by_name(&name) {
+                    Ok(Value::ExtFunction(string_id))
+                } else {
+                    Ok(Value::Ref(heap.allocate(HeapData::ExtFunction(name))?))
+                }
             }
             Self::Repr(_) => Err(InvalidInputError::invalid_type("'Repr' is not a valid input value")),
             Self::Cycle(_, _) => Err(InvalidInputError::invalid_type("'Cycle' is not a valid input value")),
@@ -493,6 +497,10 @@ impl MontyObject {
                         Self::Repr(format!("<gather({})>", gather.item_count()))
                     }
                     HeapData::Path(path) => Self::Path(path.as_str().to_owned()),
+                    HeapData::ExtFunction(name) => Self::Function {
+                        name: name.clone(),
+                        docstring: None,
+                    },
                 };
 
                 // Remove from visited set after processing

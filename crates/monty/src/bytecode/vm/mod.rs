@@ -189,13 +189,13 @@ macro_rules! handle_call_result {
         match $result {
             Ok(CallResult::Push(result)) => $self.push(result),
             Ok(CallResult::FramePushed) => reload_cache!($self, $cached_frame),
-            Ok(CallResult::External(name_id, args)) => {
+            Ok(CallResult::External(name, args)) => {
                 let call_id = $self.allocate_call_id();
                 let name_load_ip = $self.ext_function_load_ip.take();
                 // Sync cached IP back to frame before snapshot for resume
                 $self.current_frame_mut().ip = $cached_frame.ip;
                 return Ok(FrameExit::ExternalCall {
-                    function_name_id: name_id,
+                    function_name: name,
                     args,
                     call_id,
                     name_load_ip,
@@ -256,8 +256,8 @@ pub enum FrameExit {
     /// with the result. The `call_id` allows the host to use async resolution
     /// by calling `run_pending()` instead of `run(result)`.
     ExternalCall {
-        /// Interned name of the external function to call.
-        function_name_id: StringId,
+        /// Name of the external function to call (interned or heap-owned).
+        function_name: EitherStr,
         /// Arguments for the external function (includes both positional and keyword args).
         args: ArgValues,
         /// Unique ID for this call, used for async correlation.

@@ -669,12 +669,12 @@ pub(crate) fn handle_vm_result<T: ResourceTracker>(
             Ok(RunProgress::Complete(obj))
         }
         Ok(FrameExit::ExternalCall {
-            function_name_id,
+            function_name,
             args,
             call_id,
             ..
         }) => {
-            let function_name = executor.interns.get_str(function_name_id).to_owned();
+            let function_name = function_name.into_string(&executor.interns);
             let (args_py, kwargs_py) = args.into_py_objects(&mut heap, &executor.interns);
 
             Ok(RunProgress::FunctionCall(FunctionCall::new(

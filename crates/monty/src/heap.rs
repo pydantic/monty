@@ -119,6 +119,13 @@ pub(crate) enum HeapData {
     /// Pure methods (name, parent, etc.) are handled directly by the VM.
     /// I/O methods (exists, read_text, etc.) yield external function calls.
     Path(Path),
+    /// Reference to an external function whose name was not found in the intern table.
+    ///
+    /// Created when the host resolves a `NameLookup` to a callable whose name does not
+    /// match any interned string (e.g., the host returns a function with a different
+    /// `__name__` than the variable it was assigned to). When called, the VM yields
+    /// `FrameExit::ExternalCall` with an `EitherStr::Heap` containing this name.
+    ExtFunction(String),
 }
 
 impl HeapData {
@@ -192,13 +199,7 @@ impl HeapData {
                         .any(|r| r.as_ref().is_some_and(|v| matches!(v, Value::Ref(_))))
             }
             // Leaf types cannot have refs
-            Self::Str(_)
-            | Self::Bytes(_)
-            | Self::Range(_)
-            | Self::Slice(_)
-            | Self::Exception(_)
-            | Self::LongInt(_)
-            | Self::Path(_) => false,
+            _ => false,
         }
     }
 
@@ -235,6 +236,7 @@ impl HeapData {
             Self::Coroutine(coro) => HeapDataMut::Coroutine(coro),
             Self::GatherFuture(gather) => HeapDataMut::GatherFuture(gather),
             Self::Path(p) => HeapDataMut::Path(p),
+            Self::ExtFunction(s) => HeapDataMut::ExtFunction(s),
         }
     }
 }
@@ -254,7 +256,7 @@ impl PyTrait for HeapData {
             Self::Dict(d) => d.py_type(heap),
             Self::Set(s) => s.py_type(heap),
             Self::FrozenSet(fs) => fs.py_type(heap),
-            Self::Closure(_) | Self::FunctionDefaults(_) => Type::Function,
+            Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => Type::Function,
             Self::Cell(_) => Type::Cell,
             Self::Range(_) => Type::Range,
             Self::Slice(_) => Type::Slice,
@@ -301,6 +303,7 @@ impl PyTrait for HeapData {
                     + gather.pending_calls.len() * std::mem::size_of::<crate::asyncio::CallId>()
             }
             Self::Path(p) => p.py_estimate_size(),
+            Self::ExtFunction(s) => std::mem::size_of::<String>() + s.len(),
         }
     }
 
@@ -315,19 +318,8 @@ impl PyTrait for HeapData {
             Self::Set(s) => PyTrait::py_len(s, heap, interns),
             Self::FrozenSet(fs) => PyTrait::py_len(fs, heap, interns),
             Self::Range(r) => Some(r.len()),
-            // Cells, Slices, Exceptions, Dataclasses, Iterators, LongInts, Modules, Paths, and async types don't have length
-            Self::Cell(_)
-            | Self::Closure(_)
-            | Self::FunctionDefaults(_)
-            | Self::Slice(_)
-            | Self::Exception(_)
-            | Self::Dataclass(_)
-            | Self::Iter(_)
-            | Self::LongInt(_)
-            | Self::Module(_)
-            | Self::Coroutine(_)
-            | Self::GatherFuture(_)
-            | Self::Path(_) => None,
+            // other types don't have length
+            _ => None,
         }
     }
 
@@ -431,8 +423,8 @@ impl PyTrait for HeapData {
                     result.py_dec_ref_ids(stack);
                 }
             }
-            // Range, Slice, Exception, LongInt, and Path have no nested heap references
-            Self::Range(_) | Self::Slice(_) | Self::Exception(_) | Self::LongInt(_) | Self::Path(_) => {}
+            // other types have no nested heap references
+            _ => {}
         }
     }
 
@@ -446,7 +438,7 @@ impl PyTrait for HeapData {
             Self::Dict(d) => d.py_bool(heap, interns),
             Self::Set(s) => s.py_bool(heap, interns),
             Self::FrozenSet(fs) => fs.py_bool(heap, interns),
-            Self::Closure(_) | Self::FunctionDefaults(_) => true,
+            Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => true,
             Self::Cell(_) => true, // Cells are always truthy
             Self::Range(r) => r.py_bool(heap, interns),
             Self::Slice(s) => s.py_bool(heap, interns),
@@ -495,6 +487,7 @@ impl PyTrait for HeapData {
             }
             Self::GatherFuture(gather) => write!(f, "<gather({})>", gather.item_count()),
             Self::Path(p) => p.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::ExtFunction(name) => write!(f, "<function '{name}' external>"),
         }
     }
 
@@ -747,15 +740,10 @@ impl HashState {
             }
             // Path is immutable and hashable
             HeapData::Path(_) => Self::Unknown,
-            // Mutable containers, exceptions, iterators, modules, and async types are unhashable
-            HeapData::List(_)
-            | HeapData::Dict(_)
-            | HeapData::Set(_)
-            | HeapData::Exception(_)
-            | HeapData::Iter(_)
-            | HeapData::Module(_)
-            | HeapData::Coroutine(_)
-            | HeapData::GatherFuture(_) => Self::Unhashable,
+            // ExtFunction is hashable (by identity, like closures)
+            HeapData::ExtFunction(_) => Self::Unknown,
+            // other types are unhashable
+            _ => Self::Unhashable,
         }
     }
 }
@@ -1600,14 +1588,6 @@ fn longint_to_repeat_count(li: &LongInt) -> RunResult<usize> {
 /// Collects child HeapIds from a HeapData value for GC traversal.
 fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
     match data {
-        // Leaf types with no heap references
-        HeapData::Str(_)
-        | HeapData::Bytes(_)
-        | HeapData::Range(_)
-        | HeapData::Exception(_)
-        | HeapData::LongInt(_)
-        | HeapData::Slice(_)
-        | HeapData::Path(_) => {}
         HeapData::List(list) => {
             // Skip iteration if no refs - major GC optimization for lists of primitives
             if !list.contains_refs() {
@@ -1752,6 +1732,8 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
                 }
             }
         }
+        // Leaf types with no heap references
+        _ => {}
     }
 }
 

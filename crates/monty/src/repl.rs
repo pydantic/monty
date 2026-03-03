@@ -150,10 +150,10 @@ fn frame_exit_to_object(
     match frame_exit_result? {
         FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, heap, interns)),
         FrameExit::ExternalCall {
-            function_name_id, args, ..
+            function_name, args, ..
         } => {
             args.drop_with_heap(heap);
-            let function_name = interns.get_str(function_name_id);
+            let function_name = function_name.as_str(interns);
             Err(ExcType::not_implemented(format!(
                 "External function '{function_name}' not implemented with standard execution"
             ))
@@ -976,12 +976,12 @@ fn handle_repl_vm_result<T: ResourceTracker>(
             Ok(ReplProgress::Complete { repl, value: output })
         }
         Ok(FrameExit::ExternalCall {
-            function_name_id,
+            function_name,
             args,
             call_id,
             ..
         }) => {
-            let function_name = executor.interns.get_str(function_name_id).to_owned();
+            let function_name = function_name.into_string(&executor.interns);
             let (args_py, kwargs_py) = args.into_py_objects(&mut repl.heap, &executor.interns);
 
             Ok(ReplProgress::FunctionCall(ReplFunctionCall {

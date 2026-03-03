@@ -324,6 +324,9 @@ def test_name_lookup():
 
 
 def test_ext_function_alt_name():
+    """Test that a NameLookup can resolve to a function whose __name__ differs
+    from the variable it was assigned to.  The VM should yield a FunctionCall
+    with the *function's* name (not the variable name)."""
     m = pydantic_monty.Monty('x = foobar; x()')
     p = m.start()
     assert isinstance(p, pydantic_monty.NameLookupSnapshot)
@@ -332,5 +335,12 @@ def test_ext_function_alt_name():
         return 42
 
     p2 = p.resume(value=not_foobar)
-    assert isinstance(p2, pydantic_monty.MontyComplete)
-    assert p2.output == 42
+    # The function is called via HeapData::ExtFunction, yielding a FunctionSnapshot
+    assert isinstance(p2, pydantic_monty.FunctionSnapshot)
+    assert p2.function_name == snapshot('not_foobar')
+    assert p2.args == snapshot(())
+    assert p2.kwargs == snapshot({})
+
+    result = p2.resume(return_value=42)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(42)

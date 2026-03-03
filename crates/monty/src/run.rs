@@ -261,7 +261,7 @@ impl Executor {
                     frame_exit_result = vm.resume_with_exception(err.into());
                 }
                 Ok(FrameExit::ExternalCall {
-                    function_name_id,
+                    function_name,
                     args,
                     name_load_ip,
                     ..
@@ -273,7 +273,7 @@ impl Executor {
                     if let Some(load_ip) = name_load_ip {
                         vm.set_instruction_ip(load_ip);
                     }
-                    let name = self.interns.get_str(function_name_id);
+                    let name = function_name.as_str(&self.interns);
                     args.drop_with_heap(vm.heap);
                     let err = ExcType::name_error(name);
                     frame_exit_result = vm.resume_with_exception(err.into());
@@ -393,10 +393,10 @@ fn frame_exit_to_object(
     match frame_exit_result? {
         FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, heap, interns)),
         FrameExit::ExternalCall {
-            function_name_id, args, ..
+            function_name, args, ..
         } => {
             args.drop_with_heap(heap);
-            let function_name = interns.get_str(function_name_id);
+            let function_name = function_name.as_str(interns);
             Err(ExcType::not_implemented(format!(
                 "External function '{function_name}' not implemented with standard execution"
             ))

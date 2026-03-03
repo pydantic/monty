@@ -37,8 +37,8 @@ pub(super) enum CallResult {
     /// The VM should reload its cached frame state.
     FramePushed,
     /// External function call requested - VM should pause and return to caller.
-    /// The `StringId` is the interned name of the external function.
-    External(StringId, ArgValues),
+    /// The `EitherStr` is the name of the external function (interned or heap-owned).
+    External(EitherStr, ArgValues),
     /// OS operation call requested - VM should yield `FrameExit::OsCall` to host.
     ///
     /// The host executes the OS operation and resumes the VM with the result.
@@ -62,7 +62,7 @@ impl From<AttrCallResult> for CallResult {
         match result {
             AttrCallResult::Value(v) => Self::Push(v),
             AttrCallResult::OsCall(func, args) => Self::OsCall(func, args),
-            AttrCallResult::ExternalCall(ext_id, args) => Self::External(ext_id, args),
+            AttrCallResult::ExternalCall(ext_id, args) => Self::External(EitherStr::Interned(ext_id), args),
             AttrCallResult::MethodCall(name, args) => Self::MethodCall(name, args),
             AttrCallResult::AwaitValue(v) => Self::AwaitValue(v),
         }
@@ -378,7 +378,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
             Value::ExtFunction(name_id) => {
                 // External function - return to caller to execute
-                Ok(CallResult::External(*name_id, args))
+                Ok(CallResult::External(EitherStr::Interned(*name_id), args))
             }
             Value::DefFunction(func_id) => {
                 // Defined function without defaults or captured variables
@@ -396,7 +396,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         }
     }
 
-    /// Handles calling a heap-allocated callable (closure or function with defaults).
+    /// Handles calling a heap-allocated callable (closure, function with defaults, or external function).
     fn call_heap_callable(&mut self, heap_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
         let (func_id, cells, defaults) = match self.heap.get(heap_id) {
             HeapData::Closure(closure) => {
@@ -408,6 +408,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             HeapData::FunctionDefaults(fd) => {
                 let cloned_defaults: Vec<Value> = fd.defaults.iter().map(|v| v.clone_with_heap(self.heap)).collect();
                 (fd.func_id, Vec::new(), cloned_defaults)
+            }
+            HeapData::ExtFunction(name) => {
+                // Heap-allocated external function with a non-interned name
+                let name = name.clone();
+                return Ok(CallResult::External(EitherStr::Heap(name), args));
             }
             _ => {
                 args.drop_with_heap(self.heap);
