@@ -473,3 +473,116 @@ try:
     assert False, 'Pattern.sub with 4 args should raise TypeError'
 except TypeError as e:
     assert 'at most 3' in str(e), 'Pattern.sub too many args error'
+
+# === Flags on module-level functions ===
+# re.search with flags
+m = re.search(r'hello', 'HELLO WORLD', re.IGNORECASE)
+assert m is not None, 're.search with IGNORECASE flag'
+assert m.group() == 'HELLO', 're.search IGNORECASE matches case-insensitively'
+
+m = re.search(r'hello', 'HELLO WORLD')
+assert m is None, 're.search without flags is case-sensitive'
+
+# re.match with flags
+m = re.match(r'hello', 'HELLO WORLD', re.IGNORECASE)
+assert m is not None, 're.match with IGNORECASE flag'
+assert m.group() == 'HELLO', 're.match IGNORECASE matches case-insensitively'
+
+# re.fullmatch with flags
+m = re.fullmatch(r'hello', 'HELLO', re.IGNORECASE)
+assert m is not None, 're.fullmatch with IGNORECASE flag'
+assert m.group() == 'HELLO', 're.fullmatch IGNORECASE matches case-insensitively'
+
+# re.findall with flags
+result = re.findall(r'hello', 'Hello HELLO hello', re.IGNORECASE)
+assert result == ['Hello', 'HELLO', 'hello'], 're.findall with IGNORECASE flag'
+
+# re.sub with flags (5th positional arg)
+result = re.sub(r'hello', 'X', 'Hello HELLO hello', 0, re.IGNORECASE)
+assert result == 'X X X', 're.sub with flags as 5th arg'
+
+# re.search with DOTALL flag
+m = re.search(r'a.b', 'a\nb', re.DOTALL)
+assert m is not None, 're.search with DOTALL flag'
+assert m.group() == 'a\nb', 're.search DOTALL matches across newlines'
+
+# re.findall with MULTILINE
+result = re.findall(r'^\w+', 'hello\nworld\nfoo', re.MULTILINE)
+assert result == ['hello', 'world', 'foo'], 're.findall with MULTILINE flag'
+
+# re.search with combined flags
+m = re.search(r'hello.*world', 'HELLO\nWORLD', re.IGNORECASE | re.DOTALL)
+assert m is not None, 're.search with IGNORECASE | DOTALL'
+assert m.group() == 'HELLO\nWORLD', 're.search combined flags work'
+
+# === re.ASCII flag ===
+assert re.ASCII == 256, 're.ASCII flag value'
+assert re.A == re.ASCII, 're.A is alias for re.ASCII'
+
+# re.ASCII flag is accepted (doesn't error)
+p = re.compile(r'\w+', re.ASCII)
+m = p.search('cafe')
+assert m is not None, 'ASCII mode matches ASCII word chars'
+assert m.group() == 'cafe', 'ASCII mode returns correct match'
+
+# re.ASCII can be combined with other flags
+p = re.compile(r'hello', re.ASCII | re.IGNORECASE)
+m = p.search('HELLO')
+assert m is not None, 'ASCII | IGNORECASE combined'
+assert m.group() == 'HELLO', 'ASCII | IGNORECASE matches correctly'
+
+# Pattern repr with re.ASCII flag
+p = re.compile(r'\w+', re.ASCII)
+assert repr(p) == r"re.compile('\\w+', re.ASCII)", 'Pattern repr with ASCII flag'
+
+p = re.compile(r'\w+', re.ASCII | re.IGNORECASE)
+assert repr(p) == r"re.compile('\\w+', re.IGNORECASE|re.ASCII)", 'Pattern repr with ASCII|IGNORECASE flags'
+
+# re.ASCII on module-level functions
+m = re.search(r'\w+', 'cafe', re.ASCII)
+assert m is not None, 're.search with re.ASCII flag'
+assert m.group() == 'cafe', 're.search re.ASCII returns correct match'
+
+m = re.match(r'\w+', 'cafe', re.A)
+assert m is not None, 're.match with re.A alias'
+assert m.group() == 'cafe', 're.match re.A returns correct match'
+
+m = re.fullmatch(r'\w+', 'cafe', re.ASCII)
+assert m is not None, 're.fullmatch with re.ASCII flag'
+assert m.group() == 'cafe', 're.fullmatch re.ASCII returns correct match'
+
+result = re.findall(r'\w+', 'a b c', re.ASCII)
+assert result == ['a', 'b', 'c'], 're.findall with re.ASCII flag'
+
+# === match with alternation (anchored) ===
+# re.match('b|ab', 'ab') must try alternation at position 0
+m = re.match(r'b|ab', 'ab')
+assert m is not None, 're.match with alternation at start'
+assert m.group() == 'ab', 're.match alternation: second alt matches at pos 0'
+
+# re.match with alternation: first alt doesn't start at pos 0
+m = re.match(r'world|hello', 'hello world')
+assert m is not None, 're.match alternation: finds match starting at pos 0'
+assert m.group() == 'hello', 're.match alternation: correct alternative matches'
+
+# compiled pattern match with alternation
+p = re.compile(r'b|ab')
+m = p.match('ab')
+assert m is not None, 'Pattern.match with alternation'
+assert m.group() == 'ab', 'Pattern.match alternation: second alt matches at pos 0'
+
+# match with alternation where shorter alt matches at pos 0
+m = re.match(r'a|ab', 'ab')
+assert m is not None, 're.match alternation: shorter alt at pos 0'
+assert m.group() == 'a', 're.match alternation: leftmost match wins (like CPython)'
+
+# match with alternation + flags
+m = re.match(r'B|AB', 'ab', re.IGNORECASE)
+assert m is not None, 're.match alternation with IGNORECASE flag'
+assert m.group() == 'ab', 're.match alternation IGNORECASE: second alt matches at pos 0'
+
+# compiled match with alternation + flags
+p = re.compile(r'B|AB', re.IGNORECASE)
+m = p.match('ab')
+assert m is not None, 'Pattern.match alternation with IGNORECASE flag'
+assert m.group() == 'ab', 'Pattern.match alternation IGNORECASE matches correctly'

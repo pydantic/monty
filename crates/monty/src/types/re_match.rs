@@ -44,7 +44,7 @@ use crate::{
 ///
 /// Currently, only non-named groups are supported. Group 0 is the full match,
 /// groups 1..N are capture groups. Named groups are not yet implemented.
-/// If a group index other tnan integers is requested, an `TypeError` is raised.
+/// Non-integer group indices raise `IndexError`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ReMatch {
     /// The full matched text (equivalent to `group(0)`).

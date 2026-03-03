@@ -412,6 +412,12 @@ pub enum StaticStrings {
     /// `re.NOFLAG` flag
     #[strum(serialize = "NOFLAG")]
     NoFlag,
+    /// `re.ASCII` flag
+    #[strum(serialize = "ASCII")]
+    AsciiFlag,
+    /// `re.A` flag, alias
+    #[strum(serialize = "A")]
+    A,
     /// `re.PatternError` exception
     #[strum(serialize = "PatternError")]
     PatternError,

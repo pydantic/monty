@@ -125,7 +125,7 @@ pub(crate) enum HeapData {
     ///
     /// Contains the original pattern string, flags, and compiled regex engine.
     /// Leaf type: no heap references, not GC-tracked.
-    RePattern(RePattern),
+    RePattern(Box<RePattern>),
     /// A regex match result from a successful regex operation.
     ///
     /// Contains the matched text, capture groups, positions, and input string.

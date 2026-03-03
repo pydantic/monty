@@ -23,7 +23,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
-    modules::re::{DOTALL, IGNORECASE, MULTILINE},
+    modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
     resource::{ResourceError, ResourceTracker},
     types::{List, PyTrait, ReMatch, Str, Type, allocate_tuple, str::string_repr_fmt},
     value::{EitherStr, Value},
@@ -42,10 +42,17 @@ use crate::{
 pub(crate) struct RePattern {
     /// The original Python regex pattern string.
     pattern: String,
-    /// Python regex flags bitmask (IGNORECASE=2, MULTILINE=8, DOTALL=16).
-    flags: u8,
+    /// Python regex flags bitmask (IGNORECASE=2, MULTILINE=8, DOTALL=16, ASCII=256).
+    flags: u16,
     /// The compiled Rust regex, unanchored.
     compiled: Regex,
+    /// The compiled regex anchored with `\A(?:...)` for `match()`.
+    ///
+    /// Uses `\A` (absolute start anchor) instead of `^` so the MULTILINE flag
+    /// doesn't cause it to match at line boundaries. This correctly handles
+    /// alternations — e.g. `match('b|ab', 'ab')` must match `ab`, not fail
+    /// because the engine found only `b` starting at position 1.
+    compiled_match: Regex,
     /// The compiled regex anchored with `\A(?:...)\z` for `fullmatch()`.
     ///
     /// Uses `\A`/`\z` (absolute anchors) instead of `^`/`$` so the MULTILINE flag
@@ -59,19 +66,21 @@ impl RePattern {
     /// Creates a compiled pattern from a Python regex string and flags.
     ///
     /// Translates Python flag constants into inline regex flag prefixes and compiles
-    /// the pattern. Also pre-compiles an anchored variant for `fullmatch` using
-    /// `\A(?:pattern)\z` to correctly handle alternations.
+    /// the pattern. Also pre-compiles anchored variants for `match` (`\A(?:pattern)`)
+    /// and `fullmatch` (`\A(?:pattern)\z`) to correctly handle alternations.
     ///
     /// # Errors
     ///
     /// Returns `re.PatternError` if the pattern is invalid.
-    pub fn compile(pattern: String, flags: u8) -> RunResult<Self> {
+    pub fn compile(pattern: String, flags: u16) -> RunResult<Self> {
         let compiled = compile_regex(&pattern, flags)?;
+        let compiled_match = compile_regex(&format!("\\A(?:{pattern})"), flags)?;
         let compiled_fullmatch = compile_regex(&format!("\\A(?:{pattern})\\z"), flags)?;
         Ok(Self {
             pattern,
             flags,
             compiled,
+            compiled_match,
             compiled_fullmatch,
         })
     }
@@ -92,19 +101,16 @@ impl RePattern {
 
     /// `pattern.match(string)` — match anchored at the start of the string.
     ///
-    /// Equivalent to `re.match(pattern, string)`. Only matches at position 0.
+    /// Uses a pre-compiled `\A(?:pattern)` regex to correctly handle alternations.
+    /// For example, `match('b|ab', 'ab')` correctly matches `ab` because the
+    /// anchor forces the engine to try all alternatives at position 0.
+    ///
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
     pub fn match_start(&self, text: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-        match self.compiled.captures(text) {
+        match self.compiled_match.captures(text) {
             Ok(Some(caps)) => {
-                // Check if the match starts at position 0
-                if let Some(m) = caps.get(0)
-                    && m.start() == 0
-                {
-                    let match_obj = ReMatch::from_captures(&caps, text, &self.pattern);
-                    return Ok(Value::Ref(heap.allocate(HeapData::ReMatch(match_obj))?));
-                }
-                Ok(Value::None)
+                let match_obj = ReMatch::from_captures(&caps, text, &self.pattern);
+                Ok(Value::Ref(heap.allocate(HeapData::ReMatch(match_obj))?))
             }
             Ok(None) => Ok(Value::None),
             Err(err) => Err(ExcType::re_pattern_error(err)),
@@ -230,7 +236,7 @@ impl PyTrait for RePattern {
         write!(f, "re.compile(")?;
         string_repr_fmt(&self.pattern, f)?;
         if self.flags != 0 {
-            let mut flag_parts = smallvec::SmallVec::<[&'static str; 3]>::new();
+            let mut flag_parts = smallvec::SmallVec::<[&'static str; 4]>::new();
             if self.flags & IGNORECASE != 0 {
                 flag_parts.push("re.IGNORECASE");
             }
@@ -239,6 +245,9 @@ impl PyTrait for RePattern {
             }
             if self.flags & DOTALL != 0 {
                 flag_parts.push("re.DOTALL");
+            }
+            if self.flags & ASCII != 0 {
+                flag_parts.push("re.ASCII");
             }
             write!(f, ", {}", flag_parts.join("|"))?;
         }
@@ -377,7 +386,7 @@ fn call_pattern_sub(
 /// # Errors
 ///
 /// Returns `re.PatternError(...)` if the pattern is invalid.
-pub(crate) fn compile_regex(pattern: &str, flags: u8) -> RunResult<Regex> {
+pub(crate) fn compile_regex(pattern: &str, flags: u16) -> RunResult<Regex> {
     let mut prefix = String::new();
     if flags & IGNORECASE != 0 {
         prefix.push('i');
@@ -388,6 +397,10 @@ pub(crate) fn compile_regex(pattern: &str, flags: u8) -> RunResult<Regex> {
     if flags & DOTALL != 0 {
         prefix.push('s');
     }
+    // Note: re.ASCII (256) is accepted but has no effect on the regex compilation.
+    // `fancy_regex` doesn't support `(?-u)` to disable Unicode mode, so `\w`, `\d`, `\s`
+    // always match Unicode characters. This is a known limitation — Python 3 defaults to
+    // Unicode mode anyway, so the behavioral difference only matters for non-ASCII input.
 
     let full_pattern = if prefix.is_empty() {
         pattern.to_owned()
@@ -476,7 +489,7 @@ impl Serialize for RePattern {
 
 impl<'de> Deserialize<'de> for RePattern {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let (pattern, flags): (String, u8) = Deserialize::deserialize(deserializer)?;
+        let (pattern, flags): (String, u16) = Deserialize::deserialize(deserializer)?;
         Self::compile(pattern, flags).map_err(|e| serde::de::Error::custom(format!("{e:?}")))
     }
 }

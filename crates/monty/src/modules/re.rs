@@ -6,11 +6,11 @@
 //! # Supported module-level functions
 //!
 //! - `re.compile(pattern, flags=0)` → `re.Pattern`
-//! - `re.search(pattern, string)` → `re.Match` or `None`
-//! - `re.match(pattern, string)` → `re.Match` or `None`
-//! - `re.fullmatch(pattern, string)` → `re.Match` or `None`
-//! - `re.findall(pattern, string)` → `list`
-//! - `re.sub(pattern, repl, string, count=0)` → `str`
+//! - `re.search(pattern, string, flags=0)` → `re.Match` or `None`
+//! - `re.match(pattern, string, flags=0)` → `re.Match` or `None`
+//! - `re.fullmatch(pattern, string, flags=0)` → `re.Match` or `None`
+//! - `re.findall(pattern, string, flags=0)` → `list`
+//! - `re.sub(pattern, repl, string, count=0, flags=0)` → `str`
 //!
 //! # Module attributes
 //!
@@ -18,6 +18,7 @@
 //! - `re.IGNORECASE` / `re.I` — case-insensitive matching (value: 2)
 //! - `re.MULTILINE` / `re.M` — `^`/`$` match at line boundaries (value: 8)
 //! - `re.DOTALL` / `re.S` — `.` matches newlines (value: 16)
+//! - `re.ASCII` / `re.A` — ASCII-only matching for `\w`, `\d`, `\s` (value: 256)
 //! - `re.PatternError` — exception type for invalid patterns
 
 use std::borrow::Cow;
@@ -36,13 +37,15 @@ use crate::{
 };
 
 /// Python regex flag: no flag being applied.
-pub(crate) const NOFLAG: u8 = 0;
+pub(crate) const NOFLAG: u16 = 0;
 /// Python regex flag: case-insensitive matching.
-pub(crate) const IGNORECASE: u8 = 2;
+pub(crate) const IGNORECASE: u16 = 2;
 /// Python regex flag: `^` and `$` match at line boundaries.
-pub(crate) const MULTILINE: u8 = 8;
+pub(crate) const MULTILINE: u16 = 8;
 /// Python regex flag: `.` matches newlines.
-pub(crate) const DOTALL: u8 = 16;
+pub(crate) const DOTALL: u16 = 16;
+/// Python regex flag: ASCII-only matching for `\w`, `\b`, `\d`, `\s`.
+pub(crate) const ASCII: u16 = 256;
 
 /// Functions exposed by the `re` module.
 ///
@@ -54,15 +57,15 @@ pub(crate) const DOTALL: u8 = 16;
 pub(crate) enum ReFunctions {
     /// `re.compile(pattern, flags=0)` — compile a pattern into a `re.Pattern` object.
     Compile,
-    /// `re.search(pattern, string)` — find first match anywhere in the string.
+    /// `re.search(pattern, string, flags=0)` — find first match anywhere in the string.
     Search,
-    /// `re.match(pattern, string)` — match anchored at the start.
+    /// `re.match(pattern, string, flags=0)` — match anchored at the start.
     Match,
-    /// `re.fullmatch(pattern, string)` — match the entire string.
+    /// `re.fullmatch(pattern, string, flags=0)` — match the entire string.
     Fullmatch,
-    /// `re.findall(pattern, string)` — return all non-overlapping matches.
+    /// `re.findall(pattern, string, flags=0)` — return all non-overlapping matches.
     Findall,
-    /// `re.sub(pattern, repl, string, count=0)` — substitute matches.
+    /// `re.sub(pattern, repl, string, count=0, flags=0)` — substitute matches.
     Sub,
 }
 
@@ -135,6 +138,8 @@ pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -
     module.set_attr(StaticStrings::M, Value::Int(i64::from(MULTILINE)), heap, interns);
     module.set_attr(StaticStrings::DotallFlag, Value::Int(i64::from(DOTALL)), heap, interns);
     module.set_attr(StaticStrings::S, Value::Int(i64::from(DOTALL)), heap, interns);
+    module.set_attr(StaticStrings::AsciiFlag, Value::Int(i64::from(ASCII)), heap, interns);
+    module.set_attr(StaticStrings::A, Value::Int(i64::from(ASCII)), heap, interns);
 
     // Exception type
     module.set_attr(
@@ -189,46 +194,46 @@ pub(super) fn call(
 fn call_compile(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
     let (pattern_val, flags) = extract_pattern_and_flags(args, "re.compile", heap, interns)?;
     let compiled = RePattern::compile(pattern_val, flags)?;
-    Ok(Value::Ref(heap.allocate(HeapData::RePattern(compiled))?))
+    Ok(Value::Ref(heap.allocate(HeapData::RePattern(Box::new(compiled)))?))
 }
 
-/// `re.search(pattern, string)` — scan through string looking for a match.
+/// `re.search(pattern, string, flags=0)` — scan through string looking for a match.
 ///
 /// Compiles the pattern, then delegates to `RePattern::search`. Returns a `re.Match`
 /// object on success, or `None` if no position in the string matches.
 fn call_search(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let (pattern, text) = extract_pattern_and_string(args, "re.search", heap, interns)?;
-    let compiled = RePattern::compile(pattern, 0)?;
+    let (pattern, text, flags) = extract_pattern_string_flags(args, "re.search", heap, interns)?;
+    let compiled = RePattern::compile(pattern, flags)?;
     compiled.search(&text, heap)
 }
 
-/// `re.match(pattern, string)` — match at the beginning of the string.
+/// `re.match(pattern, string, flags=0)` — match at the beginning of the string.
 ///
 /// Compiles the pattern, then delegates to `RePattern::match_start`. Returns a `re.Match`
 /// object if the pattern matches at position 0, or `None` otherwise.
 fn call_match(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let (pattern, text) = extract_pattern_and_string(args, "re.match", heap, interns)?;
-    let compiled = RePattern::compile(pattern, 0)?;
+    let (pattern, text, flags) = extract_pattern_string_flags(args, "re.match", heap, interns)?;
+    let compiled = RePattern::compile(pattern, flags)?;
     compiled.match_start(&text, heap)
 }
 
-/// `re.fullmatch(pattern, string)` — match the entire string.
+/// `re.fullmatch(pattern, string, flags=0)` — match the entire string.
 ///
 /// Compiles the pattern, then delegates to `RePattern::fullmatch`. Returns a `re.Match`
 /// object if the pattern matches the whole string, or `None` otherwise.
 fn call_fullmatch(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let (pattern, text) = extract_pattern_and_string(args, "re.fullmatch", heap, interns)?;
-    let compiled = RePattern::compile(pattern, 0)?;
+    let (pattern, text, flags) = extract_pattern_string_flags(args, "re.fullmatch", heap, interns)?;
+    let compiled = RePattern::compile(pattern, flags)?;
     compiled.fullmatch(&text, heap)
 }
 
-/// `re.findall(pattern, string)` — find all non-overlapping matches.
+/// `re.findall(pattern, string, flags=0)` — find all non-overlapping matches.
 ///
 /// Compiles the pattern, then delegates to `RePattern::findall`. Returns a list of
 /// strings or tuples depending on the number of capture groups (matching CPython semantics).
 fn call_findall(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let (pattern, text) = extract_pattern_and_string(args, "re.findall", heap, interns)?;
-    let compiled = RePattern::compile(pattern, 0)?;
+    let (pattern, text, flags) = extract_pattern_string_flags(args, "re.findall", heap, interns)?;
+    let compiled = RePattern::compile(pattern, flags)?;
     compiled.findall(&text, heap)
 }
 
@@ -263,10 +268,14 @@ fn call_sub(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &In
     let count = match pos.next() {
         Some(Value::Int(n)) if n >= 0 => n as usize,
         // CPython: negative count means no replacements — return original string.
+        // Still consume the optional flags arg to validate arg count.
         Some(Value::Int(_)) => {
+            // Consume optional flags (5th arg) — don't need the value since we're
+            // returning early, but we must validate no extra args follow.
+            let _flags = extract_flags(pos.next(), heap)?;
             if let Some(extra) = pos.next() {
                 extra.drop_with_heap(heap);
-                return Err(ExcType::type_error("re.sub() takes at most 4 positional arguments"));
+                return Err(ExcType::type_error("re.sub() takes at most 5 positional arguments"));
             }
             let text = value_to_str(string_val, heap, interns)?.into_owned();
             let s = Str::new(text);
@@ -282,16 +291,18 @@ fn call_sub(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &In
         None => 0,
     };
 
+    let flags = extract_flags(pos.next(), heap)?;
+
     if let Some(extra) = pos.next() {
         extra.drop_with_heap(heap);
-        return Err(ExcType::type_error("re.sub() takes at most 4 positional arguments"));
+        return Err(ExcType::type_error("re.sub() takes at most 5 positional arguments"));
     }
 
     let pattern = value_to_str(pattern_val, heap, interns)?.into_owned();
     let repl = value_to_str(repl_val, heap, interns)?.into_owned();
     let text = value_to_str(string_val, heap, interns)?.into_owned();
 
-    let compiled = RePattern::compile(pattern, 0)?;
+    let compiled = RePattern::compile(pattern, flags)?;
     compiled.sub(&repl, &text, count, heap)
 }
 
@@ -304,43 +315,70 @@ fn extract_pattern_and_flags(
     func_name: &str,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
-) -> RunResult<(String, u8)> {
+) -> RunResult<(String, u16)> {
     let (pattern_val, flags_val) = args.get_one_two_args(func_name, heap)?;
     defer_drop!(pattern_val, heap);
 
     let pattern = value_to_str(pattern_val, heap, interns)?.into_owned();
-
-    let flags = match flags_val {
-        Some(Value::Int(n)) => {
-            u8::try_from(n).map_err(|_| ExcType::type_error("flags must be a non-negative integer"))?
-        }
-        Some(other) => {
-            let t = other.py_type(heap);
-            other.drop_with_heap(heap);
-            return Err(ExcType::type_error(format!("expected int for flags, not {t}")));
-        }
-        None => 0,
-    };
+    let flags = extract_flags(flags_val, heap)?;
 
     Ok((pattern, flags))
 }
 
-/// Extracts pattern and string arguments for two-argument `re` functions.
+/// Extracts a flags value from an optional `Value`, validating it is a non-negative integer
+/// that fits in a `u16`.
+fn extract_flags(flags_val: Option<Value>, heap: &mut Heap<impl ResourceTracker>) -> RunResult<u16> {
+    match flags_val {
+        Some(Value::Int(n)) => {
+            u16::try_from(n).map_err(|_| ExcType::type_error("flags must be a non-negative integer"))
+        }
+        Some(other) => {
+            let t = other.py_type(heap);
+            other.drop_with_heap(heap);
+            Err(ExcType::type_error(format!("expected int for flags, not {t}")))
+        }
+        None => Ok(0),
+    }
+}
+
+/// Extracts pattern, string, and optional flags for `re.search()`, `re.match()`,
+/// `re.fullmatch()`, and `re.findall()`.
 ///
-/// Used by `re.search()`, `re.match()`, `re.fullmatch()`, and `re.findall()`,
-/// all of which take exactly `(pattern, string)`.
-fn extract_pattern_and_string(
+/// Accepts 2 or 3 positional arguments: `(pattern, string)` or `(pattern, string, flags)`.
+fn extract_pattern_string_flags(
     args: ArgValues,
     func_name: &str,
     heap: &mut Heap<impl ResourceTracker>,
     interns: &Interns,
-) -> RunResult<(String, Cow<'static, str>)> {
-    let (pattern_val, string_val) = args.get_two_args(func_name, heap)?;
+) -> RunResult<(String, Cow<'static, str>, u16)> {
+    let pos = args.into_pos_only(func_name, heap)?;
+    defer_drop_mut!(pos, heap);
+
+    let Some(pattern_val) = pos.next() else {
+        return Err(ExcType::type_error(format!(
+            "{func_name}() missing required argument: 'pattern'"
+        )));
+    };
     defer_drop!(pattern_val, heap);
+
+    let Some(string_val) = pos.next() else {
+        return Err(ExcType::type_error(format!(
+            "{func_name}() missing required argument: 'string'"
+        )));
+    };
     defer_drop!(string_val, heap);
+
+    let flags = extract_flags(pos.next(), heap)?;
+
+    if let Some(extra) = pos.next() {
+        extra.drop_with_heap(heap);
+        return Err(ExcType::type_error(format!(
+            "{func_name}() takes at most 3 positional arguments"
+        )));
+    }
 
     let pattern = value_to_str(pattern_val, heap, interns)?.into_owned();
     let text = value_to_str(string_val, heap, interns)?.into_owned();
 
-    Ok((pattern, Cow::Owned(text)))
+    Ok((pattern, Cow::Owned(text), flags))
 }
