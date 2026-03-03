@@ -1,10 +1,9 @@
-use std::cmp::Ordering;
-use std::fmt::Write;
 /// Python string type, wrapping a Rust `String`.
 ///
 /// This type provides Python string semantics. Currently supports basic
 /// operations like length and equality comparison.
 use std::{borrow::Cow, fmt};
+use std::{cmp::Ordering, fmt::Write};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
@@ -254,9 +253,14 @@ impl PyTrait for Str {
     fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
         !self.0.is_empty()
     }
-    
-    fn py_cmp(&self, other: &Self, _heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> Option<Ordering> {
-        Some(self.0.cmp(&other.0))
+
+    fn py_cmp(
+        &self,
+        other: &Self,
+        _heap: &mut Heap<impl ResourceTracker>,
+        _interns: &Interns,
+    ) -> Result<Option<Ordering>, ResourceError> {
+        Ok(Some(self.0.cmp(&other.0)))
     }
 
     fn py_repr_fmt(
