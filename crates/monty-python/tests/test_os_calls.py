@@ -24,7 +24,7 @@ def test_path_exists_yields_oscall():
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/test.txt").exists()')
     result = m.start()
 
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.is_os_function is True
     assert result.function_name == snapshot('Path.exists')
     assert result.args == snapshot((PurePosixPath('/tmp/test.txt'),))
@@ -36,7 +36,7 @@ def test_path_stat_yields_oscall():
     m = pydantic_monty.Monty('from pathlib import Path; Path("/etc/passwd").stat()')
     result = m.start()
 
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.is_os_function is True
     assert result.function_name == snapshot('Path.stat')
     assert result.args == snapshot((PurePosixPath('/etc/passwd'),))
@@ -47,7 +47,7 @@ def test_path_read_text_yields_oscall():
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/hello.txt").read_text()')
     result = m.start()
 
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.is_os_function is True
     assert result.function_name == snapshot('Path.read_text')
     assert result.args == snapshot((PurePosixPath('/tmp/hello.txt'),))
@@ -69,7 +69,7 @@ full.exists()
     m = pydantic_monty.Monty(code)
     result = m.start()
 
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.args == snapshot((PurePosixPath('/home/user/documents/file.txt'),))
 
 
@@ -83,7 +83,7 @@ def test_exists_resume():
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/test.txt").exists()')
     snapshot_result = m.start()
 
-    assert isinstance(snapshot_result, pydantic_monty.MontySnapshot)
+    assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
     result = snapshot_result.resume(return_value=True)
 
     assert isinstance(result, pydantic_monty.MontyComplete)
@@ -100,7 +100,7 @@ content = Path('/tmp/hello.txt').read_text()
     m = pydantic_monty.Monty(code)
     snapshot_result = m.start()
 
-    assert isinstance(snapshot_result, pydantic_monty.MontySnapshot)
+    assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
     result = snapshot_result.resume(return_value='Hello, World!')
 
     assert isinstance(result, pydantic_monty.MontyComplete)
@@ -122,7 +122,7 @@ info = Path('/tmp/file.txt').stat()
     m = pydantic_monty.Monty(code)
     snapshot_result = m.start()
 
-    assert isinstance(snapshot_result, pydantic_monty.MontySnapshot)
+    assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
     assert snapshot_result.function_name == snapshot('Path.stat')
 
     # Resume with a file_stat result - Monty accesses multiple fields
@@ -142,7 +142,7 @@ Path('/tmp/file.txt').stat()
     m = pydantic_monty.Monty(code)
     snapshot_result = m.start()
 
-    assert isinstance(snapshot_result, pydantic_monty.MontySnapshot)
+    assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
     result = snapshot_result.resume(return_value=StatResult.file_stat(2048, 0o100_755, 1700000000.0))
 
     assert isinstance(result, pydantic_monty.MontyComplete)
@@ -167,7 +167,7 @@ Path('/tmp/file.txt').stat()
     m = pydantic_monty.Monty(code)
     snapshot_result = m.start()
 
-    assert isinstance(snapshot_result, pydantic_monty.MontySnapshot)
+    assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
     result = snapshot_result.resume(return_value=StatResult.file_stat(512, 0o644, 0.0))
 
     assert isinstance(result, pydantic_monty.MontyComplete)
@@ -197,12 +197,12 @@ is_file = p.is_file()
 
     # First call: exists()
     result = m.start()
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.function_name == snapshot('Path.exists')
 
     # Resume exists() with True
     result = result.resume(return_value=True)
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.function_name == snapshot('Path.is_file')
 
     # Resume is_file() with True
@@ -226,12 +226,12 @@ content
 
     # First call: exists()
     result = m.start()
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.function_name == snapshot('Path.exists')
 
     # Resume exists() with True - should trigger read_text()
     result = result.resume(return_value=True)
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.function_name == snapshot('Path.read_text')
 
     # Resume read_text() with content
@@ -250,13 +250,13 @@ def test_os_call_vs_external_function():
     # OS call
     m1 = pydantic_monty.Monty('from pathlib import Path; Path("/tmp").exists()')
     result1 = m1.start()
-    assert isinstance(result1, pydantic_monty.MontySnapshot)
+    assert isinstance(result1, pydantic_monty.FunctionSnapshot)
     assert result1.is_os_function is True
 
     # External function
-    m2 = pydantic_monty.Monty('my_func()', external_functions=['my_func'])
+    m2 = pydantic_monty.Monty('my_func()')
     result2 = m2.start()
-    assert isinstance(result2, pydantic_monty.MontySnapshot)
+    assert isinstance(result2, pydantic_monty.FunctionSnapshot)
     assert result2.is_os_function is False
 
 
@@ -349,7 +349,7 @@ def test_os_not_provided_error_ext_func():
     """Error is raised when OS call is made without os."""
     import pytest
 
-    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp").exists()', external_functions=['x'])
+    m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp").exists()')
     # When no external functions and no os, run() takes the fast path
     # and OS calls raise NotImplementedError inside Monty
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
@@ -375,7 +375,7 @@ def test_os_getenv_yields_oscall():
     m = pydantic_monty.Monty('import os; os.getenv("HOME")')
     result = m.start()
 
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.is_os_function is True
     assert result.function_name == snapshot('os.getenv')
     assert result.args == snapshot(('HOME', None))
@@ -386,7 +386,7 @@ def test_os_getenv_with_default_yields_oscall():
     m = pydantic_monty.Monty('import os; os.getenv("MISSING", "fallback")')
     result = m.start()
 
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.is_os_function is True
     assert result.function_name == snapshot('os.getenv')
     assert result.args == snapshot(('MISSING', 'fallback'))
@@ -447,7 +447,7 @@ def test_os_environ_yields_oscall():
     m = pydantic_monty.Monty('import os; os.environ')
     result = m.start()
 
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.is_os_function is True
     assert result.function_name == snapshot('os.environ')
     assert result.args == snapshot(())
@@ -568,7 +568,7 @@ def test_path_write_text_yields_oscall():
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/output.txt").write_text("hello world")')
     result = m.start()
 
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.is_os_function is True
     assert result.function_name == snapshot('Path.write_text')
     assert result.args == snapshot((PurePosixPath('/tmp/output.txt'), 'hello world'))
@@ -579,7 +579,7 @@ def test_path_write_text_resume():
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/output.txt").write_text("hello")')
     snapshot_result = m.start()
 
-    assert isinstance(snapshot_result, pydantic_monty.MontySnapshot)
+    assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
     result = snapshot_result.resume(return_value=5)  # write_text returns number of bytes written
 
     assert isinstance(result, pydantic_monty.MontyComplete)
@@ -614,7 +614,7 @@ def test_path_write_bytes_yields_oscall():
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/data.bin").write_bytes(b"\\x00\\x01\\x02")')
     result = m.start()
 
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.is_os_function is True
     assert result.function_name == snapshot('Path.write_bytes')
     assert result.args == snapshot((PurePosixPath('/tmp/data.bin'), b'\x00\x01\x02'))
@@ -625,7 +625,7 @@ def test_path_write_bytes_resume():
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/data.bin").write_bytes(b"abc")')
     snapshot_result = m.start()
 
-    assert isinstance(snapshot_result, pydantic_monty.MontySnapshot)
+    assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
     result = snapshot_result.resume(return_value=3)
 
     assert isinstance(result, pydantic_monty.MontyComplete)
@@ -642,7 +642,7 @@ def test_path_mkdir_yields_oscall():
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/newdir").mkdir()')
     result = m.start()
 
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.is_os_function is True
     assert result.function_name == snapshot('Path.mkdir')
     assert result.args == snapshot((PurePosixPath('/tmp/newdir'),))
@@ -653,7 +653,7 @@ def test_path_mkdir_with_parents_yields_oscall():
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/a/b/c").mkdir(parents=True)')
     result = m.start()
 
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.is_os_function is True
     assert result.function_name == snapshot('Path.mkdir')
     assert result.args == snapshot((PurePosixPath('/tmp/a/b/c'),))
@@ -665,7 +665,7 @@ def test_path_mkdir_with_exist_ok_yields_oscall():
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/existing").mkdir(exist_ok=True)')
     result = m.start()
 
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.is_os_function is True
     assert result.function_name == snapshot('Path.mkdir')
     assert result.kwargs == snapshot({'exist_ok': True})
@@ -676,7 +676,7 @@ def test_path_mkdir_with_both_kwargs():
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/a/b").mkdir(parents=True, exist_ok=True)')
     result = m.start()
 
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.kwargs == snapshot({'parents': True, 'exist_ok': True})
 
 
@@ -685,7 +685,7 @@ def test_path_mkdir_resume():
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/newdir").mkdir()')
     snapshot_result = m.start()
 
-    assert isinstance(snapshot_result, pydantic_monty.MontySnapshot)
+    assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
     result = snapshot_result.resume(return_value=None)
 
     assert isinstance(result, pydantic_monty.MontyComplete)
@@ -702,7 +702,7 @@ def test_path_unlink_yields_oscall():
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/to_delete.txt").unlink()')
     result = m.start()
 
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.is_os_function is True
     assert result.function_name == snapshot('Path.unlink')
     assert result.args == snapshot((PurePosixPath('/tmp/to_delete.txt'),))
@@ -713,7 +713,7 @@ def test_path_unlink_resume():
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/file.txt").unlink()')
     snapshot_result = m.start()
 
-    assert isinstance(snapshot_result, pydantic_monty.MontySnapshot)
+    assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
     result = snapshot_result.resume(return_value=None)
 
     assert isinstance(result, pydantic_monty.MontyComplete)
@@ -730,7 +730,7 @@ def test_path_rmdir_yields_oscall():
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/empty_dir").rmdir()')
     result = m.start()
 
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.is_os_function is True
     assert result.function_name == snapshot('Path.rmdir')
     assert result.args == snapshot((PurePosixPath('/tmp/empty_dir'),))
@@ -741,7 +741,7 @@ def test_path_rmdir_resume():
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/dir").rmdir()')
     snapshot_result = m.start()
 
-    assert isinstance(snapshot_result, pydantic_monty.MontySnapshot)
+    assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
     result = snapshot_result.resume(return_value=None)
 
     assert isinstance(result, pydantic_monty.MontyComplete)
@@ -758,7 +758,7 @@ def test_path_rename_yields_oscall():
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/old.txt").rename(Path("/tmp/new.txt"))')
     result = m.start()
 
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.is_os_function is True
     assert result.function_name == snapshot('Path.rename')
     assert result.args == snapshot((PurePosixPath('/tmp/old.txt'), PurePosixPath('/tmp/new.txt')))
@@ -769,7 +769,7 @@ def test_path_rename_resume():
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/old.txt").rename(Path("/tmp/new.txt"))')
     snapshot_result = m.start()
 
-    assert isinstance(snapshot_result, pydantic_monty.MontySnapshot)
+    assert isinstance(snapshot_result, pydantic_monty.FunctionSnapshot)
     # rename() returns None (the new Path is constructed by Monty)
     result = snapshot_result.resume(return_value=None)
 

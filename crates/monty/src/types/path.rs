@@ -15,9 +15,9 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings, StringId},
+    intern::{Interns, StaticStrings},
     os::OsFunction,
-    resource::{DepthGuard, ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker},
     types::{AttrCallResult, PyTrait, Str, Type, allocate_tuple},
     value::{EitherStr, Value},
 };
@@ -261,7 +261,9 @@ impl Path {
     /// - `Path('a')` returns `Path('a')`
     /// - `Path('a', 'b', 'c')` returns `Path('a/b/c')`
     /// - If an absolute path appears, it replaces everything before it.
-    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
         let pos_args = args.into_pos_only("Path", heap)?;
         defer_drop!(pos_args, heap);
 
@@ -391,6 +393,63 @@ fn prepend_path_arg(path_arg: Value, args: ArgValues) -> ArgValues {
     }
 }
 
+impl Path {
+    /// Resolves a known attribute by its `StaticStrings` variant.
+    ///
+    /// Returns `Ok(Some(value))` for recognized property names (`name`, `parent`,
+    /// `stem`, `suffix`, `suffixes`, `parts`), or `Ok(None)` if the variant doesn't
+    /// correspond to a Path attribute. Used by `py_getattr` to share logic between
+    /// the interned fast path and the heap string slow path.
+    fn getattr_by_static(&self, ss: StaticStrings, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let v = match ss {
+            StaticStrings::Name => {
+                let name = self.name();
+                Value::Ref(heap.allocate(HeapData::Str(Str::new(name.to_owned())))?)
+            }
+            StaticStrings::Parent => {
+                if let Some(parent) = self.parent() {
+                    let parent_path = Self::new(parent.to_owned());
+                    Value::Ref(heap.allocate(HeapData::Path(parent_path))?)
+                } else {
+                    // Return self when there's no parent (root or relative path)
+                    let same_path = Self::new(self.as_str().to_owned());
+                    Value::Ref(heap.allocate(HeapData::Path(same_path))?)
+                }
+            }
+            StaticStrings::Stem => {
+                let stem = self.stem();
+                Value::Ref(heap.allocate(HeapData::Str(Str::new(stem.to_owned())))?)
+            }
+            StaticStrings::Suffix => {
+                let suffix = self.suffix();
+                Value::Ref(heap.allocate(HeapData::Str(Str::new(suffix.to_owned())))?)
+            }
+            StaticStrings::Suffixes => {
+                use crate::types::List;
+
+                let suffixes = self.suffixes();
+                let mut items = Vec::with_capacity(suffixes.len());
+                for suffix in suffixes {
+                    let str_id = heap.allocate(HeapData::Str(Str::new(suffix.to_owned())))?;
+                    items.push(Value::Ref(str_id));
+                }
+                Value::Ref(heap.allocate(HeapData::List(List::new(items)))?)
+            }
+            StaticStrings::Parts => {
+                let parts = self.parts();
+                let mut items = SmallVec::with_capacity(parts.len());
+                for part in parts {
+                    let str_id = heap.allocate(HeapData::Str(Str::new(part.to_owned())))?;
+                    items.push(Value::Ref(str_id));
+                }
+                allocate_tuple(items, heap)?
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(v))
+    }
+}
+
 impl PyTrait for Path {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::Path
@@ -405,7 +464,6 @@ impl PyTrait for Path {
         &self,
         other: &Self,
         _heap: &mut Heap<impl ResourceTracker>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> Result<bool, ResourceError> {
         Ok(self.path == other.path)
@@ -421,7 +479,6 @@ impl PyTrait for Path {
         f: &mut impl Write,
         _heap: &Heap<impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> std::fmt::Result {
         // Format like: PosixPath('/usr/bin')
@@ -436,20 +493,36 @@ impl PyTrait for Path {
         std::mem::size_of::<Self>() + self.path.capacity()
     }
 
+    /// Handles attribute calls on Path objects, including both pure methods (no I/O)
+    /// and OS methods that require host system access.
+    ///
+    /// OS methods (exists, read_text, etc.) are detected via `OsFunction::try_from`
+    /// and returned as `AttrCallResult::OsCall` for the VM to yield to the host.
+    /// Pure methods (is_absolute, joinpath, etc.) are handled directly.
     fn py_call_attr(
         &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
+        _self_id: HeapId,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
+    ) -> RunResult<AttrCallResult> {
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
         let Some(method) = attr.static_string() else {
             args.drop_with_heap(heap);
             return Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)));
         };
 
-        match method {
-            // Pure methods (no I/O)
+        // Check if this is an OS method that requires host system access
+        if let Ok(os_fn) = OsFunction::try_from(method) {
+            // Package path as first argument for OS call (as Path, not string)
+            let path_arg = Value::Ref(heap.allocate(HeapData::Path(self.clone()))?);
+            let os_args = prepend_path_arg(path_arg, args);
+            return Ok(AttrCallResult::OsCall(os_fn, os_args));
+        }
+
+        // Pure methods (no I/O)
+        let value = match method {
             StaticStrings::IsAbsolute => {
                 args.check_zero_args("is_absolute", heap)?;
                 Ok(Value::Bool(self.is_absolute()))
@@ -496,91 +569,39 @@ impl PyTrait for Path {
             }
             _ => {
                 args.drop_with_heap(heap);
-                Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)))
+                return Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)));
             }
-        }
-    }
-
-    fn py_call_attr_raw(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
-        let Some(method) = attr.static_string() else {
-            return self
-                .py_call_attr(vm.heap, attr, args, vm.interns)
-                .map(AttrCallResult::Value);
         };
-
-        // Check if this is an OS method that requires host system access
-        if let Ok(os_fn) = OsFunction::try_from(method) {
-            // Package path as first argument for OS call (as Path, not string)
-            let path_arg = Value::Ref(vm.heap.allocate(HeapData::Path(self.clone()))?);
-            let os_args = prepend_path_arg(path_arg, args);
-            return Ok(AttrCallResult::OsCall(os_fn, os_args));
-        }
-
-        // Fall back to py_call_attr for pure methods
-        self.py_call_attr(vm.heap, attr, args, vm.interns)
-            .map(AttrCallResult::Value)
+        value.map(AttrCallResult::Value)
     }
 
     fn py_getattr(
         &self,
-        attr_id: StringId,
+        attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<Option<AttrCallResult>> {
-        let v = match StaticStrings::from_string_id(attr_id) {
-            // Properties returning strings
-            Some(StaticStrings::Name) => {
-                let name = self.name();
-                Value::Ref(heap.allocate(HeapData::Str(Str::new(name.to_owned())))?)
+        // Fast path: interned strings can be matched by ID without string comparison
+        if let Some(ss) = attr.static_string() {
+            if let Some(v) = self.getattr_by_static(ss, heap)? {
+                return Ok(Some(AttrCallResult::Value(v)));
             }
-            Some(StaticStrings::Parent) => {
-                if let Some(parent) = self.parent() {
-                    let parent_path = Self::new(parent.to_owned());
-                    Value::Ref(heap.allocate(HeapData::Path(parent_path))?)
-                } else {
-                    // Return self when there's no parent (root or relative path)
-                    let same_path = Self::new(self.as_str().to_owned());
-                    Value::Ref(heap.allocate(HeapData::Path(same_path))?)
-                }
-            }
-            Some(StaticStrings::Stem) => {
-                let stem = self.stem();
-                Value::Ref(heap.allocate(HeapData::Str(Str::new(stem.to_owned())))?)
-            }
-            Some(StaticStrings::Suffix) => {
-                let suffix = self.suffix();
-                Value::Ref(heap.allocate(HeapData::Str(Str::new(suffix.to_owned())))?)
-            }
-            Some(StaticStrings::Suffixes) => {
-                use crate::types::List;
-
-                let suffixes = self.suffixes();
-                let mut items = Vec::with_capacity(suffixes.len());
-                for suffix in suffixes {
-                    let str_id = heap.allocate(HeapData::Str(Str::new(suffix.to_owned())))?;
-                    items.push(Value::Ref(str_id));
-                }
-                Value::Ref(heap.allocate(HeapData::List(List::new(items)))?)
-            }
-            Some(StaticStrings::Parts) => {
-                let parts = self.parts();
-                let mut items = SmallVec::with_capacity(parts.len());
-                for part in parts {
-                    let str_id = heap.allocate(HeapData::Str(Str::new(part.to_owned())))?;
-                    items.push(Value::Ref(str_id));
-                }
-                allocate_tuple(items, heap)?
-            }
-            // Method is_absolute() returns bool - handled as property since it takes no args
-            // NOTE: For method calls, we'd need to return a bound method. For now, properties only.
-            _ => return Err(ExcType::attribute_error(Type::Path, interns.get_str(attr_id))),
+            return Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)));
+        }
+        // Slow path: heap-allocated strings need string comparison
+        let attr_str = attr.as_str(interns);
+        let ss = match attr_str {
+            "name" => StaticStrings::Name,
+            "parent" => StaticStrings::Parent,
+            "stem" => StaticStrings::Stem,
+            "suffix" => StaticStrings::Suffix,
+            "suffixes" => StaticStrings::Suffixes,
+            "parts" => StaticStrings::Parts,
+            _ => return Err(ExcType::attribute_error(Type::Path, attr_str)),
         };
+        let v = self
+            .getattr_by_static(ss, heap)?
+            .expect("matched attribute must produce a value");
         Ok(Some(AttrCallResult::Value(v)))
     }
 }

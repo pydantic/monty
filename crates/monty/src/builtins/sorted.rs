@@ -20,11 +20,11 @@ use crate::{
 /// Returns a new sorted list from the items in an iterable.
 /// Supports `key` and `reverse` keyword arguments matching Python's
 /// `sorted(iterable, /, *, key=None, reverse=False)` signature.
-pub fn builtin_sorted(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_sorted(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (iterable, key_fn, reverse) = parse_sorted_args(args, vm.heap, vm.interns)?;
     defer_drop!(key_fn, vm);
 
-    let items: Vec<_> = MontyIter::new(iterable, vm.heap, vm.interns)?.collect(vm.heap, vm.interns)?;
+    let items: Vec<_> = MontyIter::new(iterable, vm)?.collect(vm)?;
     let mut items_guard = HeapGuard::new(items, vm);
     let (items, vm) = items_guard.as_parts_mut();
 
@@ -40,7 +40,7 @@ pub fn builtin_sorted(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> Run
             items
                 .iter()
                 .map(|item| {
-                    let item = item.clone_with_heap(vm.heap);
+                    let item = item.clone_with_heap(vm);
                     vm.evaluate_function("sorted() key argument", f, ArgValues::One(item))
                 })
                 .process_results(|keys_iter| keys.extend(keys_iter))?;

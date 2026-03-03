@@ -88,7 +88,7 @@ for i in range(100_000):
     x += 1
 x
 """
-    m = pydantic_monty.Monty(code, external_functions=['double'])
+    m = pydantic_monty.Monty(code)
     start = time.perf_counter()
     result = m.run(external_functions={'double': double})
     diff = time.perf_counter() - start
@@ -114,11 +114,11 @@ for i in range(200_000):
     x += 1
 double(x)
 """
-    m = pydantic_monty.Monty(code, external_functions=['double'])
+    m = pydantic_monty.Monty(code)
     start = time.perf_counter()
     progress = m.start()
     diff = time.perf_counter() - start
-    assert isinstance(progress, pydantic_monty.MontySnapshot)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
 
     threads = [threading.Thread(target=m.start) for _ in range(4)]
     start = time.perf_counter()
@@ -140,16 +140,16 @@ for i in range(200_000):
     x += 1
 x
 """
-    m = pydantic_monty.Monty(code, external_functions=['double'])
+    m = pydantic_monty.Monty(code)
     progress = m.start()
-    assert isinstance(progress, pydantic_monty.MontySnapshot)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
     start = time.perf_counter()
     result = progress.resume(return_value=2)
     diff = time.perf_counter() - start
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == 200_002
 
-    progresses = cast(list[pydantic_monty.MontySnapshot], [m.start() for _ in range(4)])
+    progresses = cast(list[pydantic_monty.FunctionSnapshot], [m.start() for _ in range(4)])
 
     threads = [threading.Thread(target=partial(p.resume, return_value=2)) for p in progresses]
     start = time.perf_counter()

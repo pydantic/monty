@@ -19,6 +19,7 @@ use crate::{
     asyncio::{CallId, TaskId},
     exception_private::RunError,
     heap::{DropWithHeap, HeapId},
+    heap_data::HeapDataMut,
     namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
     parse::CodeRange,
     value::Value,
@@ -142,8 +143,6 @@ impl Task {
 /// along with tracking information for the task that created it.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PendingCallData {
-    /// The external function being called.
-    // pub ext_function_id: ExtFunctionId,
     /// Arguments for the function (includes both positional and keyword args).
     pub args: ArgValues,
     /// Task that created this call (for ignoring results if task is cancelled).
@@ -510,7 +509,7 @@ impl Scheduler {
             }
 
             // Cleanup the inner GatherFuture - extract data first to avoid borrow conflict
-            let (items, results) = if let crate::heap::HeapData::GatherFuture(gather) = heap.get_mut(inner_gather_id) {
+            let (items, results) = if let HeapDataMut::GatherFuture(gather) = heap.get_mut(inner_gather_id) {
                 (std::mem::take(&mut gather.items), std::mem::take(&mut gather.results))
             } else {
                 (vec![], vec![])
@@ -542,6 +541,12 @@ impl Scheduler {
         for value in std::mem::take(&mut task.exception_stack) {
             value.drop_with_heap(heap);
         }
+
+        // Restore this task's depth contribution before dropping namespaces,
+        // since save_task_context subtracted it and drop_with_heap will decrement.
+        let task_depth = task.frames.len();
+        let global_depth = heap.get_recursion_depth();
+        heap.set_recursion_depth(global_depth + task_depth);
 
         // Clean up frame cell references and namespaces
         for frame in std::mem::take(&mut task.frames) {

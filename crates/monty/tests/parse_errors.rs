@@ -10,13 +10,13 @@ fn get_exc_type(result: Result<MontyRun, MontyException>) -> ExcType {
 
 #[test]
 fn complex_numbers_return_not_implemented_error() {
-    let result = MontyRun::new("1 + 2j".to_owned(), "test.py", vec![], vec![]);
+    let result = MontyRun::new("1 + 2j".to_owned(), "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::NotImplementedError);
 }
 
 #[test]
 fn complex_numbers_have_descriptive_message() {
-    let result = MontyRun::new("1 + 2j".to_owned(), "test.py", vec![], vec![]);
+    let result = MontyRun::new("1 + 2j".to_owned(), "test.py", vec![]);
     let exc = result.expect_err("expected parse error");
     assert!(
         exc.message().is_some_and(|m| m.contains("complex")),
@@ -27,9 +27,9 @@ fn complex_numbers_have_descriptive_message() {
 #[test]
 fn yield_expressions_return_not_implemented_error() {
     // Yield expressions are not supported and fail at parse time
-    let result = MontyRun::new("def foo():\n    yield 1".to_owned(), "test.py", vec![], vec![]);
+    let result = MontyRun::new("def foo():\n    yield 1".to_owned(), "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::NotImplementedError);
-    let result = MontyRun::new("def foo():\n    yield 1".to_owned(), "test.py", vec![], vec![]);
+    let result = MontyRun::new("def foo():\n    yield 1".to_owned(), "test.py", vec![]);
     let exc = result.expect_err("expected parse error");
     assert!(
         exc.message().is_some_and(|m| m.contains("yield")),
@@ -39,7 +39,7 @@ fn yield_expressions_return_not_implemented_error() {
 
 #[test]
 fn classes_return_not_implemented_error() {
-    let result = MontyRun::new("class Foo: pass".to_owned(), "test.py", vec![], vec![]);
+    let result = MontyRun::new("class Foo: pass".to_owned(), "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::NotImplementedError);
 }
 
@@ -48,20 +48,20 @@ fn unknown_imports_compile_successfully_error_deferred_to_runtime() {
     // Unknown modules (not sys, typing, os, etc.) compile successfully.
     // The ModuleNotFoundError is deferred to runtime, allowing TYPE_CHECKING
     // imports to work without causing compile-time errors.
-    let result = MontyRun::new("import foobar".to_owned(), "test.py", vec![], vec![]);
+    let result = MontyRun::new("import foobar".to_owned(), "test.py", vec![]);
     assert!(result.is_ok(), "unknown import should compile successfully");
 }
 
 #[test]
 fn with_statement_returns_not_implemented_error() {
-    let result = MontyRun::new("with open('f') as f: pass".to_owned(), "test.py", vec![], vec![]);
+    let result = MontyRun::new("with open('f') as f: pass".to_owned(), "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::NotImplementedError);
 }
 
 #[test]
 fn error_display_format() {
     // Verify the Display format matches Python's exception output with traceback
-    let result = MontyRun::new("1 + 2j".to_owned(), "test.py", vec![], vec![]);
+    let result = MontyRun::new("1 + 2j".to_owned(), "test.py", vec![]);
     let err = result.expect_err("expected parse error");
     let display = err.to_string();
     // Should start with traceback header
@@ -89,19 +89,19 @@ fn error_display_format() {
 
 #[test]
 fn invalid_fstring_format_spec_returns_syntax_error() {
-    let result = MontyRun::new("f'{1:10xyz}'".to_owned(), "test.py", vec![], vec![]);
+    let result = MontyRun::new("f'{1:10xyz}'".to_owned(), "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
 #[test]
 fn invalid_fstring_format_spec_str_returns_syntax_error() {
-    let result = MontyRun::new("f'{\"hello\":abc}'".to_owned(), "test.py", vec![], vec![]);
+    let result = MontyRun::new("f'{\"hello\":abc}'".to_owned(), "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
 #[test]
 fn syntax_error_display_format() {
-    let result = MontyRun::new("f'{1:10xyz}'".to_owned(), "test.py", vec![], vec![]);
+    let result = MontyRun::new("f'{1:10xyz}'".to_owned(), "test.py", vec![]);
     let err = result.expect_err("expected parse error");
     let display = err.to_string();
     assert!(
@@ -117,7 +117,7 @@ fn deeply_nested_tuples_exceed_limit() {
     for _ in 0..250 {
         code = format!("({code},)");
     }
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     let err = result.expect_err("expected parse error");
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
     assert_eq!(
@@ -137,7 +137,7 @@ fn nested_tuples_within_limit_succeed() {
     for _ in 0..20 {
         code = format!("({code},)");
     }
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert!(result.is_ok(), "nesting within limit should succeed");
 }
 
@@ -149,7 +149,7 @@ fn deeply_nested_unpack_assignment_exceeds_limit() {
         target = format!("({target},)");
     }
     let code = format!("{target} = (1,)");
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     let err = result.expect_err("expected parse error");
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
     assert_eq!(
@@ -167,7 +167,7 @@ fn deeply_nested_lists_exceed_limit() {
     for _ in 0..250 {
         code = format!("[{code}]");
     }
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
@@ -178,7 +178,7 @@ fn deeply_nested_dicts_exceed_limit() {
     for _ in 0..250 {
         code = format!("{{'a': {code}}}");
     }
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
@@ -190,7 +190,7 @@ fn deeply_nested_function_calls_exceed_limit() {
         code = format!("f({code})");
     }
     let code = format!("def f(x): return x\n{code}");
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
@@ -201,7 +201,7 @@ fn deeply_nested_binary_ops_exceed_limit() {
     for _ in 0..250 {
         code = format!("({code} + 1)");
     }
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
@@ -212,7 +212,7 @@ fn deeply_nested_ternary_if_exceed_limit() {
     for _ in 0..250 {
         code = format!("(1 if {code} else 0)");
     }
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
@@ -224,7 +224,7 @@ fn deeply_nested_subscripts_exceed_limit() {
         code = format!("a[{code}]");
     }
     let code = format!("a = [1]\n{code}");
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
@@ -235,7 +235,7 @@ fn deeply_nested_list_comprehension_exceed_limit() {
     for _ in 0..250 {
         code = format!("[x for x in {code}]");
     }
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
@@ -248,7 +248,7 @@ fn deeply_nested_if_statements_exceed_limit() {
         writeln!(code, "{indent}if 1:").unwrap();
     }
     write!(code, "{}pass", "    ".repeat(250)).unwrap();
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
@@ -261,7 +261,7 @@ fn deeply_nested_while_loops_exceed_limit() {
         writeln!(code, "{indent}while True:").unwrap();
     }
     write!(code, "{}break", "    ".repeat(250)).unwrap();
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
@@ -274,7 +274,7 @@ fn deeply_nested_for_loops_exceed_limit() {
         writeln!(code, "{indent}for x in [1]:").unwrap();
     }
     write!(code, "{}pass", "    ".repeat(250)).unwrap();
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
@@ -291,7 +291,7 @@ fn deeply_nested_try_except_exceed_limit() {
         let indent = "    ".repeat(i);
         writeln!(code, "{indent}except: pass").unwrap();
     }
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
@@ -304,7 +304,7 @@ fn deeply_nested_function_defs_exceed_limit() {
         writeln!(code, "{indent}def f():").unwrap();
     }
     write!(code, "{}pass", "    ".repeat(250)).unwrap();
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
@@ -315,7 +315,7 @@ fn deeply_nested_attribute_access_exceed_limit() {
     for _ in 0..250 {
         code.push_str(".x");
     }
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
@@ -326,7 +326,7 @@ fn deeply_nested_lambdas_exceed_limit() {
     for _ in 0..250 {
         code = format!("(lambda: {code})");
     }
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
@@ -337,7 +337,7 @@ fn deeply_nested_unary_not_exceed_limit() {
     for _ in 0..250 {
         code = format!("not ({code})");
     }
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
@@ -348,7 +348,7 @@ fn deeply_nested_unary_minus_exceed_limit() {
     for _ in 0..250 {
         code = format!("-({code})");
     }
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
@@ -359,7 +359,7 @@ fn deeply_nested_walrus_operator_exceed_limit() {
     for i in 0..250 {
         code = format!("(x{i} := {code})");
     }
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
@@ -372,7 +372,7 @@ fn deeply_nested_await_exceed_limit() {
         code = format!("await ({code})");
     }
     let code = format!("async def f():\n    {code}");
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
@@ -383,7 +383,7 @@ fn deeply_nested_boolean_and_exceed_limit() {
     for _ in 0..250 {
         code = format!("(True and {code})");
     }
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
@@ -394,7 +394,7 @@ fn deeply_nested_boolean_or_exceed_limit() {
     for _ in 0..250 {
         code = format!("(False or {code})");
     }
-    let result = MontyRun::new(code, "test.py", vec![], vec![]);
+    let result = MontyRun::new(code, "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
@@ -403,7 +403,7 @@ fn deeply_nested_boolean_or_exceed_limit() {
 
 /// Helper to run code and get the exception type from a runtime error.
 fn run_and_get_exc_type(code: &str) -> ExcType {
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).expect("should parse");
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).expect("should parse");
     let err = runner.run_no_limits(vec![]).expect_err("expected runtime error");
     err.exc_type()
 }
@@ -417,14 +417,14 @@ fn matrix_multiplication_returns_not_implemented_error() {
 #[test]
 fn matrix_multiplication_augmented_assignment_returns_syntax_error() {
     // The @= operator (augmented matrix multiplication) is not supported at compile time
-    let result = MontyRun::new("a = 1\na @= 2".to_owned(), "test.py", vec![], vec![]);
+    let result = MontyRun::new("a = 1\na @= 2".to_owned(), "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::SyntaxError);
 }
 
 #[test]
 fn matrix_multiplication_augmented_assignment_has_descriptive_message() {
     // Verify the error message is helpful
-    let result = MontyRun::new("a = 1\na @= 2".to_owned(), "test.py", vec![], vec![]);
+    let result = MontyRun::new("a = 1\na @= 2".to_owned(), "test.py", vec![]);
     let exc = result.expect_err("expected compile error");
     assert!(
         exc.message().is_some_and(|m| m.contains("@=")),
@@ -436,6 +436,6 @@ fn matrix_multiplication_augmented_assignment_has_descriptive_message() {
 #[test]
 fn del_statement_returns_not_implemented_error() {
     // The del statement is not supported at parse time
-    let result = MontyRun::new("x = 1\ndel x".to_owned(), "test.py", vec![], vec![]);
+    let result = MontyRun::new("x = 1\ndel x".to_owned(), "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::NotImplementedError);
 }

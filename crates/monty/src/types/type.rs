@@ -4,13 +4,15 @@ use num_bigint::BigInt;
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{Heap, HeapData},
-    intern::Interns,
+    heap::{DropWithHeap, Heap, HeapData},
+    intern::{StaticStrings, StringId},
     resource::ResourceTracker,
     types::{
-        Bytes, Dict, FrozenSet, List, LongInt, MontyIter, Path, PyTrait, Range, Set, Slice, Str, Tuple, str::StringRepr,
+        Bytes, Dict, FrozenSet, List, LongInt, MontyIter, Path, PyTrait, Range, Set, Slice, Str, Tuple,
+        bytes::bytes_fromhex, dict::dict_fromkeys, str::StringRepr,
     },
     value::Value,
 };
@@ -194,28 +196,25 @@ impl Type {
     ///
     /// Dispatches to the appropriate type's init method for container types,
     /// or handles primitive type conversions inline.
-    pub(crate) fn call(
-        self,
-        heap: &mut Heap<impl ResourceTracker>,
-        args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
+    pub(crate) fn call(self, vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
         match self {
             // Container types - delegate to init methods
-            Self::List => List::init(heap, args, interns),
-            Self::Tuple => Tuple::init(heap, args, interns),
-            Self::Dict => Dict::init(heap, args, interns),
-            Self::Set => Set::init(heap, args, interns),
-            Self::FrozenSet => FrozenSet::init(heap, args, interns),
-            Self::Str => Str::init(heap, args, interns),
-            Self::Bytes => Bytes::init(heap, args, interns),
-            Self::Range => Range::init(heap, args),
-            Self::Slice => Slice::init(heap, args),
-            Self::Iterator => MontyIter::init(heap, args, interns),
-            Self::Path => Path::init(heap, args, interns),
+            Self::List => List::init(vm, args),
+            Self::Tuple => Tuple::init(vm, args),
+            Self::Dict => Dict::init(vm, args),
+            Self::Set => Set::init(vm, args),
+            Self::FrozenSet => FrozenSet::init(vm, args),
+            Self::Str => Str::init(vm, args),
+            Self::Bytes => Bytes::init(vm, args),
+            Self::Range => Range::init(vm, args),
+            Self::Slice => Slice::init(vm, args),
+            Self::Iterator => MontyIter::init(vm, args),
+            Self::Path => Path::init(vm, args),
 
             // Primitive types - inline implementation
             Self::Int => {
+                let heap = &mut *vm.heap;
+                let interns = vm.interns;
                 let Some(v) = args.get_zero_one_arg("int", heap)? else {
                     return Ok(Value::Int(0));
                 };
@@ -240,6 +239,8 @@ impl Type {
                 }
             }
             Self::Float => {
+                let heap = &mut *vm.heap;
+                let interns = vm.interns;
                 let Some(v) = args.get_zero_one_arg("float", heap)? else {
                     return Ok(Value::Float(0.0));
                 };
@@ -259,6 +260,8 @@ impl Type {
                 }
             }
             Self::Bool => {
+                let heap = &mut *vm.heap;
+                let interns = vm.interns;
                 let Some(v) = args.get_zero_one_arg("bool", heap)? else {
                     return Ok(Value::Bool(false));
                 };
@@ -369,4 +372,26 @@ fn value_error_invalid_literal_for_int(value: &str) -> RunError {
         format!("invalid literal for int() with base 10: {}", StringRepr(value)),
     )
     .into()
+}
+
+/// Dispatches a classmethod call on a type object.
+///
+/// Handles classmethods like `dict.fromkeys()` and `bytes.fromhex()` that are
+/// called on the type itself rather than on an instance.
+pub(crate) fn call_type_method(
+    t: Type,
+    method_id: StringId,
+    args: ArgValues,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
+) -> Result<Value, RunError> {
+    match (t, method_id) {
+        (Type::Dict, m) if m == StaticStrings::Fromkeys => return dict_fromkeys(args, vm),
+        (Type::Bytes, m) if m == StaticStrings::Fromhex => {
+            return bytes_fromhex(args, vm.heap, vm.interns);
+        }
+        _ => {}
+    }
+    // Other types or unknown methods - report actual type name, not 'type'
+    args.drop_with_heap(vm.heap);
+    Err(ExcType::attribute_error(t, vm.interns.get_str(method_id)))
 }

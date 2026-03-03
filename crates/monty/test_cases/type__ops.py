@@ -67,6 +67,17 @@ copy_dict = dict(orig_dict)
 copy_dict[3] = 4
 assert orig_dict == {1: 2}, 'dict copy is independent'
 assert copy_dict == {1: 2, 3: 4}, 'dict copy modified'
+assert dict([('a', 1), ('b', 2)]) == {'a': 1, 'b': 2}, 'dict(list of tuples)'
+assert dict((('a', 1), ('b', 2))) == {'a': 1, 'b': 2}, 'dict(tuple of tuples)'
+
+headers = ['a', 'b']
+row_data = [1, 2]
+assert dict(zip(headers, row_data)) == {'a': 1, 'b': 2}, 'dict(zip(list, list))'
+assert dict(zip(['a', 'b'], [1])) == {'a': 1}, 'dict(zip()) truncates to shortest iterable'
+
+assert dict(a=1, b=2) == {'a': 1, 'b': 2}, 'dict keyword arguments'
+assert dict([('a', 1)], b=2) == {'a': 1, 'b': 2}, 'dict positional iterable plus kwargs'
+assert dict([('a', 1)], a=2) == {'a': 2}, 'dict kwargs overwrite positional iterable values'
 
 # === str() constructor ===
 assert str() == '', 'str() empty'

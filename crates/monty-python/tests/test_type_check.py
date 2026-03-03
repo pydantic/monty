@@ -230,7 +230,6 @@ def fetch(url: str) -> str:
 """
     m = pydantic_monty.Monty(
         'result = fetch("https://example.com")',
-        external_functions=['fetch'],
         type_check=True,
         type_check_stubs=prefix,
     )
@@ -288,7 +287,6 @@ await agent(prompt, [])
     pydantic_monty.Monty(
         code,
         inputs=['prompt'],
-        external_functions=['call_llm'],
         script_name='agent.py',
         type_check=True,
         type_check_stubs=type_definitions,
@@ -298,7 +296,6 @@ await agent(prompt, [])
         pydantic_monty.Monty(
             code.replace('Messages', 'MXessages'),
             inputs=['prompt'],
-            external_functions=['call_llm'],
             script_name='agent.py',
             type_check=True,
             type_check_stubs=type_definitions,
@@ -322,7 +319,6 @@ info: rule `unresolved-reference` is enabled by default
         pydantic_monty.Monty(
             code_call_func_wrong,
             inputs=['prompt'],
-            external_functions=['call_llm'],
             script_name='agent.py',
             type_check=True,
             type_check_stubs=type_definitions,

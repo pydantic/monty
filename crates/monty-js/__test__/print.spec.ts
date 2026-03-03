@@ -191,7 +191,7 @@ test('with snapshot resume', (t) => {
 print("hello")
 print(func())
 `
-  const m = new Monty(code, { externalFunctions: ['func'] })
+  const m = new Monty(code)
   const { output, callback } = makePrintCollector(t)
   const progress = m.start({
     printCallback: callback,
@@ -207,9 +207,7 @@ print(func())
 })
 
 test('with snapshot dump load', (t) => {
-  const m = new Monty('print(func())', {
-    externalFunctions: ['func'],
-  })
+  const m = new Monty('print(func())')
   const { output, callback } = makePrintCollector(t)
 
   const progress = m.start({

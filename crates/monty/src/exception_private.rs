@@ -9,18 +9,19 @@ use strum::{Display, EnumString, IntoStaticStr};
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop,
     exception_public::{MontyException, StackFrame},
     fstring::FormatError,
     heap::{Heap, HeapData},
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
-    resource::{DepthGuard, ResourceTracker},
+    resource::ResourceTracker,
     types::{
         AttrCallResult, PyTrait, Str, Type, allocate_tuple,
         str::{StringRepr, string_repr_fmt},
     },
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// Result type alias for operations that can produce a runtime error.
@@ -157,21 +158,17 @@ impl ExcType {
     ///
     /// The `interns` parameter provides access to interned string content.
     /// Returns a heap-allocated exception value.
-    pub(crate) fn call(
-        self,
-        heap: &mut Heap<impl ResourceTracker>,
-        args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
-        defer_drop!(args, heap);
+    pub(crate) fn call(self, vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        defer_drop!(args, vm);
         let exc = match args {
             ArgValues::Empty => Ok(SimpleException::new_none(self)),
             ArgValues::One(value) => match value {
-                Value::InternString(string_id) => {
-                    Ok(SimpleException::new_msg(self, interns.get_str(*string_id).to_owned()))
-                }
+                Value::InternString(string_id) => Ok(SimpleException::new_msg(
+                    self,
+                    vm.interns.get_str(*string_id).to_owned(),
+                )),
                 Value::Ref(heap_id) => {
-                    if let HeapData::Str(s) = heap.get(*heap_id) {
+                    if let HeapData::Str(s) = vm.heap.get(*heap_id) {
                         Ok(SimpleException::new_msg(self, s.as_str().to_owned()))
                     } else {
                         Err(RunError::internal(
@@ -187,7 +184,7 @@ impl ExcType {
                 "exceptions can only be called with zero or one string argument",
             )),
         }?;
-        let heap_id = heap.allocate(HeapData::Exception(exc))?;
+        let heap_id = vm.heap.allocate(HeapData::Exception(exc))?;
         Ok(Value::Ref(heap_id))
     }
 
@@ -313,8 +310,7 @@ impl ExcType {
     /// For string keys, uses the raw string value without extra quoting.
     #[must_use]
     pub(crate) fn key_error(key: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunError {
-        let mut guard = DepthGuard::default();
-        let key_str = key.py_str(heap, &mut guard, interns).into_owned();
+        let key_str = key.py_str(heap, interns).into_owned();
         SimpleException::new_msg(Self::KeyError, key_str).into()
     }
 
@@ -379,9 +375,10 @@ impl ExcType {
     #[must_use]
     pub(crate) fn type_error_at_least(name: &str, min: usize, actual: usize) -> RunError {
         // CPython: "get expected at least 1 argument, got 0"
+        let plural = if min == 1 { "" } else { "s" };
         SimpleException::new_msg(
             Self::TypeError,
-            format!("{name} expected at least {min} argument, got {actual}"),
+            format!("{name} expected at least {min} argument{plural}, got {actual}"),
         )
         .into()
     }
@@ -1202,11 +1199,16 @@ impl SimpleException {
     /// Returns `Err(AttributeError)` for all other attributes.
     pub fn py_getattr(
         &self,
-        attr_id: StringId,
+        attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
+        interns: &Interns,
     ) -> RunResult<Option<AttrCallResult>> {
-        if attr_id == StaticStrings::Args {
+        // Fast path: interned strings can be matched by ID
+        let is_args = attr
+            .static_string()
+            .map_or_else(|| attr.as_str(interns) == "args", |ss| ss == StaticStrings::Args);
+
+        if is_args {
             // Construct tuple with 0 or 1 elements based on whether arg exists
             let elements = if let Some(arg_str) = &self.arg {
                 let str_id = heap.allocate(HeapData::Str(Str::from(arg_str.clone())))?;
@@ -1381,7 +1383,7 @@ pub(crate) enum RunError {
     Internal(Cow<'static, str>),
     /// Catchable Python exception (e.g., ValueError, TypeError).
     Exc(ExceptionRaise),
-    /// Uncatchable Python exception from resource limits (MemoryError, TimeoutError, RecursionError).
+    /// Uncatchable Python exception from resource limits (MemoryError, TimeoutError).
     ///
     /// These exceptions display with proper tracebacks like normal Python exceptions,
     /// but cannot be caught by try/except blocks. This prevents untrusted code from

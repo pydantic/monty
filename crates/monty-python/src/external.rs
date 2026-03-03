@@ -4,9 +4,9 @@
 //! External functions are registered by name and called when Monty execution
 //! reaches a call to that function.
 
-use ::monty::{ExternalResult, MontyObject};
+use ::monty::{ExtFunctionResult, MontyObject};
 use pyo3::{
-    exceptions::PyKeyError,
+    exceptions::PyRuntimeError,
     prelude::*,
     types::{PyDict, PyTuple},
 };
@@ -31,10 +31,10 @@ pub fn dispatch_method_call(
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
     dc_registry: &DcRegistry,
-) -> ExternalResult {
+) -> ExtFunctionResult {
     match dispatch_method_call_inner(py, function_name, args, kwargs, dc_registry) {
-        Ok(result) => ExternalResult::Return(result),
-        Err(err) => ExternalResult::Error(exc_py_to_monty(py, &err)),
+        Ok(result) => ExtFunctionResult::Return(result),
+        Err(err) => ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
     }
 }
 
@@ -50,7 +50,7 @@ fn dispatch_method_call_inner(
     let mut args_iter = args.iter();
     let self_obj = args_iter
         .next()
-        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Method call missing self argument"))?;
+        .ok_or_else(|| PyRuntimeError::new_err("Method call missing self argument"))?;
     let py_self = monty_to_py(py, self_obj, dc_registry)?;
 
     // Get the method from the object
@@ -116,10 +116,11 @@ impl<'a, 'py> ExternalFunctionRegistry<'a, 'py> {
         function_name: &str,
         args: &[MontyObject],
         kwargs: &[(MontyObject, MontyObject)],
-    ) -> ExternalResult {
+    ) -> ExtFunctionResult {
         match self.call_inner(function_name, args, kwargs) {
-            Ok(result) => ExternalResult::Return(result),
-            Err(err) => ExternalResult::Error(exc_py_to_monty(self.py, &err)),
+            Ok(Some(result)) => ExtFunctionResult::Return(result),
+            Ok(None) => ExtFunctionResult::NotFound(function_name.to_owned()),
+            Err(err) => ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)),
         }
     }
 
@@ -129,12 +130,11 @@ impl<'a, 'py> ExternalFunctionRegistry<'a, 'py> {
         function_name: &str,
         args: &[MontyObject],
         kwargs: &[(MontyObject, MontyObject)],
-    ) -> PyResult<MontyObject> {
+    ) -> PyResult<Option<MontyObject>> {
         // Look up the callable
-        let callable = self
-            .functions
-            .get_item(function_name)?
-            .ok_or_else(|| PyKeyError::new_err(format!("External function '{function_name}' not found")))?;
+        let Some(callable) = self.functions.get_item(function_name)? else {
+            return Ok(None);
+        };
 
         // Convert positional arguments to Python objects
         let py_args: PyResult<Vec<Py<PyAny>>> = args
@@ -160,6 +160,6 @@ impl<'a, 'py> ExternalFunctionRegistry<'a, 'py> {
         };
 
         // Convert result back to Monty format
-        py_to_monty(&result, self.dc_registry)
+        py_to_monty(&result, self.dc_registry).map(Some)
     }
 }

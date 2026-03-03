@@ -4,7 +4,7 @@ use super::VM;
 use crate::{
     defer_drop,
     exception_private::{ExcType, RunError},
-    resource::{DepthGuard, ResourceTracker},
+    resource::ResourceTracker,
     types::{LongInt, PyTrait},
     value::Value,
 };
@@ -19,8 +19,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        let mut guard = DepthGuard::default();
-        let result = lhs.py_eq(rhs, this.heap, &mut guard, this.interns)?;
+        let result = lhs.py_eq(rhs, this.heap, this.interns)?;
         this.push(Value::Bool(result));
         Ok(())
     }
@@ -34,8 +33,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        let mut guard = DepthGuard::default();
-        let result = !lhs.py_eq(rhs, this.heap, &mut guard, this.interns)?;
+        let result = !lhs.py_eq(rhs, this.heap, this.interns)?;
         this.push(Value::Bool(result));
         Ok(())
     }
@@ -52,8 +50,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        let mut guard = DepthGuard::default();
-        let result = lhs.py_cmp(rhs, this.heap, &mut guard, this.interns)?.is_some_and(check);
+        let result = lhs.py_cmp(rhs, this.heap, this.interns)?.is_some_and(check);
         this.push(Value::Bool(result));
         Ok(())
     }
@@ -129,18 +126,16 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     defer_drop!(v, this);
 
                     // Handle InternLongInt by converting to heap LongInt for comparison
-                    let (k_value, k_needs_drop) = if let Value::InternLongInt(id) = k {
+                    let k_value = if let Value::InternLongInt(id) = k {
                         let bi = this.interns.get_long_int(*id).clone();
-                        (LongInt::new(bi).into_value(this.heap)?, true)
+                        LongInt::new(bi).into_value(this.heap)?
                     } else {
-                        (k.copy_for_extend(), false)
+                        // k is from the constant pool and is always an immediate value
+                        k.clone_immediate()
                     };
+                    defer_drop!(k_value, this);
 
-                    let mut guard = DepthGuard::default();
-                    let is_equal = v.py_eq(&k_value, this.heap, &mut guard, this.interns)?;
-                    if k_needs_drop {
-                        k_value.drop_with_heap(this.heap);
-                    }
+                    let is_equal = v.py_eq(k_value, this.heap, this.interns)?;
                     this.push(Value::Bool(is_equal));
                     Ok(())
                 }

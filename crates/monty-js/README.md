@@ -30,7 +30,7 @@ const result = m.run({ inputs: { x: 10, y: 20 } }) // returns 30
 For synchronous external functions, pass them directly to `run()`:
 
 ```ts
-const m = new Monty('add(2, 3)', { externalFunctions: ['add'] })
+const m = new Monty('add(2, 3)')
 
 const result = m.run({
   externalFunctions: {
@@ -46,7 +46,6 @@ import { Monty, runMontyAsync } from '@pydantic/monty'
 
 const m = new Monty('fetch_data(url)', {
   inputs: ['url'],
-  externalFunctions: ['fetch_data'],
 })
 
 const result = await runMontyAsync(m, {
@@ -65,7 +64,7 @@ const result = await runMontyAsync(m, {
 For fine-grained control over external function calls, use `start()` and `resume()`:
 
 ```ts
-const m = new Monty('a() + b()', { externalFunctions: ['a', 'b'] })
+const m = new Monty('a() + b()')
 
 let progress = m.start()
 while (progress instanceof MontySnapshot) {
@@ -161,13 +160,11 @@ if (snapshot instanceof MontySnapshot) {
 - `Monty.load(data)` - Deserialize from binary format
 - `scriptName` - The script name (default: `'main.py'`)
 - `inputs` - Declared input variable names
-- `externalFunctions` - Declared external function names
 
 ### `MontyOptions`
 
 - `scriptName?: string` - Name used in tracebacks (default: `'main.py'`)
 - `inputs?: string[]` - Input variable names
-- `externalFunctions?: string[]` - External function names
 - `typeCheck?: boolean` - Enable type checking on construction
 - `typeCheckPrefixCode?: string` - Code to prepend for type checking
 

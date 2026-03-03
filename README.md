@@ -25,22 +25,24 @@ Monty avoids the cost, latency, complexity and general faff of using a full cont
 Instead, it lets you safely run Python code written by an LLM embedded in your agent, with startup times measured in single digit microseconds not hundreds of milliseconds.
 
 What Monty **can** do:
-* Run a reasonable subset of Python code - enough for your agent to express what it wants to do
-* Completely block access to the host environment: filesystem, env variables and network access are all implemented via external function calls the developer can control
-* Call functions on the host - only functions you give it access to
-* Run typechecking - monty supports full modern python type hints and comes with [ty](https://docs.astral.sh/ty/) included in a single binary to run typechecking
-* Be snapshotted to bytes at external function calls, meaning you can store the interpreter state in a file or database, and resume later
-* Startup extremely fast (<1μs to go from code to execution result), and has runtime performance that is similar to CPython (generally between 5x faster and 5x slower)
-* Be called from Rust, Python, or Javascript - because Monty has no dependencies on cpython, you can use it anywhere you can run Rust
-* Control resource usage - Monty can track memory usage, allocations, stack depth, and execution time and cancel execution if it exceeds preset limits
-* Collect stdout and stderr and return it to the caller
-* Run async or sync code on the host via async or sync code on the host
+
+- Run a reasonable subset of Python code - enough for your agent to express what it wants to do
+- Completely block access to the host environment: filesystem, env variables and network access are all implemented via external function calls the developer can control
+- Call functions on the host - only functions you give it access to
+- Run typechecking - monty supports full modern python type hints and comes with [ty](https://docs.astral.sh/ty/) included in a single binary to run typechecking
+- Be snapshotted to bytes at external function calls, meaning you can store the interpreter state in a file or database, and resume later
+- Startup extremely fast (<1μs to go from code to execution result), and has runtime performance that is similar to CPython (generally between 5x faster and 5x slower)
+- Be called from Rust, Python, or Javascript - because Monty has no dependencies on cpython, you can use it anywhere you can run Rust
+- Control resource usage - Monty can track memory usage, allocations, stack depth, and execution time and cancel execution if it exceeds preset limits
+- Collect stdout and stderr and return it to the caller
+- Run async or sync code on the host via async or sync code on the host
 
 What Monty **cannot** do:
-* Use the standard library (except a few select modules: `sys`, `typing`, `asyncio`, `dataclasses` (soon), `json` (soon))
-* Use third party libraries (like Pydantic), support for external python library is not a goal
-* define classes (support should come soon)
-* use match statements (again, support should come soon)
+
+- Use the standard library (except a few select modules: `sys`, `typing`, `asyncio`, `dataclasses` (soon), `json` (soon))
+- Use third party libraries (like Pydantic), support for external python library is not a goal
+- define classes (support should come soon)
+- use match statements (again, support should come soon)
 
 ---
 
@@ -49,10 +51,11 @@ In short, Monty is extremely limited and designed for **one** use case:
 **To run code written by agents.**
 
 For motivation on why you might want to do this, see:
-* [Codemode](https://blog.cloudflare.com/code-mode/) from Cloudflare
-* [Programmatic Tool Calling](https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling) from Anthropic
-* [Code Execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) from Anthropic
-* [Smol Agents](https://github.com/huggingface/smolagents) from Hugging Face
+
+- [Codemode](https://blog.cloudflare.com/code-mode/) from Cloudflare
+- [Programmatic Tool Calling](https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling) from Anthropic
+- [Code Execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) from Anthropic
+- [Smol Agents](https://github.com/huggingface/smolagents) from Hugging Face
 
 In very simple terms, the idea of all the above is that LLMs can work faster, cheaper and more reliably if they're asked to write Python (or Javascript) code, instead of relying on traditional tool calling. Monty makes that possible without the complexity of a sandbox or risk of running code directly on the host.
 
@@ -105,7 +108,6 @@ prompt: str = ''
 m = pydantic_monty.Monty(
     code,
     inputs=['prompt'],
-    external_functions=['call_llm'],
     script_name='agent.py',
     type_check=True,
     type_check_stubs=type_definitions,
@@ -151,13 +153,13 @@ data = fetch(url)
 len(data)
 """
 
-m = pydantic_monty.Monty(code, inputs=['url'], external_functions=['fetch'])
+m = pydantic_monty.Monty(code, inputs=['url'])
 
 # Start execution - pauses when fetch() is called
 result = m.start(inputs={'url': 'https://example.com'})
 
 print(type(result))
-#> <class 'pydantic_monty.MontySnapshot'>
+#> <class 'pydantic_monty.FunctionSnapshot'>
 print(result.function_name)  # fetch
 #> fetch
 print(result.args)
@@ -174,7 +176,7 @@ print(result.output)
 
 #### Serialization
 
-Both `Monty` and `MontySnapshot` can be serialized to bytes and restored later.
+Both `Monty` and snapshot types like `FunctionSnapshot` can be serialized to bytes and restored later.
 This allows caching parsed code or suspending execution across process boundaries:
 
 ```python
@@ -190,12 +192,12 @@ print(m2.run(inputs={'x': 41}))
 #> 42
 
 # Serialize execution state mid-flight
-m = pydantic_monty.Monty('fetch(url)', inputs=['url'], external_functions=['fetch'])
+m = pydantic_monty.Monty('fetch(url)', inputs=['url'])
 progress = m.start(inputs={'url': 'https://example.com'})
 state = progress.dump()
 
 # Later, restore and resume (e.g., in a different process)
-progress2 = pydantic_monty.MontySnapshot.load(state)
+progress2 = pydantic_monty.FunctionSnapshot.load(state)
 result = progress2.resume(return_value='response data')
 print(result.output)
 #> response data
@@ -215,7 +217,7 @@ def fib(n):
 fib(x)
 "#;
 
-let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()], vec![]).unwrap();
+let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()]).unwrap();
 let result = runner.run(vec![MontyObject::Int(10)], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 assert_eq!(result, MontyObject::Int(55));
 ```
@@ -228,7 +230,7 @@ assert_eq!(result, MontyObject::Int(55));
 use monty::{MontyRun, MontyObject, NoLimitTracker, PrintWriter};
 
 // Serialize parsed code
-let runner = MontyRun::new("x + 1".to_owned(), "main.py", vec!["x".to_owned()], vec![]).unwrap();
+let runner = MontyRun::new("x + 1".to_owned(), "main.py", vec!["x".to_owned()]).unwrap();
 let bytes = runner.dump().unwrap();
 
 // Later, restore and run
@@ -337,15 +339,15 @@ I'll try to run through the most obvious alternatives, and why there aren't righ
 
 NOTE: all these technologies are impressive and have widespread uses, this commentary on their limitations for our use case should not be seen as a criticism. Most of these solutions were not conceived with the goal of providing an LLM sandbox, which is why they're not necessary great at it.
 
-| Tech               | Language completeness | Security     | Start latency  | FOSS       | Setup complexity | File mounting  | Snapshotting |
-|--------------------|-----------------------|--------------|----------------|------------|------------------|----------------|--------------|
-| Monty              | partial               | strict       | 0.06ms         | free / OSS | easy             | easy           | easy         |
-| Docker             | full                  | good         | 195ms          | free / OSS | intermediate     | easy           | intermediate |
-| Pyodide            | full                  | poor         | 2800ms         | free / OSS | intermediate     | easy           | hard         |
-| starlark-rust      | very limited          | good         | 1.7ms          | free / OSS | easy             | not available? | impossible?  |
-| WASI / Wasmer      | partial, almost full  | strict       | 66ms           | free *     | intermediate     | easy           | intermediate |
-| sandboxing service | full                  | strict       | 1033ms         | not free   | intermediate     | hard           | intermediate |
-| YOLO Python        | full                  | non-existent | 0.1ms / 30ms   | free / OSS | easy             | easy / scary   | hard         |
+| Tech               | Language completeness | Security     | Start latency | FOSS       | Setup complexity | File mounting  | Snapshotting |
+| ------------------ | --------------------- | ------------ | ------------- | ---------- | ---------------- | -------------- | ------------ |
+| Monty              | partial               | strict       | 0.06ms        | free / OSS | easy             | easy           | easy         |
+| Docker             | full                  | good         | 195ms         | free / OSS | intermediate     | easy           | intermediate |
+| Pyodide            | full                  | poor         | 2800ms        | free / OSS | intermediate     | easy           | hard         |
+| starlark-rust      | very limited          | good         | 1.7ms         | free / OSS | easy             | not available? | impossible?  |
+| WASI / Wasmer      | partial, almost full  | strict       | 66ms          | free \*    | intermediate     | easy           | intermediate |
+| sandboxing service | full                  | strict       | 1033ms        | not free   | intermediate     | hard           | intermediate |
+| YOLO Python        | full                  | non-existent | 0.1ms / 30ms  | free / OSS | easy             | easy / scary   | hard         |
 
 See [./scripts/startup_performance.py](scripts/startup_performance.py) for the script used to calculate the startup performance numbers.
 
@@ -397,7 +399,7 @@ Running Python in WebAssembly via [Wasmer](https://wasmer.io/).
 - **Security**: In principle WebAssembly should provide strong sandboxing guarantees.
 - **Start latency**: The [wasmer](https://pypi.org/project/wasmer/) python package hasn't been updated for 3 years and I couldn't find docs on calling Python in wasmer from Python, so I called it via subprocess. Start latency was 66ms.
 - **Setup complexity**: wasmer download is 100mb, the "python/python" package is 50mb.
-- **FOSS**: I marked this as "free *" since the cost is zero but not everything seems to be open source. As of 2026-02-10 the [`python/python` wasmer package](https://wasmer.io/python/python) package has no readme, no license, no source link and no indication of how it's built, the recently uploaded versions show size as "0B" although the download is ~50MB - the build process for the Python binary is not clear and transparent. _(If I'm wrong here, please create an issue to correct correct me)_
+- **FOSS**: I marked this as "free \*" since the cost is zero but not everything seems to be open source. As of 2026-02-10 the [`python/python` wasmer package](https://wasmer.io/python/python) package has no readme, no license, no source link and no indication of how it's built, the recently uploaded versions show size as "0B" although the download is ~50MB - the build process for the Python binary is not clear and transparent. _(If I'm wrong here, please create an issue to correct correct me)_
 - **File mounting**: Supported
 - **Snapshotting**: Supported via journaling
 

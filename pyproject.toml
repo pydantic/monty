@@ -14,6 +14,11 @@ dev = [
     "ruff>=0.14.7",
     "duckdb>=1.0.0",
     "httpx>=0.28.1",
+    "playwright>=1.58.0",
+    "beautifulsoup4>=4.14.3",
+    "logfire>=4.25.0",
+    "devtools>=0.12.2",
+    "pydantic-ai-slim[anthropic,openai]>=1.63.0",
 ]
 
 # https://beta.ruff.rs/docs/configuration/
@@ -96,6 +101,7 @@ exclude = [
     "crates/monty/test_cases/loop__break_in_if_error.py",
     "crates/monty/test_cases/loop__continue_in_if_error.py",
     "scripts/startup_performance.py",
+    "examples/web_scraper/example_code.py",
 ]
 venv = ".venv"
 

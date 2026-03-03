@@ -12,7 +12,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings},
-    resource::{DepthGuard, ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker},
     sorting::{apply_permutation, sort_indices},
     types::Type,
     value::{EitherStr, Value},
@@ -165,16 +165,16 @@ impl List {
     ///
     /// - `list()` with no args returns an empty list
     /// - `list(iterable)` creates a list from any iterable (list, tuple, range, str, bytes, dict)
-    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("list", heap)?;
+    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let value = args.get_zero_one_arg("list", vm.heap)?;
         match value {
             None => {
-                let heap_id = heap.allocate(HeapData::List(Self::new(Vec::new())))?;
+                let heap_id = vm.heap.allocate(HeapData::List(Self::new(Vec::new())))?;
                 Ok(Value::Ref(heap_id))
             }
             Some(v) => {
-                let items = MontyIter::new(v, heap, interns)?.collect(heap, interns)?;
-                let heap_id = heap.allocate(HeapData::List(Self::new(items)))?;
+                let items = MontyIter::new(v, vm)?.collect(vm)?;
+                let heap_id = vm.heap.allocate(HeapData::List(Self::new(items)))?;
                 Ok(Value::Ref(heap_id))
             }
         }
@@ -305,22 +305,20 @@ impl PyTrait for List {
         &self,
         other: &Self,
         heap: &mut Heap<impl ResourceTracker>,
-        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> Result<bool, ResourceError> {
         if self.items.len() != other.items.len() {
             return Ok(false);
         }
-        guard.increase_err()?;
+        let token = heap.incr_recursion_depth()?;
+        defer_drop!(token, heap);
 
         for (i1, i2) in self.items.iter().zip(&other.items) {
             heap.check_time()?;
-            if !i1.py_eq(i2, heap, guard, interns)? {
-                guard.decrease();
+            if !i1.py_eq(i2, heap, interns)? {
                 return Ok(false);
             }
         }
-        guard.decrease();
         Ok(true)
     }
 
@@ -347,10 +345,9 @@ impl PyTrait for List {
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result {
-        repr_sequence_fmt('[', ']', &self.items, f, heap, heap_ids, guard, interns)
+        repr_sequence_fmt('[', ']', &self.items, f, heap, heap_ids, interns)
     }
 
     fn py_add(
@@ -369,13 +366,13 @@ impl PyTrait for List {
 
     fn py_iadd(
         &mut self,
-        other: Value,
+        other: &Value,
         heap: &mut Heap<impl ResourceTracker>,
         self_id: Option<HeapId>,
         _interns: &Interns,
     ) -> Result<bool, crate::resource::ResourceError> {
         // Extract the value ID first, keeping `other` around to drop later
-        let Value::Ref(other_id) = &other else { return Ok(false) };
+        let Value::Ref(other_id) = other else { return Ok(false) };
 
         if Some(*other_id) == self_id {
             // Self-extend: clone our own items with proper refcounting
@@ -411,30 +408,12 @@ impl PyTrait for List {
             }
         }
 
-        // Drop the other value - we've extracted its contents and are done with the temporary reference
-        other.drop_with_heap(heap);
         Ok(true)
     }
 
-    fn py_call_attr(
-        &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
-        attr: &EitherStr,
-        args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
-        let args_guard = HeapGuard::new(args, heap);
-        let Some(method) = attr.static_string() else {
-            return Err(ExcType::attribute_error(Type::List, attr.as_str(interns)));
-        };
-
-        let (args, heap) = args_guard.into_parts();
-        call_list_method(self, method, args, heap, interns)
-    }
-
     /// Intercepts `sort` to call `do_list_sort` (which needs `PrintWriter` for key functions),
-    /// and delegates all other methods to `py_call_attr`.
-    fn py_call_attr_raw(
+    /// and delegates all other methods to `call_list_method`.
+    fn py_call_attr(
         &mut self,
         _self_id: HeapId,
         vm: &mut VM<'_, '_, impl ResourceTracker>,
@@ -445,8 +424,13 @@ impl PyTrait for List {
             do_list_sort(self, args, vm)?;
             return Ok(AttrCallResult::Value(Value::None));
         }
-        self.py_call_attr(vm.heap, attr, args, vm.interns)
-            .map(AttrCallResult::Value)
+        let args_guard = HeapGuard::new(args, vm.heap);
+        let Some(method) = attr.static_string() else {
+            return Err(ExcType::attribute_error(Type::List, attr.as_str(vm.interns)));
+        };
+
+        let args = args_guard.into_inner();
+        call_list_method(self, method, args, vm).map(AttrCallResult::Value)
     }
 }
 
@@ -464,9 +448,10 @@ fn call_list_method(
     list: &mut List,
     method: StaticStrings,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
+    let heap = &mut *vm.heap;
+    let interns = vm.interns;
     match method {
         StaticStrings::Append => {
             let item = args.get_one_arg("list.append", heap)?;
@@ -485,7 +470,7 @@ fn call_list_method(
             args.check_zero_args("list.copy", heap)?;
             Ok(list_copy(list, heap)?)
         }
-        StaticStrings::Extend => list_extend(list, args, heap, interns),
+        StaticStrings::Extend => list_extend(list, args, vm),
         StaticStrings::Index => list_index(list, args, heap, interns),
         StaticStrings::Count => list_count(list, args, heap, interns),
         StaticStrings::Reverse => {
@@ -493,7 +478,7 @@ fn call_list_method(
             list.items.reverse();
             Ok(Value::None)
         }
-        // Note: list.sort is handled by py_call_attr_raw which intercepts it
+        // Note: list.sort is handled by py_call_attr which intercepts it before reaching here
         _ => {
             args.drop_with_heap(heap);
             Err(ExcType::attribute_error(Type::List, method.into()))
@@ -577,10 +562,9 @@ fn list_remove(
 
     // Find the first matching element
     let mut found_idx = None;
-    let mut guard = DepthGuard::default();
     for (i, item) in list.items.iter().enumerate() {
         heap.check_time()?;
-        if value.py_eq(item, heap, &mut guard, interns)? {
+        if value.py_eq(item, heap, interns)? {
             found_idx = Some(i);
             break;
         }
@@ -619,18 +603,13 @@ fn list_copy(list: &List, heap: &mut Heap<impl ResourceTracker>) -> Result<Value
 /// Implements Python's `list.extend(iterable)` method.
 ///
 /// Extends the list by appending all items from the iterable.
-fn list_extend(
-    list: &mut List,
-    args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<Value> {
-    let iterable = args.get_one_arg("list.extend", heap)?;
-    let items: SmallVec<[_; 2]> = MontyIter::new(iterable, heap, interns)?.collect(heap, interns)?;
+fn list_extend(list: &mut List, args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+    let iterable = args.get_one_arg("list.extend", vm.heap)?;
+    let items: SmallVec<[_; 2]> = MontyIter::new(iterable, vm)?.collect(vm)?;
 
     // Add each item to the list
     for item in items {
-        list.append(heap, item);
+        list.append(vm.heap, item);
     }
 
     Ok(Value::None)
@@ -666,10 +645,9 @@ fn list_index(
     };
 
     // Search for the value in the specified range
-    let mut guard = DepthGuard::default();
     for (i, item) in list.items[start..end].iter().enumerate() {
         heap.check_time()?;
-        if value.py_eq(item, heap, &mut guard, interns)? {
+        if value.py_eq(item, heap, interns)? {
             let idx = i64::try_from(start + i).expect("index exceeds i64::MAX");
             return Ok(Value::Int(idx));
         }
@@ -690,11 +668,10 @@ fn list_count(
     let value = args.get_one_arg("list.count", heap)?;
     defer_drop!(value, heap);
 
-    let mut guard = DepthGuard::default();
     let mut count: usize = 0;
     for item in &list.items {
         heap.check_time()?;
-        if value.py_eq(item, heap, &mut guard, interns)? {
+        if value.py_eq(item, heap, interns)? {
             count += 1;
         }
     }
@@ -714,14 +691,14 @@ fn normalize_list_index(index: i64, len: usize) -> usize {
 }
 
 /// Performs an in-place sort on a list with optional key function and reverse flag.
-fn do_list_sort(list: &mut List, args: ArgValues, vm: &mut VM<impl ResourceTracker>) -> Result<(), RunError> {
+fn do_list_sort(list: &mut List, args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<(), RunError> {
     // Parse keyword-only arguments: key and reverse
     let (key_arg, reverse_arg) = args.extract_two_kwargs_only("list.sort", "key", "reverse", vm.heap, vm.interns)?;
 
     // Convert reverse to bool (default false)
     let reverse = if let Some(v) = reverse_arg {
         let result = v.py_bool(vm.heap, vm.interns);
-        v.drop_with_heap(vm.heap);
+        v.drop_with_heap(vm);
         result
     } else {
         false
@@ -730,7 +707,7 @@ fn do_list_sort(list: &mut List, args: ArgValues, vm: &mut VM<impl ResourceTrack
     // Handle key function (None means no key function)
     let key_fn = match key_arg {
         Some(v) if matches!(v, Value::None) => {
-            v.drop_with_heap(vm.heap);
+            v.drop_with_heap(vm);
             None
         }
         other => other,
@@ -751,7 +728,7 @@ fn do_list_sort(list: &mut List, args: ArgValues, vm: &mut VM<impl ResourceTrack
         items
             .iter()
             .map(|item| {
-                let item = item.clone_with_heap(vm.heap);
+                let item = item.clone_with_heap(vm);
                 vm.evaluate_function("sorted() key argument", f, ArgValues::One(item))
             })
             .process_results(|keys_iter| keys.extend(keys_iter))?;
@@ -783,9 +760,7 @@ fn do_list_sort(list: &mut List, args: ArgValues, vm: &mut VM<impl ResourceTrack
 /// * `f` - The formatter to write to
 /// * `heap` - The heap for resolving value references
 /// * `heap_ids` - Set of heap IDs being repr'd (for cycle detection)
-/// * `guard` - Recursion depth tracker to prevent stack overflow on deeply nested structures
 /// * `interns` - The interned strings table for looking up string/bytes literals
-#[expect(clippy::too_many_arguments)]
 pub(crate) fn repr_sequence_fmt(
     start: char,
     end: char,
@@ -793,30 +768,29 @@ pub(crate) fn repr_sequence_fmt(
     f: &mut impl Write,
     heap: &Heap<impl ResourceTracker>,
     heap_ids: &mut AHashSet<HeapId>,
-    guard: &mut DepthGuard,
     interns: &Interns,
 ) -> std::fmt::Result {
     // Check depth limit before recursing
-    if !guard.increase() {
+    let Some(token) = heap.incr_recursion_depth_for_repr() else {
         return f.write_str("...");
-    }
+    };
+    crate::defer_drop_immutable_heap!(token, heap);
 
     f.write_char(start)?;
     let mut iter = items.iter();
     if let Some(first) = iter.next() {
-        first.py_repr_fmt(f, heap, heap_ids, guard, interns)?;
+        first.py_repr_fmt(f, heap, heap_ids, interns)?;
         for item in iter {
             if heap.check_time().is_err() {
                 f.write_str(", ...[timeout]")?;
                 break;
             }
             f.write_str(", ")?;
-            item.py_repr_fmt(f, heap, heap_ids, guard, interns)?;
+            item.py_repr_fmt(f, heap, heap_ids, interns)?;
         }
     }
     f.write_char(end)?;
 
-    guard.decrease();
     Ok(())
 }
 
@@ -878,12 +852,16 @@ mod tests {
     use num_bigint::BigInt;
 
     use super::*;
-    use crate::{intern::InternerBuilder, resource::NoLimitTracker, types::LongInt};
+    use crate::{
+        intern::{InternerBuilder, Interns},
+        resource::NoLimitTracker,
+        types::LongInt,
+    };
 
     /// Creates a minimal Interns for testing.
-    fn create_test_interns() -> crate::intern::Interns {
+    fn create_test_interns() -> Interns {
         let interner = InternerBuilder::new("");
-        crate::intern::Interns::new(interner, vec![], vec![])
+        Interns::new(interner, vec![])
     }
 
     /// Creates a heap with a list and a LongInt index, bypassing into_value() demotion.
@@ -917,7 +895,9 @@ mod tests {
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
-        let result = heap.with_entry_mut(list_id, |heap, data| data.py_setitem(key, new_value, heap, &interns));
+        let result = heap.with_entry_mut(list_id, |heap, mut data| {
+            data.py_setitem(key, new_value, heap, &interns)
+        });
 
         assert!(result.is_ok());
 
@@ -944,7 +924,9 @@ mod tests {
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
-        let result = heap.with_entry_mut(list_id, |heap, data| data.py_setitem(key, new_value, heap, &interns));
+        let result = heap.with_entry_mut(list_id, |heap, mut data| {
+            data.py_setitem(key, new_value, heap, &interns)
+        });
 
         assert!(result.is_ok());
 
@@ -969,7 +951,9 @@ mod tests {
         heap.inc_ref(index_id);
 
         // This should fail with IndexError because i64::MAX is out of bounds for a 1-element list
-        let result = heap.with_entry_mut(list_id, |heap, data| data.py_setitem(key, new_value, heap, &interns));
+        let result = heap.with_entry_mut(list_id, |heap, mut data| {
+            data.py_setitem(key, new_value, heap, &interns)
+        });
 
         assert!(result.is_err());
 

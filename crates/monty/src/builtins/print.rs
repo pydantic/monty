@@ -2,12 +2,12 @@
 
 use crate::{
     args::{ArgValues, KwargsValues},
+    bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData},
     intern::Interns,
-    io::PrintWriter,
-    resource::{DepthGuard, ResourceTracker},
+    resource::ResourceTracker,
     types::PyTrait,
     value::Value,
 };
@@ -20,38 +20,32 @@ use crate::{
 /// - `flush`: whether to flush the stream (accepted but ignored)
 ///
 /// The `file` kwarg is not supported.
-pub fn builtin_print(
-    heap: &mut Heap<impl ResourceTracker>,
-    args: ArgValues,
-    interns: &Interns,
-    print: &mut PrintWriter<'_>,
-) -> RunResult<Value> {
+pub fn builtin_print(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     // Split into positional args and kwargs
     let (positional, kwargs) = args.into_parts();
-    defer_drop!(positional, heap);
+    defer_drop!(positional, vm);
 
     // Extract kwargs first
-    let (sep, end) = extract_print_kwargs(kwargs, heap, interns)?;
+    let (sep, end) = extract_print_kwargs(kwargs, vm.heap, vm.interns)?;
 
     // Print positional args with separator, dropping each value after use
     let mut first = true;
-    let mut guard = DepthGuard::default();
     for value in positional.as_slice() {
         if first {
             first = false;
         } else if let Some(sep) = &sep {
-            print.stdout_write(sep.as_str().into())?;
+            vm.print_writer.stdout_write(sep.as_str().into())?;
         } else {
-            print.stdout_push(' ')?;
+            vm.print_writer.stdout_push(' ')?;
         }
-        print.stdout_write(value.py_str(heap, &mut guard, interns))?;
+        vm.print_writer.stdout_write(value.py_str(vm.heap, vm.interns))?;
     }
 
     // Append end string
     if let Some(end) = end {
-        print.stdout_write(end.into())?;
+        vm.print_writer.stdout_write(end.into())?;
     } else {
-        print.stdout_push('\n')?;
+        vm.print_writer.stdout_push('\n')?;
     }
 
     Ok(Value::None)

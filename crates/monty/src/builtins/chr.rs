@@ -2,9 +2,9 @@
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::Heap,
     resource::ResourceTracker,
     types::{PyTrait, str::allocate_char},
     value::Value,
@@ -14,16 +14,16 @@ use crate::{
 ///
 /// Returns a string representing a character whose Unicode code point is the integer.
 /// The valid range for the argument is from 0 through 1,114,111 (0x10FFFF).
-pub fn builtin_chr(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("chr", heap)?;
-    defer_drop!(value, heap);
+pub fn builtin_chr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("chr", vm.heap)?;
+    defer_drop!(value, vm);
 
     match value {
         Value::Int(n) => {
             if *n < 0 || *n > 0x0010_FFFF {
                 Err(SimpleException::new_msg(ExcType::ValueError, "chr() arg not in range(0x110000)").into())
             } else if let Some(c) = char::from_u32(u32::try_from(*n).expect("chr() range check failed")) {
-                Ok(allocate_char(c, heap)?)
+                Ok(allocate_char(c, vm.heap)?)
             } else {
                 // This shouldn't happen for valid Unicode range, but handle it
                 Err(SimpleException::new_msg(ExcType::ValueError, "chr() arg not in range(0x110000)").into())
@@ -32,10 +32,10 @@ pub fn builtin_chr(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Ru
         Value::Bool(b) => {
             // bool is subclass of int
             let c = if *b { '\x01' } else { '\x00' };
-            Ok(allocate_char(c, heap)?)
+            Ok(allocate_char(c, vm.heap)?)
         }
         _ => {
-            let type_name = value.py_type(heap);
+            let type_name = value.py_type(vm.heap);
             Err(SimpleException::new_msg(
                 ExcType::TypeError,
                 format!("an integer is required (got type {type_name})"),
