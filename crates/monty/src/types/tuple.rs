@@ -101,16 +101,16 @@ impl Tuple {
     ///
     /// - `tuple()` with no args returns an empty tuple (singleton)
     /// - `tuple(iterable)` creates a tuple from any iterable (list, tuple, range, str, bytes, dict)
-    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("tuple", heap)?;
+    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let value = args.get_zero_one_arg("tuple", vm.heap)?;
         match value {
             None => {
                 // Use empty tuple singleton
-                Ok(heap.get_empty_tuple())
+                Ok(vm.heap.get_empty_tuple())
             }
             Some(v) => {
-                let items = MontyIter::new(v, heap, interns)?.collect(heap, interns)?;
-                Ok(allocate_tuple(items, heap)?)
+                let items = MontyIter::new(v, vm)?.collect(vm)?;
+                Ok(allocate_tuple(items, vm.heap)?)
             }
         }
     }
@@ -254,7 +254,7 @@ impl PyTrait for Tuple {
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<impl ResourceTracker>,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<AttrCallResult> {

@@ -1151,7 +1151,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 Opcode::GetIter => {
                     let value = self.pop();
                     // Create a MontyIter from the value and store on heap
-                    match MontyIter::new(value, self.heap, self.interns) {
+                    match MontyIter::new(value, self) {
                         Ok(iter) => match self.heap.allocate(HeapData::Iter(iter)) {
                             Ok(heap_id) => self.push(Value::Ref(heap_id)),
                             Err(e) => catch_sync!(self, cached_frame, e.into()),

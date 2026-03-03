@@ -50,7 +50,9 @@ impl Str {
     ///
     /// - `str()` with no args returns an empty string
     /// - `str(x)` converts x to its string representation using `py_str`
-    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
         let value = args.get_zero_one_arg("str", heap)?;
         match value {
             None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
@@ -314,19 +316,17 @@ impl PyTrait for Str {
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<impl ResourceTracker>,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<AttrCallResult> {
-        let heap = &mut *vm.heap;
-        let interns = vm.interns;
-        let args_guard = HeapGuard::new(args, heap);
+        let args_guard = HeapGuard::new(args, vm.heap);
         let Some(method) = attr.static_string() else {
-            return Err(ExcType::attribute_error(Type::Str, attr.as_str(interns)));
+            return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
         };
 
-        let (args, heap) = args_guard.into_parts();
-        call_str_method_impl(&self.0, method, args, heap, interns).map(AttrCallResult::Value)
+        let args = args_guard.into_inner();
+        call_str_method_impl(&self.0, method, args, vm).map(AttrCallResult::Value)
     }
 }
 
@@ -338,15 +338,14 @@ pub fn call_str_method(
     s: &str,
     method_id: StringId,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let args_guard = HeapGuard::new(args, heap);
+    let args_guard = HeapGuard::new(args, vm.heap);
     let Some(method) = StaticStrings::from_string_id(method_id) else {
-        return Err(ExcType::attribute_error(Type::Str, interns.get_str(method_id)));
+        return Err(ExcType::attribute_error(Type::Str, vm.interns.get_str(method_id)));
     };
-    let (args, heap) = args_guard.into_parts();
-    call_str_method_impl(s, method, args, heap, interns)
+    let args = args_guard.into_inner();
+    call_str_method_impl(s, method, args, vm)
 }
 
 /// Dispatches a method call on a string value.
@@ -372,9 +371,10 @@ fn call_str_method_impl(
     s: &str,
     method: StaticStrings,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
+    let heap = &mut *vm.heap;
+    let interns = vm.interns;
     match method {
         // Simple transformations (no arguments)
         StaticStrings::Lower => {
@@ -476,8 +476,8 @@ fn call_str_method_impl(
         }
         // Existing method
         StaticStrings::Join => {
-            let iterable = args.get_one_arg("str.join", heap)?;
-            str_join(s, iterable, heap, interns)
+            let iterable = args.get_one_arg("str.join", vm.heap)?;
+            str_join(s, iterable, vm)
         }
         _ => {
             args.drop_with_heap(heap);
@@ -499,24 +499,19 @@ fn call_str_method_impl(
 ///
 /// # Errors
 /// Returns `TypeError` if the argument is not iterable or if any element is not a string.
-fn str_join(
-    separator: &str,
-    iterable: Value,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<Value> {
+fn str_join(separator: &str, iterable: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
     // Create MontyIter from the iterable, with join-specific error message
-    let Ok(iter) = MontyIter::new(iterable, heap, interns) else {
+    let Ok(iter) = MontyIter::new(iterable, vm) else {
         return Err(ExcType::type_error_join_not_iterable());
     };
-    defer_drop_mut!(iter, heap);
+    defer_drop_mut!(iter, vm);
 
     // Build result string, tracking index for error messages
     let mut result = String::new();
     let mut index = 0usize;
 
-    while let Some(item) = iter.for_next(heap, interns)? {
-        defer_drop!(item, heap);
+    while let Some(item) = iter.for_next(vm)? {
+        defer_drop!(item, vm);
         if index > 0 {
             result.push_str(separator);
         }
@@ -524,18 +519,18 @@ fn str_join(
         // Check item is a string and extract its content
         match item {
             Value::InternString(id) => {
-                result.push_str(interns.get_str(*id));
+                result.push_str(vm.interns.get_str(*id));
             }
             Value::Ref(heap_id) => {
-                if let HeapData::Str(s) = heap.get(*heap_id) {
+                if let HeapData::Str(s) = vm.heap.get(*heap_id) {
                     result.push_str(s.as_str());
                 } else {
-                    let t = item.py_type(heap);
+                    let t = item.py_type(vm.heap);
                     return Err(ExcType::type_error_join_item(index, t));
                 }
             }
             _ => {
-                let t = item.py_type(heap);
+                let t = item.py_type(vm.heap);
                 return Err(ExcType::type_error_join_item(index, t));
             }
         }
@@ -543,7 +538,7 @@ fn str_join(
     }
 
     // Allocate result (uses interned empty string if result is empty)
-    allocate_string(result, heap)
+    allocate_string(result, vm.heap)
 }
 
 /// Writes a Python repr() string for a given string slice to a formatter.

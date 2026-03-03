@@ -284,12 +284,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             Value::InternString(string_id) => {
                 // Call string method on interned string literal using the unified dispatcher
                 let s = this.interns.get_str(string_id);
-                call_str_method(s, name_id, args, this.heap, this.interns).map(CallResult::Push)
+                call_str_method(s, name_id, args, this).map(CallResult::Push)
             }
             Value::InternBytes(bytes_id) => {
                 // Call bytes method on interned bytes literal using the unified dispatcher
                 let b = this.interns.get_bytes(bytes_id);
-                call_bytes_method(b, name_id, args, this.heap, this.interns).map(CallResult::Push)
+                call_bytes_method(b, name_id, args, this).map(CallResult::Push)
             }
             Value::Builtin(Builtins::Type(t)) => {
                 // Handle classmethods on type objects like dict.fromkeys()

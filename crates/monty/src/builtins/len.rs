@@ -13,7 +13,7 @@ use crate::{
 /// Implementation of the len() builtin function.
 ///
 /// Returns the length of an object (number of items in a container).
-pub fn builtin_len(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_len(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("len", vm.heap)?;
     defer_drop!(value, vm);
     if let Some(len) = value.py_len(vm.heap, vm.interns) {

@@ -261,7 +261,9 @@ impl Path {
     /// - `Path('a')` returns `Path('a')`
     /// - `Path('a', 'b', 'c')` returns `Path('a/b/c')`
     /// - If an absolute path appears, it replaces everything before it.
-    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
         let pos_args = args.into_pos_only("Path", heap)?;
         defer_drop!(pos_args, heap);
 
@@ -500,7 +502,7 @@ impl PyTrait for Path {
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<impl ResourceTracker>,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<AttrCallResult> {

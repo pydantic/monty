@@ -8,7 +8,7 @@ use crate::{
 /// Implementation of the repr() builtin function.
 ///
 /// Returns a string containing a printable representation of an object.
-pub fn builtin_repr(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_repr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("repr", vm.heap)?;
     defer_drop!(value, vm);
     let heap_id = vm

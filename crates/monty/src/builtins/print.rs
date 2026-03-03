@@ -20,7 +20,7 @@ use crate::{
 /// - `flush`: whether to flush the stream (accepted but ignored)
 ///
 /// The `file` kwarg is not supported.
-pub fn builtin_print(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_print(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     // Split into positional args and kwargs
     let (positional, kwargs) = args.into_parts();
     defer_drop!(positional, vm);

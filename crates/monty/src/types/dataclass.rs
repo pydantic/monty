@@ -273,7 +273,7 @@ impl PyTrait for Dataclass {
     fn py_call_attr(
         &mut self,
         self_id: HeapId,
-        vm: &mut VM<impl ResourceTracker>,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<AttrCallResult> {

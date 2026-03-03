@@ -18,7 +18,7 @@ use crate::{
 ///
 /// Returns base to the power exp. With three arguments, returns (base ** exp) % mod.
 /// Handles negative exponents by returning a float.
-pub fn builtin_pow(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_pow(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     // pow() accepts 2 or 3 arguments
     let positional = args.into_pos_only("pow", vm.heap)?;
     defer_drop!(positional, vm);

@@ -16,11 +16,11 @@ use crate::{
 /// Sums the items of an iterable from left to right with an optional start value.
 /// The default start value is 0. String start values are explicitly rejected
 /// (use `''.join(seq)` instead for string concatenation).
-pub fn builtin_sum(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_sum(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (iterable, start) = args.get_one_two_args("sum", vm.heap)?;
     defer_drop_mut!(start, vm);
 
-    let iter = MontyIter::new(iterable, vm.heap, vm.interns)?;
+    let iter = MontyIter::new(iterable, vm)?;
     defer_drop_mut!(iter, vm);
 
     // Get the start value, defaulting to 0
@@ -46,7 +46,7 @@ pub fn builtin_sum(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunRes
     let (accumulator, vm) = acc_guard.as_parts_mut();
 
     // Sum all items
-    while let Some(item) = iter.for_next(vm.heap, vm.interns)? {
+    while let Some(item) = iter.for_next(vm)? {
         defer_drop!(item, vm);
 
         // Try to add the item to accumulator

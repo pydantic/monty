@@ -165,16 +165,16 @@ impl List {
     ///
     /// - `list()` with no args returns an empty list
     /// - `list(iterable)` creates a list from any iterable (list, tuple, range, str, bytes, dict)
-    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("list", heap)?;
+    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let value = args.get_zero_one_arg("list", vm.heap)?;
         match value {
             None => {
-                let heap_id = heap.allocate(HeapData::List(Self::new(Vec::new())))?;
+                let heap_id = vm.heap.allocate(HeapData::List(Self::new(Vec::new())))?;
                 Ok(Value::Ref(heap_id))
             }
             Some(v) => {
-                let items = MontyIter::new(v, heap, interns)?.collect(heap, interns)?;
-                let heap_id = heap.allocate(HeapData::List(Self::new(items)))?;
+                let items = MontyIter::new(v, vm)?.collect(vm)?;
+                let heap_id = vm.heap.allocate(HeapData::List(Self::new(items)))?;
                 Ok(Value::Ref(heap_id))
             }
         }
@@ -418,7 +418,7 @@ impl PyTrait for List {
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<impl ResourceTracker>,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<AttrCallResult> {
@@ -426,15 +426,13 @@ impl PyTrait for List {
             do_list_sort(self, args, vm)?;
             return Ok(AttrCallResult::Value(Value::None));
         }
-        let heap = &mut *vm.heap;
-        let interns = vm.interns;
-        let args_guard = HeapGuard::new(args, heap);
+        let args_guard = HeapGuard::new(args, vm.heap);
         let Some(method) = attr.static_string() else {
-            return Err(ExcType::attribute_error(Type::List, attr.as_str(interns)));
+            return Err(ExcType::attribute_error(Type::List, attr.as_str(vm.interns)));
         };
 
-        let (args, heap) = args_guard.into_parts();
-        call_list_method(self, method, args, heap, interns).map(AttrCallResult::Value)
+        let args = args_guard.into_inner();
+        call_list_method(self, method, args, vm).map(AttrCallResult::Value)
     }
 }
 
@@ -452,9 +450,10 @@ fn call_list_method(
     list: &mut List,
     method: StaticStrings,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
+    let heap = &mut *vm.heap;
+    let interns = vm.interns;
     match method {
         StaticStrings::Append => {
             let item = args.get_one_arg("list.append", heap)?;
@@ -473,7 +472,7 @@ fn call_list_method(
             args.check_zero_args("list.copy", heap)?;
             Ok(list_copy(list, heap)?)
         }
-        StaticStrings::Extend => list_extend(list, args, heap, interns),
+        StaticStrings::Extend => list_extend(list, args, vm),
         StaticStrings::Index => list_index(list, args, heap, interns),
         StaticStrings::Count => list_count(list, args, heap, interns),
         StaticStrings::Reverse => {
@@ -606,18 +605,13 @@ fn list_copy(list: &List, heap: &mut Heap<impl ResourceTracker>) -> Result<Value
 /// Implements Python's `list.extend(iterable)` method.
 ///
 /// Extends the list by appending all items from the iterable.
-fn list_extend(
-    list: &mut List,
-    args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<Value> {
-    let iterable = args.get_one_arg("list.extend", heap)?;
-    let items: SmallVec<[_; 2]> = MontyIter::new(iterable, heap, interns)?.collect(heap, interns)?;
+fn list_extend(list: &mut List, args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+    let iterable = args.get_one_arg("list.extend", vm.heap)?;
+    let items: SmallVec<[_; 2]> = MontyIter::new(iterable, vm)?.collect(vm)?;
 
     // Add each item to the list
     for item in items {
-        list.append(heap, item);
+        list.append(vm.heap, item);
     }
 
     Ok(Value::None)
@@ -699,7 +693,7 @@ fn normalize_list_index(index: i64, len: usize) -> usize {
 }
 
 /// Performs an in-place sort on a list with optional key function and reverse flag.
-fn do_list_sort(list: &mut List, args: ArgValues, vm: &mut VM<impl ResourceTracker>) -> Result<(), RunError> {
+fn do_list_sort(list: &mut List, args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<(), RunError> {
     // Parse keyword-only arguments: key and reverse
     let (key_arg, reverse_arg) = args.extract_two_kwargs_only("list.sort", "key", "reverse", vm.heap, vm.interns)?;
 
