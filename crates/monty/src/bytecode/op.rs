@@ -71,6 +71,28 @@ pub enum Opcode {
     StoreCell,
     /// Delete local variable. Operand: u8 slot.
     DeleteLocal,
+    /// Load local in call context: pushes `ExtFunction(name_id)` for undefined names
+    /// instead of yielding `NameLookup`. Operands: u8 slot, u16 name_id.
+    ///
+    /// Used when compiling function calls like `foo()` where `foo` is `LocalUnassigned`.
+    /// If the variable is defined, behaves identically to `LoadLocal`.
+    /// If undefined, pushes an `ExtFunction` value so execution continues to `CallFunction`,
+    /// which naturally yields `FunctionCall` instead of `NameLookup`.
+    /// The name_id is encoded in the operand to avoid namespace lookup ambiguity.
+    LoadLocalCallable,
+    /// Wide variant of `LoadLocalCallable`. Operands: u16 slot, u16 name_id.
+    LoadLocalCallableW,
+    /// Load global in call context: pushes `ExtFunction(name_id)` for undefined names
+    /// instead of yielding `NameLookup`. Operands: u16 slot, u16 name_id.
+    ///
+    /// Used when compiling function calls like `foo()` where `foo` is a global.
+    /// If the variable is defined, behaves identically to `LoadGlobal`.
+    /// If undefined, pushes an `ExtFunction` value so execution continues to `CallFunction`,
+    /// which naturally yields `FunctionCall` instead of `NameLookup`.
+    /// The name_id is encoded in the operand because global and local slot indices
+    /// belong to different namespaces — using the current frame's local_names would
+    /// return the wrong name when called from inside a function.
+    LoadGlobalCallable,
 
     // === Binary Operations (no operand) ===
     /// Add: a + b.
@@ -414,10 +436,11 @@ impl Opcode {
             InplaceAdd, InplaceAnd, InplaceDiv, InplaceFloorDiv, InplaceLShift, InplaceMod, InplaceMul, InplaceOr,
             InplacePow, InplaceRShift, InplaceSub, InplaceXor, Jump, JumpIfFalse, JumpIfFalseOrPop, JumpIfTrue,
             JumpIfTrueOrPop, ListAppend, ListExtend, ListToTuple, LoadAttr, LoadAttrImport, LoadCell, LoadConst,
-            LoadFalse, LoadGlobal, LoadLocal, LoadLocal0, LoadLocal1, LoadLocal2, LoadLocal3, LoadLocalW, LoadModule,
-            LoadNone, LoadSmallInt, LoadTrue, MakeClosure, MakeFunction, Nop, Pop, Raise, RaiseImportError, Reraise,
-            ReturnValue, Rot2, Rot3, SetAdd, StoreAttr, StoreCell, StoreGlobal, StoreLocal, StoreLocalW, StoreSubscr,
-            UnaryInvert, UnaryNeg, UnaryNot, UnaryPos, UnpackEx, UnpackSequence,
+            LoadFalse, LoadGlobal, LoadGlobalCallable, LoadLocal, LoadLocal0, LoadLocal1, LoadLocal2, LoadLocal3,
+            LoadLocalCallable, LoadLocalCallableW, LoadLocalW, LoadModule, LoadNone, LoadSmallInt, LoadTrue,
+            MakeClosure, MakeFunction, Nop, Pop, Raise, RaiseImportError, Reraise, ReturnValue, Rot2, Rot3, SetAdd,
+            StoreAttr, StoreCell, StoreGlobal, StoreLocal, StoreLocalW, StoreSubscr, UnaryInvert, UnaryNeg, UnaryNot,
+            UnaryPos, UnpackEx, UnpackSequence,
         };
         Some(match self {
             // Stack operations
@@ -430,7 +453,8 @@ impl Opcode {
 
             // Variables - loads push, stores pop
             LoadLocal0 | LoadLocal1 | LoadLocal2 | LoadLocal3 => 1,
-            LoadLocal | LoadLocalW | LoadGlobal | LoadCell => 1,
+            LoadLocal | LoadLocalW | LoadLocalCallable | LoadLocalCallableW | LoadGlobal | LoadGlobalCallable
+            | LoadCell => 1,
             StoreLocal | StoreLocalW | StoreGlobal | StoreCell => -1,
             DeleteLocal => 0, // doesn't affect stack
 

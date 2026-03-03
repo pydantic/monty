@@ -16,7 +16,7 @@ use std::{
 
 use ahash::AHashMap;
 use monty::{
-    ExcType, ExternalResult, LimitedTracker, MontyException, MontyFuture, MontyObject, MontyRun, OsFunction,
+    ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, MontyRun, NameLookupResult, OsFunction,
     PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
 };
 use pyo3::{prelude::*, types::PyDict};
@@ -228,22 +228,6 @@ fn parse_ref_counts(s: &str) -> AHashMap<String, usize> {
     counts
 }
 
-/// External function names available in iter mode tests.
-///
-/// These functions are provided by the test runner when a test uses `# call-external`.
-const ITER_EXT_FUNCTIONS: &[&str] = &[
-    "add_ints",           // (a, b) -> a + b (integers)
-    "concat_strings",     // (a, b) -> a + b (strings)
-    "return_value",       // (x) -> x (identity)
-    "get_list",           // () -> [1, 2, 3]
-    "raise_error",        // (exc_type: str, message: str) -> raises exception
-    "make_point",         // () -> Dataclass Point(x=1, y=2) (immutable)
-    "make_mutable_point", // () -> Dataclass Point(x=1, y=2) (mutable)
-    "make_user",          // (name) -> Dataclass User(name=name, active=True) (immutable)
-    "make_empty",         // () -> Dataclass Empty() (immutable, no fields)
-    "async_call",         // (x) -> async: returns x (coroutine that returns its argument)
-];
-
 /// Python implementations of external functions for running iter mode tests in CPython.
 ///
 /// These implementations mirror the behavior of `dispatch_external_call` so that
@@ -289,7 +273,7 @@ fn ensure_python_modules_imported() {
 /// asynchronous calls (return a future that needs later resolution).
 enum DispatchResult {
     /// Synchronous result - pass directly to `state.run()`.
-    Sync(ExternalResult),
+    Sync(ExtFunctionResult),
     /// Asynchronous call - use `state.run_pending()` and resolve later.
     /// Contains the value to resolve the future with.
     Async(MontyObject),
@@ -432,7 +416,7 @@ fn dispatch_method_call(
     method_name: &str,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
-) -> ExternalResult {
+) -> ExtFunctionResult {
     let class_name = match args.first() {
         Some(MontyObject::Dataclass { name, .. }) => name.as_str(),
         _ => "<unknown>",
@@ -795,7 +779,7 @@ fn dispatch_os_call(
     function: OsFunction,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
-) -> ExternalResult {
+) -> ExtFunctionResult {
     // Handle GetEnviron first as it takes no path argument
     if function == OsFunction::GetEnviron {
         // Return the virtual environment as a dict
@@ -1115,7 +1099,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<()
     // Handle ref-count-return tests separately since they need run_ref_counts()
     #[cfg(feature = "ref-count-return")]
     if let Expectation::RefCounts(expected) = expectation {
-        match MontyRun::new(code.to_owned(), &test_name, vec![], vec![]) {
+        match MontyRun::new(code.to_owned(), &test_name, vec![]) {
             Ok(ex) => {
                 let result = ex.run_ref_counts(vec![]);
                 match result {
@@ -1165,7 +1149,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<()
         }
     }
 
-    match MontyRun::new(code.to_owned(), &test_name, vec![], vec![]) {
+    match MontyRun::new(code.to_owned(), &test_name, vec![]) {
         Ok(ex) => {
             let limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
             let result = ex.run(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout);
@@ -1309,9 +1293,7 @@ fn try_run_iter_test(path: &Path, code: &str, expectation: &Expectation) -> Resu
         });
     }
 
-    let ext_functions: Vec<String> = ITER_EXT_FUNCTIONS.iter().copied().map(str::to_string).collect();
-
-    let exec = match MontyRun::new(code.to_owned(), &test_name, vec![], ext_functions) {
+    let exec = match MontyRun::new(code.to_owned(), &test_name, vec![]) {
         Ok(e) => e,
         Err(parse_err) => {
             if let Expectation::Raise(expected) = expectation {
@@ -1459,43 +1441,36 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
 
         match progress {
             RunProgress::Complete(result) => return Ok(result),
-            RunProgress::FunctionCall {
-                function_name,
-                args,
-                kwargs,
-                call_id,
-                method_call,
-                state,
-            } => {
+            RunProgress::FunctionCall(call) => {
                 // Method calls on dataclasses are dispatched to the host.
                 // Dispatch known methods; return AttributeError for unknown ones.
-                if method_call {
-                    let result = dispatch_method_call(&function_name, &args, &kwargs);
-                    progress = state.run(result, &mut PrintWriter::Stdout)?;
+                if call.method_call {
+                    let result = dispatch_method_call(&call.function_name, &call.args, &call.kwargs);
+                    progress = call.resume(result, &mut PrintWriter::Stdout)?;
                     continue;
                 }
-                let dispatch_result = dispatch_external_call(&function_name, args);
+                let dispatch_result = dispatch_external_call(&call.function_name, call.args.clone());
                 match dispatch_result {
                     DispatchResult::Sync(return_value) => {
-                        progress = state.run(return_value, &mut PrintWriter::Stdout)?;
+                        progress = call.resume(return_value, &mut PrintWriter::Stdout)?;
                     }
                     DispatchResult::Async(result_value) => {
                         // Store the result for later resolution
-                        pending_results.push((call_id, result_value));
+                        pending_results.push((call.call_id, result_value));
                         // Continue execution with a pending future
-                        progress = state.run(MontyFuture, &mut PrintWriter::Stdout)?;
+                        progress = call.resume_pending(&mut PrintWriter::Stdout)?;
                     }
                 }
             }
             RunProgress::ResolveFutures(state) => {
                 // Resolve all pending futures that we have results for
-                let results: Vec<(u32, ExternalResult)> = state
+                let results: Vec<(u32, ExtFunctionResult)> = state
                     .pending_call_ids()
                     .iter()
                     .filter_map(|p| {
                         pending_results.iter().position(|(id, _)| id == p).map(|idx| {
                             let (call_id, value) = pending_results.remove(idx);
-                            (call_id, ExternalResult::Return(value))
+                            (call_id, ExtFunctionResult::Return(value))
                         })
                     })
                     .collect();
@@ -1508,15 +1483,36 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
 
                 progress = state.resume(results, &mut PrintWriter::Stdout)?;
             }
-            RunProgress::OsCall {
-                function,
-                args,
-                kwargs,
-                state,
-                ..
-            } => {
-                let result = dispatch_os_call(function, &args, &kwargs);
-                progress = state.run(result, &mut PrintWriter::Stdout)?;
+            RunProgress::NameLookup(lookup) => {
+                let result = match lookup.name.as_str() {
+                    // External functions — resolved as callable Function objects
+                    "add_ints" | "concat_strings" | "return_value" | "get_list" | "raise_error" | "make_point"
+                    | "make_mutable_point" | "make_user" | "make_empty" | "async_call" => {
+                        NameLookupResult::Value(MontyObject::Function {
+                            name: lookup.name.clone(),
+                            docstring: None,
+                        })
+                    }
+                    // Non-function constants — resolved as plain values
+                    "CONST_INT" => NameLookupResult::Value(MontyObject::Int(42)),
+                    "CONST_STR" => NameLookupResult::Value(MontyObject::String("hello".to_string())),
+                    #[expect(clippy::approx_constant, reason = "3.14 is the intended test value")]
+                    "CONST_FLOAT" => NameLookupResult::Value(MontyObject::Float(3.14)),
+                    "CONST_BOOL" => NameLookupResult::Value(MontyObject::Bool(true)),
+                    "CONST_LIST" => NameLookupResult::Value(MontyObject::List(vec![
+                        MontyObject::Int(1),
+                        MontyObject::Int(2),
+                        MontyObject::Int(3),
+                    ])),
+                    "CONST_NONE" => NameLookupResult::Value(MontyObject::None),
+                    // Unknown names → NameError
+                    _ => NameLookupResult::Undefined,
+                };
+                progress = lookup.resume(result, &mut PrintWriter::Stdout)?;
+            }
+            RunProgress::OsCall(call) => {
+                let result = dispatch_os_call(call.function, &call.args, &call.kwargs);
+                progress = call.resume(result, &mut PrintWriter::Stdout)?;
             }
         }
     }

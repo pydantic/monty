@@ -132,3 +132,31 @@ assert s[i] == 'b', 'getitem with variable index'
 s = 'abc'
 assert s[False] == 'a', 'str getitem with False'
 assert s[True] == 'b', 'str getitem with True'
+
+# === Sorting and comparisons ===
+assert 'a' < 'b', 'str < str'
+assert 'b' > 'a', 'str > str'
+assert 'a' <= 'a', 'str <= str equal'
+assert 'a' <= 'b', 'str <= str less'
+assert 'b' >= 'b', 'str >= str equal'
+assert 'b' >= 'a', 'str >= str greater'
+assert not ('b' < 'a'), 'str not < str'
+assert not ('a' > 'b'), 'str not > str'
+
+# Different lengths
+assert 'a' < 'aa', 'shorter prefix is less'
+assert 'ab' < 'b', 'first char decides'
+assert '' < 'a', 'empty string is less'
+assert 'abc' > 'ab', 'longer string with same prefix is greater'
+
+# Non-ASCII comparisons (by Unicode code point)
+assert 'café' < 'cafë', 'non-ascii comparison (é < ë)'
+assert 'z' < 'é', 'ascii < non-ascii (z < é)'
+assert '日' < '本', 'CJK comparison by code point'
+assert '😀' < '😁', 'emoji comparison by code point'
+
+# Sorting
+assert sorted('cba') == ['a', 'b', 'c'], 'sorted string'
+assert sorted(['b', 'c', 'a']) == ['a', 'b', 'c'], 'sorted list of strings'
+assert sorted(['café', 'cafë', 'cafa']) == ['cafa', 'café', 'cafë'], 'sorted non-ascii strings'
+assert sorted(['bb', 'a', 'ba']) == ['a', 'ba', 'bb'], 'sorted different length strings'

@@ -31,6 +31,7 @@ num-traits = { workspace = true }
 num-integer = { workspace = true }
 smallvec = { version = "1.13", features = ["serde"] }
 fancy-regex = { workspace = true }
+itertools = "0.14.0"
 
 [features]
 # ref-count-return changes behavior to return information on reference counts to check they're correct
@@ -50,6 +51,9 @@ datatest-stable = "0.2"
 serde_json = "1.0"
 pprof = { version = "0.15", features = ["flamegraph", "criterion"] }
 similar = "2.7.0"
+
+[build-dependencies]
+pyo3-build-config = { version = "0.28", features = ["resolve-config"] }
 
 [[bench]]
 name = "main"

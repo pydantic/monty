@@ -391,6 +391,45 @@ impl CodeBuilder {
         }
     }
 
+    /// Emits a `LoadLocalCallable` instruction for call-context loads.
+    ///
+    /// Unlike `emit_load_local`, this does NOT use specialized 0-3 variants since
+    /// external function calls are rare enough that the optimization isn't worth
+    /// the extra opcode slots. The `name_id` is encoded directly in the operand
+    /// to avoid needing to look up the name from the code's local_names array.
+    pub fn emit_load_local_callable(&mut self, slot: u16, name_id: StringId) {
+        let name_id_u16 = u16::try_from(name_id.index()).expect("name_id exceeds u16");
+        if let Ok(s) = u8::try_from(slot) {
+            // Emit LoadLocalCallable with u8 slot + u16 name_id
+            self.record_location();
+            self.bytecode.push(Opcode::LoadLocalCallable as u8);
+            self.bytecode.push(s);
+            self.bytecode.extend_from_slice(&name_id_u16.to_le_bytes());
+            self.adjust_stack(1);
+        } else {
+            // Emit LoadLocalCallableW with u16 slot + u16 name_id
+            self.record_location();
+            self.bytecode.push(Opcode::LoadLocalCallableW as u8);
+            self.bytecode.extend_from_slice(&slot.to_le_bytes());
+            self.bytecode.extend_from_slice(&name_id_u16.to_le_bytes());
+            self.adjust_stack(1);
+        }
+    }
+
+    /// Emits a `LoadGlobalCallable` instruction for call-context loads.
+    ///
+    /// The `name_id` is encoded directly in the operand to avoid the ambiguity
+    /// of looking up global names from a function's local_names array (global slots
+    /// and local slots use different namespaces).
+    pub fn emit_load_global_callable(&mut self, slot: u16, name_id: StringId) {
+        let name_id_u16 = u16::try_from(name_id.index()).expect("name_id exceeds u16");
+        self.record_location();
+        self.bytecode.push(Opcode::LoadGlobalCallable as u8);
+        self.bytecode.extend_from_slice(&slot.to_le_bytes());
+        self.bytecode.extend_from_slice(&name_id_u16.to_le_bytes());
+        self.adjust_stack(1);
+    }
+
     /// Emits `StoreLocal`, using wide variant for slots > 255.
     pub fn emit_store_local(&mut self, slot: u16) {
         if let Ok(s) = u8::try_from(slot) {

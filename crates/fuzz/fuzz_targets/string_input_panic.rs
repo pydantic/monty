@@ -28,7 +28,6 @@ fuzz_target!(|code: String| {
         code.to_owned(),
         "fuzz.py",
         vec![], // no inputs
-        vec![], // no external functions
     ) else {
         return; // Parse errors are expected for random input
     };

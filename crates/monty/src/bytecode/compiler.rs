@@ -885,13 +885,32 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// Compiles loading a variable with position tracking for proper traceback ranges.
+    /// Compiles loading a variable in call context (e.g., `foo()` loads `foo`).
     ///
-    /// Sets the identifier's position before loading, so NameErrors show the correct caret.
-    fn compile_name_with_position(&mut self, ident: &Identifier) {
-        // Set the identifier's position for proper traceback caret range
-        self.code.set_location(ident.position, None);
-        self.compile_name(ident);
+    /// For `LocalUnassigned` and `Global` scopes, emits callable-aware load opcodes
+    /// that push `ExtFunction(name_id)` for undefined names instead of yielding
+    /// `NameLookup`. This allows execution to reach `CallFunction`, which naturally
+    /// yields `FunctionCall` — giving the host a chance to handle external function calls.
+    ///
+    /// For `Local` and `Cell` scopes, delegates to `compile_name` since those can't
+    /// be external functions (they're always defined locally or captured).
+    fn compile_name_callable(&mut self, ident: &Identifier) {
+        let slot = u16::try_from(ident.namespace_id().index()).expect("local slot exceeds u16");
+        match ident.scope {
+            NameScope::LocalUnassigned => {
+                // Undefined reference in call context - use callable-aware load
+                self.code.register_local_name(slot, ident.name_id);
+                self.code.emit_load_local_callable(slot, ident.name_id);
+            }
+            NameScope::Global => {
+                // Global scope - name_id is encoded in the operand because global slot
+                // indices are in a different namespace from local slots, so looking up
+                // the name from the current frame's local_names would be incorrect
+                self.code.emit_load_global_callable(slot, ident.name_id);
+            }
+            // Local and Cell can't be external functions - use regular load
+            NameScope::Local | NameScope::Cell => self.compile_name(ident),
+        }
     }
 
     /// Compiles storing the top of stack to a variable.
@@ -1132,8 +1151,10 @@ impl<'a> Compiler<'a> {
                 self.code.emit_u16(Opcode::LoadConst, idx);
             }
             Callable::Name(ident) => {
-                // Use identifier position so NameError shows caret under just the name
-                self.compile_name_with_position(ident);
+                // Use callable-aware load opcodes so undefined names produce ExtFunction
+                // instead of yielding NameLookup, allowing CallFunction to yield FunctionCall
+                self.code.set_location(ident.position, None);
+                self.compile_name_callable(ident);
             }
         }
 

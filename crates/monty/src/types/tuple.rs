@@ -29,14 +29,16 @@ pub(crate) type TupleVec = SmallVec<[Value; TUPLE_INLINE_CAPACITY]>;
 use super::{
     MontyIter, PyTrait,
     list::{get_slice_items, repr_sequence_fmt},
+    py_trait::AttrCallResult,
 };
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings},
-    resource::{DepthGuard, ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker},
     types::Type,
     value::{EitherStr, Value},
 };
@@ -99,16 +101,16 @@ impl Tuple {
     ///
     /// - `tuple()` with no args returns an empty tuple (singleton)
     /// - `tuple(iterable)` creates a tuple from any iterable (list, tuple, range, str, bytes, dict)
-    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("tuple", heap)?;
+    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let value = args.get_zero_one_arg("tuple", vm.heap)?;
         match value {
             None => {
                 // Use empty tuple singleton
-                Ok(heap.get_empty_tuple())
+                Ok(vm.heap.get_empty_tuple())
             }
             Some(v) => {
-                let items = MontyIter::new(v, heap, interns)?.collect(heap, interns)?;
-                Ok(allocate_tuple(items, heap)?)
+                let items = MontyIter::new(v, vm)?.collect(vm)?;
+                Ok(allocate_tuple(items, vm.heap)?)
             }
         }
     }
@@ -201,22 +203,20 @@ impl PyTrait for Tuple {
         &self,
         other: &Self,
         heap: &mut Heap<impl ResourceTracker>,
-        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> Result<bool, ResourceError> {
         if self.items.len() != other.items.len() {
             return Ok(false);
         }
-        guard.increase_err()?;
+        let token = heap.incr_recursion_depth()?;
+        defer_drop!(token, heap);
 
         for (i1, i2) in self.items.iter().zip(&other.items) {
             heap.check_time()?;
-            if !i1.py_eq(i2, heap, guard, interns)? {
-                guard.decrease();
+            if !i1.py_eq(i2, heap, interns)? {
                 return Ok(false);
             }
         }
-        guard.decrease();
         Ok(true)
     }
 
@@ -253,20 +253,22 @@ impl PyTrait for Tuple {
 
     fn py_call_attr(
         &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
+        _self_id: HeapId,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
+    ) -> RunResult<AttrCallResult> {
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
         let args_guard = HeapGuard::new(args, heap);
         match attr.static_string() {
             Some(StaticStrings::Index) => {
                 let (args, heap) = args_guard.into_parts();
-                tuple_index(self, args, heap, interns)
+                tuple_index(self, args, heap, interns).map(AttrCallResult::Value)
             }
             Some(StaticStrings::Count) => {
                 let (args, heap) = args_guard.into_parts();
-                tuple_count(self, args, heap, interns)
+                tuple_count(self, args, heap, interns).map(AttrCallResult::Value)
             }
             _ => Err(ExcType::attribute_error(Type::Tuple, attr.as_str(interns))),
         }
@@ -281,10 +283,9 @@ impl PyTrait for Tuple {
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result {
-        repr_sequence_fmt('(', ')', &self.items, f, heap, heap_ids, guard, interns)
+        repr_sequence_fmt('(', ')', &self.items, f, heap, heap_ids, interns)
     }
 }
 
@@ -317,10 +318,9 @@ fn tuple_index(
         other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
     };
 
-    let mut guard = DepthGuard::default();
     // Search for the value in the specified range
     for (i, item) in tuple.as_slice()[start..end].iter().enumerate() {
-        if value.py_eq(item, heap, &mut guard, interns)? {
+        if value.py_eq(item, heap, interns)? {
             let idx = i64::try_from(start + i).expect("index exceeds i64::MAX");
             return Ok(Value::Int(idx));
         }
@@ -341,10 +341,9 @@ fn tuple_count(
     let value = args.get_one_arg("tuple.count", heap)?;
     defer_drop!(value, heap);
 
-    let mut guard = DepthGuard::default();
     let mut count = 0usize;
     for item in tuple.as_slice() {
-        if value.py_eq(item, heap, &mut guard, interns)? {
+        if value.py_eq(item, heap, interns)? {
             count += 1;
         }
     }

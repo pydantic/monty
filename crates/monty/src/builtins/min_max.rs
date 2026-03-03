@@ -4,11 +4,11 @@ use std::cmp::Ordering;
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapGuard},
-    intern::Interns,
-    resource::{DepthGuard, ResourceTracker},
+    resource::ResourceTracker,
     types::{MontyIter, PyTrait},
     value::Value,
 };
@@ -19,8 +19,8 @@ use crate::{
 /// Supports two forms:
 /// - `min(iterable)` - returns smallest item from iterable
 /// - `min(arg1, arg2, ...)` - returns smallest of the arguments
-pub fn builtin_min(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    builtin_min_max(heap, args, interns, true)
+pub fn builtin_min(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    builtin_min_max(vm, args, true)
 }
 
 /// Implementation of the max() builtin function.
@@ -29,25 +29,20 @@ pub fn builtin_min(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
 /// Supports two forms:
 /// - `max(iterable)` - returns largest item from iterable
 /// - `max(arg1, arg2, ...)` - returns largest of the arguments
-pub fn builtin_max(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    builtin_min_max(heap, args, interns, false)
+pub fn builtin_max(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    builtin_min_max(vm, args, false)
 }
 
 /// Shared implementation for min() and max().
 ///
 /// When `is_min` is true, returns the minimum; otherwise returns the maximum.
-fn builtin_min_max(
-    heap: &mut Heap<impl ResourceTracker>,
-    args: ArgValues,
-    interns: &Interns,
-    is_min: bool,
-) -> RunResult<Value> {
+fn builtin_min_max(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, is_min: bool) -> RunResult<Value> {
     let func_name = if is_min { "min" } else { "max" };
     let (positional, kwargs) = args.into_parts();
-    defer_drop_mut!(positional, heap);
+    defer_drop_mut!(positional, vm);
 
     // TODO: support kwargs (key, default)
-    kwargs.not_supported_yet(func_name, heap)?;
+    kwargs.not_supported_yet(func_name, vm.heap)?;
 
     let Some(first_arg) = positional.next() else {
         return Err(SimpleException::new_msg(
@@ -60,10 +55,10 @@ fn builtin_min_max(
     // decide what to do based on remaining arguments
     if positional.len() == 0 {
         // Single argument: iterate over it
-        let iter = MontyIter::new(first_arg, heap, interns)?;
-        defer_drop_mut!(iter, heap);
+        let iter = MontyIter::new(first_arg, vm)?;
+        defer_drop_mut!(iter, vm);
 
-        let Some(result) = iter.for_next(heap, interns)? else {
+        let Some(result) = iter.for_next(vm)? else {
             return Err(SimpleException::new_msg(
                 ExcType::ValueError,
                 format!("{func_name}() iterable argument is empty"),
@@ -71,15 +66,14 @@ fn builtin_min_max(
             .into());
         };
 
-        let mut result_guard = HeapGuard::new(result, heap);
-        let (result, heap) = result_guard.as_parts_mut();
-        let mut guard = DepthGuard::default();
+        let mut result_guard = HeapGuard::new(result, vm);
+        let (result, vm) = result_guard.as_parts_mut();
 
-        while let Some(item) = iter.for_next(heap, interns)? {
-            defer_drop_mut!(item, heap);
+        while let Some(item) = iter.for_next(vm)? {
+            defer_drop_mut!(item, vm);
 
-            let Some(ordering) = result.py_cmp(item, heap, &mut guard, interns)? else {
-                return Err(ord_not_supported(result, item, heap));
+            let Some(ordering) = result.py_cmp(item, vm.heap, vm.interns)? else {
+                return Err(ord_not_supported(result, item, vm.heap));
             };
 
             if (is_min && ordering == Ordering::Greater) || (!is_min && ordering == Ordering::Less) {
@@ -90,15 +84,14 @@ fn builtin_min_max(
         Ok(result_guard.into_inner())
     } else {
         // Multiple arguments: compare them directly
-        let mut result_guard = HeapGuard::new(first_arg, heap);
-        let (result, heap) = result_guard.as_parts_mut();
-        let mut guard = DepthGuard::default();
+        let mut result_guard = HeapGuard::new(first_arg, vm);
+        let (result, vm) = result_guard.as_parts_mut();
 
         for item in positional {
-            defer_drop_mut!(item, heap);
+            defer_drop_mut!(item, vm);
 
-            let Some(ordering) = result.py_cmp(item, heap, &mut guard, interns)? else {
-                return Err(ord_not_supported(result, item, heap));
+            let Some(ordering) = result.py_cmp(item, vm.heap, vm.interns)? else {
+                return Err(ord_not_supported(result, item, vm.heap));
             };
 
             if (is_min && ordering == Ordering::Greater) || (!is_min && ordering == Ordering::Less) {

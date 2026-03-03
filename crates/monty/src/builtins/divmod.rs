@@ -6,9 +6,10 @@ use smallvec::smallvec;
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::{Heap, HeapData},
+    heap::HeapData,
     resource::{ResourceTracker, check_div_size},
     types::{LongInt, PyTrait, allocate_tuple},
     value::{Value, floor_divmod},
@@ -18,12 +19,13 @@ use crate::{
 ///
 /// Returns a tuple (quotient, remainder) from integer division.
 /// Equivalent to (a // b, a % b).
-pub fn builtin_divmod(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (a, b) = args.get_two_args("divmod", heap)?;
+pub fn builtin_divmod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (a, b) = args.get_two_args("divmod", vm.heap)?;
     let a = super::round::normalize_bool_to_int(a);
     let b = super::round::normalize_bool_to_int(b);
-    defer_drop!(a, heap);
-    defer_drop!(b, heap);
+    defer_drop!(a, vm);
+    defer_drop!(b, vm);
+    let heap = &mut *vm.heap;
 
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => {

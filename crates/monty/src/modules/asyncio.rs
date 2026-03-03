@@ -1,6 +1,7 @@
 //! Implementation of the `asyncio` module.
 //!
-//! Provides a minimal implementation of Python's `asyncio` module with only:
+//! Provides a minimal implementation of Python's `asyncio` module with:
+//! - `run(coro)`: Runs a coroutine to completion, equivalent to `await coro`
 //! - `gather(*awaitables)`: Collects coroutines for concurrent execution
 //!
 //! Other asyncio functions (`create_task`, `sleep`, `wait`, etc.) are not implemented.
@@ -24,6 +25,7 @@ use crate::{
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum AsyncioFunctions {
     Gather,
+    Run,
 }
 
 /// Creates the `asyncio` module and allocates it on the heap.
@@ -39,10 +41,15 @@ pub(crate) enum AsyncioFunctions {
 pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Asyncio);
 
-    // asyncio.gather - the only function we implement
     module.set_attr(
         StaticStrings::Gather,
         Value::ModuleFunction(ModuleFunctions::Asyncio(AsyncioFunctions::Gather)),
+        heap,
+        interns,
+    );
+    module.set_attr(
+        StaticStrings::Run,
+        Value::ModuleFunction(ModuleFunctions::Asyncio(AsyncioFunctions::Run)),
         heap,
         interns,
     );
@@ -56,7 +63,20 @@ pub(super) fn call(
 ) -> RunResult<AttrCallResult> {
     match functions {
         AsyncioFunctions::Gather => gather(heap, args).map(AttrCallResult::Value),
+        AsyncioFunctions::Run => run(heap, args),
     }
+}
+
+/// Implementation of `asyncio.run(coro)`.
+///
+/// Runs a single coroutine to completion, equivalent to `await coro` at the top level.
+/// Accepts exactly one positional argument (the coroutine) and no keyword arguments.
+///
+/// Returns `AttrCallResult::AwaitValue` so the VM executes `exec_get_awaitable` on
+/// the value, which handles validation that it's actually a coroutine/awaitable.
+fn run(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<AttrCallResult> {
+    let coroutine = args.get_one_arg("asyncio.run", heap)?;
+    Ok(AttrCallResult::AwaitValue(coroutine))
 }
 
 /// Implementation of `asyncio.gather(*awaitables)`.

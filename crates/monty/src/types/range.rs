@@ -9,11 +9,12 @@ use ahash::AHashSet;
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::Interns,
-    resource::{DepthGuard, ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker},
     types::{PyTrait, Type},
     value::Value,
 };
@@ -116,7 +117,8 @@ impl Range {
     /// - `range(stop)` - range from 0 to stop
     /// - `range(start, stop)` - range from start to stop
     /// - `range(start, stop, step)` - range with custom step
-    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let heap = &mut *vm.heap;
         let pos_args = args.into_pos_only("range", heap)?;
         defer_drop!(pos_args, heap);
 
@@ -246,7 +248,6 @@ impl PyTrait for Range {
         &self,
         other: &Self,
         _heap: &mut Heap<impl ResourceTracker>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> Result<bool, ResourceError> {
         // Compare ranges by their actual sequences, not parameters.
@@ -272,7 +273,6 @@ impl PyTrait for Range {
         f: &mut impl Write,
         _heap: &Heap<impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> std::fmt::Result {
         if self.step == 1 {

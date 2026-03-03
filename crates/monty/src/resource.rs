@@ -96,87 +96,6 @@ fn estimate_bits_to_bytes(bits: u64) -> usize {
     usize::try_from(bits.saturating_add(7) / 8).unwrap_or(usize::MAX)
 }
 
-/// Maximum recursion depth for data structure operations (repr, eq, hash, etc.).
-///
-/// Separate from the function call stack limit. This protects against stack overflow
-/// when traversing deeply nested structures.
-///
-/// Lower in debug mode to avoid stack overflow (debug builds use more stack space
-/// per call frame).
-#[cfg(debug_assertions)]
-pub const MAX_DATA_RECURSION_DEPTH: u16 = 100;
-
-/// Maximum recursion depth for data structure operations (repr, eq, hash, etc.).
-///
-/// Separate from the function call stack limit. This protects against stack overflow
-/// when traversing deeply nested structures.
-#[cfg(not(debug_assertions))]
-pub const MAX_DATA_RECURSION_DEPTH: u16 = 500;
-
-/// Tracks recursion depth for container operations (repr, eq, cmp, hash).
-///
-/// The guard tracks remaining depth rather than current depth, making the
-/// check a simple decrement-and-check operation.
-#[derive(Debug, Clone)]
-pub struct DepthGuard {
-    /// Remaining depth before limit is exceeded.
-    depth_remaining: u16,
-}
-
-impl DepthGuard {
-    /// Increases recursion depth, returning `true` if within limits, `false` if exceeded.
-    ///
-    /// When this returns `true`, you MUST call `decrease()` on every return path.
-    /// When it returns `false`, the depth was not incremented, so `decrease()` must NOT be called.
-    ///
-    /// Use this in contexts like `py_repr_fmt` where exceeding the limit should
-    /// produce a truncated representation (e.g. `...`) rather than an error.
-    #[inline]
-    pub fn increase(&mut self) -> bool {
-        if let Some(decr) = self.depth_remaining.checked_sub(1) {
-            self.depth_remaining = decr;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Increases recursion depth, returning `Err(ResourceError::Recursion)` if
-    /// the limit is exceeded.
-    ///
-    /// MUST call `decrease()` on every return path after a successful call.
-    /// For complex control flow with multiple exit points, use the `*_inner` pattern
-    /// where the outer function handles `increase_err()/decrease()` and delegates to
-    /// an inner function for the actual implementation.
-    #[inline]
-    pub fn increase_err(&mut self) -> Result<(), ResourceError> {
-        if self.increase() {
-            Ok(())
-        } else {
-            Err(ResourceError::Recursion {
-                limit: MAX_DATA_RECURSION_DEPTH as usize,
-                depth: MAX_DATA_RECURSION_DEPTH as usize + 1,
-            })
-        }
-    }
-
-    /// Decreases recursion depth (must be called after a successful `increase()` or `increase_err()`).
-    ///
-    /// This restores the guard's remaining depth after exiting a level of recursion.
-    #[inline]
-    pub fn decrease(&mut self) {
-        self.depth_remaining += 1;
-    }
-}
-
-impl Default for DepthGuard {
-    fn default() -> Self {
-        Self {
-            depth_remaining: MAX_DATA_RECURSION_DEPTH,
-        }
-    }
-}
-
 /// Error returned when a resource limit is exceeded during execution.
 ///
 /// This allows the sandbox to enforce strict limits on allocation count,
@@ -258,7 +177,14 @@ impl ResourceError {
 
 impl From<ResourceError> for RunError {
     fn from(err: ResourceError) -> Self {
-        Self::UncatchableExc(err.into_exception(None))
+        // RecursionError is catchable in CPython, so it must be catchable here too.
+        // Other resource errors (memory, time, allocation) remain uncatchable to prevent
+        // untrusted code from suppressing resource limit violations.
+        if matches!(err, ResourceError::Recursion { .. }) {
+            Self::Exc(err.into_exception(None))
+        } else {
+            Self::UncatchableExc(err.into_exception(None))
+        }
     }
 }
 

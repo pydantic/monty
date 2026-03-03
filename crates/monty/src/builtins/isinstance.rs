@@ -3,6 +3,7 @@
 use super::Builtins;
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData},
@@ -14,10 +15,11 @@ use crate::{
 /// Implementation of the isinstance() builtin function.
 ///
 /// Checks if an object is an instance of a class or a tuple of classes.
-pub fn builtin_isinstance(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (obj, classinfo) = args.get_two_args("isinstance", heap)?;
-    defer_drop!(obj, heap);
-    defer_drop!(classinfo, heap);
+pub fn builtin_isinstance(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let (obj, classinfo) = args.get_two_args("isinstance", vm.heap)?;
+    defer_drop!(obj, vm);
+    defer_drop!(classinfo, vm);
+    let heap = &mut *vm.heap;
 
     let obj_type = obj.py_type(heap);
 

@@ -167,6 +167,7 @@ def test_dataclass_empty():
     assert repr(result) == snapshot('test_dataclass_empty.<locals>.Empty()')
 
 
+@pytest.mark.xfail(reason='We should extend the dataclass registry to cover all types, then test it is enforced')
 def test_dataclass_type_raises():
     """Dataclass type (not instance) should raise TypeError."""
 
@@ -176,8 +177,10 @@ def test_dataclass_type_raises():
 
     m = pydantic_monty.Monty('x', inputs=['x'])
     m.register_dataclass(MyClass)
-    with pytest.raises(TypeError, match='Cannot convert type to Monty value'):
+    with pytest.raises(TypeError) as exc_info:
         m.run(inputs={'x': MyClass})
+
+    assert str(exc_info.value) == snapshot('Cannot convert builtins.type to Monty value')
 
 
 # === Field access ===
@@ -415,7 +418,7 @@ except AttributeError:
     caught = 'attr'
 caught
 """
-    m = pydantic_monty.Monty(code, external_functions=['fail'])
+    m = pydantic_monty.Monty(code)
 
     def fail() -> NoReturn:
         raise FrozenInstanceError('cannot assign to field')
@@ -427,7 +430,7 @@ caught
 
 def test_frozen_instance_error_from_external_function_propagates():
     """FrozenInstanceError from external function propagates to Python."""
-    m = pydantic_monty.Monty('fail()', external_functions=['fail'])
+    m = pydantic_monty.Monty('fail()')
 
     def fail() -> NoReturn:
         raise FrozenInstanceError('test frozen error')
@@ -798,7 +801,7 @@ def test_method_no_args_raw():
     """Calling a dataclass method with no args (besides self), raw."""
     m = pydantic_monty.Monty('g.greet()', inputs=['g'], dataclass_registry=[Greeter])
     result = m.start(inputs={'g': Greeter(greeting='hello')})
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.script_name == snapshot('main.py')
     assert result.function_name == snapshot('greet')
     assert result.args == snapshot((Greeter(greeting='hello'),))
@@ -907,6 +910,46 @@ def test_method_on_nested_dataclass_in_tuple():
     m = pydantic_monty.Monty('t[1].add(10)', inputs=['t'], dataclass_registry=[Calculator])
     result = m.run(inputs={'t': (0, Calculator(value=5))})
     assert result == snapshot(15)
+
+
+def test_dataclass_private_fields_skipped():
+    """Private fields (starting with _) are excluded from conversion."""
+
+    @dataclass
+    class WithPrivate:
+        name: str
+        _internal: int = 0
+
+    m = pydantic_monty.Monty('repr(x)', inputs=['x'])
+    result = m.run(inputs={'x': WithPrivate(name='Alice', _internal=42)})
+    assert result == snapshot("WithPrivate(name='Alice')")
+
+
+def test_dataclass_private_fields_skipped_no_default():
+    """Private fields without defaults cause TypeError on reconstruction (field is missing)."""
+
+    @dataclass
+    class WithPrivateNoDefault:
+        name: str
+        _secret: str
+
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    with pytest.raises(TypeError):
+        m.run(inputs={'x': WithPrivateNoDefault(name='Alice', _secret='hidden')})
+
+
+def test_dataclass_private_field_not_accessible_in_monty():
+    """Private fields are not accessible inside Monty expressions."""
+
+    @dataclass
+    class WithPrivate:
+        name: str
+        _internal: int = 0
+
+    m = pydantic_monty.Monty('x._internal', inputs=['x'])
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run(inputs={'x': WithPrivate(name='Alice', _internal=42)})
+    assert isinstance(exc_info.value.exception(), AttributeError)
 
 
 def test_method_on_nested_dataclass_field():

@@ -8,7 +8,7 @@ import { isRuntimeError } from './exceptions.spec'
 // =============================================================================
 
 test('external function no args', (t) => {
-  const m = new Monty('noop()', { externalFunctions: ['noop'] })
+  const m = new Monty('noop()')
 
   const noop = (...args: unknown[]) => {
     t.deepEqual(args, [])
@@ -20,7 +20,7 @@ test('external function no args', (t) => {
 })
 
 test('external function positional args', (t) => {
-  const m = new Monty('func(1, 2, 3)', { externalFunctions: ['func'] })
+  const m = new Monty('func(1, 2, 3)')
 
   const func = (...args: unknown[]) => {
     t.deepEqual(args, [1, 2, 3])
@@ -31,7 +31,7 @@ test('external function positional args', (t) => {
 })
 
 test('external function kwargs only', (t) => {
-  const m = new Monty('func(a=1, b="two")', { externalFunctions: ['func'] })
+  const m = new Monty('func(a=1, b="two")')
 
   const func = (...args: unknown[]) => {
     // kwargs are passed as the last argument as an object
@@ -43,7 +43,7 @@ test('external function kwargs only', (t) => {
 })
 
 test('external function mixed args kwargs', (t) => {
-  const m = new Monty('func(1, 2, x="hello", y=True)', { externalFunctions: ['func'] })
+  const m = new Monty('func(1, 2, x="hello", y=True)')
 
   const func = (...args: unknown[]) => {
     // positional args followed by kwargs object
@@ -55,7 +55,7 @@ test('external function mixed args kwargs', (t) => {
 })
 
 test('external function complex types', (t) => {
-  const m = new Monty('func([1, 2], {"key": "value"})', { externalFunctions: ['func'] })
+  const m = new Monty('func([1, 2], {"key": "value"})')
 
   const func = (...args: unknown[]) => {
     t.deepEqual(args[0], [1, 2])
@@ -69,7 +69,7 @@ test('external function complex types', (t) => {
 })
 
 test('external function returns none', (t) => {
-  const m = new Monty('do_nothing()', { externalFunctions: ['do_nothing'] })
+  const m = new Monty('do_nothing()')
 
   const do_nothing = () => {
     // returns undefined which becomes None
@@ -79,7 +79,7 @@ test('external function returns none', (t) => {
 })
 
 test('external function returns complex type', (t) => {
-  const m = new Monty('get_data()', { externalFunctions: ['get_data'] })
+  const m = new Monty('get_data()')
 
   const get_data = () => {
     return { a: [1, 2, 3], b: { nested: true } }
@@ -99,7 +99,7 @@ test('external function returns complex type', (t) => {
 // =============================================================================
 
 test('multiple external functions', (t) => {
-  const m = new Monty('add(1, 2) + mul(3, 4)', { externalFunctions: ['add', 'mul'] })
+  const m = new Monty('add(1, 2) + mul(3, 4)')
 
   const add = (a: number, b: number) => {
     t.is(a, 1)
@@ -118,7 +118,7 @@ test('multiple external functions', (t) => {
 })
 
 test('external function called multiple times', (t) => {
-  const m = new Monty('counter() + counter() + counter()', { externalFunctions: ['counter'] })
+  const m = new Monty('counter() + counter() + counter()')
 
   let callCount = 0
 
@@ -133,7 +133,7 @@ test('external function called multiple times', (t) => {
 })
 
 test('external function with input', (t) => {
-  const m = new Monty('process(x)', { inputs: ['x'], externalFunctions: ['process'] })
+  const m = new Monty('process(x)', { inputs: ['x'] })
 
   const process = (x: number) => {
     t.is(x, 5)
@@ -147,11 +147,11 @@ test('external function with input', (t) => {
 // Error handling tests
 // =============================================================================
 
-test('external function not provided raises', (t) => {
-  const m = new Monty('missing()', { externalFunctions: ['missing'] })
+test('undeclared external function raises name error', (t) => {
+  const m = new Monty('missing()')
 
-  const error = t.throws(() => m.run(), { message: /no externalFunctions provided/i })
-  t.truthy(error)
+  const error = t.throws(() => m.run(), isRuntimeError)
+  t.is(error.message, "NameError: name 'missing' is not defined")
 })
 
 test('undeclared function raises name error', (t) => {
@@ -162,7 +162,7 @@ test('undeclared function raises name error', (t) => {
 })
 
 test('external function raises exception', (t) => {
-  const m = new Monty('fail()', { externalFunctions: ['fail'] })
+  const m = new Monty('fail()')
 
   const fail = () => {
     const error = new Error('intentional error')
@@ -175,14 +175,15 @@ test('external function raises exception', (t) => {
   t.true(error.message.includes('intentional error'))
 })
 
-test('external function wrong name raises', (t) => {
-  const m = new Monty('foo()', { externalFunctions: ['foo'] })
+test('external function wrong name raises name error', (t) => {
+  // When 'foo' is called but only 'bar' is provided at runtime, foo is a NameError
+  // because no externalFunctions are declared in the constructor
+  const m = new Monty('foo()')
 
   const bar = () => 1
 
   const error = t.throws(() => m.run({ externalFunctions: { bar } }), isRuntimeError)
-  t.true(error.message.includes('KeyError'))
-  t.true(error.message.includes('foo'))
+  t.is(error.message, "NameError: name 'foo' is not defined")
 })
 
 test('external function exception caught by try except', (t) => {
@@ -193,7 +194,7 @@ except ValueError:
     caught = True
 caught
 `
-  const m = new Monty(code, { externalFunctions: ['fail'] })
+  const m = new Monty(code)
 
   const fail = () => {
     const error = new Error('caught error')
@@ -205,7 +206,7 @@ caught
 })
 
 test('external function exception type preserved', (t) => {
-  const m = new Monty('fail()', { externalFunctions: ['fail'] })
+  const m = new Monty('fail()')
 
   const fail = () => {
     const error = new Error('type error message')
@@ -241,7 +242,7 @@ const exceptionTypes = [
 
 for (const exceptionType of exceptionTypes) {
   test(`external function exception hierarchy - ${exceptionType}`, (t) => {
-    const m = new Monty('fail()', { externalFunctions: ['fail'] })
+    const m = new Monty('fail()')
 
     const fail = () => {
       const error = new Error('test message')
@@ -278,7 +279,7 @@ except ${childType}:
     caught = 'child'
 caught
 `
-    const m = new Monty(code, { externalFunctions: ['fail'] })
+    const m = new Monty(code)
 
     const fail = () => {
       const error = new Error('test')
@@ -296,7 +297,7 @@ caught
 // =============================================================================
 
 test('external function exception in expression', (t) => {
-  const m = new Monty('1 + fail() + 2', { externalFunctions: ['fail'] })
+  const m = new Monty('1 + fail() + 2')
 
   const fail = () => {
     const error = new Error('mid-expression error')
@@ -315,7 +316,7 @@ a = success()
 b = fail()
 a + b
 `
-  const m = new Monty(code, { externalFunctions: ['success', 'fail'] })
+  const m = new Monty(code)
 
   const success = () => 10
 
@@ -341,7 +342,7 @@ finally:
     finally_ran = True
 finally_ran
 `
-  const m = new Monty(code, { externalFunctions: ['fail'] })
+  const m = new Monty(code)
 
   const fail = () => {
     const error = new Error('error')

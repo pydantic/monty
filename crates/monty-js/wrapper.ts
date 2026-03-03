@@ -7,6 +7,8 @@ import type {
   Frame,
   JsMontyObject,
   MontyOptions,
+  NameLookupLoadOptions,
+  NameLookupResumeOptions,
   ResourceLimits,
   ResumeOptions,
   RunOptions,
@@ -18,6 +20,7 @@ import {
   Monty as NativeMonty,
   MontyRepl as NativeMontyRepl,
   MontySnapshot as NativeMontySnapshot,
+  MontyNameLookup as NativeMontyNameLookup,
   MontyComplete as NativeMontyComplete,
   MontyException as NativeMontyException,
   MontyTypingError as NativeMontyTypingError,
@@ -33,6 +36,8 @@ export type {
   ResumeOptions,
   ExceptionInput,
   SnapshotLoadOptions,
+  NameLookupResumeOptions,
+  NameLookupLoadOptions,
   JsMontyObject,
 }
 
@@ -303,13 +308,14 @@ export class Monty {
   }
 
   /**
-   * Starts execution and returns either a snapshot (paused at external call) or completion.
+   * Starts execution and returns a snapshot (paused at external call or name lookup) or completion.
    *
    * @param options - Execution options (inputs, limits)
-   * @returns MontySnapshot if an external function call is pending, MontyComplete if done
+   * @returns MontySnapshot if paused at function call, MontyNameLookup if paused at
+   *   name lookup, MontyComplete if done
    * @throws {MontyRuntimeError} If the code raises an exception
    */
-  start(options?: StartOptions): MontySnapshot | MontyComplete {
+  start(options?: StartOptions): MontySnapshot | MontyNameLookup | MontyComplete {
     const result = this._native.start(options)
     return wrapStartResult(result)
   }
@@ -338,11 +344,6 @@ export class Monty {
   /** Returns the input variable names. */
   get inputs(): string[] {
     return this._native.inputs
-  }
-
-  /** Returns the external function names. */
-  get externalFunctions(): string[] {
-    return this._native.externalFunctions
   }
 
   /** Returns a string representation of the Monty instance. */
@@ -418,10 +419,15 @@ export class MontyRepl {
  * Helper to wrap native start/resume results, throwing errors as needed.
  */
 function wrapStartResult(
-  result: NativeMontySnapshot | NativeMontyComplete | NativeMontyException,
-): MontySnapshot | MontyComplete {
+  result: NativeMontySnapshot | NativeMontyNameLookup | NativeMontyComplete | NativeMontyException,
+): MontySnapshot | MontyNameLookup | MontyComplete {
   if (result instanceof NativeMontyException) {
     throw new MontyRuntimeError(result)
+  }
+  // Check MontyNameLookup before MontySnapshot — napi `Either4` may cause
+  // false positives with `instanceof` if checked in the wrong order.
+  if (result instanceof NativeMontyNameLookup) {
+    return new MontyNameLookup(result)
   }
   if (result instanceof NativeMontySnapshot) {
     return new MontySnapshot(result)
@@ -469,10 +475,11 @@ export class MontySnapshot {
    * Resumes execution with either a return value or an exception.
    *
    * @param options - Object with either `returnValue` or `exception`
-   * @returns MontySnapshot if another external call is pending, MontyComplete if done
+   * @returns MontySnapshot if paused at function call, MontyNameLookup if paused at
+   *   name lookup, MontyComplete if done
    * @throws {MontyRuntimeError} If the code raises an exception
    */
-  resume(options: ResumeOptions): MontySnapshot | MontyComplete {
+  resume(options: ResumeOptions): MontySnapshot | MontyNameLookup | MontyComplete {
     const result = this._native.resume(options)
     return wrapStartResult(result)
   }
@@ -493,6 +500,67 @@ export class MontySnapshot {
   }
 
   /** Returns a string representation of the MontySnapshot. */
+  repr(): string {
+    return this._native.repr()
+  }
+}
+
+/**
+ * Represents paused execution waiting for a name to be resolved.
+ *
+ * The host should check if the variable name corresponds to a known value
+ * (e.g., an external function). Call `resume()` with the value to continue
+ * execution, or call `resume()` with no value to raise `NameError`.
+ */
+export class MontyNameLookup {
+  private _native: NativeMontyNameLookup
+
+  constructor(nativeNameLookup: NativeMontyNameLookup) {
+    this._native = nativeNameLookup
+  }
+
+  /** Returns the name of the script being executed. */
+  get scriptName(): string {
+    return this._native.scriptName
+  }
+
+  /** Returns the name of the variable being looked up. */
+  get variableName(): string {
+    return this._native.variableName
+  }
+
+  /**
+   * Resumes execution after resolving the name lookup.
+   *
+   * If `value` is provided, the name resolves to that value and execution continues.
+   * If `value` is omitted/undefined, the VM raises a `NameError`.
+   *
+   * @param options - Optional object with `value` to resolve the name to
+   * @returns MontySnapshot if paused at function call, MontyNameLookup if paused at
+   *   another name lookup, MontyComplete if done
+   * @throws {MontyRuntimeError} If the code raises an exception
+   */
+  resume(options?: NameLookupResumeOptions): MontySnapshot | MontyNameLookup | MontyComplete {
+    const result = this._native.resume(options)
+    return wrapStartResult(result)
+  }
+
+  /**
+   * Serializes the MontyNameLookup to a binary format.
+   */
+  dump(): Buffer {
+    return this._native.dump()
+  }
+
+  /**
+   * Deserializes a MontyNameLookup from binary format.
+   */
+  static load(data: Buffer, options?: NameLookupLoadOptions): MontyNameLookup {
+    const nativeLookup = NativeMontyNameLookup.load(data, options)
+    return new MontyNameLookup(nativeLookup)
+  }
+
+  /** Returns a string representation of the MontyNameLookup. */
   repr(): string {
     return this._native.repr()
   }
@@ -547,7 +615,6 @@ export interface RunMontyAsyncOptions {
  * @example
  * const m = new Monty('result = await fetch_data(url)', {
  *   inputs: ['url'],
- *   externalFunctions: ['fetch_data']
  * });
  *
  * const result = await runMontyAsync(m, {
@@ -563,22 +630,38 @@ export interface RunMontyAsyncOptions {
 export async function runMontyAsync(montyRunner: Monty, options: RunMontyAsyncOptions = {}): Promise<JsMontyObject> {
   const { inputs, externalFunctions = {}, limits } = options
 
-  let progress: MontySnapshot | MontyComplete = montyRunner.start({
+  let progress: MontySnapshot | MontyNameLookup | MontyComplete = montyRunner.start({
     inputs,
     limits,
   })
 
-  while (progress instanceof MontySnapshot) {
+  while (!(progress instanceof MontyComplete)) {
+    if (progress instanceof MontyNameLookup) {
+      // Name lookup — check if the name is a known external function
+      const name = progress.variableName
+      const extFunction = externalFunctions[name]
+      if (extFunction) {
+        // Resolve the name as a function value
+        progress = progress.resume({ value: extFunction })
+      } else {
+        // Unknown name — resume with no value to raise NameError
+        progress = progress.resume()
+      }
+      continue
+    }
+
+    // MontySnapshot — external function call
     const snapshot = progress
     const funcName = snapshot.functionName
     const extFunction = externalFunctions[funcName]
 
     if (!extFunction) {
-      // Function not found - resume with a KeyError exception
+      // Function not found — this shouldn't normally happen since NameLookup
+      // would have raised NameError, but handle it defensively
       progress = snapshot.resume({
         exception: {
-          type: 'KeyError',
-          message: `"External function '${funcName}' not found"`,
+          type: 'NameError',
+          message: `name '${funcName}' is not defined`,
         },
       })
       continue

@@ -1,21 +1,22 @@
-use std::fmt::Write;
 /// Python string type, wrapping a Rust `String`.
 ///
 /// This type provides Python string semantics. Currently supports basic
 /// operations like length and equality comparison.
 use std::{borrow::Cow, fmt};
+use std::{cmp::Ordering, fmt::Write};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
 
-use super::{Bytes, MontyIter, PyTrait};
+use super::{Bytes, MontyIter, PyTrait, py_trait::AttrCallResult};
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings, StringId},
-    resource::{DepthGuard, ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker},
     types::Type,
     value::{EitherStr, Value},
 };
@@ -25,13 +26,13 @@ use crate::{
 /// Wraps a Rust `String` and provides Python-compatible operations.
 /// `len()` returns the number of Unicode codepoints (characters), matching Python semantics.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Str(String);
+pub(crate) struct Str(Box<str>);
 
 impl Str {
     /// Creates a new Str from a Rust String.
     #[must_use]
     pub fn new(s: String) -> Self {
-        Self(s)
+        Self(s.into())
     }
 
     /// Returns a reference to the inner string.
@@ -40,23 +41,19 @@ impl Str {
         &self.0
     }
 
-    /// Returns a mutable reference to the inner string.
-    pub fn as_string_mut(&mut self) -> &mut String {
-        &mut self.0
-    }
-
     /// Creates a string from the `str()` constructor call.
     ///
     /// - `str()` with no args returns an empty string
     /// - `str(x)` converts x to its string representation using `py_str`
-    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
         let value = args.get_zero_one_arg("str", heap)?;
         match value {
             None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
             Some(v) => {
                 defer_drop!(v, heap);
-                let mut guard = DepthGuard::default();
-                let s = v.py_str(heap, &mut guard, interns).into_owned();
+                let s = v.py_str(heap, interns).into_owned();
                 allocate_string(s, heap)
             }
         }
@@ -79,19 +76,19 @@ impl Str {
 
 impl From<String> for Str {
     fn from(s: String) -> Self {
-        Self(s)
+        Self(s.into())
     }
 }
 
 impl From<&str> for Str {
     fn from(s: &str) -> Self {
-        Self(s.to_string())
+        Self(s.into())
     }
 }
 
 impl From<Str> for String {
     fn from(value: Str) -> Self {
-        value.0
+        value.0.into_string()
     }
 }
 
@@ -200,7 +197,7 @@ pub(crate) fn get_str_slice(s: &str, start: usize, stop: usize, step: i64) -> St
 }
 
 impl std::ops::Deref for Str {
-    type Target = String;
+    type Target = str;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -243,7 +240,6 @@ impl PyTrait for Str {
         &self,
         other: &Self,
         _heap: &mut Heap<impl ResourceTracker>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> Result<bool, ResourceError> {
         Ok(self.0 == other.0)
@@ -258,24 +254,27 @@ impl PyTrait for Str {
         !self.0.is_empty()
     }
 
+    fn py_cmp(
+        &self,
+        other: &Self,
+        _heap: &mut Heap<impl ResourceTracker>,
+        _interns: &Interns,
+    ) -> Result<Option<Ordering>, ResourceError> {
+        Ok(Some(self.0.cmp(&other.0)))
+    }
+
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
         _heap: &Heap<impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> fmt::Result {
         string_repr_fmt(&self.0, f)
     }
 
-    fn py_str(
-        &self,
-        _heap: &Heap<impl ResourceTracker>,
-        _guard: &mut DepthGuard,
-        _interns: &Interns,
-    ) -> Cow<'static, str> {
-        self.0.clone().into()
+    fn py_str(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Cow<'static, str> {
+        self.0.clone().into_string().into()
     }
 
     fn py_add(
@@ -289,49 +288,20 @@ impl PyTrait for Str {
         Ok(Some(Value::Ref(id)))
     }
 
-    fn py_iadd(
-        &mut self,
-        other: Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        self_id: Option<HeapId>,
-        interns: &Interns,
-    ) -> Result<bool, crate::resource::ResourceError> {
-        match &other {
-            Value::Ref(other_id) => {
-                if Some(*other_id) == self_id {
-                    let rhs = self.0.clone();
-                    self.0.push_str(&rhs);
-                } else if let HeapData::Str(rhs) = heap.get(*other_id) {
-                    self.0.push_str(rhs.as_str());
-                } else {
-                    return Ok(false);
-                }
-                // Drop the other value - we've consumed it
-                other.drop_with_heap(heap);
-                Ok(true)
-            }
-            Value::InternString(string_id) => {
-                self.0.push_str(interns.get_str(*string_id));
-                Ok(true)
-            }
-            _ => Ok(false),
-        }
-    }
-
     fn py_call_attr(
         &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
+        _self_id: HeapId,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
-        let args_guard = HeapGuard::new(args, heap);
+    ) -> RunResult<AttrCallResult> {
+        let args_guard = HeapGuard::new(args, vm.heap);
         let Some(method) = attr.static_string() else {
-            return Err(ExcType::attribute_error(Type::Str, attr.as_str(interns)));
+            return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
         };
 
-        let (args, heap) = args_guard.into_parts();
-        call_str_method_impl(&self.0, method, args, heap, interns)
+        let args = args_guard.into_inner();
+        call_str_method_impl(&self.0, method, args, vm).map(AttrCallResult::Value)
     }
 }
 
@@ -343,15 +313,14 @@ pub fn call_str_method(
     s: &str,
     method_id: StringId,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let args_guard = HeapGuard::new(args, heap);
+    let args_guard = HeapGuard::new(args, vm.heap);
     let Some(method) = StaticStrings::from_string_id(method_id) else {
-        return Err(ExcType::attribute_error(Type::Str, interns.get_str(method_id)));
+        return Err(ExcType::attribute_error(Type::Str, vm.interns.get_str(method_id)));
     };
-    let (args, heap) = args_guard.into_parts();
-    call_str_method_impl(s, method, args, heap, interns)
+    let args = args_guard.into_inner();
+    call_str_method_impl(s, method, args, vm)
 }
 
 /// Dispatches a method call on a string value.
@@ -377,9 +346,10 @@ fn call_str_method_impl(
     s: &str,
     method: StaticStrings,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
+    let heap = &mut *vm.heap;
+    let interns = vm.interns;
     match method {
         // Simple transformations (no arguments)
         StaticStrings::Lower => {
@@ -481,8 +451,8 @@ fn call_str_method_impl(
         }
         // Existing method
         StaticStrings::Join => {
-            let iterable = args.get_one_arg("str.join", heap)?;
-            str_join(s, iterable, heap, interns)
+            let iterable = args.get_one_arg("str.join", vm.heap)?;
+            str_join(s, iterable, vm)
         }
         _ => {
             args.drop_with_heap(heap);
@@ -504,24 +474,19 @@ fn call_str_method_impl(
 ///
 /// # Errors
 /// Returns `TypeError` if the argument is not iterable or if any element is not a string.
-fn str_join(
-    separator: &str,
-    iterable: Value,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<Value> {
+fn str_join(separator: &str, iterable: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
     // Create MontyIter from the iterable, with join-specific error message
-    let Ok(iter) = MontyIter::new(iterable, heap, interns) else {
+    let Ok(iter) = MontyIter::new(iterable, vm) else {
         return Err(ExcType::type_error_join_not_iterable());
     };
-    defer_drop_mut!(iter, heap);
+    defer_drop_mut!(iter, vm);
 
     // Build result string, tracking index for error messages
     let mut result = String::new();
     let mut index = 0usize;
 
-    while let Some(item) = iter.for_next(heap, interns)? {
-        defer_drop!(item, heap);
+    while let Some(item) = iter.for_next(vm)? {
+        defer_drop!(item, vm);
         if index > 0 {
             result.push_str(separator);
         }
@@ -529,18 +494,18 @@ fn str_join(
         // Check item is a string and extract its content
         match item {
             Value::InternString(id) => {
-                result.push_str(interns.get_str(*id));
+                result.push_str(vm.interns.get_str(*id));
             }
             Value::Ref(heap_id) => {
-                if let HeapData::Str(s) = heap.get(*heap_id) {
+                if let HeapData::Str(s) = vm.heap.get(*heap_id) {
                     result.push_str(s.as_str());
                 } else {
-                    let t = item.py_type(heap);
+                    let t = item.py_type(vm.heap);
                     return Err(ExcType::type_error_join_item(index, t));
                 }
             }
             _ => {
-                let t = item.py_type(heap);
+                let t = item.py_type(vm.heap);
                 return Err(ExcType::type_error_join_item(index, t));
             }
         }
@@ -548,7 +513,7 @@ fn str_join(
     }
 
     // Allocate result (uses interned empty string if result is empty)
-    allocate_string(result, heap)
+    allocate_string(result, vm.heap)
 }
 
 /// Writes a Python repr() string for a given string slice to a formatter.

@@ -5,9 +5,10 @@ use num_traits::Signed;
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData},
+    heap::HeapData,
     resource::ResourceTracker,
     types::{PyTrait, Str},
     value::Value,
@@ -17,32 +18,34 @@ use crate::{
 ///
 /// Converts an integer to a binary string prefixed with '0b'.
 /// Supports both i64 and BigInt integers.
-pub fn builtin_bin(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("bin", heap)?;
-    defer_drop!(value, heap);
+pub fn builtin_bin(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("bin", vm.heap)?;
+    defer_drop!(value, vm);
 
     match value {
         Value::Int(n) => {
             let abs_digits = format!("{:b}", n.unsigned_abs());
             let prefix = if *n < 0 { "-0b" } else { "0b" };
-            let heap_id = heap.allocate(HeapData::Str(Str::new(format!("{prefix}{abs_digits}"))))?;
+            let heap_id = vm
+                .heap
+                .allocate(HeapData::Str(Str::new(format!("{prefix}{abs_digits}"))))?;
             Ok(Value::Ref(heap_id))
         }
         Value::Bool(b) => {
             let s = if *b { "0b1" } else { "0b0" };
-            let heap_id = heap.allocate(HeapData::Str(Str::new(s.to_string())))?;
+            let heap_id = vm.heap.allocate(HeapData::Str(Str::new(s.to_string())))?;
             Ok(Value::Ref(heap_id))
         }
         Value::Ref(id) => {
-            if let HeapData::LongInt(li) = heap.get(*id) {
+            if let HeapData::LongInt(li) = vm.heap.get(*id) {
                 let bin_str = format_bigint_bin(li.inner());
-                let heap_id = heap.allocate(HeapData::Str(Str::new(bin_str)))?;
+                let heap_id = vm.heap.allocate(HeapData::Str(Str::new(bin_str)))?;
                 Ok(Value::Ref(heap_id))
             } else {
-                Err(ExcType::type_error_not_integer(value.py_type(heap)))
+                Err(ExcType::type_error_not_integer(value.py_type(vm.heap)))
             }
         }
-        _ => Err(ExcType::type_error_not_integer(value.py_type(heap))),
+        _ => Err(ExcType::type_error_not_integer(value.py_type(vm.heap))),
     }
 }
 

@@ -65,19 +65,21 @@
 /// - `expandtabs(tabsize=8)` - Tab expansion
 /// - `translate(table[, delete])` - Character translation
 /// - `maketrans(frm, to)` - Create translation table (staticmethod)
+use std::cmp::Ordering;
 use std::fmt::Write;
 
 use ahash::AHashSet;
 use smallvec::smallvec;
 
-use super::{MontyIter, PyTrait, Type, str::Str};
+use super::{MontyIter, PyTrait, Type, py_trait::AttrCallResult, str::Str};
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings, StringId},
-    resource::{DepthGuard, ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker},
     types::List,
     value::{EitherStr, Value},
 };
@@ -176,11 +178,6 @@ impl Bytes {
         &self.0
     }
 
-    /// Returns a mutable reference to the inner byte vector.
-    pub fn as_vec_mut(&mut self) -> &mut Vec<u8> {
-        &mut self.0
-    }
-
     /// Creates bytes from the `bytes()` constructor call.
     ///
     /// - `bytes()` with no args returns empty bytes
@@ -189,7 +186,9 @@ impl Bytes {
     /// - `bytes(bytes)` returns a copy of the bytes
     ///
     /// Note: Full Python semantics for bytes() are more complex (encoding, errors params).
-    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
         let value = args.get_zero_one_arg("bytes", heap)?;
         defer_drop!(value, heap);
         let new_data = match value {
@@ -286,7 +285,6 @@ impl PyTrait for Bytes {
         &self,
         other: &Self,
         _heap: &mut Heap<impl ResourceTracker>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> Result<bool, ResourceError> {
         Ok(self.0 == other.0)
@@ -295,6 +293,15 @@ impl PyTrait for Bytes {
     /// Bytes don't contain nested heap references.
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // No-op: bytes don't hold Value references
+    }
+
+    fn py_cmp(
+        &self,
+        other: &Self,
+        _heap: &mut Heap<impl ResourceTracker>,
+        _interns: &Interns,
+    ) -> Result<Option<Ordering>, ResourceError> {
+        Ok(Some(self.0.cmp(&other.0)))
     }
 
     fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
@@ -306,7 +313,6 @@ impl PyTrait for Bytes {
         f: &mut impl Write,
         _heap: &Heap<impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> std::fmt::Result {
         bytes_repr_fmt(&self.0, f)
@@ -314,17 +320,17 @@ impl PyTrait for Bytes {
 
     fn py_call_attr(
         &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
+        _self_id: HeapId,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
+    ) -> RunResult<AttrCallResult> {
         let Some(method) = attr.static_string() else {
-            args.drop_with_heap(heap);
-            return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(interns)));
+            args.drop_with_heap(vm.heap);
+            return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(vm.interns)));
         };
 
-        call_bytes_method_impl(self.as_slice(), method, args, heap, interns)
+        call_bytes_method_impl(self.as_slice(), method, args, vm).map(AttrCallResult::Value)
     }
 }
 
@@ -336,14 +342,13 @@ pub fn call_bytes_method(
     bytes: &[u8],
     method_id: StringId,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let Some(method) = StaticStrings::from_string_id(method_id) else {
-        args.drop_with_heap(heap);
-        return Err(ExcType::attribute_error(Type::Bytes, interns.get_str(method_id)));
+        args.drop_with_heap(vm.heap);
+        return Err(ExcType::attribute_error(Type::Bytes, vm.interns.get_str(method_id)));
     };
-    call_bytes_method_impl(bytes, method, args, heap, interns)
+    call_bytes_method_impl(bytes, method, args, vm)
 }
 
 /// Calls a bytes method on a byte slice.
@@ -355,9 +360,10 @@ fn call_bytes_method_impl(
     bytes: &[u8],
     method: StaticStrings,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
+    let heap = &mut *vm.heap;
+    let interns = vm.interns;
     match method {
         // Decode method
         StaticStrings::Decode => bytes_decode(bytes, args, heap, interns),
@@ -443,8 +449,8 @@ fn call_bytes_method_impl(
         StaticStrings::Zfill => bytes_zfill(bytes, args, heap),
         // Join method
         StaticStrings::Join => {
-            let iterable = args.get_one_arg("bytes.join", heap)?;
-            bytes_join(bytes, iterable, heap, interns)
+            let iterable = args.get_one_arg("bytes.join", vm.heap)?;
+            bytes_join(bytes, iterable, vm)
         }
         // Hex method
         StaticStrings::Hex => bytes_hex(bytes, args, heap, interns),
@@ -2095,22 +2101,17 @@ fn bytes_zfill(bytes: &[u8], args: ArgValues, heap: &mut Heap<impl ResourceTrack
 /// Implements Python's `bytes.join(iterable)` method.
 ///
 /// Joins elements of the iterable with the separator bytes.
-fn bytes_join(
-    separator: &[u8],
-    iterable: Value,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<Value> {
-    let Ok(iter) = MontyIter::new(iterable, heap, interns) else {
+fn bytes_join(separator: &[u8], iterable: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+    let Ok(iter) = MontyIter::new(iterable, vm) else {
         return Err(ExcType::type_error_join_not_iterable());
     };
-    defer_drop_mut!(iter, heap);
+    defer_drop_mut!(iter, vm);
 
     let mut result = Vec::new();
     let mut index = 0usize;
 
-    while let Some(item) = iter.for_next(heap, interns)? {
-        defer_drop!(item, heap);
+    while let Some(item) = iter.for_next(vm)? {
+        defer_drop!(item, vm);
 
         if index > 0 {
             result.extend_from_slice(separator);
@@ -2119,20 +2120,20 @@ fn bytes_join(
         // Check item is bytes and extract its content
         match item {
             Value::InternBytes(id) => {
-                result.extend_from_slice(interns.get_bytes(*id));
+                result.extend_from_slice(vm.interns.get_bytes(*id));
             }
             Value::Ref(heap_id) => {
-                if let HeapData::Bytes(b) = heap.get(*heap_id) {
+                if let HeapData::Bytes(b) = vm.heap.get(*heap_id) {
                     result.extend_from_slice(b.as_slice());
                 } else {
-                    let t = item.py_type(heap);
+                    let t = item.py_type(vm.heap);
                     return Err(ExcType::type_error(format!(
                         "sequence item {index}: expected a bytes-like object, {t} found"
                     )));
                 }
             }
             _ => {
-                let t = item.py_type(heap);
+                let t = item.py_type(vm.heap);
                 return Err(ExcType::type_error(format!(
                     "sequence item {index}: expected a bytes-like object, {t} found"
                 )));
@@ -2141,7 +2142,7 @@ fn bytes_join(
         index += 1;
     }
 
-    allocate_bytes(result, heap)
+    allocate_bytes(result, vm.heap)
 }
 
 // =============================================================================

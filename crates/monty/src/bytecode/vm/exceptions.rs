@@ -156,7 +156,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 // Unwind stack to target depth (drop excess values)
                 while this.stack.len() > target_stack_depth {
                     let value = this.stack.pop().unwrap();
-                    value.drop_with_heap(this.heap);
+                    value.drop_with_heap(this);
                 }
 
                 // Push exception value onto stack (handler expects it)
@@ -206,7 +206,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             let call_position = this.current_frame().call_position;
 
             // Pop this frame
-            this.pop_frame();
+            if this.pop_frame() {
+                // The frame indicated evaluation should stop - e.g. inside `evaluate_function` - return the error
+                // now to stop unwinding.
+                return Some(error);
+            }
 
             // Add caller frame info to traceback (if we have call position)
             if let Some(pos) = call_position {
@@ -217,12 +221,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     RunError::Internal(_) => {}
                 }
             }
-
-            // Update instruction_ip for the new frame
-            this.instruction_ip = this
-                .current_frame()
-                .call_position
-                .map_or(0, |p| p.start().line as usize);
         }
     }
 

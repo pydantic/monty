@@ -223,7 +223,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let (lhs, this) = lhs_guard.as_parts_mut();
 
         // Try in-place operation first (for mutable types like lists)
-        if lhs.py_iadd(rhs.clone_with_heap(this.heap), this.heap, lhs.ref_id(), this.interns)? {
+        if lhs.py_iadd(rhs, this.heap, lhs.ref_id(), this.interns)? {
             // In-place operation succeeded - push lhs back
             let (lhs, this) = lhs_guard.into_parts();
             this.push(lhs);
@@ -248,8 +248,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn binary_matmul(&mut self) -> Result<(), RunError> {
         let rhs = self.pop();
         let lhs = self.pop();
-        lhs.drop_with_heap(self.heap);
-        rhs.drop_with_heap(self.heap);
+        lhs.drop_with_heap(self);
+        rhs.drop_with_heap(self);
         Err(ExcType::not_implemented("matrix multiplication (@) is not supported").into())
     }
 }

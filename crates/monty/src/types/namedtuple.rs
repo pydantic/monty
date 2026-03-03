@@ -21,10 +21,11 @@ use ahash::AHashSet;
 
 use super::PyTrait;
 use crate::{
+    defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapId},
     intern::{Interns, StringId},
-    resource::{DepthGuard, ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker},
     types::{AttrCallResult, Type},
     value::{EitherStr, Value},
 };
@@ -118,7 +119,7 @@ impl NamedTuple {
         self.contains_refs
     }
 
-    /// Gets a field value by name (StringId).
+    /// Gets a field value by name.
     ///
     /// Compares field names by actual string content, not just variant type.
     /// This allows lookup to work regardless of whether the field name was
@@ -126,8 +127,7 @@ impl NamedTuple {
     ///
     /// Returns `Some(value)` if the field exists, `None` otherwise.
     #[must_use]
-    pub fn get_by_name(&self, name_id: StringId, interns: &Interns) -> Option<&Value> {
-        let name_str = interns.get_str(name_id);
+    pub fn get_by_name(&self, name_str: &str, interns: &Interns) -> Option<&Value> {
         self.field_names
             .iter()
             .position(|field_name| field_name.as_str(interns) == name_str)
@@ -183,7 +183,6 @@ impl PyTrait for NamedTuple {
         &self,
         other: &Self,
         heap: &mut Heap<impl ResourceTracker>,
-        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> Result<bool, ResourceError> {
         // Compare only by items (not type_name) to match tuple semantics
@@ -191,14 +190,13 @@ impl PyTrait for NamedTuple {
         if self.items.len() != other.items.len() {
             return Ok(false);
         }
-        guard.increase_err()?;
+        let token = heap.incr_recursion_depth()?;
+        defer_drop!(token, heap);
         for (i1, i2) in self.items.iter().zip(&other.items) {
-            if !i1.py_eq(i2, heap, guard, interns)? {
-                guard.decrease();
+            if !i1.py_eq(i2, heap, interns)? {
                 return Ok(false);
             }
         }
-        guard.decrease();
         Ok(true)
     }
 
@@ -229,13 +227,13 @@ impl PyTrait for NamedTuple {
         f: &mut impl Write,
         heap: &Heap<impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-        guard: &mut DepthGuard,
         interns: &Interns,
     ) -> std::fmt::Result {
         // Check depth limit before recursing
-        if !guard.increase() {
+        let Some(token) = heap.incr_recursion_depth_for_repr() else {
             return f.write_str("...");
-        }
+        };
+        crate::defer_drop_immutable_heap!(token, heap);
 
         // Format: type_name(field1=value1, field2=value2, ...)
         write!(f, "{}(", self.name.as_str(interns))?;
@@ -248,25 +246,25 @@ impl PyTrait for NamedTuple {
             first = false;
             f.write_str(field_name.as_str(interns))?;
             f.write_char('=')?;
-            value.py_repr_fmt(f, heap, heap_ids, guard, interns)?;
+            value.py_repr_fmt(f, heap, heap_ids, interns)?;
         }
 
         f.write_char(')')?;
-        guard.decrease();
         Ok(())
     }
 
     fn py_getattr(
         &self,
-        attr_id: StringId,
+        attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<Option<AttrCallResult>> {
-        if let Some(value) = self.get_by_name(attr_id, interns) {
+        let attr_name = attr.as_str(interns);
+        if let Some(value) = self.get_by_name(attr_name, interns) {
             Ok(Some(AttrCallResult::Value(value.clone_with_heap(heap))))
         } else {
             // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
-            Err(ExcType::attribute_error(self.name(interns), interns.get_str(attr_id)))
+            Err(ExcType::attribute_error(self.name(interns), attr_name))
         }
     }
 }

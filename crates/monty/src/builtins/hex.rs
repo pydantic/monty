@@ -5,9 +5,10 @@ use num_traits::Signed;
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData},
+    heap::HeapData,
     resource::ResourceTracker,
     types::{PyTrait, Str},
     value::Value,
@@ -17,9 +18,10 @@ use crate::{
 ///
 /// Converts an integer to a lowercase hexadecimal string prefixed with '0x'.
 /// Supports both i64 and BigInt integers.
-pub fn builtin_hex(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("hex", heap)?;
-    defer_drop!(value, heap);
+pub fn builtin_hex(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let value = args.get_one_arg("hex", vm.heap)?;
+    defer_drop!(value, vm);
+    let heap = &mut *vm.heap;
 
     match value {
         Value::Int(n) => {

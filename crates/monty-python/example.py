@@ -19,7 +19,7 @@ m = pydantic_monty.Monty('x * y * z', inputs=['x', 'y', 'z'])
 print(f'With limits: {m.run(inputs={"x": 2, "y": 3, "z": 4}, limits=limits)}')  # 24
 
 # External function callbacks
-m = pydantic_monty.Monty('fetch("https://example.com")', external_functions=['fetch'])
+m = pydantic_monty.Monty('fetch("https://example.com")')
 
 
 def fetch(url: str) -> str:

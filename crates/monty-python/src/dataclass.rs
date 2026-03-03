@@ -66,6 +66,12 @@ pub fn dataclass_to_monty(value: &Bound<'_, PyAny>, dc_registry: &DcRegistry) ->
         let field_type = field.getattr(intern!(py, "_field_type"))?;
         if field_type.is(field_type_marker) {
             let field_name_str = field_name_obj.cast::<PyString>()?.to_str()?.to_string();
+
+            // we don't include private fields in the dataclass serialized for monty
+            if field_name_str.starts_with('_') {
+                continue;
+            }
+
             let field_value = value.getattr(field_name_obj.cast::<PyString>()?)?;
             let field_name_monty = py_to_monty(&field_name_obj, dc_registry)?;
             let field_value_monty = py_to_monty(&field_value, dc_registry)?;

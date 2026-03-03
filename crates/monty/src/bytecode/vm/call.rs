@@ -9,17 +9,16 @@ use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::Coroutine,
     builtins::{Builtins, BuiltinsFunctions},
+    bytecode::FrameExit,
     defer_drop,
     exception_private::{ExcType, RunError},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
-    intern::{ExtFunctionId, FunctionId, Interns, StaticStrings, StringId},
+    heap_data::CellValue,
+    intern::{FunctionId, StringId},
     os::OsFunction,
     resource::ResourceTracker,
     types::{
-        AttrCallResult, Dict, PyTrait, Type,
-        bytes::{bytes_fromhex, call_bytes_method},
-        dict::dict_fromkeys,
-        str::call_str_method,
+        AttrCallResult, Dict, PyTrait, Type, bytes::call_bytes_method, str::call_str_method, r#type::call_type_method,
     },
     value::{EitherStr, Value},
 };
@@ -35,7 +34,8 @@ pub(super) enum CallResult {
     /// The VM should reload its cached frame state.
     FramePushed,
     /// External function call requested - VM should pause and return to caller.
-    External(ExtFunctionId, ArgValues),
+    /// The `EitherStr` is the name of the external function (interned or heap-owned).
+    External(EitherStr, ArgValues),
     /// OS operation call requested - VM should yield `FrameExit::OsCall` to host.
     ///
     /// The host executes the OS operation and resumes the VM with the result.
@@ -44,9 +44,14 @@ pub(super) enum CallResult {
     ///
     /// The method name (e.g. `"distance"`) and the args include the dataclass instance
     /// as the first argument (`self`). Unlike `External`, this uses an `EitherStr` instead
-    /// of `ExtFunctionId` because method names are only known at runtime when dataclass
+    /// of `StringId` because method names are only known at runtime when dataclass
     /// inputs are provided.
     MethodCall(EitherStr, ArgValues),
+    /// The call returned a value that should be implicitly awaited.
+    ///
+    /// Used by `asyncio.run()` to execute a coroutine without an explicit `await`.
+    /// The VM will push the value onto the stack and execute `exec_get_awaitable`.
+    AwaitValue(Value),
 }
 
 impl From<AttrCallResult> for CallResult {
@@ -54,8 +59,9 @@ impl From<AttrCallResult> for CallResult {
         match result {
             AttrCallResult::Value(v) => Self::Push(v),
             AttrCallResult::OsCall(func, args) => Self::OsCall(func, args),
-            AttrCallResult::ExternalCall(ext_id, args) => Self::External(ext_id, args),
+            AttrCallResult::ExternalCall(ext_id, args) => Self::External(EitherStr::Interned(ext_id), args),
             AttrCallResult::MethodCall(name, args) => Self::MethodCall(name, args),
+            AttrCallResult::AwaitValue(v) => Self::AwaitValue(v),
         }
     }
 }
@@ -75,7 +81,9 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn exec_call_function(&mut self, arg_count: usize) -> Result<CallResult, RunError> {
         let args = self.pop_n_args(arg_count);
         let callable = self.pop();
-        self.call_function(callable, args)
+        let this = self;
+        defer_drop!(callable, this);
+        this.call_function(callable, args)
     }
 
     /// Executes `CallBuiltinFunction` opcode.
@@ -86,7 +94,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // Convert u8 to BuiltinsFunctions via FromRepr
         if let Some(builtin) = BuiltinsFunctions::from_repr(builtin_id) {
             let args = self.pop_n_args(arg_count);
-            builtin.call(self.heap, args, self.interns, self.print_writer)
+            builtin.call(self, args)
         } else {
             Err(RunError::internal("CallBuiltinFunction: invalid builtin_id"))
         }
@@ -100,7 +108,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // Convert u8 to Type via callable_from_u8
         if let Some(t) = Type::callable_from_u8(type_id) {
             let args = self.pop_n_args(arg_count);
-            t.call(self.heap, args, self.interns)
+            t.call(self, args)
         } else {
             Err(RunError::internal("CallBuiltinType: invalid type_id"))
         }
@@ -125,6 +133,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Pop the callable
         let callable = self.pop();
+        let this = self;
+        defer_drop!(callable, this);
 
         // Build kwargs as Vec<(StringId, Value)>
         let kwargs_inline: Vec<(StringId, Value)> = kwname_ids.into_iter().zip(kw_values).collect();
@@ -141,7 +151,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
         };
 
-        self.call_function(callable, args)
+        this.call_function(callable, args)
     }
 
     /// Executes `CallAttr` opcode.
@@ -256,7 +266,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Calls an attribute on an object.
     ///
     /// For heap-allocated objects (`Value::Ref`), dispatches to the type's
-    /// attribute call implementation via `heap.call_attr_raw()`, which may return
+    /// attribute call implementation via `Heap::call_attr()`, which may return
     /// `AttrCallResult::OsCall`, `AttrCallResult::ExternalCall`, or
     /// `AttrCallResult::MethodCall` for operations that require host involvement.
     ///
@@ -269,30 +279,78 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         match obj {
             Value::Ref(heap_id) => {
                 defer_drop!(obj, this);
-                let result = this
-                    .heap
-                    .call_attr_raw(heap_id, &attr, args, this.interns, this.print_writer);
+                let result = Heap::call_attr(this, heap_id, &attr, args);
                 result.map(Into::into)
             }
             Value::InternString(string_id) => {
                 // Call string method on interned string literal using the unified dispatcher
                 let s = this.interns.get_str(string_id);
-                call_str_method(s, name_id, args, this.heap, this.interns).map(CallResult::Push)
+                call_str_method(s, name_id, args, this).map(CallResult::Push)
             }
             Value::InternBytes(bytes_id) => {
                 // Call bytes method on interned bytes literal using the unified dispatcher
                 let b = this.interns.get_bytes(bytes_id);
-                call_bytes_method(b, name_id, args, this.heap, this.interns).map(CallResult::Push)
+                call_bytes_method(b, name_id, args, this).map(CallResult::Push)
             }
             Value::Builtin(Builtins::Type(t)) => {
                 // Handle classmethods on type objects like dict.fromkeys()
-                call_type_method(t, name_id, args, this.heap, this.interns).map(CallResult::Push)
+                call_type_method(t, name_id, args, this).map(CallResult::Push)
             }
             _ => {
                 // Non-heap values without method support
                 let type_name = obj.py_type(this.heap);
-                args.drop_with_heap(this.heap);
+                args.drop_with_heap(this);
                 Err(ExcType::attribute_error(type_name, this.interns.get_str(name_id)))
+            }
+        }
+    }
+
+    /// Evaluates a function in a position that doesn't yet support suspending.
+    ///
+    /// Calls the function and, if it's a user-defined function that pushes a frame,
+    /// runs the VM until that frame returns.
+    ///
+    /// Returns an error for external/OS functions since those require the host to
+    /// execute them and resume, which this synchronous context cannot support.
+    pub(crate) fn evaluate_function(
+        &mut self,
+        ctx: &'static str,
+        callable: &Value,
+        args: ArgValues,
+    ) -> Result<Value, RunError> {
+        match self.call_function(callable, args)? {
+            CallResult::Push(v) => Ok(v),
+            CallResult::FramePushed => {
+                // A new frame was pushed for a defined function call - we need to run it
+                // to completion.
+                let stack_depth = self.frames.len();
+                // Mark the frame as an exit point from the `run()` loop
+                self.current_frame_mut().should_return = true;
+                match self.run()? {
+                    FrameExit::Return(v) => Ok(v),
+                    FrameExit::ResolveFutures(_)
+                    | FrameExit::ExternalCall { .. }
+                    | FrameExit::OsCall { .. }
+                    | FrameExit::MethodCall { .. }
+                    | FrameExit::NameLookup { .. } => {
+                        // Pop frames off the stack from this failed evaluation
+                        while self.frames.len() > stack_depth {
+                            self.pop_frame();
+                        }
+                        Err(RunError::internal(format!(
+                            "{ctx}: external functions are not yet supported in this context"
+                        )))
+                    }
+                }
+            }
+            CallResult::External(_, _)
+            | CallResult::OsCall(_, _)
+            | CallResult::MethodCall(_, _)
+            | CallResult::AwaitValue(_) => {
+                // External calls are not supported in this context since the caller doesn't support suspending
+                Err(RunError::internal(format!(
+                    "{ctx}: external functions are not yet supported in this context"
+                )))
             }
         }
     }
@@ -305,78 +363,65 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// - `Value::ExtFunction`: returns `External` for caller to execute
     /// - `Value::DefFunction`: pushes a new frame, returns `FramePushed`
     /// - `Value::Ref`: checks for closure/function on heap
-    fn call_function(&mut self, callable: Value, args: ArgValues) -> Result<CallResult, RunError> {
+    fn call_function(&mut self, callable: &Value, args: ArgValues) -> Result<CallResult, RunError> {
         match callable {
             Value::Builtin(builtin) => {
-                let result = builtin.call(self.heap, args, self.interns, self.print_writer)?;
+                let result = builtin.call(self, args)?;
                 Ok(CallResult::Push(result))
             }
             Value::ModuleFunction(mf) => {
                 let result = mf.call(self.heap, args, self.interns)?;
                 Ok(result.into())
             }
-            Value::ExtFunction(ext_id) => {
+            Value::ExtFunction(name_id) => {
                 // External function - return to caller to execute
-                Ok(CallResult::External(ext_id, args))
+                Ok(CallResult::External(EitherStr::Interned(*name_id), args))
             }
             Value::DefFunction(func_id) => {
                 // Defined function without defaults or captured variables
-                self.call_def_function(func_id, &[], Vec::new(), args)
+                self.call_def_function(*func_id, &[], Vec::new(), args)
             }
             Value::Ref(heap_id) => {
                 // Could be a closure or function with defaults - check heap
-                self.call_heap_callable(heap_id, callable, args)
+                self.call_heap_callable(*heap_id, args)
             }
             _ => {
-                args.drop_with_heap(self.heap);
-                Err(ExcType::type_error("object is not callable"))
+                args.drop_with_heap(self);
+                let ty = callable.py_type(self.heap);
+                Err(ExcType::type_error(format!("'{ty}' object is not callable")))
             }
         }
     }
 
-    /// Handles calling a heap-allocated callable (closure or function with defaults).
-    ///
-    /// Uses a two-phase approach to avoid borrow conflicts:
-    /// 1. Copy data without incrementing refcounts
-    /// 2. Increment refcounts after the borrow ends
-    fn call_heap_callable(
-        &mut self,
-        heap_id: HeapId,
-        callable: Value,
-        args: ArgValues,
-    ) -> Result<CallResult, RunError> {
-        let this = self;
-        defer_drop!(callable, this);
-
-        // Phase 1: Copy data (func_id, cells, defaults) without refcount changes
-        let (func_id, cells, defaults) = match this.heap.get(heap_id) {
-            HeapData::Closure(fid, cells, defaults) => {
-                let cloned_cells = cells.clone();
-                let cloned_defaults: Vec<Value> = defaults.iter().map(Value::copy_for_extend).collect();
-                (*fid, cloned_cells, cloned_defaults)
+    /// Handles calling a heap-allocated callable (closure, function with defaults, or external function).
+    fn call_heap_callable(&mut self, heap_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
+        let (func_id, cells, defaults) = match self.heap.get(heap_id) {
+            HeapData::Closure(closure) => {
+                let cloned_cells = closure.cells.clone();
+                let cloned_defaults: Vec<Value> = closure.defaults.iter().map(|v| v.clone_with_heap(self)).collect();
+                (closure.func_id, cloned_cells, cloned_defaults)
             }
-            HeapData::FunctionDefaults(fid, defaults) => {
-                let cloned_defaults: Vec<Value> = defaults.iter().map(Value::copy_for_extend).collect();
-                (*fid, Vec::new(), cloned_defaults)
+            HeapData::FunctionDefaults(fd) => {
+                let cloned_defaults: Vec<Value> = fd.defaults.iter().map(|v| v.clone_with_heap(self)).collect();
+                (fd.func_id, Vec::new(), cloned_defaults)
+            }
+            HeapData::ExtFunction(name) => {
+                // Heap-allocated external function with a non-interned name
+                let name = name.clone();
+                return Ok(CallResult::External(EitherStr::Heap(name), args));
             }
             _ => {
-                args.drop_with_heap(this.heap);
+                args.drop_with_heap(self);
                 return Err(ExcType::type_error("object is not callable"));
             }
         };
 
-        // Phase 2: Increment refcounts now that the heap borrow has ended
+        // Increment refcounts for captured cells
         for &cell_id in &cells {
-            this.heap.inc_ref(cell_id);
-        }
-        for default in &defaults {
-            if let Value::Ref(id) = default {
-                this.heap.inc_ref(*id);
-            }
+            self.heap.inc_ref(cell_id);
         }
 
-        // Call the defined function (callable guard drops at scope exit)
-        this.call_def_function(func_id, &cells, defaults, args)
+        self.call_def_function(func_id, &cells, defaults, args)
     }
 
     /// Calls a function with unpacked args tuple and optional kwargs dict.
@@ -390,16 +435,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     ) -> Result<CallResult, RunError> {
         let this = self;
         defer_drop!(args_tuple, this);
+        defer_drop!(callable, this);
 
         // Extract positional args from tuple
         let copied_args = this.extract_args_tuple(args_tuple);
-
-        // Increment refcounts for positional args
-        for arg in &copied_args {
-            if let Value::Ref(id) = arg {
-                this.heap.inc_ref(*id);
-            }
-        }
 
         // Build ArgValues from positional args and optional kwargs
         let args = if let Some(kwargs_ref) = kwargs {
@@ -428,13 +467,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // Extract positional args from tuple
         let copied_args = this.extract_args_tuple_for_attr(args_tuple);
 
-        // Increment refcounts for positional args
-        for arg in &copied_args {
-            if let Value::Ref(id) = arg {
-                this.heap.inc_ref(*id);
-            }
-        }
-
         // Build ArgValues from positional args and optional kwargs
         let args = if let Some(kwargs_ref) = kwargs {
             this.build_args_with_kwargs_for_attr(copied_args, kwargs_ref)?
@@ -458,7 +490,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let HeapData::Tuple(tuple) = self.heap.get(*id) else {
             unreachable!("CallFunctionExtended: args_tuple must be a Tuple")
         };
-        tuple.as_slice().iter().map(Value::copy_for_extend).collect()
+        tuple.as_slice().iter().map(|v| v.clone_with_heap(self)).collect()
     }
 
     /// Builds `ArgValues` with kwargs for `CallFunctionExtended`.
@@ -479,18 +511,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         };
         let copied_kwargs: Vec<(Value, Value)> = dict
             .iter()
-            .map(|(k, v)| (Value::copy_for_extend(k), Value::copy_for_extend(v)))
+            .map(|(k, v)| (k.clone_with_heap(this.heap), v.clone_with_heap(this.heap)))
             .collect();
-
-        // Increment refcounts for kwargs
-        for (k, v) in &copied_kwargs {
-            if let Value::Ref(id) = k {
-                this.heap.inc_ref(*id);
-            }
-            if let Value::Ref(id) = v {
-                this.heap.inc_ref(*id);
-            }
-        }
 
         let kwargs_values = if copied_kwargs.is_empty() {
             KwargsValues::Empty
@@ -541,7 +563,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let HeapData::Tuple(tuple) = self.heap.get(*id) else {
             unreachable!("CallAttrExtended: args_tuple must be a Tuple")
         };
-        tuple.as_slice().iter().map(Value::copy_for_extend).collect()
+        tuple.as_slice().iter().map(|v| v.clone_with_heap(self)).collect()
     }
 
     /// Builds `ArgValues` with kwargs for `CallAttrExtended`.
@@ -566,18 +588,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         };
         let copied_kwargs: Vec<(Value, Value)> = dict
             .iter()
-            .map(|(k, v)| (Value::copy_for_extend(k), Value::copy_for_extend(v)))
+            .map(|(k, v)| (k.clone_with_heap(this.heap), v.clone_with_heap(this.heap)))
             .collect();
-
-        // Increment refcounts for kwargs
-        for (k, v) in &copied_kwargs {
-            if let Value::Ref(id) = k {
-                this.heap.inc_ref(*id);
-            }
-            if let Value::Ref(id) = v {
-                this.heap.inc_ref(*id);
-            }
-        }
 
         let kwargs_values = if copied_kwargs.is_empty() {
             KwargsValues::Empty
@@ -669,7 +681,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 } else {
                     Value::Undefined
                 };
-                let cell_id = this.heap.allocate(HeapData::Cell(cell_value))?;
+                let cell_id = this.heap.allocate(HeapData::Cell(CellValue(cell_value)))?;
                 frame_cells.push(cell_id);
                 namespace.resize_with(cell_slot, || Value::Undefined);
                 namespace.push(Value::Ref(cell_id));
@@ -727,7 +739,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             if let Err(e) = bind_result {
                 self.namespaces.drop_with_heap(namespace_idx, self.heap);
                 for default in defaults {
-                    default.drop_with_heap(self.heap);
+                    default.drop_with_heap(self);
                 }
                 return Err(e);
             }
@@ -751,7 +763,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 } else {
                     Value::Undefined
                 };
-                let cell_id = self.heap.allocate(HeapData::Cell(cell_value))?;
+                let cell_id = self.heap.allocate(HeapData::Cell(CellValue(cell_value)))?;
                 frame_cells.push(cell_id);
                 namespace.resize_with(cell_slot, || Value::Undefined);
                 namespace.push(Value::Ref(cell_id));
@@ -773,36 +785,15 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         let code = &func.code;
         // 6. Push new frame
-        self.frames.push(CallFrame::new_function(
+        self.push_frame(CallFrame::new_function(
             code,
             self.stack.len(),
             namespace_idx,
             func_id,
             frame_cells,
             Some(call_position),
-        ));
+        ))?;
 
         Ok(CallResult::FramePushed)
     }
-}
-
-/// Dispatches a classmethod call on a type object.
-///
-/// Handles classmethods like `dict.fromkeys()` and `bytes.fromhex()` that are
-/// called on the type itself rather than on an instance.
-fn call_type_method(
-    t: Type,
-    method_id: StringId,
-    args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> Result<Value, RunError> {
-    match (t, method_id) {
-        (Type::Dict, m) if m == StaticStrings::Fromkeys => return dict_fromkeys(args, heap, interns),
-        (Type::Bytes, m) if m == StaticStrings::Fromhex => return bytes_fromhex(args, heap, interns),
-        _ => {}
-    }
-    // Other types or unknown methods - report actual type name, not 'type'
-    args.drop_with_heap(heap);
-    Err(ExcType::attribute_error(t, interns.get_str(method_id)))
 }
