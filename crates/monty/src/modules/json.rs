@@ -143,27 +143,34 @@ fn extract_json_input<'a>(
 
 /// Converts a parsed `serde_json::Value` into a Monty runtime `Value`.
 fn json_value_to_monty(value: JsonValue, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Value> {
-    let token = heap.incr_recursion_depth()?;
-    defer_drop!(token, heap);
-
     match value {
         JsonValue::Null => Ok(Value::None),
         JsonValue::Bool(b) => Ok(Value::Bool(b)),
         JsonValue::Number(number) => json_number_to_monty(&number, heap),
         JsonValue::String(s) => allocate_string(s, heap),
         JsonValue::Array(items) => {
+            let token = heap.incr_recursion_depth()?;
+            defer_drop!(token, heap);
+
             let mut values = Vec::with_capacity(items.len());
-            for item in items {
-                heap.check_time()?;
+            for (idx, item) in items.into_iter().enumerate() {
+                if idx.is_multiple_of(32) {
+                    heap.check_time()?;
+                }
                 values.push(json_value_to_monty(item, heap, interns)?);
             }
             let list_id = heap.allocate(HeapData::List(List::new(values)))?;
             Ok(Value::Ref(list_id))
         }
         JsonValue::Object(map) => {
+            let token = heap.incr_recursion_depth()?;
+            defer_drop!(token, heap);
+
             let mut pairs = Vec::with_capacity(map.len());
-            for (key, value) in map {
-                heap.check_time()?;
+            for (idx, (key, value)) in map.into_iter().enumerate() {
+                if idx.is_multiple_of(32) {
+                    heap.check_time()?;
+                }
                 let key_value = allocate_string(key, heap)?;
                 let value_value = json_value_to_monty(value, heap, interns)?;
                 pairs.push((key_value, value_value));
