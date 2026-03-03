@@ -10,7 +10,7 @@
 
 use std::{borrow::Cow, fmt::Write, str::FromStr};
 
-use ahash::AHashSet;
+use ahash::{AHashMap, AHashSet};
 use num_bigint::BigInt;
 use serde_json::{Number as JsonNumber, Value as JsonValue};
 
@@ -18,7 +18,7 @@ use crate::{
     args::ArgValues,
     defer_drop,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings},
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
@@ -33,6 +33,19 @@ pub(crate) enum JsonFunctions {
     Dumps,
     Loads,
 }
+
+/// Number of converted items between `heap.check_time()` calls in `json.loads()`.
+///
+/// The conversion phase can traverse very large arrays/objects. Checking time for
+/// every item adds measurable overhead, so we check periodically instead.
+const LOADS_CONVERSION_TIME_CHECK_INTERVAL: usize = 64;
+
+/// Minimum JSON object size that enables key-string caching in `json.loads()`.
+///
+/// Small objects are cheap to convert directly, so cache lookups can be net
+/// overhead. Larger objects are much more likely to repeat keys across many
+/// rows and benefit from reusing previously allocated key strings.
+const LOADS_KEY_CACHE_MIN_OBJECT_SIZE: usize = 5;
 
 /// Creates the `json` module and allocates it on the heap.
 ///
@@ -111,7 +124,9 @@ fn loads(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Inter
     let parsed: JsonValue = serde_json::from_str(&input)
         .map_err(|err| ExcType::value_error_json_decode(format_json_decode_error(&input, &err)))?;
 
-    json_value_to_monty(parsed, heap, interns)
+    let mut key_cache_guard = HeapGuard::new(JsonKeyCache::new(), heap);
+    let (key_cache, heap) = key_cache_guard.as_parts_mut();
+    json_value_to_monty(parsed, heap, interns, key_cache)
 }
 
 /// Extracts JSON text from `json.loads` input.
@@ -141,8 +156,55 @@ fn extract_json_input<'a>(
     }
 }
 
+/// Caches JSON object key strings while converting `json.loads()` output.
+///
+/// Large JSON payloads often repeat the same object keys many times (for example,
+/// arrays of similarly shaped objects). Reusing previously allocated key strings
+/// avoids repeated heap allocations and reduces conversion overhead.
+struct JsonKeyCache {
+    /// Maps UTF-8 key text to one retained Monty string value.
+    keys: AHashMap<String, Value>,
+}
+
+impl JsonKeyCache {
+    /// Creates an empty key cache.
+    fn new() -> Self {
+        Self { keys: AHashMap::new() }
+    }
+
+    /// Returns a key value for this JSON object key, reusing cached strings.
+    ///
+    /// The returned value is owned by the caller and has its reference count
+    /// adjusted appropriately. The cache itself retains one reference for each
+    /// unique key and releases those references at the end of `json.loads()`.
+    fn intern_key(&mut self, key: String, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+        match self.keys.entry(key) {
+            std::collections::hash_map::Entry::Occupied(entry) => Ok(entry.get().clone_with_heap(heap)),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let key_value = allocate_string(entry.key().clone(), heap)?;
+                let cached = key_value.clone_with_heap(heap);
+                entry.insert(cached);
+                Ok(key_value)
+            }
+        }
+    }
+}
+
+impl DropWithHeap for JsonKeyCache {
+    fn drop_with_heap<T: ResourceTracker>(self, heap: &mut Heap<T>) {
+        for value in self.keys.into_values() {
+            value.drop_with_heap(heap);
+        }
+    }
+}
+
 /// Converts a parsed `serde_json::Value` into a Monty runtime `Value`.
-fn json_value_to_monty(value: JsonValue, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Value> {
+fn json_value_to_monty(
+    value: JsonValue,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+    key_cache: &mut JsonKeyCache,
+) -> RunResult<Value> {
     match value {
         JsonValue::Null => Ok(Value::None),
         JsonValue::Bool(b) => Ok(Value::Bool(b)),
@@ -153,11 +215,14 @@ fn json_value_to_monty(value: JsonValue, heap: &mut Heap<impl ResourceTracker>, 
             defer_drop!(token, heap);
 
             let mut values = Vec::with_capacity(items.len());
-            for (idx, item) in items.into_iter().enumerate() {
-                if idx.is_multiple_of(32) {
+            let mut time_check_budget = LOADS_CONVERSION_TIME_CHECK_INTERVAL;
+            for item in items {
+                time_check_budget -= 1;
+                if time_check_budget == 0 {
                     heap.check_time()?;
+                    time_check_budget = LOADS_CONVERSION_TIME_CHECK_INTERVAL;
                 }
-                values.push(json_value_to_monty(item, heap, interns)?);
+                values.push(json_value_to_monty(item, heap, interns, key_cache)?);
             }
             let list_id = heap.allocate(HeapData::List(List::new(values)))?;
             Ok(Value::Ref(list_id))
@@ -167,13 +232,31 @@ fn json_value_to_monty(value: JsonValue, heap: &mut Heap<impl ResourceTracker>, 
             defer_drop!(token, heap);
 
             let mut pairs = Vec::with_capacity(map.len());
-            for (idx, (key, value)) in map.into_iter().enumerate() {
-                if idx.is_multiple_of(32) {
-                    heap.check_time()?;
+            let should_cache_keys = map.len() >= LOADS_KEY_CACHE_MIN_OBJECT_SIZE;
+            if should_cache_keys {
+                let mut time_check_budget = LOADS_CONVERSION_TIME_CHECK_INTERVAL;
+                for (key, value) in map {
+                    time_check_budget -= 1;
+                    if time_check_budget == 0 {
+                        heap.check_time()?;
+                        time_check_budget = LOADS_CONVERSION_TIME_CHECK_INTERVAL;
+                    }
+                    let key_value = key_cache.intern_key(key, heap)?;
+                    let value_value = json_value_to_monty(value, heap, interns, key_cache)?;
+                    pairs.push((key_value, value_value));
                 }
-                let key_value = allocate_string(key, heap)?;
-                let value_value = json_value_to_monty(value, heap, interns)?;
-                pairs.push((key_value, value_value));
+            } else {
+                let mut time_check_budget = LOADS_CONVERSION_TIME_CHECK_INTERVAL;
+                for (key, value) in map {
+                    time_check_budget -= 1;
+                    if time_check_budget == 0 {
+                        heap.check_time()?;
+                        time_check_budget = LOADS_CONVERSION_TIME_CHECK_INTERVAL;
+                    }
+                    let key_value = allocate_string(key, heap)?;
+                    let value_value = json_value_to_monty(value, heap, interns, key_cache)?;
+                    pairs.push((key_value, value_value));
+                }
             }
             let dict = Dict::from_pairs(pairs, heap, interns)?;
             let dict_id = heap.allocate(HeapData::Dict(dict))?;
