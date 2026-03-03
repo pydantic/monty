@@ -28,213 +28,6 @@ use crate::{
     value::Value,
 };
 
-/// Compiled snippet/module representation used only by REPL execution.
-///
-/// This intentionally mirrors the data shape needed by VM execution in
-/// `run.rs` but lives in the REPL module so REPL evolution does not require
-/// changing `run.rs`.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct ReplExecutor {
-    /// Number of slots needed in the global namespace.
-    namespace_size: usize,
-    /// Maps variable names to their indices in the namespace.
-    ///
-    /// Stable slot assignment is required across snippets so previously created
-    /// objects continue to resolve names correctly.
-    name_map: AHashMap<String, NamespaceId>,
-    /// Compiled bytecode for the snippet/module.
-    module_code: Code,
-    /// Interned strings and compiled functions for this snippet/module.
-    interns: Interns,
-    /// Source code used for traceback/error rendering.
-    code: String,
-}
-
-impl ReplExecutor {
-    /// Compiles the initial REPL module.
-    ///
-    /// This is equivalent to normal module compilation but scoped to REPL
-    /// infrastructure so `run.rs` can remain unchanged.
-    fn new(code: String, script_name: &str, input_names: Vec<String>) -> Result<Self, MontyException> {
-        let parse_result = parse(&code, script_name).map_err(|e| e.into_python_exc(script_name, &code))?;
-        let prepared = prepare(parse_result, input_names).map_err(|e| e.into_python_exc(script_name, &code))?;
-
-        let mut interns = Interns::new(prepared.interner, Vec::new());
-        let namespace_size_u16 = u16::try_from(prepared.namespace_size).expect("module namespace size exceeds u16");
-        let compile_result = Compiler::compile_module(&prepared.nodes, &interns, namespace_size_u16)
-            .map_err(|e| e.into_python_exc(script_name, &code))?;
-        interns.set_functions(compile_result.functions);
-
-        Ok(Self {
-            namespace_size: prepared.namespace_size,
-            name_map: prepared.name_map,
-            module_code: compile_result.code,
-            interns,
-            code,
-        })
-    }
-
-    /// Compiles one incremental REPL snippet against existing session metadata.
-    ///
-    /// This differs from normal compilation in three ways required for true
-    /// no-replay execution:
-    /// - Seeds parsing from `existing_interns` so old `StringId` values stay stable.
-    /// - Seeds compilation with existing functions so old `FunctionId` values remain valid.
-    /// - Reuses `existing_name_map` and appends new global names only.
-    fn new_repl_snippet(
-        code: String,
-        script_name: &str,
-        existing_name_map: AHashMap<String, NamespaceId>,
-        existing_interns: &Interns,
-    ) -> Result<Self, MontyException> {
-        let seeded_interner = InternerBuilder::from_interns(existing_interns, &code);
-        let parse_result = parse_with_interner(&code, script_name, seeded_interner)
-            .map_err(|e| e.into_python_exc(script_name, &code))?;
-        let prepared = prepare_with_existing_names(parse_result, existing_name_map)
-            .map_err(|e| e.into_python_exc(script_name, &code))?;
-
-        let existing_functions = existing_interns.functions_clone();
-        let mut interns = Interns::new(prepared.interner, Vec::new());
-        let namespace_size_u16 = u16::try_from(prepared.namespace_size).expect("module namespace size exceeds u16");
-        let compile_result =
-            Compiler::compile_module_with_functions(&prepared.nodes, &interns, namespace_size_u16, existing_functions)
-                .map_err(|e| e.into_python_exc(script_name, &code))?;
-        interns.set_functions(compile_result.functions);
-
-        Ok(Self {
-            namespace_size: prepared.namespace_size,
-            name_map: prepared.name_map,
-            module_code: compile_result.code,
-            interns,
-            code,
-        })
-    }
-
-    /// Builds the runtime namespace stack for module execution.
-    ///
-    /// External function bindings are inserted first, then input values, then
-    /// remaining slots are initialized to `Undefined`.
-    fn prepare_namespaces(
-        &self,
-        inputs: Vec<MontyObject>,
-        heap: &mut Heap<impl ResourceTracker>,
-    ) -> Result<Namespaces, MontyException> {
-        let Some(extra) = self.namespace_size.checked_sub(inputs.len()) else {
-            return Err(MontyException::runtime_error("too many inputs for namespace"));
-        };
-
-        let mut namespace = Vec::with_capacity(self.namespace_size);
-        for input in inputs {
-            namespace.push(
-                input
-                    .to_value(heap, &self.interns)
-                    .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?,
-            );
-        }
-        if extra > 0 {
-            namespace.extend((0..extra).map(|_| Value::Undefined));
-        }
-        Ok(Namespaces::new(namespace))
-    }
-}
-
-/// Converts module/frame exit results into plain `MontyObject` outputs.
-///
-/// REPL initialization executes like normal module execution, which must reject
-/// suspendable outcomes when called through non-iterative APIs.
-fn frame_exit_to_object(
-    frame_exit_result: RunResult<FrameExit>,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<MontyObject> {
-    match frame_exit_result? {
-        FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, heap, interns)),
-        FrameExit::ExternalCall {
-            function_name, args, ..
-        } => {
-            args.drop_with_heap(heap);
-            let function_name = function_name.as_str(interns);
-            Err(ExcType::not_implemented(format!(
-                "External function '{function_name}' not implemented with standard execution"
-            ))
-            .into())
-        }
-        FrameExit::OsCall { function, args, .. } => {
-            args.drop_with_heap(heap);
-            Err(ExcType::not_implemented(format!(
-                "OS function '{function}' not implemented with standard execution"
-            ))
-            .into())
-        }
-        FrameExit::MethodCall { method_name, args, .. } => {
-            args.drop_with_heap(heap);
-            let name = method_name.as_str(interns);
-            Err(
-                ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution"))
-                    .into(),
-            )
-        }
-        FrameExit::ResolveFutures(_) => {
-            Err(ExcType::not_implemented("async futures not supported by standard execution.").into())
-        }
-        FrameExit::NameLookup { name_id, .. } => {
-            let name = interns.get_str(name_id);
-            Err(ExcType::name_error(name).into())
-        }
-    }
-}
-
-/// Parse-derived continuation state for interactive REPL input collection.
-///
-/// `monty-cli` uses this to decide whether to execute the buffered snippet
-/// immediately, keep collecting continuation lines, or require a terminating
-/// blank line for block statements (`if:`, `def:`, etc.).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReplContinuationMode {
-    /// The current snippet is syntactically complete and can run now.
-    Complete,
-    /// The snippet is incomplete and needs more continuation lines.
-    IncompleteImplicit,
-    /// The snippet opened an indented block and should wait for a trailing blank
-    /// line before execution, matching CPython interactive behavior.
-    IncompleteBlock,
-}
-
-/// Detects whether REPL source is complete or needs more input.
-///
-/// This mirrors CPython's broad interactive behavior:
-/// - Incomplete bracketed / parenthesized / triple-quoted constructs continue.
-/// - Clause headers (`if:`, `def:`, etc.) require an indented body and then a
-///   terminating blank line before execution.
-/// - All other parse outcomes are treated as complete (either valid code or a
-///   syntax error that should be shown immediately).
-#[must_use]
-pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
-    let Err(error) = parse_module(source) else {
-        return ReplContinuationMode::Complete;
-    };
-
-    match error.error {
-        ParseErrorType::OtherError(msg) => {
-            if msg.starts_with("Expected an indented block after ") {
-                ReplContinuationMode::IncompleteBlock
-            } else {
-                ReplContinuationMode::Complete
-            }
-        }
-        ParseErrorType::Lexical(LexicalErrorType::Eof)
-        | ParseErrorType::ExpectedToken {
-            found: TokenKind::EndOfFile,
-            ..
-        }
-        | ParseErrorType::FStringError(InterpolatedStringErrorType::UnterminatedTripleQuotedString)
-        | ParseErrorType::TStringError(InterpolatedStringErrorType::UnterminatedTripleQuotedString) => {
-            ReplContinuationMode::IncompleteImplicit
-        }
-        _ => ReplContinuationMode::Complete,
-    }
-}
-
 /// Stateful REPL session that executes snippets incrementally without replay.
 ///
 /// `MontyRepl` preserves heap and global namespace state between snippets.
@@ -886,7 +679,176 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
 }
 
 // ---------------------------------------------------------------------------
-// ReplSnapshot (pub(crate))
+// ReplContinuationMode — public utility for interactive input collection
+// ---------------------------------------------------------------------------
+
+/// Parse-derived continuation state for interactive REPL input collection.
+///
+/// `monty-cli` uses this to decide whether to execute the buffered snippet
+/// immediately, keep collecting continuation lines, or require a terminating
+/// blank line for block statements (`if:`, `def:`, etc.).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplContinuationMode {
+    /// The current snippet is syntactically complete and can run now.
+    Complete,
+    /// The snippet is incomplete and needs more continuation lines.
+    IncompleteImplicit,
+    /// The snippet opened an indented block and should wait for a trailing blank
+    /// line before execution, matching CPython interactive behavior.
+    IncompleteBlock,
+}
+
+/// Detects whether REPL source is complete or needs more input.
+///
+/// This mirrors CPython's broad interactive behavior:
+/// - Incomplete bracketed / parenthesized / triple-quoted constructs continue.
+/// - Clause headers (`if:`, `def:`, etc.) require an indented body and then a
+///   terminating blank line before execution.
+/// - All other parse outcomes are treated as complete (either valid code or a
+///   syntax error that should be shown immediately).
+#[must_use]
+pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
+    let Err(error) = parse_module(source) else {
+        return ReplContinuationMode::Complete;
+    };
+
+    match error.error {
+        ParseErrorType::OtherError(msg) => {
+            if msg.starts_with("Expected an indented block after ") {
+                ReplContinuationMode::IncompleteBlock
+            } else {
+                ReplContinuationMode::Complete
+            }
+        }
+        ParseErrorType::Lexical(LexicalErrorType::Eof)
+        | ParseErrorType::ExpectedToken {
+            found: TokenKind::EndOfFile,
+            ..
+        }
+        | ParseErrorType::FStringError(InterpolatedStringErrorType::UnterminatedTripleQuotedString)
+        | ParseErrorType::TStringError(InterpolatedStringErrorType::UnterminatedTripleQuotedString) => {
+            ReplContinuationMode::IncompleteImplicit
+        }
+        _ => ReplContinuationMode::Complete,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ReplExecutor — internal compilation helper
+// ---------------------------------------------------------------------------
+
+/// Compiled snippet/module representation used only by REPL execution.
+///
+/// This intentionally mirrors the data shape needed by VM execution in
+/// `run.rs` but lives in the REPL module so REPL evolution does not require
+/// changing `run.rs`.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct ReplExecutor {
+    /// Number of slots needed in the global namespace.
+    namespace_size: usize,
+    /// Maps variable names to their indices in the namespace.
+    ///
+    /// Stable slot assignment is required across snippets so previously created
+    /// objects continue to resolve names correctly.
+    name_map: AHashMap<String, NamespaceId>,
+    /// Compiled bytecode for the snippet/module.
+    module_code: Code,
+    /// Interned strings and compiled functions for this snippet/module.
+    interns: Interns,
+    /// Source code used for traceback/error rendering.
+    code: String,
+}
+
+impl ReplExecutor {
+    /// Compiles the initial REPL module.
+    ///
+    /// This is equivalent to normal module compilation but scoped to REPL
+    /// infrastructure so `run.rs` can remain unchanged.
+    fn new(code: String, script_name: &str, input_names: Vec<String>) -> Result<Self, MontyException> {
+        let parse_result = parse(&code, script_name).map_err(|e| e.into_python_exc(script_name, &code))?;
+        let prepared = prepare(parse_result, input_names).map_err(|e| e.into_python_exc(script_name, &code))?;
+
+        let mut interns = Interns::new(prepared.interner, Vec::new());
+        let namespace_size_u16 = u16::try_from(prepared.namespace_size).expect("module namespace size exceeds u16");
+        let compile_result = Compiler::compile_module(&prepared.nodes, &interns, namespace_size_u16)
+            .map_err(|e| e.into_python_exc(script_name, &code))?;
+        interns.set_functions(compile_result.functions);
+
+        Ok(Self {
+            namespace_size: prepared.namespace_size,
+            name_map: prepared.name_map,
+            module_code: compile_result.code,
+            interns,
+            code,
+        })
+    }
+
+    /// Compiles one incremental REPL snippet against existing session metadata.
+    ///
+    /// This differs from normal compilation in three ways required for true
+    /// no-replay execution:
+    /// - Seeds parsing from `existing_interns` so old `StringId` values stay stable.
+    /// - Seeds compilation with existing functions so old `FunctionId` values remain valid.
+    /// - Reuses `existing_name_map` and appends new global names only.
+    fn new_repl_snippet(
+        code: String,
+        script_name: &str,
+        existing_name_map: AHashMap<String, NamespaceId>,
+        existing_interns: &Interns,
+    ) -> Result<Self, MontyException> {
+        let seeded_interner = InternerBuilder::from_interns(existing_interns, &code);
+        let parse_result = parse_with_interner(&code, script_name, seeded_interner)
+            .map_err(|e| e.into_python_exc(script_name, &code))?;
+        let prepared = prepare_with_existing_names(parse_result, existing_name_map)
+            .map_err(|e| e.into_python_exc(script_name, &code))?;
+
+        let existing_functions = existing_interns.functions_clone();
+        let mut interns = Interns::new(prepared.interner, Vec::new());
+        let namespace_size_u16 = u16::try_from(prepared.namespace_size).expect("module namespace size exceeds u16");
+        let compile_result =
+            Compiler::compile_module_with_functions(&prepared.nodes, &interns, namespace_size_u16, existing_functions)
+                .map_err(|e| e.into_python_exc(script_name, &code))?;
+        interns.set_functions(compile_result.functions);
+
+        Ok(Self {
+            namespace_size: prepared.namespace_size,
+            name_map: prepared.name_map,
+            module_code: compile_result.code,
+            interns,
+            code,
+        })
+    }
+
+    /// Builds the runtime namespace stack for module execution.
+    ///
+    /// External function bindings are inserted first, then input values, then
+    /// remaining slots are initialized to `Undefined`.
+    fn prepare_namespaces(
+        &self,
+        inputs: Vec<MontyObject>,
+        heap: &mut Heap<impl ResourceTracker>,
+    ) -> Result<Namespaces, MontyException> {
+        let Some(extra) = self.namespace_size.checked_sub(inputs.len()) else {
+            return Err(MontyException::runtime_error("too many inputs for namespace"));
+        };
+
+        let mut namespace = Vec::with_capacity(self.namespace_size);
+        for input in inputs {
+            namespace.push(
+                input
+                    .to_value(heap, &self.interns)
+                    .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?,
+            );
+        }
+        if extra > 0 {
+            namespace.extend((0..extra).map(|_| Value::Undefined));
+        }
+        Ok(Namespaces::new(namespace))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ReplSnapshot — internal execution state for suspend/resume
 // ---------------------------------------------------------------------------
 
 /// REPL execution state that can be resumed after an external call.
@@ -949,8 +911,54 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
 }
 
 // ---------------------------------------------------------------------------
-// handle_repl_vm_result
+// Private helper functions
 // ---------------------------------------------------------------------------
+
+/// Converts module/frame exit results into plain `MontyObject` outputs.
+///
+/// REPL initialization executes like normal module execution, which must reject
+/// suspendable outcomes when called through non-iterative APIs.
+fn frame_exit_to_object(
+    frame_exit_result: RunResult<FrameExit>,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<MontyObject> {
+    match frame_exit_result? {
+        FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, heap, interns)),
+        FrameExit::ExternalCall {
+            function_name, args, ..
+        } => {
+            args.drop_with_heap(heap);
+            let function_name = function_name.as_str(interns);
+            Err(ExcType::not_implemented(format!(
+                "External function '{function_name}' not implemented with standard execution"
+            ))
+            .into())
+        }
+        FrameExit::OsCall { function, args, .. } => {
+            args.drop_with_heap(heap);
+            Err(ExcType::not_implemented(format!(
+                "OS function '{function}' not implemented with standard execution"
+            ))
+            .into())
+        }
+        FrameExit::MethodCall { method_name, args, .. } => {
+            args.drop_with_heap(heap);
+            let name = method_name.as_str(interns);
+            Err(
+                ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution"))
+                    .into(),
+            )
+        }
+        FrameExit::ResolveFutures(_) => {
+            Err(ExcType::not_implemented("async futures not supported by standard execution.").into())
+        }
+        FrameExit::NameLookup { name_id, .. } => {
+            let name = interns.get_str(name_id);
+            Err(ExcType::name_error(name).into())
+        }
+    }
+}
 
 /// Handles a `FrameExit` result and converts it to REPL progress.
 ///

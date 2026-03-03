@@ -8,6 +8,28 @@ use monty::{
     ReplStartError, detect_repl_continuation_mode,
 };
 
+#[test]
+fn repl_executes_only_new_code() {
+    let (mut repl, init_output) = MontyRepl::new(
+        "counter = 0".to_owned(),
+        "repl.py",
+        vec![],
+        vec![],
+        NoLimitTracker,
+        &mut PrintWriter::Stdout,
+    )
+    .unwrap();
+    assert_eq!(init_output, MontyObject::None);
+
+    // Execute a snippet that mutates state.
+    let output = repl.feed_no_print("counter = counter + 1").unwrap();
+    assert_eq!(output, MontyObject::None);
+
+    // Feed only the read expression. If replay happened, we'd get 2 instead of 1.
+    let output = repl.feed_no_print("counter").unwrap();
+    assert_eq!(output, MontyObject::Int(1));
+}
+
 fn init_repl(code: &str) -> (MontyRepl<NoLimitTracker>, MontyObject) {
     MontyRepl::new(
         code.to_owned(),
@@ -18,20 +40,6 @@ fn init_repl(code: &str) -> (MontyRepl<NoLimitTracker>, MontyObject) {
         &mut PrintWriter::Stdout,
     )
     .unwrap()
-}
-
-#[test]
-fn repl_executes_only_new_code() {
-    let (mut repl, init_output) = init_repl("counter = 0");
-    assert_eq!(init_output, MontyObject::None);
-
-    // Execute a snippet that mutates state.
-    let output = repl.feed_no_print("counter = counter + 1").unwrap();
-    assert_eq!(output, MontyObject::None);
-
-    // Feed only the read expression. If replay happened, we'd get 2 instead of 1.
-    let output = repl.feed_no_print("counter").unwrap();
-    assert_eq!(output, MontyObject::Int(1));
 }
 
 #[test]
@@ -318,4 +326,27 @@ fn repl_dataclass_method_call_yields_function_call_with_method_flag() {
 
     // Verify REPL state is preserved after method call
     assert_eq!(repl.feed_no_print("1 + 1").unwrap(), MontyObject::Int(2));
+}
+
+#[test]
+fn repl_start_new_external_function_in_later_block() {
+    // Verify that an external function never referenced in prior blocks can be
+    // called for the first time in a later REPL snippet.
+    let (mut repl, _) = init_repl("x = 10");
+
+    repl.feed_no_print("y = x + 5").unwrap();
+
+    // Now call a brand-new external function that was never mentioned before.
+    let progress = repl.start("new_ext(y)", &mut PrintWriter::Stdout).unwrap();
+    let call = progress.into_function_call().expect("expected function call");
+    assert_eq!(call.function_name, "new_ext");
+    assert_eq!(call.args, vec![MontyObject::Int(15)]);
+
+    let progress = call.resume(MontyObject::Int(100), &mut PrintWriter::Stdout).unwrap();
+    let (mut repl, value) = progress.into_complete().expect("expected completion");
+    assert_eq!(value, MontyObject::Int(100));
+
+    // REPL state from before the external call is still intact.
+    assert_eq!(repl.feed_no_print("x").unwrap(), MontyObject::Int(10));
+    assert_eq!(repl.feed_no_print("y").unwrap(), MontyObject::Int(15));
 }
