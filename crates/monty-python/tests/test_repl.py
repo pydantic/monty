@@ -37,27 +37,27 @@ def test_repr():
     assert repr(repl) == snapshot("MontyRepl(script_name='my_repl.py')")
 
 
-# === Basic feed behavior ===
+# === Basic feed_run behavior ===
 
 
-def test_feed_expression_returns_value():
+def test_feed_run_expression_returns_value():
     repl = pydantic_monty.MontyRepl()
-    assert repl.feed('1 + 2') == snapshot(3)
+    assert repl.feed_run('1 + 2') == snapshot(3)
 
 
-def test_feed_assignment_returns_none():
+def test_feed_run_assignment_returns_none():
     repl = pydantic_monty.MontyRepl()
-    assert repl.feed('x = 42') == snapshot(None)
+    assert repl.feed_run('x = 42') == snapshot(None)
 
 
-def test_feed_empty_string_returns_none():
+def test_feed_run_empty_string_returns_none():
     repl = pydantic_monty.MontyRepl()
-    assert repl.feed('') == snapshot(None)
+    assert repl.feed_run('') == snapshot(None)
 
 
-def test_feed_none_literal():
+def test_feed_run_none_literal():
     repl = pydantic_monty.MontyRepl()
-    assert repl.feed('None') is None
+    assert repl.feed_run('None') is None
 
 
 # === State persistence across feeds ===
@@ -65,60 +65,60 @@ def test_feed_none_literal():
 
 def test_variable_persists_across_feeds():
     repl = pydantic_monty.MontyRepl()
-    repl.feed('x = 10')
-    assert repl.feed('x') == snapshot(10)
+    repl.feed_run('x = 10')
+    assert repl.feed_run('x') == snapshot(10)
 
 
 def test_incremental_mutation():
     repl = pydantic_monty.MontyRepl()
-    repl.feed('counter = 0')
-    repl.feed('counter = counter + 1')
-    repl.feed('counter = counter + 1')
-    assert repl.feed('counter') == snapshot(2)
+    repl.feed_run('counter = 0')
+    repl.feed_run('counter = counter + 1')
+    repl.feed_run('counter = counter + 1')
+    assert repl.feed_run('counter') == snapshot(2)
 
 
 def test_multiple_variables():
     repl = pydantic_monty.MontyRepl()
-    repl.feed('x = 10')
-    repl.feed('y = 20')
-    assert repl.feed('x + y') == snapshot(30)
+    repl.feed_run('x = 10')
+    repl.feed_run('y = 20')
+    assert repl.feed_run('x + y') == snapshot(30)
 
 
 def test_function_defined_then_called():
     repl = pydantic_monty.MontyRepl()
-    repl.feed('def double(n):\n    return n * 2')
-    assert repl.feed('double(21)') == snapshot(42)
+    repl.feed_run('def double(n):\n    return n * 2')
+    assert repl.feed_run('double(21)') == snapshot(42)
 
 
 def test_function_uses_previously_defined_variable():
     repl = pydantic_monty.MontyRepl()
-    repl.feed('factor = 3')
-    repl.feed('def multiply(n):\n    return n * factor')
-    assert repl.feed('multiply(7)') == snapshot(21)
+    repl.feed_run('factor = 3')
+    repl.feed_run('def multiply(n):\n    return n * factor')
+    assert repl.feed_run('multiply(7)') == snapshot(21)
 
 
 def test_list_mutation_persists():
     repl = pydantic_monty.MontyRepl()
-    repl.feed('items = [1, 2, 3]')
-    repl.feed('items.append(4)')
-    assert repl.feed('len(items)') == snapshot(4)
-    assert repl.feed('items') == snapshot([1, 2, 3, 4])
+    repl.feed_run('items = [1, 2, 3]')
+    repl.feed_run('items.append(4)')
+    assert repl.feed_run('len(items)') == snapshot(4)
+    assert repl.feed_run('items') == snapshot([1, 2, 3, 4])
 
 
 def test_dict_mutation_persists():
     repl = pydantic_monty.MontyRepl()
-    repl.feed("data = {'a': 1}")
-    repl.feed("data['b'] = 2")
-    assert repl.feed('len(data)') == snapshot(2)
-    assert repl.feed("data['b']") == snapshot(2)
+    repl.feed_run("data = {'a': 1}")
+    repl.feed_run("data['b'] = 2")
+    assert repl.feed_run('len(data)') == snapshot(2)
+    assert repl.feed_run("data['b']") == snapshot(2)
 
 
 def test_variable_reassignment():
     repl = pydantic_monty.MontyRepl()
-    repl.feed('x = "hello"')
-    assert repl.feed('x') == snapshot('hello')
-    repl.feed('x = 42')
-    assert repl.feed('x') == snapshot(42)
+    repl.feed_run('x = "hello"')
+    assert repl.feed_run('x') == snapshot('hello')
+    repl.feed_run('x = 42')
+    assert repl.feed_run('x') == snapshot(42)
 
 
 # === Multi-statement snippets ===
@@ -126,21 +126,21 @@ def test_variable_reassignment():
 
 def test_multi_statement_snippet():
     repl = pydantic_monty.MontyRepl()
-    repl.feed('a = 1\nb = 2\nc = a + b')
-    assert repl.feed('c') == snapshot(3)
+    repl.feed_run('a = 1\nb = 2\nc = a + b')
+    assert repl.feed_run('c') == snapshot(3)
 
 
 def test_loop_in_snippet():
     repl = pydantic_monty.MontyRepl()
-    repl.feed('total = 0\nfor i in range(5):\n    total = total + i')
-    assert repl.feed('total') == snapshot(10)
+    repl.feed_run('total = 0\nfor i in range(5):\n    total = total + i')
+    assert repl.feed_run('total') == snapshot(10)
 
 
 def test_if_else_in_snippet():
     repl = pydantic_monty.MontyRepl()
-    repl.feed('x = 10')
-    repl.feed('result = "big" if x > 5 else "small"')
-    assert repl.feed('result') == snapshot('big')
+    repl.feed_run('x = 10')
+    repl.feed_run('result = "big" if x > 5 else "small"')
+    assert repl.feed_run('result') == snapshot('big')
 
 
 # === Return value types ===
@@ -160,9 +160,9 @@ def test_if_else_in_snippet():
     ],
     ids=['int', 'float', 'str', 'true', 'false', 'list', 'tuple', 'dict'],
 )
-def test_feed_return_types(code: str, expected: object):
+def test_feed_run_return_types(code: str, expected: object):
     repl = pydantic_monty.MontyRepl()
-    assert repl.feed(code) == expected
+    assert repl.feed_run(code) == expected
 
 
 # === Error handling ===
@@ -171,23 +171,23 @@ def test_feed_return_types(code: str, expected: object):
 def test_syntax_error():
     repl = pydantic_monty.MontyRepl()
     with pytest.raises(pydantic_monty.MontySyntaxError):
-        repl.feed('def')
+        repl.feed_run('def')
 
 
 def test_runtime_error_preserves_state():
     """A runtime error should not destroy previously defined state."""
     repl = pydantic_monty.MontyRepl()
-    repl.feed('x = 42')
+    repl.feed_run('x = 42')
     with pytest.raises(pydantic_monty.MontyRuntimeError):
-        repl.feed('1 / 0')
+        repl.feed_run('1 / 0')
     # x should still be accessible after the error
-    assert repl.feed('x') == snapshot(42)
+    assert repl.feed_run('x') == snapshot(42)
 
 
 def test_name_error():
     repl = pydantic_monty.MontyRepl()
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        repl.feed('undefined_var')
+        repl.feed_run('undefined_var')
     inner = exc_info.value.exception()
     assert isinstance(inner, NameError)
 
@@ -195,7 +195,7 @@ def test_name_error():
 def test_type_error():
     repl = pydantic_monty.MontyRepl()
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        repl.feed('"hello" + 1')
+        repl.feed_run('"hello" + 1')
     inner = exc_info.value.exception()
     assert isinstance(inner, TypeError)
 
@@ -203,7 +203,7 @@ def test_type_error():
 def test_zero_division_error():
     repl = pydantic_monty.MontyRepl()
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        repl.feed('1 / 0')
+        repl.feed_run('1 / 0')
     inner = exc_info.value.exception()
     assert isinstance(inner, ZeroDivisionError)
 
@@ -211,7 +211,7 @@ def test_zero_division_error():
 def test_index_error():
     repl = pydantic_monty.MontyRepl()
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        repl.feed('[1, 2][10]')
+        repl.feed_run('[1, 2][10]')
     inner = exc_info.value.exception()
     assert isinstance(inner, IndexError)
 
@@ -219,20 +219,20 @@ def test_index_error():
 def test_key_error():
     repl = pydantic_monty.MontyRepl()
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        repl.feed("{'a': 1}['b']")
+        repl.feed_run("{'a': 1}['b']")
     inner = exc_info.value.exception()
     assert isinstance(inner, KeyError)
 
 
 def test_multiple_errors_dont_corrupt_state():
     repl = pydantic_monty.MontyRepl()
-    repl.feed('x = 1')
+    repl.feed_run('x = 1')
     with pytest.raises(pydantic_monty.MontyRuntimeError):
-        repl.feed('1 / 0')
-    repl.feed('x = x + 1')
+        repl.feed_run('1 / 0')
+    repl.feed_run('x = x + 1')
     with pytest.raises(pydantic_monty.MontyRuntimeError):
-        repl.feed('undefined_name')
-    assert repl.feed('x') == snapshot(2)
+        repl.feed_run('undefined_name')
+    assert repl.feed_run('x') == snapshot(2)
 
 
 # === Print callback ===
@@ -241,14 +241,14 @@ def test_multiple_errors_dont_corrupt_state():
 def test_print_callback_on_constructor():
     output, callback = make_print_collector()
     repl = pydantic_monty.MontyRepl(print_callback=callback)
-    repl.feed('print("hello")')
+    repl.feed_run('print("hello")')
     assert ''.join(output) == snapshot('hello\n')
 
 
 def test_print_callback_on_feed():
     repl = pydantic_monty.MontyRepl()
     output, callback = make_print_collector()
-    repl.feed('print("hello")', print_callback=callback)
+    repl.feed_run('print("hello")', print_callback=callback)
     assert ''.join(output) == snapshot('hello\n')
 
 
@@ -257,7 +257,7 @@ def test_print_callback_per_feed_overrides_constructor():
     repl = pydantic_monty.MontyRepl(print_callback=ctor_callback)
 
     feed_output, feed_callback = make_print_collector()
-    repl.feed('print("routed")', print_callback=feed_callback)
+    repl.feed_run('print("routed")', print_callback=feed_callback)
 
     assert ''.join(ctor_output) == snapshot('')
     assert ''.join(feed_output) == snapshot('routed\n')
@@ -266,8 +266,8 @@ def test_print_callback_per_feed_overrides_constructor():
 def test_print_callback_persists_across_feeds():
     output, callback = make_print_collector()
     repl = pydantic_monty.MontyRepl(print_callback=callback)
-    repl.feed('print("first")')
-    repl.feed('print("second")')
+    repl.feed_run('print("first")')
+    repl.feed_run('print("second")')
     assert ''.join(output) == snapshot('first\nsecond\n')
 
 
@@ -277,14 +277,14 @@ def test_print_callback_persists_across_feeds():
 def test_construction_with_limits():
     limits = pydantic_monty.ResourceLimits(max_duration_secs=5.0)
     repl = pydantic_monty.MontyRepl(limits=limits)
-    assert repl.feed('1 + 1') == snapshot(2)
+    assert repl.feed_run('1 + 1') == snapshot(2)
 
 
 def test_infinite_loop_with_limits():
     limits = pydantic_monty.ResourceLimits(max_duration_secs=0.5)
     repl = pydantic_monty.MontyRepl(limits=limits)
     with pytest.raises(pydantic_monty.MontyRuntimeError):
-        repl.feed('while True:\n    pass')
+        repl.feed_run('while True:\n    pass')
 
 
 # === Serialization ===
@@ -292,22 +292,22 @@ def test_infinite_loop_with_limits():
 
 def test_dump_load_roundtrip():
     repl = pydantic_monty.MontyRepl()
-    repl.feed('x = 40')
-    repl.feed('x = x + 1')
+    repl.feed_run('x = 40')
+    repl.feed_run('x = x + 1')
 
     serialized = repl.dump()
     assert isinstance(serialized, bytes)
 
     loaded = pydantic_monty.MontyRepl.load(serialized)
-    assert loaded.feed('x + 1') == snapshot(42)
+    assert loaded.feed_run('x + 1') == snapshot(42)
 
 
 def test_dump_load_preserves_functions():
     repl = pydantic_monty.MontyRepl()
-    repl.feed('def greet(name):\n    return "hello " + name')
+    repl.feed_run('def greet(name):\n    return "hello " + name')
 
     loaded = pydantic_monty.MontyRepl.load(repl.dump())
-    assert loaded.feed('greet("world")') == snapshot('hello world')
+    assert loaded.feed_run('greet("world")') == snapshot('hello world')
 
 
 def test_dump_load_preserves_script_name():
@@ -318,14 +318,111 @@ def test_dump_load_preserves_script_name():
 
 def test_load_with_print_callback():
     repl = pydantic_monty.MontyRepl()
-    repl.feed('x = 1')
+    repl.feed_run('x = 1')
 
     output, callback = make_print_collector()
     loaded = pydantic_monty.MontyRepl.load(repl.dump(), print_callback=callback)
-    loaded.feed('print(x)')
+    loaded.feed_run('print(x)')
     assert ''.join(output) == snapshot('1\n')
 
 
 def test_load_invalid_data():
     with pytest.raises(ValueError):
         pydantic_monty.MontyRepl.load(b'invalid data')
+
+
+# === External functions ===
+
+
+def test_external_function_basic():
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    repl = pydantic_monty.MontyRepl()
+    assert repl.feed_run('result = add(3, 4)', external_functions={'add': add}) == snapshot(None)
+    assert repl.feed_run('result') == snapshot(7)
+
+
+def test_external_function_return_value():
+    def greet(name: str) -> str:
+        return f'hello {name}'
+
+    repl = pydantic_monty.MontyRepl()
+    assert repl.feed_run('greet("world")', external_functions={'greet': greet}) == snapshot('hello world')
+
+
+def test_external_function_called_multiple_times():
+    call_count = 0
+
+    def counter():
+        nonlocal call_count
+        call_count += 1
+        return call_count
+
+    repl = pydantic_monty.MontyRepl()
+    ext = {'counter': counter}
+    assert repl.feed_run('counter()', external_functions=ext) == snapshot(1)
+    assert repl.feed_run('counter()', external_functions=ext) == snapshot(2)
+    assert call_count == 2
+
+
+def test_external_function_persists_state_across_feeds():
+    def double(x: int) -> int:
+        return x * 2
+
+    repl = pydantic_monty.MontyRepl()
+    repl.feed_run('x = 5')
+    assert repl.feed_run('double(x)', external_functions={'double': double}) == snapshot(10)
+
+
+def test_external_function_exception_becomes_runtime_error():
+    def fail():
+        raise ValueError('external failure')
+
+    repl = pydantic_monty.MontyRepl()
+    ext = {'fail': fail}
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        repl.feed_run('fail()', external_functions=ext)
+    inner = exc_info.value.exception()
+    assert isinstance(inner, ValueError)
+    assert str(inner) == snapshot('external failure')
+
+
+def test_external_function_error_preserves_repl_state():
+    def fail():
+        raise ValueError('boom')
+
+    repl = pydantic_monty.MontyRepl()
+    repl.feed_run('x = 42')
+    ext = {'fail': fail}
+    with pytest.raises(pydantic_monty.MontyRuntimeError):
+        repl.feed_run('fail()', external_functions=ext)
+    # REPL state should be preserved after error
+    assert repl.feed_run('x') == snapshot(42)
+
+
+def test_external_function_undefined_raises_name_error():
+    """Calling a name that's not in external_functions raises NameError."""
+    repl = pydantic_monty.MontyRepl()
+    ext = {'known': lambda: 1}
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        repl.feed_run('unknown()', external_functions=ext)
+    inner = exc_info.value.exception()
+    assert isinstance(inner, NameError)
+
+
+def test_external_function_with_print_callback():
+    output, callback = make_print_collector()
+    repl = pydantic_monty.MontyRepl()
+    ext = {'get_msg': lambda: 'from external'}
+    repl.feed_run('x = get_msg()\nprint(x)', external_functions=ext, print_callback=callback)
+    assert ''.join(output) == snapshot('from external\n')
+
+
+def test_external_function_with_kwargs():
+    def greet(name: str, greeting: str = 'hello') -> str:
+        return f'{greeting} {name}'
+
+    repl = pydantic_monty.MontyRepl()
+    ext = {'greet': greet}
+    assert repl.feed_run("greet('world', greeting='hi')", external_functions=ext) == snapshot('hi world')

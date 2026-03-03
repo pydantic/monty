@@ -194,7 +194,7 @@ class MontyRepl:
     """
     Incremental no-replay REPL session.
 
-    Create with ``MontyRepl()`` then call ``feed()`` to execute snippets
+    Create with ``MontyRepl()`` then call ``feed_run()`` to execute snippets
     incrementally against persistent heap and namespace state.
     """
 
@@ -207,7 +207,7 @@ class MontyRepl:
         dataclass_registry: list[type] | None = None,
     ) -> Self:
         """
-        Create an empty REPL session ready to receive snippets via ``feed()``.
+        Create an empty REPL session ready to receive snippets via ``feed_run()``.
 
         No code is parsed or executed at construction time.
         """
@@ -216,14 +216,25 @@ class MontyRepl:
     def script_name(self) -> str:
         """The name of the script being executed."""
 
-    def feed(
+    def register_dataclass(self, cls: type) -> None:
+        """
+        Register a dataclass type for proper isinstance() support on output.
+        """
+
+    def feed_run(
         self,
         code: str,
         *,
+        external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        os: Callable[[str, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> Any:
         """
         Execute one incremental snippet and return its output.
+
+        When ``external_functions`` is provided, external function calls and
+        name lookups are dispatched to the provided callables — matching the
+        behavior of ``Monty.run(external_functions=...)``.
         """
 
     def dump(self) -> bytes:
