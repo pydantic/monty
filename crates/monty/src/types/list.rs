@@ -366,13 +366,13 @@ impl PyTrait for List {
 
     fn py_iadd(
         &mut self,
-        other: Value,
+        other: &Value,
         heap: &mut Heap<impl ResourceTracker>,
         self_id: Option<HeapId>,
         _interns: &Interns,
     ) -> Result<bool, crate::resource::ResourceError> {
         // Extract the value ID first, keeping `other` around to drop later
-        let Value::Ref(other_id) = &other else { return Ok(false) };
+        let Value::Ref(other_id) = other else { return Ok(false) };
 
         if Some(*other_id) == self_id {
             // Self-extend: clone our own items with proper refcounting
@@ -408,8 +408,6 @@ impl PyTrait for List {
             }
         }
 
-        // Drop the other value - we've extracted its contents and are done with the temporary reference
-        other.drop_with_heap(heap);
         Ok(true)
     }
 

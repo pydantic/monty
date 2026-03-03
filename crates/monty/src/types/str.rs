@@ -26,24 +26,19 @@ use crate::{
 /// Wraps a Rust `String` and provides Python-compatible operations.
 /// `len()` returns the number of Unicode codepoints (characters), matching Python semantics.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Str(String);
+pub(crate) struct Str(Box<str>);
 
 impl Str {
     /// Creates a new Str from a Rust String.
     #[must_use]
     pub fn new(s: String) -> Self {
-        Self(s)
+        Self(s.into())
     }
 
     /// Returns a reference to the inner string.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-
-    /// Returns a mutable reference to the inner string.
-    pub fn as_string_mut(&mut self) -> &mut String {
-        &mut self.0
     }
 
     /// Creates a string from the `str()` constructor call.
@@ -81,19 +76,19 @@ impl Str {
 
 impl From<String> for Str {
     fn from(s: String) -> Self {
-        Self(s)
+        Self(s.into())
     }
 }
 
 impl From<&str> for Str {
     fn from(s: &str) -> Self {
-        Self(s.to_string())
+        Self(s.into())
     }
 }
 
 impl From<Str> for String {
     fn from(value: Str) -> Self {
-        value.0
+        value.0.into_string()
     }
 }
 
@@ -202,7 +197,7 @@ pub(crate) fn get_str_slice(s: &str, start: usize, stop: usize, step: i64) -> St
 }
 
 impl std::ops::Deref for Str {
-    type Target = String;
+    type Target = str;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -270,7 +265,7 @@ impl PyTrait for Str {
     }
 
     fn py_str(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Cow<'static, str> {
-        self.0.clone().into()
+        self.0.clone().into_string().into()
     }
 
     fn py_add(
@@ -282,35 +277,6 @@ impl PyTrait for Str {
         let result = format!("{}{}", self.0, other.0);
         let id = heap.allocate(HeapData::Str(result.into()))?;
         Ok(Some(Value::Ref(id)))
-    }
-
-    fn py_iadd(
-        &mut self,
-        other: Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        self_id: Option<HeapId>,
-        interns: &Interns,
-    ) -> Result<bool, crate::resource::ResourceError> {
-        match &other {
-            Value::Ref(other_id) => {
-                if Some(*other_id) == self_id {
-                    let rhs = self.0.clone();
-                    self.0.push_str(&rhs);
-                } else if let HeapData::Str(rhs) = heap.get(*other_id) {
-                    self.0.push_str(rhs.as_str());
-                } else {
-                    return Ok(false);
-                }
-                // Drop the other value - we've consumed it
-                other.drop_with_heap(heap);
-                Ok(true)
-            }
-            Value::InternString(string_id) => {
-                self.0.push_str(interns.get_str(*string_id));
-                Ok(true)
-            }
-            _ => Ok(false),
-        }
     }
 
     fn py_call_attr(

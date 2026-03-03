@@ -589,22 +589,15 @@ impl PyTrait for HeapData {
 
     fn py_iadd(
         &mut self,
-        other: Value,
+        other: &Value,
         heap: &mut Heap<impl ResourceTracker>,
         self_id: Option<HeapId>,
         interns: &Interns,
     ) -> Result<bool, crate::resource::ResourceError> {
         match self {
-            Self::Str(s) => s.py_iadd(other, heap, self_id, interns),
-            Self::Bytes(b) => b.py_iadd(other, heap, self_id, interns),
             Self::List(l) => l.py_iadd(other, heap, self_id, interns),
-            Self::Tuple(t) => t.py_iadd(other, heap, self_id, interns),
             Self::Dict(d) => d.py_iadd(other, heap, self_id, interns),
-            _ => {
-                // Drop other if it's a Ref (ensure proper refcounting for unsupported types)
-                other.drop_with_heap(heap);
-                Ok(false)
-            }
+            _ => Ok(false),
         }
     }
 

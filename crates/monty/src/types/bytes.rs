@@ -177,11 +177,6 @@ impl Bytes {
         &self.0
     }
 
-    /// Returns a mutable reference to the inner byte vector.
-    pub fn as_vec_mut(&mut self) -> &mut Vec<u8> {
-        &mut self.0
-    }
-
     /// Creates bytes from the `bytes()` constructor call.
     ///
     /// - `bytes()` with no args returns empty bytes

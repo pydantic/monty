@@ -642,12 +642,12 @@ impl PyTrait for Value {
 
     fn py_iadd(
         &mut self,
-        other: Self,
+        other: &Self,
         heap: &mut Heap<impl ResourceTracker>,
         _self_id: Option<HeapId>,
         interns: &Interns,
     ) -> Result<bool, crate::resource::ResourceError> {
-        match (&self, &other) {
+        match (&self, other) {
             (Self::Int(v1), Self::Int(v2)) => {
                 if let Some(result) = v1.checked_add(*v2) {
                     *self = Self::Int(result);
@@ -675,17 +675,7 @@ impl PyTrait for Value {
                 } else {
                     false
                 };
-                // Drop the other value - we've consumed it
-                other.drop_with_heap(heap);
                 Ok(result)
-            }
-            (Self::Ref(id1), Self::InternString(string_id)) => {
-                if let HeapDataMut::Str(s1) = heap.get_mut(*id1) {
-                    s1.as_string_mut().push_str(interns.get_str(*string_id));
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
             }
             // same for bytes
             (Self::InternBytes(b1), Self::InternBytes(b2)) => {
@@ -708,26 +698,12 @@ impl PyTrait for Value {
                 } else {
                     false
                 };
-                // Drop the other value - we've consumed it
-                other.drop_with_heap(heap);
                 Ok(result)
-            }
-            (Self::Ref(id1), Self::InternBytes(bytes_id)) => {
-                if let HeapDataMut::Bytes(b1) = heap.get_mut(*id1) {
-                    b1.as_vec_mut().extend_from_slice(interns.get_bytes(*bytes_id));
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
             }
             (Self::Ref(id), Self::Ref(_)) => {
                 heap.with_entry_mut(*id, |heap, mut data| data.py_iadd(other, heap, Some(*id), interns))
             }
-            _ => {
-                // Drop other if it's a Ref (ensure proper refcounting for unsupported type combinations)
-                other.drop_with_heap(heap);
-                Ok(false)
-            }
+            _ => Ok(false),
         }
     }
 
