@@ -203,7 +203,6 @@ class MontyRepl:
         *,
         script_name: str = 'main.py',
         limits: ResourceLimits | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
         dataclass_registry: list[type] | None = None,
     ) -> Self:
         """
@@ -225,12 +224,16 @@ class MontyRepl:
         self,
         code: str,
         *,
+        inputs: dict[str, Any] | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
         os: Callable[[str, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> Any:
         """
         Execute one incremental snippet and return its output.
+
+        When ``inputs`` is provided, the key-value pairs are injected into
+        the REPL namespace before executing the snippet.
 
         When ``external_functions`` is provided, external function calls and
         name lookups are dispatched to the provided callables — matching the
@@ -244,7 +247,6 @@ class MontyRepl:
     def load(
         data: bytes,
         *,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
         dataclass_registry: list[type] | None = None,
     ) -> MontyRepl:
         """Restore a REPL session from bytes."""

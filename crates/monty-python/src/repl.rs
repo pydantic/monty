@@ -44,7 +44,6 @@ enum EitherRepl {
 #[derive(Debug)]
 pub struct PyMontyRepl {
     repl: Mutex<EitherRepl>,
-    print_callback: Option<Py<PyAny>>,
     dc_registry: DcRegistry,
 
     /// Name of the script being executed.
@@ -59,16 +58,14 @@ impl PyMontyRepl {
     /// No code is parsed or executed at construction time — all execution
     /// is driven through `feed_run()`.
     #[new]
-    #[pyo3(signature = (*, script_name="main.py", limits=None, print_callback=None, dataclass_registry=None))]
+    #[pyo3(signature = (*, script_name="main.py", limits=None, dataclass_registry=None))]
     fn new(
         py: Python<'_>,
         script_name: &str,
         limits: Option<&Bound<'_, PyDict>>,
-        print_callback: Option<&Bound<'_, PyAny>>,
         dataclass_registry: Option<&Bound<'_, PyList>>,
     ) -> PyResult<Self> {
         let dc_registry = DcRegistry::from_list(py, dataclass_registry)?;
-        let print_callback = print_callback.map(|c| c.clone().unbind());
         let script_name = script_name.to_string();
 
         let repl = if let Some(limits) = limits {
@@ -81,7 +78,6 @@ impl PyMontyRepl {
 
         Ok(Self {
             repl: Mutex::new(repl),
-            print_callback,
             dc_registry,
             script_name,
         })
@@ -100,16 +96,17 @@ impl PyMontyRepl {
     /// When `external_functions` is provided, external function calls and name
     /// lookups are dispatched to the provided callables — matching the behavior
     /// of `Monty.run(external_functions=...)`.
-    #[pyo3(signature = (code, *, external_functions=None, print_callback=None, os=None))]
+    #[pyo3(signature = (code, *, inputs=None, external_functions=None, print_callback=None, os=None))]
     fn feed_run<'py>(
         &self,
         py: Python<'py>,
         code: &str,
+        inputs: Option<&Bound<'_, PyDict>>,
         external_functions: Option<&Bound<'_, PyDict>>,
         print_callback: Option<Py<PyAny>>,
         os: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let print_callback = print_callback.or_else(|| self.print_callback.as_ref().map(|cb| cb.clone_ref(py)));
+        let input_values = extract_repl_inputs(inputs, &self.dc_registry)?;
 
         let mut print_cb;
         let mut print_writer = match print_callback {
@@ -121,7 +118,7 @@ impl PyMontyRepl {
         };
 
         if external_functions.is_some() || os.is_some() {
-            return self.feed_run_with_externals(py, code, external_functions, os, &mut print_writer);
+            return self.feed_run_with_externals(py, code, &input_values, external_functions, os, &mut print_writer);
         }
 
         let mut repl = self
@@ -130,8 +127,8 @@ impl PyMontyRepl {
             .map_err(|_| PyRuntimeError::new_err("REPL session is currently executing another snippet"))?;
 
         let output = match &mut *repl {
-            EitherRepl::NoLimit(repl) => repl.feed_run(code, vec![], &mut print_writer),
-            EitherRepl::Limited(repl) => repl.feed_run(code, vec![], &mut print_writer),
+            EitherRepl::NoLimit(repl) => repl.feed_run(code, input_values, &mut print_writer),
+            EitherRepl::Limited(repl) => repl.feed_run(code, input_values, &mut print_writer),
         }
         .map_err(|e| MontyError::new_err(py, e))?;
 
@@ -158,11 +155,10 @@ impl PyMontyRepl {
 
     /// Restores a REPL session from `dump()` bytes.
     #[staticmethod]
-    #[pyo3(signature = (data, *, print_callback=None, dataclass_registry=None))]
+    #[pyo3(signature = (data, *, dataclass_registry=None))]
     fn load(
         py: Python<'_>,
         data: &Bound<'_, PyBytes>,
-        print_callback: Option<Py<PyAny>>,
         dataclass_registry: Option<&Bound<'_, PyList>>,
     ) -> PyResult<Self> {
         #[derive(serde::Deserialize)]
@@ -176,7 +172,6 @@ impl PyMontyRepl {
 
         Ok(Self {
             repl: Mutex::new(serialized.repl),
-            print_callback,
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
             script_name: serialized.script_name,
         })
@@ -199,6 +194,7 @@ impl PyMontyRepl {
         &self,
         py: Python<'py>,
         code: &str,
+        input_values: &[(String, MontyObject)],
         external_functions: Option<&Bound<'_, PyDict>>,
         os: Option<&Bound<'_, PyAny>>,
         print_writer: &mut PrintWriter<'_>,
@@ -209,10 +205,10 @@ impl PyMontyRepl {
 
         let result = match repl {
             EitherRepl::NoLimit(repl) => {
-                self.feed_start_loop(py, repl, code, external_functions, os, &mut print_output)
+                self.feed_start_loop(py, repl, code, input_values, external_functions, os, &mut print_output)
             }
             EitherRepl::Limited(repl) => {
-                self.feed_start_loop(py, repl, code, external_functions, os, &mut print_output)
+                self.feed_start_loop(py, repl, code, input_values, external_functions, os, &mut print_output)
             }
         };
 
@@ -229,11 +225,13 @@ impl PyMontyRepl {
     /// Runs the feed_start / resume loop for a specific resource tracker type.
     ///
     /// Returns the output value and the restored REPL enum variant, or a Python error.
+    #[expect(clippy::too_many_arguments)]
     fn feed_start_loop<T: ResourceTracker + Send>(
         &self,
         py: Python<'_>,
         repl: CoreMontyRepl<T>,
         code: &str,
+        input_values: &[(String, MontyObject)],
         external_functions: Option<&Bound<'_, PyDict>>,
         os: Option<&Bound<'_, PyAny>>,
         print_output: &mut SendWrapper<&mut PrintWriter<'_>>,
@@ -242,8 +240,9 @@ impl PyMontyRepl {
         EitherRepl: FromCoreRepl<T>,
     {
         let code_owned = code.to_owned();
+        let inputs_owned = input_values.to_vec();
         let mut progress = py
-            .detach(|| repl.feed_start(&code_owned, vec![], print_output))
+            .detach(|| repl.feed_start(&code_owned, inputs_owned, print_output))
             .map_err(|e| self.restore_repl_from_start_error(py, *e))?;
 
         loop {
@@ -357,6 +356,25 @@ impl PyMontyRepl {
         self.put_repl(EitherRepl::from_core(err.repl));
         MontyError::new_err(py, err.error)
     }
+}
+
+/// Converts a Python dict of `{name: value}` pairs into the `Vec<(String, MontyObject)>`
+/// format expected by the core REPL's `feed_run` and `feed_start`.
+fn extract_repl_inputs(
+    inputs: Option<&Bound<'_, PyDict>>,
+    dc_registry: &DcRegistry,
+) -> PyResult<Vec<(String, MontyObject)>> {
+    let Some(inputs) = inputs else {
+        return Ok(vec![]);
+    };
+    inputs
+        .iter()
+        .map(|(key, value)| {
+            let name = key.extract::<String>()?;
+            let obj = py_to_monty(&value, dc_registry)?;
+            Ok((name, obj))
+        })
+        .collect::<PyResult<_>>()
 }
 
 /// Helper trait to convert a typed `CoreMontyRepl<T>` back into the

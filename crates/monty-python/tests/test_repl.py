@@ -238,13 +238,6 @@ def test_multiple_errors_dont_corrupt_state():
 # === Print callback ===
 
 
-def test_print_callback_on_constructor():
-    output, callback = make_print_collector()
-    repl = pydantic_monty.MontyRepl(print_callback=callback)
-    repl.feed_run('print("hello")')
-    assert ''.join(output) == snapshot('hello\n')
-
-
 def test_print_callback_on_feed():
     repl = pydantic_monty.MontyRepl()
     output, callback = make_print_collector()
@@ -252,22 +245,11 @@ def test_print_callback_on_feed():
     assert ''.join(output) == snapshot('hello\n')
 
 
-def test_print_callback_per_feed_overrides_constructor():
-    ctor_output, ctor_callback = make_print_collector()
-    repl = pydantic_monty.MontyRepl(print_callback=ctor_callback)
-
-    feed_output, feed_callback = make_print_collector()
-    repl.feed_run('print("routed")', print_callback=feed_callback)
-
-    assert ''.join(ctor_output) == snapshot('')
-    assert ''.join(feed_output) == snapshot('routed\n')
-
-
-def test_print_callback_persists_across_feeds():
+def test_print_callback_across_feeds():
+    repl = pydantic_monty.MontyRepl()
     output, callback = make_print_collector()
-    repl = pydantic_monty.MontyRepl(print_callback=callback)
-    repl.feed_run('print("first")')
-    repl.feed_run('print("second")')
+    repl.feed_run('print("first")', print_callback=callback)
+    repl.feed_run('print("second")', print_callback=callback)
     assert ''.join(output) == snapshot('first\nsecond\n')
 
 
@@ -321,8 +303,8 @@ def test_load_with_print_callback():
     repl.feed_run('x = 1')
 
     output, callback = make_print_collector()
-    loaded = pydantic_monty.MontyRepl.load(repl.dump(), print_callback=callback)
-    loaded.feed_run('print(x)')
+    loaded = pydantic_monty.MontyRepl.load(repl.dump())
+    loaded.feed_run('print(x)', print_callback=callback)
     assert ''.join(output) == snapshot('1\n')
 
 
@@ -426,3 +408,45 @@ def test_external_function_with_kwargs():
     repl = pydantic_monty.MontyRepl()
     ext = {'greet': greet}
     assert repl.feed_run("greet('world', greeting='hi')", external_functions=ext) == snapshot('hi world')
+
+
+# === Inputs ===
+
+
+def test_inputs_basic():
+    repl = pydantic_monty.MontyRepl()
+    assert repl.feed_run('x + 1', inputs={'x': 10}) == snapshot(11)
+
+
+def test_inputs_used_in_same_snippet():
+    repl = pydantic_monty.MontyRepl()
+    repl.feed_run('y = x + 1', inputs={'x': 42})
+    assert repl.feed_run('y') == snapshot(43)
+
+
+def test_inputs_multiple_values():
+    repl = pydantic_monty.MontyRepl()
+    assert repl.feed_run('a + b', inputs={'a': 3, 'b': 7}) == snapshot(10)
+
+
+def test_inputs_override_existing_variable():
+    repl = pydantic_monty.MontyRepl()
+    repl.feed_run('x = 1')
+    assert repl.feed_run('x', inputs={'x': 99}) == snapshot(99)
+
+
+def test_inputs_with_external_functions():
+    def double(n: int) -> int:
+        return n * 2
+
+    repl = pydantic_monty.MontyRepl()
+    assert repl.feed_run('double(x)', inputs={'x': 5}, external_functions={'double': double}) == snapshot(10)
+
+
+def test_inputs_various_types():
+    repl = pydantic_monty.MontyRepl()
+    assert repl.feed_run('s', inputs={'s': 'hello'}) == snapshot('hello')
+    assert repl.feed_run('n', inputs={'n': 42}) == snapshot(42)
+    assert repl.feed_run('f', inputs={'f': 3.14}) == snapshot(3.14)
+    assert repl.feed_run('b', inputs={'b': True}) == snapshot(True)
+    assert repl.feed_run('lst', inputs={'lst': [1, 2]}) == snapshot([1, 2])
