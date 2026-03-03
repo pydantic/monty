@@ -65,6 +65,9 @@ pretty_assertions = "1.4"
 # codspeed cfg is set by codspeed-criterion-compat when running in CodSpeed environment
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(codspeed)'] }
 
+[workspace.lints.rustdoc]
+invalid_codeblock_attributes = "allow"
+
 [workspace.lints.clippy]
 dbg_macro = "warn"
 use_self = "warn"
