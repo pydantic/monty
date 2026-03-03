@@ -1,7 +1,7 @@
 //! Built-in module implementations.
 //!
 //! This module provides implementations for Python built-in modules like `sys`, `typing`,
-//! and `asyncio`. These are created on-demand when import statements are executed.
+//! `asyncio`, `os`, and `json`. These are created on-demand when import statements are executed.
 
 use std::fmt::{self, Write};
 
@@ -17,6 +17,7 @@ use crate::{
 };
 
 pub(crate) mod asyncio;
+pub(crate) mod json;
 pub(crate) mod os;
 pub(crate) mod pathlib;
 pub(crate) mod sys;
@@ -36,6 +37,8 @@ pub(crate) enum BuiltinModule {
     Pathlib,
     /// The `os` module providing operating system interface (only `getenv()` implemented).
     Os,
+    /// The `json` module providing JSON serialization/deserialization.
+    Json,
 }
 
 impl BuiltinModule {
@@ -47,6 +50,7 @@ impl BuiltinModule {
             StaticStrings::Asyncio => Some(Self::Asyncio),
             StaticStrings::Pathlib => Some(Self::Pathlib),
             StaticStrings::Os => Some(Self::Os),
+            StaticStrings::Json => Some(Self::Json),
             _ => None,
         }
     }
@@ -65,6 +69,7 @@ impl BuiltinModule {
             Self::Asyncio => asyncio::create_module(heap, interns),
             Self::Pathlib => pathlib::create_module(heap, interns),
             Self::Os => os::create_module(heap, interns),
+            Self::Json => json::create_module(heap, interns),
         }
     }
 }
@@ -73,6 +78,7 @@ impl BuiltinModule {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ModuleFunctions {
     Asyncio(asyncio::AsyncioFunctions),
+    Json(json::JsonFunctions),
     Os(os::OsFunctions),
 }
 
@@ -80,6 +86,7 @@ impl fmt::Display for ModuleFunctions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Asyncio(func) => write!(f, "{func}"),
+            Self::Json(func) => write!(f, "{func}"),
             Self::Os(func) => write!(f, "{func}"),
         }
     }
@@ -90,10 +97,16 @@ impl ModuleFunctions {
     ///
     /// Returns `AttrCallResult` to support both immediate values and OS calls that
     /// require host involvement (e.g., `os.getenv()` needs the host to provide environment variables).
-    pub fn call(self, heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<AttrCallResult> {
+    pub fn call(
+        self,
+        heap: &mut Heap<impl ResourceTracker>,
+        args: ArgValues,
+        interns: &Interns,
+    ) -> RunResult<AttrCallResult> {
         match self {
-            Self::Asyncio(functions) => asyncio::call(heap, functions, args),
-            Self::Os(functions) => os::call(heap, functions, args),
+            Self::Asyncio(functions) => asyncio::call(heap, functions, args, interns),
+            Self::Json(functions) => json::call(heap, functions, args, interns),
+            Self::Os(functions) => os::call(heap, functions, args, interns),
         }
     }
 

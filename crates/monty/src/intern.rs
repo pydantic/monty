@@ -349,6 +349,12 @@ pub enum StaticStrings {
     Start,
     Stop,
     Step,
+
+    // ==========================
+    // json module strings
+    Json,
+    Dumps,
+    Loads,
 }
 
 impl StaticStrings {

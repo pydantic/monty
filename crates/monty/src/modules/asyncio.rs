@@ -60,6 +60,7 @@ pub(super) fn call(
     heap: &mut Heap<impl ResourceTracker>,
     functions: AsyncioFunctions,
     args: ArgValues,
+    _interns: &Interns,
 ) -> RunResult<AttrCallResult> {
     match functions {
         AsyncioFunctions::Gather => gather(heap, args).map(AttrCallResult::Value),

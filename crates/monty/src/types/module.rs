@@ -147,7 +147,7 @@ impl Module {
         match self.get_attr(&attr_key, args_guard.heap(), interns) {
             Some(Value::ModuleFunction(mf)) => {
                 let (args, heap) = args_guard.into_parts();
-                mf.call(heap, args)
+                mf.call(heap, args, interns)
             }
             Some(func) => {
                 // Found attribute but it's not callable

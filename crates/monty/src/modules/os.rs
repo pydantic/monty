@@ -70,6 +70,7 @@ pub(super) fn call(
     heap: &mut Heap<impl ResourceTracker>,
     functions: OsFunctions,
     args: ArgValues,
+    _interns: &Interns,
 ) -> RunResult<AttrCallResult> {
     match functions {
         OsFunctions::Getenv => getenv(heap, args),

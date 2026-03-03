@@ -702,6 +702,58 @@ impl ExcType {
         SimpleException::new_msg(Self::TypeError, format!("{name}() takes no keyword arguments")).into()
     }
 
+    /// Creates a TypeError for `json.dumps()` when an object type is not serializable.
+    ///
+    /// Matches CPython's format: `TypeError: Object of type {type} is not JSON serializable`
+    #[must_use]
+    pub(crate) fn type_error_json_not_serializable(type_: Type) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("Object of type {type_} is not JSON serializable"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for `json.dumps()` when a dict key has an invalid type.
+    ///
+    /// Matches CPython's format:
+    /// `TypeError: keys must be str, int, float, bool or None, not {type}`
+    #[must_use]
+    pub(crate) fn type_error_json_invalid_key(type_: Type) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("keys must be str, int, float, bool or None, not {type_}"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for `json.loads()` when input is not text/bytes.
+    ///
+    /// Matches CPython's format:
+    /// `TypeError: the JSON object must be str, bytes or bytearray, not {type}`
+    #[must_use]
+    pub(crate) fn type_error_json_loads_input(type_: Type) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("the JSON object must be str, bytes or bytearray, not {type_}"),
+        )
+        .into()
+    }
+
+    /// Creates a ValueError for circular references during `json.dumps()`.
+    ///
+    /// Matches CPython's format: `ValueError: Circular reference detected`
+    #[must_use]
+    pub(crate) fn value_error_json_circular_reference() -> RunError {
+        SimpleException::new_msg(Self::ValueError, "Circular reference detected").into()
+    }
+
+    /// Creates a ValueError for JSON parsing failures from `json.loads()`.
+    #[must_use]
+    pub(crate) fn value_error_json_decode(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(Self::ValueError, msg).into()
+    }
+
     /// Creates an IndexError for list index out of range (getitem).
     ///
     /// Matches CPython's format: `IndexError('list index out of range')`
