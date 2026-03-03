@@ -507,30 +507,18 @@ impl MontyRepl {
         let input_values = extract_input_values_in_order(&input_names, start_options.inputs, *env)?;
         if let Some(limits) = start_options.limits {
             let tracker = LimitedTracker::new(limits.into());
-            match CoreMontyRepl::new(
-                code,
-                &script_name,
-                input_names,
-                input_values,
-                tracker,
-                &mut print_writer,
-            ) {
-                Ok((repl, _output)) => Ok(Either3::A(Self {
+            let mut repl = CoreMontyRepl::new(&script_name, tracker);
+            match repl.feed(&code, input_names, input_values, &mut print_writer) {
+                Ok(_output) => Ok(Either3::A(Self {
                     repl: EitherRepl::Limited(repl),
                     script_name,
                 })),
                 Err(exc) => Ok(Either3::B(JsMontyException::new(exc))),
             }
         } else {
-            match CoreMontyRepl::new(
-                code,
-                &script_name,
-                input_names,
-                input_values,
-                NoLimitTracker,
-                &mut print_writer,
-            ) {
-                Ok((repl, _output)) => Ok(Either3::A(Self {
+            let mut repl = CoreMontyRepl::new(&script_name, NoLimitTracker);
+            match repl.feed(&code, input_names, input_values, &mut print_writer) {
+                Ok(_output) => Ok(Either3::A(Self {
                     repl: EitherRepl::NoLimit(repl),
                     script_name,
                 })),
@@ -554,8 +542,8 @@ impl MontyRepl {
         code: String,
     ) -> Result<Either<JsMontyObject<'env>, JsMontyException>> {
         let output = match &mut self.repl {
-            EitherRepl::NoLimit(repl) => repl.feed(&code, &mut PrintWriter::Stdout),
-            EitherRepl::Limited(repl) => repl.feed(&code, &mut PrintWriter::Stdout),
+            EitherRepl::NoLimit(repl) => repl.feed(&code, vec![], vec![], &mut PrintWriter::Stdout),
+            EitherRepl::Limited(repl) => repl.feed(&code, vec![], vec![], &mut PrintWriter::Stdout),
         };
 
         match output {

@@ -122,7 +122,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
         return if cli.interactive {
-            dispatch_repl("<string>", cmd, limits)
+            dispatch_repl("<string>", &cmd, limits)
         } else {
             dispatch_script("<string>", cmd, type_check_enabled, limits)
         };
@@ -137,13 +137,13 @@ fn main() -> ExitCode {
             }
         };
         return if cli.interactive {
-            dispatch_repl(file_path, code, limits)
+            dispatch_repl(file_path, &code, limits)
         } else {
             dispatch_script(file_path, code, type_check_enabled, limits)
         };
     }
 
-    dispatch_repl("repl.py", String::new(), limits)
+    dispatch_repl("repl.py", "", limits)
 }
 
 /// Dispatches script execution with either `LimitedTracker` or `NoLimitTracker`.
@@ -164,7 +164,7 @@ fn dispatch_script(
 }
 
 /// Dispatches REPL startup with either `LimitedTracker` or `NoLimitTracker`.
-fn dispatch_repl(file_path: &str, code: String, limits: Option<ResourceLimits>) -> ExitCode {
+fn dispatch_repl(file_path: &str, code: &str, limits: Option<ResourceLimits>) -> ExitCode {
     if let Some(limits) = limits {
         run_repl(file_path, code, LimitedTracker::new(limits))
     } else {
@@ -274,21 +274,21 @@ fn run_script(file_path: &str, code: String, type_check_enabled: bool, tracker: 
 ///
 /// Returns `ExitCode::SUCCESS` on EOF or `exit`, and `ExitCode::FAILURE` on
 /// initialization or I/O errors.
-fn run_repl(file_path: &str, code: String, tracker: impl ResourceTracker) -> ExitCode {
-    let input_names = vec![];
-    let inputs = vec![];
+fn run_repl(file_path: &str, code: &str, tracker: impl ResourceTracker) -> ExitCode {
+    let mut repl = MontyRepl::new(file_path, tracker);
 
-    let (mut repl, init_output) =
-        match MontyRepl::new(code, file_path, input_names, inputs, tracker, &mut PrintWriter::Stdout) {
-            Ok(v) => v,
+    if !code.is_empty() {
+        match repl.feed_no_print(code) {
+            Ok(init_output) => {
+                if init_output != MontyObject::None {
+                    println!("{init_output}");
+                }
+            }
             Err(err) => {
                 eprintln!("{BOLD_RED}error{RESET} initializing repl:\n{err}");
                 return ExitCode::FAILURE;
             }
-        };
-
-    if init_output != MontyObject::None {
-        println!("{init_output}");
+        }
     }
 
     eprintln!("Monty v{} REPL. Type `exit` to exit.", env!("CARGO_PKG_VERSION"));

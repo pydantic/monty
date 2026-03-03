@@ -632,8 +632,8 @@ impl PyMontyRepl {
             .map_err(|_| PyRuntimeError::new_err("REPL session is currently executing another snippet"))?;
 
         let output = match &mut *repl {
-            EitherRepl::NoLimit(repl) => repl.feed(code, &mut print_writer),
-            EitherRepl::Limited(repl) => repl.feed(code, &mut print_writer),
+            EitherRepl::NoLimit(repl) => repl.feed(code, vec![], vec![], &mut print_writer),
+            EitherRepl::Limited(repl) => repl.feed(code, vec![], vec![], &mut print_writer),
         }
         .map_err(|e| MontyError::new_err(py, e))?;
 
@@ -716,14 +716,9 @@ impl PyMontyRepl {
             let print_writer = SendWrapper::new(&mut print_writer);
             let (repl, output) = py
                 .detach(move || {
-                    CoreMontyRepl::new(
-                        code,
-                        &script_name,
-                        input_names,
-                        input_values,
-                        tracker,
-                        print_writer.take(),
-                    )
+                    let mut repl = CoreMontyRepl::new(&script_name, tracker);
+                    let output = repl.feed(&code, input_names, input_values, print_writer.take())?;
+                    Ok((repl, output))
                 })
                 .map_err(|e| MontyError::new_err(py, e))?;
             Ok((EitherRepl::Limited(repl), output))
@@ -732,14 +727,9 @@ impl PyMontyRepl {
             let print_writer = SendWrapper::new(&mut print_writer);
             let (repl, output) = py
                 .detach(move || {
-                    CoreMontyRepl::new(
-                        code,
-                        &script_name,
-                        input_names,
-                        input_values,
-                        tracker,
-                        print_writer.take(),
-                    )
+                    let mut repl = CoreMontyRepl::new(&script_name, tracker);
+                    let output = repl.feed(&code, input_names, input_values, print_writer.take())?;
+                    Ok((repl, output))
                 })
                 .map_err(|e| MontyError::new_err(py, e))?;
             Ok((EitherRepl::NoLimit(repl), output))
