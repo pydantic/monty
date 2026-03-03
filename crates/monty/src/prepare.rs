@@ -1686,7 +1686,12 @@ impl<'i> Prepare<'i> {
         // not assigned in the function body). This MUST be checked before
         // enclosing_locals, otherwise a parameter like `def inner(x)` would be
         // incorrectly resolved as a closure capture when an outer scope also has `x`.
-        if let Some(&id) = self.name_map.get(name_str) {
+        // Excludes names tracked in `unassigned_ref_names` — those were added to
+        // `name_map` by step 8 as `LocalUnassigned` references and must stay that way
+        // to trigger NameLookup at runtime (e.g., for external function resolution).
+        if !self.unassigned_ref_names.contains(name_str)
+            && let Some(&id) = self.name_map.get(name_str)
+        {
             return (
                 Identifier::new_with_scope(ident.name_id, ident.position, id, NameScope::Local),
                 false, // Not new - was pre-populated from parameters
