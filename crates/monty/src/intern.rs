@@ -642,24 +642,23 @@ impl Interns {
     /// Used when the host provides a name (e.g., from a NameLookup response) that was
     /// previously interned during preparation.
     ///
-    /// # Panics
-    /// Panics if the string was never interned.
-    pub fn get_string_id_by_name(&self, s: &str) -> StringId {
+    /// Error if the string was never interned.
+    pub fn get_string_id_by_name(&self, s: &str) -> Option<StringId> {
         // Check single ASCII char
         if s.len() == 1 {
-            return StringId::from_ascii(s.as_bytes()[0]);
+            return Some(StringId::from_ascii(s.as_bytes()[0]));
         }
         // Check static strings
         if let Ok(ss) = StaticStrings::from_str(s) {
-            return ss.into();
+            return Some(ss.into());
         }
         // Check interned strings
         for (i, interned) in self.strings.iter().enumerate() {
             if interned == s {
-                return StringId(u32::try_from(INTERN_STRING_ID_OFFSET + i).expect("StringId overflow"));
+                return u32::try_from(INTERN_STRING_ID_OFFSET + i).ok().map(StringId);
             }
         }
-        panic!("String '{s}' was never interned")
+        None
     }
 
     /// Sets the compiled functions.

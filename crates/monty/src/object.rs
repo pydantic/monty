@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     fmt::{self, Write},
     hash::{Hash, Hasher},
 };
@@ -307,11 +308,13 @@ impl MontyObject {
             Self::Function { name, .. } => {
                 // Intern the function name and create an ExtFunction value.
                 // We look up the name in the existing interns to find/create a StringId.
-                let string_id = interns.get_string_id_by_name(&name);
+                let string_id = interns
+                    .get_string_id_by_name(&name)
+                    .ok_or_else(|| InvalidInputError::invalid_type(format!("String '{name}' was never interned")))?;
                 Ok(Value::ExtFunction(string_id))
             }
-            Self::Repr(_) => Err(InvalidInputError::invalid_type("Repr")),
-            Self::Cycle(_, _) => Err(InvalidInputError::invalid_type("Cycle")),
+            Self::Repr(_) => Err(InvalidInputError::invalid_type("'Repr' is not a valid input value")),
+            Self::Cycle(_, _) => Err(InvalidInputError::invalid_type("'Cycle' is not a valid input value")),
         }
     }
 
@@ -903,8 +906,8 @@ impl std::error::Error for ConversionError {}
 #[derive(Debug, Clone)]
 pub enum InvalidInputError {
     /// The input type is not valid for conversion to a runtime Value.
-    /// The type name of the invalid input value
-    InvalidType(&'static str),
+    /// Message explaining why the type is invalid.
+    InvalidType(Cow<'static, str>),
     /// A resource limit was exceeded during conversion.
     Resource(ResourceError),
 }
@@ -912,15 +915,15 @@ pub enum InvalidInputError {
 impl InvalidInputError {
     /// Creates a new `InvalidInputError` for the given type name.
     #[must_use]
-    pub fn invalid_type(type_name: &'static str) -> Self {
-        Self::InvalidType(type_name)
+    pub fn invalid_type(msg: impl Into<Cow<'static, str>>) -> Self {
+        Self::InvalidType(msg.into())
     }
 }
 
 impl fmt::Display for InvalidInputError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidType(type_name) => write!(f, "'{type_name}' is not a valid input value"),
+            Self::InvalidType(msg) => write!(f, "{msg}"),
             Self::Resource(e) => write!(f, "{e}"),
         }
     }

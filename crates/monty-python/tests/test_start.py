@@ -321,3 +321,16 @@ def test_name_lookup():
     p2 = p.resume(value=42)
     assert isinstance(p2, pydantic_monty.MontyComplete)
     assert p2.output == 42
+
+
+def test_ext_function_alt_name():
+    m = pydantic_monty.Monty('x = foobar; x()')
+    p = m.start()
+    assert isinstance(p, pydantic_monty.NameLookupSnapshot)
+
+    def not_foobar():
+        return 42
+
+    p2 = p.resume(value=not_foobar)
+    assert isinstance(p2, pydantic_monty.MontyComplete)
+    assert p2.output == 42
