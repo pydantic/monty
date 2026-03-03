@@ -508,7 +508,7 @@ impl MontyRepl {
         if let Some(limits) = start_options.limits {
             let tracker = LimitedTracker::new(limits.into());
             let mut repl = CoreMontyRepl::new(&script_name, tracker);
-            match repl.feed(&code, input_names, input_values, &mut print_writer) {
+            match repl.feed_run(&code, input_names, input_values, &mut print_writer) {
                 Ok(_output) => Ok(Either3::A(Self {
                     repl: EitherRepl::Limited(repl),
                     script_name,
@@ -517,7 +517,7 @@ impl MontyRepl {
             }
         } else {
             let mut repl = CoreMontyRepl::new(&script_name, NoLimitTracker);
-            match repl.feed(&code, input_names, input_values, &mut print_writer) {
+            match repl.feed_run(&code, input_names, input_values, &mut print_writer) {
                 Ok(_output) => Ok(Either3::A(Self {
                     repl: EitherRepl::NoLimit(repl),
                     script_name,
@@ -542,8 +542,8 @@ impl MontyRepl {
         code: String,
     ) -> Result<Either<JsMontyObject<'env>, JsMontyException>> {
         let output = match &mut self.repl {
-            EitherRepl::NoLimit(repl) => repl.feed(&code, vec![], vec![], &mut PrintWriter::Stdout),
-            EitherRepl::Limited(repl) => repl.feed(&code, vec![], vec![], &mut PrintWriter::Stdout),
+            EitherRepl::NoLimit(repl) => repl.feed_run(&code, vec![], vec![], &mut PrintWriter::Stdout),
+            EitherRepl::Limited(repl) => repl.feed_run(&code, vec![], vec![], &mut PrintWriter::Stdout),
         };
 
         match output {

@@ -278,17 +278,7 @@ fn run_repl(file_path: &str, code: &str, tracker: impl ResourceTracker) -> ExitC
     let mut repl = MontyRepl::new(file_path, tracker);
 
     if !code.is_empty() {
-        match repl.feed_no_print(code) {
-            Ok(init_output) => {
-                if init_output != MontyObject::None {
-                    println!("{init_output}");
-                }
-            }
-            Err(err) => {
-                eprintln!("{BOLD_RED}error{RESET} initializing repl:\n{err}");
-                return ExitCode::FAILURE;
-            }
-        }
+        execute_repl_snippet(&mut repl, code);
     }
 
     eprintln!("Monty v{} REPL. Type `exit` to exit.", env!("CARGO_PKG_VERSION"));
@@ -368,7 +358,7 @@ fn run_repl(file_path: &str, code: &str, tracker: impl ResourceTracker) -> ExitC
 
 /// Executes one collected REPL snippet, printing the result or error.
 fn execute_repl_snippet(repl: &mut MontyRepl<impl ResourceTracker>, snippet: &str) {
-    match repl.feed_no_print(snippet) {
+    match repl.feed_run(snippet, vec![], vec![], &mut PrintWriter::Stdout) {
         Ok(output) => {
             if output != MontyObject::None {
                 println!("{output}");

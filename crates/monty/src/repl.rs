@@ -90,7 +90,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
     /// # Errors
     /// Returns `Err(Box<ReplStartError>)` for syntax, compile-time, or runtime
     /// failures — the REPL session is always preserved inside the error.
-    pub fn start(
+    pub fn feed_start(
         self,
         code: &str,
         input_names: Vec<String>,
@@ -132,12 +132,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
         handle_repl_vm_result(vm_result, vm_state, executor, this)
     }
 
-    /// Starts snippet execution with `PrintWriter::Stdout`, no inputs, and no additional host output wiring.
-    pub fn start_no_print(self, code: &str) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
-        self.start(code, vec![], vec![], &mut PrintWriter::Stdout)
-    }
-
-    /// Feeds and executes a new snippet against the current REPL state.
+    /// Feeds and executes a new snippet against the current REPL state to completion.
     ///
     /// This compiles only `code` using the existing global slot map, extends the
     /// global namespace if new names are introduced, and executes the snippet once.
@@ -147,7 +142,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
     ///
     /// # Errors
     /// Returns `MontyException` for syntax/compile/runtime failures.
-    pub fn feed(
+    pub fn feed_run(
         &mut self,
         code: &str,
         input_names: Vec<String>,
@@ -211,11 +206,6 @@ impl<T: ResourceTracker> MontyRepl<T> {
 
         frame_exit_to_object(frame_exit_result, &mut self.heap, &self.interns)
             .map_err(|e| e.into_python_exception(&self.interns, &code))
-    }
-
-    /// Executes a snippet with `PrintWriter::Stdout`, no inputs, and no additional host output wiring.
-    pub fn feed_no_print(&mut self, code: &str) -> Result<MontyObject, MontyException> {
-        self.feed(code, vec![], vec![], &mut PrintWriter::Stdout)
     }
 
     /// Grows the global namespace to at least `namespace_size`.

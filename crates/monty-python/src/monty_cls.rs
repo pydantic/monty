@@ -632,8 +632,8 @@ impl PyMontyRepl {
             .map_err(|_| PyRuntimeError::new_err("REPL session is currently executing another snippet"))?;
 
         let output = match &mut *repl {
-            EitherRepl::NoLimit(repl) => repl.feed(code, vec![], vec![], &mut print_writer),
-            EitherRepl::Limited(repl) => repl.feed(code, vec![], vec![], &mut print_writer),
+            EitherRepl::NoLimit(repl) => repl.feed_run(code, vec![], vec![], &mut print_writer),
+            EitherRepl::Limited(repl) => repl.feed_run(code, vec![], vec![], &mut print_writer),
         }
         .map_err(|e| MontyError::new_err(py, e))?;
 
@@ -717,7 +717,7 @@ impl PyMontyRepl {
             let (repl, output) = py
                 .detach(move || {
                     let mut repl = CoreMontyRepl::new(&script_name, tracker);
-                    let output = repl.feed(&code, input_names, input_values, print_writer.take())?;
+                    let output = repl.feed_run(&code, input_names, input_values, print_writer.take())?;
                     Ok((repl, output))
                 })
                 .map_err(|e| MontyError::new_err(py, e))?;
@@ -728,7 +728,7 @@ impl PyMontyRepl {
             let (repl, output) = py
                 .detach(move || {
                     let mut repl = CoreMontyRepl::new(&script_name, tracker);
-                    let output = repl.feed(&code, input_names, input_values, print_writer.take())?;
+                    let output = repl.feed_run(&code, input_names, input_values, print_writer.take())?;
                     Ok((repl, output))
                 })
                 .map_err(|e| MontyError::new_err(py, e))?;
