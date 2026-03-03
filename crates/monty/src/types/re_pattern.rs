@@ -1,17 +1,13 @@
 //! Compiled regex pattern type for the `re` module.
 //!
-//! `RePattern` wraps a compiled `regex::Regex` with the original Python pattern string
-//! and flags. The Rust `regex` crate guarantees linear-time matching (DFA-based),
-//! preventing catastrophic backtracking (ReDoS) attacks — critical for sandbox security.
+//! `RePattern` wraps a compiled `fancy_regex::Regex` with the original Python pattern
+//! string and flags. The `fancy_regex` crate supports backreferences, lookahead/lookbehind,
+//! and other advanced features, but uses backtracking which means patterns are susceptible
+//! to ReDoS. Monty's resource limits (time and allocation budgets) are the primary defense
+//! against catastrophic backtracking in untrusted patterns.
 //!
 //! Custom serde serializes only the pattern string and flags, recompiling the regex
 //! on deserialization. This supports Monty's snapshot/restore feature.
-//!
-//! # Unsupported Python regex features
-//!
-//! The Rust `regex` crate does not support backreferences (`\1`), lookahead/lookbehind
-//! (`(?=...)`, `(?!...)`), or atomic groups. Attempting to compile patterns using these
-//! features raises `re.PatternError`.
 
 use std::{borrow::Cow, fmt::Write};
 
@@ -35,19 +31,13 @@ use crate::{
 
 /// A compiled regular expression pattern.
 ///
-/// Wraps a Rust `regex::Regex` with the original Python pattern string and flags.
-///
-/// This introduces a difference from CPython's implementation.
-/// Switch to `fancy_regex` crate would be needed to support backreferences,
-/// but given the security implications of backtracking this is not currently an option.
+/// Wraps a `fancy_regex::Regex` with the original Python pattern string and flags.
+/// The `fancy_regex` crate supports backtracking features like backreferences and
+/// lookaround, but this means patterns are susceptible to ReDoS — Monty's resource
+/// limits are the defense against catastrophic backtracking.
 ///
 /// Custom serde serializes only the pattern string and flags, recompiling the
 /// regex on deserialization. This supports Monty's snapshot/restore feature.
-///
-/// # Serialization Behavior
-///
-/// When serialized, only the original pattern string and flags are stored.
-/// Upon deserialization, the regex is recompiled.
 #[derive(Debug)]
 pub(crate) struct RePattern {
     /// The original Python regex pattern string.
@@ -56,24 +46,33 @@ pub(crate) struct RePattern {
     flags: u8,
     /// The compiled Rust regex, unanchored.
     compiled: Regex,
+    /// The compiled regex anchored with `\A(?:...)\z` for `fullmatch()`.
+    ///
+    /// Uses `\A`/`\z` (absolute anchors) instead of `^`/`$` so the MULTILINE flag
+    /// doesn't cause them to match at line boundaries. This correctly handles
+    /// alternations — e.g. `fullmatch('a|ab', 'ab')` must match `ab`, not fail
+    /// because the engine found `a` first.
+    compiled_fullmatch: Regex,
 }
 
 impl RePattern {
     /// Creates a compiled pattern from a Python regex string and flags.
     ///
     /// Translates Python flag constants into inline regex flag prefixes and compiles
-    /// the pattern. Also pre-compiles anchored variants for `match` and `fullmatch`.
+    /// the pattern. Also pre-compiles an anchored variant for `fullmatch` using
+    /// `\A(?:pattern)\z` to correctly handle alternations.
     ///
     /// # Errors
     ///
-    /// Returns `re.PatternError` if the pattern is invalid or uses features not supported
-    /// by the Rust regex engine.
+    /// Returns `re.PatternError` if the pattern is invalid.
     pub fn compile(pattern: String, flags: u8) -> RunResult<Self> {
         let compiled = compile_regex(&pattern, flags)?;
+        let compiled_fullmatch = compile_regex(&format!("\\A(?:{pattern})\\z"), flags)?;
         Ok(Self {
             pattern,
             flags,
             compiled,
+            compiled_fullmatch,
         })
     }
 
@@ -114,19 +113,16 @@ impl RePattern {
 
     /// `pattern.fullmatch(string)` — match the entire string.
     ///
+    /// Uses a pre-compiled `\A(?:pattern)\z` regex to correctly handle alternations.
+    /// For example, `fullmatch('a|ab', 'ab')` correctly matches `ab` because the
+    /// anchors force the engine to try all alternatives for a full-string match.
+    ///
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
     pub fn fullmatch(&self, text: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-        match self.compiled.captures(text) {
+        match self.compiled_fullmatch.captures(text) {
             Ok(Some(caps)) => {
-                // Check if the match spans the entire string
-                if let Some(m) = caps.get(0)
-                    && m.start() == 0
-                    && m.end() == text.len()
-                {
-                    let match_obj = ReMatch::from_captures(&caps, text, &self.pattern);
-                    return Ok(Value::Ref(heap.allocate(HeapData::ReMatch(match_obj))?));
-                }
-                Ok(Value::None)
+                let match_obj = ReMatch::from_captures(&caps, text, &self.pattern);
+                Ok(Value::Ref(heap.allocate(HeapData::ReMatch(match_obj))?))
             }
             Ok(None) => Ok(Value::None),
             Err(err) => Err(ExcType::re_pattern_error(err)),
@@ -339,8 +335,17 @@ fn call_pattern_sub(
     )]
     let count = match pos.next() {
         Some(Value::Int(n)) if n >= 0 => n as usize,
+        // CPython: negative count means no replacements — return original string.
         Some(Value::Int(_)) => {
-            return Err(ExcType::type_error("count must be a non-negative integer"));
+            if let Some(extra) = pos.next() {
+                extra.drop_with_heap(heap);
+                return Err(ExcType::type_error(
+                    "Pattern.sub() takes at most 3 positional arguments",
+                ));
+            }
+            let text = value_to_str(string_val, heap, interns)?.into_owned();
+            let s = Str::new(text);
+            return Ok(Value::Ref(heap.allocate(HeapData::Str(s))?));
         }
         Some(other) => {
             let t = other.py_type(heap);
@@ -350,7 +355,8 @@ fn call_pattern_sub(
         None => 0,
     };
 
-    if pos.next().is_some() {
+    if let Some(extra) = pos.next() {
+        extra.drop_with_heap(heap);
         return Err(ExcType::type_error(
             "Pattern.sub() takes at most 3 positional arguments",
         ));
@@ -370,8 +376,7 @@ fn call_pattern_sub(
 ///
 /// # Errors
 ///
-/// Returns `re.PatternError(...)` if the pattern is invalid or uses features not supported
-/// by the Rust regex engine (backreferences, lookahead, etc.).
+/// Returns `re.PatternError(...)` if the pattern is invalid.
 pub(crate) fn compile_regex(pattern: &str, flags: u8) -> RunResult<Regex> {
     let mut prefix = String::new();
     if flags & IGNORECASE != 0 {
@@ -401,7 +406,8 @@ pub(crate) fn compile_regex(pattern: &str, flags: u8) -> RunResult<Regex> {
 ///
 /// Returns a `Cow` to avoid allocation when no translation is needed.
 fn translate_replacement(repl: &str) -> Cow<'_, str> {
-    if !repl.contains('\\') {
+    // Fast path: no backslashes and no literal `$` means nothing to translate or escape.
+    if !repl.contains('\\') && !repl.contains('$') {
         return Cow::Borrowed(repl);
     }
 
@@ -424,6 +430,11 @@ fn translate_replacement(repl: &str) -> Cow<'_, str> {
                     result.push('\\');
                 }
             }
+        } else if c == '$' {
+            // Escape literal `$` as `$$` so `fancy_regex` doesn't interpret `$1` etc.
+            // as backreferences.
+            result.push('$');
+            result.push('$');
         } else {
             result.push(c);
         }

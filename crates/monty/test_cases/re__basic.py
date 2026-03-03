@@ -340,3 +340,136 @@ assert isinstance(re.compile(r'\d+'), re.Pattern), 're.compile returns re.Patter
 assert isinstance(re.search(r'\w+', 'hello'), re.Match), 're.search returns re.Match instance'
 assert str(type(re.compile(r'\d+'))) == "<class 're.Pattern'>", 'type of compiled pattern is re.Pattern'
 assert str(type(re.search(r'\w+', 'hello'))) == "<class 're.Match'>", 'type of search match is re.Match'
+
+# === fullmatch with alternation ===
+# fullmatch must try all alternatives to find a full-string match,
+# not just pick the first alternative that matches somewhere
+m = re.fullmatch('a|ab', 'ab')
+assert m is not None, 'fullmatch with alternation finds full match'
+assert m.group() == 'ab', 'fullmatch alternation matches full-string alternative'
+
+m = re.fullmatch('ab|a', 'ab')
+assert m is not None, 'fullmatch when full-match alternative is first'
+assert m.group() == 'ab', 'fullmatch returns correct match when first alt matches'
+
+m = re.fullmatch('cat|category', 'category')
+assert m is not None, 'fullmatch alternation picks full-string alternative'
+assert m.group() == 'category', 'fullmatch alternation returns correct match'
+
+m = re.fullmatch('x|ab|a', 'ab')
+assert m is not None, 'fullmatch with three alternatives'
+assert m.group() == 'ab', 'fullmatch picks correct alternative from three'
+
+# compiled pattern fullmatch with alternation
+p = re.compile('a|ab')
+m = p.fullmatch('ab')
+assert m is not None, 'compiled fullmatch with alternation finds full match'
+assert m.group() == 'ab', 'compiled fullmatch alternation matches correctly'
+
+# fullmatch with alternation and groups
+m = re.fullmatch('(a)|(ab)', 'ab')
+assert m is not None, 'fullmatch alternation with groups'
+assert m.group(0) == 'ab', 'fullmatch alternation groups: group(0) is full match'
+assert m.group(1) is None, 'fullmatch alternation groups: group(1) did not match'
+assert m.group(2) == 'ab', 'fullmatch alternation groups: group(2) matched'
+
+# fullmatch with quantifiers
+m = re.fullmatch('a+|b+', 'aaa')
+assert m is not None, 'fullmatch a+|b+ on aaa'
+assert m.group() == 'aaa', 'fullmatch a+|b+ returns full match'
+
+# fullmatch with .* (greedy)
+m = re.fullmatch('.*', 'anything')
+assert m is not None, 'fullmatch .* matches anything'
+assert m.group() == 'anything', 'fullmatch .* returns full string'
+
+# fullmatch on empty string with empty pattern
+m = re.fullmatch('', '')
+assert m is not None, 'fullmatch empty pattern on empty string'
+assert m.group() == '', 'fullmatch empty returns empty'
+
+# fullmatch should not match partial strings even with alternation
+m = re.fullmatch('a|ab', 'abc')
+assert m is None, 'fullmatch rejects when no alternative spans full string'
+
+# fullmatch with MULTILINE should still require full-string match
+p = re.compile('hello', re.MULTILINE)
+m = p.fullmatch('hello')
+assert m is not None, 'fullmatch MULTILINE on single line'
+assert m.group() == 'hello', 'fullmatch MULTILINE returns correct match'
+
+m = p.fullmatch('hello\nworld')
+assert m is None, 'fullmatch MULTILINE rejects multi-line input'
+
+# fullmatch with alternation and flags combined
+p = re.compile('(a+)|(b+)', re.MULTILINE)
+m = p.fullmatch('bbb')
+assert m is not None, 'fullmatch groups with MULTILINE flag'
+assert m.group(0) == 'bbb', 'fullmatch groups MULTILINE: group(0) correct'
+assert m.group(1) is None, 'fullmatch groups MULTILINE: group(1) did not match'
+assert m.group(2) == 'bbb', 'fullmatch groups MULTILINE: group(2) matched'
+
+# === Literal $ in replacement ===
+result = re.sub(r'\d+', '$', 'a1b2')
+assert result == 'a$b$', 'literal $ in replacement is preserved'
+
+result = re.sub(r'\d+', '$1', 'a1b2')
+assert result == 'a$1b$1', 'literal $1 in replacement is preserved (not backreference)'
+
+result = re.sub(r'\d+', '$$', 'a1b2')
+assert result == 'a$$b$$', 'literal $$ in replacement is preserved'
+
+# compiled pattern with $ in replacement
+p = re.compile(r'\d+')
+result = p.sub('$', 'a1b2')
+assert result == 'a$b$', 'compiled pattern: literal $ in replacement is preserved'
+
+result = re.sub(r'\d+', '$$$', 'a1b2')
+assert result == 'a$$$b$$$', 'triple $ in replacement preserved'
+
+# plain replacement with no special chars
+result = re.sub(r'\d+', 'NUM', 'a1 b2')
+assert result == 'aNUM bNUM', 'plain replacement without special chars'
+
+# === Negative count in re.sub ===
+result = re.sub(r'\d+', 'X', 'a1 b2 c3', -1)
+assert result == 'a1 b2 c3', 're.sub with negative count returns string unchanged'
+
+result = re.sub(r'\d+', 'X', 'a1 b2 c3', -100)
+assert result == 'a1 b2 c3', 're.sub with large negative count returns string unchanged'
+
+result = re.sub(r'\d+', 'X', 'a1 b2 c3', -999)
+assert result == 'a1 b2 c3', 're.sub with very large negative count returns string unchanged'
+
+# compiled pattern with negative count
+p = re.compile(r'\d+')
+result = p.sub('X', 'a1 b2 c3', -1)
+assert result == 'a1 b2 c3', 'compiled pattern: negative count returns string unchanged'
+
+result = p.sub('X', 'a1 b2 c3', -100)
+assert result == 'a1 b2 c3', 'compiled pattern: large negative count returns string unchanged'
+
+# negative count with empty string
+result = re.sub(r'\d+', 'X', '', -1)
+assert result == '', 're.sub negative count on empty string'
+
+# === re.sub with count boundary values ===
+result = re.sub(r'\d+', 'X', 'a1 b2 c3', 0)
+assert result == 'aX bX cX', 're.sub count=0 replaces all (explicit)'
+
+result = re.sub(r'\d+', 'X', 'a1 b2 c3', 1)
+assert result == 'aX b2 c3', 're.sub count=1 replaces first only'
+
+result = re.sub(r'\d+', 'X', 'a1 b2 c3', 3)
+assert result == 'aX bX cX', 're.sub count=3 replaces all three'
+
+result = re.sub(r'\d+', 'X', 'a1 b2 c3', 100)
+assert result == 'aX bX cX', 're.sub count exceeding matches replaces all'
+
+# === Pattern.sub() error: too many arguments ===
+p = re.compile(r'\d+')
+try:
+    p.sub('X', 'a1b2', 0, 'extra')
+    assert False, 'Pattern.sub with 4 args should raise TypeError'
+except TypeError as e:
+    assert 'at most 3' in str(e), 'Pattern.sub too many args error'

@@ -20,7 +20,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
-    types::{PyTrait, Str, Type, allocate_tuple},
+    types::{PyTrait, Str, Type, allocate_tuple, str::string_repr_fmt},
     value::{EitherStr, Value},
 };
 
@@ -256,11 +256,9 @@ impl PyTrait for ReMatch {
         _heap_ids: &mut AHashSet<HeapId>,
         _interns: &Interns,
     ) -> std::fmt::Result {
-        write!(
-            f,
-            "<re.Match object; span=({}, {}), match='{}'>",
-            self.start, self.end, self.full_match
-        )
+        write!(f, "<re.Match object; span=({}, {}), match=", self.start, self.end)?;
+        string_repr_fmt(&self.full_match, f)?;
+        f.write_char('>')
     }
 
     fn py_estimate_size(&self) -> usize {

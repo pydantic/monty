@@ -25,13 +25,13 @@ use std::borrow::Cow;
 use crate::{
     args::ArgValues,
     builtins::Builtins,
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
-    types::{AttrCallResult, Module, PyTrait, RePattern, Type, re_pattern::value_to_str},
+    types::{AttrCallResult, Module, PyTrait, RePattern, Str, Type, re_pattern::value_to_str},
     value::Value,
 };
 
@@ -237,7 +237,8 @@ fn call_findall(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns:
 /// Compiles the pattern, then delegates to `RePattern::sub`. Replaces occurrences of the
 /// pattern with the replacement string. When `count` is 0, all matches are replaced.
 fn call_sub(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let mut pos = args.into_pos_only("re.sub", heap)?;
+    let pos = args.into_pos_only("re.sub", heap)?;
+    defer_drop_mut!(pos, heap);
 
     let Some(pattern_val) = pos.next() else {
         return Err(ExcType::type_error("re.sub() missing required argument: 'pattern'"));
@@ -261,7 +262,16 @@ fn call_sub(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &In
     )]
     let count = match pos.next() {
         Some(Value::Int(n)) if n >= 0 => n as usize,
-        Some(Value::Int(_)) => 0,
+        // CPython: negative count means no replacements — return original string.
+        Some(Value::Int(_)) => {
+            if let Some(extra) = pos.next() {
+                extra.drop_with_heap(heap);
+                return Err(ExcType::type_error("re.sub() takes at most 4 positional arguments"));
+            }
+            let text = value_to_str(string_val, heap, interns)?.into_owned();
+            let s = Str::new(text);
+            return Ok(Value::Ref(heap.allocate(HeapData::Str(s))?));
+        }
         Some(other) => {
             let t = other.py_type(heap);
             other.drop_with_heap(heap);
@@ -272,7 +282,8 @@ fn call_sub(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &In
         None => 0,
     };
 
-    if pos.next().is_some() {
+    if let Some(extra) = pos.next() {
+        extra.drop_with_heap(heap);
         return Err(ExcType::type_error("re.sub() takes at most 4 positional arguments"));
     }
 
