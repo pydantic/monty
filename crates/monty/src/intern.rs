@@ -438,22 +438,6 @@ impl FunctionId {
     }
 }
 
-/// Unique identifier for external functions
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-pub struct ExtFunctionId(u32);
-
-impl ExtFunctionId {
-    pub fn new(index: usize) -> Self {
-        Self(index.try_into().expect("Invalid external function id"))
-    }
-
-    /// Returns the raw index value.
-    #[inline]
-    pub fn index(self) -> usize {
-        self.0 as usize
-    }
-}
-
 /// A string, bytes, and long integer interner that stores unique values and returns indices for lookup.
 ///
 /// Interns are deduplicated on insertion - interning the same string twice returns
@@ -600,17 +584,15 @@ pub(crate) struct Interns {
     bytes: Vec<Vec<u8>>,
     long_ints: Vec<BigInt>,
     functions: Vec<Function>,
-    external_functions: Vec<String>,
 }
 
 impl Interns {
-    pub fn new(interner: InternerBuilder, functions: Vec<Function>, external_functions: Vec<String>) -> Self {
+    pub fn new(interner: InternerBuilder, functions: Vec<Function>) -> Self {
         Self {
             strings: interner.strings,
             bytes: interner.bytes,
             long_ints: interner.long_ints,
             functions,
-            external_functions,
         }
     }
 
@@ -654,17 +636,29 @@ impl Interns {
         self.functions.get(id.index()).expect("Function not found")
     }
 
-    /// Lookup an external function name by its `ExtFunctionId`
+    /// Looks up the `StringId` for a string, checking ASCII, static strings, and interned strings.
     ///
-    /// # Panics
+    /// This is the reverse of `get_str`: given a string, find its StringId.
+    /// Used when the host provides a name (e.g., from a NameLookup response) that was
+    /// previously interned during preparation.
     ///
-    /// Panics if the `ExtFunctionId` is invalid.
-    #[inline]
-    pub fn get_external_function_name(&self, id: ExtFunctionId) -> String {
-        self.external_functions
-            .get(id.index())
-            .expect("External function not found")
-            .clone()
+    /// Error if the string was never interned.
+    pub fn get_string_id_by_name(&self, s: &str) -> Option<StringId> {
+        // Check single ASCII char
+        if s.len() == 1 {
+            return Some(StringId::from_ascii(s.as_bytes()[0]));
+        }
+        // Check static strings
+        if let Ok(ss) = StaticStrings::from_str(s) {
+            return Some(ss.into());
+        }
+        // Check interned strings
+        for (i, interned) in self.strings.iter().enumerate() {
+            if interned == s {
+                return u32::try_from(INTERN_STRING_ID_OFFSET + i).ok().map(StringId);
+            }
+        }
+        None
     }
 
     /// Sets the compiled functions.

@@ -14,11 +14,11 @@ use crate::{
 ///
 /// Returns a list with elements in reverse order.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
-pub fn builtin_reversed(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_reversed(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("reversed", vm.heap)?;
 
     // Collect all items
-    let mut items: Vec<_> = MontyIter::new(value, vm.heap, vm.interns)?.collect(vm.heap, vm.interns)?;
+    let mut items: Vec<_> = MontyIter::new(value, vm)?.collect(vm)?;
 
     // Reverse in place
     items.reverse();

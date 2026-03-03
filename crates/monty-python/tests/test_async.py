@@ -10,14 +10,14 @@ from pydantic_monty import run_monty_async
 
 def test_async():
     code = 'await foobar(1, 2)'
-    m = pydantic_monty.Monty(code, external_functions=['foobar'])
+    m = pydantic_monty.Monty(code)
     progress = m.start()
-    assert isinstance(progress, pydantic_monty.MontySnapshot)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
     assert progress.function_name == snapshot('foobar')
     assert progress.args == snapshot((1, 2))
     call_id = progress.call_id
     progress = progress.resume(future=...)
-    assert isinstance(progress, pydantic_monty.MontyFutureSnapshot)
+    assert isinstance(progress, pydantic_monty.FutureSnapshot)
     assert progress.pending_call_ids == snapshot([call_id])
     progress = progress.resume({call_id: {'return_value': 3}})
     assert isinstance(progress, pydantic_monty.MontyComplete)
@@ -30,21 +30,21 @@ import asyncio
 
 await asyncio.gather(foo(1), bar(2))
 """
-    m = pydantic_monty.Monty(code, external_functions=['foo', 'bar'])
+    m = pydantic_monty.Monty(code)
     progress = m.start()
-    assert isinstance(progress, pydantic_monty.MontySnapshot)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
     assert progress.function_name == snapshot('foo')
     assert progress.args == snapshot((1,))
     foo_call_ids = progress.call_id
 
     progress = progress.resume(future=...)
-    assert isinstance(progress, pydantic_monty.MontySnapshot)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
     assert progress.function_name == snapshot('bar')
     assert progress.args == snapshot((2,))
     bar_call_ids = progress.call_id
     progress = progress.resume(future=...)
 
-    assert isinstance(progress, pydantic_monty.MontyFutureSnapshot)
+    assert isinstance(progress, pydantic_monty.FutureSnapshot)
     dump_progress = progress.dump()
 
     assert progress.pending_call_ids == IsList(foo_call_ids, bar_call_ids, check_order=False)
@@ -52,15 +52,15 @@ await asyncio.gather(foo(1), bar(2))
     assert isinstance(progress, pydantic_monty.MontyComplete)
     assert progress.output == snapshot([3, 4])
 
-    progress2 = pydantic_monty.MontyFutureSnapshot.load(dump_progress)
+    progress2 = pydantic_monty.FutureSnapshot.load(dump_progress)
     assert progress2.pending_call_ids == IsList(foo_call_ids, bar_call_ids, check_order=False)
     progress = progress2.resume({bar_call_ids: {'return_value': 14}, foo_call_ids: {'return_value': 13}})
     assert isinstance(progress, pydantic_monty.MontyComplete)
     assert progress.output == snapshot([13, 14])
 
-    progress3 = pydantic_monty.MontyFutureSnapshot.load(dump_progress)
+    progress3 = pydantic_monty.FutureSnapshot.load(dump_progress)
     progress = progress3.resume({bar_call_ids: {'return_value': 14}, foo_call_ids: {'future': ...}})
-    assert isinstance(progress, pydantic_monty.MontyFutureSnapshot)
+    assert isinstance(progress, pydantic_monty.FutureSnapshot)
 
     assert progress.pending_call_ids == [foo_call_ids]
     progress = progress.resume({foo_call_ids: {'return_value': 144}})
@@ -73,7 +73,7 @@ await asyncio.gather(foo(1), bar(2))
 
 async def test_run_monty_async_sync_function():
     """Test run_monty_async with a basic sync external function."""
-    m = pydantic_monty.Monty('get_value()', external_functions=['get_value'])
+    m = pydantic_monty.Monty('get_value()')
 
     def get_value():
         return 42
@@ -84,7 +84,7 @@ async def test_run_monty_async_sync_function():
 
 async def test_run_monty_async_async_function():
     """Test run_monty_async with a basic async external function."""
-    m = pydantic_monty.Monty('await fetch_data()', external_functions=['fetch_data'])
+    m = pydantic_monty.Monty('await fetch_data()')
 
     async def fetch_data():
         await asyncio.sleep(0.001)
@@ -96,7 +96,7 @@ async def test_run_monty_async_async_function():
 
 async def test_run_monty_async_function_not_found():
     """Test that missing external function raises wrapped error."""
-    m = pydantic_monty.Monty('missing_func()', external_functions=['missing_func'])
+    m = pydantic_monty.Monty('missing_func()')
 
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         await run_monty_async(m, external_functions={})
@@ -107,7 +107,7 @@ async def test_run_monty_async_function_not_found():
 
 async def test_run_monty_async_sync_exception():
     """Test that sync function exceptions propagate correctly."""
-    m = pydantic_monty.Monty('fail()', external_functions=['fail'])
+    m = pydantic_monty.Monty('fail()')
 
     def fail():
         raise ValueError('sync error')
@@ -121,7 +121,7 @@ async def test_run_monty_async_sync_exception():
 
 async def test_run_monty_async_async_exception():
     """Test that async function exceptions propagate correctly."""
-    m = pydantic_monty.Monty('await async_fail()', external_functions=['async_fail'])
+    m = pydantic_monty.Monty('await async_fail()')
 
     async def async_fail():
         await asyncio.sleep(0.001)
@@ -143,7 +143,7 @@ except ValueError:
     caught = True
 caught
 """
-    m = pydantic_monty.Monty(code, external_functions=['fail'])
+    m = pydantic_monty.Monty(code)
 
     def fail():
         raise ValueError('caught error')
@@ -158,7 +158,7 @@ async def test_run_monty_async_multiple_async_functions():
 import asyncio
 await asyncio.gather(fetch_a(), fetch_b())
 """
-    m = pydantic_monty.Monty(code, external_functions=['fetch_a', 'fetch_b'])
+    m = pydantic_monty.Monty(code)
 
     async def fetch_a():
         await asyncio.sleep(0.01)
@@ -179,7 +179,7 @@ sync_val = sync_func()
 async_val = await async_func()
 sync_val + async_val
 """
-    m = pydantic_monty.Monty(code, external_functions=['sync_func', 'async_func'])
+    m = pydantic_monty.Monty(code)
 
     def sync_func():
         return 10
@@ -194,7 +194,7 @@ sync_val + async_val
 
 async def test_run_monty_async_with_inputs():
     """Test run_monty_async with inputs parameter."""
-    m = pydantic_monty.Monty('process(x, y)', inputs=['x', 'y'], external_functions=['process'])
+    m = pydantic_monty.Monty('process(x, y)', inputs=['x', 'y'])
 
     def process(a: int, b: int) -> int:
         return a * b
@@ -218,7 +218,7 @@ async def test_run_monty_async_with_print_callback():
 
 async def test_run_monty_async_function_returning_none():
     """Test async function that returns None."""
-    m = pydantic_monty.Monty('do_nothing()', external_functions=['do_nothing'])
+    m = pydantic_monty.Monty('do_nothing()')
 
     def do_nothing():
         return None
@@ -248,7 +248,6 @@ async def test_run_monty_async_with_os():
 from pathlib import Path
 Path('/test.txt').read_text()
         """,
-        external_functions=[],
     )
 
     result = await run_monty_async(m, os=fs)
@@ -270,7 +269,6 @@ from pathlib import Path
 content = Path('/data.txt').read_text()
 await process(content)
         """,
-        external_functions=['process'],
     )
 
     result = await run_monty_async(
@@ -346,7 +344,7 @@ async def main():
 
 await main()
 """
-    m = pydantic_monty.Monty(code, external_functions=['get_lat_lng', 'get_temp', 'get_weather_description'])
+    m = pydantic_monty.Monty(code)
 
     city_coords = {
         'London': {'lat': 51.5, 'lng': -0.1},

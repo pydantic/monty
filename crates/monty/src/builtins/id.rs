@@ -7,7 +7,7 @@ use crate::{
 /// Implementation of the id() builtin function.
 ///
 /// Returns the identity of an object (unique integer for the object's lifetime).
-pub fn builtin_id(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_id(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("id", vm.heap)?;
     defer_drop!(value, vm);
 

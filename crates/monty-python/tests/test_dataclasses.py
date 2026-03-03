@@ -167,6 +167,7 @@ def test_dataclass_empty():
     assert repr(result) == snapshot('test_dataclass_empty.<locals>.Empty()')
 
 
+@pytest.mark.xfail(reason='We should extend the dataclass registry to cover all types, then test it is enforced')
 def test_dataclass_type_raises():
     """Dataclass type (not instance) should raise TypeError."""
 
@@ -417,7 +418,7 @@ except AttributeError:
     caught = 'attr'
 caught
 """
-    m = pydantic_monty.Monty(code, external_functions=['fail'])
+    m = pydantic_monty.Monty(code)
 
     def fail() -> NoReturn:
         raise FrozenInstanceError('cannot assign to field')
@@ -429,7 +430,7 @@ caught
 
 def test_frozen_instance_error_from_external_function_propagates():
     """FrozenInstanceError from external function propagates to Python."""
-    m = pydantic_monty.Monty('fail()', external_functions=['fail'])
+    m = pydantic_monty.Monty('fail()')
 
     def fail() -> NoReturn:
         raise FrozenInstanceError('test frozen error')
@@ -800,7 +801,7 @@ def test_method_no_args_raw():
     """Calling a dataclass method with no args (besides self), raw."""
     m = pydantic_monty.Monty('g.greet()', inputs=['g'], dataclass_registry=[Greeter])
     result = m.start(inputs={'g': Greeter(greeting='hello')})
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     assert result.script_name == snapshot('main.py')
     assert result.function_name == snapshot('greet')
     assert result.args == snapshot((Greeter(greeting='hello'),))

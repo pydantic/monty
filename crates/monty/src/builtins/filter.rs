@@ -30,18 +30,18 @@ use crate::{
 /// filter(lambda x: x > 0, [-1, 0, 1, 2])  # [1, 2]
 /// filter(None, [0, 1, False, True, ''])   # [1, True]
 /// ```
-pub fn builtin_filter(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_filter(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (function, iterable) = args.get_two_args("filter", vm.heap)?;
     defer_drop!(function, vm);
 
-    let iter = MontyIter::new(iterable, vm.heap, vm.interns)?;
+    let iter = MontyIter::new(iterable, vm)?;
     defer_drop_mut!(iter, vm);
 
     let out: Vec<Value> = Vec::new();
     let mut out_guard = HeapGuard::new(out, vm);
     let (out, vm) = out_guard.as_parts_mut();
 
-    while let Some(item) = iter.for_next(vm.heap, vm.interns)? {
+    while let Some(item) = iter.for_next(vm)? {
         let mut item_guard = HeapGuard::new(item, vm);
         let (item, vm) = item_guard.as_parts_mut();
         let should_include = if let Value::None = function {

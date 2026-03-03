@@ -14,7 +14,7 @@ use crate::{
 ///   `StopIteration` when the iterator is exhausted.
 /// - `next(iterator, default)` - Returns the next item from the iterator, or
 ///   `default` if the iterator is exhausted.
-pub fn builtin_next(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_next(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (iterator, default) = args.get_one_two_args("next", vm.heap)?;
     defer_drop!(iterator, vm);
     iterator_next(iterator, default, vm.heap, vm.interns)

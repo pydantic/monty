@@ -1,6 +1,6 @@
 import test from 'ava'
 
-import { Monty, MontySnapshot, MontyComplete, type ResourceLimits } from '../wrapper'
+import { Monty, MontySnapshot, MontyNameLookup, MontyComplete, type ResourceLimits } from '../wrapper'
 import { Buffer } from 'node:buffer'
 
 // =============================================================================
@@ -35,12 +35,14 @@ test('monty dump load preserves inputs', (t) => {
   t.is(m2.run({ inputs: { x: 1, y: 2 } }), 3)
 })
 
-test('monty dump load preserves external functions', (t) => {
-  const m = new Monty('func()', { externalFunctions: ['func'] })
+test('monty dump load preserves code execution', (t) => {
+  const m = new Monty('func()')
   const data = m.dump()
 
   const m2 = Monty.load(data)
-  t.deepEqual(m2.externalFunctions, ['func'])
+  const progress = m2.start()
+  t.true(progress instanceof MontySnapshot)
+  t.is((progress as MontySnapshot).functionName, 'func')
 })
 
 test('monty dump produces same result on multiple calls', (t) => {
@@ -72,26 +74,31 @@ test('monty dump load various outputs', (t) => {
 // =============================================================================
 
 test('snapshot dump load roundtrip', (t) => {
-  const m = new Monty('func(1, 2)', { externalFunctions: ['func'] })
+  const m = new Monty('func(1, 2)')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
+  const snapshot = progress as MontySnapshot
 
-  const data = (progress as MontySnapshot).dump()
+  t.is(snapshot.functionName, 'func')
+  t.deepEqual(snapshot.args, [1, 2])
+  t.deepEqual(snapshot.kwargs, {})
+
+  const data = snapshot.dump()
   t.true(data instanceof Buffer)
   t.true(data.length > 0)
 
-  const progress2 = MontySnapshot.load(data)
-  t.is(progress2.functionName, 'func')
-  t.deepEqual(progress2.args, [1, 2])
-  t.deepEqual(progress2.kwargs, {})
+  const snapshot2 = MontySnapshot.load(data)
+  t.is(snapshot2.functionName, 'func')
+  t.deepEqual(snapshot2.args, [1, 2])
+  t.deepEqual(snapshot2.kwargs, {})
 
-  const result = progress2.resume({ returnValue: 100 })
+  const result = snapshot2.resume({ returnValue: 100 })
   t.true(result instanceof MontyComplete)
   t.is((result as MontyComplete).output, 100)
 })
 
 test('snapshot dump load preserves script name', (t) => {
-  const m = new Monty('func()', { scriptName: 'test.py', externalFunctions: ['func'] })
+  const m = new Monty('func()', { scriptName: 'test.py' })
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
 
@@ -101,7 +108,7 @@ test('snapshot dump load preserves script name', (t) => {
 })
 
 test('snapshot dump load with kwargs', (t) => {
-  const m = new Monty('func(a=1, b="hello")', { externalFunctions: ['func'] })
+  const m = new Monty('func(a=1, b="hello")')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
 
@@ -113,10 +120,8 @@ test('snapshot dump load with kwargs', (t) => {
 })
 
 test('snapshot dump after resume fails', (t) => {
-  const m = new Monty('func()', { externalFunctions: ['func'] })
-  const progress = m.start()
-  t.true(progress instanceof MontySnapshot)
-  const snapshot = progress as MontySnapshot
+  const m = new Monty('func()')
+  const snapshot = m.start() as MontySnapshot
 
   snapshot.resume({ returnValue: 1 })
 
@@ -125,32 +130,36 @@ test('snapshot dump after resume fails', (t) => {
 })
 
 test('snapshot dump load multiple calls', (t) => {
-  const m = new Monty('a() + b()', { externalFunctions: ['a', 'b'] })
+  const m = new Monty('a() + b()')
 
-  // First call
-  let progress = m.start() as MontySnapshot
-  t.is(progress.functionName, 'a')
+  // First call: a()
+  let progress: MontySnapshot | MontyNameLookup | MontyComplete = m.start()
+  t.true(progress instanceof MontySnapshot)
+  let snapshot = progress as MontySnapshot
+  t.is(snapshot.functionName, 'a')
 
   // Dump and load the state
-  const data = progress.dump()
-  progress = MontySnapshot.load(data)
+  const data = snapshot.dump()
+  snapshot = MontySnapshot.load(data)
 
-  // Resume with first return value
-  let progress3 = progress.resume({ returnValue: 10 }) as MontySnapshot
-  t.is(progress3.functionName, 'b')
+  // Resume with first return value — triggers b()
+  progress = snapshot.resume({ returnValue: 10 })
+  t.true(progress instanceof MontySnapshot)
+  let snapshot2 = progress as MontySnapshot
+  t.is(snapshot2.functionName, 'b')
 
   // Dump and load again
-  const data2 = progress3.dump()
-  progress3 = MontySnapshot.load(data2)
+  const data2 = snapshot2.dump()
+  snapshot2 = MontySnapshot.load(data2)
 
   // Resume with second return value
-  const result = progress3.resume({ returnValue: 5 })
+  const result = snapshot2.resume({ returnValue: 5 })
   t.true(result instanceof MontyComplete)
   t.is((result as MontyComplete).output, 15)
 })
 
 test('snapshot dump load with limits', (t) => {
-  const m = new Monty('func()', { externalFunctions: ['func'] })
+  const m = new Monty('func()')
   const limits: ResourceLimits = { maxAllocations: 1000 }
   const progress = m.start({ limits })
   t.true(progress instanceof MontySnapshot)
@@ -161,4 +170,36 @@ test('snapshot dump load with limits', (t) => {
   const result = progress2.resume({ returnValue: 99 })
   t.true(result instanceof MontyComplete)
   t.is((result as MontyComplete).output, 99)
+})
+
+// =============================================================================
+// MontyNameLookup dump/load tests
+// =============================================================================
+
+test('name lookup dump load roundtrip', (t) => {
+  const m = new Monty('x = foo; x')
+  const lookup = m.start()
+  t.true(lookup instanceof MontyNameLookup)
+
+  const data = (lookup as MontyNameLookup).dump()
+  t.true(data instanceof Buffer)
+  t.true(data.length > 0)
+
+  const lookup2 = MontyNameLookup.load(data)
+  t.is(lookup2.variableName, 'foo')
+  t.is(lookup2.scriptName, 'main.py')
+
+  const result = lookup2.resume({ value: 42 })
+  t.true(result instanceof MontyComplete)
+  t.is((result as MontyComplete).output, 42)
+})
+
+test('name lookup dump after resume fails', (t) => {
+  const m = new Monty('x = foo; x')
+  const lookup = m.start() as MontyNameLookup
+
+  lookup.resume({ value: 42 })
+
+  const error = t.throws(() => lookup.dump())
+  t.true(error?.message.includes('already been resumed'))
 })

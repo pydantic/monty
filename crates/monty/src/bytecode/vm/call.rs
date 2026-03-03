@@ -14,7 +14,7 @@ use crate::{
     exception_private::{ExcType, RunError},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     heap_data::CellValue,
-    intern::{ExtFunctionId, FunctionId, StringId},
+    intern::{FunctionId, StringId},
     os::OsFunction,
     resource::ResourceTracker,
     types::{
@@ -34,7 +34,8 @@ pub(super) enum CallResult {
     /// The VM should reload its cached frame state.
     FramePushed,
     /// External function call requested - VM should pause and return to caller.
-    External(ExtFunctionId, ArgValues),
+    /// The `EitherStr` is the name of the external function (interned or heap-owned).
+    External(EitherStr, ArgValues),
     /// OS operation call requested - VM should yield `FrameExit::OsCall` to host.
     ///
     /// The host executes the OS operation and resumes the VM with the result.
@@ -43,7 +44,7 @@ pub(super) enum CallResult {
     ///
     /// The method name (e.g. `"distance"`) and the args include the dataclass instance
     /// as the first argument (`self`). Unlike `External`, this uses an `EitherStr` instead
-    /// of `ExtFunctionId` because method names are only known at runtime when dataclass
+    /// of `StringId` because method names are only known at runtime when dataclass
     /// inputs are provided.
     MethodCall(EitherStr, ArgValues),
     /// The call returned a value that should be implicitly awaited.
@@ -58,7 +59,7 @@ impl From<AttrCallResult> for CallResult {
         match result {
             AttrCallResult::Value(v) => Self::Push(v),
             AttrCallResult::OsCall(func, args) => Self::OsCall(func, args),
-            AttrCallResult::ExternalCall(ext_id, args) => Self::External(ext_id, args),
+            AttrCallResult::ExternalCall(ext_id, args) => Self::External(EitherStr::Interned(ext_id), args),
             AttrCallResult::MethodCall(name, args) => Self::MethodCall(name, args),
             AttrCallResult::AwaitValue(v) => Self::AwaitValue(v),
         }
@@ -284,12 +285,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             Value::InternString(string_id) => {
                 // Call string method on interned string literal using the unified dispatcher
                 let s = this.interns.get_str(string_id);
-                call_str_method(s, name_id, args, this.heap, this.interns).map(CallResult::Push)
+                call_str_method(s, name_id, args, this).map(CallResult::Push)
             }
             Value::InternBytes(bytes_id) => {
                 // Call bytes method on interned bytes literal using the unified dispatcher
                 let b = this.interns.get_bytes(bytes_id);
-                call_bytes_method(b, name_id, args, this.heap, this.interns).map(CallResult::Push)
+                call_bytes_method(b, name_id, args, this).map(CallResult::Push)
             }
             Value::Builtin(Builtins::Type(t)) => {
                 // Handle classmethods on type objects like dict.fromkeys()
@@ -330,7 +331,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     FrameExit::ResolveFutures(_)
                     | FrameExit::ExternalCall { .. }
                     | FrameExit::OsCall { .. }
-                    | FrameExit::MethodCall { .. } => {
+                    | FrameExit::MethodCall { .. }
+                    | FrameExit::NameLookup { .. } => {
                         // Pop frames off the stack from this failed evaluation
                         while self.frames.len() > stack_depth {
                             self.pop_frame();
@@ -371,9 +373,9 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 let result = mf.call(self.heap, args)?;
                 Ok(result.into())
             }
-            Value::ExtFunction(ext_id) => {
+            Value::ExtFunction(name_id) => {
                 // External function - return to caller to execute
-                Ok(CallResult::External(*ext_id, args))
+                Ok(CallResult::External(EitherStr::Interned(*name_id), args))
             }
             Value::DefFunction(func_id) => {
                 // Defined function without defaults or captured variables
@@ -391,7 +393,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         }
     }
 
-    /// Handles calling a heap-allocated callable (closure or function with defaults).
+    /// Handles calling a heap-allocated callable (closure, function with defaults, or external function).
     fn call_heap_callable(&mut self, heap_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
         let (func_id, cells, defaults) = match self.heap.get(heap_id) {
             HeapData::Closure(closure) => {
@@ -402,6 +404,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             HeapData::FunctionDefaults(fd) => {
                 let cloned_defaults: Vec<Value> = fd.defaults.iter().map(|v| v.clone_with_heap(self)).collect();
                 (fd.func_id, Vec::new(), cloned_defaults)
+            }
+            HeapData::ExtFunction(name) => {
+                // Heap-allocated external function with a non-interned name
+                let name = name.clone();
+                return Ok(CallResult::External(EitherStr::Heap(name), args));
             }
             _ => {
                 args.drop_with_heap(self);

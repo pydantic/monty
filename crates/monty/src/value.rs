@@ -19,7 +19,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, Heap, HeapData, HeapId},
     heap_data::HeapDataMut,
-    intern::{BytesId, ExtFunctionId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
+    intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker, check_div_size, check_lshift_size, check_pow_size, check_repeat_size},
     types::{
@@ -66,8 +66,12 @@ pub(crate) enum Value {
     ModuleFunction(ModuleFunctions),
     /// A function defined in the module (not a closure, doesn't capture any variables)
     DefFunction(FunctionId),
-    /// Reference to an external function defined on the host
-    ExtFunction(ExtFunctionId),
+    /// Reference to an external function defined on the host.
+    ///
+    /// The `StringId` stores the interned function name. When called, the VM yields
+    /// a `FrameExit::ExternalCall` with this `StringId` so the host can look up and
+    /// execute the function by name.
+    ExtFunction(StringId),
     /// A marker value representing special objects like sys.stdout/stderr.
     /// These exist but have minimal functionality in the sandboxed environment.
     Marker(Marker),
@@ -376,8 +380,8 @@ impl PyTrait for Value {
             Self::Builtin(b) => b.py_repr_fmt(f),
             Self::ModuleFunction(mf) => mf.py_repr_fmt(f, self.id()),
             Self::DefFunction(f_id) => interns.get_function(*f_id).py_repr_fmt(f, interns, self.id()),
-            Self::ExtFunction(f_id) => {
-                write!(f, "<function '{}' external>", interns.get_external_function_name(*f_id))
+            Self::ExtFunction(name_id) => {
+                write!(f, "<function '{}' external>", interns.get_str(*name_id))
             }
             Self::InternString(string_id) => string_repr_fmt(interns.get_str(*string_id), f),
             Self::InternBytes(bytes_id) => bytes_repr_fmt(interns.get_bytes(*bytes_id), f),
@@ -1426,7 +1430,7 @@ impl Value {
             Self::Builtin(c) => builtin_value_id(*c),
             Self::ModuleFunction(mf) => module_function_value_id(*mf),
             Self::DefFunction(f_id) => function_value_id(*f_id),
-            Self::ExtFunction(f_id) => ext_function_value_id(*f_id),
+            Self::ExtFunction(name_id) => ext_function_value_id(*name_id),
             // Markers get deterministic IDs based on discriminant
             Self::Marker(m) => marker_value_id(*m),
             // Properties get deterministic IDs based on discriminant
@@ -1525,7 +1529,7 @@ impl Value {
             Self::ModuleFunction(mf) => mf.hash(&mut hasher),
             // Hash functions based on function ID
             Self::DefFunction(f_id) => f_id.hash(&mut hasher),
-            Self::ExtFunction(f_id) => f_id.hash(&mut hasher),
+            Self::ExtFunction(name_id) => name_id.hash(&mut hasher),
             // Markers are hashable based on their discriminant (already included above)
             Self::Marker(m) => m.hash(&mut hasher),
             // Properties are hashable based on their OS function discriminant
@@ -2259,10 +2263,10 @@ fn function_value_id(f_id: FunctionId) -> usize {
     FUNCTION_ID_TAG | (f_id.index() & FUNCTION_ID_MASK)
 }
 
-/// Computes a deterministic ID for an external function based on its id.
+/// Computes a deterministic ID for an external function based on its interned name.
 #[inline]
-fn ext_function_value_id(f_id: ExtFunctionId) -> usize {
-    EXTFUNCTION_ID_TAG | (f_id.index() & EXTFUNCTION_ID_MASK)
+fn ext_function_value_id(name_id: StringId) -> usize {
+    EXTFUNCTION_ID_TAG | (name_id.index() & EXTFUNCTION_ID_MASK)
 }
 
 /// Computes a deterministic ID for a marker value based on its discriminant.

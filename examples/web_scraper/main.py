@@ -118,7 +118,6 @@ Ignore any deprecated models.
                     with logfire.span('prepare monty', code=extracted.code):
                         m = Monty(
                             extracted.code,
-                            external_functions=['open_page', 'beautiful_soup', 'record_model_info'],
                             type_check=True,
                             type_check_stubs=stubs,
                         )

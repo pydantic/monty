@@ -19,7 +19,7 @@ use crate::{
 ///
 /// Returns a tuple (quotient, remainder) from integer division.
 /// Equivalent to (a // b, a % b).
-pub fn builtin_divmod(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_divmod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (a, b) = args.get_two_args("divmod", vm.heap)?;
     let a = super::round::normalize_bool_to_int(a);
     let b = super::round::normalize_bool_to_int(b);

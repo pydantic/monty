@@ -6,8 +6,8 @@ use std::{
 
 use clap::Parser;
 use monty::{
-    LimitedTracker, MontyObject, MontyRepl, MontyRun, NoLimitTracker, PrintWriter, ReplContinuationMode,
-    ResourceLimits, ResourceTracker, RunProgress, detect_repl_continuation_mode,
+    LimitedTracker, MontyObject, MontyRepl, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter,
+    ReplContinuationMode, ResourceLimits, ResourceTracker, RunProgress, detect_repl_continuation_mode,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 // disabled due to format failing on https://github.com/pydantic/monty/pull/75 where CI and local wanted imports ordered differently
@@ -201,9 +201,8 @@ fn run_script(file_path: &str, code: String, type_check_enabled: bool, tracker: 
 
     let input_names = vec![];
     let inputs = vec![];
-    let ext_functions = vec!["add_ints".to_owned()];
 
-    let runner = match MontyRun::new(code, file_path, input_names, ext_functions) {
+    let runner = match MontyRun::new(code, file_path, input_names) {
         Ok(ex) => ex,
         Err(err) => {
             eprintln!("{BOLD_RED}error{RESET}:\n{err}");
@@ -278,23 +277,15 @@ fn run_script(file_path: &str, code: String, type_check_enabled: bool, tracker: 
 fn run_repl(file_path: &str, code: String, tracker: impl ResourceTracker) -> ExitCode {
     let input_names = vec![];
     let inputs = vec![];
-    let ext_functions = vec!["add_ints".to_owned()];
 
-    let (mut repl, init_output) = match MontyRepl::new(
-        code,
-        file_path,
-        input_names,
-        ext_functions,
-        inputs,
-        tracker,
-        &mut PrintWriter::Stdout,
-    ) {
-        Ok(v) => v,
-        Err(err) => {
-            eprintln!("{BOLD_RED}error{RESET} initializing repl:\n{err}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let (mut repl, init_output) =
+        match MontyRepl::new(code, file_path, input_names, inputs, tracker, &mut PrintWriter::Stdout) {
+            Ok(v) => v,
+            Err(err) => {
+                eprintln!("{BOLD_RED}error{RESET} initializing repl:\n{err}");
+                return ExitCode::FAILURE;
+            }
+        };
 
     if init_output != MontyObject::None {
         println!("{init_output}");
@@ -401,15 +392,10 @@ fn run_until_complete(mut progress: RunProgress<impl ResourceTracker>) -> Result
     loop {
         match progress {
             RunProgress::Complete(value) => return Ok(value),
-            RunProgress::FunctionCall {
-                function_name,
-                args,
-                state,
-                ..
-            } => {
-                let return_value = resolve_external_call(&function_name, &args)?;
-                progress = state
-                    .run(return_value, &mut PrintWriter::Stdout)
+            RunProgress::FunctionCall(call) => {
+                let return_value = resolve_external_call(&call.function_name, &call.args)?;
+                progress = call
+                    .resume(return_value, &mut PrintWriter::Stdout)
                     .map_err(|err| format!("{err}"))?;
             }
             RunProgress::ResolveFutures(state) => {
@@ -418,8 +404,24 @@ fn run_until_complete(mut progress: RunProgress<impl ResourceTracker>) -> Result
                     state.pending_call_ids()
                 ));
             }
-            RunProgress::OsCall { function, args, .. } => {
-                return Err(format!("OS calls not supported in CLI: {function:?}({args:?})"));
+            RunProgress::NameLookup(lookup) => {
+                let result = if lookup.name == "add_ints" {
+                    NameLookupResult::Value(MontyObject::Function {
+                        name: "add_ints".to_string(),
+                        docstring: None,
+                    })
+                } else {
+                    NameLookupResult::Undefined
+                };
+                progress = lookup
+                    .resume(result, &mut PrintWriter::Stdout)
+                    .map_err(|err| format!("{err}"))?;
+            }
+            RunProgress::OsCall(call) => {
+                return Err(format!(
+                    "OS calls not supported in CLI: {:?}({:?})",
+                    call.function, call.args
+                ));
             }
         }
     }

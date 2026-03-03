@@ -97,7 +97,6 @@ def fetch(url: str) -> str:
   t.notThrows(
     () =>
       new Monty('result = fetch("https://example.com")', {
-        externalFunctions: ['fetch'],
         typeCheck: true,
         typeCheckPrefixCode: prefix,
       }),

@@ -50,7 +50,6 @@ async def main():
     m = pydantic_monty.Monty(
         SANDBOX_CODE_PATH.read_text(),
         script_name='sql_playground.py',
-        external_functions=['query_csv', 'read_json', 'analyze_sentiment'],
         type_check=True,
         type_check_stubs=TYPE_STUBS,
     )

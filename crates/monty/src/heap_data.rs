@@ -95,6 +95,12 @@ pub(crate) enum HeapDataMut<'a> {
     /// Pure methods (name, parent, etc.) are handled directly by the VM.
     /// I/O methods (exists, read_text, etc.) yield external function calls.
     Path(&'a mut Path),
+    /// Reference to an external function where the name was not interned.
+    ///
+    /// Created when the host resolves a name lookup to a callable whose name
+    /// does not match any interned string (e.g., the host returns a function
+    /// with a different `__name__` than the variable it was assigned to).
+    ExtFunction(&'a mut String),
 }
 
 /// Thin wrapper around `Value` which is used in the `Cell` variant above.
@@ -257,6 +263,13 @@ impl HeapDataMut<'_> {
             | Self::GatherFuture(_) => Ok(None),
             // LongInt is immutable and hashable
             Self::LongInt(li) => Ok(Some(li.hash())),
+            // ExtFunction is hashable by name
+            Self::ExtFunction(name) => {
+                let mut hasher = DefaultHasher::new();
+                discriminant(self).hash(&mut hasher);
+                name.hash(&mut hasher);
+                Ok(Some(hasher.finish()))
+            }
         }
     }
 }
@@ -276,7 +289,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Dict(d) => d.py_type(heap),
             Self::Set(s) => s.py_type(heap),
             Self::FrozenSet(fs) => fs.py_type(heap),
-            Self::Closure(_) | Self::FunctionDefaults(_) => Type::Function,
+            Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => Type::Function,
             Self::Cell(_) => Type::Cell,
             Self::Range(_) => Type::Range,
             Self::Slice(_) => Type::Slice,
@@ -323,6 +336,7 @@ impl PyTrait for HeapDataMut<'_> {
                     + gather.pending_calls.len() * std::mem::size_of::<crate::asyncio::CallId>()
             }
             Self::Path(p) => p.py_estimate_size(),
+            Self::ExtFunction(s) => std::mem::size_of::<String>() + s.len(),
         }
     }
 
@@ -337,19 +351,8 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Set(s) => s.py_len(heap, interns),
             Self::FrozenSet(fs) => fs.py_len(heap, interns),
             Self::Range(r) => Some(r.len()),
-            // Cells, Slices, Exceptions, Dataclasses, Iterators, LongInts, Modules, Paths, and async types don't have length
-            Self::Cell(_)
-            | Self::Closure(_)
-            | Self::FunctionDefaults(_)
-            | Self::Slice(_)
-            | Self::Exception(_)
-            | Self::Dataclass(_)
-            | Self::Iter(_)
-            | Self::LongInt(_)
-            | Self::Module(_)
-            | Self::Coroutine(_)
-            | Self::GatherFuture(_)
-            | Self::Path(_) => None,
+            // other types don't have length
+            _ => None,
         }
     }
 
@@ -453,8 +456,8 @@ impl PyTrait for HeapDataMut<'_> {
                     result.py_dec_ref_ids(stack);
                 }
             }
-            // Range, Slice, Exception, LongInt, and Path have no nested heap references
-            Self::Range(_) | Self::Slice(_) | Self::Exception(_) | Self::LongInt(_) | Self::Path(_) => {}
+            // other types have no nested heap references
+            _ => {}
         }
     }
 
@@ -468,7 +471,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Dict(d) => d.py_bool(heap, interns),
             Self::Set(s) => s.py_bool(heap, interns),
             Self::FrozenSet(fs) => fs.py_bool(heap, interns),
-            Self::Closure(_) | Self::FunctionDefaults(_) => true,
+            Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => true,
             Self::Cell(_) => true, // Cells are always truthy
             Self::Range(r) => r.py_bool(heap, interns),
             Self::Slice(s) => s.py_bool(heap, interns),
@@ -517,6 +520,7 @@ impl PyTrait for HeapDataMut<'_> {
             }
             Self::GatherFuture(gather) => write!(f, "<gather({})>", gather.item_count()),
             Self::Path(p) => p.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::ExtFunction(name) => write!(f, "<function '{name}' external>"),
         }
     }
 

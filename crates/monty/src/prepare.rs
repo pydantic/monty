@@ -43,13 +43,9 @@ pub struct PrepareResult {
 ///
 /// The namespace will be converted to runtime Objects when execution begins and the heap is available.
 /// At module level, the local namespace IS the global namespace.
-pub(crate) fn prepare(
-    parse_result: ParseResult,
-    input_names: Vec<String>,
-    external_functions: &[String],
-) -> Result<PrepareResult, ParseError> {
+pub(crate) fn prepare(parse_result: ParseResult, input_names: Vec<String>) -> Result<PrepareResult, ParseError> {
     let ParseResult { nodes, interner } = parse_result;
-    let mut p = Prepare::new_module(input_names, external_functions, &interner);
+    let mut p = Prepare::new_module(input_names, &interner);
     let mut prepared_nodes = p.prepare_nodes(nodes)?;
 
     // In the root frame, the last expression is implicitly returned
@@ -148,6 +144,13 @@ struct Prepare<'i> {
     /// that are both nonlocal and captured by nested functions), then extended as new
     /// captures are discovered during nested function preparation.
     cell_var_map: AHashMap<String, NamespaceId>,
+    /// Names that were resolved as `LocalUnassigned` in step 8 of `get_id`.
+    ///
+    /// These names are never assigned and not parameters - they were only referenced
+    /// (e.g., external function names). Tracking them prevents step 6 from incorrectly
+    /// classifying subsequent references as `Local` (like parameters) when the name
+    /// appears in `name_map` from a previous `get_id` call.
+    unassigned_ref_names: AHashSet<String>,
 }
 
 impl<'i> Prepare<'i> {
@@ -157,16 +160,12 @@ impl<'i> Prepare<'i> {
     /// since all variables are already in the global namespace.
     ///
     /// # Arguments
-    /// * `input_names` - Names that should be pre-registered in the namespace (e.g., external variables)
-    /// * `external_functions` - Names of external functions to pre-register
+    /// * `input_names` - Names that should be pre-registered in the namespace (e.g., input variables)
     /// * `interner` - Reference to the string interner for looking up names
-    fn new_module(input_names: Vec<String>, external_functions: &[String], interner: &'i InternerBuilder) -> Self {
-        let mut name_map = AHashMap::with_capacity(input_names.len() + external_functions.len());
-        for (index, name) in external_functions.iter().enumerate() {
-            name_map.insert(name.clone(), NamespaceId::new(index));
-        }
+    fn new_module(input_names: Vec<String>, interner: &'i InternerBuilder) -> Self {
+        let mut name_map = AHashMap::with_capacity(input_names.len());
         for (index, name) in input_names.into_iter().enumerate() {
-            name_map.insert(name, NamespaceId::new(external_functions.len() + index));
+            name_map.insert(name, NamespaceId::new(index));
         }
         let namespace_size = name_map.len();
         Self {
@@ -181,6 +180,7 @@ impl<'i> Prepare<'i> {
             enclosing_locals: None,
             free_var_map: AHashMap::new(),
             cell_var_map: AHashMap::new(),
+            unassigned_ref_names: AHashSet::new(),
         }
     }
 
@@ -206,6 +206,7 @@ impl<'i> Prepare<'i> {
             enclosing_locals: None,
             free_var_map: AHashMap::new(),
             cell_var_map: AHashMap::new(),
+            unassigned_ref_names: AHashSet::new(),
         }
     }
 
@@ -292,6 +293,7 @@ impl<'i> Prepare<'i> {
             enclosing_locals,
             free_var_map,
             cell_var_map,
+            unassigned_ref_names: AHashSet::new(),
         }
     }
 
@@ -895,6 +897,7 @@ impl<'i> Prepare<'i> {
         let saved_free_var_map = self.free_var_map.clone();
         let saved_cell_var_map = self.cell_var_map.clone();
         let saved_enclosing_locals = self.enclosing_locals.clone();
+        let saved_unassigned_ref_names = self.unassigned_ref_names.clone();
 
         // Step 1: Prepare first generator's iter in enclosing scope (before any shadowing)
         let mut generators_iter = generators.into_iter();
@@ -967,6 +970,7 @@ impl<'i> Prepare<'i> {
         self.free_var_map = saved_free_var_map;
         self.cell_var_map = saved_cell_var_map;
         self.enclosing_locals = saved_enclosing_locals;
+        self.unassigned_ref_names = saved_unassigned_ref_names;
 
         Ok((prepared_generators, prepared_elt, prepared_key_value))
     }
@@ -1567,9 +1571,17 @@ impl<'i> Prepare<'i> {
         if self.is_module_scope {
             return match self.name_map.entry(name_str.to_string()) {
                 Entry::Occupied(e) => {
-                    // Name already exists (from prior assignment or pre-registered)
+                    // Name already exists (from prior reference or pre-registered).
+                    // Determine scope the same way as for vacant entries: if the name
+                    // has been assigned so far, it's a true local; otherwise it's an
+                    // unassigned reference that should yield NameLookup at runtime.
+                    let scope = if self.names_assigned_in_order.contains(name_str) {
+                        NameScope::Local
+                    } else {
+                        NameScope::LocalUnassigned
+                    };
                     (
-                        Identifier::new_with_scope(ident.name_id, ident.position, *e.get(), NameScope::Local),
+                        Identifier::new_with_scope(ident.name_id, ident.position, *e.get(), scope),
                         false,
                     )
                 }
@@ -1689,11 +1701,13 @@ impl<'i> Prepare<'i> {
             );
         }
 
-        // 6. Check if name was pre-populated in name_map (from function parameters)
-        // This ensures parameters shadow global variables with the same name.
-        // Parameters are added to name_map during FunctionScope::new_function() but are NOT
-        // in assigned_names (since they're not assigned in the function body).
-        if let Some(&id) = self.name_map.get(name_str) {
+        // 6. Check if name was pre-populated in name_map (from function parameters,
+        // comprehension targets, etc.). Excludes names that were added by step 8 as
+        // `LocalUnassigned` references - those must stay `LocalUnassigned` to trigger
+        // NameLookup at runtime for external function resolution.
+        if !self.unassigned_ref_names.contains(name_str)
+            && let Some(&id) = self.name_map.get(name_str)
+        {
             return (
                 Identifier::new_with_scope(ident.name_id, ident.position, id, NameScope::Local),
                 false, // Not new - was pre-populated from parameters
@@ -1714,6 +1728,9 @@ impl<'i> Prepare<'i> {
         // This handles names that are only read (never assigned) and don't exist globally.
         // We allocate a local slot that will never be written to.
         // Mark as LocalUnassigned so runtime raises NameError (not UnboundLocalError).
+        // Track in `unassigned_ref_names` so step 6 doesn't treat subsequent references
+        // as `Local` (parameters).
+        self.unassigned_ref_names.insert(name_str.to_string());
         let (id, is_new) = match self.name_map.entry(name_str.to_string()) {
             Entry::Occupied(e) => (*e.get(), false),
             Entry::Vacant(e) => {

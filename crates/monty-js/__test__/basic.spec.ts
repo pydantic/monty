@@ -10,7 +10,6 @@ test('Monty constructor with default options', (t) => {
   const m = new Monty('1 + 2')
   t.is(m.scriptName, 'main.py')
   t.deepEqual(m.inputs, [])
-  t.deepEqual(m.externalFunctions, [])
 })
 
 test('Monty constructor with custom script name', (t) => {
@@ -21,11 +20,6 @@ test('Monty constructor with custom script name', (t) => {
 test('Monty constructor with inputs', (t) => {
   const m = new Monty('x + y', { inputs: ['x', 'y'] })
   t.deepEqual(m.inputs, ['x', 'y'])
-})
-
-test('Monty constructor with external functions', (t) => {
-  const m = new Monty('foo()', { externalFunctions: ['foo'] })
-  t.deepEqual(m.externalFunctions, ['foo'])
 })
 
 test('Monty constructor with syntax error', (t) => {
@@ -51,17 +45,10 @@ test('Monty repr() with inputs', (t) => {
   t.true(repr.includes('inputs'))
 })
 
-test('Monty repr() with external functions', (t) => {
-  const m = new Monty('foo()', { externalFunctions: ['foo'] })
-  const repr = m.repr()
-  t.true(repr.includes('externalFunctions'))
-})
-
-test('Monty repr() with inputs and external functions', (t) => {
-  const m = new Monty('foo(x)', { inputs: ['x'], externalFunctions: ['foo'] })
+test('Monty repr() with inputs and external call', (t) => {
+  const m = new Monty('foo(x)', { inputs: ['x'] })
   const repr = m.repr()
   t.true(repr.includes('inputs'))
-  t.true(repr.includes('externalFunctions'))
 })
 
 // =============================================================================

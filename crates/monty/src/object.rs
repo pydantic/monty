@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     fmt::{self, Write},
     hash::{Hash, Hasher},
 };
@@ -141,6 +142,16 @@ pub enum MontyObject {
         /// Whether this dataclass instance is immutable.
         frozen: bool,
     },
+    /// An external function provided by the host.
+    ///
+    /// Returned by the host in response to a `NameLookup` to provide a callable
+    /// that the VM can invoke. When called, the VM yields `FunctionCall` to the host.
+    Function {
+        /// The function name (used for repr, error messages, and function call identification).
+        name: String,
+        /// Optional docstring for the function.
+        docstring: Option<String>,
+    },
     /// Fallback for values that cannot be represented as other variants.
     ///
     /// Contains the `repr()` string of the original value.
@@ -163,6 +174,7 @@ impl fmt::Display for MontyObject {
             Self::String(s) => f.write_str(s),
             Self::Cycle(_, placeholder) => f.write_str(placeholder),
             Self::Type(t) => write!(f, "<class '{t}'>"),
+            Self::Function { name, .. } => write!(f, "<function '{name}' external>"),
             _ => self.repr_fmt(f),
         }
     }
@@ -290,8 +302,19 @@ impl MontyObject {
             Self::Path(s) => Ok(Value::Ref(heap.allocate(HeapData::Path(Path::new(s)))?)),
             Self::Type(t) => Ok(Value::Builtin(Builtins::Type(t))),
             Self::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
-            Self::Repr(_) => Err(InvalidInputError::invalid_type("Repr")),
-            Self::Cycle(_, _) => Err(InvalidInputError::invalid_type("Cycle")),
+            Self::Function { name, .. } => {
+                // Try to intern the function name. If the name is already interned
+                // (common case: the function has the same name as the variable it was
+                // assigned to), use the lightweight `Value::ExtFunction(StringId)`.
+                // Otherwise, allocate a `HeapData::ExtFunction(String)` on the heap.
+                if let Some(string_id) = interns.get_string_id_by_name(&name) {
+                    Ok(Value::ExtFunction(string_id))
+                } else {
+                    Ok(Value::Ref(heap.allocate(HeapData::ExtFunction(name))?))
+                }
+            }
+            Self::Repr(_) => Err(InvalidInputError::invalid_type("'Repr' is not a valid input value")),
+            Self::Cycle(_, _) => Err(InvalidInputError::invalid_type("'Cycle' is not a valid input value")),
         }
     }
 
@@ -470,6 +493,10 @@ impl MontyObject {
                         Self::Repr(format!("<gather({})>", gather.item_count()))
                     }
                     HeapData::Path(path) => Self::Path(path.as_str().to_owned()),
+                    HeapData::ExtFunction(name) => Self::Function {
+                        name: name.clone(),
+                        docstring: None,
+                    },
                 };
 
                 // Remove from visited set after processing
@@ -646,6 +673,7 @@ impl MontyObject {
             Self::Path(p) => write!(f, "PosixPath('{p}')"),
             Self::Type(t) => write!(f, "<class '{t}'>"),
             Self::BuiltinFunction(func) => write!(f, "<built-in function {func}>"),
+            Self::Function { name, .. } => write!(f, "<function '{name}' external>"),
             Self::Repr(s) => write!(f, "Repr({})", StringRepr(s)),
             Self::Cycle(_, placeholder) => f.write_str(placeholder),
         }
@@ -680,7 +708,9 @@ impl MontyObject {
             Self::Exception { .. } => true,
             Self::Path(_) => true,          // Path instances are always truthy
             Self::Dataclass { .. } => true, // Dataclass instances are always truthy
-            Self::Type(_) | Self::BuiltinFunction(_) | Self::Repr(_) | Self::Cycle(_, _) => true,
+            Self::Type(_) | Self::BuiltinFunction(_) | Self::Function { .. } | Self::Repr(_) | Self::Cycle(_, _) => {
+                true
+            }
         }
     }
 
@@ -708,6 +738,7 @@ impl MontyObject {
             Self::Dataclass { .. } => "dataclass",
             Self::Type(_) => "type",
             Self::BuiltinFunction(_) => "builtin_function_or_method",
+            Self::Function { .. } => "function",
             Self::Repr(_) => "repr",
             Self::Cycle(_, _) => "cycle",
         }
@@ -817,6 +848,16 @@ impl PartialEq for MontyObject {
                     && a_frozen == b_frozen
             }
             (Self::Path(a), Self::Path(b)) => a == b,
+            (
+                Self::Function {
+                    name: a_name,
+                    docstring: a_doc,
+                },
+                Self::Function {
+                    name: b_name,
+                    docstring: b_doc,
+                },
+            ) => a_name == b_name && a_doc == b_doc,
             (Self::Repr(a), Self::Repr(b)) => a == b,
             (Self::Cycle(a, _), Self::Cycle(b, _)) => a == b,
             (Self::Type(a), Self::Type(b)) => a == b,
@@ -869,8 +910,8 @@ impl std::error::Error for ConversionError {}
 #[derive(Debug, Clone)]
 pub enum InvalidInputError {
     /// The input type is not valid for conversion to a runtime Value.
-    /// The type name of the invalid input value
-    InvalidType(&'static str),
+    /// Message explaining why the type is invalid.
+    InvalidType(Cow<'static, str>),
     /// A resource limit was exceeded during conversion.
     Resource(ResourceError),
 }
@@ -878,15 +919,15 @@ pub enum InvalidInputError {
 impl InvalidInputError {
     /// Creates a new `InvalidInputError` for the given type name.
     #[must_use]
-    pub fn invalid_type(type_name: &'static str) -> Self {
-        Self::InvalidType(type_name)
+    pub fn invalid_type(msg: impl Into<Cow<'static, str>>) -> Self {
+        Self::InvalidType(msg.into())
     }
 }
 
 impl fmt::Display for InvalidInputError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidType(type_name) => write!(f, "'{type_name}' is not a valid input value"),
+            Self::InvalidType(msg) => write!(f, "{msg}"),
             Self::Resource(e) => write!(f, "{e}"),
         }
     }

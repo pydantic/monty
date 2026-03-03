@@ -9,6 +9,7 @@ use monty::MontyException;
 use num_bigint::BigInt;
 use pyo3::{
     exceptions::{PyBaseException, PyTypeError},
+    intern,
     prelude::*,
     sync::PyOnceLock,
     types::{PyBool, PyBytes, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple},
@@ -21,8 +22,8 @@ use crate::{
 
 /// Converts a Python object to Monty's `MontyObject` representation.
 ///
-/// Handles all standard Python types that Monty supports as inputs.
-/// Unsupported types will raise a `TypeError`.
+/// Handles all standard Python types that Monty supports as inputs, including callable objects
+/// which are converted to `MontyObject::Function`. Unsupported types will raise a `TypeError`.
 ///
 /// When a dataclass is encountered, it is automatically registered in `dc_registry`
 /// so that the original Python type can be reconstructed on output (enabling `isinstance()`).
@@ -30,6 +31,7 @@ use crate::{
 ///
 /// # Important
 /// Checks `bool` before `int` since `bool` is a subclass of `int` in Python.
+/// Callable check is last since many Python types (classes, etc.) are technically callable.
 pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult<MontyObject> {
     if obj.is_none() {
         Ok(MontyObject::None)
@@ -111,6 +113,12 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
         // Handle pathlib.PurePosixPath and thereby pathlib.PosixPath objects
         let path_str: String = obj.str()?.extract()?;
         Ok(MontyObject::Path(path_str))
+    } else if obj.is_callable() {
+        // Callable check is last since many Python types (classes, etc.) are technically callable,
+        // and we want to match more specific types first (e.g. dataclasses).
+        let name = get_name(obj);
+        let docstring = get_docstring(obj);
+        Ok(MontyObject::Function { name, docstring })
     } else if let Ok(name) = obj.get_type().qualname() {
         let msg = match obj.get_type().module() {
             Ok(module) => format!("Cannot convert {module}.{name} to Monty value"),
@@ -225,6 +233,9 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) 
         // Output-only types - convert to string representation
         MontyObject::Repr(s) => Ok(PyString::new(py, s).into_any().unbind()),
         MontyObject::Cycle(_, placeholder) => Ok(PyString::new(py, placeholder).into_any().unbind()),
+        // Function objects are internal to the name lookup protocol and should not normally
+        // appear as final output values. If they do, represent as a string with the function name.
+        MontyObject::Function { name, .. } => Ok(PyString::new(py, name).into_any().unbind()),
     }
 }
 
@@ -246,4 +257,17 @@ fn get_pure_posix_path(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static PUREPOSIX: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
     PUREPOSIX.import(py, "pathlib", "PurePosixPath")
+}
+
+pub fn get_name(f: &Bound<'_, PyAny>) -> String {
+    f.getattr(intern!(f.py(), "__name__"))
+        .and_then(|n| n.extract::<String>())
+        .unwrap_or_else(|_| "<unknown>".to_string())
+}
+
+/// get the `__doc__` attribute from a (hopefully) function
+pub fn get_docstring(f: &Bound<'_, PyAny>) -> Option<String> {
+    f.getattr(intern!(f.py(), "__doc__"))
+        .and_then(|d| d.extract::<String>())
+        .ok()
 }

@@ -15,7 +15,7 @@ use crate::{args::ArgValues, os::OsFunction, types::AttrCallResult};
 ///
 /// Currently only supports OS properties. Future variants:
 /// - `Callable(FunctionId)` - user-defined getter functions (@property)
-/// - `External(ExtFunctionId)` - external function getters
+/// - `External(StringId)` - external function getters
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Property {
     /// A property backed by an OS function (e.g., `os.environ`).

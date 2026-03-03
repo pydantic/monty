@@ -16,7 +16,7 @@ use crate::{
 /// Returns a list of tuples, where the i-th tuple contains the i-th element
 /// from each of the argument iterables. Stops when the shortest iterable is exhausted.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
-pub fn builtin_zip(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_zip(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (positional, kwargs) = args.into_parts();
     defer_drop_mut!(positional, vm);
 
@@ -32,7 +32,7 @@ pub fn builtin_zip(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunRes
     // Create iterators for each iterable
     let mut iterators: Vec<MontyIter> = Vec::with_capacity(positional.len());
     for iterable in positional {
-        match MontyIter::new(iterable, vm.heap, vm.interns) {
+        match MontyIter::new(iterable, vm) {
             Ok(iter) => iterators.push(iter),
             Err(e) => {
                 // Clean up already-created iterators
@@ -51,7 +51,7 @@ pub fn builtin_zip(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunRes
         let mut tuple_items = TupleVec::with_capacity(iterators.len());
 
         for iter in &mut iterators {
-            if let Some(item) = iter.for_next(vm.heap, vm.interns)? {
+            if let Some(item) = iter.for_next(vm)? {
                 tuple_items.push(item);
             } else {
                 // This iterator is exhausted - drop partial tuple items and stop

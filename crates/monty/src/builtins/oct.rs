@@ -18,7 +18,7 @@ use crate::{
 ///
 /// Converts an integer to an octal string prefixed with '0o'.
 /// Supports both i64 and BigInt integers.
-pub fn builtin_oct(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_oct(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("oct", vm.heap)?;
     defer_drop!(value, vm);
 

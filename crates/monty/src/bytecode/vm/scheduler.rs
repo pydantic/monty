@@ -143,8 +143,6 @@ impl Task {
 /// along with tracking information for the task that created it.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PendingCallData {
-    /// The external function being called.
-    // pub ext_function_id: ExtFunctionId,
     /// Arguments for the function (includes both positional and keyword args).
     pub args: ArgValues,
     /// Task that created this call (for ignoring results if task is cancelled).
