@@ -156,7 +156,7 @@ class Monty:
         data: bytes,
         *,
         dataclass_registry: list[type] | None = None,
-    ) -> 'Monty':
+    ) -> Monty:
         """
         Deserialize a Monty instance from binary format.
 
@@ -194,25 +194,22 @@ class MontyRepl:
     """
     Incremental no-replay REPL session.
 
-    Each `feed()` call compiles and executes only the provided snippet against
-    preserved heap/global state.
+    Create with ``MontyRepl()`` then call ``feed()`` to execute snippets
+    incrementally against persistent heap and namespace state.
     """
 
-    @staticmethod
-    def create(
-        code: str,
+    def __new__(
+        cls,
         *,
         script_name: str = 'main.py',
-        inputs: list[str] | None = None,
-        start_inputs: dict[str, Any] | None = None,
         limits: ResourceLimits | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
         dataclass_registry: list[type] | None = None,
-    ) -> tuple['MontyRepl', Any]:
+    ) -> Self:
         """
-        Create a REPL session directly from source code.
+        Create an empty REPL session ready to receive snippets via ``feed()``.
 
-        Returns `(repl, output)` where `output` is the initial execution result.
+        No code is parsed or executed at construction time.
         """
 
     @property
@@ -238,7 +235,7 @@ class MontyRepl:
         *,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
         dataclass_registry: list[type] | None = None,
-    ) -> 'MontyRepl':
+    ) -> MontyRepl:
         """Restore a REPL session from bytes."""
 
 @final
@@ -531,7 +528,7 @@ class FutureSnapshot:
         *,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
         dataclass_registry: list[type] | None = None,
-    ) -> 'FutureSnapshot':
+    ) -> FutureSnapshot:
         """
         Deserialize a FutureSnapshot instance from binary format.
 

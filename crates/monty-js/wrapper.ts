@@ -352,31 +352,30 @@ export class Monty {
   }
 }
 
+/** Options for creating a new MontyRepl instance. */
+export interface MontyReplOptions {
+  /** Name used in tracebacks and error messages. Default: 'main.py' */
+  scriptName?: string
+  /** Resource limits applied to all snippet executions. */
+  limits?: ResourceLimits
+}
+
 /**
  * Incremental no-replay REPL session.
+ *
+ * Create with `new MontyRepl()` then call `feed()` to execute snippets
+ * incrementally against persistent state.
  */
 export class MontyRepl {
   private _native: NativeMontyRepl
 
   /**
-   * Creates a REPL session directly from source code.
+   * Creates an empty REPL session ready to receive snippets via `feed()`.
+   *
+   * @param options - Optional configuration (scriptName, limits)
    */
-  static create(code: string, options?: MontyOptions, startOptions?: StartOptions): MontyRepl {
-    const result = NativeMontyRepl.create(code, options, startOptions)
-    if (result instanceof NativeMontyException) {
-      if (result.exception.typeName === 'SyntaxError') {
-        throw new MontySyntaxError(result)
-      }
-      throw new MontyRuntimeError(result)
-    }
-    if (result instanceof NativeMontyTypingError) {
-      throw new MontyTypingError(result)
-    }
-    return new MontyRepl(result)
-  }
-
-  constructor(nativeRepl: NativeMontyRepl) {
-    this._native = nativeRepl
+  constructor(options?: MontyReplOptions) {
+    this._native = new NativeMontyRepl(options)
   }
 
   /** Returns the script name for this REPL session. */
@@ -406,7 +405,10 @@ export class MontyRepl {
 
   /** Restores a REPL session from bytes. */
   static load(data: Buffer): MontyRepl {
-    return new MontyRepl(NativeMontyRepl.load(data))
+    const native = NativeMontyRepl.load(data)
+    const repl = Object.create(MontyRepl.prototype) as MontyRepl
+    ;(repl as any)._native = native
+    return repl
   }
 
   /** Returns a string representation of the REPL session. */

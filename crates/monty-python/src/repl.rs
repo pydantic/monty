@@ -1,20 +1,19 @@
 use std::sync::{Mutex, PoisonError};
 
 // Use `::monty` to refer to the external crate (not the pymodule)
-use ::monty::{LimitedTracker, MontyObject, MontyRepl as CoreMontyRepl, NoLimitTracker, PrintWriter};
+use ::monty::{LimitedTracker, MontyRepl as CoreMontyRepl, NoLimitTracker, PrintWriter};
 use pyo3::{
-    exceptions::{PyKeyError, PyRuntimeError, PyTypeError, PyValueError},
+    exceptions::{PyRuntimeError, PyValueError},
     prelude::*,
     types::{PyBytes, PyDict, PyList},
 };
-use send_wrapper::SendWrapper;
 
 use crate::{
-    convert::{monty_to_py, py_to_monty},
+    convert::monty_to_py,
     dataclass::DcRegistry,
     exceptions::MontyError,
     limits::{PySignalTracker, extract_limits},
-    monty_cls::{CallbackStringPrint, list_str},
+    monty_cls::CallbackStringPrint,
 };
 
 /// Runtime REPL session holder for pyclass interoperability.
@@ -27,6 +26,10 @@ enum EitherRepl {
     Limited(CoreMontyRepl<PySignalTracker<LimitedTracker>>),
 }
 
+/// Stateful no-replay REPL session.
+///
+/// Create with `MontyRepl()` then call `feed()` to execute snippets
+/// incrementally against persistent heap and namespace state.
 #[pyclass(name = "MontyRepl", module = "pydantic_monty", frozen)]
 #[derive(Debug)]
 pub struct PyMontyRepl {
@@ -41,50 +44,37 @@ pub struct PyMontyRepl {
 
 #[pymethods]
 impl PyMontyRepl {
-    /// Creates a REPL session directly from source code.
+    /// Creates an empty REPL session ready to receive snippets via `feed()`.
     ///
-    /// This mirrors `Monty` construction but returns a stateful REPL that can
-    /// be fed incrementally without replay.
-    ///
-    /// # Returns
-    /// `(repl, output)` where `output` is the initial execution result.
-    #[staticmethod]
-    #[pyo3(signature = (code, *, script_name="main.py", inputs=None, start_inputs=None, limits=None, print_callback=None, dataclass_registry=None))]
-    #[expect(clippy::too_many_arguments)]
-    fn create(
+    /// No code is parsed or executed at construction time — all execution
+    /// is driven through `feed()`.
+    #[new]
+    #[pyo3(signature = (*, script_name="main.py", limits=None, print_callback=None, dataclass_registry=None))]
+    fn new(
         py: Python<'_>,
-        code: String,
         script_name: &str,
-        inputs: Option<&Bound<'_, PyList>>,
-        start_inputs: Option<&Bound<'_, PyDict>>,
         limits: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         dataclass_registry: Option<&Bound<'_, PyList>>,
-    ) -> PyResult<(Self, Py<PyAny>)> {
-        let input_names = list_str(inputs, "inputs")?;
+    ) -> PyResult<Self> {
         let dc_registry = DcRegistry::from_list(py, dataclass_registry)?;
-        let input_values = Self::extract_repl_input_values(&input_names, start_inputs, &dc_registry)?;
         let print_callback = print_callback.map(|c| c.clone().unbind());
-        let print_callback_for_create = print_callback.as_ref();
         let script_name = script_name.to_string();
-        let (repl, output) = Self::create_repl(
-            py,
-            code,
-            script_name.clone(),
-            input_names,
-            input_values,
-            limits,
-            print_callback_for_create,
-        )?;
 
-        let output = monty_to_py(py, &output, &dc_registry)?;
-        let repl = Self {
+        let repl = if let Some(limits) = limits {
+            let tracker = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
+            EitherRepl::Limited(CoreMontyRepl::new(&script_name, tracker))
+        } else {
+            let tracker = PySignalTracker::new(NoLimitTracker);
+            EitherRepl::NoLimit(CoreMontyRepl::new(&script_name, tracker))
+        };
+
+        Ok(Self {
             repl: Mutex::new(repl),
             print_callback,
             dc_registry,
             script_name,
-        };
-        Ok((repl, output))
+        })
     }
 
     /// Feeds and executes a single incremental REPL snippet.
@@ -164,91 +154,5 @@ impl PyMontyRepl {
 
     fn __repr__(&self) -> String {
         format!("MontyRepl(script_name='{}')", self.script_name)
-    }
-}
-
-impl PyMontyRepl {
-    /// Creates a core REPL and returns both the stored REPL state enum and initial output.
-    ///
-    /// This helper centralizes REPL bootstrapping for `create()`.
-    fn create_repl(
-        py: Python<'_>,
-        code: String,
-        script_name: String,
-        input_names: Vec<String>,
-        input_values: Vec<MontyObject>,
-        limits: Option<&Bound<'_, PyDict>>,
-        print_callback: Option<&Py<PyAny>>,
-    ) -> PyResult<(EitherRepl, MontyObject)> {
-        let mut print_cb;
-        let mut print_writer = match print_callback {
-            Some(cb) => {
-                print_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
-                PrintWriter::Callback(&mut print_cb)
-            }
-            None => PrintWriter::Stdout,
-        };
-
-        let inputs: Vec<(String, MontyObject)> = input_names.into_iter().zip(input_values).collect();
-
-        if let Some(limits) = limits {
-            let tracker = PySignalTracker::new(LimitedTracker::new(extract_limits(limits)?));
-            let print_writer = SendWrapper::new(&mut print_writer);
-            let (repl, output) = py
-                .detach(move || {
-                    let mut repl = CoreMontyRepl::new(&script_name, tracker);
-                    let output = repl.feed_run(&code, inputs, print_writer.take())?;
-                    Ok((repl, output))
-                })
-                .map_err(|e| MontyError::new_err(py, e))?;
-            Ok((EitherRepl::Limited(repl), output))
-        } else {
-            let tracker = PySignalTracker::new(NoLimitTracker);
-            let print_writer = SendWrapper::new(&mut print_writer);
-            let (repl, output) = py
-                .detach(move || {
-                    let mut repl = CoreMontyRepl::new(&script_name, tracker);
-                    let output = repl.feed_run(&code, inputs, print_writer.take())?;
-                    Ok((repl, output))
-                })
-                .map_err(|e| MontyError::new_err(py, e))?;
-            Ok((EitherRepl::NoLimit(repl), output))
-        }
-    }
-
-    /// Extracts initial input values in declaration order for direct REPL creation.
-    ///
-    /// This matches the same validation behavior as `Monty.start()`.
-    /// Any dataclass inputs are automatically registered in the `dc_registry` via `py_to_monty`
-    /// so they can be properly reconstructed on output.
-    fn extract_repl_input_values(
-        input_names: &[String],
-        inputs: Option<&Bound<'_, PyDict>>,
-        dc_registry: &DcRegistry,
-    ) -> PyResult<Vec<::monty::MontyObject>> {
-        if input_names.is_empty() {
-            if inputs.is_some() {
-                return Err(PyTypeError::new_err(
-                    "No input variables declared but inputs dict was provided",
-                ));
-            }
-            return Ok(vec![]);
-        }
-
-        let Some(inputs) = inputs else {
-            return Err(PyTypeError::new_err(format!(
-                "Missing required inputs: {input_names:?}"
-            )));
-        };
-
-        input_names
-            .iter()
-            .map(|name| {
-                let value = inputs
-                    .get_item(name)?
-                    .ok_or_else(|| PyKeyError::new_err(format!("Missing required input: '{name}'")))?;
-                py_to_monty(&value, dc_registry)
-            })
-            .collect::<PyResult<_>>()
     }
 }
