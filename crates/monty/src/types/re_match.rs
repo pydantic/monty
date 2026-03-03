@@ -15,10 +15,11 @@ use smallvec::smallvec;
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings, StringId},
-    resource::{DepthGuard, ResourceError, ResourceTracker},
+    intern::{Interns, StaticStrings},
+    resource::{ResourceError, ResourceTracker},
     types::{PyTrait, Str, Type, allocate_tuple},
     value::{EitherStr, Value},
 };
@@ -233,7 +234,6 @@ impl PyTrait for ReMatch {
         &self,
         _other: &Self,
         _heap: &mut Heap<impl ResourceTracker>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> Result<bool, ResourceError> {
         // Match objects are not comparable
@@ -254,7 +254,6 @@ impl PyTrait for ReMatch {
         f: &mut impl Write,
         _heap: &Heap<impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> std::fmt::Result {
         write!(
@@ -278,50 +277,51 @@ impl PyTrait for ReMatch {
 
     fn py_getattr(
         &self,
-        attr_id: StringId,
+        attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<Option<super::AttrCallResult>> {
-        match StaticStrings::from_string_id(attr_id) {
+        match attr.static_string() {
             Some(StaticStrings::StringAttr) => {
                 let s = Str::new(self.input_string.clone());
                 let v = Value::Ref(heap.allocate(HeapData::Str(s))?);
                 Ok(Some(super::AttrCallResult::Value(v)))
             }
-            _ => Err(ExcType::attribute_error(Type::ReMatch, interns.get_str(attr_id))),
+            _ => Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(interns))),
         }
     }
 
     fn py_call_attr(
         &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
+        _self_id: HeapId,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
-        match attr.static_string() {
+    ) -> RunResult<super::AttrCallResult> {
+        let result = match attr.static_string() {
             Some(StaticStrings::Group) => {
-                let n = extract_optional_group_arg(args, "re.Match.group", 0, heap)?;
-                self.get_group(n, heap)
+                let n = extract_optional_group_arg(args, "re.Match.group", 0, vm.heap)?;
+                self.get_group(n, vm.heap)
             }
             Some(StaticStrings::Groups) => {
-                args.check_zero_args("re.Match.groups", heap)?;
-                self.get_groups(heap)
+                args.check_zero_args("re.Match.groups", vm.heap)?;
+                self.get_groups(vm.heap)
             }
             Some(StaticStrings::Start) => {
-                let n = extract_optional_group_arg(args, "re.Match.start", 0, heap)?;
+                let n = extract_optional_group_arg(args, "re.Match.start", 0, vm.heap)?;
                 self.get_start(n)
             }
             Some(StaticStrings::End) => {
-                let n = extract_optional_group_arg(args, "re.Match.end", 0, heap)?;
+                let n = extract_optional_group_arg(args, "re.Match.end", 0, vm.heap)?;
                 self.get_end(n)
             }
             Some(StaticStrings::Span) => {
-                let n = extract_optional_group_arg(args, "re.Match.span", 0, heap)?;
-                self.get_span(n, heap)
+                let n = extract_optional_group_arg(args, "re.Match.span", 0, vm.heap)?;
+                self.get_span(n, vm.heap)
             }
-            _ => Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(interns))),
-        }
+            _ => return Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns))),
+        }?;
+        Ok(super::AttrCallResult::Value(result))
     }
 }
 

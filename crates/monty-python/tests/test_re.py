@@ -113,16 +113,16 @@ pattern = re.compile(func())
 matches = pattern.findall('Sample 123 text 456')
 dump(matches)
 """
-    m = pydantic_monty.Monty(code, external_functions=['func', 'dump'])
+    m = pydantic_monty.Monty(code)
     progress = m.start()
-    assert isinstance(progress, pydantic_monty.MontySnapshot)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
 
     assert progress.function_name == snapshot('func')
     assert progress.args == snapshot(())
     assert progress.kwargs == snapshot({})
 
     progress2 = progress.resume(return_value='\\d+')
-    assert isinstance(progress2, pydantic_monty.MontySnapshot)
+    assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
 
     result = progress2.resume(return_value=['123', '456'])
     assert isinstance(result, pydantic_monty.MontyComplete)
@@ -137,13 +137,13 @@ dump()
 matches = pattern.findall('Test 123!')
 matches
 """
-    m = pydantic_monty.Monty(code, external_functions=['dump'])
+    m = pydantic_monty.Monty(code)
     progress = m.start()
-    assert isinstance(progress, pydantic_monty.MontySnapshot)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
 
     data = progress.dump()
 
-    progress2 = pydantic_monty.MontySnapshot.load(data)
+    progress2 = pydantic_monty.FunctionSnapshot.load(data)
 
     result = progress2.resume(return_value=None)
     assert isinstance(result, pydantic_monty.MontyComplete)

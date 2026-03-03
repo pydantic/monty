@@ -18,7 +18,7 @@ use crate::{
     intern::{FunctionId, Interns},
     types::{
         AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait,
-        Range, Set, Slice, Str, Tuple, Type,
+        Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type,
     },
     value::{EitherStr, Value},
 };
@@ -95,6 +95,16 @@ pub(crate) enum HeapDataMut<'a> {
     /// Pure methods (name, parent, etc.) are handled directly by the VM.
     /// I/O methods (exists, read_text, etc.) yield external function calls.
     Path(&'a mut Path),
+    /// A regex match result from `re.match()`, `re.search()`, etc.
+    ///
+    /// Stores matched text, capture groups, and positions. All data is owned
+    /// (no heap references), so reference counting is trivial.
+    ReMatch(&'a mut ReMatch),
+    /// A compiled regex pattern from `re.compile()`.
+    ///
+    /// Wraps a compiled regex with the original pattern string and flags.
+    /// Custom serde serializes only the pattern and flags, recompiling on deserialize.
+    RePattern(&'a mut RePattern),
     /// Reference to an external function where the name was not interned.
     ///
     /// Created when the host resolves a name lookup to a callable whose name
@@ -250,17 +260,6 @@ impl HeapDataMut<'_> {
                 path.as_str().hash(&mut hasher);
                 Ok(Some(hasher.finish()))
             }
-            // Mutable types, exceptions, iterators, modules, and async types cannot be hashed
-            // (Cell is handled specially in get_or_compute_hash)
-            Self::List(_)
-            | Self::Dict(_)
-            | Self::Set(_)
-            | Self::Cell(_)
-            | Self::Exception(_)
-            | Self::Iter(_)
-            | Self::Module(_)
-            | Self::Coroutine(_)
-            | Self::GatherFuture(_) => Ok(None),
             // LongInt is immutable and hashable
             Self::LongInt(li) => Ok(Some(li.hash())),
             // ExtFunction is hashable by name
@@ -270,6 +269,8 @@ impl HeapDataMut<'_> {
                 name.hash(&mut hasher);
                 Ok(Some(hasher.finish()))
             }
+            // other types cannot be hashed (Cell is handled specially in get_or_compute_hash)
+            _ => Ok(None),
         }
     }
 }
@@ -301,6 +302,8 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Module(_) => Type::Module,
             Self::Coroutine(_) | Self::GatherFuture(_) => Type::Coroutine,
             Self::Path(p) => p.py_type(heap),
+            Self::ReMatch(m) => m.py_type(heap),
+            Self::RePattern(p) => p.py_type(heap),
         }
     }
 
@@ -336,6 +339,8 @@ impl PyTrait for HeapDataMut<'_> {
                     + gather.pending_calls.len() * std::mem::size_of::<crate::asyncio::CallId>()
             }
             Self::Path(p) => p.py_estimate_size(),
+            Self::ReMatch(m) => m.py_estimate_size(),
+            Self::RePattern(p) => p.py_estimate_size(),
             Self::ExtFunction(s) => std::mem::size_of::<String>() + s.len(),
         }
     }
@@ -397,6 +402,10 @@ impl PyTrait for HeapDataMut<'_> {
             (Self::Slice(a), Self::Slice(b)) => a.py_eq(b, heap, interns),
             // Path equality
             (Self::Path(a), Self::Path(b)) => a.py_eq(b, heap, interns),
+            // ReMatch objects are not comparable
+            (Self::ReMatch(a), Self::ReMatch(b)) => a.py_eq(b, heap, interns),
+            // RePattern equality by pattern string and flags
+            (Self::RePattern(a), Self::RePattern(b)) => a.py_eq(b, heap, interns),
             // Cells, Exceptions, Iterators, Modules, and async types compare by identity only (handled at Value level via HeapId comparison)
             (Self::Cell(_), Self::Cell(_))
             | (Self::Exception(_), Self::Exception(_))
@@ -483,6 +492,8 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Coroutine(_) => true,    // Coroutines are always truthy
             Self::GatherFuture(_) => true, // GatherFutures are always truthy
             Self::Path(p) => p.py_bool(heap, interns),
+            Self::ReMatch(m) => m.py_bool(heap, interns),
+            Self::RePattern(p) => p.py_bool(heap, interns),
         }
     }
 
@@ -520,6 +531,8 @@ impl PyTrait for HeapDataMut<'_> {
             }
             Self::GatherFuture(gather) => write!(f, "<gather({})>", gather.item_count()),
             Self::Path(p) => p.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::ReMatch(m) => m.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::RePattern(p) => p.py_repr_fmt(f, heap, heap_ids, interns),
             Self::ExtFunction(name) => write!(f, "<function '{name}' external>"),
         }
     }
@@ -636,6 +649,8 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Dataclass(dc) => dc.py_call_attr(self_id, vm, attr, args),
             Self::Path(p) => p.py_call_attr(self_id, vm, attr, args),
             Self::Module(m) => m.py_call_attr(self_id, vm, attr, args),
+            Self::ReMatch(m) => m.py_call_attr(self_id, vm, attr, args),
+            Self::RePattern(p) => p.py_call_attr(self_id, vm, attr, args),
             _ => Err(ExcType::attribute_error(self.py_type(vm.heap), attr.as_str(vm.interns))),
         }
     }
@@ -683,6 +698,8 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Slice(s) => s.py_getattr(attr, heap, interns),
             Self::Exception(exc) => exc.py_getattr(attr, heap, interns),
             Self::Path(p) => p.py_getattr(attr, heap, interns),
+            Self::ReMatch(m) => m.py_getattr(attr, heap, interns),
+            Self::RePattern(p) => p.py_getattr(attr, heap, interns),
             // All other types don't support attribute access via py_getattr
             _ => Ok(None),
         }

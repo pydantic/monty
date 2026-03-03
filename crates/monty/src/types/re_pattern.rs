@@ -22,12 +22,13 @@ use smallvec::SmallVec;
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings, StringId},
+    intern::{Interns, StaticStrings},
     modules::re::{DOTALL, IGNORECASE, MULTILINE},
-    resource::{DepthGuard, ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker},
     types::{List, PyTrait, ReMatch, Str, Type, allocate_tuple, str::string_repr_fmt},
     value::{EitherStr, Value},
 };
@@ -209,7 +210,6 @@ impl PyTrait for RePattern {
         &self,
         other: &Self,
         _heap: &mut Heap<impl ResourceTracker>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> Result<bool, ResourceError> {
         Ok(self.pattern == other.pattern && self.flags == other.flags)
@@ -229,7 +229,6 @@ impl PyTrait for RePattern {
         f: &mut impl Write,
         _heap: &Heap<impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> std::fmt::Result {
         write!(f, "re.compile(")?;
@@ -256,56 +255,57 @@ impl PyTrait for RePattern {
 
     fn py_getattr(
         &self,
-        attr_id: StringId,
+        attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> RunResult<Option<super::AttrCallResult>> {
-        match StaticStrings::from_string_id(attr_id) {
+        match attr.static_string() {
             Some(StaticStrings::PatternAttr) => {
                 let s = Str::new(self.pattern.clone());
                 let v = Value::Ref(heap.allocate(HeapData::Str(s))?);
                 Ok(Some(super::AttrCallResult::Value(v)))
             }
             Some(StaticStrings::Flags) => Ok(Some(super::AttrCallResult::Value(Value::Int(i64::from(self.flags))))),
-            _ => Err(ExcType::attribute_error(Type::RePattern, interns.get_str(attr_id))),
+            _ => Err(ExcType::attribute_error(Type::RePattern, attr.as_str(interns))),
         }
     }
 
     fn py_call_attr(
         &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
+        _self_id: HeapId,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
-        match attr.static_string() {
+    ) -> RunResult<super::AttrCallResult> {
+        let result = match attr.static_string() {
             Some(StaticStrings::Search) => {
-                let arg = args.get_one_arg("Pattern.search", heap)?;
-                defer_drop!(arg, heap);
-                let text = value_to_str(arg, heap, interns)?.into_owned();
-                self.search(&text, heap)
+                let arg = args.get_one_arg("Pattern.search", vm.heap)?;
+                defer_drop!(arg, vm);
+                let text = value_to_str(arg, vm.heap, vm.interns)?.into_owned();
+                self.search(&text, vm.heap)
             }
             Some(StaticStrings::Match) => {
-                let arg = args.get_one_arg("Pattern.match", heap)?;
-                defer_drop!(arg, heap);
-                let text = value_to_str(arg, heap, interns)?.into_owned();
-                self.match_start(&text, heap)
+                let arg = args.get_one_arg("Pattern.match", vm.heap)?;
+                defer_drop!(arg, vm);
+                let text = value_to_str(arg, vm.heap, vm.interns)?.into_owned();
+                self.match_start(&text, vm.heap)
             }
             Some(StaticStrings::Fullmatch) => {
-                let arg = args.get_one_arg("Pattern.fullmatch", heap)?;
-                defer_drop!(arg, heap);
-                let text = value_to_str(arg, heap, interns)?.into_owned();
-                self.fullmatch(&text, heap)
+                let arg = args.get_one_arg("Pattern.fullmatch", vm.heap)?;
+                defer_drop!(arg, vm);
+                let text = value_to_str(arg, vm.heap, vm.interns)?.into_owned();
+                self.fullmatch(&text, vm.heap)
             }
             Some(StaticStrings::Findall) => {
-                let arg = args.get_one_arg("Pattern.findall", heap)?;
-                defer_drop!(arg, heap);
-                let text = value_to_str(arg, heap, interns)?.into_owned();
-                self.findall(&text, heap)
+                let arg = args.get_one_arg("Pattern.findall", vm.heap)?;
+                defer_drop!(arg, vm);
+                let text = value_to_str(arg, vm.heap, vm.interns)?.into_owned();
+                self.findall(&text, vm.heap)
             }
-            Some(StaticStrings::Sub) => call_pattern_sub(self, args, heap, interns),
-            _ => Err(ExcType::attribute_error(Type::RePattern, attr.as_str(interns))),
-        }
+            Some(StaticStrings::Sub) => call_pattern_sub(self, args, vm.heap, vm.interns),
+            _ => return Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns))),
+        }?;
+        Ok(super::AttrCallResult::Value(result))
     }
 }
 

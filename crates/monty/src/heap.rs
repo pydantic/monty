@@ -383,9 +383,9 @@ impl PyTrait for HeapData {
             // Path equality
             (Self::Path(a), Self::Path(b)) => a.py_eq(b, heap, interns),
             // RePattern equality
-            (Self::RePattern(a), Self::RePattern(b)) => a.py_eq(b, heap, guard, interns),
+            (Self::RePattern(a), Self::RePattern(b)) => a.py_eq(b, heap, interns),
             // ReMatch equality
-            (Self::ReMatch(a), Self::ReMatch(b)) => a.py_eq(b, heap, guard, interns),
+            (Self::ReMatch(a), Self::ReMatch(b)) => a.py_eq(b, heap, interns),
             // Cells, Exceptions, Iterators, Modules, and async types compare by identity only (handled at Value level via HeapId comparison)
             (Self::Cell(_), Self::Cell(_))
             | (Self::Exception(_), Self::Exception(_))
@@ -511,8 +511,8 @@ impl PyTrait for HeapData {
             }
             Self::GatherFuture(gather) => write!(f, "<gather({})>", gather.item_count()),
             Self::Path(p) => p.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::RePattern(p) => p.py_repr_fmt(f, heap, heap_ids, guard, interns),
-            Self::ReMatch(m) => m.py_repr_fmt(f, heap, heap_ids, guard, interns),
+            Self::RePattern(p) => p.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::ReMatch(m) => m.py_repr_fmt(f, heap, heap_ids, interns),
             Self::ExtFunction(name) => write!(f, "<function '{name}' external>"),
         }
     }
@@ -643,8 +643,8 @@ impl PyTrait for HeapData {
             Self::Dataclass(dc) => dc.py_call_attr(self_id, vm, attr, args),
             Self::Path(p) => p.py_call_attr(self_id, vm, attr, args),
             Self::Module(m) => m.py_call_attr(self_id, vm, attr, args),
-            Self::RePattern(p) => p.py_call_attr(heap, attr, args, interns),
-            Self::ReMatch(m) => m.py_call_attr(heap, attr, args, interns),
+            Self::RePattern(p) => p.py_call_attr(self_id, vm, attr, args),
+            Self::ReMatch(m) => m.py_call_attr(self_id, vm, attr, args),
             _ => Err(ExcType::attribute_error(self.py_type(vm.heap), attr.as_str(vm.interns))),
         }
     }
