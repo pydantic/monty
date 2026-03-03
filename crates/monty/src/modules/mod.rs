@@ -1,7 +1,8 @@
 //! Built-in module implementations.
 //!
 //! This module provides implementations for Python built-in modules like `sys`, `typing`,
-//! and `asyncio`. These are created on-demand when import statements are executed.
+//! `asyncio`, and `collections`. These are created on-demand when import statements are
+//! executed.
 
 use std::fmt::{self, Write};
 
@@ -17,6 +18,7 @@ use crate::{
 };
 
 pub(crate) mod asyncio;
+pub(crate) mod collections;
 pub(crate) mod os;
 pub(crate) mod pathlib;
 pub(crate) mod sys;
@@ -36,6 +38,8 @@ pub(crate) enum BuiltinModule {
     Pathlib,
     /// The `os` module providing operating system interface (only `getenv()` implemented).
     Os,
+    /// The `collections` module providing specialized container datatypes.
+    Collections,
 }
 
 impl BuiltinModule {
@@ -47,6 +51,7 @@ impl BuiltinModule {
             StaticStrings::Asyncio => Some(Self::Asyncio),
             StaticStrings::Pathlib => Some(Self::Pathlib),
             StaticStrings::Os => Some(Self::Os),
+            StaticStrings::Collections => Some(Self::Collections),
             _ => None,
         }
     }
@@ -65,6 +70,7 @@ impl BuiltinModule {
             Self::Asyncio => asyncio::create_module(heap, interns),
             Self::Pathlib => pathlib::create_module(heap, interns),
             Self::Os => os::create_module(heap, interns),
+            Self::Collections => collections::create_module(heap, interns),
         }
     }
 }
@@ -74,6 +80,7 @@ impl BuiltinModule {
 pub(crate) enum ModuleFunctions {
     Asyncio(asyncio::AsyncioFunctions),
     Os(os::OsFunctions),
+    Collections(collections::CollectionsFunctions),
 }
 
 impl fmt::Display for ModuleFunctions {
@@ -81,6 +88,7 @@ impl fmt::Display for ModuleFunctions {
         match self {
             Self::Asyncio(func) => write!(f, "{func}"),
             Self::Os(func) => write!(f, "{func}"),
+            Self::Collections(func) => write!(f, "{func}"),
         }
     }
 }
@@ -90,10 +98,16 @@ impl ModuleFunctions {
     ///
     /// Returns `AttrCallResult` to support both immediate values and OS calls that
     /// require host involvement (e.g., `os.getenv()` needs the host to provide environment variables).
-    pub fn call(self, heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<AttrCallResult> {
+    pub fn call(
+        self,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+        args: ArgValues,
+    ) -> RunResult<AttrCallResult> {
         match self {
-            Self::Asyncio(functions) => asyncio::call(heap, functions, args),
-            Self::Os(functions) => os::call(heap, functions, args),
+            Self::Asyncio(functions) => asyncio::call(heap, interns, functions, args),
+            Self::Os(functions) => os::call(heap, interns, functions, args),
+            Self::Collections(functions) => collections::call(heap, interns, functions, args),
         }
     }
 

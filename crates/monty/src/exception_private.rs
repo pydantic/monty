@@ -404,6 +404,21 @@ impl ExcType {
         .into()
     }
 
+    /// Creates a TypeError for `collections.Counter.__init__` when too many positional arguments are provided.
+    ///
+    /// Matches CPython's format:
+    /// `Counter.__init__() takes from 1 to 2 positional arguments but {given} were given`
+    /// where `given` includes the implicit `self` parameter.
+    #[must_use]
+    pub(crate) fn type_error_counter_init_too_many_args(positional_args: usize) -> RunError {
+        let given = positional_args + 1;
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("Counter.__init__() takes from 1 to 2 positional arguments but {given} were given"),
+        )
+        .into()
+    }
+
     /// Creates a TypeError for missing positional arguments.
     ///
     /// Matches CPython's format: `{name}() missing {count} required positional argument(s): 'a' and 'b'`
@@ -793,7 +808,7 @@ impl ExcType {
     pub(crate) fn name_error(name: &str) -> SimpleException {
         let mut msg = format!("name '{name}' is not defined");
         // add the same suffix as cpython, but only for the modules supported by Monty
-        if matches!(name, "asyncio" | "sys" | "typing" | "types") {
+        if matches!(name, "asyncio" | "collections" | "sys" | "typing" | "types") {
             write!(&mut msg, ". Did you forget to import '{name}'?").unwrap();
         }
         SimpleException::new_msg(Self::NameError, msg)

@@ -373,7 +373,8 @@ pub enum Opcode {
     // === Module Operations ===
     /// Load a built-in module onto the stack. Operand: u8 module_id.
     ///
-    /// The module_id maps to `BuiltinModule` (0=sys, 1=typing).
+    /// The module_id maps to `BuiltinModule` repr discriminants
+    /// (`sys`, `typing`, `asyncio`, `pathlib`, `os`, `collections`).
     /// Creates the module on the heap and pushes a `Value::Ref` to it.
     LoadModule,
     /// Raises `ModuleNotFoundError` at runtime. Operand: u16 constant index for module name.

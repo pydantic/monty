@@ -292,6 +292,12 @@ pub enum StaticStrings {
     Default,
 
     // ==========================
+    // collections module strings
+    Collections,
+    #[strum(serialize = "Counter")]
+    Counter,
+
+    // ==========================
     // Exception attributes
     Args,
 

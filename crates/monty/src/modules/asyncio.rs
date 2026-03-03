@@ -58,6 +58,7 @@ pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -
 }
 pub(super) fn call(
     heap: &mut Heap<impl ResourceTracker>,
+    _interns: &Interns,
     functions: AsyncioFunctions,
     args: ArgValues,
 ) -> RunResult<AttrCallResult> {
