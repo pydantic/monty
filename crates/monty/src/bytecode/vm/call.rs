@@ -14,14 +14,11 @@ use crate::{
     exception_private::{ExcType, RunError},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     heap_data::CellValue,
-    intern::{ExtFunctionId, FunctionId, Interns, StaticStrings, StringId},
+    intern::{ExtFunctionId, FunctionId, StringId},
     os::OsFunction,
     resource::ResourceTracker,
     types::{
-        AttrCallResult, Dict, PyTrait, Type,
-        bytes::{bytes_fromhex, call_bytes_method},
-        dict::dict_fromkeys,
-        str::call_str_method,
+        AttrCallResult, Dict, PyTrait, Type, bytes::call_bytes_method, str::call_str_method, r#type::call_type_method,
     },
     value::{EitherStr, Value},
 };
@@ -110,7 +107,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // Convert u8 to Type via callable_from_u8
         if let Some(t) = Type::callable_from_u8(type_id) {
             let args = self.pop_n_args(arg_count);
-            t.call(self.heap, args, self.interns)
+            t.call(self, args)
         } else {
             Err(RunError::internal("CallBuiltinType: invalid type_id"))
         }
@@ -296,7 +293,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
             Value::Builtin(Builtins::Type(t)) => {
                 // Handle classmethods on type objects like dict.fromkeys()
-                call_type_method(t, name_id, args, this.heap, this.interns).map(CallResult::Push)
+                call_type_method(t, name_id, args, this).map(CallResult::Push)
             }
             _ => {
                 // Non-heap values without method support
@@ -793,25 +790,4 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         Ok(CallResult::FramePushed)
     }
-}
-
-/// Dispatches a classmethod call on a type object.
-///
-/// Handles classmethods like `dict.fromkeys()` and `bytes.fromhex()` that are
-/// called on the type itself rather than on an instance.
-fn call_type_method(
-    t: Type,
-    method_id: StringId,
-    args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> Result<Value, RunError> {
-    match (t, method_id) {
-        (Type::Dict, m) if m == StaticStrings::Fromkeys => return dict_fromkeys(args, heap, interns),
-        (Type::Bytes, m) if m == StaticStrings::Fromhex => return bytes_fromhex(args, heap, interns),
-        _ => {}
-    }
-    // Other types or unknown methods - report actual type name, not 'type'
-    args.drop_with_heap(heap);
-    Err(ExcType::attribute_error(t, interns.get_str(method_id)))
 }

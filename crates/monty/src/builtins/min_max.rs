@@ -4,6 +4,7 @@ use std::cmp::Ordering;
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapGuard},
@@ -19,8 +20,8 @@ use crate::{
 /// Supports two forms:
 /// - `min(iterable)` - returns smallest item from iterable
 /// - `min(arg1, arg2, ...)` - returns smallest of the arguments
-pub fn builtin_min(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    builtin_min_max(heap, args, interns, true)
+pub fn builtin_min(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    builtin_min_max(vm.heap, args, vm.interns, true)
 }
 
 /// Implementation of the max() builtin function.
@@ -29,8 +30,8 @@ pub fn builtin_min(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, inter
 /// Supports two forms:
 /// - `max(iterable)` - returns largest item from iterable
 /// - `max(arg1, arg2, ...)` - returns largest of the arguments
-pub fn builtin_max(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    builtin_min_max(heap, args, interns, false)
+pub fn builtin_max(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    builtin_min_max(vm.heap, args, vm.interns, false)
 }
 
 /// Shared implementation for min() and max().

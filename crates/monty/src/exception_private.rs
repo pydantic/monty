@@ -9,6 +9,7 @@ use strum::{Display, EnumString, IntoStaticStr};
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop,
     exception_public::{MontyException, StackFrame},
     fstring::FormatError,
@@ -157,21 +158,17 @@ impl ExcType {
     ///
     /// The `interns` parameter provides access to interned string content.
     /// Returns a heap-allocated exception value.
-    pub(crate) fn call(
-        self,
-        heap: &mut Heap<impl ResourceTracker>,
-        args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
-        defer_drop!(args, heap);
+    pub(crate) fn call(self, vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        defer_drop!(args, vm);
         let exc = match args {
             ArgValues::Empty => Ok(SimpleException::new_none(self)),
             ArgValues::One(value) => match value {
-                Value::InternString(string_id) => {
-                    Ok(SimpleException::new_msg(self, interns.get_str(*string_id).to_owned()))
-                }
+                Value::InternString(string_id) => Ok(SimpleException::new_msg(
+                    self,
+                    vm.interns.get_str(*string_id).to_owned(),
+                )),
                 Value::Ref(heap_id) => {
-                    if let HeapData::Str(s) = heap.get(*heap_id) {
+                    if let HeapData::Str(s) = vm.heap.get(*heap_id) {
                         Ok(SimpleException::new_msg(self, s.as_str().to_owned()))
                     } else {
                         Err(RunError::internal(
@@ -187,7 +184,7 @@ impl ExcType {
                 "exceptions can only be called with zero or one string argument",
             )),
         }?;
-        let heap_id = heap.allocate(HeapData::Exception(exc))?;
+        let heap_id = vm.heap.allocate(HeapData::Exception(exc))?;
         Ok(Value::Ref(heap_id))
     }
 

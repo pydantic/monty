@@ -3,10 +3,9 @@
 use crate::{
     ExcType,
     args::ArgValues,
+    bytecode::VM,
     defer_drop,
     exception_private::{RunResult, SimpleException},
-    heap::Heap,
-    intern::Interns,
     resource::ResourceTracker,
     types::{AttrCallResult, PyTrait},
     value::Value,
@@ -28,9 +27,10 @@ use crate::{
 /// getattr(obj, 'y', None)       # Get obj.y or None if not found
 /// getattr(module, 'function')   # Get module.function
 /// ```
-pub fn builtin_getattr(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let positional = args.into_pos_only("getattr", heap)?;
-    defer_drop!(positional, heap);
+pub fn builtin_getattr(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let positional = args.into_pos_only("getattr", vm.heap)?;
+    defer_drop!(positional, vm);
+    let heap = &mut *vm.heap;
 
     let (object, name, default) = match positional.as_slice() {
         too_few @ ([] | [_]) => return Err(ExcType::type_error_at_least("getattr", 2, too_few.len())),
@@ -46,7 +46,7 @@ pub fn builtin_getattr(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, i
         );
     };
 
-    match object.py_getattr(&attr, heap, interns) {
+    match object.py_getattr(&attr, heap, vm.interns) {
         Ok(AttrCallResult::Value(value)) => Ok(value),
         Ok(_) => {
             // getattr() only retrieves attribute values — OS calls, external calls,
