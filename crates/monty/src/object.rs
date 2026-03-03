@@ -146,10 +146,6 @@ pub enum MontyObject {
     ///
     /// Returned by the host in response to a `NameLookup` to provide a callable
     /// that the VM can invoke. When called, the VM yields `FunctionCall` to the host.
-    ///
-    /// If the name matches an interned string, the function is stored as
-    /// `Value::ExtFunction(StringId)`. Otherwise it is stored on the heap as
-    /// `HeapData::ExtFunction(String)`.
     Function {
         /// The function name (used for repr, error messages, and function call identification).
         name: String,
