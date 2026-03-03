@@ -29,9 +29,11 @@ pub(crate) type TupleVec = SmallVec<[Value; TUPLE_INLINE_CAPACITY]>;
 use super::{
     MontyIter, PyTrait,
     list::{get_slice_items, repr_sequence_fmt},
+    py_trait::AttrCallResult,
 };
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapGuard, HeapId},
@@ -99,16 +101,16 @@ impl Tuple {
     ///
     /// - `tuple()` with no args returns an empty tuple (singleton)
     /// - `tuple(iterable)` creates a tuple from any iterable (list, tuple, range, str, bytes, dict)
-    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("tuple", heap)?;
+    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let value = args.get_zero_one_arg("tuple", vm.heap)?;
         match value {
             None => {
                 // Use empty tuple singleton
-                Ok(heap.get_empty_tuple())
+                Ok(vm.heap.get_empty_tuple())
             }
             Some(v) => {
-                let items = MontyIter::new(v, heap, interns)?.collect(heap, interns)?;
-                Ok(allocate_tuple(items, heap)?)
+                let items = MontyIter::new(v, vm)?.collect(vm)?;
+                Ok(allocate_tuple(items, vm.heap)?)
             }
         }
     }
@@ -251,20 +253,22 @@ impl PyTrait for Tuple {
 
     fn py_call_attr(
         &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
+        _self_id: HeapId,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
+    ) -> RunResult<AttrCallResult> {
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
         let args_guard = HeapGuard::new(args, heap);
         match attr.static_string() {
             Some(StaticStrings::Index) => {
                 let (args, heap) = args_guard.into_parts();
-                tuple_index(self, args, heap, interns)
+                tuple_index(self, args, heap, interns).map(AttrCallResult::Value)
             }
             Some(StaticStrings::Count) => {
                 let (args, heap) = args_guard.into_parts();
-                tuple_count(self, args, heap, interns)
+                tuple_count(self, args, heap, interns).map(AttrCallResult::Value)
             }
             _ => Err(ExcType::attribute_error(Type::Tuple, attr.as_str(interns))),
         }

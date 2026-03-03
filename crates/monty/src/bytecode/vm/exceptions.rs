@@ -156,7 +156,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 // Unwind stack to target depth (drop excess values)
                 while this.stack.len() > target_stack_depth {
                     let value = this.stack.pop().unwrap();
-                    value.drop_with_heap(this.heap);
+                    value.drop_with_heap(this);
                 }
 
                 // Push exception value onto stack (handler expects it)

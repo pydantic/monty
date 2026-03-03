@@ -14,14 +14,11 @@ use crate::{
     exception_private::{ExcType, RunError},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     heap_data::CellValue,
-    intern::{FunctionId, Interns, StaticStrings, StringId},
+    intern::{FunctionId, StringId},
     os::OsFunction,
     resource::ResourceTracker,
     types::{
-        AttrCallResult, Dict, PyTrait, Type,
-        bytes::{bytes_fromhex, call_bytes_method},
-        dict::dict_fromkeys,
-        str::call_str_method,
+        AttrCallResult, Dict, PyTrait, Type, bytes::call_bytes_method, str::call_str_method, r#type::call_type_method,
     },
     value::{EitherStr, Value},
 };
@@ -111,7 +108,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // Convert u8 to Type via callable_from_u8
         if let Some(t) = Type::callable_from_u8(type_id) {
             let args = self.pop_n_args(arg_count);
-            t.call(self.heap, args, self.interns)
+            t.call(self, args)
         } else {
             Err(RunError::internal("CallBuiltinType: invalid type_id"))
         }
@@ -269,7 +266,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Calls an attribute on an object.
     ///
     /// For heap-allocated objects (`Value::Ref`), dispatches to the type's
-    /// attribute call implementation via `heap.call_attr_raw()`, which may return
+    /// attribute call implementation via `Heap::call_attr()`, which may return
     /// `AttrCallResult::OsCall`, `AttrCallResult::ExternalCall`, or
     /// `AttrCallResult::MethodCall` for operations that require host involvement.
     ///
@@ -282,27 +279,27 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         match obj {
             Value::Ref(heap_id) => {
                 defer_drop!(obj, this);
-                let result = Heap::call_attr_raw(this, heap_id, &attr, args);
+                let result = Heap::call_attr(this, heap_id, &attr, args);
                 result.map(Into::into)
             }
             Value::InternString(string_id) => {
                 // Call string method on interned string literal using the unified dispatcher
                 let s = this.interns.get_str(string_id);
-                call_str_method(s, name_id, args, this.heap, this.interns).map(CallResult::Push)
+                call_str_method(s, name_id, args, this).map(CallResult::Push)
             }
             Value::InternBytes(bytes_id) => {
                 // Call bytes method on interned bytes literal using the unified dispatcher
                 let b = this.interns.get_bytes(bytes_id);
-                call_bytes_method(b, name_id, args, this.heap, this.interns).map(CallResult::Push)
+                call_bytes_method(b, name_id, args, this).map(CallResult::Push)
             }
             Value::Builtin(Builtins::Type(t)) => {
                 // Handle classmethods on type objects like dict.fromkeys()
-                call_type_method(t, name_id, args, this.heap, this.interns).map(CallResult::Push)
+                call_type_method(t, name_id, args, this).map(CallResult::Push)
             }
             _ => {
                 // Non-heap values without method support
                 let type_name = obj.py_type(this.heap);
-                args.drop_with_heap(this.heap);
+                args.drop_with_heap(this);
                 Err(ExcType::attribute_error(type_name, this.interns.get_str(name_id)))
             }
         }
@@ -389,7 +386,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 self.call_heap_callable(*heap_id, args)
             }
             _ => {
-                args.drop_with_heap(self.heap);
+                args.drop_with_heap(self);
                 let ty = callable.py_type(self.heap);
                 Err(ExcType::type_error(format!("'{ty}' object is not callable")))
             }
@@ -401,12 +398,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let (func_id, cells, defaults) = match self.heap.get(heap_id) {
             HeapData::Closure(closure) => {
                 let cloned_cells = closure.cells.clone();
-                let cloned_defaults: Vec<Value> =
-                    closure.defaults.iter().map(|v| v.clone_with_heap(self.heap)).collect();
+                let cloned_defaults: Vec<Value> = closure.defaults.iter().map(|v| v.clone_with_heap(self)).collect();
                 (closure.func_id, cloned_cells, cloned_defaults)
             }
             HeapData::FunctionDefaults(fd) => {
-                let cloned_defaults: Vec<Value> = fd.defaults.iter().map(|v| v.clone_with_heap(self.heap)).collect();
+                let cloned_defaults: Vec<Value> = fd.defaults.iter().map(|v| v.clone_with_heap(self)).collect();
                 (fd.func_id, Vec::new(), cloned_defaults)
             }
             HeapData::ExtFunction(name) => {
@@ -415,7 +411,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 return Ok(CallResult::External(EitherStr::Heap(name), args));
             }
             _ => {
-                args.drop_with_heap(self.heap);
+                args.drop_with_heap(self);
                 return Err(ExcType::type_error("object is not callable"));
             }
         };
@@ -494,7 +490,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let HeapData::Tuple(tuple) = self.heap.get(*id) else {
             unreachable!("CallFunctionExtended: args_tuple must be a Tuple")
         };
-        tuple.as_slice().iter().map(|v| v.clone_with_heap(self.heap)).collect()
+        tuple.as_slice().iter().map(|v| v.clone_with_heap(self)).collect()
     }
 
     /// Builds `ArgValues` with kwargs for `CallFunctionExtended`.
@@ -567,7 +563,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let HeapData::Tuple(tuple) = self.heap.get(*id) else {
             unreachable!("CallAttrExtended: args_tuple must be a Tuple")
         };
-        tuple.as_slice().iter().map(|v| v.clone_with_heap(self.heap)).collect()
+        tuple.as_slice().iter().map(|v| v.clone_with_heap(self)).collect()
     }
 
     /// Builds `ArgValues` with kwargs for `CallAttrExtended`.
@@ -743,7 +739,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             if let Err(e) = bind_result {
                 self.namespaces.drop_with_heap(namespace_idx, self.heap);
                 for default in defaults {
-                    default.drop_with_heap(self.heap);
+                    default.drop_with_heap(self);
                 }
                 return Err(e);
             }
@@ -800,25 +796,4 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         Ok(CallResult::FramePushed)
     }
-}
-
-/// Dispatches a classmethod call on a type object.
-///
-/// Handles classmethods like `dict.fromkeys()` and `bytes.fromhex()` that are
-/// called on the type itself rather than on an instance.
-fn call_type_method(
-    t: Type,
-    method_id: StringId,
-    args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> Result<Value, RunError> {
-    match (t, method_id) {
-        (Type::Dict, m) if m == StaticStrings::Fromkeys => return dict_fromkeys(args, heap, interns),
-        (Type::Bytes, m) if m == StaticStrings::Fromhex => return bytes_fromhex(args, heap, interns),
-        _ => {}
-    }
-    // Other types or unknown methods - report actual type name, not 'type'
-    args.drop_with_heap(heap);
-    Err(ExcType::attribute_error(t, interns.get_str(method_id)))
 }

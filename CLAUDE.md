@@ -60,9 +60,9 @@ Beyond safety, `defer_drop!` is often much more concise than inserting `drop_wit
 `defer_drop!` gives you an immutable reference to the value. Use `defer_drop_mut!` when you need a mutable reference (e.g. iterators, values you may swap):
 
 ```rust
-let iter = heap.get_iter(iter_ref);
-defer_drop_mut!(iter, heap);
-while let Some(item) = iter.for_next(heap)? { ... }
+let iter = vm.heap.get_iter(iter_ref);
+defer_drop_mut!(iter, vm);
+while let Some(item) = iter.for_next(vm)? { ... }
 ```
 
 **Limitation:** because the macro rebinds the heap, it cannot be used inside `&mut self` methods where `self` owns the heap — first assign `let this = self;` and pass `this` instead.

@@ -248,8 +248,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn binary_matmul(&mut self) -> Result<(), RunError> {
         let rhs = self.pop();
         let lhs = self.pop();
-        lhs.drop_with_heap(self.heap);
-        rhs.drop_with_heap(self.heap);
+        lhs.drop_with_heap(self);
+        rhs.drop_with_heap(self);
         Err(ExcType::not_implemented("matrix multiplication (@) is not supported").into())
     }
 }
