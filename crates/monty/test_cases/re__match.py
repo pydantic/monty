@@ -115,3 +115,13 @@ assert repr(p) == "re.compile('hello')", 'Pattern repr simple string'
 
 p = re.compile(r'\n\t')
 assert repr(p) == "re.compile('\\\\n\\\\t')", 'Pattern repr with escape sequences in pattern'
+
+# === Bool as group index ===
+m = re.search(r'(\w+)\s+(\w+)', 'hello world')
+assert m is not None, 'search for bool group test'
+assert m.group(True) == 'hello', 'group(True) is group(1)'
+assert m.group(False) == 'hello world', 'group(False) is group(0)'
+assert m.start(True) == 0, 'start(True) is start(1)'
+assert m.end(True) == 5, 'end(True) is end(1)'
+assert m.span(True) == (0, 5), 'span(True) is span(1)'
+assert m.span(False) == (0, 11), 'span(False) is span(0)'

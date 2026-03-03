@@ -267,6 +267,8 @@ fn call_sub(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &In
     )]
     let count = match pos.next() {
         Some(Value::Int(n)) if n >= 0 => n as usize,
+        // CPython treats bool as int: True=1, False=0 (both non-negative).
+        Some(Value::Bool(b)) => usize::from(b),
         // CPython: negative count means no replacements — return original string.
         // Still consume the optional flags arg to validate arg count.
         Some(Value::Int(_)) => {
@@ -332,6 +334,8 @@ fn extract_flags(flags_val: Option<Value>, heap: &mut Heap<impl ResourceTracker>
         Some(Value::Int(n)) => {
             u16::try_from(n).map_err(|_| ExcType::type_error("flags must be a non-negative integer"))
         }
+        // CPython treats bool as int subclass: True=1, False=0.
+        Some(Value::Bool(b)) => Ok(u16::from(b)),
         Some(other) => {
             let t = other.py_type(heap);
             other.drop_with_heap(heap);

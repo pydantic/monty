@@ -586,3 +586,82 @@ p = re.compile(r'B|AB', re.IGNORECASE)
 m = p.match('ab')
 assert m is not None, 'Pattern.match alternation with IGNORECASE flag'
 assert m.group() == 'ab', 'Pattern.match alternation IGNORECASE matches correctly'
+
+# === \g<N> numeric backreference in replacement ===
+result = re.sub(r'(\w+)\s+(\w+)', r'\g<2> \g<1>', 'hello world')
+assert result == 'world hello', r'\g<N> numeric backreference swaps groups'
+
+result = re.sub(r'(\w+)\s+(\w+)', r'\g<0>', 'hello world')
+assert result == 'hello world', r'\g<0> is the full match'
+
+result = re.sub(r'(\w+)', r'\g<1>!', 'hello world')
+assert result == 'hello! world!', r'\g<1> with suffix'
+
+# \g<N> with multiple replacements in one string
+result = re.sub(r'(\w+)\s+(\w+)\s+(\w+)', r'\g<3>-\g<2>-\g<1>', 'a b c')
+assert result == 'c-b-a', r'\g<N> multiple groups reversed'
+
+# \g<N> mixed with \1 style backrefs
+result = re.sub(r'(\w+)\s+(\w+)', r'\1-\g<2>', 'hello world')
+assert result == 'hello-world', r'\1 and \g<2> mixed in replacement'
+
+# \g<N> mixed with literal $
+result = re.sub(r'(\w+)', r'$\g<1>$', 'hi')
+assert result == '$hi$', r'\g<1> with literal $ signs'
+
+# === \g<name> named backreference in replacement ===
+result = re.sub(r'(?P<first>\w+)\s+(?P<second>\w+)', r'\g<second> \g<first>', 'hello world')
+assert result == 'world hello', r'\g<name> named backreference swaps groups'
+
+# \g<name> on compiled pattern
+p = re.compile(r'(?P<word>\w+)')
+result = p.sub(r'[\g<word>]', 'hello world')
+assert result == '[hello] [world]', r'compiled pattern \g<name> backreference'
+
+# \g<name> mixed with \g<N>
+result = re.sub(r'(?P<a>\w+)\s+(\w+)', r'\g<a>-\g<2>', 'hello world')
+assert result == 'hello-world', r'\g<name> and \g<N> mixed'
+
+# === \g combined with other replacement features ===
+result = re.sub(r'(\w+)', r'[\g<1>]', 'hi')
+assert result == '[hi]', r'\g<1> with surrounding literal brackets'
+
+# compiled pattern with \g
+p = re.compile(r'(\w+)\s+(\w+)')
+result = p.sub(r'\g<2>-\g<1>', 'hello world')
+assert result == 'world-hello', r'compiled pattern \g<N> backreference'
+
+# === Bool as int in re functions ===
+# bool as flags (True=1, False=0)
+m = re.search(r'hello', 'HELLO', False)
+assert m is None, 'search flags=False (0) is case-sensitive'
+
+m = re.match(r'hello', 'HELLO', False)
+assert m is None, 'match flags=False is case-sensitive'
+
+m = re.fullmatch(r'hello', 'HELLO', False)
+assert m is None, 'fullmatch flags=False is case-sensitive'
+
+result = re.findall(r'hello', 'HELLO hello', False)
+assert result == ['hello'], 'findall flags=False is case-sensitive'
+
+p = re.compile(r'hello', False)
+assert p.flags & re.IGNORECASE == 0, 'compile with flags=False has no IGNORECASE'
+
+p = re.compile(r'hello', True)
+assert p.flags & 1 != 0, 'compile with flags=True stores 1'
+
+# bool as count in re.sub (True=1 replacement, False=0=all)
+result = re.sub(r'\d', 'X', '123', True)
+assert result == 'X23', 'count=True replaces only first match'
+
+result = re.sub(r'\d', 'X', '123', False)
+assert result == 'XXX', 'count=False (0) replaces all matches'
+
+# bool as count in Pattern.sub
+p = re.compile(r'\d')
+result = p.sub('X', '123', True)
+assert result == 'X23', 'Pattern.sub count=True replaces only first'
+
+result = p.sub('X', '123', False)
+assert result == 'XXX', 'Pattern.sub count=False replaces all'

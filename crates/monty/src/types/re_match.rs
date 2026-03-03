@@ -338,6 +338,8 @@ fn extract_optional_group_arg(
     match opt {
         None => Ok(default),
         Some(Value::Int(n)) => Ok(n),
+        // CPython treats bool as int subclass: True=1, False=0.
+        Some(Value::Bool(b)) => Ok(i64::from(b)),
         Some(other) => {
             other.drop_with_heap(heap);
             Err(ExcType::re_match_group_index_error())

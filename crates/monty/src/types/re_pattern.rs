@@ -344,6 +344,8 @@ fn call_pattern_sub(
     )]
     let count = match pos.next() {
         Some(Value::Int(n)) if n >= 0 => n as usize,
+        // CPython treats bool as int: True=1, False=0 (both non-negative).
+        Some(Value::Bool(b)) => usize::from(b),
         // CPython: negative count means no replacements — return original string.
         Some(Value::Int(_)) => {
             if let Some(extra) = pos.next() {
@@ -411,13 +413,29 @@ pub(crate) fn compile_regex(pattern: &str, flags: u16) -> RunResult<Regex> {
     Regex::new(&full_pattern).map_err(ExcType::re_pattern_error)
 }
 
-/// Translates Python-style replacement backreferences to Rust regex syntax.
+/// Translates Python-style replacement backreferences to `fancy_regex` syntax.
 ///
-/// Python uses `\1`, `\2`, etc. for backreferences in replacement strings.
-/// The Rust `regex` crate uses `$1`, `$2`, etc. This function converts
-/// the Python style to Rust style.
+/// Python uses `\1`, `\2`, `\g<1>`, `\g<name>` for backreferences in replacement strings.
+/// `fancy_regex` uses `$1`, `$2`, `${1}`, `${name}`. This function converts between them.
+///
+/// # Supported translations
+///
+/// - `\1`–`\9` → `$1`–`$9` (single-digit backreferences)
+/// - `\g<N>` → `${N}` (numeric backreference with explicit syntax)
+/// - `\g<name>` → `${name}` (named group backreference)
+/// - `\\` → literal backslash
+/// - `$` → `$$` (escape literal `$` so `fancy_regex` doesn't misinterpret it)
 ///
 /// Returns a `Cow` to avoid allocation when no translation is needed.
+///
+/// # Limitations
+///
+/// TODO: Multi-digit backreferences like `\10` are not fully supported. CPython
+/// greedily reads all digits after `\` and interprets them as a group number if
+/// that group exists, otherwise falls back to octal escapes. Currently `\10` is
+/// translated as `$1` followed by literal `0`, which is wrong when 10+ groups
+/// exist. Fixing this requires passing the pattern's capture group count into
+/// this function to disambiguate.
 fn translate_replacement(repl: &str) -> Cow<'_, str> {
     // Fast path: no backslashes and no literal `$` means nothing to translate or escape.
     if !repl.contains('\\') && !repl.contains('$') {
@@ -431,9 +449,16 @@ fn translate_replacement(repl: &str) -> Cow<'_, str> {
         if c == '\\' {
             match chars.peek() {
                 Some(&d) if d.is_ascii_digit() => {
+                    // TODO: This only handles single-digit backrefs (\1–\9).
+                    // Multi-digit like \10 should be ${10} when group 10 exists,
+                    // but that requires knowing the group count. See docstring.
                     result.push('$');
                     result.push(d);
                     chars.next();
+                }
+                Some(&'g') => {
+                    chars.next(); // consume 'g'
+                    translate_g_backref(&mut chars, &mut result);
                 }
                 Some(&'\\') => {
                     result.push('\\');
@@ -454,6 +479,44 @@ fn translate_replacement(repl: &str) -> Cow<'_, str> {
     }
 
     Cow::Owned(result)
+}
+
+/// Translates a `\g<...>` backreference to `fancy_regex` `${...}` syntax.
+///
+/// Called after `\g` has been consumed. Reads `<name_or_number>` from the iterator
+/// and writes `${name_or_number}` to the result. If the syntax is malformed
+/// (missing `<` or `>`), the literal characters are written through unchanged.
+fn translate_g_backref(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, result: &mut String) {
+    if chars.peek() != Some(&'<') {
+        // Not \g<...>, just literal \g
+        result.push('\\');
+        result.push('g');
+        return;
+    }
+    chars.next(); // consume '<'
+
+    // Collect everything until '>'
+    let mut name = String::new();
+    loop {
+        match chars.next() {
+            Some('>') => break,
+            Some(ch) => name.push(ch),
+            None => {
+                // Unterminated \g<... — emit literally
+                result.push('\\');
+                result.push('g');
+                result.push('<');
+                result.push_str(&name);
+                return;
+            }
+        }
+    }
+
+    // Write as ${name_or_number} for fancy_regex
+    result.push('$');
+    result.push('{');
+    result.push_str(&name);
+    result.push('}');
 }
 
 /// Extracts a string from a `Value`, supporting both interned and heap strings.
