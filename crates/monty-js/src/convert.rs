@@ -431,7 +431,16 @@ pub fn js_to_monty(value: Unknown<'_>, env: Env) -> Result<MontyObject> {
             // Plain object → Dict (with string keys)
             js_object_to_monty_dict(obj, env)
         }
-        ValueType::Function | ValueType::Symbol | ValueType::External => {
+        ValueType::Function => {
+            // JS functions are converted to MontyObject::Function for external function resolution.
+            // The function's `name` property is used as the Monty function name.
+            let func_obj: Object = value.coerce_to_object()?;
+            let name: String = func_obj
+                .get_named_property::<String>("name")
+                .unwrap_or_else(|_| "<anonymous>".to_string());
+            Ok(MontyObject::Function { name, docstring: None })
+        }
+        ValueType::Symbol | ValueType::External => {
             // These JS types don't have Monty equivalents
             Err(Error::from_reason(format!(
                 "Cannot convert JS {value_type:?} to Monty value"

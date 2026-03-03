@@ -3,6 +3,7 @@ import test from 'ava'
 import {
   Monty,
   MontySnapshot,
+  MontyNameLookup,
   MontyComplete,
   MontyRuntimeError,
   type ResourceLimits,
@@ -38,7 +39,7 @@ test('start returns complete for various types', (t) => {
 })
 
 // =============================================================================
-// start() returns MontySnapshot tests
+// start() returns MontySnapshot tests (callable names go through FunctionCall)
 // =============================================================================
 
 test('start with external function returns progress', (t) => {
@@ -87,6 +88,84 @@ test('start progress with mixed args kwargs', (t) => {
   t.is(snapshot.functionName, 'func')
   t.deepEqual(snapshot.args, [1, 2])
   t.deepEqual(snapshot.kwargs, { x: 'hello', y: true })
+})
+
+// =============================================================================
+// start() returns MontyNameLookup tests (non-callable name resolution)
+// =============================================================================
+
+test('start with unknown name returns name lookup', (t) => {
+  const m = new Monty('x = foo; x')
+  const result = m.start()
+  t.true(result instanceof MontyNameLookup)
+  const lookup = result as MontyNameLookup
+  t.is(lookup.scriptName, 'main.py')
+  t.is(lookup.variableName, 'foo')
+})
+
+test('name lookup resume with value completes', (t) => {
+  const m = new Monty('x = foo; x')
+  const result = m.start()
+  t.true(result instanceof MontyNameLookup)
+  const lookup = result as MontyNameLookup
+  t.is(lookup.variableName, 'foo')
+
+  const complete = lookup.resume({ value: 42 })
+  t.true(complete instanceof MontyComplete)
+  t.is((complete as MontyComplete).output, 42)
+})
+
+test('name lookup resume without value raises NameError', (t) => {
+  const m = new Monty('x = foo; x')
+  const result = m.start()
+  t.true(result instanceof MontyNameLookup)
+  const lookup = result as MontyNameLookup
+
+  const error = t.throws(() => lookup.resume(), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.true(error.message.includes('NameError'))
+  t.true(error.message.includes('foo'))
+})
+
+test('name lookup custom script name', (t) => {
+  const m = new Monty('x = foo; x', { scriptName: 'custom.py' })
+  const result = m.start()
+  t.true(result instanceof MontyNameLookup)
+  t.is((result as MontyNameLookup).scriptName, 'custom.py')
+})
+
+test('name lookup resume cannot be called twice', (t) => {
+  const m = new Monty('x = foo; x')
+  const lookup = m.start() as MontyNameLookup
+
+  // First resume succeeds
+  lookup.resume({ value: 42 })
+
+  // Second resume should fail
+  const error = t.throws(() => lookup.resume({ value: 99 }))
+  t.true(error?.message.includes('already'))
+})
+
+test('name lookup resolves to function, then function call yields snapshot', (t) => {
+  // Assign an external function to x via name lookup, then call x()
+  const m = new Monty('x = foobar; x()')
+  const lookup = m.start()
+  t.true(lookup instanceof MontyNameLookup)
+  t.is((lookup as MontyNameLookup).variableName, 'foobar')
+
+  // Provide a function — JS functions convert to MontyObject::Function
+  function notFoobar(): unknown {
+    return 42
+  }
+  const snapshot = (lookup as MontyNameLookup).resume({ value: notFoobar })
+  t.true(snapshot instanceof MontySnapshot)
+  // Function name comes from the JS function's name, not the variable
+  t.is((snapshot as MontySnapshot).functionName, 'notFoobar')
+
+  const result = (snapshot as MontySnapshot).resume({ returnValue: 99 })
+  t.true(result instanceof MontyComplete)
+  t.is((result as MontyComplete).output, 99)
 })
 
 // =============================================================================
@@ -140,7 +219,7 @@ test('multiple external calls', (t) => {
   const m = new Monty('a() + b()')
 
   // First call
-  let progress = m.start()
+  let progress: MontySnapshot | MontyNameLookup | MontyComplete = m.start()
   t.true(progress instanceof MontySnapshot)
   t.is((progress as MontySnapshot).functionName, 'a')
 
@@ -159,7 +238,7 @@ test('chain of external calls', (t) => {
   const m = new Monty('c() + c() + c()')
 
   let callCount = 0
-  let progress: MontySnapshot | MontyComplete = m.start()
+  let progress: MontySnapshot | MontyNameLookup | MontyComplete = m.start()
 
   while (progress instanceof MontySnapshot) {
     t.is(progress.functionName, 'c')
@@ -318,6 +397,15 @@ test('start can reuse monty instance', (t) => {
 // =============================================================================
 // repr() tests
 // =============================================================================
+
+test('name lookup repr', (t) => {
+  const m = new Monty('x = foo; x')
+  const progress = m.start()
+  t.true(progress instanceof MontyNameLookup)
+  const repr = (progress as MontyNameLookup).repr()
+  t.true(repr.includes('MontyNameLookup'))
+  t.true(repr.includes('foo'))
+})
 
 test('progress repr', (t) => {
   const m = new Monty('func(1, x=2)')

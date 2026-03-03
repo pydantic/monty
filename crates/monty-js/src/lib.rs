@@ -1,5 +1,5 @@
 // napi macros generate code that triggers some clippy lints
-#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
 
 //! Node.js/TypeScript bindings for the Monty sandboxed Python interpreter.
 //!
@@ -36,6 +36,6 @@ mod monty_cls;
 pub use exceptions::{ExceptionInfo, Frame, JsMontyException, MontyTypingError};
 pub use limits::JsResourceLimits;
 pub use monty_cls::{
-    ExceptionInput, Monty, MontyComplete, MontyOptions, MontyRepl, MontySnapshot, ResumeOptions, RunOptions,
-    SnapshotLoadOptions, StartOptions,
+    ExceptionInput, Monty, MontyComplete, MontyNameLookup, MontyOptions, MontyRepl, MontySnapshot,
+    NameLookupLoadOptions, NameLookupResumeOptions, ResumeOptions, RunOptions, SnapshotLoadOptions, StartOptions,
 };

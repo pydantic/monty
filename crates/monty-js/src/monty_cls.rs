@@ -22,13 +22,14 @@
 //! ## Iterative Execution
 //!
 //! ```text
-//! Monty.start() -> MontySnapshot | MontyComplete
-//!                       |
-//!                       v
-//! MontySnapshot.resume() -> MontySnapshot | MontyComplete
-//!                                |
-//!                                v
-//!                          (repeat until complete)
+//! Monty.start() -> MontySnapshot | MontyNameLookup | MontyComplete
+//!                       |                |
+//!                       v                v
+//! MontySnapshot.resume() / MontyNameLookup.resume()
+//!       -> MontySnapshot | MontyNameLookup | MontyComplete
+//!                       |                |
+//!                       v                v
+//!                    (repeat until complete)
 //! ```
 //!
 //! ```typescript
@@ -46,7 +47,8 @@ use std::borrow::Cow;
 
 use monty::{
     ExcType, ExtFunctionResult, FunctionCall, LimitedTracker, MontyException, MontyObject, MontyRepl as CoreMontyRepl,
-    MontyRun, NameLookupResult, NoLimitTracker, PrintWriter, PrintWriterCallback, ResourceTracker, RunProgress,
+    MontyRun, NameLookup, NameLookupResult, NoLimitTracker, PrintWriter, PrintWriterCallback, ResourceTracker,
+    RunProgress,
 };
 use monty_type_checking::{type_check, SourceFile};
 use napi::bindgen_prelude::*;
@@ -299,19 +301,21 @@ impl Monty {
         }
     }
 
-    /// Starts execution and returns either a snapshot (paused at external call), completion, or error.
+    /// Starts execution and returns a snapshot (paused at external call or name lookup),
+    /// completion, or error.
     ///
     /// This method enables iterative execution where code pauses at external function
-    /// calls, allowing the host to provide return values or exceptions before resuming.
+    /// calls or name lookups, allowing the host to provide return values before resuming.
     ///
     /// @param options - Execution options (inputs, limits)
-    /// @returns MontySnapshot if paused, MontyComplete if done, or MontyException if failed
+    /// @returns MontySnapshot if paused at function call, MontyNameLookup if paused at
+    ///   name lookup, MontyComplete if done, or MontyException if failed
     #[napi]
     pub fn start<'env>(
         &self,
         env: &'env Env,
         options: Option<StartOptions<'env>>,
-    ) -> Result<Either3<MontySnapshot, MontyComplete, JsMontyException>> {
+    ) -> Result<Either4<MontySnapshot, MontyNameLookup, MontyComplete, JsMontyException>> {
         let options = options.unwrap_or_default();
         let input_values = self.extract_input_values(options.inputs, *env)?;
 
@@ -334,14 +338,14 @@ impl Monty {
             let tracker = LimitedTracker::new(limits.into());
             let progress = match runner.start(input_values, tracker, &mut print_writer) {
                 Ok(p) => p,
-                Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
+                Err(exc) => return Ok(Either4::D(JsMontyException::new(exc))),
             };
             Ok(progress_to_result(progress, print_callback_ref, self.script_name()))
         } else {
             let tracker = NoLimitTracker;
             let progress = match runner.start(input_values, tracker, &mut print_writer) {
                 Ok(p) => p,
-                Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
+                Err(exc) => return Ok(Either4::D(JsMontyException::new(exc))),
             };
             Ok(progress_to_result(progress, print_callback_ref, self.script_name()))
         }
@@ -762,13 +766,14 @@ impl MontySnapshot {
     /// Exactly one of `returnValue` or `exception` must be provided.
     ///
     /// @param options - Object with either `returnValue` or `exception`
-    /// @returns MontySnapshot if paused, MontyComplete if done, or MontyException if failed
+    /// @returns MontySnapshot if paused at function call, MontyNameLookup if paused at
+    ///   name lookup, MontyComplete if done, or MontyException if failed
     #[napi]
     pub fn resume<'env>(
         &mut self,
         env: &'env Env,
         options: ResumeOptions<'env>,
-    ) -> Result<Either3<Self, MontyComplete, JsMontyException>> {
+    ) -> Result<Either4<Self, MontyNameLookup, MontyComplete, JsMontyException>> {
         // Validate that exactly one of returnValue or exception is provided
         let external_result = match (options.return_value, options.exception) {
             (Some(value), None) => {
@@ -812,14 +817,14 @@ impl MontySnapshot {
             EitherSnapshot::NoLimit(call) => {
                 let progress = match call.resume(external_result, &mut print_writer) {
                     Ok(p) => p,
-                    Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
+                    Err(exc) => return Ok(Either4::D(JsMontyException::new(exc))),
                 };
                 Ok(progress_to_result(progress, print_callback, self.script_name.clone()))
             }
             EitherSnapshot::Limited(call) => {
                 let progress = match call.resume(external_result, &mut print_writer) {
                     Ok(p) => p,
-                    Err(exc) => return Ok(Either3::C(JsMontyException::new(exc))),
+                    Err(exc) => return Ok(Either4::D(JsMontyException::new(exc))),
                 };
                 Ok(progress_to_result(progress, print_callback, self.script_name.clone()))
             }
@@ -915,6 +920,205 @@ impl MontyComplete {
     }
 }
 
+// =============================================================================
+// EitherLookupSnapshot - Internal enum for NameLookup tracker variants
+// =============================================================================
+
+/// Runtime execution snapshot, holds a `NameLookup` for either resource tracker variant
+/// since napi structs can't be generic.
+///
+/// The `Done` variant indicates the snapshot has been consumed.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+enum EitherLookupSnapshot {
+    NoLimit(NameLookup<NoLimitTracker>),
+    Limited(NameLookup<LimitedTracker>),
+    /// Sentinel indicating the snapshot has been consumed via `resume()`.
+    Done,
+}
+
+/// Trait to convert a typed `NameLookup` into `EitherLookupSnapshot`.
+trait FromLookupSnapshot<T: ResourceTracker> {
+    /// Wraps a name-lookup snapshot.
+    fn from_lookup(lookup: NameLookup<T>) -> Self;
+}
+
+impl FromLookupSnapshot<NoLimitTracker> for EitherLookupSnapshot {
+    fn from_lookup(lookup: NameLookup<NoLimitTracker>) -> Self {
+        Self::NoLimit(lookup)
+    }
+}
+
+impl FromLookupSnapshot<LimitedTracker> for EitherLookupSnapshot {
+    fn from_lookup(lookup: NameLookup<LimitedTracker>) -> Self {
+        Self::Limited(lookup)
+    }
+}
+
+// =============================================================================
+// MontyNameLookup - Paused execution at a name lookup
+// =============================================================================
+
+/// Represents paused execution waiting for a name to be resolved.
+///
+/// The host should check if the variable name corresponds to a known value
+/// (e.g., an external function). Call `resume()` with the value to continue
+/// execution, or call `resume()` with no value to raise `NameError`.
+#[napi]
+pub struct MontyNameLookup {
+    /// The execution state that can be resumed.
+    snapshot: EitherLookupSnapshot,
+    /// Name of the script being executed.
+    script_name: String,
+    /// The name of the variable being looked up.
+    variable_name: String,
+    /// Optional print callback function.
+    print_callback: Option<JsPrintCallbackRef>,
+}
+
+/// Options for resuming execution from a name lookup.
+///
+/// If `value` is provided, the name resolves to that value and execution continues.
+/// If `value` is omitted or undefined, the VM raises a `NameError`.
+#[napi(object)]
+pub struct NameLookupResumeOptions<'env> {
+    /// The value to provide for the name.
+    pub value: Option<Unknown<'env>>,
+}
+
+/// Options for loading a serialized name lookup snapshot.
+#[napi(object)]
+pub struct NameLookupLoadOptions<'env> {
+    /// Optional print callback function.
+    pub print_callback: Option<JsPrintCallback<'env>>,
+}
+
+#[napi]
+impl MontyNameLookup {
+    /// Returns the name of the script being executed.
+    #[napi(getter)]
+    pub fn script_name(&self) -> String {
+        self.script_name.clone()
+    }
+
+    /// Returns the name of the variable being looked up.
+    #[napi(getter)]
+    pub fn variable_name(&self) -> String {
+        self.variable_name.clone()
+    }
+
+    /// Resumes execution after resolving the name lookup.
+    ///
+    /// If `value` is provided, the name resolves to that value and execution continues.
+    /// If `value` is omitted or undefined, the VM raises a `NameError`.
+    ///
+    /// @param options - Optional object with `value` to resolve the name to
+    /// @returns MontySnapshot if paused at function call, MontyNameLookup if paused at
+    ///   another name lookup, MontyComplete if done, or MontyException if failed
+    #[napi]
+    pub fn resume<'env>(
+        &mut self,
+        env: &'env Env,
+        options: Option<NameLookupResumeOptions<'env>>,
+    ) -> Result<Either4<MontySnapshot, Self, MontyComplete, JsMontyException>> {
+        let lookup_result = match options.and_then(|opts| opts.value) {
+            Some(value) => {
+                let monty_value = js_to_monty(value, *env)?;
+                NameLookupResult::Value(monty_value)
+            }
+            None => NameLookupResult::Undefined,
+        };
+
+        // Take the snapshot, replacing with Done
+        let snapshot = std::mem::replace(&mut self.snapshot, EitherLookupSnapshot::Done);
+
+        // Take the print callback
+        let print_callback = std::mem::take(&mut self.print_callback);
+
+        // Build print writer from the callback ref
+        let mut print_cb;
+        let mut print_writer = match &print_callback {
+            Some(func) => {
+                print_cb = CallbackStringPrint::new_js_ref(env, func)?;
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
+
+        match snapshot {
+            EitherLookupSnapshot::NoLimit(lookup) => {
+                let progress = match lookup.resume(lookup_result, &mut print_writer) {
+                    Ok(p) => p,
+                    Err(exc) => return Ok(Either4::D(JsMontyException::new(exc))),
+                };
+                Ok(progress_to_result(progress, print_callback, self.script_name.clone()))
+            }
+            EitherLookupSnapshot::Limited(lookup) => {
+                let progress = match lookup.resume(lookup_result, &mut print_writer) {
+                    Ok(p) => p,
+                    Err(exc) => return Ok(Either4::D(JsMontyException::new(exc))),
+                };
+                Ok(progress_to_result(progress, print_callback, self.script_name.clone()))
+            }
+            EitherLookupSnapshot::Done => Err(Error::from_reason("Name lookup has already been resumed")),
+        }
+    }
+
+    /// Serializes the MontyNameLookup to a binary format.
+    ///
+    /// The serialized data can be stored and later restored with `MontyNameLookup.load()`.
+    ///
+    /// @returns Buffer containing the serialized name lookup snapshot
+    #[napi]
+    pub fn dump(&self) -> Result<Buffer> {
+        if matches!(self.snapshot, EitherLookupSnapshot::Done) {
+            return Err(Error::from_reason(
+                "Cannot dump name lookup that has already been resumed",
+            ));
+        }
+
+        let serialized = SerializedNameLookup {
+            snapshot: &self.snapshot,
+            script_name: &self.script_name,
+            variable_name: &self.variable_name,
+        };
+
+        let bytes =
+            postcard::to_allocvec(&serialized).map_err(|e| Error::from_reason(format!("Serialization failed: {e}")))?;
+        Ok(Buffer::from(bytes))
+    }
+
+    /// Deserializes a MontyNameLookup from binary format.
+    ///
+    /// @param data - The serialized data from `dump()`
+    /// @param options - Optional load options
+    /// @returns A new MontyNameLookup instance
+    #[napi(factory)]
+    pub fn load(data: Buffer, options: Option<NameLookupLoadOptions>) -> Result<Self> {
+        let serialized: SerializedNameLookupOwned =
+            postcard::from_bytes(&data).map_err(|e| Error::from_reason(format!("Deserialization failed: {e}")))?;
+
+        Ok(Self {
+            snapshot: serialized.snapshot,
+            script_name: serialized.script_name,
+            variable_name: serialized.variable_name,
+            print_callback: options
+                .as_ref()
+                .and_then(|t| t.print_callback.as_ref())
+                .map(Function::create_ref)
+                .transpose()?,
+        })
+    }
+
+    /// Returns a string representation of the MontyNameLookup.
+    #[napi]
+    pub fn repr(&self) -> String {
+        format!(
+            "MontyNameLookup(scriptName='{}', variableName='{}')",
+            self.script_name, self.variable_name
+        )
+    }
+}
+
 // Function type for JS callback used in `CallbackStringPrint`.
 type JsPrintCallback<'env> = Function<'env, FnArgs<(&'static str, String)>, ()>;
 type JsPrintCallbackRef = FunctionRef<FnArgs<(&'static str, String)>, ()>;
@@ -958,41 +1162,32 @@ impl PrintWriterCallback for CallbackStringPrint<'_> {
 // Helper functions for progress conversion
 // =============================================================================
 
-/// Converts a `RunProgress` to either a `MontySnapshot`, `MontyComplete`, or `JsMontyException`.
+/// Converts a `RunProgress` to either a `MontySnapshot`, `MontyNameLookup`,
+/// `MontyComplete`, or `JsMontyException`.
 ///
-/// NameLookup events are auto-resolved by treating unresolved names as external functions.
-/// This allows the `start()`/`resume()` path to work without upfront declaration of
-/// external function names — the host will handle the actual function calls when they
-/// arrive as `FunctionCall` events via `MontySnapshot`.
+/// `NameLookup` events are surfaced to the host as `MontyNameLookup` instances,
+/// allowing the host to decide how to resolve each name (or let the VM raise `NameError`).
 ///
 /// # Panics
-/// Panics if the progress is `ResolveFutures` - async futures are not yet supported in the JS bindings.
+/// Panics if the progress is `ResolveFutures` or `OsCall` — these are not yet
+/// supported in the JS bindings.
 fn progress_to_result<T>(
     progress: RunProgress<T>,
     print_callback: Option<JsPrintCallbackRef>,
     script_name: String,
-) -> Either3<MontySnapshot, MontyComplete, JsMontyException>
+) -> Either4<MontySnapshot, MontyNameLookup, MontyComplete, JsMontyException>
 where
     T: ResourceTracker + serde::Serialize + serde::de::DeserializeOwned,
     EitherSnapshot: FromSnapshot<T>,
+    EitherLookupSnapshot: FromLookupSnapshot<T>,
 {
-    // Auto-resolve NameLookup events before converting to JS objects.
-    // In the start/resume path, all unresolved names are assumed to be external
-    // functions — the host provides the actual implementation via resume().
-    let progress = resolve_name_lookups_loop(progress);
-    let progress = match progress {
-        Ok(p) => p,
-        Err(exc) => return Either3::C(JsMontyException::new(exc)),
-    };
-
     match progress {
-        RunProgress::Complete(result) => Either3::B(MontyComplete { output_value: result }),
+        RunProgress::Complete(result) => Either4::C(MontyComplete { output_value: result }),
         RunProgress::FunctionCall(call) => {
             let function_name = call.function_name.clone();
             let args = call.args.clone();
             let kwargs = call.kwargs.clone();
-            // Store args/kwargs as MontyObject directly for serialization
-            Either3::A(MontySnapshot {
+            Either4::A(MontySnapshot {
                 snapshot: EitherSnapshot::from_snapshot(call),
                 script_name,
                 function_name,
@@ -1001,35 +1196,20 @@ where
                 print_callback,
             })
         }
-        RunProgress::NameLookup(_) => {
-            unreachable!("NameLookup should have been resolved by resolve_name_lookups_loop")
+        RunProgress::NameLookup(lookup) => {
+            let variable_name = lookup.name.clone();
+            Either4::B(MontyNameLookup {
+                snapshot: EitherLookupSnapshot::from_lookup(lookup),
+                script_name,
+                variable_name,
+                print_callback,
+            })
         }
         RunProgress::ResolveFutures(_) => {
             panic!("Async futures (ResolveFutures) are not yet supported in the JS bindings")
         }
         RunProgress::OsCall(call) => {
             panic!("OS calls are not yet supported in the JS bindings: {:?}", call.function)
-        }
-    }
-}
-
-/// Auto-resolves NameLookup events by treating unresolved names as external functions.
-///
-/// Loops until the progress is no longer a NameLookup, caching each resolved name
-/// as a `MontyObject::Function` in the VM's namespace.
-fn resolve_name_lookups_loop<T: ResourceTracker>(
-    mut progress: RunProgress<T>,
-) -> std::result::Result<RunProgress<T>, MontyException> {
-    loop {
-        match progress {
-            RunProgress::NameLookup(lookup) => {
-                let result = NameLookupResult::Value(MontyObject::Function {
-                    name: lookup.name.clone(),
-                    docstring: None,
-                });
-                progress = lookup.resume(result, &mut PrintWriter::Stdout)?;
-            }
-            other => return Ok(other),
         }
     }
 }
@@ -1105,6 +1285,22 @@ struct SerializedSnapshotOwned {
     kwargs: Vec<(MontyObject, MontyObject)>,
 }
 
+/// Serialization wrapper for `MontyNameLookup` using borrowed references.
+#[derive(serde::Serialize)]
+struct SerializedNameLookup<'a> {
+    snapshot: &'a EitherLookupSnapshot,
+    script_name: &'a str,
+    variable_name: &'a str,
+}
+
+/// Owned version of `SerializedNameLookup` for deserialization.
+#[derive(serde::Deserialize)]
+struct SerializedNameLookupOwned {
+    snapshot: EitherLookupSnapshot,
+    script_name: String,
+    variable_name: String,
+}
+
 // =============================================================================
 // External function support
 // =============================================================================
@@ -1129,10 +1325,10 @@ fn call_external_function(
 
     // Look up the function by name
     if !functions.has_named_property(function_name)? {
-        // Return a KeyError exception that will be raised in Monty
+        // Return a NameError exception — matches Python's behavior for undefined names
         let exc = MontyException::new(
-            ExcType::KeyError,
-            Some(format!("\"External function '{function_name}' not found\"")),
+            ExcType::NameError,
+            Some(format!("name '{function_name}' is not defined")),
         );
         return Ok(ExtFunctionResult::Error(exc));
     }

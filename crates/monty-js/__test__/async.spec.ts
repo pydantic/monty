@@ -159,12 +159,13 @@ result
   t.is(result, 'caught')
 })
 
-test('runMontyAsync missing external function', async (t) => {
+test('runMontyAsync missing external function raises NameError', async (t) => {
   const m = new Monty('missing_func()')
 
   const error = await t.throwsAsync(runMontyAsync(m, { externalFunctions: {} }))
 
   t.true(error instanceof MontyRuntimeError)
+  t.true(error!.message.includes('NameError'))
 })
 
 test('runMontyAsync missing function caught in try/except', async (t) => {
@@ -172,7 +173,7 @@ test('runMontyAsync missing function caught in try/except', async (t) => {
     `
 try:
     missing()
-except KeyError:
+except NameError:
     result = 'caught'
 result
 `,
