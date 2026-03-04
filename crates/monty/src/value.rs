@@ -263,8 +263,8 @@ impl PyTrait for Value {
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> Result<Option<Ordering>, ResourceError> {
-        // py_cmp currently only handles non-recursive types (numbers, strings, bytes)
-        // so recursion depth tracking is not needed here.
+        // py_cmp handles numbers, strings, bytes, and tuples.
+        // Recursion depth tracking for tuples is handled in Tuple::py_cmp.
         match (self, other) {
             (Self::Int(s), Self::Int(o)) => Ok(s.partial_cmp(o)),
             (Self::Float(s), Self::Float(o)) => Ok(s.partial_cmp(o)),
@@ -290,10 +290,16 @@ impl PyTrait for Value {
                     Ok(None)
                 }
             }
-            // Ref vs Ref comparison: handles LongInt and Str
+            // Ref vs Ref comparison: handles LongInt, Str, and Tuple
             (Self::Ref(id1), Self::Ref(id2)) => match (heap.get(*id1), heap.get(*id2)) {
                 (HeapData::LongInt(a), HeapData::LongInt(b)) => Ok(a.inner().partial_cmp(b.inner())),
                 (HeapData::Str(a), HeapData::Str(b)) => Ok(a.as_str().partial_cmp(b.as_str())),
+                (HeapData::Tuple(_), HeapData::Tuple(_)) => heap.with_two(*id1, *id2, |heap, left, right| {
+                    let (HeapData::Tuple(a), HeapData::Tuple(b)) = (left, right) else {
+                        unreachable!()
+                    };
+                    a.py_cmp(b, heap, interns)
+                }),
                 _ => Ok(None),
             },
             // Interned string comparisons
