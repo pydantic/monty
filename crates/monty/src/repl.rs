@@ -11,19 +11,20 @@ use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErr
 use crate::{
     ExcType, MontyException,
     asyncio::CallId,
-    bytecode::{Code, Compiler, FrameExit, VM, VMSnapshot},
+    bytecode::{Code, Compiler, FrameExit, VM, VMContext, VMSnapshot},
     exception_private::{RunError, RunResult},
     heap::{DropWithHeap, Heap},
     intern::{ExtFunctionId, InternerBuilder, Interns},
     io::PrintWriter,
     namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
     object::MontyObject,
+    observer::{ExternalCallKind, ExternalCallReturnKind, RuntimeObserverHandle},
     os::OsFunction,
     parse::{parse, parse_with_interner},
     prepare::{prepare, prepare_with_existing_names},
     progress_runtime_ids::{RuntimeIdCardinality, RuntimeIdSlices, checked_runtime_id_payload},
     resource::ResourceTracker,
-    run::{ExternalResult, MontyFuture},
+    run::{ExternalResult, MontyFuture, emit_external_call_requested, emit_external_call_returned},
     runtime_id::RuntimeValueId,
     value::Value,
 };
@@ -307,7 +308,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
         let mut heap = Heap::new(executor.namespace_size, resource_tracker);
         let mut namespaces = executor.prepare_namespaces(inputs, &mut heap)?;
 
-        let mut vm = VM::new(&mut heap, &mut namespaces, &executor.interns, print);
+        let mut vm = VM::new(VMContext::new(&mut heap, &mut namespaces, &executor.interns, print));
         let frame_exit_result = vm.run_module(&executor.module_code);
         vm.cleanup();
 
@@ -345,6 +346,16 @@ impl<T: ResourceTracker> MontyRepl<T> {
     /// Returns `Err(Box<ReplStartError>)` for syntax, compile-time, or runtime
     /// failures — the REPL session is always preserved inside the error.
     pub fn start(self, code: &str, print: &mut PrintWriter<'_>) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+        self.start_with_observer(code, print, RuntimeObserverHandle::disabled())
+    }
+
+    /// Starts executing a new snippet with a runtime observer.
+    pub fn start_with_observer(
+        self,
+        code: &str,
+        print: &mut PrintWriter<'_>,
+        observer: RuntimeObserverHandle,
+    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         let mut this = self;
         if code.is_empty() {
             return Ok(ReplProgress::Complete {
@@ -368,18 +379,30 @@ impl<T: ResourceTracker> MontyRepl<T> {
         this.ensure_global_namespace_size(executor.namespace_size);
 
         let (vm_result, vm_state) = {
-            let mut vm = VM::new(&mut this.heap, &mut this.namespaces, &executor.interns, print);
+            let mut vm = VM::new_with_observer(
+                VMContext::new(&mut this.heap, &mut this.namespaces, &executor.interns, print),
+                observer.clone(),
+            );
             let vm_result = vm.run_module(&executor.module_code);
             let vm_state = vm.check_snapshot(&vm_result);
             (vm_result, vm_state)
         };
 
-        handle_repl_vm_result(vm_result, vm_state, executor, this)
+        handle_repl_vm_result(vm_result, vm_state, executor, this, observer)
     }
 
     /// Starts snippet execution with `PrintWriter::Stdout` and no additional host output wiring.
     pub fn start_no_print(self, code: &str) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         self.start(code, &mut PrintWriter::Stdout)
+    }
+
+    /// Starts snippet execution with `PrintWriter::Stdout` and a runtime observer.
+    pub fn start_no_print_with_observer(
+        self,
+        code: &str,
+        observer: RuntimeObserverHandle,
+    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+        self.start_with_observer(code, &mut PrintWriter::Stdout, observer)
     }
 
     /// Feeds and executes a new snippet against the current REPL state.
@@ -417,7 +440,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
 
         self.ensure_global_namespace_size(namespace_size);
 
-        let mut vm = VM::new(&mut self.heap, &mut self.namespaces, &interns, print);
+        let mut vm = VM::new(VMContext::new(&mut self.heap, &mut self.namespaces, &interns, print));
         let frame_exit_result = vm.run_module(&module_code);
         vm.cleanup();
 
@@ -786,9 +809,19 @@ pub struct ReplSnapshot<T: ResourceTracker> {
     vm_state: VMSnapshot,
     /// call_id used when resuming with an unresolved future.
     pending_call_id: u32,
+    /// Optional runtime observer handle for resumed execution.
+    #[serde(skip, default = "RuntimeObserverHandle::disabled")]
+    observer: RuntimeObserverHandle,
 }
 
 impl<T: ResourceTracker> ReplSnapshot<T> {
+    /// Installs a runtime observer for subsequent resume calls.
+    #[must_use]
+    pub fn with_observer(mut self, observer: RuntimeObserverHandle) -> Self {
+        self.observer = observer;
+        self
+    }
+
     /// Continues snippet execution with an external result.
     ///
     /// # Arguments
@@ -799,38 +832,51 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
         result: impl Into<ExternalResult>,
         print: &mut PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+        let observer = self.observer.clone();
+        self.run_with_observer(result, print, observer)
+    }
+
+    /// Continues snippet execution with an explicit runtime observer.
+    pub fn run_with_observer(
+        self,
+        result: impl Into<ExternalResult>,
+        print: &mut PrintWriter<'_>,
+        observer: RuntimeObserverHandle,
+    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         let Self {
             mut repl,
             executor,
             vm_state,
             pending_call_id,
+            ..
         } = self;
 
         let ext_result = result.into();
 
-        let mut vm = VM::restore(
-            vm_state,
-            &executor.module_code,
-            &mut repl.heap,
-            &mut repl.namespaces,
-            &executor.interns,
-            print,
-        );
+        let context = VMContext::new(&mut repl.heap, &mut repl.namespaces, &executor.interns, print);
+        let mut vm = VM::restore_with_observer(vm_state, &executor.module_code, context, observer.clone());
 
         let vm_result = match ext_result {
-            ExternalResult::Return(obj) => vm.resume(obj),
-            ExternalResult::Error(exc) => vm.resume_with_exception(exc.into()),
+            ExternalResult::Return(obj) => {
+                emit_external_call_returned(&observer, pending_call_id, ExternalCallReturnKind::Return);
+                vm.resume(obj)
+            }
+            ExternalResult::Error(exc) => {
+                emit_external_call_returned(&observer, pending_call_id, ExternalCallReturnKind::Error);
+                vm.resume_with_exception(exc.into())
+            }
             ExternalResult::Future => {
+                emit_external_call_returned(&observer, pending_call_id, ExternalCallReturnKind::Future);
                 let call_id = CallId::new(pending_call_id);
                 vm.add_pending_call(call_id);
-                vm.push(Value::ExternalFuture(call_id));
+                vm.push_created(Value::ExternalFuture(call_id));
                 vm.run()
             }
         };
 
         let vm_state = vm.check_snapshot(&vm_result);
 
-        handle_repl_vm_result(vm_result, vm_state, executor, repl)
+        handle_repl_vm_result(vm_result, vm_state, executor, repl, observer)
     }
 
     /// Continues snippet execution by pushing an unresolved `ExternalFuture`.
@@ -855,9 +901,19 @@ pub struct ReplFutureSnapshot<T: ResourceTracker> {
     vm_state: VMSnapshot,
     /// Pending call IDs expected by this snapshot.
     pending_call_ids: Vec<u32>,
+    /// Optional runtime observer handle for resumed execution.
+    #[serde(skip, default = "RuntimeObserverHandle::disabled")]
+    observer: RuntimeObserverHandle,
 }
 
 impl<T: ResourceTracker> ReplFutureSnapshot<T> {
+    /// Installs a runtime observer for subsequent resume calls.
+    #[must_use]
+    pub fn with_observer(mut self, observer: RuntimeObserverHandle) -> Self {
+        self.observer = observer;
+        self
+    }
+
     /// Returns unresolved call IDs for this suspended state.
     #[must_use]
     pub fn pending_call_ids(&self) -> &[u32] {
@@ -877,11 +933,23 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
         results: Vec<(u32, ExternalResult)>,
         print: &mut PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+        let observer = self.observer.clone();
+        self.resume_with_observer(results, print, observer)
+    }
+
+    /// Resumes snippet execution with an explicit runtime observer.
+    pub fn resume_with_observer(
+        self,
+        results: Vec<(u32, ExternalResult)>,
+        print: &mut PrintWriter<'_>,
+        observer: RuntimeObserverHandle,
+    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         let Self {
             mut repl,
             executor,
             vm_state,
             pending_call_ids,
+            ..
         } = self;
 
         let invalid_call_id = results
@@ -889,14 +957,8 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
             .find(|(call_id, _)| !pending_call_ids.contains(call_id))
             .map(|(call_id, _)| *call_id);
 
-        let mut vm = VM::restore(
-            vm_state,
-            &executor.module_code,
-            &mut repl.heap,
-            &mut repl.namespaces,
-            &executor.interns,
-            print,
-        );
+        let context = VMContext::new(&mut repl.heap, &mut repl.namespaces, &executor.interns, print);
+        let mut vm = VM::restore_with_observer(vm_state, &executor.module_code, context, observer.clone());
 
         if let Some(call_id) = invalid_call_id {
             vm.cleanup();
@@ -909,6 +971,7 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
         for (call_id, ext_result) in results {
             match ext_result {
                 ExternalResult::Return(obj) => {
+                    emit_external_call_returned(&observer, call_id, ExternalCallReturnKind::Return);
                     if let Err(e) = vm.resolve_future(call_id, obj) {
                         vm.cleanup();
                         let error =
@@ -916,8 +979,13 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
                         return Err(Box::new(ReplStartError { repl, error }));
                     }
                 }
-                ExternalResult::Error(exc) => vm.fail_future(call_id, RunError::from(exc)),
-                ExternalResult::Future => {}
+                ExternalResult::Error(exc) => {
+                    emit_external_call_returned(&observer, call_id, ExternalCallReturnKind::Error);
+                    vm.fail_future(call_id, RunError::from(exc));
+                }
+                ExternalResult::Future => {
+                    emit_external_call_returned(&observer, call_id, ExternalCallReturnKind::Future);
+                }
             }
         }
 
@@ -948,6 +1016,7 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
                     executor,
                     vm_state,
                     pending_call_ids,
+                    observer,
                 }));
             }
         }
@@ -955,7 +1024,7 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
         let vm_result = vm.run();
         let vm_state = vm.check_snapshot(&vm_result);
 
-        handle_repl_vm_result(vm_result, vm_state, executor, repl)
+        handle_repl_vm_result(vm_result, vm_state, executor, repl, observer)
     }
 }
 
@@ -964,6 +1033,10 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
 /// This mirrors `handle_vm_result` but preserves REPL heap/namespaces on
 /// completion by returning `ReplProgress::Complete { repl, value }`.
 /// On runtime errors, the REPL is preserved inside a `ReplStartError`.
+///
+/// `HostArgs` stores converted host-call payloads:
+/// `args`/`kwargs` are host-facing values and `arg_runtime_ids`/`kwarg_runtime_ids`
+/// preserve runtime identity metadata aligned to those argument lists.
 struct HostArgs {
     args: Vec<MontyObject>,
     arg_runtime_ids: Vec<RuntimeValueId>,
@@ -972,6 +1045,12 @@ struct HostArgs {
 }
 
 impl HostArgs {
+    /// Converts VM argument storage into host-call payloads with runtime IDs.
+    ///
+    /// Takes VM-side `args: ArgValues` plus `heap: &mut Heap<T>` and
+    /// `interns: &Interns` (`T: ResourceTracker`), and returns `HostArgs` where:
+    /// `args` are positional values, `arg_runtime_ids` match those positions,
+    /// `kwargs` are key/value pairs, and `kwarg_runtime_ids` align to each pair.
     fn from_vm_args<T: ResourceTracker>(args: crate::args::ArgValues, heap: &mut Heap<T>, interns: &Interns) -> Self {
         let host_args = args.into_py_objects_with_runtime_ids(heap, interns);
         Self {
@@ -1019,94 +1098,272 @@ impl HostArgs {
     }
 }
 
+/// Builds a runtime error describing a missing REPL VM snapshot.
+///
+/// This centralises the message used when resumable REPL builders are invoked
+/// without `vm_state`, which indicates an internal state mismatch.
+fn missing_repl_snapshot_error(context: &str) -> MontyException {
+    MontyException::runtime_error(format!("internal error: missing VM snapshot for {context}"))
+}
+
+/// Shared REPL-owned state for converting `FrameExit` values into progress.
+///
+/// For `T: ResourceTracker`, this carries mutable REPL ownership (`repl`) plus
+/// compiler metadata and observer state; `vm_state` may be `None`, so builders
+/// that require suspension state must validate before constructing snapshots.
+struct ReplProgressContext<T: ResourceTracker> {
+    /// Suspended VM state, present when execution yielded a resumable operation.
+    vm_state: Option<VMSnapshot>,
+    /// Compiled snippet/module executor used to convert values and names.
+    executor: ReplExecutor,
+    /// Owning REPL session state and resource tracker used for value conversion.
+    repl: MontyRepl<T>,
+    /// Runtime observer handle used to emit progress lifecycle notifications.
+    observer: RuntimeObserverHandle,
+}
+
+/// Classifies the suspended REPL call variant for shared builder paths.
+///
+/// This allows one generic call-progress constructor to reuse argument
+/// conversion and snapshot logic while preserving variant-specific payload
+/// semantics (function, method, or OS call).
+enum ReplCallKind {
+    Function(String),
+    Method(String),
+    Os(OsFunction),
+}
+
+/// Builds call-progress output for all suspended REPL call kinds.
+///
+/// This exists to keep conversion/emission/snapshot logic in one place; it
+/// consumes `context`, so callers must not expect to reuse `repl` or `executor`
+/// after delegation, and snapshot creation will fail if `vm_state` is absent.
+fn build_repl_external_call_progress_generic<T: ResourceTracker>(
+    kind: ReplCallKind,
+    args: crate::args::ArgValues,
+    call_id: CallId,
+    mut context: ReplProgressContext<T>,
+) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    let host_args = HostArgs::from_vm_args(args, &mut context.repl.heap, &context.executor.interns);
+    let (observer_kind, snapshot_desc) = match &kind {
+        ReplCallKind::Function(_) => (ExternalCallKind::Function, "external call"),
+        ReplCallKind::Method(_) => (ExternalCallKind::Method, "method call"),
+        ReplCallKind::Os(_) => (ExternalCallKind::Os, "OS call"),
+    };
+    let state = build_repl_snapshot(context, call_id.raw(), snapshot_desc)?;
+    emit_external_call_requested(
+        &state.observer,
+        call_id.raw(),
+        observer_kind,
+        host_args.arg_runtime_ids.as_slice(),
+        host_args.kwarg_runtime_ids.as_slice(),
+    );
+    let progress = match kind {
+        ReplCallKind::Function(name) => host_args.into_function_call_progress(name, call_id.raw(), false, state),
+        ReplCallKind::Method(name) => host_args.into_function_call_progress(name, call_id.raw(), true, state),
+        ReplCallKind::Os(function) => host_args.into_os_call_progress(function, call_id.raw(), state),
+    };
+    Ok(progress)
+}
+
+/// Builds a resumable `ReplSnapshot` from shared REPL progress context.
+///
+/// This isolates snapshot assembly and missing-state validation so all
+/// call-progress paths emit identical errors when `vm_state` is unexpectedly
+/// unavailable.
+fn build_repl_snapshot<T: ResourceTracker>(
+    context: ReplProgressContext<T>,
+    pending_call_id: u32,
+    snapshot_context: &str,
+) -> Result<ReplSnapshot<T>, Box<ReplStartError<T>>> {
+    let ReplProgressContext {
+        vm_state,
+        executor,
+        repl,
+        observer,
+    } = context;
+    let Some(vm_state) = vm_state else {
+        return Err(Box::new(ReplStartError {
+            repl,
+            error: missing_repl_snapshot_error(snapshot_context),
+        }));
+    };
+    Ok(ReplSnapshot {
+        repl,
+        executor,
+        vm_state,
+        pending_call_id,
+        observer,
+    })
+}
+
+/// Commits compiled metadata from a snippet executor into persistent REPL state.
+///
+/// This exists because snippet execution can mutate symbol/function tables even
+/// when execution later fails; callers should run it exactly once when handing
+/// ownership of `executor` back to `repl`.
+fn commit_repl_executor_metadata<T: ResourceTracker>(repl: &mut MontyRepl<T>, executor: ReplExecutor) {
+    let ReplExecutor { name_map, interns, .. } = executor;
+    repl.global_name_map = name_map;
+    repl.interns = interns;
+}
+
+/// Builds `ReplProgress::Complete` from a returned VM value.
+///
+/// This converts the value using the current heap and commits executor metadata
+/// so future snippets observe updated symbols and intern tables.
+fn build_repl_complete_progress<T: ResourceTracker>(
+    value: Value,
+    mut context: ReplProgressContext<T>,
+) -> ReplProgress<T> {
+    let output = MontyObject::new(value, &mut context.repl.heap, &context.executor.interns);
+    commit_repl_executor_metadata(&mut context.repl, context.executor);
+    ReplProgress::Complete {
+        repl: context.repl,
+        value: output,
+    }
+}
+
+/// Builds external-function call progress for REPL suspension.
+///
+/// This resolves the external function name and delegates to the generic call
+/// builder so request emission and snapshot behaviour stay uniform.
+fn build_repl_external_call_progress<T: ResourceTracker>(
+    ext_function_id: ExtFunctionId,
+    args: crate::args::ArgValues,
+    call_id: CallId,
+    context: ReplProgressContext<T>,
+) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    let function_name = context.executor.interns.get_external_function_name(ext_function_id);
+    build_repl_external_call_progress_generic(ReplCallKind::Function(function_name), args, call_id, context)
+}
+
+/// Builds OS-call progress for REPL suspension.
+///
+/// This exists as a thin adapter so OS calls share the generic conversion and
+/// snapshot pipeline without duplicating observer emission logic.
+fn build_repl_os_call_progress<T: ResourceTracker>(
+    function: OsFunction,
+    args: crate::args::ArgValues,
+    call_id: CallId,
+    context: ReplProgressContext<T>,
+) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    build_repl_external_call_progress_generic(ReplCallKind::Os(function), args, call_id, context)
+}
+
+/// Builds method-call progress for REPL suspension.
+///
+/// This resolves the interned method name, then delegates so method-call
+/// progress follows the same snapshot/error semantics as other call kinds.
+fn build_repl_method_call_progress<T: ResourceTracker>(
+    method_name: crate::value::EitherStr,
+    args: crate::args::ArgValues,
+    call_id: CallId,
+    context: ReplProgressContext<T>,
+) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    let function_name = method_name.into_string(&context.executor.interns);
+    build_repl_external_call_progress_generic(ReplCallKind::Method(function_name), args, call_id, context)
+}
+
+/// Builds resolve-futures progress when a REPL snippet is blocked on futures.
+///
+/// This packages pending call IDs into `ReplFutureSnapshot`; like other
+/// suspendable paths, it errors if `vm_state` is missing because no resume
+/// state can be produced.
+fn build_repl_resolve_futures_progress<T: ResourceTracker>(
+    pending_call_ids: Vec<CallId>,
+    context: ReplProgressContext<T>,
+) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    let ReplProgressContext {
+        vm_state,
+        executor,
+        repl,
+        observer,
+    } = context;
+    let Some(vm_state) = vm_state else {
+        return Err(Box::new(ReplStartError {
+            repl,
+            error: missing_repl_snapshot_error("ResolveFutures"),
+        }));
+    };
+    let pending_call_ids = pending_call_ids.into_iter().map(CallId::raw).collect();
+    Ok(ReplProgress::ResolveFutures(ReplFutureSnapshot {
+        repl,
+        executor,
+        vm_state,
+        pending_call_ids,
+        observer,
+    }))
+}
+
+/// Maps an internal VM `RunError` into a REPL-preserving start error.
+///
+/// This centralises error conversion while ensuring executor metadata is still
+/// committed, because snippets may define symbols before failing.
+fn build_repl_runtime_error_progress<T: ResourceTracker>(
+    err: RunError,
+    mut context: ReplProgressContext<T>,
+) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    let error = err.into_python_exception(&context.executor.interns, &context.executor.code);
+    // Commit compiler metadata even on runtime errors, matching feed() behavior.
+    // Snippets can create new variables or functions before raising, and those
+    // values may reference FunctionId/StringId values from the new tables.
+    commit_repl_executor_metadata(&mut context.repl, context.executor);
+    Err(Box::new(ReplStartError {
+        repl: context.repl,
+        error,
+    }))
+}
+
+/// Dispatches a REPL `FrameExit` into the corresponding progress builder.
+///
+/// This keeps branch logic local and moves `context` into downstream builders,
+/// so each branch can safely consume and return owned REPL state.
+fn dispatch_repl_frame_exit<T: ResourceTracker>(
+    frame_exit: FrameExit,
+    context: ReplProgressContext<T>,
+) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    match frame_exit {
+        FrameExit::Return(value) => Ok(build_repl_complete_progress(value, context)),
+        FrameExit::ExternalCall {
+            ext_function_id,
+            args,
+            call_id,
+        } => build_repl_external_call_progress(ext_function_id, args, call_id, context),
+        FrameExit::OsCall {
+            function,
+            args,
+            call_id,
+        } => build_repl_os_call_progress(function, args, call_id, context),
+        FrameExit::MethodCall {
+            method_name,
+            args,
+            call_id,
+        } => build_repl_method_call_progress(method_name, args, call_id, context),
+        FrameExit::ResolveFutures(pending_call_ids) => build_repl_resolve_futures_progress(pending_call_ids, context),
+    }
+}
+
+/// Converts a VM run result into `ReplProgress` using shared context plumbing.
+///
+/// This exists to centralise success/error dispatch and ensures ownership of
+/// `repl`, `executor`, and `vm_state` is consumed into the returned progress or
+/// boxed start error.
 fn handle_repl_vm_result<T: ResourceTracker>(
     result: RunResult<FrameExit>,
     vm_state: Option<VMSnapshot>,
     executor: ReplExecutor,
-    mut repl: MontyRepl<T>,
+    repl: MontyRepl<T>,
+    observer: RuntimeObserverHandle,
 ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
-    fn missing_snapshot_error(context: &str) -> MontyException {
-        MontyException::runtime_error(format!("internal error: missing VM snapshot for {context}"))
-    }
-
-    macro_rules! new_repl_snapshot {
-        ($pending_call_id:expr, $context:expr) => {
-            match vm_state {
-                Some(vm_state) => Ok(ReplSnapshot {
-                    repl,
-                    executor,
-                    vm_state,
-                    pending_call_id: $pending_call_id,
-                }),
-                None => Err(Box::new(ReplStartError {
-                    repl,
-                    error: missing_snapshot_error($context),
-                })),
-            }
-        };
-    }
-
+    let context = ReplProgressContext {
+        vm_state,
+        executor,
+        repl,
+        observer,
+    };
     match result {
-        Ok(FrameExit::Return(value)) => {
-            let output = MontyObject::new(value, &mut repl.heap, &executor.interns);
-            let ReplExecutor { name_map, interns, .. } = executor;
-            repl.global_name_map = name_map;
-            repl.interns = interns;
-            Ok(ReplProgress::Complete { repl, value: output })
-        }
-        Ok(FrameExit::ExternalCall {
-            ext_function_id,
-            args,
-            call_id,
-        }) => {
-            let function_name = executor.interns.get_external_function_name(ext_function_id);
-            let host_args = HostArgs::from_vm_args(args, &mut repl.heap, &executor.interns);
-            let state = new_repl_snapshot!(call_id.raw(), "external call")?;
-            Ok(host_args.into_function_call_progress(function_name, call_id.raw(), false, state))
-        }
-        Ok(FrameExit::OsCall {
-            function,
-            args,
-            call_id,
-        }) => {
-            let host_args = HostArgs::from_vm_args(args, &mut repl.heap, &executor.interns);
-            let state = new_repl_snapshot!(call_id.raw(), "OS call")?;
-            Ok(host_args.into_os_call_progress(function, call_id.raw(), state))
-        }
-        Ok(FrameExit::MethodCall {
-            method_name,
-            args,
-            call_id,
-        }) => {
-            let function_name = method_name.into_string(&executor.interns);
-            let host_args = HostArgs::from_vm_args(args, &mut repl.heap, &executor.interns);
-            let state = new_repl_snapshot!(call_id.raw(), "method call")?;
-            Ok(host_args.into_function_call_progress(function_name, call_id.raw(), true, state))
-        }
-        Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
-            let pending_call_ids: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
-            let Some(vm_state) = vm_state else {
-                return Err(Box::new(ReplStartError {
-                    repl,
-                    error: missing_snapshot_error("ResolveFutures"),
-                }));
-            };
-            Ok(ReplProgress::ResolveFutures(ReplFutureSnapshot {
-                repl,
-                executor,
-                vm_state,
-                pending_call_ids,
-            }))
-        }
-        Err(err) => {
-            let error = err.into_python_exception(&executor.interns, &executor.code);
-            // Commit compiler metadata even on runtime errors, matching feed() behavior.
-            // Snippets can create new variables or functions before raising, and those
-            // values may reference FunctionId/StringId values from the new tables.
-            let ReplExecutor { name_map, interns, .. } = executor;
-            repl.global_name_map = name_map;
-            repl.interns = interns;
-            Err(Box::new(ReplStartError { repl, error }))
-        }
+        Ok(frame_exit) => dispatch_repl_frame_exit(frame_exit, context),
+        Err(err) => build_repl_runtime_error_progress(err, context),
     }
 }

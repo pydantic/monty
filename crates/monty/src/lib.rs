@@ -16,6 +16,7 @@ mod io;
 mod modules;
 mod namespace;
 mod object;
+mod observer;
 mod os;
 mod parse;
 mod prepare;
@@ -36,6 +37,11 @@ pub use crate::{
     exception_public::{CodeLoc, MontyException, StackFrame},
     io::{PrintWriter, PrintWriterCallback},
     object::{DictPairs, InvalidInputError, MontyObject},
+    observer::{
+        ControlConditionEvent, ExternalCallKind, ExternalCallRequestedEvent, ExternalCallReturnKind,
+        ExternalCallReturnedEvent, NoopRuntimeObserver, OpInputIds, OpResultEvent, RuntimeObserver,
+        RuntimeObserverEvent, RuntimeObserverHandle, ValueCreatedEvent,
+    },
     os::{OsFunction, dir_stat, file_stat, stat_result, symlink_stat},
     repl::{
         MontyRepl, ReplContinuationMode, ReplFutureSnapshot, ReplProgress, ReplSnapshot, ReplStartError,

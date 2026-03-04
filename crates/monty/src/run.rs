@@ -4,13 +4,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::{
     ExcType, MontyException,
     asyncio::CallId,
-    bytecode::{Code, Compiler, FrameExit, VM, VMSnapshot},
-    exception_private::RunResult,
+    bytecode::{Code, Compiler, FrameExit, VM, VMContext, VMSnapshot},
+    exception_private::{RunError, RunResult},
     heap::{DropWithHeap, Heap},
     intern::{ExtFunctionId, Interns},
     io::PrintWriter,
     namespace::Namespaces,
     object::MontyObject,
+    observer::{
+        ExternalCallKind, ExternalCallRequestedEvent, ExternalCallReturnKind, ExternalCallReturnedEvent,
+        RuntimeObserverEvent, RuntimeObserverHandle,
+    },
     os::OsFunction,
     parse::parse,
     prepare::prepare,
@@ -151,6 +155,19 @@ impl MontyRun {
         resource_tracker: T,
         print: &mut PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
+        self.start_with_observer(inputs, resource_tracker, print, RuntimeObserverHandle::disabled())
+    }
+
+    /// Starts execution with a runtime observer.
+    ///
+    /// Observer events are emitted only when `observer` is enabled.
+    pub fn start_with_observer<T: ResourceTracker>(
+        self,
+        inputs: Vec<MontyObject>,
+        resource_tracker: T,
+        print: &mut PrintWriter<'_>,
+        observer: RuntimeObserverHandle,
+    ) -> Result<RunProgress<T>, MontyException> {
         let executor = self.executor;
 
         // Create heap and prepare namespaces
@@ -158,7 +175,10 @@ impl MontyRun {
         let mut namespaces = executor.prepare_namespaces(inputs, &mut heap)?;
 
         // Create and run VM
-        let mut vm = VM::new(&mut heap, &mut namespaces, &executor.interns, print);
+        let mut vm = VM::new_with_observer(
+            VMContext::new(&mut heap, &mut namespaces, &executor.interns, print),
+            observer.clone(),
+        );
 
         // Start execution
         let vm_result = vm.run_module(&executor.module_code);
@@ -166,7 +186,7 @@ impl MontyRun {
         let vm_state = vm.check_snapshot(&vm_result);
 
         // Handle the result using the destructured parts
-        handle_vm_result(vm_result, vm_state, executor, heap, namespaces)
+        handle_vm_result(vm_result, vm_state, executor, heap, namespaces, observer)
     }
 }
 
@@ -475,6 +495,9 @@ pub struct Snapshot<T: ResourceTracker> {
     /// The call_id from the most recent FunctionCall that created this Snapshot.
     /// Used by `run_pending()` to push the correct `ExternalFuture`.
     pending_call_id: u32,
+    /// Optional runtime observer handle for resumed execution.
+    #[serde(skip, default = "RuntimeObserverHandle::disabled")]
+    observer: RuntimeObserverHandle,
 }
 
 #[derive(Debug)]
@@ -518,6 +541,13 @@ impl<T: ResourceTracker> Snapshot<T> {
         self.heap.tracker_mut()
     }
 
+    /// Installs a runtime observer for subsequent resume calls.
+    #[must_use]
+    pub fn with_observer(mut self, observer: RuntimeObserverHandle) -> Self {
+        self.observer = observer;
+        self
+    }
+
     /// Continues execution with the return value or exception from the external function.
     ///
     /// Consumes self and returns the next execution progress.
@@ -530,27 +560,39 @@ impl<T: ResourceTracker> Snapshot<T> {
     /// This method should not panic under normal operation. Internal assertions
     /// may panic if the VM reaches an inconsistent state (indicating a bug).
     pub fn run(
+        self,
+        result: impl Into<ExternalResult>,
+        print: &mut PrintWriter<'_>,
+    ) -> Result<RunProgress<T>, MontyException> {
+        let observer = self.observer.clone();
+        self.run_with_observer(result, print, observer)
+    }
+
+    /// Continues execution with an explicit runtime observer handle.
+    pub fn run_with_observer(
         mut self,
         result: impl Into<ExternalResult>,
         print: &mut PrintWriter<'_>,
+        observer: RuntimeObserverHandle,
     ) -> Result<RunProgress<T>, MontyException> {
         let ext_result = result.into();
 
         // Restore the VM from the snapshot
-        let mut vm = VM::restore(
-            self.vm_state,
-            &self.executor.module_code,
-            &mut self.heap,
-            &mut self.namespaces,
-            &self.executor.interns,
-            print,
-        );
+        let context = VMContext::new(&mut self.heap, &mut self.namespaces, &self.executor.interns, print);
+        let mut vm = VM::restore_with_observer(self.vm_state, &self.executor.module_code, context, observer.clone());
 
         // Convert return value or exception before creating VM (to avoid borrow conflicts)
         let vm_result = match ext_result {
-            ExternalResult::Return(obj) => vm.resume(obj),
-            ExternalResult::Error(exc) => vm.resume_with_exception(exc.into()),
+            ExternalResult::Return(obj) => {
+                emit_external_call_returned(&observer, self.pending_call_id, ExternalCallReturnKind::Return);
+                vm.resume(obj)
+            }
+            ExternalResult::Error(exc) => {
+                emit_external_call_returned(&observer, self.pending_call_id, ExternalCallReturnKind::Error);
+                vm.resume_with_exception(exc.into())
+            }
             ExternalResult::Future => {
+                emit_external_call_returned(&observer, self.pending_call_id, ExternalCallReturnKind::Future);
                 // Get the call_id and ext_function_id that were stored when this Snapshot was created
                 let call_id = CallId::new(self.pending_call_id);
 
@@ -560,7 +602,7 @@ impl<T: ResourceTracker> Snapshot<T> {
 
                 // Push the ExternalFuture value onto the stack
                 // This allows the code to continue and potentially await this future later
-                vm.push(Value::ExternalFuture(call_id));
+                vm.push_created(Value::ExternalFuture(call_id));
 
                 // Continue execution
                 vm.run()
@@ -570,7 +612,7 @@ impl<T: ResourceTracker> Snapshot<T> {
         let vm_state = vm.check_snapshot(&vm_result);
 
         // Handle the result using the destructured parts
-        handle_vm_result(vm_result, vm_state, self.executor, self.heap, self.namespaces)
+        handle_vm_result(vm_result, vm_state, self.executor, self.heap, self.namespaces, observer)
     }
 
     /// Continues execution by pushing an ExternalFuture instead of a concrete value.
@@ -620,9 +662,19 @@ pub struct FutureSnapshot<T: ResourceTracker> {
     /// The pending call_ids that this snapshot is waiting on.
     /// Used to validate that resume() only receives known call_ids.
     pending_call_ids: Vec<u32>,
+    /// Optional runtime observer handle for resumed execution.
+    #[serde(skip, default = "RuntimeObserverHandle::disabled")]
+    observer: RuntimeObserverHandle,
 }
 
 impl<T: ResourceTracker> FutureSnapshot<T> {
+    /// Installs a runtime observer for subsequent resume calls.
+    #[must_use]
+    pub fn with_observer(mut self, observer: RuntimeObserverHandle) -> Self {
+        self.observer = observer;
+        self
+    }
+
     pub fn pending_call_ids(&self) -> &[u32] {
         &self.pending_call_ids
     }
@@ -659,8 +711,17 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
         results: Vec<(u32, ExternalResult)>,
         print: &mut PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
-        use crate::exception_private::RunError;
+        let observer = self.observer.clone();
+        self.resume_with_observer(results, print, observer)
+    }
 
+    /// Resumes execution with an explicit runtime observer handle.
+    pub fn resume_with_observer(
+        self,
+        results: Vec<(u32, ExternalResult)>,
+        print: &mut PrintWriter<'_>,
+        observer: RuntimeObserverHandle,
+    ) -> Result<RunProgress<T>, MontyException> {
         // Destructure self to avoid partial move issues
         let Self {
             executor,
@@ -668,6 +729,7 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
             mut heap,
             mut namespaces,
             pending_call_ids,
+            ..
         } = self;
 
         // Validate that all provided call_ids are in the pending set before restoring VM
@@ -677,14 +739,8 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
             .map(|(call_id, _)| *call_id);
 
         // Restore the VM from the snapshot (must happen before any error return to clean up properly)
-        let mut vm = VM::restore(
-            vm_state,
-            &executor.module_code,
-            &mut heap,
-            &mut namespaces,
-            &executor.interns,
-            print,
-        );
+        let context = VMContext::new(&mut heap, &mut namespaces, &executor.interns, print);
+        let mut vm = VM::restore_with_observer(vm_state, &executor.module_code, context, observer.clone());
 
         // Now check for invalid call_ids after VM is restored
         if let Some(call_id) = invalid_call_id {
@@ -699,13 +755,26 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
         for (call_id, ext_result) in results {
             match ext_result {
                 // Resolve successful futures in the scheduler
-                ExternalResult::Return(obj) => vm.resolve_future(call_id, obj).map_err(|e| {
-                    MontyException::runtime_error(format!("Invalid return type for call {call_id}: {e}"))
-                })?,
+                ExternalResult::Return(obj) => {
+                    emit_external_call_returned(&observer, call_id, ExternalCallReturnKind::Return);
+                    if let Err(e) = vm.resolve_future(call_id, obj) {
+                        vm.cleanup();
+                        #[cfg(feature = "ref-count-panic")]
+                        namespaces.drop_global_with_heap(&mut heap);
+                        return Err(MontyException::runtime_error(format!(
+                            "Invalid return type for call {call_id}: {e}"
+                        )));
+                    }
+                }
                 // Fail futures that returned errors
-                ExternalResult::Error(exc) => vm.fail_future(call_id, RunError::from(exc)),
+                ExternalResult::Error(exc) => {
+                    emit_external_call_returned(&observer, call_id, ExternalCallReturnKind::Error);
+                    vm.fail_future(call_id, RunError::from(exc));
+                }
                 // do nothing, same as not returning this id
-                ExternalResult::Future => {}
+                ExternalResult::Future => {
+                    emit_external_call_returned(&observer, call_id, ExternalCallReturnKind::Future);
+                }
             }
         }
 
@@ -749,6 +818,7 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
                     heap,
                     namespaces,
                     pending_call_ids,
+                    observer,
                 }));
             }
         }
@@ -759,10 +829,14 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
         let vm_state = vm.check_snapshot(&result);
 
         // Handle the result using the destructured parts
-        handle_vm_result(result, vm_state, executor, heap, namespaces)
+        handle_vm_result(result, vm_state, executor, heap, namespaces, observer)
     }
 }
 
+/// Groups state required to translate a suspended function/method call into `RunProgress`.
+///
+/// This keeps snapshot construction and observer emission wiring consistent
+/// across external-function and method-call branches.
 struct FunctionCallProgressInput<T: ResourceTracker> {
     function_name: String,
     args: crate::args::ArgValues,
@@ -772,10 +846,57 @@ struct FunctionCallProgressInput<T: ResourceTracker> {
     vm_state: Option<VMSnapshot>,
     heap: Heap<T>,
     namespaces: Namespaces,
+    observer: RuntimeObserverHandle,
 }
 
+/// Builds a runtime error describing a missing VM snapshot for a progress path.
+///
+/// This centralises snapshot-missing messaging so all builders report the same
+/// failure when `vm_state` is unexpectedly `None`.
 fn missing_snapshot_error(context: &str) -> MontyException {
     MontyException::runtime_error(format!("internal error: missing VM snapshot for {context}"))
+}
+
+/// Emits `ExternalCallReturned` when observer hooks are enabled.
+///
+/// Disabled observers are a deliberate no-op so resume paths can invoke this
+/// helper unconditionally without branching on observer state.
+pub(crate) fn emit_external_call_returned(
+    observer: &RuntimeObserverHandle,
+    call_id: u32,
+    kind: ExternalCallReturnKind,
+) {
+    if !observer.is_enabled() {
+        return;
+    }
+    observer.emit(RuntimeObserverEvent::ExternalCallReturned(ExternalCallReturnedEvent {
+        call_id,
+        kind,
+    }));
+}
+
+/// Emits `ExternalCallRequested` when observer hooks are enabled.
+///
+/// Disabled observers are a deliberate no-op so callers can report request
+/// metadata without duplicating enablement checks.
+pub(crate) fn emit_external_call_requested(
+    observer: &RuntimeObserverHandle,
+    call_id: u32,
+    kind: ExternalCallKind,
+    arg_runtime_ids: &[RuntimeValueId],
+    kwarg_runtime_ids: &[(RuntimeValueId, RuntimeValueId)],
+) {
+    if !observer.is_enabled() {
+        return;
+    }
+    observer.emit(RuntimeObserverEvent::ExternalCallRequested(
+        ExternalCallRequestedEvent {
+            call_id,
+            kind,
+            arg_runtime_ids,
+            kwarg_runtime_ids,
+        },
+    ));
 }
 
 /// Handles a FrameExit result and converts it to RunProgress for FutureSnapshot.
@@ -793,17 +914,31 @@ fn build_function_call_progress<T: ResourceTracker>(
         vm_state,
         mut heap,
         namespaces,
+        observer,
     } = input;
 
     let host_args = args.into_py_objects_with_runtime_ids(&mut heap, &executor.interns);
     let pending_call_id = call_id.raw();
+    let kind = if method_call {
+        ExternalCallKind::Method
+    } else {
+        ExternalCallKind::Function
+    };
     let vm_state = vm_state.ok_or_else(|| missing_snapshot_error("function call"))?;
+    emit_external_call_requested(
+        &observer,
+        pending_call_id,
+        kind,
+        host_args.arg_runtime_ids.as_slice(),
+        host_args.kwarg_runtime_ids.as_slice(),
+    );
     let state = Snapshot {
         executor,
         vm_state,
         heap,
         namespaces,
         pending_call_id,
+        observer,
     };
 
     Ok(RunProgress::FunctionCall {
@@ -818,24 +953,104 @@ fn build_function_call_progress<T: ResourceTracker>(
     })
 }
 
+/// Shared state threaded through `build_*` progress constructors.
+///
+/// The context owns VM snapshot data plus execution resources (`executor`,
+/// `heap`, and `namespaces`) and carries the observer used for emitted runtime
+/// notifications.
+struct RunProgressContext<T: ResourceTracker> {
+    vm_state: Option<VMSnapshot>,
+    executor: Executor,
+    heap: Heap<T>,
+    namespaces: Namespaces,
+    observer: RuntimeObserverHandle,
+}
+
+/// Builds a completion progress value from a returned VM value.
+///
+/// This converts the VM `Value` into a host-visible `MontyObject` and applies
+/// ref-count cleanup side effects when that feature is enabled.
+fn build_complete_progress<T: ResourceTracker>(value: Value, context: RunProgressContext<T>) -> RunProgress<T> {
+    #[cfg(feature = "ref-count-panic")]
+    {
+        let mut context = context;
+        context.namespaces.drop_global_with_heap(&mut context.heap);
+        let obj = MontyObject::new(value, &mut context.heap, &context.executor.interns);
+        RunProgress::Complete(obj)
+    }
+    #[cfg(not(feature = "ref-count-panic"))]
+    {
+        let RunProgressContext { executor, mut heap, .. } = context;
+        let obj = MontyObject::new(value, &mut heap, &executor.interns);
+        RunProgress::Complete(obj)
+    }
+}
+
+/// Builds an external-function call progress payload from a frame-exit record.
+///
+/// This resolves the external function name and forwards all conversion and
+/// snapshot construction to the shared function-call builder.
+fn build_external_call_progress<T: ResourceTracker>(
+    ext_function_id: ExtFunctionId,
+    args: crate::args::ArgValues,
+    call_id: CallId,
+    context: RunProgressContext<T>,
+) -> Result<RunProgress<T>, MontyException> {
+    let function_name = context.executor.interns.get_external_function_name(ext_function_id);
+    let RunProgressContext {
+        vm_state,
+        executor,
+        heap,
+        namespaces,
+        observer,
+    } = context;
+    build_function_call_progress(FunctionCallProgressInput {
+        function_name,
+        args,
+        call_id,
+        method_call: false,
+        executor,
+        vm_state,
+        heap,
+        namespaces,
+        observer,
+    })
+}
+
+/// Builds an OS-call progress payload from a frame-exit record.
+///
+/// This converts VM arguments, emits the observer request event, and returns a
+/// suspendable snapshot that can resume once the host responds.
 fn build_os_call_progress<T: ResourceTracker>(
     function: OsFunction,
     args: crate::args::ArgValues,
     call_id: CallId,
-    executor: Executor,
-    vm_state: Option<VMSnapshot>,
-    mut heap: Heap<T>,
-    namespaces: Namespaces,
+    context: RunProgressContext<T>,
 ) -> Result<RunProgress<T>, MontyException> {
+    let RunProgressContext {
+        vm_state,
+        executor,
+        mut heap,
+        namespaces,
+        observer,
+    } = context;
     let host_args = args.into_py_objects_with_runtime_ids(&mut heap, &executor.interns);
     let pending_call_id = call_id.raw();
     let vm_state = vm_state.ok_or_else(|| missing_snapshot_error("OS call"))?;
+    emit_external_call_requested(
+        &observer,
+        pending_call_id,
+        ExternalCallKind::Os,
+        host_args.arg_runtime_ids.as_slice(),
+        host_args.kwarg_runtime_ids.as_slice(),
+    );
     let state = Snapshot {
         executor,
         vm_state,
         heap,
         namespaces,
         pending_call_id,
+        observer,
     };
 
     Ok(RunProgress::OsCall {
@@ -849,84 +1064,137 @@ fn build_os_call_progress<T: ResourceTracker>(
     })
 }
 
-#[cfg_attr(
-    not(feature = "ref-count-panic"),
-    expect(
-        unused_mut,
-        reason = "mut bindings are required when the ref-count-panic feature is enabled"
-    )
-)]
+/// Builds a method-call progress payload from a frame-exit record.
+///
+/// This resolves the interned method name and reuses the shared function-call
+/// builder to keep method and function suspension handling aligned.
+fn build_method_call_progress<T: ResourceTracker>(
+    method_name: crate::value::EitherStr,
+    args: crate::args::ArgValues,
+    call_id: CallId,
+    context: RunProgressContext<T>,
+) -> Result<RunProgress<T>, MontyException> {
+    let function_name = method_name.into_string(&context.executor.interns);
+    let RunProgressContext {
+        vm_state,
+        executor,
+        heap,
+        namespaces,
+        observer,
+    } = context;
+    build_function_call_progress(FunctionCallProgressInput {
+        function_name,
+        args,
+        call_id,
+        method_call: true,
+        executor,
+        vm_state,
+        heap,
+        namespaces,
+        observer,
+    })
+}
+
+/// Builds a resolve-futures progress payload for async suspension.
+///
+/// This converts pending scheduler call identifiers into raw IDs and returns a
+/// `FutureSnapshot` that the host can resume with completed results.
+fn build_resolve_futures_progress<T: ResourceTracker>(
+    pending_call_ids: Vec<CallId>,
+    context: RunProgressContext<T>,
+) -> Result<RunProgress<T>, MontyException> {
+    let RunProgressContext {
+        vm_state,
+        executor,
+        heap,
+        namespaces,
+        observer,
+    } = context;
+    let pending_call_ids = pending_call_ids.into_iter().map(CallId::raw).collect();
+    let vm_state = vm_state.ok_or_else(|| missing_snapshot_error("ResolveFutures"))?;
+    Ok(RunProgress::ResolveFutures(FutureSnapshot {
+        executor,
+        vm_state,
+        heap,
+        namespaces,
+        pending_call_ids,
+        observer,
+    }))
+}
+
+/// Builds the error result path for a VM run cycle.
+///
+/// This maps internal `RunError` values into `MontyException` while performing
+/// ref-count cleanup side effects under the corresponding feature flag.
+fn build_run_error_progress<T: ResourceTracker>(
+    err: RunError,
+    context: RunProgressContext<T>,
+) -> Result<RunProgress<T>, MontyException> {
+    #[cfg(feature = "ref-count-panic")]
+    {
+        let mut context = context;
+        context.namespaces.drop_global_with_heap(&mut context.heap);
+        Err(err.into_python_exception(&context.executor.interns, &context.executor.code))
+    }
+    #[cfg(not(feature = "ref-count-panic"))]
+    {
+        let RunProgressContext { executor, .. } = context;
+        Err(err.into_python_exception(&executor.interns, &executor.code))
+    }
+}
+
+/// Dispatches a `FrameExit` into the corresponding `RunProgress` builder.
+///
+/// This keeps branch-specific conversion logic out of the caller; it assumes
+/// `context` owns all resources and may move those resources into the returned
+/// progress value.
+fn dispatch_frame_exit<T: ResourceTracker>(
+    frame_exit: FrameExit,
+    context: RunProgressContext<T>,
+) -> Result<RunProgress<T>, MontyException> {
+    match frame_exit {
+        FrameExit::Return(value) => Ok(build_complete_progress(value, context)),
+        FrameExit::ExternalCall {
+            ext_function_id,
+            args,
+            call_id,
+        } => build_external_call_progress(ext_function_id, args, call_id, context),
+        FrameExit::OsCall {
+            function,
+            args,
+            call_id,
+        } => build_os_call_progress(function, args, call_id, context),
+        FrameExit::MethodCall {
+            method_name,
+            args,
+            call_id,
+        } => build_method_call_progress(method_name, args, call_id, context),
+        FrameExit::ResolveFutures(pending_call_ids) => build_resolve_futures_progress(pending_call_ids, context),
+    }
+}
+
+/// Converts a VM run result into `RunProgress` using shared builder context.
+///
+/// This centralises success/error mapping and consumes `executor`, `heap`, and
+/// `namespaces`, moving them into the produced progress value or error path.
 fn handle_vm_result<T: ResourceTracker>(
     result: RunResult<FrameExit>,
     vm_state: Option<VMSnapshot>,
     executor: Executor,
-    mut heap: Heap<T>,
-    mut namespaces: Namespaces,
+    heap: Heap<T>,
+    namespaces: Namespaces,
+    observer: RuntimeObserverHandle,
 ) -> Result<RunProgress<T>, MontyException> {
+    let context = RunProgressContext {
+        vm_state,
+        executor,
+        heap,
+        namespaces,
+        observer,
+    };
     match result {
-        Ok(FrameExit::Return(value)) => {
-            #[cfg(feature = "ref-count-panic")]
-            namespaces.drop_global_with_heap(&mut heap);
-
-            let obj = MontyObject::new(value, &mut heap, &executor.interns);
-            Ok(RunProgress::Complete(obj))
-        }
-        Ok(FrameExit::ExternalCall {
-            ext_function_id,
-            args,
-            call_id,
-        }) => {
-            let function_name = executor.interns.get_external_function_name(ext_function_id);
-            build_function_call_progress(FunctionCallProgressInput {
-                function_name,
-                args,
-                call_id,
-                method_call: false,
-                executor,
-                vm_state,
-                heap,
-                namespaces,
-            })
-        }
-        Ok(FrameExit::OsCall {
-            function,
-            args,
-            call_id,
-        }) => build_os_call_progress(function, args, call_id, executor, vm_state, heap, namespaces),
-        Ok(FrameExit::MethodCall {
-            method_name,
-            args,
-            call_id,
-        }) => {
-            let function_name = method_name.into_string(&executor.interns);
-            build_function_call_progress(FunctionCallProgressInput {
-                function_name,
-                args,
-                call_id,
-                method_call: true,
-                executor,
-                vm_state,
-                heap,
-                namespaces,
-            })
-        }
-        Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
-            let pending_call_ids: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
-            let vm_state = vm_state.ok_or_else(|| missing_snapshot_error("ResolveFutures"))?;
-            Ok(RunProgress::ResolveFutures(FutureSnapshot {
-                executor,
-                vm_state,
-                heap,
-                namespaces,
-                pending_call_ids,
-            }))
-        }
-        Err(err) => {
-            #[cfg(feature = "ref-count-panic")]
-            namespaces.drop_global_with_heap(&mut heap);
-
-            Err(err.into_python_exception(&executor.interns, &executor.code))
-        }
+        Ok(frame_exit) => dispatch_frame_exit(frame_exit, context),
+        Err(err) => build_run_error_progress(err, context),
     }
 }
 
@@ -1028,7 +1296,7 @@ impl Executor {
         let mut namespaces = self.prepare_namespaces(inputs, &mut heap)?;
 
         // Create and run VM
-        let mut vm = VM::new(&mut heap, &mut namespaces, &self.interns, print);
+        let mut vm = VM::new(VMContext::new(&mut heap, &mut namespaces, &self.interns, print));
         let frame_exit_result = vm.run_module(&self.module_code);
 
         // Clean up VM state before it goes out of scope
@@ -1068,7 +1336,7 @@ impl Executor {
 
         // Create and run VM with Stdout for output
         let mut print = PrintWriter::Stdout;
-        let mut vm = VM::new(&mut heap, &mut namespaces, &self.interns, &mut print);
+        let mut vm = VM::new(VMContext::new(&mut heap, &mut namespaces, &self.interns, &mut print));
         let frame_exit_result = vm.run_module(&self.module_code);
 
         // Compute ref counts before consuming the heap - return value is still alive

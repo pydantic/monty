@@ -11,6 +11,7 @@ mod collections;
 mod compare;
 mod exceptions;
 mod format;
+mod observer_hooks;
 mod scheduler;
 
 use std::cmp::Ordering;
@@ -29,9 +30,11 @@ use crate::{
     io::PrintWriter,
     modules::BuiltinModule,
     namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
+    observer::{OpInputIds, RuntimeObserverHandle},
     os::OsFunction,
     parse::CodeRange,
     resource::ResourceTracker,
+    runtime_id::RuntimeValueId,
     types::{LongInt, MontyIter, PyTrait, iter::advance_on_heap},
     value::{BitwiseOp, EitherStr, Value},
 };
@@ -519,88 +522,36 @@ pub struct VM<'a, 'p, T: ResourceTracker> {
     /// Stored here because the main task's frames have `function_id: None` and
     /// need a reference to the module code when being restored after task switching.
     module_code: Option<&'a Code>,
+    /// Optional runtime observer for generic host instrumentation.
+    observer: RuntimeObserverHandle,
 }
 
-impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
-    /// Creates a new VM with the given runtime context.
-    pub fn new(
+/// Borrowed runtime context required to construct or restore a VM.
+pub struct VMContext<'a, 'p, T: ResourceTracker> {
+    pub(crate) heap: &'a mut Heap<T>,
+    pub(crate) namespaces: &'a mut Namespaces,
+    pub(crate) interns: &'a Interns,
+    pub(crate) print_writer: &'a mut PrintWriter<'p>,
+}
+
+impl<'a, 'p, T: ResourceTracker> VMContext<'a, 'p, T> {
+    /// Creates a new VM runtime context bundle.
+    pub(crate) fn new(
         heap: &'a mut Heap<T>,
         namespaces: &'a mut Namespaces,
         interns: &'a Interns,
         print_writer: &'a mut PrintWriter<'p>,
     ) -> Self {
         Self {
-            stack: Vec::with_capacity(64),
-            frames: Vec::with_capacity(16),
             heap,
             namespaces,
             interns,
             print_writer,
-            exception_stack: Vec::new(),
-            instruction_ip: 0,
-            next_call_id: 0,
-            scheduler: None, // Lazy - no allocation for sync code
-            module_code: None,
         }
     }
+}
 
-    /// Reconstructs a VM from a snapshot.
-    ///
-    /// The heap and namespaces must already be deserialized. `FunctionId` values
-    /// in frames are used to look up pre-compiled `Code` objects from the `Interns`.
-    /// The `module_code` is used for frames with `function_id = None`.
-    ///
-    /// # Arguments
-    /// * `snapshot` - The VM snapshot to restore
-    /// * `module_code` - Compiled module code (for frames with function_id = None)
-    /// * `heap` - The deserialized heap
-    /// * `namespaces` - The deserialized namespaces
-    /// * `interns` - Interns for looking up function code
-    /// * `print_writer` - Writer for print output
-    pub fn restore(
-        snapshot: VMSnapshot,
-        module_code: &'a Code,
-        heap: &'a mut Heap<T>,
-        namespaces: &'a mut Namespaces,
-        interns: &'a Interns,
-        print_writer: &'a mut PrintWriter<'p>,
-    ) -> Self {
-        // Reconstruct call frames from serialized form
-        let frames = snapshot
-            .frames
-            .into_iter()
-            .map(|sf| {
-                let code = match sf.function_id {
-                    Some(func_id) => &interns.get_function(func_id).code,
-                    None => module_code,
-                };
-                CallFrame {
-                    code,
-                    ip: sf.ip,
-                    stack_base: sf.stack_base,
-                    namespace_idx: sf.namespace_idx,
-                    function_id: sf.function_id,
-                    cells: sf.cells,
-                    call_position: sf.call_position,
-                    should_return: false,
-                }
-            })
-            .collect();
-
-        Self {
-            stack: snapshot.stack,
-            frames,
-            heap,
-            namespaces,
-            interns,
-            print_writer,
-            exception_stack: snapshot.exception_stack,
-            instruction_ip: snapshot.instruction_ip,
-            next_call_id: snapshot.next_call_id,
-            scheduler: snapshot.scheduler,
-            module_code: Some(module_code),
-        }
-    }
+impl<'a, T: ResourceTracker> VM<'a, '_, T> {
     /// Consumes the VM and creates a snapshot for pause/resume if needed.
     pub fn check_snapshot(mut self, result: &RunResult<FrameExit>) -> Option<VMSnapshot> {
         if matches!(
@@ -789,19 +740,19 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                     if let Value::InternLongInt(long_int_id) = value {
                         let bi = self.interns.get_long_int(*long_int_id).clone();
                         match LongInt::new(bi).into_value(self.heap) {
-                            Ok(v) => self.push(v),
+                            Ok(v) => self.push_created(v),
                             Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                         }
                     } else {
                         self.push(value.clone_with_heap(self.heap));
                     }
                 }
-                Opcode::LoadNone => self.push(Value::None),
-                Opcode::LoadTrue => self.push(Value::Bool(true)),
-                Opcode::LoadFalse => self.push(Value::Bool(false)),
+                Opcode::LoadNone => self.push_created(Value::None),
+                Opcode::LoadTrue => self.push_created(Value::Bool(true)),
+                Opcode::LoadFalse => self.push_created(Value::Bool(false)),
                 Opcode::LoadSmallInt => {
                     let n = fetch_i8!(cached_frame);
-                    self.push(Value::Int(i64::from(n)));
+                    self.push_created(Value::Int(i64::from(n)));
                 }
                 // Variables - Specialized Local Loads (no operand)
                 Opcode::LoadLocal0 => try_catch_sync!(self, cached_frame, self.load_local(&cached_frame, 0)),
@@ -885,101 +836,16 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 // Unary Operations
                 Opcode::UnaryNot => {
                     let value = self.pop();
+                    let input_id = self.observer.is_enabled().then(|| RuntimeValueId::new(value.id()));
                     let result = !value.py_bool(self.heap, self.interns);
+                    let output = Value::Bool(result);
+                    self.emit_unary_op_result(input_id, &output);
                     value.drop_with_heap(self.heap);
-                    self.push(Value::Bool(result));
+                    self.push_created(output);
                 }
-                Opcode::UnaryNeg => {
-                    // Unary minus - negate numeric value
-                    let value = self.pop();
-                    match value {
-                        Value::Int(n) => {
-                            // Use checked_neg to handle i64::MIN overflow
-                            if let Some(negated) = n.checked_neg() {
-                                self.push(Value::Int(negated));
-                            } else {
-                                // i64::MIN negated overflows to LongInt
-                                let li = -LongInt::from(n);
-                                match li.into_value(self.heap) {
-                                    Ok(v) => self.push(v),
-                                    Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
-                                }
-                            }
-                        }
-                        Value::Float(f) => self.push(Value::Float(-f)),
-                        Value::Bool(b) => self.push(Value::Int(if b { -1 } else { 0 })),
-                        Value::Ref(id) => {
-                            if let HeapData::LongInt(li) = self.heap.get(id) {
-                                let negated = -LongInt::new(li.inner().clone());
-                                value.drop_with_heap(self.heap);
-                                match negated.into_value(self.heap) {
-                                    Ok(v) => self.push(v),
-                                    Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
-                                }
-                            } else {
-                                let value_type = value.py_type(self.heap);
-                                value.drop_with_heap(self.heap);
-                                catch_sync!(self, cached_frame, ExcType::unary_type_error("-", value_type));
-                            }
-                        }
-                        _ => {
-                            let value_type = value.py_type(self.heap);
-                            value.drop_with_heap(self.heap);
-                            catch_sync!(self, cached_frame, ExcType::unary_type_error("-", value_type));
-                        }
-                    }
-                }
-                Opcode::UnaryPos => {
-                    // Unary plus - converts bools to int, no-op for other numbers
-                    let value = self.pop();
-                    match value {
-                        Value::Int(_) | Value::Float(_) => self.push(value),
-                        Value::Bool(b) => self.push(Value::Int(i64::from(b))),
-                        Value::Ref(id) => {
-                            if matches!(self.heap.get(id), HeapData::LongInt(_)) {
-                                // LongInt - return as-is (value already has correct refcount)
-                                self.push(value);
-                            } else {
-                                let value_type = value.py_type(self.heap);
-                                value.drop_with_heap(self.heap);
-                                catch_sync!(self, cached_frame, ExcType::unary_type_error("+", value_type));
-                            }
-                        }
-                        _ => {
-                            let value_type = value.py_type(self.heap);
-                            value.drop_with_heap(self.heap);
-                            catch_sync!(self, cached_frame, ExcType::unary_type_error("+", value_type));
-                        }
-                    }
-                }
-                Opcode::UnaryInvert => {
-                    // Bitwise NOT
-                    let value = self.pop();
-                    match value {
-                        Value::Int(n) => self.push(Value::Int(!n)),
-                        Value::Bool(b) => self.push(Value::Int(!i64::from(b))),
-                        Value::Ref(id) => {
-                            if let HeapData::LongInt(li) = self.heap.get(id) {
-                                // LongInt bitwise NOT: ~x = -(x + 1)
-                                let inverted = -(li.inner() + 1i32);
-                                value.drop_with_heap(self.heap);
-                                match LongInt::new(inverted).into_value(self.heap) {
-                                    Ok(v) => self.push(v),
-                                    Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
-                                }
-                            } else {
-                                let value_type = value.py_type(self.heap);
-                                value.drop_with_heap(self.heap);
-                                catch_sync!(self, cached_frame, ExcType::unary_type_error("~", value_type));
-                            }
-                        }
-                        _ => {
-                            let value_type = value.py_type(self.heap);
-                            value.drop_with_heap(self.heap);
-                            catch_sync!(self, cached_frame, ExcType::unary_type_error("~", value_type));
-                        }
-                    }
-                }
+                Opcode::UnaryNeg => try_catch_sync!(self, cached_frame, self.unary_neg()),
+                Opcode::UnaryPos => try_catch_sync!(self, cached_frame, self.unary_pos()),
+                Opcode::UnaryInvert => try_catch_sync!(self, cached_frame, self.unary_invert()),
                 // In-place Operations - route through exception handling
                 Opcode::InplaceAdd => try_catch_sync!(self, cached_frame, self.inplace_add()),
                 // Other in-place ops use the same logic as binary ops for now
@@ -1099,7 +965,9 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 Opcode::JumpIfTrue => {
                     let offset = fetch_i16!(cached_frame);
                     let cond = self.pop();
-                    if cond.py_bool(self.heap, self.interns) {
+                    let branch_taken = cond.py_bool(self.heap, self.interns);
+                    self.emit_control_condition(&cond, branch_taken);
+                    if branch_taken {
                         jump_relative!(cached_frame.ip, offset);
                     }
                     cond.drop_with_heap(self.heap);
@@ -1107,14 +975,18 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 Opcode::JumpIfFalse => {
                     let offset = fetch_i16!(cached_frame);
                     let cond = self.pop();
-                    if !cond.py_bool(self.heap, self.interns) {
+                    let branch_taken = !cond.py_bool(self.heap, self.interns);
+                    self.emit_control_condition(&cond, branch_taken);
+                    if branch_taken {
                         jump_relative!(cached_frame.ip, offset);
                     }
                     cond.drop_with_heap(self.heap);
                 }
                 Opcode::JumpIfTrueOrPop => {
                     let offset = fetch_i16!(cached_frame);
-                    if self.peek().py_bool(self.heap, self.interns) {
+                    let branch_taken = self.peek().py_bool(self.heap, self.interns);
+                    self.emit_control_condition(self.peek(), branch_taken);
+                    if branch_taken {
                         jump_relative!(cached_frame.ip, offset);
                     } else {
                         let value = self.pop();
@@ -1123,11 +995,13 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 }
                 Opcode::JumpIfFalseOrPop => {
                     let offset = fetch_i16!(cached_frame);
-                    if self.peek().py_bool(self.heap, self.interns) {
+                    let branch_taken = !self.peek().py_bool(self.heap, self.interns);
+                    self.emit_control_condition(self.peek(), branch_taken);
+                    if branch_taken {
+                        jump_relative!(cached_frame.ip, offset);
+                    } else {
                         let value = self.pop();
                         value.drop_with_heap(self.heap);
-                    } else {
-                        jump_relative!(cached_frame.ip, offset);
                     }
                 }
                 // Iteration - route through exception handling
@@ -1136,7 +1010,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                     // Create a MontyIter from the value and store on heap
                     match MontyIter::new(value, self.heap, self.interns) {
                         Ok(iter) => match self.heap.allocate(HeapData::Iter(iter)) {
-                            Ok(heap_id) => self.push(Value::Ref(heap_id)),
+                            Ok(heap_id) => self.push_created(Value::Ref(heap_id)),
                             Err(e) => catch_sync!(self, cached_frame, e.into()),
                         },
                         Err(e) => catch_sync!(self, cached_frame, e),
@@ -1280,7 +1154,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
 
                     if defaults_count == 0 {
                         // No defaults - use inline Value::Function (no heap allocation)
-                        self.push(Value::DefFunction(func_id));
+                        self.push_created(Value::DefFunction(func_id));
                     } else {
                         // Pop default values from stack (drain maintains order: first pushed = first in vec)
                         let defaults = self.pop_n(defaults_count);
@@ -1289,7 +1163,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                         let heap_id = self
                             .heap
                             .allocate(HeapData::FunctionDefaults(FunctionDefaults { func_id, defaults }))?;
-                        self.push(Value::Ref(heap_id));
+                        self.push_created(Value::Ref(heap_id));
                     }
                 }
                 Opcode::MakeClosure => {
@@ -1333,7 +1207,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                         cells,
                         defaults,
                     }))?;
-                    self.push(Value::Ref(heap_id));
+                    self.push_created(Value::Ref(heap_id));
                 }
                 // Exception Handling
                 Opcode::Raise => {
@@ -1366,7 +1240,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                     let result = self.check_exc_match(exception, &exc_type);
                     exc_type.drop_with_heap(self.heap);
                     let result = result?;
-                    self.push(Value::Bool(result));
+                    self.push_created(Value::Bool(result));
                 }
                 // Return - reload cache after popping frame
                 Opcode::ReturnValue => {
@@ -1473,7 +1347,134 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
 
         // Create the module on the heap using pre-interned strings
         let heap_id = module.create(self.heap, self.interns)?;
-        self.push(Value::Ref(heap_id));
+        self.push_created(Value::Ref(heap_id));
+        Ok(())
+    }
+
+    /// Executes unary minus on the top stack value.
+    fn unary_neg(&mut self) -> Result<(), RunError> {
+        let value = self.pop();
+        let input_id = self.observer.is_enabled().then(|| RuntimeValueId::new(value.id()));
+        match value {
+            Value::Int(n) => {
+                let output = n
+                    .checked_neg()
+                    .map(Value::Int)
+                    .map_or_else(|| (-LongInt::from(n)).into_value(self.heap).map_err(RunError::from), Ok)?;
+                self.emit_unary_op_result(input_id, &output);
+                self.push_created(output);
+            }
+            Value::Float(f) => {
+                let output = Value::Float(-f);
+                self.emit_unary_op_result(input_id, &output);
+                self.push_created(output);
+            }
+            Value::Bool(b) => {
+                let output = Value::Int(if b { -1 } else { 0 });
+                self.emit_unary_op_result(input_id, &output);
+                self.push_created(output);
+            }
+            Value::Ref(id) => {
+                let HeapData::LongInt(li) = self.heap.get(id) else {
+                    let value_type = value.py_type(self.heap);
+                    value.drop_with_heap(self.heap);
+                    return Err(ExcType::unary_type_error("-", value_type));
+                };
+                let negated = -LongInt::new(li.inner().clone());
+                let v = match negated.into_value(self.heap).map_err(RunError::from) {
+                    Ok(v) => v,
+                    Err(error) => {
+                        value.drop_with_heap(self.heap);
+                        return Err(error);
+                    }
+                };
+                self.emit_unary_op_result(input_id, &v);
+                value.drop_with_heap(self.heap);
+                self.push_created(v);
+            }
+            _ => {
+                let value_type = value.py_type(self.heap);
+                value.drop_with_heap(self.heap);
+                return Err(ExcType::unary_type_error("-", value_type));
+            }
+        }
+        Ok(())
+    }
+
+    /// Executes unary plus on the top stack value.
+    fn unary_pos(&mut self) -> Result<(), RunError> {
+        let value = self.pop();
+        let input_id = self.observer.is_enabled().then(|| RuntimeValueId::new(value.id()));
+        match value {
+            Value::Int(_) | Value::Float(_) => {
+                self.emit_unary_op_result(input_id, &value);
+                self.push(value);
+            }
+            Value::Bool(b) => {
+                let output = Value::Int(i64::from(b));
+                self.emit_unary_op_result(input_id, &output);
+                self.push_created(output);
+            }
+            Value::Ref(id) => {
+                if matches!(self.heap.get(id), HeapData::LongInt(_)) {
+                    self.emit_unary_op_result(input_id, &value);
+                    self.push(value);
+                } else {
+                    let value_type = value.py_type(self.heap);
+                    value.drop_with_heap(self.heap);
+                    return Err(ExcType::unary_type_error("+", value_type));
+                }
+            }
+            _ => {
+                let value_type = value.py_type(self.heap);
+                value.drop_with_heap(self.heap);
+                return Err(ExcType::unary_type_error("+", value_type));
+            }
+        }
+        Ok(())
+    }
+
+    /// Executes unary bitwise invert on the top stack value.
+    fn unary_invert(&mut self) -> Result<(), RunError> {
+        let value = self.pop();
+        let input_id = self.observer.is_enabled().then(|| RuntimeValueId::new(value.id()));
+        match value {
+            Value::Int(n) => {
+                let output = Value::Int(!n);
+                self.emit_unary_op_result(input_id, &output);
+                self.push_created(output);
+            }
+            Value::Bool(b) => {
+                let output = Value::Int(!i64::from(b));
+                self.emit_unary_op_result(input_id, &output);
+                self.push_created(output);
+            }
+            Value::Ref(id) => {
+                if let HeapData::LongInt(li) = self.heap.get(id) {
+                    let inverted = -(li.inner() + 1i32);
+                    match LongInt::new(inverted).into_value(self.heap) {
+                        Ok(v) => {
+                            self.emit_unary_op_result(input_id, &v);
+                            value.drop_with_heap(self.heap);
+                            self.push_created(v);
+                        }
+                        Err(e) => {
+                            value.drop_with_heap(self.heap);
+                            return Err(RunError::from(e));
+                        }
+                    }
+                } else {
+                    let value_type = value.py_type(self.heap);
+                    value.drop_with_heap(self.heap);
+                    return Err(ExcType::unary_type_error("~", value_type));
+                }
+            }
+            _ => {
+                let value_type = value.py_type(self.heap);
+                value.drop_with_heap(self.heap);
+                return Err(ExcType::unary_type_error("~", value_type));
+            }
+        }
         Ok(())
     }
 
@@ -1484,7 +1485,8 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
         let value = obj
             .to_value(self.heap, self.interns)
             .map_err(|e| SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {e}"))))?;
-        self.push(value);
+        self.emit_op_result(&value, OpInputIds::none());
+        self.push_created(value);
         self.run()
     }
 
@@ -1509,6 +1511,13 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// Pushes a value onto the operand stack.
     #[inline]
     pub(crate) fn push(&mut self, value: Value) {
+        self.stack.push(value);
+    }
+
+    /// Pushes a newly created value onto the operand stack and emits creation.
+    #[inline]
+    pub(crate) fn push_created(&mut self, value: Value) {
+        self.emit_value_created(&value);
         self.stack.push(value);
     }
 
