@@ -14,6 +14,7 @@
 /// - `count(value)` - Count occurrences
 ///
 /// All tuple methods from Python's builtins are implemented.
+use std::cmp::Ordering;
 use std::fmt::Write;
 
 use ahash::AHashSet;
@@ -218,6 +219,43 @@ impl PyTrait for Tuple {
             }
         }
         Ok(true)
+    }
+
+    /// Lexicographic comparison for tuples.
+    ///
+    /// Compares element-by-element left-to-right. The first non-equal pair
+    /// determines the result. If all compared elements are equal, the shorter
+    /// tuple is considered less than the longer one — matching Python semantics:
+    /// `(1, 2) < (1, 2, 3)` is `True`.
+    ///
+    /// Returns `None` if any element pair is incomparable (e.g. `int` vs `str`).
+    fn py_cmp(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> Result<Option<Ordering>, ResourceError> {
+        let token = heap.incr_recursion_depth()?;
+        defer_drop!(token, heap);
+
+        for (a, b) in self.items.iter().zip(&other.items) {
+            heap.check_time()?;
+            match a.py_cmp(b, heap, interns)? {
+                Some(Ordering::Equal) => {}
+                Some(ord) => return Ok(Some(ord)),
+                None => {
+                    // py_cmp returned None — the elements don't support ordering.
+                    // CPython checks __eq__ first and only calls __lt__ for non-equal
+                    // pairs, so equal-but-unorderable elements (e.g. None == None)
+                    // should be treated as equal and not block comparison.
+                    if !a.py_eq(b, heap, interns)? {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+        // All compared elements equal — shorter tuple is less
+        Ok(Some(self.items.len().cmp(&other.items.len())))
     }
 
     fn py_add(
