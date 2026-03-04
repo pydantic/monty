@@ -20,7 +20,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
-    types::{PyTrait, Str, Type, allocate_tuple, str::string_repr_fmt},
+    types::{Dict, PyTrait, Str, Type, allocate_tuple, str::string_repr_fmt},
     value::{EitherStr, Value},
 };
 
@@ -42,9 +42,9 @@ use crate::{
 ///
 /// # Group Indexing
 ///
-/// Currently, only non-named groups are supported. Group 0 is the full match,
-/// groups 1..N are capture groups. Named groups are not yet implemented.
-/// Non-integer group indices raise `IndexError`.
+/// Group 0 is the full match, groups 1..N are capture groups.
+/// Both integer and named group access are supported — named groups are looked
+/// up via the `named_groups` mapping.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ReMatch {
     /// The full matched text (equivalent to `group(0)`).
@@ -57,6 +57,8 @@ pub(crate) struct ReMatch {
     groups: Vec<Option<String>>,
     /// Span positions per captured group (index 0 = group 1). `None` for unmatched optional groups.
     group_spans: Vec<Option<(usize, usize)>>,
+    /// Named groups: maps group name → 1-based group index.
+    named_groups: Vec<(String, usize)>,
     /// Owned copy of the input string (returned by `.string` attribute).
     input_string: String,
     /// The original pattern string (used in repr output).
@@ -64,7 +66,7 @@ pub(crate) struct ReMatch {
 }
 
 impl ReMatch {
-    /// Creates a `ReMatch` from a `regex::Captures` result.
+    /// Creates a `ReMatch` from a `fancy_regex::Captures` result.
     ///
     /// Converts byte offsets from the regex crate into character offsets to match
     /// CPython's behavior. The full match (group 0) is always present when captures
@@ -74,7 +76,13 @@ impl ReMatch {
     /// * `caps` - The successful capture result from the regex engine
     /// * `input` - The full input string that was searched
     /// * `pattern` - The original pattern string (for repr)
-    pub fn from_captures(caps: &fancy_regex::Captures<'_>, input: &str, pattern: &str) -> Self {
+    /// * `regex` - The compiled regex, used to extract named group mappings
+    pub fn from_captures(
+        caps: &fancy_regex::Captures<'_>,
+        input: &str,
+        pattern: &str,
+        regex: &fancy_regex::Regex,
+    ) -> Self {
         let full = caps.get(0).expect("group 0 always exists on a successful match");
         let full_match = full.as_str().to_owned();
         let start = byte_to_char_offset(input, full.start());
@@ -97,12 +105,21 @@ impl ReMatch {
             }
         }
 
+        // Extract named group name→index mappings from the regex
+        let mut named_groups = Vec::new();
+        for (idx, name) in regex.capture_names().enumerate() {
+            if let Some(name) = name {
+                named_groups.push((name.to_owned(), idx));
+            }
+        }
+
         Self {
             full_match,
             start,
             end,
             groups,
             group_spans,
+            named_groups,
             input_string: input.to_owned(),
             pattern_string: pattern.to_owned(),
         }
@@ -134,6 +151,80 @@ impl ReMatch {
                 }
             }
         }
+    }
+
+    /// Returns the match for a named group.
+    ///
+    /// Looks up the group name in `named_groups` and delegates to `get_group`.
+    /// Raises `IndexError` if the name is not found.
+    fn get_group_by_name(&self, name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+        for (group_name, idx) in &self.named_groups {
+            if group_name == name {
+                #[expect(clippy::cast_possible_wrap, reason = "group indices are always small")]
+                return self.get_group(*idx as i64, heap);
+            }
+        }
+        Err(ExcType::re_match_group_index_error())
+    }
+
+    /// Implements `m[key]` subscript access on match objects.
+    ///
+    /// Supports integer indexing (like `m[0]`, `m[1]`), bool indexing,
+    /// and string indexing for named groups (like `m['name']`).
+    pub fn py_getitem(
+        &self,
+        key: &Value,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<Value> {
+        match key {
+            Value::Int(n) => self.get_group(*n, heap),
+            Value::Bool(b) => self.get_group(i64::from(*b), heap),
+            Value::InternString(id) => {
+                let name = interns.get_str(*id);
+                self.get_group_by_name(name, heap)
+            }
+            Value::Ref(heap_id) => match heap.get(*heap_id) {
+                HeapData::Str(s) => {
+                    let name = s.as_str().to_owned();
+                    self.get_group_by_name(&name, heap)
+                }
+                _ => Err(ExcType::re_match_group_index_error()),
+            },
+            _ => Err(ExcType::re_match_group_index_error()),
+        }
+    }
+
+    /// Returns a dict mapping named group names to their matched strings.
+    ///
+    /// Groups that didn't participate in the match have the `default` value
+    /// (typically `None`).
+    fn get_groupdict(
+        &self,
+        default: &Value,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<Value> {
+        let mut pairs = Vec::with_capacity(self.named_groups.len());
+        for (name, idx) in &self.named_groups {
+            let key_str = Str::new(name.clone());
+            let key = Value::Ref(heap.allocate(HeapData::Str(key_str))?);
+            // idx is 1-based, groups vec is 0-based (index 0 = group 1)
+            let value = if *idx > 0 && (*idx - 1) < self.groups.len() {
+                match &self.groups[*idx - 1] {
+                    Some(s) => {
+                        let s = Str::new(s.clone());
+                        Value::Ref(heap.allocate(HeapData::Str(s))?)
+                    }
+                    None => default.clone_with_heap(heap),
+                }
+            } else {
+                default.clone_with_heap(heap)
+            };
+            pairs.push((key, value));
+        }
+        let dict = Dict::from_pairs(pairs, heap, interns)?;
+        Ok(Value::Ref(heap.allocate(HeapData::Dict(dict))?))
     }
 
     /// Returns a tuple of all capture group strings.
@@ -271,6 +362,11 @@ impl PyTrait for ReMatch {
                 .iter()
                 .map(|g| g.as_ref().map_or(0, String::len))
                 .sum::<usize>()
+            + self
+                .named_groups
+                .iter()
+                .map(|(name, _)| name.len() + std::mem::size_of::<usize>())
+                .sum::<usize>()
     }
 
     fn py_getattr(
@@ -297,37 +393,113 @@ impl PyTrait for ReMatch {
         args: ArgValues,
     ) -> RunResult<super::AttrCallResult> {
         let result = match attr.static_string() {
-            Some(StaticStrings::Group) => {
-                let n = extract_optional_group_arg(args, "re.Match.group", 0, vm.heap)?;
-                self.get_group(n, vm.heap)
-            }
+            Some(StaticStrings::Group) => call_group(self, args, vm.heap, vm.interns)?,
             Some(StaticStrings::Groups) => {
                 args.check_zero_args("re.Match.groups", vm.heap)?;
-                self.get_groups(vm.heap)
+                self.get_groups(vm.heap)?
+            }
+            Some(StaticStrings::Groupdict) => {
+                let default = args.get_zero_one_arg("re.Match.groupdict", vm.heap)?;
+                let default = default.unwrap_or(Value::None);
+                let result = self.get_groupdict(&default, vm.heap, vm.interns)?;
+                default.drop_with_heap(vm.heap);
+                result
             }
             Some(StaticStrings::Start) => {
                 let n = extract_optional_group_arg(args, "re.Match.start", 0, vm.heap)?;
-                self.get_start(n)
+                self.get_start(n)?
             }
             Some(StaticStrings::End) => {
                 let n = extract_optional_group_arg(args, "re.Match.end", 0, vm.heap)?;
-                self.get_end(n)
+                self.get_end(n)?
             }
             Some(StaticStrings::Span) => {
                 let n = extract_optional_group_arg(args, "re.Match.span", 0, vm.heap)?;
-                self.get_span(n, vm.heap)
+                self.get_span(n, vm.heap)?
             }
             _ => return Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns))),
-        }?;
+        };
         Ok(super::AttrCallResult::Value(result))
+    }
+}
+
+/// Handles `m.group(...)` calls, supporting zero, one, or multiple arguments.
+///
+/// - `m.group()` → equivalent to `m.group(0)`, returns full match string
+/// - `m.group(n)` → returns the nth group (integer or named string)
+/// - `m.group(n1, n2, ...)` → returns a tuple of groups
+fn call_group(
+    m: &ReMatch,
+    args: ArgValues,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    match args {
+        ArgValues::Empty => m.get_group(0, heap),
+        ArgValues::One(v) => {
+            let result = resolve_group_arg(m, &v, heap, interns);
+            v.drop_with_heap(heap);
+            result
+        }
+        other => {
+            let pos = other.into_pos_only("re.Match.group", heap)?;
+            let mut pos_guard = smallvec::SmallVec::<[Value; 4]>::new();
+            for val in pos {
+                pos_guard.push(val);
+            }
+            let mut elements = smallvec::smallvec![];
+            for val in &pos_guard {
+                let result = resolve_group_arg(m, val, heap, interns);
+                if result.is_err() {
+                    // Drop already-allocated elements
+                    for elem in elements {
+                        Value::drop_with_heap(elem, heap);
+                    }
+                    for val in pos_guard {
+                        val.drop_with_heap(heap);
+                    }
+                    return result;
+                }
+                elements.push(result?);
+            }
+            for val in pos_guard {
+                val.drop_with_heap(heap);
+            }
+            Ok(allocate_tuple(elements, heap)?)
+        }
+    }
+}
+
+/// Resolves a single group argument — integer, bool, or string (named group).
+fn resolve_group_arg(
+    m: &ReMatch,
+    val: &Value,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Value> {
+    match val {
+        Value::Int(n) => m.get_group(*n, heap),
+        Value::Bool(b) => m.get_group(i64::from(*b), heap),
+        Value::InternString(id) => {
+            let name = interns.get_str(*id);
+            m.get_group_by_name(name, heap)
+        }
+        Value::Ref(heap_id) => match heap.get(*heap_id) {
+            HeapData::Str(s) => {
+                let name = s.as_str().to_owned();
+                m.get_group_by_name(&name, heap)
+            }
+            _ => Err(ExcType::re_match_group_index_error()),
+        },
+        _ => Err(ExcType::re_match_group_index_error()),
     }
 }
 
 /// Extracts an optional integer argument for group-related methods.
 ///
 /// Many `re.Match` methods accept an optional group number that defaults to 0.
-/// This helper extracts the argument, validates it is an integer, and returns
-/// the group number.
+/// This helper extracts the argument, validates it is an integer (or string for
+/// named groups), and returns the group number.
 fn extract_optional_group_arg(
     args: ArgValues,
     name: &str,
@@ -340,6 +512,7 @@ fn extract_optional_group_arg(
         Some(Value::Int(n)) => Ok(n),
         // CPython treats bool as int subclass: True=1, False=0.
         Some(Value::Bool(b)) => Ok(i64::from(b)),
+        // String group names are not valid for start/end/span — they take integers only
         Some(other) => {
             other.drop_with_heap(heap);
             Err(ExcType::re_match_group_index_error())

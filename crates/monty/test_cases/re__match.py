@@ -125,3 +125,24 @@ assert m.start(True) == 0, 'start(True) is start(1)'
 assert m.end(True) == 5, 'end(True) is end(1)'
 assert m.span(True) == (0, 5), 'span(True) is span(1)'
 assert m.span(False) == (0, 11), 'span(False) is span(0)'
+
+# === m[N] subscript access ===
+m = re.search(r'(\w+)\s+(\w+)', 'hello world')
+assert m is not None, 'search for subscript test'
+assert m[0] == 'hello world', 'm[0] is full match'
+assert m[1] == 'hello', 'm[1] is first group'
+assert m[2] == 'world', 'm[2] is second group'
+
+# subscript with named groups
+m = re.search(r'(?P<first>\w+)\s+(?P<second>\w+)', 'hello world')
+assert m is not None, 'search for named subscript test'
+assert m['first'] == 'hello', "m['first'] accesses named group"
+assert m['second'] == 'world', "m['second'] accesses named group"
+assert m[1] == 'hello', 'm[1] also works with named groups'
+
+# subscript with invalid index
+try:
+    m[99]
+    assert False, 'out-of-range subscript should raise IndexError'
+except IndexError as e:
+    assert str(e) == 'no such group', 'subscript IndexError message'

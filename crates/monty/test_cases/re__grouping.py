@@ -193,3 +193,49 @@ assert m.group(1) is None, 'unmatched optional group returns None'
 assert m.start(1) == -1, 'start of unmatched optional group returns -1'
 assert m.end(1) == -1, 'end of unmatched optional group returns -1'
 assert m.span(1) == (-1, -1), 'span of unmatched optional group returns (-1, -1)'
+
+# === Named group access with m.group('name') ===
+m = re.search(r'(?P<first>\w+)\s+(?P<second>\w+)', 'hello world')
+assert m is not None, 'named group search finds match'
+assert m.group('first') == 'hello', "group('first') returns first named group"
+assert m.group('second') == 'world', "group('second') returns second named group"
+assert m.group(1) == 'hello', 'named group is also accessible by index'
+assert m.group(2) == 'world', 'named group is also accessible by index'
+assert m.group(0) == 'hello world', 'group(0) still returns full match'
+
+# Named group with invalid name
+try:
+    m.group('nonexistent')
+    assert False, 'non-existent named group should raise IndexError'
+except IndexError as e:
+    assert str(e) == 'no such group', 'non-existent named group error message'
+
+# === m.group() with multiple arguments ===
+m = re.search(r'(\w+)\s+(\w+)\s+(\w+)', 'a b c')
+assert m is not None, 'multi-group search finds match'
+result = m.group(1, 2)
+assert result == ('a', 'b'), 'group(1, 2) returns tuple of two groups'
+
+result = m.group(1, 2, 3)
+assert result == ('a', 'b', 'c'), 'group(1, 2, 3) returns tuple of three groups'
+
+result = m.group(0, 1)
+assert result == ('a b c', 'a'), 'group(0, 1) includes full match'
+
+# === m.groupdict() ===
+m = re.search(r'(?P<first>\w+)\s+(?P<second>\w+)', 'hello world')
+assert m is not None, 'named group search for groupdict'
+d = m.groupdict()
+assert d == {'first': 'hello', 'second': 'world'}, 'groupdict returns correct dict'
+
+# groupdict with no named groups
+m = re.search(r'(\w+)\s+(\w+)', 'hello world')
+assert m is not None, 'unnamed group search for groupdict'
+d = m.groupdict()
+assert d == {}, 'groupdict with no named groups returns empty dict'
+
+# groupdict with unmatched optional named group
+m = re.search(r'(?P<first>\w+)?@(?P<second>\w+)', '@host')
+assert m is not None, 'optional named group search for groupdict'
+d = m.groupdict()
+assert d == {'first': None, 'second': 'host'}, 'groupdict includes unmatched named groups as None'

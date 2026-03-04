@@ -421,6 +421,15 @@ pub enum StaticStrings {
     /// `re.PatternError` exception
     #[strum(serialize = "PatternError")]
     PatternError,
+    /// `re.error` exception alias (same as `re.PatternError`)
+    #[strum(serialize = "error")]
+    Error,
+    /// `re.escape()` function
+    Escape,
+    /// `re.finditer()` / `pattern.finditer()` method
+    Finditer,
+    /// `match.groupdict()` method
+    Groupdict,
 }
 
 impl StaticStrings {

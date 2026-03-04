@@ -11,6 +11,9 @@
 //! - `re.fullmatch(pattern, string, flags=0)` → `re.Match` or `None`
 //! - `re.findall(pattern, string, flags=0)` → `list`
 //! - `re.sub(pattern, repl, string, count=0, flags=0)` → `str`
+//! - `re.split(pattern, string, maxsplit=0, flags=0)` → `list`
+//! - `re.finditer(pattern, string, flags=0)` → iterator of `re.Match`
+//! - `re.escape(pattern)` → `str`
 //!
 //! # Module attributes
 //!
@@ -19,7 +22,7 @@
 //! - `re.MULTILINE` / `re.M` — `^`/`$` match at line boundaries (value: 8)
 //! - `re.DOTALL` / `re.S` — `.` matches newlines (value: 16)
 //! - `re.ASCII` / `re.A` — ASCII-only matching for `\w`, `\d`, `\s` (value: 256)
-//! - `re.PatternError` — exception type for invalid patterns
+//! - `re.PatternError` / `re.error` — exception type for invalid patterns
 
 use std::borrow::Cow;
 
@@ -28,7 +31,7 @@ use crate::{
     builtins::Builtins,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
@@ -67,6 +70,12 @@ pub(crate) enum ReFunctions {
     Findall,
     /// `re.sub(pattern, repl, string, count=0, flags=0)` — substitute matches.
     Sub,
+    /// `re.split(pattern, string, maxsplit=0, flags=0)` — split string by pattern.
+    Split,
+    /// `re.finditer(pattern, string, flags=0)` — return iterator over all matches.
+    Finditer,
+    /// `re.escape(pattern)` — escape all non-alphanumeric characters in pattern.
+    Escape,
 }
 
 /// Creates the `re` module and allocates it on the heap.
@@ -119,6 +128,24 @@ pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -
         heap,
         interns,
     );
+    module.set_attr(
+        StaticStrings::Split,
+        Value::ModuleFunction(ModuleFunctions::Re(ReFunctions::Split)),
+        heap,
+        interns,
+    );
+    module.set_attr(
+        StaticStrings::Finditer,
+        Value::ModuleFunction(ModuleFunctions::Re(ReFunctions::Finditer)),
+        heap,
+        interns,
+    );
+    module.set_attr(
+        StaticStrings::Escape,
+        Value::ModuleFunction(ModuleFunctions::Re(ReFunctions::Escape)),
+        heap,
+        interns,
+    );
 
     // Flag constants
     module.set_attr(StaticStrings::NoFlag, Value::Int(i64::from(NOFLAG)), heap, interns);
@@ -141,9 +168,16 @@ pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -
     module.set_attr(StaticStrings::AsciiFlag, Value::Int(i64::from(ASCII)), heap, interns);
     module.set_attr(StaticStrings::A, Value::Int(i64::from(ASCII)), heap, interns);
 
-    // Exception type
+    // Exception types
     module.set_attr(
         StaticStrings::PatternError,
+        Value::Builtin(Builtins::ExcType(ExcType::RePatternError)),
+        heap,
+        interns,
+    );
+    // `re.error` is the historical alias for `re.PatternError` (still widely used)
+    module.set_attr(
+        StaticStrings::Error,
         Value::Builtin(Builtins::ExcType(ExcType::RePatternError)),
         heap,
         interns,
@@ -184,6 +218,9 @@ pub(super) fn call(
         ReFunctions::Fullmatch => call_fullmatch(heap, args, interns).map(AttrCallResult::Value),
         ReFunctions::Findall => call_findall(heap, args, interns).map(AttrCallResult::Value),
         ReFunctions::Sub => call_sub(heap, args, interns).map(AttrCallResult::Value),
+        ReFunctions::Split => call_split(heap, args, interns).map(AttrCallResult::Value),
+        ReFunctions::Finditer => call_finditer(heap, args, interns).map(AttrCallResult::Value),
+        ReFunctions::Escape => call_escape(heap, args, interns).map(AttrCallResult::Value),
     }
 }
 
@@ -237,13 +274,16 @@ fn call_findall(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns:
     compiled.findall(&text, heap)
 }
 
-/// `re.sub(pattern, repl, string, count=0)` — substitute matches with a replacement.
+/// `re.sub(pattern, repl, string, count=0, flags=0)` — substitute matches with a replacement.
 ///
 /// Compiles the pattern, then delegates to `RePattern::sub`. Replaces occurrences of the
 /// pattern with the replacement string. When `count` is 0, all matches are replaced.
+/// Supports both positional and keyword arguments for `count` and `flags`.
 fn call_sub(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let pos = args.into_pos_only("re.sub", heap)?;
+    let (pos, kwargs) = args.into_parts();
     defer_drop_mut!(pos, heap);
+    let kwargs = kwargs.into_iter();
+    defer_drop_mut!(kwargs, heap);
 
     let Some(pattern_val) = pos.next() else {
         return Err(ExcType::type_error("re.sub() missing required argument: 'pattern'"));
@@ -260,25 +300,62 @@ fn call_sub(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &In
     };
     defer_drop!(string_val, heap);
 
+    // Extract count and flags from remaining positional args
+    let pos_count = pos.next();
+    let pos_flags = pos.next();
+
+    if let Some(extra) = pos.next() {
+        extra.drop_with_heap(heap);
+        return Err(ExcType::type_error("re.sub() takes at most 5 positional arguments"));
+    }
+
+    // Extract count and flags from kwargs (if not given positionally)
+    let (mut kw_count, mut kw_flags): (Option<Value>, Option<Value>) = (None, None);
+    for (key, value) in kwargs {
+        defer_drop!(key, heap);
+        let Some(keyword_name) = key.as_either_str(heap) else {
+            value.drop_with_heap(heap);
+            return Err(ExcType::type_error("keywords must be strings"));
+        };
+        let key_str = keyword_name.as_str(interns);
+        match key_str {
+            "count" => {
+                if pos_count.is_some() {
+                    value.drop_with_heap(heap);
+                    return Err(ExcType::type_error("re.sub() got multiple values for argument 'count'"));
+                }
+                kw_count.replace(value).drop_with_heap(heap);
+            }
+            "flags" => {
+                if pos_flags.is_some() {
+                    value.drop_with_heap(heap);
+                    return Err(ExcType::type_error("re.sub() got multiple values for argument 'flags'"));
+                }
+                kw_flags.replace(value).drop_with_heap(heap);
+            }
+            _ => {
+                value.drop_with_heap(heap);
+                return Err(ExcType::type_error(format!(
+                    "'{key_str}' is an invalid keyword argument for re.sub()"
+                )));
+            }
+        }
+    }
+
+    let count_val = pos_count.or(kw_count);
+    let flags_val = pos_flags.or(kw_flags);
+
     #[expect(
         clippy::cast_sign_loss,
         clippy::cast_possible_truncation,
         reason = "n is checked non-negative above"
     )]
-    let count = match pos.next() {
+    let count = match count_val {
         Some(Value::Int(n)) if n >= 0 => n as usize,
-        // CPython treats bool as int: True=1, False=0 (both non-negative).
         Some(Value::Bool(b)) => usize::from(b),
-        // CPython: negative count means no replacements — return original string.
-        // Still consume the optional flags arg to validate arg count.
         Some(Value::Int(_)) => {
-            // Consume optional flags (5th arg) — don't need the value since we're
-            // returning early, but we must validate no extra args follow.
-            let _flags = extract_flags(pos.next(), heap)?;
-            if let Some(extra) = pos.next() {
-                extra.drop_with_heap(heap);
-                return Err(ExcType::type_error("re.sub() takes at most 5 positional arguments"));
-            }
+            // Negative count — return original string unchanged
+            let _flags = extract_flags(flags_val, heap)?;
             let text = value_to_str(string_val, heap, interns)?.into_owned();
             let s = Str::new(text);
             return Ok(Value::Ref(heap.allocate(HeapData::Str(s))?));
@@ -293,19 +370,185 @@ fn call_sub(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &In
         None => 0,
     };
 
-    let flags = extract_flags(pos.next(), heap)?;
-
-    if let Some(extra) = pos.next() {
-        extra.drop_with_heap(heap);
-        return Err(ExcType::type_error("re.sub() takes at most 5 positional arguments"));
-    }
+    let flags = extract_flags(flags_val, heap)?;
 
     let pattern = value_to_str(pattern_val, heap, interns)?.into_owned();
+
+    // Check that repl is a string — callable replacement is not supported
+    if !repl_val.is_str(heap) {
+        return Err(ExcType::type_error(
+            "callable replacement is not yet supported in re.sub()",
+        ));
+    }
     let repl = value_to_str(repl_val, heap, interns)?.into_owned();
     let text = value_to_str(string_val, heap, interns)?.into_owned();
 
     let compiled = RePattern::compile(pattern, flags)?;
     compiled.sub(&repl, &text, count, heap)
+}
+
+/// `re.split(pattern, string, maxsplit=0, flags=0)` — split string by pattern occurrences.
+///
+/// Returns a list of strings. If `maxsplit` is non-zero, at most `maxsplit` splits occur
+/// and the remainder of the string is returned as the final list element.
+/// Supports both positional and keyword arguments for `maxsplit` and `flags`.
+fn call_split(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+    let (pos, kwargs) = args.into_parts();
+    defer_drop_mut!(pos, heap);
+    let kwargs = kwargs.into_iter();
+    defer_drop_mut!(kwargs, heap);
+
+    let Some(pattern_val) = pos.next() else {
+        return Err(ExcType::type_error("re.split() missing required argument: 'pattern'"));
+    };
+    defer_drop!(pattern_val, heap);
+
+    let Some(string_val) = pos.next() else {
+        return Err(ExcType::type_error("re.split() missing required argument: 'string'"));
+    };
+    defer_drop!(string_val, heap);
+
+    let pos_maxsplit = pos.next();
+    let pos_flags = pos.next();
+
+    if let Some(extra) = pos.next() {
+        extra.drop_with_heap(heap);
+        return Err(ExcType::type_error("re.split() takes at most 4 positional arguments"));
+    }
+
+    let (mut kw_maxsplit, mut kw_flags): (Option<Value>, Option<Value>) = (None, None);
+    for (key, value) in kwargs {
+        defer_drop!(key, heap);
+        let Some(keyword_name) = key.as_either_str(heap) else {
+            value.drop_with_heap(heap);
+            return Err(ExcType::type_error("keywords must be strings"));
+        };
+        let key_str = keyword_name.as_str(interns);
+        match key_str {
+            "maxsplit" => {
+                if pos_maxsplit.is_some() {
+                    value.drop_with_heap(heap);
+                    return Err(ExcType::type_error(
+                        "re.split() got multiple values for argument 'maxsplit'",
+                    ));
+                }
+                kw_maxsplit.replace(value).drop_with_heap(heap);
+            }
+            "flags" => {
+                if pos_flags.is_some() {
+                    value.drop_with_heap(heap);
+                    return Err(ExcType::type_error(
+                        "re.split() got multiple values for argument 'flags'",
+                    ));
+                }
+                kw_flags.replace(value).drop_with_heap(heap);
+            }
+            _ => {
+                value.drop_with_heap(heap);
+                return Err(ExcType::type_error(format!(
+                    "'{key_str}' is an invalid keyword argument for re.split()"
+                )));
+            }
+        }
+    }
+
+    let maxsplit = extract_maxsplit(pos_maxsplit.or(kw_maxsplit), heap)?;
+    let flags = extract_flags(pos_flags.or(kw_flags), heap)?;
+
+    let pattern = value_to_str(pattern_val, heap, interns)?.into_owned();
+    let text = value_to_str(string_val, heap, interns)?.into_owned();
+
+    let compiled = RePattern::compile(pattern, flags)?;
+    compiled.split(&text, maxsplit, heap)
+}
+
+/// `re.finditer(pattern, string, flags=0)` — return all matches as a list.
+///
+/// Eagerly collects all match objects into a list. When the user iterates with
+/// `for m in re.finditer(...)`, the VM's `GetIter` opcode handles iteration
+/// over the returned list automatically.
+fn call_finditer(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+    let (pattern, text, flags) = extract_pattern_string_flags(args, "re.finditer", heap, interns)?;
+    let compiled = RePattern::compile(pattern, flags)?;
+    compiled.finditer(&text, heap)
+}
+
+/// `re.escape(pattern)` — escape special regex characters in a string.
+///
+/// Returns a string with all regex metacharacters and whitespace prefixed with
+/// a backslash. Only characters that have special meaning in regex patterns are
+/// escaped, matching CPython 3.7+ behavior.
+///
+/// Escaped characters: `\t \n \v \f \r   # $ & ( ) * + - . ? [ \ ] ^ { | } ~`
+fn call_escape(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+    let arg = args.get_one_arg("re.escape", heap)?;
+    defer_drop!(arg, heap);
+    let text = value_to_str(arg, heap, interns)?.into_owned();
+
+    let mut result = String::with_capacity(text.len() * 2);
+    for c in text.chars() {
+        if should_escape(c) {
+            result.push('\\');
+        }
+        result.push(c);
+    }
+
+    let s = Str::new(result);
+    Ok(Value::Ref(heap.allocate(HeapData::Str(s))?))
+}
+
+/// Returns whether a character should be escaped by `re.escape()`.
+///
+/// Matches CPython's `_special_chars_map` — only regex metacharacters and whitespace.
+fn should_escape(c: char) -> bool {
+    matches!(
+        c,
+        '\t' | '\n'
+            | '\x0b'
+            | '\x0c'
+            | '\r'
+            | ' '
+            | '#'
+            | '$'
+            | '&'
+            | '('
+            | ')'
+            | '*'
+            | '+'
+            | '-'
+            | '.'
+            | '?'
+            | '['
+            | '\\'
+            | ']'
+            | '^'
+            | '{'
+            | '|'
+            | '}'
+            | '~'
+    )
+}
+
+/// Extracts a `maxsplit` value from an optional `Value`.
+///
+/// Returns 0 if not provided. Negative values are treated as 0 (split all).
+fn extract_maxsplit(val: Option<Value>, heap: &mut Heap<impl ResourceTracker>) -> RunResult<usize> {
+    match val {
+        None => Ok(0),
+        Some(Value::Int(n)) if n <= 0 => Ok(0),
+        #[expect(
+            clippy::cast_sign_loss,
+            clippy::cast_possible_truncation,
+            reason = "n is checked positive above"
+        )]
+        Some(Value::Int(n)) => Ok(n as usize),
+        Some(Value::Bool(b)) => Ok(usize::from(b)),
+        Some(other) => {
+            let t = other.py_type(heap);
+            other.drop_with_heap(heap);
+            Err(ExcType::type_error(format!("expected int for maxsplit, not {t}")))
+        }
+    }
 }
 
 /// Extracts pattern string and optional flags from arguments for `re.compile()`.

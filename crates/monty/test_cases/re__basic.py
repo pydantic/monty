@@ -665,3 +665,92 @@ assert result == 'X23', 'Pattern.sub count=True replaces only first'
 
 result = p.sub('X', '123', False)
 assert result == 'XXX', 'Pattern.sub count=False replaces all'
+
+# === re.error alias (same as re.PatternError) ===
+assert re.error is re.PatternError, 're.error is alias for re.PatternError'
+try:
+    re.compile('(unclosed')
+    assert False, 'should raise'
+except re.error as e:
+    assert len(str(e)) > 0, 're.error catches PatternError'
+
+# === re.escape() ===
+assert re.escape('hello') == 'hello', 're.escape leaves alphanumeric unchanged'
+assert re.escape('hello world!') == 'hello\\ world!', 're.escape escapes space but not !'
+assert re.escape('a.b+c*d?e') == 'a\\.b\\+c\\*d\\?e', 're.escape escapes regex metacharacters'
+assert re.escape('') == '', 're.escape on empty string'
+assert re.escape('[test]') == '\\[test\\]', 're.escape escapes brackets'
+assert re.escape('price: $10') == 'price:\\ \\$10', 're.escape escapes space and dollar'
+assert re.escape('a_b') == 'a_b', 're.escape preserves underscores'
+
+# re.escape result works as a literal pattern
+text = 'price is $10.00 (USD)'
+escaped = re.escape('$10.00')
+m = re.search(escaped, text)
+assert m is not None, 'escaped pattern matches literally'
+assert m.group() == '$10.00', 'escaped pattern matches the exact string'
+
+# === re.sub() with keyword arguments ===
+result = re.sub(r'\d+', 'X', 'a1 b2 c3', count=1)
+assert result == 'aX b2 c3', 're.sub with count kwarg'
+
+result = re.sub(r'hello', 'X', 'Hello HELLO hello', count=0, flags=re.IGNORECASE)
+assert result == 'X X X', 're.sub with flags kwarg'
+
+# Pattern.sub with count kwarg
+p = re.compile(r'\d+')
+result = p.sub('X', 'a1 b2 c3', count=1)
+assert result == 'aX b2 c3', 'Pattern.sub with count kwarg'
+
+# === re.split() ===
+result = re.split(r'\s+', 'hello world foo')
+assert result == ['hello', 'world', 'foo'], 're.split basic'
+
+result = re.split(r'[,;]', 'a,b;c')
+assert result == ['a', 'b', 'c'], 're.split on multiple delimiters'
+
+result = re.split(r'\s+', 'hello world foo', maxsplit=1)
+assert result == ['hello', 'world foo'], 're.split with maxsplit=1'
+
+result = re.split(r'\s+', 'hello')
+assert result == ['hello'], 're.split with no matches'
+
+result = re.split(r'\s+', '')
+assert result == [''], 're.split on empty string'
+
+# Pattern.split
+p = re.compile(r'[,;]')
+result = p.split('a,b;c')
+assert result == ['a', 'b', 'c'], 'Pattern.split basic'
+
+result = p.split('a,b;c', maxsplit=1)
+assert result == ['a', 'b;c'], 'Pattern.split with maxsplit kwarg'
+
+# === re.finditer() ===
+matches = list(re.finditer(r'\d+', 'a1 b22 c333'))
+assert len(matches) == 3, 'finditer returns 3 matches'
+assert matches[0].group() == '1', 'finditer match 0'
+assert matches[1].group() == '22', 'finditer match 1'
+assert matches[2].group() == '333', 'finditer match 2'
+
+# finditer with no matches
+matches = list(re.finditer(r'\d+', 'no numbers'))
+assert len(matches) == 0, 'finditer with no matches returns empty'
+
+# finditer iteration
+groups = [m.group() for m in re.finditer(r'\w+', 'hello world')]
+assert groups == ['hello', 'world'], 'finditer in list comprehension'
+
+# Pattern.finditer
+p = re.compile(r'\d+')
+matches = list(p.finditer('a1 b22'))
+assert len(matches) == 2, 'Pattern.finditer returns 2 matches'
+assert matches[0].group() == '1', 'Pattern.finditer match 0'
+assert matches[1].group() == '22', 'Pattern.finditer match 1'
+
+# finditer with capture groups
+matches = list(re.finditer(r'(\w+)=(\w+)', 'a=1 b=2'))
+assert len(matches) == 2, 'finditer with groups returns 2 matches'
+assert matches[0].group(1) == 'a', 'finditer group 1 of match 0'
+assert matches[0].group(2) == '1', 'finditer group 2 of match 0'
+assert matches[1].group(1) == 'b', 'finditer group 1 of match 1'
