@@ -17,6 +17,7 @@ use crate::{
     heap::{HeapData, HeapGuard, HeapId},
     heap_data::HeapDataMut,
     intern::FunctionId,
+    observer::OpInputIds,
     resource::ResourceTracker,
     types::{List, PyTrait},
     value::Value,
@@ -466,7 +467,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     self.scheduler_mut().set_current_task(Some(waiter_id));
                     self.load_or_init_task(waiter_id)?;
                     // Push the result onto the waiter's stack
-                    self.push(Value::Ref(list_id));
+                    self.push_created(Value::Ref(list_id));
                     return Ok(AwaitResult::FramePushed);
                 }
 
@@ -773,6 +774,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Ok(());
         }
         let value = obj.to_value(self.heap, self.interns)?;
+        self.emit_op_result(&value, OpInputIds::none());
 
         // Check if a gather is waiting on this CallId
         if let Some((gather_id, result_idx)) = self.scheduler_mut().take_gather_waiter(call_id) {
@@ -831,16 +833,19 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                             let waiter_context_in_vm =
                                 self.scheduler().current_task_id() == Some(waiter_id) && !self.frames.is_empty();
 
+                            let list_value = Value::Ref(list_id);
+                            self.emit_value_created(&list_value);
+
                             if waiter_context_in_vm {
                                 // Waiter's frames are in the VM - push directly onto VM stack
-                                self.stack.push(Value::Ref(list_id));
+                                self.stack.push(list_value);
                                 // Mark as ready but don't add to ready_queue
                                 self.scheduler_mut().get_task_mut(waiter_id).state = TaskState::Ready;
                             } else {
                                 // Waiter's context is saved in the task (either spawned task,
                                 // or main task that was saved when switching to spawned tasks)
                                 let scheduler = self.scheduler_mut();
-                                scheduler.get_task_mut(waiter_id).stack.push(Value::Ref(list_id));
+                                scheduler.get_task_mut(waiter_id).stack.push(list_value);
                                 scheduler.make_ready(waiter_id);
                             }
                         }

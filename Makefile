@@ -1,5 +1,17 @@
 .DEFAULT_GOAL := main
 
+# Prefer the project-local interpreter (3.14) for CPython parity tests, while
+# remaining portable by falling back to whatever `python3` is on PATH.
+ifeq ($(wildcard $(CURDIR)/.venv/bin/python3),)
+PYO3_PYTHON_DEFAULT := $(shell command -v python3)
+else
+PYO3_PYTHON_DEFAULT := $(CURDIR)/.venv/bin/python3
+endif
+
+ifeq ($(strip $(PYO3_PYTHON_DEFAULT)),)
+$(error python3 not found on PATH and $(CURDIR)/.venv/bin/python3 is missing)
+endif
+
 .PHONY: .cargo
 .cargo: ## Check that cargo is installed
 	@cargo --version || echo 'Please install cargo: https://github.com/rust-lang/cargo'
@@ -118,23 +130,23 @@ format-lint-py: format-py lint-py ## Format and lint Python code with ruff
 
 .PHONY: test-no-features
 test-no-features: ## Run rust tests without any features enabled
-	cargo test -p monty
+	PYO3_PYTHON="$${PYO3_PYTHON:-$(PYO3_PYTHON_DEFAULT)}" cargo test -p monty
 
 .PHONY: test-ref-count-panic
 test-ref-count-panic: ## Run rust tests with ref-count-panic enabled
-	cargo test -p monty --features ref-count-panic
+	PYO3_PYTHON="$${PYO3_PYTHON:-$(PYO3_PYTHON_DEFAULT)}" cargo test -p monty --features ref-count-panic
 
 .PHONY: test-ref-count-return
 test-ref-count-return: ## Run rust tests with ref-count-return enabled
-	cargo test -p monty --features ref-count-return
+	PYO3_PYTHON="$${PYO3_PYTHON:-$(PYO3_PYTHON_DEFAULT)}" cargo test -p monty --features ref-count-return
 
 .PHONY: test-cases
 test-cases: ## Run tests cases only
-	cargo test -p monty --test datatest_runner
+	PYO3_PYTHON="$${PYO3_PYTHON:-$(PYO3_PYTHON_DEFAULT)}" cargo test -p monty --test datatest_runner
 
 .PHONY: test-type-checking
 test-type-checking: ## Run rust tests on monty_type_checking
-	cargo test -p monty_type_checking -p monty_typeshed
+	PYO3_PYTHON="$${PYO3_PYTHON:-$(PYO3_PYTHON_DEFAULT)}" cargo test -p monty_type_checking -p monty_typeshed
 
 .PHONY: pytest
 pytest: ## Run Python tests with pytest

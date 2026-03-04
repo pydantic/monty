@@ -20,7 +20,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let items = self.pop_n(count);
         let list = List::new(items);
         let heap_id = self.heap.allocate(HeapData::List(list))?;
-        self.push(Value::Ref(heap_id));
+        self.push_created(Value::Ref(heap_id));
         Ok(())
     }
 
@@ -31,7 +31,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn build_tuple(&mut self, count: usize) -> Result<(), RunError> {
         let items = self.pop_n(count);
         let value = allocate_tuple(items.into(), self.heap)?;
-        self.push(value);
+        self.push_created(value);
         Ok(())
     }
 
@@ -45,7 +45,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             dict.set(key, value, self.heap, self.interns)?;
         }
         let heap_id = self.heap.allocate(HeapData::Dict(dict))?;
-        self.push(Value::Ref(heap_id));
+        self.push_created(Value::Ref(heap_id));
         Ok(())
     }
 
@@ -57,7 +57,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             set.add(item, self.heap, self.interns)?;
         }
         let heap_id = self.heap.allocate(HeapData::Set(set))?;
-        self.push(Value::Ref(heap_id));
+        self.push_created(Value::Ref(heap_id));
         Ok(())
     }
 
@@ -81,7 +81,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         let slice = Slice::new(start, stop, step);
         let heap_id = this.heap.allocate(HeapData::Slice(slice))?;
-        this.push(Value::Ref(heap_id));
+        this.push_created(Value::Ref(heap_id));
         Ok(())
     }
 
@@ -182,7 +182,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // list_ref is dropped by the guard at scope exit; allocate the tuple
         let value = allocate_tuple(copied_items, this.heap)?;
-        this.push(value);
+        this.push_created(value);
         Ok(())
     }
 
@@ -556,7 +556,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // Middle items as a list (starred target)
         let middle_list: Vec<Value> = items.drain(before..).collect();
         let list_id = this.heap.allocate(HeapData::List(List::new(middle_list)))?;
-        this.push(Value::Ref(list_id));
+        this.push_created(Value::Ref(list_id));
 
         // Before items
         for item in items.drain(..).rev() {
