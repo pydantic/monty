@@ -477,6 +477,9 @@ impl<T: ResourceTracker + serde::de::DeserializeOwned> RunProgress<T> {
 /// External function calls occur when calling a function that is not a builtin,
 /// exception, or user-defined function.
 ///
+/// Snapshots can also carry optional embedder-owned extension bytes; Monty
+/// persists them but never interprets them.
+///
 /// # Type Parameters
 /// * `T` - Resource tracker implementation
 ///
@@ -495,6 +498,9 @@ pub struct Snapshot<T: ResourceTracker> {
     /// The call_id from the most recent FunctionCall that created this Snapshot.
     /// Used by `run_pending()` to push the correct `ExternalFuture`.
     pending_call_id: u32,
+    /// Optional embedder-owned bytes persisted with this snapshot.
+    #[serde(default, rename = "snapshot_extension")]
+    extension_bytes: Option<Vec<u8>>,
     /// Optional runtime observer handle for resumed execution.
     #[serde(skip, default = "RuntimeObserverHandle::disabled")]
     observer: RuntimeObserverHandle,
@@ -539,6 +545,22 @@ impl<T: ResourceTracker> Snapshot<T> {
     /// e.g., setting a time limit before resuming after an external function call.
     pub fn tracker_mut(&mut self) -> &mut T {
         self.heap.tracker_mut()
+    }
+
+    /// Attaches embedder-owned snapshot extension bytes to this state.
+    ///
+    /// These bytes are serialized alongside the snapshot without interpretation
+    /// by Monty. The host controls their content and versioning.
+    #[must_use]
+    pub fn with_snapshot_extension(mut self, snapshot_extension: Vec<u8>) -> Self {
+        self.extension_bytes = Some(snapshot_extension);
+        self
+    }
+
+    /// Returns the embedder-owned snapshot extension bytes, if present.
+    #[must_use]
+    pub fn snapshot_extension(&self) -> Option<&[u8]> {
+        self.extension_bytes.as_deref()
     }
 
     /// Installs a runtime observer for subsequent resume calls.
@@ -644,6 +666,9 @@ impl<T: ResourceTracker> Snapshot<T> {
 /// incremental resolution - you can provide partial results and Monty will
 /// continue running until all tasks are blocked again.
 ///
+/// Snapshots can also carry optional embedder-owned extension bytes; Monty
+/// persists them but never interprets them.
+///
 /// # Type Parameters
 /// * `T` - Resource tracker implementation
 ///
@@ -662,12 +687,31 @@ pub struct FutureSnapshot<T: ResourceTracker> {
     /// The pending call_ids that this snapshot is waiting on.
     /// Used to validate that resume() only receives known call_ids.
     pending_call_ids: Vec<u32>,
+    /// Optional embedder-owned bytes persisted with this snapshot.
+    #[serde(default, rename = "snapshot_extension")]
+    extension_bytes: Option<Vec<u8>>,
     /// Optional runtime observer handle for resumed execution.
     #[serde(skip, default = "RuntimeObserverHandle::disabled")]
     observer: RuntimeObserverHandle,
 }
 
 impl<T: ResourceTracker> FutureSnapshot<T> {
+    /// Attaches embedder-owned snapshot extension bytes to this state.
+    ///
+    /// These bytes are serialized alongside the snapshot without interpretation
+    /// by Monty. The host controls their content and versioning.
+    #[must_use]
+    pub fn with_snapshot_extension(mut self, snapshot_extension: Vec<u8>) -> Self {
+        self.extension_bytes = Some(snapshot_extension);
+        self
+    }
+
+    /// Returns the embedder-owned snapshot extension bytes, if present.
+    #[must_use]
+    pub fn snapshot_extension(&self) -> Option<&[u8]> {
+        self.extension_bytes.as_deref()
+    }
+
     /// Installs a runtime observer for subsequent resume calls.
     #[must_use]
     pub fn with_observer(mut self, observer: RuntimeObserverHandle) -> Self {
@@ -729,6 +773,7 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
             mut heap,
             mut namespaces,
             pending_call_ids,
+            extension_bytes,
             ..
         } = self;
 
@@ -818,6 +863,7 @@ impl<T: ResourceTracker> FutureSnapshot<T> {
                     heap,
                     namespaces,
                     pending_call_ids,
+                    extension_bytes,
                     observer,
                 }));
             }
@@ -938,6 +984,7 @@ fn build_function_call_progress<T: ResourceTracker>(
         heap,
         namespaces,
         pending_call_id,
+        extension_bytes: None,
         observer,
     };
 
@@ -1050,6 +1097,7 @@ fn build_os_call_progress<T: ResourceTracker>(
         heap,
         namespaces,
         pending_call_id,
+        extension_bytes: None,
         observer,
     };
 
@@ -1118,6 +1166,7 @@ fn build_resolve_futures_progress<T: ResourceTracker>(
         heap,
         namespaces,
         pending_call_ids,
+        extension_bytes: None,
         observer,
     }))
 }

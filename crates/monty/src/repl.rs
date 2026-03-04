@@ -798,6 +798,9 @@ impl<T: ResourceTracker + serde::de::DeserializeOwned> ReplProgress<T> {
 /// This is the REPL-aware counterpart to `Snapshot`. Resuming continues the
 /// same snippet and ultimately returns `ReplProgress::Complete` with the
 /// updated REPL session.
+///
+/// Snapshots can also carry optional embedder-owned extension bytes; Monty
+/// persists them but never interprets them.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
 pub struct ReplSnapshot<T: ResourceTracker> {
@@ -809,12 +812,31 @@ pub struct ReplSnapshot<T: ResourceTracker> {
     vm_state: VMSnapshot,
     /// call_id used when resuming with an unresolved future.
     pending_call_id: u32,
+    /// Optional embedder-owned bytes persisted with this snapshot.
+    #[serde(default, rename = "snapshot_extension")]
+    extension_bytes: Option<Vec<u8>>,
     /// Optional runtime observer handle for resumed execution.
     #[serde(skip, default = "RuntimeObserverHandle::disabled")]
     observer: RuntimeObserverHandle,
 }
 
 impl<T: ResourceTracker> ReplSnapshot<T> {
+    /// Attaches embedder-owned snapshot extension bytes to this state.
+    ///
+    /// These bytes are serialized alongside the snapshot without interpretation
+    /// by Monty. The host controls their content and versioning.
+    #[must_use]
+    pub fn with_snapshot_extension(mut self, snapshot_extension: Vec<u8>) -> Self {
+        self.extension_bytes = Some(snapshot_extension);
+        self
+    }
+
+    /// Returns the embedder-owned snapshot extension bytes, if present.
+    #[must_use]
+    pub fn snapshot_extension(&self) -> Option<&[u8]> {
+        self.extension_bytes.as_deref()
+    }
+
     /// Installs a runtime observer for subsequent resume calls.
     #[must_use]
     pub fn with_observer(mut self, observer: RuntimeObserverHandle) -> Self {
@@ -890,6 +912,9 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
 /// REPL execution state blocked on unresolved external futures.
 ///
 /// This is the REPL-aware counterpart to `FutureSnapshot`.
+///
+/// Snapshots can also carry optional embedder-owned extension bytes; Monty
+/// persists them but never interprets them.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
 pub struct ReplFutureSnapshot<T: ResourceTracker> {
@@ -901,12 +926,31 @@ pub struct ReplFutureSnapshot<T: ResourceTracker> {
     vm_state: VMSnapshot,
     /// Pending call IDs expected by this snapshot.
     pending_call_ids: Vec<u32>,
+    /// Optional embedder-owned bytes persisted with this snapshot.
+    #[serde(default, rename = "snapshot_extension")]
+    extension_bytes: Option<Vec<u8>>,
     /// Optional runtime observer handle for resumed execution.
     #[serde(skip, default = "RuntimeObserverHandle::disabled")]
     observer: RuntimeObserverHandle,
 }
 
 impl<T: ResourceTracker> ReplFutureSnapshot<T> {
+    /// Attaches embedder-owned snapshot extension bytes to this state.
+    ///
+    /// These bytes are serialized alongside the snapshot without interpretation
+    /// by Monty. The host controls their content and versioning.
+    #[must_use]
+    pub fn with_snapshot_extension(mut self, snapshot_extension: Vec<u8>) -> Self {
+        self.extension_bytes = Some(snapshot_extension);
+        self
+    }
+
+    /// Returns the embedder-owned snapshot extension bytes, if present.
+    #[must_use]
+    pub fn snapshot_extension(&self) -> Option<&[u8]> {
+        self.extension_bytes.as_deref()
+    }
+
     /// Installs a runtime observer for subsequent resume calls.
     #[must_use]
     pub fn with_observer(mut self, observer: RuntimeObserverHandle) -> Self {
@@ -949,6 +993,7 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
             executor,
             vm_state,
             pending_call_ids,
+            extension_bytes,
             ..
         } = self;
 
@@ -1016,6 +1061,7 @@ impl<T: ResourceTracker> ReplFutureSnapshot<T> {
                     executor,
                     vm_state,
                     pending_call_ids,
+                    extension_bytes,
                     observer,
                 }));
             }
@@ -1193,6 +1239,7 @@ fn build_repl_snapshot<T: ResourceTracker>(
         executor,
         vm_state,
         pending_call_id,
+        extension_bytes: None,
         observer,
     })
 }
@@ -1292,6 +1339,7 @@ fn build_repl_resolve_futures_progress<T: ResourceTracker>(
         executor,
         vm_state,
         pending_call_ids,
+        extension_bytes: None,
         observer,
     }))
 }
