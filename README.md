@@ -36,10 +36,11 @@ What Monty **can** do:
 - Control resource usage - Monty can track memory usage, allocations, stack depth, and execution time and cancel execution if it exceeds preset limits
 - Collect stdout and stderr and return it to the caller
 - Run async or sync code on the host via async or sync code on the host
+- Use a small subset of the standard library: `sys`, `os`, `typing`, `asyncio`, `re`, `datetime` (soon), `dataclasses` (soon), `json` (soon)
 
 What Monty **cannot** do:
 
-- Use the standard library (except a few select modules: `sys`, `typing`, `asyncio`, `dataclasses` (soon), `json` (soon))
+- Use the rest of the standard library
 - Use third party libraries (like Pydantic), support for external python library is not a goal
 - define classes (support should come soon)
 - use match statements (again, support should come soon)
