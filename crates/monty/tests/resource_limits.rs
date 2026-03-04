@@ -1618,3 +1618,209 @@ fn fstring_dynamic_width_memory_limit() {
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
 }
+
+// === re.sub() memory tracking tests ===
+// These tests verify that the single-pass replacement loop in `re.sub()` tracks
+// the running output size and bails out when the resource limit is exceeded.
+
+/// Test that `re.sub` with every-char pattern amplification is rejected.
+///
+/// Pattern 'a' matches every character in 'aaa...'. Each replacement expands
+/// 1 byte → 1000 bytes, so the output grows to ~1MB which exceeds the 500KB limit.
+/// The inline loop catches this after a few hundred matches.
+#[test]
+fn re_sub_amplification_memory_limit() {
+    let code = r"
+import re
+s = 'a' * 1000
+re.sub('a', 'b' * 1000, s)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(500_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout);
+
+    assert!(result.is_err(), "re.sub amplification should be rejected");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
+    );
+}
+
+/// Test that `re.sub` with empty pattern amplification is rejected.
+///
+/// Empty pattern matches N+1 times for N-char input (between and around every
+/// character). Each match inserts 1000 bytes, so 501 matches × 1000 ≈ 500KB
+/// which exceeds the 200KB limit.
+#[test]
+fn re_sub_empty_pattern_amplification_memory_limit() {
+    let code = r"
+import re
+s = 'a' * 500
+re.sub('', 'x' * 1000, s)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(200_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout);
+
+    assert!(
+        result.is_err(),
+        "re.sub with empty pattern amplification should be rejected"
+    );
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+/// Test that `pattern.sub` (compiled pattern method) is also rejected.
+#[test]
+fn re_pattern_sub_amplification_memory_limit() {
+    let code = r"
+import re
+p = re.compile('a')
+s = 'a' * 1000
+p.sub('b' * 1000, s)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(500_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout);
+
+    assert!(result.is_err(), "pattern.sub amplification should be rejected");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+/// Test that `re.sub` raises `re.PatternError` when the regex engine hits its backtracking limit.
+///
+/// The pattern `(a+)+\1b` forces `fancy_regex` into its backtracking VM (due to the
+/// backreference `\1`). With enough `a`s followed by a non-matching character, the
+/// exponential blowup exceeds the engine's backtracking step limit (~1M steps).
+#[test]
+fn re_sub_backtracking_limit_raises_pattern_error() {
+    let code = r"
+import re
+re.sub('(a+)+\\1b', 'X', 'a' * 30 + 'c')
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(500_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout);
+
+    assert!(result.is_err(), "backtracking limit should raise an error");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::RePatternError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("backtrack")),
+        "expected backtracking error, got: {exc}"
+    );
+}
+
+// --- Selective patterns: few matches in large text stay within limits ---
+
+/// Test that a selective pattern on large text passes.
+///
+/// The pattern `xxx` only matches 3 times (at positions 0, 3, 6 in the 9-char prefix),
+/// so the result is ~10000 - 9 + 300 = 10291 bytes — well within the 500KB limit.
+#[test]
+fn re_sub_selective_pattern_passes() {
+    // 'xxx' repeated 3 times at the start, rest is 'a's
+    let code = r"
+import re
+s = 'xxx' * 3 + 'a' * 9991
+result = re.sub('xxx', 'y' * 100, s)
+len(result)  == 9991 + 3 * 100
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(500_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout);
+
+    assert!(
+        result.is_ok(),
+        "selective pattern with few matches should pass: {result:?}"
+    );
+    assert_eq!(result.unwrap(), MontyObject::Bool(true));
+}
+
+/// Test that a digit-matching pattern on mostly-text input passes.
+///
+/// Pattern `\d+` matches only the 10-digit number, so the result is
+/// 990 + 200 = 1190 bytes — well within the 150KB limit.
+#[test]
+fn re_sub_digit_pattern_passes() {
+    let code = r"
+import re
+s = 'a' * 990 + '1234567890'
+result = re.sub('\d+', 'X' * 200, s)
+len(result) == 990 + 200
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(150_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout);
+
+    assert!(result.is_ok(), "digit pattern on mostly-text should pass: {result:?}");
+    assert_eq!(result.unwrap(), MontyObject::Bool(true));
+}
+
+/// Test that every-char amplification is still rejected even with a generic pattern.
+///
+/// Pattern `.` matches every character (10000 matches), each expanding 1 → 1000 bytes.
+/// The inline loop catches this after a few hundred matches once the running output
+/// size exceeds the 500KB limit.
+#[test]
+fn re_sub_every_char_amplification_rejected() {
+    let code = r"
+import re
+s = 'a' * 10000
+re.sub('.', 'b' * 1000, s)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(500_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout);
+
+    assert!(result.is_err(), "every-char pattern amplification should be rejected");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+// --- General re.sub tests ---
+
+/// Test that small `re.sub` works within limits.
+#[test]
+fn re_sub_within_limit() {
+    let code = r"
+import re
+re.sub('world', 'rust', 'hello world') == 'hello rust'
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout);
+
+    assert!(result.is_ok(), "small re.sub should succeed");
+    assert_eq!(result.unwrap(), MontyObject::Bool(true));
+}
+
+/// Test that `re.sub` with count parameter limits replacements correctly.
+///
+/// `count=5` caps replacements to 5, so the result is
+/// 995 unchanged bytes + 5 × 100 replacement bytes = 1495 bytes.
+#[test]
+fn re_sub_with_count_within_limit() {
+    let code = r"
+import re
+re.sub('a', 'b' * 100, 'a' * 1000, count=5) == 'b' * 500 + 'a' * 995
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(500_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout);
+
+    assert!(result.is_ok(), "re.sub with small count should succeed");
+    assert_eq!(result.unwrap(), MontyObject::Bool(true));
+}

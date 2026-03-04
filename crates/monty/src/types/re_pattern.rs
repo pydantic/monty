@@ -24,7 +24,7 @@ use crate::{
     heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
-    resource::{ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker, check_estimated_size},
     types::{List, PyTrait, ReMatch, Str, Type, allocate_tuple, str::string_repr_fmt},
     value::{EitherStr, Value},
 };
@@ -186,15 +186,32 @@ impl RePattern {
     /// When `count` is 0, all matches are replaced. Otherwise, at most `count`
     /// replacements are made. The replacement string supports `$1`, `$2`, etc.
     /// for backreferences to captured groups.
+    ///
+    /// Builds the result string in a single pass by iterating matches and appending
+    /// replacements directly. Checks the running output size against resource limits
+    /// after each match, bailing out immediately if the budget is exceeded. This
+    /// avoids both false rejections from conservative pre-estimates and untracked
+    /// Rust heap allocations from delegating to `fancy_regex::replace_all()`.
     pub fn sub(&self, repl: &str, text: &str, count: usize, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
         // Translate Python-style backreferences (\1, \2) to regex crate style ($1, $2)
         let rust_repl = translate_replacement(repl);
-        let result = if count == 0 {
-            self.compiled.replace_all(text, rust_repl.as_ref())
-        } else {
-            self.compiled.replacen(text, count, rust_repl.as_ref())
-        };
-        let s = Str::new(result.into_owned());
+        let effective_count = if count == 0 { usize::MAX } else { count };
+
+        let mut result = String::new();
+        let mut last_end = 0;
+
+        for caps in self.compiled.captures_iter(text).take(effective_count) {
+            let caps = caps.map_err(ExcType::re_pattern_error)?;
+            let m = caps.get(0).expect("capture group 0 always exists");
+            result.push_str(&text[last_end..m.start()]);
+            caps.expand(rust_repl.as_ref(), &mut result);
+            last_end = m.end();
+            // Check running size: current result + remaining unprocessed text.
+            check_estimated_size(result.len() + (text.len() - last_end), heap.tracker())?;
+        }
+
+        result.push_str(&text[last_end..]);
+        let s = Str::new(result);
         Ok(Value::Ref(heap.allocate(HeapData::Str(s))?))
     }
 
