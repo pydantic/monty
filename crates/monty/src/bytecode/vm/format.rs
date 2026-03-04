@@ -5,7 +5,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunError, SimpleException},
     fstring::{ParsedFormatSpec, ascii_escape, decode_format_spec, format_string, format_with_spec},
-    resource::ResourceTracker,
+    resource::{ResourceTracker, check_repeat_size},
     types::{PyTrait, str::allocate_string},
     value::Value,
 };
@@ -60,6 +60,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             defer_drop!(spec_value, this);
 
             let spec = this.get_format_spec(spec_value, value)?;
+
+            // Pre-check: reject format specs with huge width before pad_string
+            // allocates an untracked Rust String.
+            check_repeat_size(spec.width, spec.fill.len_utf8(), this.heap.tracker())?;
 
             match conversion {
                 // No conversion - format original value

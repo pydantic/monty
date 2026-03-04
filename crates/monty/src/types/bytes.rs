@@ -79,7 +79,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings, StringId},
-    resource::{ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
     types::List,
     value::{EitherStr, Value},
 };
@@ -1774,6 +1774,8 @@ fn bytes_replace(
 ) -> RunResult<Value> {
     let (old, new, count) = parse_bytes_replace_args("bytes.replace", args, heap, interns)?;
 
+    check_replace_size(bytes.len(), old.len(), new.len(), count, heap.tracker())?;
+
     let result = if count < 0 {
         bytes_replace_all(bytes, &old, &new, heap)?
     } else {
@@ -1949,6 +1951,7 @@ fn bytes_center(
     let result = if width <= len {
         bytes.to_vec()
     } else {
+        check_repeat_size(width, 1, heap.tracker())?;
         let total_pad = width - len;
         let left_pad = total_pad / 2;
         let right_pad = total_pad - left_pad;
@@ -1981,6 +1984,7 @@ fn bytes_ljust(
     let result = if width <= len {
         bytes.to_vec()
     } else {
+        check_repeat_size(width, 1, heap.tracker())?;
         let pad = width - len;
         let mut result = Vec::with_capacity(width);
         result.extend_from_slice(bytes);
@@ -2008,6 +2012,7 @@ fn bytes_rjust(
     let result = if width <= len {
         bytes.to_vec()
     } else {
+        check_repeat_size(width, 1, heap.tracker())?;
         let pad = width - len;
         let mut result = Vec::with_capacity(width);
         for _ in 0..pad {
@@ -2076,6 +2081,7 @@ fn bytes_zfill(bytes: &[u8], args: ArgValues, heap: &mut Heap<impl ResourceTrack
     let result = if width <= len {
         bytes.to_vec()
     } else {
+        check_repeat_size(width, 1, heap.tracker())?;
         let pad = width - len;
         let mut result = Vec::with_capacity(width);
 

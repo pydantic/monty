@@ -16,7 +16,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     intern::{Interns, StaticStrings, StringId},
-    resource::{ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
     types::Type,
     value::{EitherStr, Value},
 };
@@ -1728,6 +1728,8 @@ fn str_rpartition(
 fn str_replace(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Value> {
     let (old, new, count) = parse_replace_args("str.replace", args, heap, interns)?;
 
+    check_replace_size(s.len(), old.len(), new.len(), count, heap.tracker())?;
+
     let result = if count < 0 {
         s.replace(&old, &new)
     } else {
@@ -1820,6 +1822,7 @@ fn str_center(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, i
     let result = if width <= len {
         s.to_owned()
     } else {
+        check_repeat_size(width, fillchar.len_utf8(), heap.tracker())?;
         let total_pad = width - len;
         let left_pad = total_pad / 2;
         let right_pad = total_pad - left_pad;
@@ -1847,6 +1850,7 @@ fn str_ljust(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, in
     let result = if width <= len {
         s.to_owned()
     } else {
+        check_repeat_size(width, fillchar.len_utf8(), heap.tracker())?;
         let pad = width - len;
         let mut result = String::with_capacity(width);
         result.push_str(s);
@@ -1869,6 +1873,7 @@ fn str_rjust(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>, in
     let result = if width <= len {
         s.to_owned()
     } else {
+        check_repeat_size(width, fillchar.len_utf8(), heap.tracker())?;
         let pad = width - len;
         let mut result = String::with_capacity(width);
         for _ in 0..pad {
@@ -1936,6 +1941,8 @@ fn str_zfill(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>) ->
     let result = if width <= len {
         s.to_owned()
     } else {
+        // zfill always pads with ASCII '0' (1 byte)
+        check_repeat_size(width, 1, heap.tracker())?;
         let pad = width - len;
         let mut chars = s.chars();
         let first = chars.next();
