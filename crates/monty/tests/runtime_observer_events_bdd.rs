@@ -20,9 +20,6 @@ enum RecordedEvent {
 
 impl RecordedEvent {
     /// Converts a runtime observer callback payload into the reduced BDD event model.
-    ///
-    /// `ValueCreated` is intentionally ignored (`None`) so scenarios can focus on
-    /// call/control/operator signals without coupling to allocation internals.
     fn from_runtime_event(event: RuntimeObserverEvent<'_>) -> Option<Self> {
         match event {
             RuntimeObserverEvent::ExternalCallRequested(call_event) => Some(Self::ExternalCallRequested {
@@ -54,9 +51,6 @@ struct RecordingObserver {
 }
 
 impl RecordingObserver {
-    /// Creates a recording observer backed by a shared `Arc<Mutex<_>>` buffer.
-    ///
-    /// Clones of this observer append into the same synchronized event list.
     fn new(events: Arc<Mutex<Vec<RecordedEvent>>>) -> Self {
         Self { events }
     }
@@ -74,9 +68,6 @@ impl RuntimeObserver for RecordingObserver {
 }
 
 /// Shared mutable world state for runtime-observer BDD scenarios.
-///
-/// The world stores the current script under test, the captured event stream,
-/// and the latest host-visible `call_id` for request/return assertions.
 #[derive(Default)]
 struct RuntimeObserverWorld {
     script: String,
@@ -86,9 +77,6 @@ struct RuntimeObserverWorld {
 
 impl RuntimeObserverWorld {
     /// Asserts at least one recorded event matches `predicate` for the stored call ID.
-    ///
-    /// Panics when `call_id` is missing, because request/return assertions require
-    /// a prior suspension step to capture host-visible call identity.
     fn assert_has_event<F>(&self, predicate: F, error_message: &str)
     where
         F: Fn(&RecordedEvent, u32) -> bool,
@@ -132,9 +120,6 @@ impl RuntimeObserverWorld {
 }
 
 /// Captures the handles returned by a start call with a recording observer.
-///
-/// `events` is a shared, mutex-protected log used across observer clones, while
-/// `progress` and `observer` drive the scenario resume and flush lifecycle.
 #[derive(Debug)]
 struct RecordingRunFixture {
     events: Arc<Mutex<Vec<RecordedEvent>>>,
@@ -156,16 +141,21 @@ fn recording_observer_fixture() -> (RuntimeObserverHandle, Arc<Mutex<Vec<Recorde
     (observer, events)
 }
 
+fn as_function_call(progress: RunProgress<NoLimitTracker>, context: &str) -> monty::FunctionCall<NoLimitTracker> {
+    match progress {
+        RunProgress::FunctionCall(call) => call,
+        other => panic!("{context}: expected function call progress, got {other:?}"),
+    }
+}
+
 /// Starts a run with a recording observer and returns progress plus event handles.
 fn recording_start_with_observer(
     script: String,
     input_names: Vec<String>,
-    external_functions: Vec<String>,
     inputs: Vec<MontyObject>,
 ) -> RecordingRunFixture {
     let (observer, events) = recording_observer_fixture();
-    let run =
-        MontyRun::new(script, "test.py", input_names, external_functions).expect("runner creation should succeed");
+    let run = MontyRun::new(script, "test.py", input_names).expect("runner creation should succeed");
     let progress = run
         .start_with_observer(inputs, NoLimitTracker, &mut PrintWriter::Stdout, observer.clone())
         .expect("start_with_observer should succeed");
@@ -179,24 +169,17 @@ fn recording_start_with_observer(
 
 /// Starts execution with a recording observer, resumes with a host result, and
 /// stores call/event state on the BDD world.
-fn start_and_resume_generic<R, A>(
-    world: &mut RuntimeObserverWorld,
-    external_functions: Vec<String>,
-    resume_value: R,
-    assert_result: A,
-) where
-    R: Into<monty::ExternalResult>,
+fn start_and_resume_generic<R, A>(world: &mut RuntimeObserverWorld, resume_value: R, assert_result: A)
+where
+    R: Into<monty::ExtFunctionResult>,
     A: FnOnce(Result<RunProgress<NoLimitTracker>, MontyException>),
 {
-    let fixture = recording_start_with_observer(world.script.clone(), vec![], external_functions, vec![]);
+    let fixture = recording_start_with_observer(world.script.clone(), vec![], vec![]);
 
-    let RunProgress::FunctionCall { call_id, state, .. } = fixture.progress else {
-        panic!("expected function call progress");
-    };
+    let function_call = as_function_call(fixture.progress, "start and resume generic");
+    world.call_id = Some(function_call.call_id);
 
-    world.call_id = Some(call_id);
-
-    let result = state.run(resume_value, &mut PrintWriter::Stdout);
+    let result = function_call.resume(resume_value, &mut PrintWriter::Stdout);
     assert_result(result);
 
     drop(fixture.observer);
@@ -220,7 +203,7 @@ fn given_branching_script(world: &mut RuntimeObserverWorld) {
 /// Starts execution with an observer and resumes with a concrete return value.
 #[when("execution starts with a recording observer and resumes with integer return value")]
 fn when_start_and_resume_with_return(world: &mut RuntimeObserverWorld) {
-    start_and_resume_generic(world, vec!["ext_fn".to_owned()], MontyObject::Int(9), |result| {
+    start_and_resume_generic(world, MontyObject::Int(9), |result| {
         let completion = result.expect("resume should complete");
         assert!(matches!(completion, RunProgress::Complete(MontyObject::Int(9))));
     });
@@ -229,12 +212,7 @@ fn when_start_and_resume_with_return(world: &mut RuntimeObserverWorld) {
 /// Starts execution with an observer and runs a branch snippet to completion.
 #[when("execution starts with a recording observer and runs to completion")]
 fn when_start_and_complete(world: &mut RuntimeObserverWorld) {
-    let fixture = recording_start_with_observer(
-        world.script.clone(),
-        vec!["x".to_owned()],
-        vec![],
-        vec![MontyObject::Int(1)],
-    );
+    let fixture = recording_start_with_observer(world.script.clone(), vec!["x".to_owned()], vec![MontyObject::Int(1)]);
 
     assert!(matches!(fixture.progress, RunProgress::Complete(MontyObject::Int(3))));
 
@@ -249,7 +227,6 @@ fn when_start_and_complete(world: &mut RuntimeObserverWorld) {
 fn when_start_and_resume_with_exception(world: &mut RuntimeObserverWorld) {
     start_and_resume_generic(
         world,
-        vec!["ext_fn".to_owned()],
         MontyException::new(ExcType::RuntimeError, Some("bdd failure".to_owned())),
         |result| {
             let error = result.expect_err("resume should return an error");

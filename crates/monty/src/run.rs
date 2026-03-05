@@ -10,6 +10,7 @@ use crate::{
     io::PrintWriter,
     namespace::Namespaces,
     object::MontyObject,
+    observer::RuntimeObserverHandle,
     parse::parse,
     prepare::prepare,
     resource::{NoLimitTracker, ResourceTracker},
@@ -143,6 +144,17 @@ impl MontyRun {
         resource_tracker: T,
         print: &mut PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
+        self.start_with_observer(inputs, resource_tracker, print, RuntimeObserverHandle::disabled())
+    }
+
+    /// Starts execution with a runtime observer for host instrumentation.
+    pub fn start_with_observer<T: ResourceTracker>(
+        self,
+        inputs: Vec<MontyObject>,
+        resource_tracker: T,
+        print: &mut PrintWriter<'_>,
+        observer: RuntimeObserverHandle,
+    ) -> Result<RunProgress<T>, MontyException> {
         let executor = self.executor;
 
         // Create heap and prepare namespaces
@@ -150,7 +162,7 @@ impl MontyRun {
         let mut namespaces = executor.prepare_namespaces(inputs, &mut heap)?;
 
         // Create and run VM
-        let mut vm = VM::new(&mut heap, &mut namespaces, &executor.interns, print);
+        let mut vm = VM::new_with_observer(&mut heap, &mut namespaces, &executor.interns, print, observer.clone());
 
         // Start execution
         let vm_result = vm.run_module(&executor.module_code);
@@ -158,7 +170,7 @@ impl MontyRun {
         let vm_state = vm.check_snapshot(&vm_result);
 
         // Handle the result using the destructured parts
-        handle_vm_result(vm_result, vm_state, executor, heap, namespaces)
+        handle_vm_result(vm_result, vm_state, executor, heap, namespaces, observer)
     }
 }
 

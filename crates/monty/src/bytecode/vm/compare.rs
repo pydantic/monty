@@ -4,7 +4,7 @@ use super::VM;
 use crate::{
     defer_drop,
     exception_private::{ExcType, RunError},
-    resource::{DepthGuard, ResourceTracker},
+    resource::ResourceTracker,
     types::{LongInt, PyTrait},
     value::Value,
 };
@@ -19,8 +19,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        let mut guard = DepthGuard::default();
-        let result = lhs.py_eq(rhs, this.heap, &mut guard, this.interns)?;
+        let result = lhs.py_eq(rhs, this.heap, this.interns)?;
         let output = Value::Bool(result);
         this.emit_binary_op_result(lhs, rhs, &output);
         this.push_created(output);
@@ -36,8 +35,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        let mut guard = DepthGuard::default();
-        let result = !lhs.py_eq(rhs, this.heap, &mut guard, this.interns)?;
+        let result = !lhs.py_eq(rhs, this.heap, this.interns)?;
         let output = Value::Bool(result);
         this.emit_binary_op_result(lhs, rhs, &output);
         this.push_created(output);
@@ -56,8 +54,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        let mut guard = DepthGuard::default();
-        let result = lhs.py_cmp(rhs, this.heap, &mut guard, this.interns)?.is_some_and(check);
+        let result = lhs.py_cmp(rhs, this.heap, this.interns)?.is_some_and(check);
         let output = Value::Bool(result);
         this.emit_binary_op_result(lhs, rhs, &output);
         this.push_created(output);
@@ -150,8 +147,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     };
                     defer_drop!(k_value, this);
 
-                    let mut guard = DepthGuard::default();
-                    let is_equal = v.py_eq(k_value, this.heap, &mut guard, this.interns)?;
+                    let is_equal = v.py_eq(k_value, this.heap, this.interns)?;
                     let output = Value::Bool(is_equal);
                     this.emit_binary_op_result(lhs, rhs, &output);
                     this.push_created(output);

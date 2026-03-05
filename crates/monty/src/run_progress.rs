@@ -17,9 +17,15 @@ use crate::{
     io::PrintWriter,
     namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
     object::MontyObject,
+    observer::{
+        ExternalCallKind, ExternalCallRequestedEvent, ExternalCallReturnKind, ExternalCallReturnedEvent,
+        RuntimeObserverEvent, RuntimeObserverHandle,
+    },
     os::OsFunction,
+    progress_runtime_ids::RuntimeIdSlices,
     resource::ResourceTracker,
     run::Executor,
+    runtime_id::RuntimeValueId,
     value::Value,
 };
 
@@ -96,6 +102,16 @@ impl<T: ResourceTracker> RunProgress<T> {
             _ => None,
         }
     }
+
+    /// Returns runtime-ID slices for suspendable call variants.
+    #[must_use]
+    pub fn runtime_ids(&self) -> Option<RuntimeIdSlices<'_>> {
+        match self {
+            Self::FunctionCall(call) => Some((&call.arg_runtime_ids, &call.kwarg_runtime_ids)),
+            Self::OsCall(call) => Some((&call.arg_runtime_ids, &call.kwarg_runtime_ids)),
+            _ => None,
+        }
+    }
 }
 
 impl<T: ResourceTracker + serde::Serialize> RunProgress<T> {
@@ -142,6 +158,10 @@ pub struct FunctionCall<T: ResourceTracker> {
     pub args: Vec<MontyObject>,
     /// The keyword arguments passed to the function (key, value pairs).
     pub kwargs: Vec<(MontyObject, MontyObject)>,
+    /// Stable runtime IDs for positional arguments.
+    pub arg_runtime_ids: Vec<RuntimeValueId>,
+    /// Stable runtime IDs for keyword `(key, value)` pairs.
+    pub kwarg_runtime_ids: Vec<(RuntimeValueId, RuntimeValueId)>,
     /// Unique identifier for this call (used for async correlation).
     pub call_id: u32,
     /// Whether this is a dataclass method call (first arg is `self`).
@@ -151,25 +171,6 @@ pub struct FunctionCall<T: ResourceTracker> {
 }
 
 impl<T: ResourceTracker> FunctionCall<T> {
-    /// Creates a new `FunctionCall` from its parts.
-    fn new(
-        function_name: String,
-        args: Vec<MontyObject>,
-        kwargs: Vec<(MontyObject, MontyObject)>,
-        call_id: u32,
-        method_call: bool,
-        snapshot: Snapshot<T>,
-    ) -> Self {
-        Self {
-            function_name,
-            args,
-            kwargs,
-            call_id,
-            method_call,
-            snapshot,
-        }
-    }
-
     /// Returns a mutable reference to the resource tracker.
     ///
     /// This allows modifying resource limits between execution phases,
@@ -228,6 +229,10 @@ pub struct OsCall<T: ResourceTracker> {
     pub args: Vec<MontyObject>,
     /// The keyword arguments passed to the function (key, value pairs).
     pub kwargs: Vec<(MontyObject, MontyObject)>,
+    /// Stable runtime IDs for positional arguments.
+    pub arg_runtime_ids: Vec<RuntimeValueId>,
+    /// Stable runtime IDs for keyword `(key, value)` pairs.
+    pub kwarg_runtime_ids: Vec<(RuntimeValueId, RuntimeValueId)>,
     /// Unique identifier for this call (used for async correlation).
     pub call_id: u32,
     /// Internal execution snapshot.
@@ -240,6 +245,8 @@ impl<T: ResourceTracker> OsCall<T> {
         function: OsFunction,
         args: Vec<MontyObject>,
         kwargs: Vec<(MontyObject, MontyObject)>,
+        arg_runtime_ids: Vec<RuntimeValueId>,
+        kwarg_runtime_ids: Vec<(RuntimeValueId, RuntimeValueId)>,
         call_id: u32,
         snapshot: Snapshot<T>,
     ) -> Self {
@@ -247,6 +254,8 @@ impl<T: ResourceTracker> OsCall<T> {
             function,
             args,
             kwargs,
+            arg_runtime_ids,
+            kwarg_runtime_ids,
             call_id,
             snapshot,
         }
@@ -341,13 +350,14 @@ impl<T: ResourceTracker> NameLookup<T> {
         };
 
         // Now restore the VM (borrows heap and namespaces)
-        let mut vm = VM::restore(
+        let mut vm = VM::restore_with_observer(
             self.snapshot.vm_state,
             &self.snapshot.executor.module_code,
             &mut self.snapshot.heap,
             &mut self.snapshot.namespaces,
             &self.snapshot.executor.interns,
             print,
+            self.snapshot.observer.clone(),
         );
 
         // Resume execution: either push the resolved value or raise NameError
@@ -366,6 +376,7 @@ impl<T: ResourceTracker> NameLookup<T> {
             self.snapshot.executor,
             self.snapshot.heap,
             self.snapshot.namespaces,
+            self.snapshot.observer,
         )
     }
 }
@@ -394,6 +405,9 @@ pub struct ResolveFutures<T: ResourceTracker> {
     namespaces: Namespaces,
     /// The pending call_ids that this snapshot is waiting on.
     pending_call_ids: Vec<u32>,
+    /// Runtime observer carried across suspend/resume boundaries.
+    #[serde(skip, default)]
+    observer: RuntimeObserverHandle,
 }
 
 impl<T: ResourceTracker> ResolveFutures<T> {
@@ -404,6 +418,7 @@ impl<T: ResourceTracker> ResolveFutures<T> {
         heap: Heap<T>,
         namespaces: Namespaces,
         pending_call_ids: Vec<u32>,
+        observer: RuntimeObserverHandle,
     ) -> Self {
         Self {
             executor,
@@ -411,6 +426,7 @@ impl<T: ResourceTracker> ResolveFutures<T> {
             heap,
             namespaces,
             pending_call_ids,
+            observer,
         }
     }
 
@@ -446,6 +462,7 @@ impl<T: ResourceTracker> ResolveFutures<T> {
             mut heap,
             mut namespaces,
             pending_call_ids,
+            observer,
         } = self;
 
         // Validate that all provided call_ids are in the pending set before restoring VM.
@@ -455,13 +472,14 @@ impl<T: ResourceTracker> ResolveFutures<T> {
             .map(|(call_id, _)| *call_id);
 
         // Restore the VM from the snapshot (must happen before any error return to clean up properly).
-        let mut vm = VM::restore(
+        let mut vm = VM::restore_with_observer(
             vm_state,
             &executor.module_code,
             &mut heap,
             &mut namespaces,
             &executor.interns,
             print,
+            observer.clone(),
         );
 
         // Now check for invalid call_ids after VM is restored.
@@ -520,13 +538,14 @@ impl<T: ResourceTracker> ResolveFutures<T> {
                     heap,
                     namespaces,
                     pending_call_ids,
+                    observer,
                 }));
             }
         }
 
         let result = vm.run();
         let vm_state = vm.check_snapshot(&result);
-        handle_vm_result(result, vm_state, executor, heap, namespaces)
+        handle_vm_result(result, vm_state, executor, heap, namespaces, observer)
     }
 }
 
@@ -550,6 +569,14 @@ pub(crate) struct Snapshot<T: ResourceTracker> {
     pub(crate) heap: Heap<T>,
     /// The namespaces containing all variable bindings.
     pub(crate) namespaces: Namespaces,
+    /// Runtime observer carried across suspend/resume boundaries.
+    #[serde(skip, default)]
+    observer: RuntimeObserverHandle,
+    /// Metadata for the host call currently being resumed, when applicable.
+    #[serde(skip, default)]
+    pending_call_id: Option<u32>,
+    #[serde(skip, default)]
+    pending_call_kind: Option<ExternalCallKind>,
 }
 
 impl<T: ResourceTracker> Snapshot<T> {
@@ -561,13 +588,26 @@ impl<T: ResourceTracker> Snapshot<T> {
     ) -> Result<RunProgress<T>, MontyException> {
         let ext_result = result.into();
 
-        let mut vm = VM::restore(
+        if let (Some(call_id), Some(_kind)) = (self.pending_call_id, self.pending_call_kind) {
+            self.observer
+                .emit(RuntimeObserverEvent::ExternalCallReturned(ExternalCallReturnedEvent {
+                    call_id,
+                    kind: match ext_result {
+                        ExtFunctionResult::Return(_) => ExternalCallReturnKind::Return,
+                        ExtFunctionResult::Future(_) => ExternalCallReturnKind::Future,
+                        ExtFunctionResult::Error(_) | ExtFunctionResult::NotFound(_) => ExternalCallReturnKind::Error,
+                    },
+                }));
+        }
+
+        let mut vm = VM::restore_with_observer(
             self.vm_state,
             &self.executor.module_code,
             &mut self.heap,
             &mut self.namespaces,
             &self.executor.interns,
             print,
+            self.observer.clone(),
         );
 
         let vm_result = match ext_result {
@@ -585,7 +625,14 @@ impl<T: ResourceTracker> Snapshot<T> {
         };
 
         let vm_state = vm.check_snapshot(&vm_result);
-        handle_vm_result(vm_result, vm_state, self.executor, self.heap, self.namespaces)
+        handle_vm_result(
+            vm_result,
+            vm_state,
+            self.executor,
+            self.heap,
+            self.namespaces,
+            self.observer,
+        )
     }
 }
 
@@ -663,14 +710,18 @@ pub(crate) fn handle_vm_result<T: ResourceTracker>(
     executor: Executor,
     mut heap: Heap<T>,
     mut namespaces: Namespaces,
+    observer: RuntimeObserverHandle,
 ) -> Result<RunProgress<T>, MontyException> {
     macro_rules! new_snapshot {
-        () => {
+        ($pending_call_id:expr, $pending_call_kind:expr) => {
             Snapshot {
                 executor,
                 vm_state: vm_state.expect("snapshot should exist"),
                 heap,
                 namespaces,
+                observer: observer.clone(),
+                pending_call_id: $pending_call_id,
+                pending_call_kind: $pending_call_kind,
             }
         };
     }
@@ -690,30 +741,50 @@ pub(crate) fn handle_vm_result<T: ResourceTracker>(
             ..
         }) => {
             let function_name = function_name.into_string(&executor.interns);
-            let (args_py, kwargs_py) = args.into_py_objects(&mut heap, &executor.interns);
+            let host_args = args.into_py_objects_with_runtime_ids(&mut heap, &executor.interns);
+            observer.emit(RuntimeObserverEvent::ExternalCallRequested(
+                ExternalCallRequestedEvent {
+                    call_id: call_id.raw(),
+                    kind: ExternalCallKind::Function,
+                    arg_runtime_ids: &host_args.arg_runtime_ids,
+                    kwarg_runtime_ids: &host_args.kwarg_runtime_ids,
+                },
+            ));
 
-            Ok(RunProgress::FunctionCall(FunctionCall::new(
+            Ok(RunProgress::FunctionCall(FunctionCall {
                 function_name,
-                args_py,
-                kwargs_py,
-                call_id.raw(),
-                false,
-                new_snapshot!(),
-            )))
+                args: host_args.args,
+                kwargs: host_args.kwargs,
+                arg_runtime_ids: host_args.arg_runtime_ids,
+                kwarg_runtime_ids: host_args.kwarg_runtime_ids,
+                call_id: call_id.raw(),
+                method_call: false,
+                snapshot: new_snapshot!(Some(call_id.raw()), Some(ExternalCallKind::Function)),
+            }))
         }
         Ok(FrameExit::OsCall {
             function,
             args,
             call_id,
         }) => {
-            let (args_py, kwargs_py) = args.into_py_objects(&mut heap, &executor.interns);
+            let host_args = args.into_py_objects_with_runtime_ids(&mut heap, &executor.interns);
+            observer.emit(RuntimeObserverEvent::ExternalCallRequested(
+                ExternalCallRequestedEvent {
+                    call_id: call_id.raw(),
+                    kind: ExternalCallKind::Os,
+                    arg_runtime_ids: &host_args.arg_runtime_ids,
+                    kwarg_runtime_ids: &host_args.kwarg_runtime_ids,
+                },
+            ));
 
             Ok(RunProgress::OsCall(OsCall::new(
                 function,
-                args_py,
-                kwargs_py,
+                host_args.args,
+                host_args.kwargs,
+                host_args.arg_runtime_ids,
+                host_args.kwarg_runtime_ids,
                 call_id.raw(),
-                new_snapshot!(),
+                new_snapshot!(Some(call_id.raw()), Some(ExternalCallKind::Os)),
             )))
         }
         Ok(FrameExit::MethodCall {
@@ -722,16 +793,26 @@ pub(crate) fn handle_vm_result<T: ResourceTracker>(
             call_id,
         }) => {
             let function_name = method_name.into_string(&executor.interns);
-            let (args_py, kwargs_py) = args.into_py_objects(&mut heap, &executor.interns);
+            let host_args = args.into_py_objects_with_runtime_ids(&mut heap, &executor.interns);
+            observer.emit(RuntimeObserverEvent::ExternalCallRequested(
+                ExternalCallRequestedEvent {
+                    call_id: call_id.raw(),
+                    kind: ExternalCallKind::Method,
+                    arg_runtime_ids: &host_args.arg_runtime_ids,
+                    kwarg_runtime_ids: &host_args.kwarg_runtime_ids,
+                },
+            ));
 
-            Ok(RunProgress::FunctionCall(FunctionCall::new(
+            Ok(RunProgress::FunctionCall(FunctionCall {
                 function_name,
-                args_py,
-                kwargs_py,
-                call_id.raw(),
-                true,
-                new_snapshot!(),
-            )))
+                args: host_args.args,
+                kwargs: host_args.kwargs,
+                arg_runtime_ids: host_args.arg_runtime_ids,
+                kwarg_runtime_ids: host_args.kwarg_runtime_ids,
+                call_id: call_id.raw(),
+                method_call: true,
+                snapshot: new_snapshot!(Some(call_id.raw()), Some(ExternalCallKind::Method)),
+            }))
         }
         Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
             let pending_call_ids: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
@@ -741,6 +822,7 @@ pub(crate) fn handle_vm_result<T: ResourceTracker>(
                 heap,
                 namespaces,
                 pending_call_ids,
+                observer,
             )))
         }
         Ok(FrameExit::NameLookup {
@@ -753,7 +835,7 @@ pub(crate) fn handle_vm_result<T: ResourceTracker>(
                 name,
                 namespace_slot,
                 is_global,
-                new_snapshot!(),
+                new_snapshot!(None, None),
             )))
         }
         Err(err) => {

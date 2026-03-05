@@ -32,21 +32,24 @@ def test_path_exists_yields_oscall():
     assert len(result.arg_runtime_ids) == len(result.args)
     assert result.kwarg_runtime_ids == snapshot([])
 
+
 def test_os_call_runtime_ids_survive_snapshot_dump_load():
-    """OS-call runtime IDs are preserved when dumping/loading MontySnapshot."""
+    """OS-call runtime IDs are preserved when dumping/loading FunctionSnapshot."""
     m = pydantic_monty.Monty('from pathlib import Path; Path("/tmp/test.txt").exists()')
     result = m.start()
 
-    assert isinstance(result, pydantic_monty.MontySnapshot)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
     expected_arg_runtime_ids = tuple(result.arg_runtime_ids)
     expected_kwarg_runtime_ids = tuple(result.kwarg_runtime_ids)
 
     dumped = result.dump()
-    loaded = pydantic_monty.MontySnapshot.load(dumped)
+    loaded = pydantic_monty.FunctionSnapshot.load(dumped)
 
     assert loaded.is_os_function is True
     assert tuple(loaded.arg_runtime_ids) == expected_arg_runtime_ids
     assert tuple(loaded.kwarg_runtime_ids) == expected_kwarg_runtime_ids
+
+
 def test_path_stat_yields_oscall():
     """Path.stat() yields an OS call."""
     m = pydantic_monty.Monty('from pathlib import Path; Path("/etc/passwd").stat()')

@@ -20,4 +20,4 @@ mod vm;
 
 pub use code::Code;
 pub use compiler::Compiler;
-pub use vm::{FrameExit, VM, VMContext, VMSnapshot};
+pub use vm::{FrameExit, VM, VMSnapshot};

@@ -11,6 +11,7 @@ mod collections;
 mod compare;
 mod exceptions;
 mod format;
+mod observer_hooks;
 mod scheduler;
 
 use std::cmp::Ordering;
@@ -30,6 +31,7 @@ use crate::{
     io::PrintWriter,
     modules::BuiltinModule,
     namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
+    observer::RuntimeObserverHandle,
     os::OsFunction,
     parse::CodeRange,
     resource::ResourceTracker,
@@ -584,6 +586,9 @@ pub struct VM<'a, 'p, T: ResourceTracker> {
     /// need a reference to the module code when being restored after task switching.
     module_code: Option<&'a Code>,
 
+    /// Optional runtime observer for host instrumentation.
+    observer: RuntimeObserverHandle,
+
     /// Bytecode IP of the most recent `LoadGlobalCallable`/`LoadLocalCallable` that
     /// pushed an `ExtFunction` for an undefined name.
     ///
@@ -614,6 +619,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
             scheduler: None,            // Lazy - no allocation for sync code
             ext_function_load_ip: None, // Set by LoadGlobalCallable/LoadLocalCallable
             module_code: None,
+            observer: RuntimeObserverHandle::disabled(),
         }
     }
 
@@ -679,6 +685,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
             scheduler: snapshot.scheduler,
             module_code: Some(module_code),
             ext_function_load_ip: None,
+            observer: RuntimeObserverHandle::disabled(),
         }
     }
     /// Consumes the VM and creates a snapshot for pause/resume if needed.
@@ -1206,7 +1213,9 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 Opcode::JumpIfTrue => {
                     let offset = fetch_i16!(cached_frame);
                     let cond = self.pop();
-                    if cond.py_bool(self.heap, self.interns) {
+                    let branch_taken = cond.py_bool(self.heap, self.interns);
+                    self.emit_control_condition(&cond, branch_taken);
+                    if branch_taken {
                         jump_relative!(cached_frame.ip, offset);
                     }
                     cond.drop_with_heap(self);
@@ -1214,14 +1223,22 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 Opcode::JumpIfFalse => {
                     let offset = fetch_i16!(cached_frame);
                     let cond = self.pop();
-                    if !cond.py_bool(self.heap, self.interns) {
+                    let branch_taken = !cond.py_bool(self.heap, self.interns);
+                    self.emit_control_condition(&cond, branch_taken);
+                    if branch_taken {
                         jump_relative!(cached_frame.ip, offset);
                     }
                     cond.drop_with_heap(self);
                 }
                 Opcode::JumpIfTrueOrPop => {
                     let offset = fetch_i16!(cached_frame);
-                    if self.peek().py_bool(self.heap, self.interns) {
+                    let branch_taken = {
+                        let condition = self.peek();
+                        let branch_taken = condition.py_bool(self.heap, self.interns);
+                        self.emit_control_condition(condition, branch_taken);
+                        branch_taken
+                    };
+                    if branch_taken {
                         jump_relative!(cached_frame.ip, offset);
                     } else {
                         let value = self.pop();
@@ -1230,11 +1247,17 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 }
                 Opcode::JumpIfFalseOrPop => {
                     let offset = fetch_i16!(cached_frame);
-                    if self.peek().py_bool(self.heap, self.interns) {
+                    let branch_taken = {
+                        let condition = self.peek();
+                        let branch_taken = !condition.py_bool(self.heap, self.interns);
+                        self.emit_control_condition(condition, branch_taken);
+                        branch_taken
+                    };
+                    if branch_taken {
+                        jump_relative!(cached_frame.ip, offset);
+                    } else {
                         let value = self.pop();
                         value.drop_with_heap(self);
-                    } else {
-                        jump_relative!(cached_frame.ip, offset);
                     }
                 }
                 // Iteration - route through exception handling
