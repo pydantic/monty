@@ -3,19 +3,31 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
     ExcType, MontyException,
-    bytecode::{Code, Compiler, FrameExit, VM},
+    bytecode::{Code, Compiler, FrameExit, VM, VmComponents},
     exception_private::RunResult,
     heap::{DropWithHeap, Heap},
     intern::Interns,
     io::PrintWriter,
     namespace::Namespaces,
     object::MontyObject,
+    observer::RuntimeObserverHandle,
     parse::parse,
     prepare::prepare,
     resource::{NoLimitTracker, ResourceTracker},
     run_progress::{RunProgress, handle_vm_result},
     value::Value,
 };
+
+/// Bundles the owned inputs required to start a [`MontyRun`] execution.
+///
+/// Keeping them together reduces argument lists and makes the relationship
+/// between the data and its resource budget explicit.
+pub struct RunInputs<T: ResourceTracker> {
+    /// Initial input values (must match the length of `input_names` from [`MontyRun::new`]).
+    pub inputs: Vec<MontyObject>,
+    /// Resource tracker controlling allocation limits and GC scheduling.
+    pub resource_tracker: T,
+}
 
 /// Primary interface for running Monty code.
 ///
@@ -143,14 +155,43 @@ impl MontyRun {
         resource_tracker: T,
         print: &mut PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
+        self.start_with_observer(
+            RunInputs {
+                inputs,
+                resource_tracker,
+            },
+            print,
+            RuntimeObserverHandle::disabled(),
+        )
+    }
+
+    /// Starts execution with a runtime observer for host instrumentation.
+    pub fn start_with_observer<T: ResourceTracker>(
+        self,
+        run_inputs: RunInputs<T>,
+        print: &mut PrintWriter<'_>,
+        observer: RuntimeObserverHandle,
+    ) -> Result<RunProgress<T>, MontyException> {
         let executor = self.executor;
+        let RunInputs {
+            inputs,
+            resource_tracker,
+        } = run_inputs;
 
         // Create heap and prepare namespaces
         let mut heap = Heap::new(executor.namespace_size, resource_tracker);
         let mut namespaces = executor.prepare_namespaces(inputs, &mut heap)?;
 
         // Create and run VM
-        let mut vm = VM::new(&mut heap, &mut namespaces, &executor.interns, print);
+        let mut vm = VM::new_with_observer(
+            VmComponents {
+                heap: &mut heap,
+                namespaces: &mut namespaces,
+                interns: &executor.interns,
+                print_writer: print,
+            },
+            observer.clone(),
+        );
 
         // Start execution
         let vm_result = vm.run_module(&executor.module_code);
@@ -158,7 +199,7 @@ impl MontyRun {
         let vm_state = vm.check_snapshot(&vm_result);
 
         // Handle the result using the destructured parts
-        handle_vm_result(vm_result, vm_state, executor, heap, namespaces)
+        handle_vm_result(vm_result, vm_state, executor, heap, namespaces, observer)
     }
 }
 

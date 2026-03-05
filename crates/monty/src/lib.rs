@@ -18,19 +18,16 @@ mod io;
 mod modules;
 mod namespace;
 mod object;
-
 mod observer;
 mod os;
 mod parse;
 mod prepare;
-
-mod heap_traits;
+mod progress_runtime_ids;
 mod repl;
 mod resource;
 mod run;
-
-mod heap_data;
 mod run_progress;
+mod runtime_id;
 mod signature;
 mod sorting;
 mod types;
@@ -56,8 +53,9 @@ pub use crate::{
     resource::{
         DEFAULT_MAX_RECURSION_DEPTH, LimitedTracker, NoLimitTracker, ResourceError, ResourceLimits, ResourceTracker,
     },
-    run::MontyRun,
+    run::{MontyRun, RunInputs},
     run_progress::{
         ExtFunctionResult, FunctionCall, NameLookup, NameLookupResult, OsCall, ResolveFutures, RunProgress,
     },
+    runtime_id::RuntimeValueId,
 };

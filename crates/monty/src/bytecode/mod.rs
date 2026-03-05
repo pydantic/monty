@@ -20,4 +20,5 @@ mod vm;
 
 pub use code::Code;
 pub use compiler::Compiler;
-pub use vm::{FrameExit, VM, VMContext, VMSnapshot};
+pub use vm::{FrameExit, VM, VMSnapshot};
+pub(crate) type VmComponents<'a, 'p, T> = vm::observer_hooks::VmComponents<'a, 'p, T>;

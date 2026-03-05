@@ -41,6 +41,22 @@ pub(crate) struct HostCallArgs {
     pub arg_runtime_ids: Vec<RuntimeValueId>,
     pub kwarg_runtime_ids: Vec<(RuntimeValueId, RuntimeValueId)>,
 }
+
+type HostKwarg = (MontyObject, MontyObject);
+type HostKwargRuntimeIds = (RuntimeValueId, RuntimeValueId);
+
+impl HostCallArgs {
+    #[inline]
+    fn empty() -> Self {
+        Self {
+            args: vec![],
+            kwargs: vec![],
+            arg_runtime_ids: vec![],
+            kwarg_runtime_ids: vec![],
+        }
+    }
+}
+
 impl ArgValues {
     /// Checks that zero arguments were passed.
     ///
@@ -343,20 +359,21 @@ impl ArgValues {
     }
 }
 
-impl DropWithHeap for KwargsValuesIter {
+impl DropWithHeap for ArgValues {
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         match self {
             Self::Empty => {}
-            Self::Inline(iter) => {
-                for (_, v) in iter {
-                    v.drop_with_heap(heap);
-                }
+            Self::One(v) => v.drop_with_heap(heap),
+            Self::Two(v1, v2) => {
+                v1.drop_with_heap(heap);
+                v2.drop_with_heap(heap);
             }
-            Self::Dict(iter) => {
-                for (k, v) in iter {
-                    k.drop_with_heap(heap);
-                    v.drop_with_heap(heap);
-                }
+            Self::Kwargs(kwargs) => {
+                kwargs.drop_with_heap(heap);
+            }
+            Self::ArgsKargs { args, kwargs } => {
+                args.drop_with_heap(heap);
+                kwargs.drop_with_heap(heap);
             }
         }
     }
@@ -389,43 +406,50 @@ impl ArgPosIter {
     }
 }
 
-impl Iterator for KwargsValuesIter {
-    type Item = (Value, Value);
+impl Iterator for ArgPosIter {
+    type Item = Value;
 
-    fn next(&mut self) -> Option<Self::Item> {
+    #[inline]
+    fn next(&mut self) -> Option<Value> {
         match self {
             Self::Empty => None,
-            Self::Inline(iter) => iter.next().map(|(k, v)| (Value::InternString(k), v)),
-            Self::Dict(iter) => iter.next(),
+            Self::One(_) => {
+                let Self::One(v) = std::mem::replace(self, Self::Empty) else {
+                    unreachable!()
+                };
+                Some(v)
+            }
+            Self::Two(_) => {
+                let Self::Two([v1, v2]) = std::mem::replace(self, Self::Empty) else {
+                    unreachable!()
+                };
+                *self = Self::One(v2);
+                Some(v1)
+            }
+            Self::Vec(iter) => iter.next(),
         }
     }
 
+    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         match self {
             Self::Empty => (0, Some(0)),
-            Self::Inline(iter) => iter.size_hint(),
-            Self::Dict(iter) => iter.size_hint(),
+            Self::One(_) => (1, Some(1)),
+            Self::Two(_) => (2, Some(2)),
+            Self::Vec(iter) => iter.size_hint(),
         }
     }
 }
 
-impl ExactSizeIterator for KwargsValuesIter {}
+impl ExactSizeIterator for ArgPosIter {}
 
-impl DropWithHeap for KwargsValuesIter {
+impl DropWithHeap for ArgPosIter {
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         match self {
             Self::Empty => {}
-            Self::Inline(iter) => {
-                for (_, v) in iter {
-                    v.drop_with_heap(heap);
-                }
-            }
-            Self::Dict(iter) => {
-                for (k, v) in iter {
-                    k.drop_with_heap(heap);
-                    v.drop_with_heap(heap);
-                }
-            }
+            Self::One(v1) => v1.drop_with_heap(heap),
+            Self::Two(v12) => v12.drop_with_heap(heap),
+            Self::Vec(iter) => iter.drop_with_heap(heap),
         }
     }
 }
@@ -492,17 +516,18 @@ impl KwargsValues {
     }
 }
 
-impl DropWithHeap for KwargsValuesIter {
+impl DropWithHeap for KwargsValues {
+    /// Properly drops all values in the arguments, decrementing reference counts.
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         match self {
             Self::Empty => {}
-            Self::Inline(iter) => {
-                for (_, v) in iter {
+            Self::Inline(kvs) => {
+                for (_, v) in kvs {
                     v.drop_with_heap(heap);
                 }
             }
-            Self::Dict(iter) => {
-                for (k, v) in iter {
+            Self::Dict(dict) => {
+                for (k, v) in dict {
                     k.drop_with_heap(heap);
                     v.drop_with_heap(heap);
                 }
@@ -538,6 +563,25 @@ fn build_args_with_runtime_ids(
         })
         .unzip()
 }
+
+fn build_kwarg_pair(
+    key: Value,
+    value: Value,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> ((MontyObject, MontyObject), (RuntimeValueId, RuntimeValueId)) {
+    let key_runtime_id = runtime_value_id(&key);
+    let value_runtime_id = runtime_value_id(&value);
+    let key_py = MontyObject::new(key, heap, interns);
+    let value_py = MontyObject::new(value, heap, interns);
+    ((key_py, value_py), (key_runtime_id, value_runtime_id))
+}
+
+#[inline]
+fn runtime_value_id(value: &Value) -> RuntimeValueId {
+    RuntimeValueId::new(value.id())
+}
+
 /// Iterator over keyword argument (key, value) pairs.
 ///
 /// For `Inline` kwargs, converts `StringId` keys to `Value::InternString`.
@@ -710,36 +754,3 @@ impl ArgExprs {
         Ok(())
     }
 }
-
-fn build_kwarg_pair(
-    key: Value,
-    value: Value,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> ((MontyObject, MontyObject), (RuntimeValueId, RuntimeValueId)) {
-    let key_runtime_id = runtime_value_id(&key);
-    let value_runtime_id = runtime_value_id(&value);
-    let key_py = MontyObject::new(key, heap, interns);
-    let value_py = MontyObject::new(value, heap, interns);
-    ((key_py, value_py), (key_runtime_id, value_runtime_id))
-}
-
-impl HostCallArgs {
-    #[inline]
-    fn empty() -> Self {
-        Self {
-            args: vec![],
-            kwargs: vec![],
-            arg_runtime_ids: vec![],
-            kwarg_runtime_ids: vec![],
-        }
-    }
-}
-
-fn runtime_value_id(value: &Value) -> RuntimeValueId {
-    RuntimeValueId::new(value.id())
-}
-
-type HostKwarg = (MontyObject, MontyObject);
-
-type HostKwargRuntimeIds = (RuntimeValueId, RuntimeValueId);

@@ -11,7 +11,7 @@ use std::{
 use crate::runtime_id::RuntimeValueId;
 
 /// Event class for external-call request points.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExternalCallKind {
     /// A host external function call.
     Function,

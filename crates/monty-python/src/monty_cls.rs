@@ -851,6 +851,26 @@ pub struct PyFunctionSnapshot {
     /// The unique identifier for this call
     #[pyo3(get)]
     pub call_id: u32,
+    /// Stable runtime IDs for positional args in `args` order.
+    #[pyo3(get)]
+    pub arg_runtime_ids: Vec<u64>,
+    /// Stable runtime IDs for keyword `(key, value)` pairs in `kwargs` order.
+    #[pyo3(get)]
+    pub kwarg_runtime_ids: Vec<(u64, u64)>,
+}
+
+/// Converts runtime-id wrappers to raw stable IDs for Python-facing snapshots.
+fn map_runtime_ids(
+    arg_ids: &[::monty::RuntimeValueId],
+    kwarg_ids: &[(::monty::RuntimeValueId, ::monty::RuntimeValueId)],
+) -> (Vec<u64>, Vec<(u64, u64)>) {
+    (
+        arg_ids.iter().map(|id| id.raw() as u64).collect(),
+        kwarg_ids
+            .iter()
+            .map(|(key, value)| (key.raw() as u64, value.raw() as u64))
+            .collect(),
+    )
 }
 
 impl PyFunctionSnapshot {
@@ -869,6 +889,7 @@ impl PyFunctionSnapshot {
         let function_name = call.function_name.clone();
         let call_id = call.call_id;
         let method_call = call.method_call;
+        let (arg_runtime_ids, kwarg_runtime_ids) = map_runtime_ids(&call.arg_runtime_ids, &call.kwarg_runtime_ids);
         let items: PyResult<Vec<Py<PyAny>>> = call
             .args
             .iter()
@@ -889,6 +910,8 @@ impl PyFunctionSnapshot {
             args: PyTuple::new(py, items?)?.unbind(),
             kwargs: dict.unbind(),
             call_id,
+            arg_runtime_ids,
+            kwarg_runtime_ids,
             dc_registry,
         };
         slf.into_bound_py_any(py)
@@ -908,6 +931,7 @@ impl PyFunctionSnapshot {
     ) -> PyResult<Bound<'_, PyAny>> {
         let function_name = call.function.to_string();
         let call_id = call.call_id;
+        let (arg_runtime_ids, kwarg_runtime_ids) = map_runtime_ids(&call.arg_runtime_ids, &call.kwarg_runtime_ids);
         let items: PyResult<Vec<Py<PyAny>>> = call
             .args
             .iter()
@@ -928,6 +952,8 @@ impl PyFunctionSnapshot {
             args: PyTuple::new(py, items?)?.unbind(),
             kwargs: dict.unbind(),
             call_id,
+            arg_runtime_ids,
+            kwarg_runtime_ids,
             dc_registry,
         };
         slf.into_bound_py_any(py)
@@ -1025,6 +1051,8 @@ impl PyFunctionSnapshot {
             args: Vec<MontyObject>,
             kwargs: Vec<(MontyObject, MontyObject)>,
             call_id: u32,
+            arg_runtime_ids: &'a [u64],
+            kwarg_runtime_ids: &'a [(u64, u64)],
         }
 
         let snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1059,6 +1087,8 @@ impl PyFunctionSnapshot {
             args,
             kwargs,
             call_id: self.call_id,
+            arg_runtime_ids: &self.arg_runtime_ids,
+            kwarg_runtime_ids: &self.kwarg_runtime_ids,
         };
         let bytes = postcard::to_allocvec(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(PyBytes::new(py, &bytes))
@@ -1097,6 +1127,8 @@ impl PyFunctionSnapshot {
             args: Vec<MontyObject>,
             kwargs: Vec<(MontyObject, MontyObject)>,
             call_id: u32,
+            arg_runtime_ids: Vec<u64>,
+            kwarg_runtime_ids: Vec<(u64, u64)>,
         }
 
         let bytes = data.as_bytes();
@@ -1130,6 +1162,8 @@ impl PyFunctionSnapshot {
             args: PyTuple::new(py, args)?.unbind(),
             kwargs: kwargs_dict.unbind(),
             call_id: serialized.call_id,
+            arg_runtime_ids: serialized.arg_runtime_ids,
+            kwarg_runtime_ids: serialized.kwarg_runtime_ids,
         })
     }
 
