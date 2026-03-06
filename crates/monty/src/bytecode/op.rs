@@ -457,9 +457,9 @@ impl Opcode {
             JumpIfTrue, JumpIfTrueOrPop, ListAppend, ListExtend, ListToTuple, LoadAttr, LoadAttrImport, LoadCell,
             LoadConst, LoadFalse, LoadGlobal, LoadGlobalCallable, LoadLocal, LoadLocal0, LoadLocal1, LoadLocal2,
             LoadLocal3, LoadLocalCallable, LoadLocalCallableW, LoadLocalW, LoadModule, LoadNone, LoadSmallInt,
-            LoadTrue, MakeClosure, MakeFunction, Nop, Pop, Raise, RaiseImportError, Reraise, ReturnValue, Rot2,
-            Rot3, SetAdd, SetExtend, StoreAttr, StoreCell, StoreGlobal, StoreLocal, StoreLocalW, StoreSubscr,
-            UnaryInvert, UnaryNeg, UnaryNot, UnaryPos, UnpackEx, UnpackSequence,
+            LoadTrue, MakeClosure, MakeFunction, Nop, Pop, Raise, RaiseImportError, Reraise, ReturnValue, Rot2, Rot3,
+            SetAdd, SetExtend, StoreAttr, StoreCell, StoreGlobal, StoreLocal, StoreLocalW, StoreSubscr, UnaryInvert,
+            UnaryNeg, UnaryNot, UnaryPos, UnpackEx, UnpackSequence,
         };
         Some(match self {
             // Stack operations
