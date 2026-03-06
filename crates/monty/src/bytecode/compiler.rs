@@ -1793,6 +1793,10 @@ impl<'a> Compiler<'a> {
         body: &[PreparedNode],
         or_else: &[PreparedNode],
     ) -> Result<(), CompileError> {
+        // Record stack depth at loop start (before iterator is pushed)
+        // This is the depth we return to when the loop finishes (iterator popped)
+        let loop_exit_depth = self.code.stack_depth();
+
         // Compile iterator expression
         self.compile_expr(iter)?;
         // Convert to iterator
@@ -1822,6 +1826,8 @@ impl<'a> Compiler<'a> {
 
         // End of loop - ForIter jumps here when iterator is exhausted
         self.code.patch_jump(end_jump);
+        // Iterator is popped when loop ends normally, so restore depth to before loop
+        self.code.set_stack_depth(loop_exit_depth);
 
         // Pop loop info before compiling else block
         let loop_info = self.loop_stack.pop().expect("loop stack underflow");
@@ -2162,6 +2168,10 @@ impl<'a> Compiler<'a> {
     ) -> Result<(), CompileError> {
         let generator = &generators[index];
 
+        // Record stack depth before iterator expression
+        // This is the depth we return to when the loop finishes (iterator popped)
+        let loop_exit_depth = self.code.stack_depth();
+
         // Compile iterator expression
         self.compile_expr(&generator.iter)?;
         self.code.emit(Opcode::GetIter);
@@ -2196,6 +2206,8 @@ impl<'a> Compiler<'a> {
 
         // End of loop
         self.code.patch_jump(end_jump);
+        // Iterator is popped when loop ends normally, so restore depth to before loop
+        self.code.set_stack_depth(loop_exit_depth);
 
         Ok(())
     }
