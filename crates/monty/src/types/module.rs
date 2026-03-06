@@ -4,7 +4,7 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapGuard, HeapId},
+    heap::{DropWithHeap, Heap, HeapGuard, HeapId},
     intern::{Interns, StringId},
     resource::ResourceTracker,
     types::{AttrCallResult, Dict, PyTrait},
@@ -132,30 +132,55 @@ impl Module {
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<AttrCallResult> {
-        let heap = &mut *vm.heap;
-        let interns = vm.interns;
-        let mut args_guard = HeapGuard::new(args, heap);
-
         let attr_key = match attr {
             EitherStr::Interned(id) => Value::InternString(*id),
             EitherStr::Heap(s) => {
                 // Module attributes are always interned, so owned strings won't match
-                return Err(ExcType::attribute_error_module(interns.get_str(self.name), s));
+                args.drop_with_heap(&mut *vm.heap);
+                return Err(ExcType::attribute_error_module(vm.interns.get_str(self.name), s));
             }
         };
 
-        match self.get_attr(&attr_key, args_guard.heap(), interns) {
-            Some(Value::ModuleFunction(mf)) => {
-                let (args, heap) = args_guard.into_parts();
-                mf.call(heap, args, interns)
+        // Scope the heap borrow to ensure we can use `vm` later for Builtin::call
+        let attr_val = {
+            let heap = &mut *vm.heap;
+            let interns = vm.interns;
+            let mut args_guard = HeapGuard::new(args, heap);
+
+            if let Some(val) = self.get_attr(&attr_key, args_guard.heap(), interns) {
+                let (args, _) = args_guard.into_parts();
+                Some((val, args))
+            } else {
+                // Not found - args_guard will drop args automatically
+                None
             }
-            Some(func) => {
-                // Found attribute but it's not callable
-                func.drop_with_heap(args_guard.heap());
-                Err(ExcType::type_error("module attribute is not callable"))
+        };
+
+        match attr_val {
+            Some((val, args)) => {
+                // Found attribute - try to call it based on type
+                match val {
+                    Value::ModuleFunction(mf) => {
+                        let heap = &mut *vm.heap;
+                        mf.call(heap, args, vm.interns)
+                    }
+                    Value::Builtin(builtin) => {
+                        // Builtin types/functions can be called with VM access
+                        let result = builtin.call(vm, args)?;
+                        Ok(AttrCallResult::Value(result))
+                    }
+                    func => {
+                        // Found attribute but it's not a supported callable type
+                        // Drop function and args manually
+                        let heap = &mut *vm.heap;
+                        func.drop_with_heap(heap);
+                        args.drop_with_heap(heap);
+                        Err(ExcType::type_error("module attribute is not callable"))
+                    }
+                }
             }
             None => Err(ExcType::attribute_error_module(
-                interns.get_str(self.name),
+                vm.interns.get_str(self.name),
                 attr.as_str(vm.interns),
             )),
         }
