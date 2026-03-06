@@ -218,7 +218,7 @@ def fib(n):
 fib(x)
 "#;
 
-let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned(), vec![]]).unwrap();
+let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()], vec![]).unwrap();
 let result = runner.run(vec![MontyObject::Int(10)], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
 assert_eq!(result, MontyObject::Int(55));
 ```
