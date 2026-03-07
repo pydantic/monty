@@ -361,6 +361,24 @@ impl<T: ResourceTracker> ReplProgress<T> {
             _ => None,
         }
     }
+
+    /// Extracts the REPL session from any progress variant, discarding
+    /// the in-flight execution state.
+    ///
+    /// Use this to recover the REPL when you need to abandon the current
+    /// snippet (e.g. because `feed_run` doesn't support async futures).
+    /// The REPL state reflects any mutations that occurred before the
+    /// snapshot was taken.
+    #[must_use]
+    pub fn into_repl(self) -> MontyRepl<T> {
+        match self {
+            Self::FunctionCall(call) => call.into_repl(),
+            Self::OsCall(call) => call.into_repl(),
+            Self::ResolveFutures(state) => state.into_repl(),
+            Self::NameLookup(lookup) => lookup.into_repl(),
+            Self::Complete { repl, .. } => repl,
+        }
+    }
 }
 
 impl<T: ResourceTracker + serde::Serialize> ReplProgress<T> {
@@ -409,6 +427,12 @@ pub struct ReplFunctionCall<T: ResourceTracker> {
 }
 
 impl<T: ResourceTracker> ReplFunctionCall<T> {
+    /// Extracts the REPL session, discarding the in-flight execution state.
+    #[must_use]
+    pub fn into_repl(self) -> MontyRepl<T> {
+        self.snapshot.repl
+    }
+
     /// Resumes snippet execution with an external result.
     pub fn resume(
         self,
@@ -449,6 +473,12 @@ pub struct ReplOsCall<T: ResourceTracker> {
 }
 
 impl<T: ResourceTracker> ReplOsCall<T> {
+    /// Extracts the REPL session, discarding the in-flight execution state.
+    #[must_use]
+    pub fn into_repl(self) -> MontyRepl<T> {
+        self.snapshot.repl
+    }
+
     /// Resumes snippet execution with the OS call result.
     pub fn resume(
         self,
@@ -482,6 +512,12 @@ pub struct ReplNameLookup<T: ResourceTracker> {
 }
 
 impl<T: ResourceTracker> ReplNameLookup<T> {
+    /// Extracts the REPL session, discarding the in-flight execution state.
+    #[must_use]
+    pub fn into_repl(self) -> MontyRepl<T> {
+        self.snapshot.repl
+    }
+
     /// Resumes execution after name resolution.
     ///
     /// Caches the resolved value in the namespace slot before restoring the VM,
@@ -577,6 +613,12 @@ pub struct ReplResolveFutures<T: ResourceTracker> {
 }
 
 impl<T: ResourceTracker> ReplResolveFutures<T> {
+    /// Extracts the REPL session, discarding the in-flight execution state.
+    #[must_use]
+    pub fn into_repl(self) -> MontyRepl<T> {
+        self.repl
+    }
+
     /// Returns unresolved call IDs for this suspended state.
     #[must_use]
     pub fn pending_call_ids(&self) -> &[u32] {

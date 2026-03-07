@@ -410,6 +410,26 @@ def test_external_function_with_kwargs():
     assert repl.feed_run("greet('world', greeting='hi')", external_functions=ext) == snapshot('hi world')
 
 
+def test_feed_run_no_externals_with_os_preserves_repl_state():
+    """feed_run with os= but no external_functions= preserves REPL state when an external call is hit.
+
+    When os= is provided, feed_run uses the feed_start_loop path. If a non-OS external
+    function is called but external_functions was not provided, the loop must restore
+    the REPL before returning the error.
+    """
+    repl = pydantic_monty.MontyRepl()
+    repl.feed_run('x = 42')
+
+    # Provide os= to force the feed_start_loop path, but no external_functions
+    def dummy_os(func: str, args: object, kwargs: object) -> None:
+        pass
+
+    with pytest.raises(RuntimeError, match='no external_functions provided'):
+        repl.feed_run('unknown_func()', os=dummy_os)
+    # REPL state must be preserved — previously this was lost
+    assert repl.feed_run('x') == snapshot(42)
+
+
 # === Inputs ===
 
 

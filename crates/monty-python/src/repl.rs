@@ -313,10 +313,12 @@ impl PyMontyRepl {
                         let registry = ExternalFunctionRegistry::new(py, ext_fns, &self.dc_registry);
                         registry.call(&call.function_name, &call.args, &call.kwargs)
                     } else {
-                        return Err(PyRuntimeError::new_err(format!(
+                        let msg = format!(
                             "External function '{}' called but no external_functions provided",
                             call.function_name
-                        )));
+                        );
+                        self.put_repl(EitherRepl::from_core(call.into_repl()));
+                        return Err(PyRuntimeError::new_err(msg));
                     };
 
                     progress = py
@@ -372,7 +374,8 @@ impl PyMontyRepl {
                         .detach(|| call.resume(result, print_output))
                         .map_err(|e| self.restore_repl_from_start_error(py, *e))?;
                 }
-                ReplProgress::ResolveFutures(_) => {
+                ReplProgress::ResolveFutures(state) => {
+                    self.put_repl(EitherRepl::from_core(state.into_repl()));
                     return Err(PyRuntimeError::new_err(
                         "async futures not supported with `MontyRepl.feed_run`",
                     ));
