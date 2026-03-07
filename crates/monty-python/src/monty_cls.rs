@@ -462,8 +462,8 @@ pub(crate) enum EitherProgress {
 }
 
 impl EitherProgress {
-    /// Converts a `RunProgress` into the appropriate Python object:
-    /// function snapshot, name lookup snapshot, or complete.
+    /// Converts progress into the appropriate Python object:
+    /// function snapshot, name lookup snapshot, future snapshot, or complete.
     pub(crate) fn progress_or_complete(
         self,
         py: Python<'_>,
@@ -472,76 +472,38 @@ impl EitherProgress {
         dc_registry: DcRegistry,
     ) -> PyResult<Bound<'_, PyAny>> {
         match self {
-            Self::NoLimit(p) => match p {
-                RunProgress::Complete(result) => PyMontyComplete::create(py, &result, &dc_registry),
-                RunProgress::FunctionCall(call) => PyFunctionSnapshot::function_call(
-                    py,
-                    call,
-                    EitherFunctionSnapshot::wrap_fn_no_limit,
-                    script_name,
-                    print_callback,
-                    dc_registry,
-                ),
-                RunProgress::ResolveFutures(state) => PyFutureSnapshot::new_py_any(
-                    py,
-                    EitherFutureSnapshot::NoLimit(state),
-                    script_name,
-                    print_callback,
-                    dc_registry,
-                ),
-                RunProgress::OsCall(call) => PyFunctionSnapshot::os_call(
-                    py,
-                    call,
-                    EitherFunctionSnapshot::wrap_os_no_limit,
-                    script_name,
-                    print_callback,
-                    dc_registry,
-                ),
-                RunProgress::NameLookup(lookup) => PyNameLookupSnapshot::new_py_any(
-                    py,
-                    lookup,
-                    EitherLookupSnapshot::wrap_no_limit,
-                    script_name,
-                    print_callback,
-                    dc_registry,
-                ),
-            },
-            Self::Limited(p) => match p {
-                RunProgress::Complete(result) => PyMontyComplete::create(py, &result, &dc_registry),
-                RunProgress::FunctionCall(call) => PyFunctionSnapshot::function_call(
-                    py,
-                    call,
-                    EitherFunctionSnapshot::wrap_fn_limited,
-                    script_name,
-                    print_callback,
-                    dc_registry,
-                ),
-                RunProgress::ResolveFutures(state) => PyFutureSnapshot::new_py_any(
-                    py,
-                    EitherFutureSnapshot::Limited(state),
-                    script_name,
-                    print_callback,
-                    dc_registry,
-                ),
-                RunProgress::OsCall(call) => PyFunctionSnapshot::os_call(
-                    py,
-                    call,
-                    EitherFunctionSnapshot::wrap_os_limited,
-                    script_name,
-                    print_callback,
-                    dc_registry,
-                ),
-                RunProgress::NameLookup(lookup) => PyNameLookupSnapshot::new_py_any(
-                    py,
-                    lookup,
-                    EitherLookupSnapshot::wrap_limited,
-                    script_name,
-                    print_callback,
-                    dc_registry,
-                ),
-            },
+            Self::NoLimit(p) => run_progress_to_py(py, p, script_name, print_callback, dc_registry),
+            Self::Limited(p) => run_progress_to_py(py, p, script_name, print_callback, dc_registry),
             Self::ReplNoLimit(p, owner) => repl_progress_to_py(py, p, script_name, print_callback, dc_registry, owner),
             Self::ReplLimited(p, owner) => repl_progress_to_py(py, p, script_name, print_callback, dc_registry, owner),
+        }
+    }
+}
+
+/// Converts a `RunProgress<T>` into the appropriate Python snapshot type.
+fn run_progress_to_py<T: ResourceTracker>(
+    py: Python<'_>,
+    progress: RunProgress<T>,
+    script_name: String,
+    print_callback: Option<Py<PyAny>>,
+    dc_registry: DcRegistry,
+) -> PyResult<Bound<'_, PyAny>>
+where
+    EitherFunctionSnapshot: FromFunctionCall<T> + FromOsCall<T>,
+    EitherLookupSnapshot: FromNameLookup<T>,
+    EitherFutureSnapshot: FromResolveFutures<T>,
+{
+    match progress {
+        RunProgress::Complete(result) => PyMontyComplete::create(py, &result, &dc_registry),
+        RunProgress::FunctionCall(call) => {
+            PyFunctionSnapshot::function_call(py, call, script_name, print_callback, dc_registry)
+        }
+        RunProgress::OsCall(call) => PyFunctionSnapshot::os_call(py, call, script_name, print_callback, dc_registry),
+        RunProgress::ResolveFutures(state) => {
+            PyFutureSnapshot::new_py_any(py, state, script_name, print_callback, dc_registry)
+        }
+        RunProgress::NameLookup(lookup) => {
+            PyNameLookupSnapshot::new_py_any(py, lookup, script_name, print_callback, dc_registry)
         }
     }
 }
@@ -624,20 +586,38 @@ enum EitherFunctionSnapshot {
     Done,
 }
 
-impl EitherFunctionSnapshot {
-    fn wrap_fn_no_limit(call: FunctionCall<PySignalTracker<NoLimitTracker>>) -> Self {
+/// Helper trait for wrapping `FunctionCall<T>` into `EitherFunctionSnapshot`.
+trait FromFunctionCall<T: ResourceTracker> {
+    /// Wraps a function call into the appropriate variant.
+    fn from_fn(call: FunctionCall<T>) -> Self;
+}
+
+impl FromFunctionCall<PySignalTracker<NoLimitTracker>> for EitherFunctionSnapshot {
+    fn from_fn(call: FunctionCall<PySignalTracker<NoLimitTracker>>) -> Self {
         Self::NoLimitFn(call)
     }
+}
 
-    fn wrap_fn_limited(call: FunctionCall<PySignalTracker<LimitedTracker>>) -> Self {
+impl FromFunctionCall<PySignalTracker<LimitedTracker>> for EitherFunctionSnapshot {
+    fn from_fn(call: FunctionCall<PySignalTracker<LimitedTracker>>) -> Self {
         Self::LimitedFn(call)
     }
+}
 
-    fn wrap_os_no_limit(call: OsCall<PySignalTracker<NoLimitTracker>>) -> Self {
+/// Helper trait for wrapping `OsCall<T>` into `EitherFunctionSnapshot`.
+trait FromOsCall<T: ResourceTracker> {
+    /// Wraps an OS call into the appropriate variant.
+    fn from_os(call: OsCall<T>) -> Self;
+}
+
+impl FromOsCall<PySignalTracker<NoLimitTracker>> for EitherFunctionSnapshot {
+    fn from_os(call: OsCall<PySignalTracker<NoLimitTracker>>) -> Self {
         Self::NoLimitOs(call)
     }
+}
 
-    fn wrap_os_limited(call: OsCall<PySignalTracker<LimitedTracker>>) -> Self {
+impl FromOsCall<PySignalTracker<LimitedTracker>> for EitherFunctionSnapshot {
+    fn from_os(call: OsCall<PySignalTracker<LimitedTracker>>) -> Self {
         Self::LimitedOs(call)
     }
 }
@@ -786,11 +766,13 @@ impl PyFunctionSnapshot {
     fn function_call<T: ResourceTracker>(
         py: Python<'_>,
         call: FunctionCall<T>,
-        wrap: fn(FunctionCall<T>) -> EitherFunctionSnapshot,
         script_name: String,
         print_callback: Option<Py<PyAny>>,
         dc_registry: DcRegistry,
-    ) -> PyResult<Bound<'_, PyAny>> {
+    ) -> PyResult<Bound<'_, PyAny>>
+    where
+        EitherFunctionSnapshot: FromFunctionCall<T>,
+    {
         let function_name = call.function_name.clone();
         let call_id = call.call_id;
         let method_call = call.method_call;
@@ -805,7 +787,7 @@ impl PyFunctionSnapshot {
         }
 
         let slf = Self {
-            snapshot: Mutex::new(wrap(call)),
+            snapshot: Mutex::new(EitherFunctionSnapshot::from_fn(call)),
             print_callback,
             script_name,
             is_os_function: false,
@@ -826,11 +808,13 @@ impl PyFunctionSnapshot {
     fn os_call<T: ResourceTracker>(
         py: Python<'_>,
         call: OsCall<T>,
-        wrap: fn(OsCall<T>) -> EitherFunctionSnapshot,
         script_name: String,
         print_callback: Option<Py<PyAny>>,
         dc_registry: DcRegistry,
-    ) -> PyResult<Bound<'_, PyAny>> {
+    ) -> PyResult<Bound<'_, PyAny>>
+    where
+        EitherFunctionSnapshot: FromOsCall<T>,
+    {
         let function_name = call.function.to_string();
         let call_id = call.call_id;
         let items: PyResult<Vec<Py<PyAny>>> = call
@@ -844,7 +828,7 @@ impl PyFunctionSnapshot {
         }
 
         let slf = Self {
-            snapshot: Mutex::new(wrap(call)),
+            snapshot: Mutex::new(EitherFunctionSnapshot::from_os(call)),
             print_callback,
             script_name,
             is_os_function: true,
@@ -1188,12 +1172,20 @@ enum EitherLookupSnapshot {
     Done,
 }
 
-impl EitherLookupSnapshot {
-    fn wrap_no_limit(lookup: NameLookup<PySignalTracker<NoLimitTracker>>) -> Self {
+/// Helper trait for wrapping `NameLookup<T>` into `EitherLookupSnapshot`.
+trait FromNameLookup<T: ResourceTracker> {
+    /// Wraps a name lookup into the appropriate variant.
+    fn from_name_lookup(lookup: NameLookup<T>) -> Self;
+}
+
+impl FromNameLookup<PySignalTracker<NoLimitTracker>> for EitherLookupSnapshot {
+    fn from_name_lookup(lookup: NameLookup<PySignalTracker<NoLimitTracker>>) -> Self {
         Self::NoLimit(lookup)
     }
+}
 
-    fn wrap_limited(lookup: NameLookup<PySignalTracker<LimitedTracker>>) -> Self {
+impl FromNameLookup<PySignalTracker<LimitedTracker>> for EitherLookupSnapshot {
+    fn from_name_lookup(lookup: NameLookup<PySignalTracker<LimitedTracker>>) -> Self {
         Self::Limited(lookup)
     }
 }
@@ -1286,15 +1278,17 @@ impl PyNameLookupSnapshot {
     fn new_py_any<T: ResourceTracker>(
         py: Python<'_>,
         lookup: NameLookup<T>,
-        wrap: fn(NameLookup<T>) -> EitherLookupSnapshot,
         script_name: String,
         print_callback: Option<Py<PyAny>>,
         dc_registry: DcRegistry,
-    ) -> PyResult<Bound<'_, PyAny>> {
+    ) -> PyResult<Bound<'_, PyAny>>
+    where
+        EitherLookupSnapshot: FromNameLookup<T>,
+    {
         let variable_name = lookup.name.clone();
 
         let slf = Self {
-            snapshot: Mutex::new(wrap(lookup)),
+            snapshot: Mutex::new(EitherLookupSnapshot::from_name_lookup(lookup)),
             print_callback,
             dc_registry,
             script_name,
@@ -1497,6 +1491,24 @@ enum EitherFutureSnapshot {
     Done,
 }
 
+/// Helper trait for wrapping `ResolveFutures<T>` into `EitherFutureSnapshot`.
+trait FromResolveFutures<T: ResourceTracker> {
+    /// Wraps a resolve-futures state into the appropriate variant.
+    fn from_resolve_futures(state: ResolveFutures<T>) -> Self;
+}
+
+impl FromResolveFutures<PySignalTracker<NoLimitTracker>> for EitherFutureSnapshot {
+    fn from_resolve_futures(state: ResolveFutures<PySignalTracker<NoLimitTracker>>) -> Self {
+        Self::NoLimit(state)
+    }
+}
+
+impl FromResolveFutures<PySignalTracker<LimitedTracker>> for EitherFutureSnapshot {
+    fn from_resolve_futures(state: ResolveFutures<PySignalTracker<LimitedTracker>>) -> Self {
+        Self::Limited(state)
+    }
+}
+
 /// Helper trait for wrapping `ReplResolveFutures<T>` into `EitherFutureSnapshot`.
 trait FromReplResolveFutures<T: ResourceTracker> {
     /// Wraps a REPL resolve-futures state into the appropriate variant.
@@ -1582,15 +1594,18 @@ pub struct PyFutureSnapshot {
 }
 
 impl PyFutureSnapshot {
-    fn new_py_any(
+    fn new_py_any<T: ResourceTracker>(
         py: Python<'_>,
-        snapshot: EitherFutureSnapshot,
+        state: ResolveFutures<T>,
         script_name: String,
         print_callback: Option<Py<PyAny>>,
         dc_registry: DcRegistry,
-    ) -> PyResult<Bound<'_, PyAny>> {
+    ) -> PyResult<Bound<'_, PyAny>>
+    where
+        EitherFutureSnapshot: FromResolveFutures<T>,
+    {
         let slf = Self {
-            snapshot: Mutex::new(snapshot),
+            snapshot: Mutex::new(EitherFutureSnapshot::from_resolve_futures(state)),
             print_callback,
             dc_registry,
             script_name,
