@@ -1334,7 +1334,7 @@ impl PyMontyComplete {
     }
 }
 
-pub(crate) fn list_str(arg: Option<&Bound<'_, PyList>>, name: &str) -> PyResult<Vec<String>> {
+fn list_str(arg: Option<&Bound<'_, PyList>>, name: &str) -> PyResult<Vec<String>> {
     if let Some(names) = arg {
         names
             .iter()
@@ -1356,7 +1356,7 @@ pub(crate) struct CallbackStringPrint(Py<PyAny>);
 
 impl CallbackStringPrint {
     /// Creates a new `CallbackStringPrint` from a borrowed Python callback.
-    pub(crate) fn new(callback: &Bound<'_, PyAny>) -> Self {
+    fn new(callback: &Bound<'_, PyAny>) -> Self {
         Self(callback.clone().unbind())
     }
 
