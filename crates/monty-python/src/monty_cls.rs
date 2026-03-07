@@ -1007,28 +1007,6 @@ impl PyFunctionSnapshot {
         Ok(PyBytes::new(py, &bytes))
     }
 
-    /// Deserializes a FunctionSnapshot instance from binary format.
-    ///
-    /// Note: The `print_callback` is not preserved during serialization and must be
-    /// re-provided as a keyword argument if print output is needed.
-    ///
-    /// **Deprecated**: Use `load_snapshot()` or `load_repl_snapshot()` instead.
-    /// Those module-level functions auto-detect the snapshot type and handle
-    /// REPL round-trips correctly.
-    ///
-    /// # Raises
-    /// `ValueError` if deserialization fails.
-    #[staticmethod]
-    #[pyo3(signature = (data, *, print_callback=None, dataclass_registry=None))]
-    fn load<'py>(
-        py: Python<'py>,
-        data: &Bound<'_, PyBytes>,
-        print_callback: Option<Py<PyAny>>,
-        dataclass_registry: Option<&Bound<'_, PyList>>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        crate::serialization::load_snapshot(py, data, print_callback, dataclass_registry)
-    }
-
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
         Ok(format!(
             "FunctionSnapshot(script_name='{}', function_name='{}', args={}, kwargs={})",
@@ -1259,28 +1237,6 @@ impl PyNameLookupSnapshot {
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let bytes = crate::serialization::dump_lookup_snapshot(&self.snapshot, &self.script_name, &self.variable_name)?;
         Ok(PyBytes::new(py, &bytes))
-    }
-
-    /// Deserializes a NameLookupSnapshot instance from binary format.
-    ///
-    /// Note: The `print_callback` is not preserved during serialization and must be
-    /// re-provided as a keyword argument if print output is needed.
-    ///
-    /// **Deprecated**: Use `load_snapshot()` or `load_repl_snapshot()` instead.
-    /// Those module-level functions auto-detect the snapshot type and handle
-    /// REPL round-trips correctly.
-    ///
-    /// # Raises
-    /// `ValueError` if deserialization fails.
-    #[staticmethod]
-    #[pyo3(signature = (data, *, print_callback=None, dataclass_registry=None))]
-    fn load<'py>(
-        py: Python<'py>,
-        data: &Bound<'_, PyBytes>,
-        print_callback: Option<Py<PyAny>>,
-        dataclass_registry: Option<&Bound<'_, PyList>>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        crate::serialization::load_snapshot(py, data, print_callback, dataclass_registry)
     }
 
     fn __repr__(&self) -> String {
@@ -1526,28 +1482,6 @@ impl PyFutureSnapshot {
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let bytes = crate::serialization::dump_future_snapshot(&self.snapshot, &self.script_name)?;
         Ok(PyBytes::new(py, &bytes))
-    }
-
-    /// Deserializes a FutureSnapshot instance from binary format.
-    ///
-    /// Note: The `print_callback` is not preserved during serialization and must be
-    /// re-provided as a keyword argument if print output is needed.
-    ///
-    /// **Deprecated**: Use `load_snapshot()` or `load_repl_snapshot()` instead.
-    /// Those module-level functions auto-detect the snapshot type and handle
-    /// REPL round-trips correctly.
-    ///
-    /// # Raises
-    /// `ValueError` if deserialization fails.
-    #[staticmethod]
-    #[pyo3(signature = (data, *, print_callback=None, dataclass_registry=None))]
-    fn load<'py>(
-        py: Python<'py>,
-        data: &Bound<'_, PyBytes>,
-        print_callback: Option<Py<PyAny>>,
-        dataclass_registry: Option<&Bound<'_, PyList>>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        crate::serialization::load_snapshot(py, data, print_callback, dataclass_registry)
     }
 
     fn __repr__(&self) -> String {

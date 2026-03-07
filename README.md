@@ -198,7 +198,7 @@ progress = m.start(inputs={'url': 'https://example.com'})
 state = progress.dump()
 
 # Later, restore and resume (e.g., in a different process)
-progress2 = pydantic_monty.FunctionSnapshot.load(state)
+progress2 = pydantic_monty.load_snapshot(state)
 result = progress2.resume(return_value='response data')
 print(result.output)
 #> response data

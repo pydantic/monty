@@ -52,13 +52,15 @@ await asyncio.gather(foo(1), bar(2))
     assert isinstance(progress, pydantic_monty.MontyComplete)
     assert progress.output == snapshot([3, 4])
 
-    progress2 = pydantic_monty.FutureSnapshot.load(dump_progress)
+    progress2 = pydantic_monty.load_snapshot(dump_progress)
+    assert isinstance(progress2, pydantic_monty.FutureSnapshot)
     assert progress2.pending_call_ids == IsList(foo_call_ids, bar_call_ids, check_order=False)
     progress = progress2.resume({bar_call_ids: {'return_value': 14}, foo_call_ids: {'return_value': 13}})
     assert isinstance(progress, pydantic_monty.MontyComplete)
     assert progress.output == snapshot([13, 14])
 
-    progress3 = pydantic_monty.FutureSnapshot.load(dump_progress)
+    progress3 = pydantic_monty.load_snapshot(dump_progress)
+    assert isinstance(progress3, pydantic_monty.FutureSnapshot)
     progress = progress3.resume({bar_call_ids: {'return_value': 14}, foo_call_ids: {'future': ...}})
     assert isinstance(progress, pydantic_monty.FutureSnapshot)
 

@@ -19,6 +19,8 @@ from ._monty import (
     MontyTypingError,
     NameLookupSnapshot,
     __version__,
+    load_repl_snapshot,
+    load_snapshot,
 )
 from .os_access import AbstractFile, AbstractOS, CallbackFile, MemoryFile, OSAccess, OsFunction, StatResult
 
@@ -40,6 +42,8 @@ __all__ = (
     'MontyRuntimeError',
     'MontyTypingError',
     'Frame',
+    'load_snapshot',
+    'load_repl_snapshot',
     # os_access
     'StatResult',
     'OsFunction',

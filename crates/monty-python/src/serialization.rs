@@ -93,11 +93,14 @@ fn deserialize_with_header<'de, T: Deserialize<'de>>(bytes: &'de [u8]) -> PyResu
 ///
 /// Postcard's enum tagging handles type discrimination, so `load_snapshot`
 /// doesn't need to know the snapshot type upfront.
+///
+/// Uses `Serde*Snapshot` types for snapshot fields — these are the wire-format
+/// representations without `Py<PyMontyRepl>` references.
 #[derive(Serialize, Deserialize)]
 pub(crate) enum SerializedSnapshot {
     /// External function or OS call.
     Function {
-        snapshot: EitherFunctionSnapshot,
+        snapshot: SerdeFunctionSnapshot,
         script_name: String,
         is_os_function: bool,
         is_method_call: bool,
@@ -108,13 +111,13 @@ pub(crate) enum SerializedSnapshot {
     },
     /// Name lookup.
     NameLookup {
-        snapshot: EitherLookupSnapshot,
+        snapshot: SerdeLookupSnapshot,
         script_name: String,
         variable_name: String,
     },
     /// Future resolution.
     Future {
-        snapshot: EitherFutureSnapshot,
+        snapshot: SerdeFutureSnapshot,
         script_name: String,
     },
 }
@@ -160,10 +163,10 @@ pub(crate) enum SerializedReplSnapshot {
 // Serde helpers for Either*Snapshot types
 // ---------------------------------------------------------------------------
 
-/// Serde helper: mirrors `EitherFunctionSnapshot` layout but without `Py<PyMontyRepl>`.
+/// Wire-format representation of `EitherFunctionSnapshot` without `Py<PyMontyRepl>`.
 ///
-/// REPL variants are serialized with the inner call data preserved; for non-REPL loads
-/// they produce `Done`, but for REPL loads they are rewired with a fresh `Py<PyMontyRepl>`.
+/// REPL variants preserve the inner call data for round-tripping through
+/// `load_repl_snapshot`. Non-REPL variants pass through directly.
 #[derive(Serialize, Deserialize)]
 pub(crate) enum SerdeFunctionSnapshot {
     NoLimitFn(FunctionCall<PySignalTracker<NoLimitTracker>>),
@@ -177,7 +180,7 @@ pub(crate) enum SerdeFunctionSnapshot {
     Done,
 }
 
-/// Serde helper: borrows from `EitherFunctionSnapshot` for zero-copy serialization.
+/// Borrowing version of `SerdeFunctionSnapshot` for zero-copy serialization.
 #[derive(Serialize)]
 enum SerdeFunctionSnapshotRef<'a> {
     NoLimitFn(&'a FunctionCall<PySignalTracker<NoLimitTracker>>),
@@ -191,46 +194,27 @@ enum SerdeFunctionSnapshotRef<'a> {
     Done,
 }
 
-impl Serialize for EitherFunctionSnapshot {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let r = match self {
-            Self::NoLimitFn(c) => SerdeFunctionSnapshotRef::NoLimitFn(c),
-            Self::NoLimitOs(c) => SerdeFunctionSnapshotRef::NoLimitOs(c),
-            Self::LimitedFn(c) => SerdeFunctionSnapshotRef::LimitedFn(c),
-            Self::LimitedOs(c) => SerdeFunctionSnapshotRef::LimitedOs(c),
-            Self::ReplNoLimitFn(c, _) => SerdeFunctionSnapshotRef::ReplNoLimitFn(c),
-            Self::ReplNoLimitOs(c, _) => SerdeFunctionSnapshotRef::ReplNoLimitOs(c),
-            Self::ReplLimitedFn(c, _) => SerdeFunctionSnapshotRef::ReplLimitedFn(c),
-            Self::ReplLimitedOs(c, _) => SerdeFunctionSnapshotRef::ReplLimitedOs(c),
-            Self::Done => SerdeFunctionSnapshotRef::Done,
-        };
-        r.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for EitherFunctionSnapshot {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let v = SerdeFunctionSnapshot::deserialize(deserializer)?;
-        Ok(match v {
-            SerdeFunctionSnapshot::NoLimitFn(c) => Self::NoLimitFn(c),
-            SerdeFunctionSnapshot::NoLimitOs(c) => Self::NoLimitOs(c),
-            SerdeFunctionSnapshot::LimitedFn(c) => Self::LimitedFn(c),
-            SerdeFunctionSnapshot::LimitedOs(c) => Self::LimitedOs(c),
-            // REPL variants deserialize as Done — the REPL owner is restored separately
-            // by `load_repl_snapshot` which uses `SerdeFunctionSnapshot` directly.
-            SerdeFunctionSnapshot::ReplNoLimitFn(_)
-            | SerdeFunctionSnapshot::ReplNoLimitOs(_)
-            | SerdeFunctionSnapshot::ReplLimitedFn(_)
-            | SerdeFunctionSnapshot::ReplLimitedOs(_)
-            | SerdeFunctionSnapshot::Done => Self::Done,
-        })
-    }
-}
-
 impl SerdeFunctionSnapshot {
-    /// Converts a deserialized serde snapshot into an `EitherFunctionSnapshot` with a REPL owner.
+    /// Converts into `EitherFunctionSnapshot` for the non-REPL path.
     ///
-    /// REPL variants are attached to the given `Py<PyMontyRepl>`.
+    /// Returns an error if this contains a REPL variant — use `into_either_with_repl`
+    /// for REPL snapshots instead.
+    fn into_either(self) -> PyResult<EitherFunctionSnapshot> {
+        match self {
+            Self::NoLimitFn(c) => Ok(EitherFunctionSnapshot::NoLimitFn(c)),
+            Self::NoLimitOs(c) => Ok(EitherFunctionSnapshot::NoLimitOs(c)),
+            Self::LimitedFn(c) => Ok(EitherFunctionSnapshot::LimitedFn(c)),
+            Self::LimitedOs(c) => Ok(EitherFunctionSnapshot::LimitedOs(c)),
+            Self::ReplNoLimitFn(_) | Self::ReplNoLimitOs(_) | Self::ReplLimitedFn(_) | Self::ReplLimitedOs(_) => Err(
+                PyValueError::new_err("Cannot load a REPL snapshot with load_snapshot, use load_repl_snapshot instead"),
+            ),
+            Self::Done => Ok(EitherFunctionSnapshot::Done),
+        }
+    }
+
+    /// Converts into `EitherFunctionSnapshot` with a REPL owner attached.
+    ///
+    /// REPL variants are wired to the given `Py<PyMontyRepl>`.
     /// Non-REPL variants pass through unchanged.
     fn into_either_with_repl(self, owner: Py<PyMontyRepl>) -> EitherFunctionSnapshot {
         match self {
@@ -247,7 +231,24 @@ impl SerdeFunctionSnapshot {
     }
 }
 
-/// Serde helper: serializable subset of `EitherLookupSnapshot` without REPL owner.
+impl EitherFunctionSnapshot {
+    /// Borrows self as a `SerdeFunctionSnapshotRef` for serialization.
+    fn as_serde_ref(&self) -> SerdeFunctionSnapshotRef<'_> {
+        match self {
+            Self::NoLimitFn(c) => SerdeFunctionSnapshotRef::NoLimitFn(c),
+            Self::NoLimitOs(c) => SerdeFunctionSnapshotRef::NoLimitOs(c),
+            Self::LimitedFn(c) => SerdeFunctionSnapshotRef::LimitedFn(c),
+            Self::LimitedOs(c) => SerdeFunctionSnapshotRef::LimitedOs(c),
+            Self::ReplNoLimitFn(c, _) => SerdeFunctionSnapshotRef::ReplNoLimitFn(c),
+            Self::ReplNoLimitOs(c, _) => SerdeFunctionSnapshotRef::ReplNoLimitOs(c),
+            Self::ReplLimitedFn(c, _) => SerdeFunctionSnapshotRef::ReplLimitedFn(c),
+            Self::ReplLimitedOs(c, _) => SerdeFunctionSnapshotRef::ReplLimitedOs(c),
+            Self::Done => SerdeFunctionSnapshotRef::Done,
+        }
+    }
+}
+
+/// Wire-format representation of `EitherLookupSnapshot` without `Py<PyMontyRepl>`.
 #[derive(Serialize, Deserialize)]
 pub(crate) enum SerdeLookupSnapshot {
     NoLimit(NameLookup<PySignalTracker<NoLimitTracker>>),
@@ -257,7 +258,7 @@ pub(crate) enum SerdeLookupSnapshot {
     Done,
 }
 
-/// Serde helper: borrows from `EitherLookupSnapshot` for zero-copy serialization.
+/// Borrowing version of `SerdeLookupSnapshot` for zero-copy serialization.
 #[derive(Serialize)]
 enum SerdeLookupSnapshotRef<'a> {
     NoLimit(&'a NameLookup<PySignalTracker<NoLimitTracker>>),
@@ -267,34 +268,20 @@ enum SerdeLookupSnapshotRef<'a> {
     Done,
 }
 
-impl Serialize for EitherLookupSnapshot {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let r = match self {
-            Self::NoLimit(l) => SerdeLookupSnapshotRef::NoLimit(l),
-            Self::Limited(l) => SerdeLookupSnapshotRef::Limited(l),
-            Self::ReplNoLimit(l, _) => SerdeLookupSnapshotRef::ReplNoLimit(l),
-            Self::ReplLimited(l, _) => SerdeLookupSnapshotRef::ReplLimited(l),
-            Self::Done => SerdeLookupSnapshotRef::Done,
-        };
-        r.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for EitherLookupSnapshot {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let v = SerdeLookupSnapshot::deserialize(deserializer)?;
-        Ok(match v {
-            SerdeLookupSnapshot::NoLimit(l) => Self::NoLimit(l),
-            SerdeLookupSnapshot::Limited(l) => Self::Limited(l),
-            SerdeLookupSnapshot::ReplNoLimit(_) | SerdeLookupSnapshot::ReplLimited(_) | SerdeLookupSnapshot::Done => {
-                Self::Done
-            }
-        })
-    }
-}
-
 impl SerdeLookupSnapshot {
-    /// Converts a deserialized serde snapshot into an `EitherLookupSnapshot` with a REPL owner.
+    /// Converts into `EitherLookupSnapshot` for the non-REPL path.
+    fn into_either(self) -> PyResult<EitherLookupSnapshot> {
+        match self {
+            Self::NoLimit(l) => Ok(EitherLookupSnapshot::NoLimit(l)),
+            Self::Limited(l) => Ok(EitherLookupSnapshot::Limited(l)),
+            Self::ReplNoLimit(_) | Self::ReplLimited(_) => Err(PyValueError::new_err(
+                "Cannot load a REPL snapshot with load_snapshot, use load_repl_snapshot instead",
+            )),
+            Self::Done => Ok(EitherLookupSnapshot::Done),
+        }
+    }
+
+    /// Converts into `EitherLookupSnapshot` with a REPL owner attached.
     fn into_either_with_repl(self, owner: Py<PyMontyRepl>) -> EitherLookupSnapshot {
         match self {
             Self::NoLimit(l) => EitherLookupSnapshot::NoLimit(l),
@@ -306,7 +293,20 @@ impl SerdeLookupSnapshot {
     }
 }
 
-/// Serde helper for `EitherFutureSnapshot` without REPL owner.
+impl EitherLookupSnapshot {
+    /// Borrows self as a `SerdeLookupSnapshotRef` for serialization.
+    fn as_serde_ref(&self) -> SerdeLookupSnapshotRef<'_> {
+        match self {
+            Self::NoLimit(l) => SerdeLookupSnapshotRef::NoLimit(l),
+            Self::Limited(l) => SerdeLookupSnapshotRef::Limited(l),
+            Self::ReplNoLimit(l, _) => SerdeLookupSnapshotRef::ReplNoLimit(l),
+            Self::ReplLimited(l, _) => SerdeLookupSnapshotRef::ReplLimited(l),
+            Self::Done => SerdeLookupSnapshotRef::Done,
+        }
+    }
+}
+
+/// Wire-format representation of `EitherFutureSnapshot` without `Py<PyMontyRepl>`.
 #[derive(Serialize, Deserialize)]
 pub(crate) enum SerdeFutureSnapshot {
     NoLimit(ResolveFutures<PySignalTracker<NoLimitTracker>>),
@@ -316,7 +316,7 @@ pub(crate) enum SerdeFutureSnapshot {
     Done,
 }
 
-/// Serde helper: borrows from `EitherFutureSnapshot` for zero-copy serialization.
+/// Borrowing version of `SerdeFutureSnapshot` for zero-copy serialization.
 #[derive(Serialize)]
 enum SerdeFutureSnapshotRef<'a> {
     NoLimit(&'a ResolveFutures<PySignalTracker<NoLimitTracker>>),
@@ -326,34 +326,20 @@ enum SerdeFutureSnapshotRef<'a> {
     Done,
 }
 
-impl Serialize for EitherFutureSnapshot {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let r = match self {
-            Self::NoLimit(s) => SerdeFutureSnapshotRef::NoLimit(s),
-            Self::Limited(s) => SerdeFutureSnapshotRef::Limited(s),
-            Self::ReplNoLimit(s, _) => SerdeFutureSnapshotRef::ReplNoLimit(s),
-            Self::ReplLimited(s, _) => SerdeFutureSnapshotRef::ReplLimited(s),
-            Self::Done => SerdeFutureSnapshotRef::Done,
-        };
-        r.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for EitherFutureSnapshot {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let v = SerdeFutureSnapshot::deserialize(deserializer)?;
-        Ok(match v {
-            SerdeFutureSnapshot::NoLimit(s) => Self::NoLimit(s),
-            SerdeFutureSnapshot::Limited(s) => Self::Limited(s),
-            SerdeFutureSnapshot::ReplNoLimit(_) | SerdeFutureSnapshot::ReplLimited(_) | SerdeFutureSnapshot::Done => {
-                Self::Done
-            }
-        })
-    }
-}
-
 impl SerdeFutureSnapshot {
-    /// Converts a deserialized serde snapshot into an `EitherFutureSnapshot` with a REPL owner.
+    /// Converts into `EitherFutureSnapshot` for the non-REPL path.
+    fn into_either(self) -> PyResult<EitherFutureSnapshot> {
+        match self {
+            Self::NoLimit(s) => Ok(EitherFutureSnapshot::NoLimit(s)),
+            Self::Limited(s) => Ok(EitherFutureSnapshot::Limited(s)),
+            Self::ReplNoLimit(_) | Self::ReplLimited(_) => Err(PyValueError::new_err(
+                "Cannot load a REPL snapshot with load_snapshot, use load_repl_snapshot instead",
+            )),
+            Self::Done => Ok(EitherFutureSnapshot::Done),
+        }
+    }
+
+    /// Converts into `EitherFutureSnapshot` with a REPL owner attached.
     fn into_either_with_repl(self, owner: Py<PyMontyRepl>) -> EitherFutureSnapshot {
         match self {
             Self::NoLimit(s) => EitherFutureSnapshot::NoLimit(s),
@@ -361,6 +347,19 @@ impl SerdeFutureSnapshot {
             Self::ReplNoLimit(s) => EitherFutureSnapshot::ReplNoLimit(s, owner),
             Self::ReplLimited(s) => EitherFutureSnapshot::ReplLimited(s, owner),
             Self::Done => EitherFutureSnapshot::Done,
+        }
+    }
+}
+
+impl EitherFutureSnapshot {
+    /// Borrows self as a `SerdeFutureSnapshotRef` for serialization.
+    fn as_serde_ref(&self) -> SerdeFutureSnapshotRef<'_> {
+        match self {
+            Self::NoLimit(s) => SerdeFutureSnapshotRef::NoLimit(s),
+            Self::Limited(s) => SerdeFutureSnapshotRef::Limited(s),
+            Self::ReplNoLimit(s, _) => SerdeFutureSnapshotRef::ReplNoLimit(s),
+            Self::ReplLimited(s, _) => SerdeFutureSnapshotRef::ReplLimited(s),
+            Self::Done => SerdeFutureSnapshotRef::Done,
         }
     }
 }
@@ -396,10 +395,12 @@ pub(crate) fn dump_function_snapshot(
     let args_monty = convert_args_to_monty(py, args, dc_registry)?;
     let kwargs_monty = convert_kwargs_to_monty(py, kwargs, dc_registry)?;
 
+    let serde_ref = snapshot.as_serde_ref();
+
     if snapshot.is_repl() {
         let repl = snapshot.take_repl_state()?;
         let serialized = SerializedReplSnapshotRef::Function {
-            snapshot: &snapshot,
+            snapshot: serde_ref,
             repl: &repl,
             script_name,
             is_os_function,
@@ -412,7 +413,7 @@ pub(crate) fn dump_function_snapshot(
         serialize_with_header(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))
     } else {
         let serialized = SerializedSnapshotRef::Function {
-            snapshot: &snapshot,
+            snapshot: serde_ref,
             script_name,
             is_os_function,
             is_method_call,
@@ -438,10 +439,12 @@ pub(crate) fn dump_lookup_snapshot(
         ));
     }
 
+    let serde_ref = snapshot.as_serde_ref();
+
     if snapshot.is_repl() {
         let repl = snapshot.take_repl_state()?;
         let serialized = SerializedReplSnapshotRef::NameLookup {
-            snapshot: &snapshot,
+            snapshot: serde_ref,
             repl: &repl,
             script_name,
             variable_name,
@@ -449,7 +452,7 @@ pub(crate) fn dump_lookup_snapshot(
         serialize_with_header(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))
     } else {
         let serialized = SerializedSnapshotRef::NameLookup {
-            snapshot: &snapshot,
+            snapshot: serde_ref,
             script_name,
             variable_name,
         };
@@ -469,17 +472,19 @@ pub(crate) fn dump_future_snapshot(
         ));
     }
 
+    let serde_ref = snapshot.as_serde_ref();
+
     if snapshot.is_repl() {
         let repl = snapshot.take_repl_state()?;
         let serialized = SerializedReplSnapshotRef::Future {
-            snapshot: &snapshot,
+            snapshot: serde_ref,
             repl: &repl,
             script_name,
         };
         serialize_with_header(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))
     } else {
         let serialized = SerializedSnapshotRef::Future {
-            snapshot: &snapshot,
+            snapshot: serde_ref,
             script_name,
         };
         serialize_with_header(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))
@@ -494,7 +499,7 @@ pub(crate) fn dump_future_snapshot(
 #[derive(Serialize)]
 enum SerializedSnapshotRef<'a> {
     Function {
-        snapshot: &'a EitherFunctionSnapshot,
+        snapshot: SerdeFunctionSnapshotRef<'a>,
         script_name: &'a str,
         is_os_function: bool,
         is_method_call: bool,
@@ -504,12 +509,12 @@ enum SerializedSnapshotRef<'a> {
         call_id: u32,
     },
     NameLookup {
-        snapshot: &'a EitherLookupSnapshot,
+        snapshot: SerdeLookupSnapshotRef<'a>,
         script_name: &'a str,
         variable_name: &'a str,
     },
     Future {
-        snapshot: &'a EitherFutureSnapshot,
+        snapshot: SerdeFutureSnapshotRef<'a>,
         script_name: &'a str,
     },
 }
@@ -518,7 +523,7 @@ enum SerializedSnapshotRef<'a> {
 #[derive(Serialize)]
 enum SerializedReplSnapshotRef<'a> {
     Function {
-        snapshot: &'a EitherFunctionSnapshot,
+        snapshot: SerdeFunctionSnapshotRef<'a>,
         repl: &'a EitherRepl,
         script_name: &'a str,
         is_os_function: bool,
@@ -529,13 +534,13 @@ enum SerializedReplSnapshotRef<'a> {
         call_id: u32,
     },
     NameLookup {
-        snapshot: &'a EitherLookupSnapshot,
+        snapshot: SerdeLookupSnapshotRef<'a>,
         repl: &'a EitherRepl,
         script_name: &'a str,
         variable_name: &'a str,
     },
     Future {
-        snapshot: &'a EitherFutureSnapshot,
+        snapshot: SerdeFutureSnapshotRef<'a>,
         repl: &'a EitherRepl,
         script_name: &'a str,
     },
@@ -572,11 +577,12 @@ pub(crate) fn load_snapshot<'py>(
             kwargs,
             call_id,
         } => {
+            let either = snapshot.into_either()?;
             let py_args = monty_objects_to_py_tuple(py, &args, &dc_registry)?;
             let py_kwargs = monty_pairs_to_py_dict(py, &kwargs, &dc_registry)?;
             PyFunctionSnapshot::from_deserialized(
                 py,
-                snapshot,
+                either,
                 print_callback,
                 dc_registry,
                 script_name,
@@ -592,16 +598,13 @@ pub(crate) fn load_snapshot<'py>(
             snapshot,
             script_name,
             variable_name,
-        } => PyNameLookupSnapshot::from_deserialized(
-            py,
-            snapshot,
-            print_callback,
-            dc_registry,
-            script_name,
-            variable_name,
-        ),
+        } => {
+            let either = snapshot.into_either()?;
+            PyNameLookupSnapshot::from_deserialized(py, either, print_callback, dc_registry, script_name, variable_name)
+        }
         SerializedSnapshot::Future { snapshot, script_name } => {
-            PyFutureSnapshot::from_deserialized(py, snapshot, print_callback, dc_registry, script_name)
+            let either = snapshot.into_either()?;
+            PyFutureSnapshot::from_deserialized(py, either, print_callback, dc_registry, script_name)
         }
     }
 }

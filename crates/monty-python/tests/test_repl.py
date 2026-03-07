@@ -562,19 +562,162 @@ def test_feed_start_name_lookup():
     assert repl.feed_run('x') == snapshot(42)
 
 
-# def test_feed_start_dump_load():
-#     """FunctionSnapshot from feed_start can be serialized and deserialized."""
-#     # TODO: fix serde for REPL snapshot variants
-#     repl = pydantic_monty.MontyRepl()
-#     progress = repl.feed_start('add(1, 2)')
-#     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
-#     data = progress.dump()
-#     loaded = pydantic_monty.FunctionSnapshot.load(data)
-#     assert loaded.function_name == snapshot('add')
-#     assert loaded.args == snapshot((1, 2))
-#     # Deserialized REPL snapshots cannot be resumed (owner is lost during serialization)
-#     with pytest.raises(RuntimeError, match='Progress already resumed'):
-#         loaded.resume(return_value=3)
+def test_feed_start_dump_load_repl_snapshot():
+    """FunctionSnapshot from feed_start can be serialized and deserialized with load_repl_snapshot."""
+    repl = pydantic_monty.MontyRepl()
+    repl.feed_run('x = 10')
+    progress = repl.feed_start('add(x, 2)')
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    data = progress.dump()
+    loaded, loaded_repl = pydantic_monty.load_repl_snapshot(data)
+    assert isinstance(loaded, pydantic_monty.FunctionSnapshot)
+    assert loaded.function_name == snapshot('add')
+    assert loaded.args == snapshot((10, 2))
+
+    # Resume the loaded snapshot
+    result = loaded.resume(return_value=12)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(12)
+
+    # REPL state is restored and usable
+    assert loaded_repl.feed_run('x') == snapshot(10)
+
+
+def test_feed_start_dump_load_repl_snapshot_preserves_state():
+    """REPL state from before feed_start is preserved through dump/load."""
+    repl = pydantic_monty.MontyRepl()
+    repl.feed_run('counter = 0')
+    repl.feed_run('counter = counter + 1')
+    repl.feed_run('counter = counter + 1')
+
+    progress = repl.feed_start('result = fetch(counter)')
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.args == snapshot((2,))
+
+    data = progress.dump()
+    loaded, loaded_repl = pydantic_monty.load_repl_snapshot(data)
+    assert isinstance(loaded, pydantic_monty.FunctionSnapshot)
+    result = loaded.resume(return_value='done')
+    assert isinstance(result, pydantic_monty.MontyComplete)
+
+    # Counter should still be 2, and result should be set
+    assert loaded_repl.feed_run('counter') == snapshot(2)
+    assert loaded_repl.feed_run('result') == snapshot('done')
+
+
+def test_feed_start_dump_load_repl_snapshot_name_lookup():
+    """NameLookupSnapshot from feed_start can be serialized and deserialized."""
+    repl = pydantic_monty.MontyRepl()
+    progress = repl.feed_start('x = foo')
+    assert isinstance(progress, pydantic_monty.NameLookupSnapshot)
+    assert progress.variable_name == snapshot('foo')
+
+    data = progress.dump()
+    loaded, loaded_repl = pydantic_monty.load_repl_snapshot(data)
+    assert isinstance(loaded, pydantic_monty.NameLookupSnapshot)
+    assert loaded.variable_name == snapshot('foo')
+
+    result = loaded.resume(value=99)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert loaded_repl.feed_run('x') == snapshot(99)
+
+
+def test_feed_start_dump_load_repl_snapshot_multiple_calls():
+    """Multiple external calls with dump/load between each."""
+    repl = pydantic_monty.MontyRepl()
+    progress = repl.feed_start('a = foo(1)\nb = bar(2)\na + b')
+
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.function_name == snapshot('foo')
+
+    # Dump/load between first and second call
+    data = progress.dump()
+    loaded, _ = pydantic_monty.load_repl_snapshot(data)
+    assert isinstance(loaded, pydantic_monty.FunctionSnapshot)
+    progress2 = loaded.resume(return_value=10)
+
+    assert isinstance(progress2, pydantic_monty.FunctionSnapshot)
+    assert progress2.function_name == snapshot('bar')
+
+    # Dump/load between second call and completion
+    data2 = progress2.dump()
+    loaded2, _ = pydantic_monty.load_repl_snapshot(data2)
+    assert isinstance(loaded2, pydantic_monty.FunctionSnapshot)
+    result = loaded2.resume(return_value=20)
+
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(30)
+
+
+def test_feed_start_dump_load_snapshot_errors_on_repl():
+    """load_snapshot rejects REPL snapshots — the wire formats are incompatible."""
+    repl = pydantic_monty.MontyRepl()
+    progress = repl.feed_start('fetch(1)')
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    data = progress.dump()
+    # REPL snapshots use a different wire format, so load_snapshot fails on deserialization
+    with pytest.raises(ValueError):
+        pydantic_monty.load_snapshot(data)
+
+
+def test_feed_start_dump_load_repl_snapshot_with_print_callback():
+    """print_callback works on loaded REPL snapshots."""
+    output, callback = make_print_collector()
+
+    repl = pydantic_monty.MontyRepl()
+    progress = repl.feed_start('x = fetch()')
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    data = progress.dump()
+    loaded, loaded_repl = pydantic_monty.load_repl_snapshot(data, print_callback=callback)
+    assert isinstance(loaded, pydantic_monty.FunctionSnapshot)
+    # Resume — the loaded snapshot should use the print callback for subsequent prints
+    loaded.resume(return_value=42)
+    loaded_repl.feed_run('print(x)', print_callback=callback)
+    assert ''.join(output) == snapshot('42\n')
+
+
+def test_feed_start_dump_load_repl_snapshot_preserves_script_name():
+    """Script name is preserved through REPL snapshot dump/load."""
+    repl = pydantic_monty.MontyRepl(script_name='my_repl.py')
+    progress = repl.feed_start('fetch()')
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    data = progress.dump()
+    loaded, loaded_repl = pydantic_monty.load_repl_snapshot(data)
+    assert loaded.script_name == snapshot('my_repl.py')
+    assert loaded_repl.script_name == snapshot('my_repl.py')
+
+
+def test_non_repl_dump_load_with_load_snapshot():
+    """Non-REPL snapshots from Monty.start() work with load_snapshot."""
+    m = pydantic_monty.Monty('func(1, 2)')
+    progress = m.start()
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+
+    data = progress.dump()
+    loaded = pydantic_monty.load_snapshot(data)
+    assert isinstance(loaded, pydantic_monty.FunctionSnapshot)
+    assert loaded.function_name == snapshot('func')
+    assert loaded.args == snapshot((1, 2))
+
+    result = loaded.resume(return_value=100)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(100)
+
+
+def test_feed_start_dump_after_resume_fails():
+    """Cannot dump a REPL snapshot that has already been resumed."""
+    repl = pydantic_monty.MontyRepl()
+    progress = repl.feed_start('fetch()')
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    progress.resume(return_value=1)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        progress.dump()
+    assert exc_info.value.args[0] == snapshot('Cannot dump progress that has already been resumed')
 
 
 def test_inputs_various_types():
