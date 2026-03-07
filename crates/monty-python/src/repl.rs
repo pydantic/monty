@@ -397,6 +397,17 @@ impl PyMontyRepl {
         ))
     }
 
+    /// Constructs a `PyMontyRepl` from deserialized REPL state.
+    ///
+    /// Used by `load_repl_snapshot` to reconstruct the REPL session from serialized data.
+    pub(crate) fn from_deserialized(repl: EitherRepl, script_name: String, dc_registry: DcRegistry) -> Self {
+        Self {
+            repl: Mutex::new(repl),
+            dc_registry,
+            script_name,
+        }
+    }
+
     /// Restores a REPL into the mutex after `feed_start` completes successfully.
     pub(crate) fn put_repl(&self, repl: EitherRepl) {
         let mut guard = self.repl.lock().unwrap_or_else(PoisonError::into_inner);

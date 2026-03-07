@@ -11,6 +11,7 @@ mod external;
 mod limits;
 mod monty_cls;
 mod repl;
+mod serialization;
 
 use std::sync::OnceLock;
 
@@ -63,6 +64,10 @@ mod _monty {
     #[pymodule_export]
     use super::PyNameLookupSnapshot as NameLookupSnapshot;
     use super::get_version;
+    #[pymodule_export]
+    use super::serialization::load_repl_snapshot;
+    #[pymodule_export]
+    use super::serialization::load_snapshot;
 
     #[pymodule_init]
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {

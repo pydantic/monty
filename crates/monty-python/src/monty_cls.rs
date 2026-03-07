@@ -571,7 +571,7 @@ where
 /// Serde: REPL variants serialize as their non-REPL counterparts (stripping the owner).
 /// Deserialization always produces non-REPL variants.
 #[derive(Debug)]
-enum EitherFunctionSnapshot {
+pub(crate) enum EitherFunctionSnapshot {
     // Run variants (from Monty.start())
     NoLimitFn(FunctionCall<PySignalTracker<NoLimitTracker>>),
     NoLimitOs(OsCall<PySignalTracker<NoLimitTracker>>),
@@ -655,72 +655,6 @@ impl FromReplOsCall<PySignalTracker<NoLimitTracker>> for EitherFunctionSnapshot 
 impl FromReplOsCall<PySignalTracker<LimitedTracker>> for EitherFunctionSnapshot {
     fn from_repl_os(call: ReplOsCall<PySignalTracker<LimitedTracker>>, owner: Py<PyMontyRepl>) -> Self {
         Self::ReplLimitedOs(call, owner)
-    }
-}
-
-/// Serde helper: mirrors `EitherFunctionSnapshot` layout but without `Py<PyMontyRepl>`.
-///
-/// REPL variants serialize their snapshot data under the same tag name; on deserialization
-/// they produce `Done` since the REPL owner cannot be restored from serialized data.
-#[derive(serde::Serialize, serde::Deserialize)]
-enum SerdeFunctionSnapshot {
-    NoLimitFn(FunctionCall<PySignalTracker<NoLimitTracker>>),
-    NoLimitOs(OsCall<PySignalTracker<NoLimitTracker>>),
-    LimitedFn(FunctionCall<PySignalTracker<LimitedTracker>>),
-    LimitedOs(OsCall<PySignalTracker<LimitedTracker>>),
-    ReplNoLimitFn(ReplFunctionCall<PySignalTracker<NoLimitTracker>>),
-    ReplNoLimitOs(ReplOsCall<PySignalTracker<NoLimitTracker>>),
-    ReplLimitedFn(ReplFunctionCall<PySignalTracker<LimitedTracker>>),
-    ReplLimitedOs(ReplOsCall<PySignalTracker<LimitedTracker>>),
-    Done,
-}
-
-/// Serde helper: borrows from `EitherFunctionSnapshot` for zero-copy serialization.
-#[derive(serde::Serialize)]
-enum SerdeFunctionSnapshotRef<'a> {
-    NoLimitFn(&'a FunctionCall<PySignalTracker<NoLimitTracker>>),
-    NoLimitOs(&'a OsCall<PySignalTracker<NoLimitTracker>>),
-    LimitedFn(&'a FunctionCall<PySignalTracker<LimitedTracker>>),
-    LimitedOs(&'a OsCall<PySignalTracker<LimitedTracker>>),
-    ReplNoLimitFn(&'a ReplFunctionCall<PySignalTracker<NoLimitTracker>>),
-    ReplNoLimitOs(&'a ReplOsCall<PySignalTracker<NoLimitTracker>>),
-    ReplLimitedFn(&'a ReplFunctionCall<PySignalTracker<LimitedTracker>>),
-    ReplLimitedOs(&'a ReplOsCall<PySignalTracker<LimitedTracker>>),
-    Done,
-}
-
-impl serde::Serialize for EitherFunctionSnapshot {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let r = match self {
-            Self::NoLimitFn(c) => SerdeFunctionSnapshotRef::NoLimitFn(c),
-            Self::NoLimitOs(c) => SerdeFunctionSnapshotRef::NoLimitOs(c),
-            Self::LimitedFn(c) => SerdeFunctionSnapshotRef::LimitedFn(c),
-            Self::LimitedOs(c) => SerdeFunctionSnapshotRef::LimitedOs(c),
-            Self::ReplNoLimitFn(c, _) => SerdeFunctionSnapshotRef::ReplNoLimitFn(c),
-            Self::ReplNoLimitOs(c, _) => SerdeFunctionSnapshotRef::ReplNoLimitOs(c),
-            Self::ReplLimitedFn(c, _) => SerdeFunctionSnapshotRef::ReplLimitedFn(c),
-            Self::ReplLimitedOs(c, _) => SerdeFunctionSnapshotRef::ReplLimitedOs(c),
-            Self::Done => SerdeFunctionSnapshotRef::Done,
-        };
-        r.serialize(serializer)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for EitherFunctionSnapshot {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let v = SerdeFunctionSnapshot::deserialize(deserializer)?;
-        Ok(match v {
-            SerdeFunctionSnapshot::NoLimitFn(c) => Self::NoLimitFn(c),
-            SerdeFunctionSnapshot::NoLimitOs(c) => Self::NoLimitOs(c),
-            SerdeFunctionSnapshot::LimitedFn(c) => Self::LimitedFn(c),
-            SerdeFunctionSnapshot::LimitedOs(c) => Self::LimitedOs(c),
-            // REPL variants deserialize as Done — the Py<PyMontyRepl> cannot be restored.
-            SerdeFunctionSnapshot::ReplNoLimitFn(_)
-            | SerdeFunctionSnapshot::ReplNoLimitOs(_)
-            | SerdeFunctionSnapshot::ReplLimitedFn(_)
-            | SerdeFunctionSnapshot::ReplLimitedOs(_)
-            | SerdeFunctionSnapshot::Done => todo!(),
-        })
     }
 }
 
@@ -920,6 +854,38 @@ impl PyFunctionSnapshot {
         };
         slf.into_bound_py_any(py)
     }
+
+    /// Constructs a `PyFunctionSnapshot` from deserialized parts.
+    ///
+    /// Used by `load_snapshot` and `load_repl_snapshot` to reconstruct snapshot objects.
+    #[expect(clippy::too_many_arguments)]
+    pub(crate) fn from_deserialized(
+        py: Python<'_>,
+        snapshot: EitherFunctionSnapshot,
+        print_callback: Option<Py<PyAny>>,
+        dc_registry: DcRegistry,
+        script_name: String,
+        is_os_function: bool,
+        is_method_call: bool,
+        function_name: String,
+        args: Py<PyTuple>,
+        kwargs: Py<PyDict>,
+        call_id: u32,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let slf = Self {
+            snapshot: Mutex::new(snapshot),
+            print_callback,
+            dc_registry,
+            script_name,
+            is_os_function,
+            is_method_call,
+            function_name,
+            args,
+            kwargs,
+            call_id,
+        };
+        slf.into_bound_py_any(py)
+    }
 }
 
 #[pymethods]
@@ -1014,11 +980,10 @@ impl PyFunctionSnapshot {
 
     /// Serializes the FunctionSnapshot instance to a binary format.
     ///
-    /// The serialized data can be stored and later restored with `FunctionSnapshot.load()`.
-    /// This allows suspending execution and resuming later, potentially in a different process.
+    /// The serialized data can be stored and later restored with `load_snapshot()`
+    /// or `load_repl_snapshot()`. REPL snapshots automatically include the REPL state.
     ///
-    /// Note: The `print_callback` is not serialized and must be re-provided when resuming
-    /// after loading.
+    /// Note: The `print_callback` is not serialized and must be re-provided when loading.
     ///
     /// # Returns
     /// Bytes containing the serialized FunctionSnapshot instance.
@@ -1027,52 +992,18 @@ impl PyFunctionSnapshot {
     /// `ValueError` if serialization fails.
     /// `RuntimeError` if the progress has already been resumed.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        #[derive(serde::Serialize)]
-        struct SerializedSnapshot<'a> {
-            snapshot: &'a EitherFunctionSnapshot,
-            script_name: &'a str,
-            is_os_function: bool,
-            is_method_call: bool,
-            function_name: &'a str,
-            args: Vec<MontyObject>,
-            kwargs: Vec<(MontyObject, MontyObject)>,
-            call_id: u32,
-        }
-
-        let snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
-        if matches!(&*snapshot, EitherFunctionSnapshot::Done) {
-            return Err(PyRuntimeError::new_err(
-                "Cannot dump progress that has already been resumed",
-            ));
-        }
-
-        // Convert Python args to MontyObject
-        let args: Vec<MontyObject> = self
-            .args
-            .bind(py)
-            .iter()
-            .map(|item| py_to_monty(&item, &self.dc_registry))
-            .collect::<PyResult<_>>()?;
-
-        // Convert Python kwargs to MontyObject pairs
-        let kwargs: Vec<(MontyObject, MontyObject)> = self
-            .kwargs
-            .bind(py)
-            .iter()
-            .map(|(k, v)| Ok((py_to_monty(&k, &self.dc_registry)?, py_to_monty(&v, &self.dc_registry)?)))
-            .collect::<PyResult<_>>()?;
-
-        let serialized = SerializedSnapshot {
-            snapshot: &snapshot,
-            script_name: &self.script_name,
-            is_os_function: self.is_os_function,
-            is_method_call: self.is_method_call,
-            function_name: &self.function_name,
-            args,
-            kwargs,
-            call_id: self.call_id,
-        };
-        let bytes = postcard::to_allocvec(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let bytes = crate::serialization::dump_function_snapshot(
+            py,
+            &self.snapshot,
+            &self.script_name,
+            self.is_os_function,
+            self.is_method_call,
+            &self.function_name,
+            &self.args,
+            &self.kwargs,
+            self.call_id,
+            &self.dc_registry,
+        )?;
         Ok(PyBytes::new(py, &bytes))
     }
 
@@ -1081,68 +1012,21 @@ impl PyFunctionSnapshot {
     /// Note: The `print_callback` is not preserved during serialization and must be
     /// re-provided as a keyword argument if print output is needed.
     ///
-    /// # Arguments
-    /// * `data` - The serialized FunctionSnapshot data from `dump()`
-    /// * `print_callback` - Optional callback for print output
-    /// * `dataclass_registry` - Optional list of dataclasses to register
-    ///
-    /// # Returns
-    /// A new FunctionSnapshot instance.
+    /// **Deprecated**: Use `load_snapshot()` or `load_repl_snapshot()` instead.
+    /// Those module-level functions auto-detect the snapshot type and handle
+    /// REPL round-trips correctly.
     ///
     /// # Raises
     /// `ValueError` if deserialization fails.
     #[staticmethod]
     #[pyo3(signature = (data, *, print_callback=None, dataclass_registry=None))]
-    fn load(
-        py: Python<'_>,
+    fn load<'py>(
+        py: Python<'py>,
         data: &Bound<'_, PyBytes>,
         print_callback: Option<Py<PyAny>>,
         dataclass_registry: Option<&Bound<'_, PyList>>,
-    ) -> PyResult<Self> {
-        #[derive(serde::Deserialize)]
-        struct SerializedSnapshotOwned {
-            snapshot: EitherFunctionSnapshot,
-            script_name: String,
-            is_os_function: bool,
-            is_method_call: bool,
-            function_name: String,
-            args: Vec<MontyObject>,
-            kwargs: Vec<(MontyObject, MontyObject)>,
-            call_id: u32,
-        }
-
-        let bytes = data.as_bytes();
-
-        let serialized: SerializedSnapshotOwned =
-            postcard::from_bytes(bytes).map_err(|e| PyValueError::new_err(e.to_string()))?;
-
-        let dc_registry = DcRegistry::from_list(py, dataclass_registry)?;
-
-        // Convert MontyObject args to Python
-        let args: Vec<Py<PyAny>> = serialized
-            .args
-            .iter()
-            .map(|item| monty_to_py(py, item, &dc_registry))
-            .collect::<PyResult<_>>()?;
-
-        // Convert MontyObject kwargs to Python dict
-        let kwargs_dict = PyDict::new(py);
-        for (k, v) in &serialized.kwargs {
-            kwargs_dict.set_item(monty_to_py(py, k, &dc_registry)?, monty_to_py(py, v, &dc_registry)?)?;
-        }
-
-        Ok(Self {
-            snapshot: Mutex::new(serialized.snapshot),
-            print_callback,
-            dc_registry,
-            script_name: serialized.script_name,
-            is_os_function: serialized.is_os_function,
-            is_method_call: serialized.is_method_call,
-            function_name: serialized.function_name,
-            args: PyTuple::new(py, args)?.unbind(),
-            kwargs: kwargs_dict.unbind(),
-            call_id: serialized.call_id,
-        })
+    ) -> PyResult<Bound<'py, PyAny>> {
+        crate::serialization::load_snapshot(py, data, print_callback, dataclass_registry)
     }
 
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
@@ -1163,7 +1047,7 @@ impl PyFunctionSnapshot {
 ///
 /// The `Done` variant indicates the snapshot has been consumed.
 #[derive(Debug)]
-enum EitherLookupSnapshot {
+pub(crate) enum EitherLookupSnapshot {
     NoLimit(NameLookup<PySignalTracker<NoLimitTracker>>),
     Limited(NameLookup<PySignalTracker<LimitedTracker>>),
     ReplNoLimit(ReplNameLookup<PySignalTracker<NoLimitTracker>>, Py<PyMontyRepl>),
@@ -1205,51 +1089,6 @@ impl FromReplNameLookup<PySignalTracker<NoLimitTracker>> for EitherLookupSnapsho
 impl FromReplNameLookup<PySignalTracker<LimitedTracker>> for EitherLookupSnapshot {
     fn from_repl_name_lookup(lookup: ReplNameLookup<PySignalTracker<LimitedTracker>>, owner: Py<PyMontyRepl>) -> Self {
         Self::ReplLimited(lookup, owner)
-    }
-}
-
-/// Serde helper: serializable subset of `EitherLookupSnapshot` without REPL owner.
-#[derive(serde::Serialize, serde::Deserialize)]
-enum SerdeLookupSnapshot {
-    NoLimit(NameLookup<PySignalTracker<NoLimitTracker>>),
-    Limited(NameLookup<PySignalTracker<LimitedTracker>>),
-    ReplNoLimit(ReplNameLookup<PySignalTracker<NoLimitTracker>>),
-    ReplLimited(ReplNameLookup<PySignalTracker<LimitedTracker>>),
-    Done,
-}
-
-#[derive(serde::Serialize)]
-enum SerdeLookupSnapshotRef<'a> {
-    NoLimit(&'a NameLookup<PySignalTracker<NoLimitTracker>>),
-    Limited(&'a NameLookup<PySignalTracker<LimitedTracker>>),
-    ReplNoLimit(&'a ReplNameLookup<PySignalTracker<NoLimitTracker>>),
-    ReplLimited(&'a ReplNameLookup<PySignalTracker<LimitedTracker>>),
-    Done,
-}
-
-impl serde::Serialize for EitherLookupSnapshot {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let r = match self {
-            Self::NoLimit(l) => SerdeLookupSnapshotRef::NoLimit(l),
-            Self::Limited(l) => SerdeLookupSnapshotRef::Limited(l),
-            Self::ReplNoLimit(l, _) => SerdeLookupSnapshotRef::ReplNoLimit(l),
-            Self::ReplLimited(l, _) => SerdeLookupSnapshotRef::ReplLimited(l),
-            Self::Done => SerdeLookupSnapshotRef::Done,
-        };
-        r.serialize(serializer)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for EitherLookupSnapshot {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let v = SerdeLookupSnapshot::deserialize(deserializer)?;
-        Ok(match v {
-            SerdeLookupSnapshot::NoLimit(l) => Self::NoLimit(l),
-            SerdeLookupSnapshot::Limited(l) => Self::Limited(l),
-            SerdeLookupSnapshot::ReplNoLimit(_) | SerdeLookupSnapshot::ReplLimited(_) | SerdeLookupSnapshot::Done => {
-                Self::Done
-            }
-        })
     }
 }
 
@@ -1312,6 +1151,25 @@ impl PyNameLookupSnapshot {
     {
         let slf = Self {
             snapshot: Mutex::new(EitherLookupSnapshot::from_repl_name_lookup(lookup, repl_owner)),
+            print_callback,
+            dc_registry,
+            script_name,
+            variable_name,
+        };
+        slf.into_bound_py_any(py)
+    }
+
+    /// Constructs a `PyNameLookupSnapshot` from deserialized parts.
+    pub(crate) fn from_deserialized(
+        py: Python<'_>,
+        snapshot: EitherLookupSnapshot,
+        print_callback: Option<Py<PyAny>>,
+        dc_registry: DcRegistry,
+        script_name: String,
+        variable_name: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let slf = Self {
+            snapshot: Mutex::new(snapshot),
             print_callback,
             dc_registry,
             script_name,
@@ -1387,11 +1245,10 @@ impl PyNameLookupSnapshot {
 
     /// Serializes the NameLookupSnapshot instance to a binary format.
     ///
-    /// The serialized data can be stored and later restored with `NameLookupSnapshot.load()`.
-    /// This allows suspending execution and resuming later, potentially in a different process.
+    /// The serialized data can be stored and later restored with `load_snapshot()`
+    /// or `load_repl_snapshot()`. REPL snapshots automatically include the REPL state.
     ///
-    /// Note: The `print_callback` is not serialized and must be re-provided when resuming
-    /// after loading.
+    /// Note: The `print_callback` is not serialized and must be re-provided when loading.
     ///
     /// # Returns
     /// Bytes containing the serialized NameLookupSnapshot instance.
@@ -1400,26 +1257,7 @@ impl PyNameLookupSnapshot {
     /// `ValueError` if serialization fails.
     /// `RuntimeError` if the progress has already been resumed.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        #[derive(serde::Serialize)]
-        struct SerializedSnapshot<'a> {
-            snapshot: &'a EitherLookupSnapshot,
-            script_name: &'a str,
-            variable_name: &'a str,
-        }
-
-        let snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
-        if matches!(&*snapshot, EitherLookupSnapshot::Done) {
-            return Err(PyRuntimeError::new_err(
-                "Cannot dump progress that has already been resumed",
-            ));
-        }
-
-        let serialized = SerializedSnapshot {
-            snapshot: &snapshot,
-            script_name: &self.script_name,
-            variable_name: &self.variable_name,
-        };
-        let bytes = postcard::to_allocvec(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let bytes = crate::serialization::dump_lookup_snapshot(&self.snapshot, &self.script_name, &self.variable_name)?;
         Ok(PyBytes::new(py, &bytes))
     }
 
@@ -1428,43 +1266,21 @@ impl PyNameLookupSnapshot {
     /// Note: The `print_callback` is not preserved during serialization and must be
     /// re-provided as a keyword argument if print output is needed.
     ///
-    /// # Arguments
-    /// * `data` - The serialized NameLookupSnapshot data from `dump()`
-    /// * `print_callback` - Optional callback for print output
-    /// * `dataclass_registry` - Optional list of dataclasses to register
-    ///
-    /// # Returns
-    /// A new NameLookupSnapshot instance.
+    /// **Deprecated**: Use `load_snapshot()` or `load_repl_snapshot()` instead.
+    /// Those module-level functions auto-detect the snapshot type and handle
+    /// REPL round-trips correctly.
     ///
     /// # Raises
     /// `ValueError` if deserialization fails.
     #[staticmethod]
     #[pyo3(signature = (data, *, print_callback=None, dataclass_registry=None))]
-    fn load(
-        py: Python<'_>,
+    fn load<'py>(
+        py: Python<'py>,
         data: &Bound<'_, PyBytes>,
         print_callback: Option<Py<PyAny>>,
         dataclass_registry: Option<&Bound<'_, PyList>>,
-    ) -> PyResult<Self> {
-        #[derive(serde::Deserialize)]
-        struct SerializedSnapshotOwned {
-            snapshot: EitherLookupSnapshot,
-            script_name: String,
-            variable_name: String,
-        }
-
-        let bytes = data.as_bytes();
-
-        let serialized: SerializedSnapshotOwned =
-            postcard::from_bytes(bytes).map_err(|e| PyValueError::new_err(e.to_string()))?;
-
-        Ok(Self {
-            snapshot: Mutex::new(serialized.snapshot),
-            print_callback,
-            dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
-            script_name: serialized.script_name,
-            variable_name: serialized.variable_name,
-        })
+    ) -> PyResult<Bound<'py, PyAny>> {
+        crate::serialization::load_snapshot(py, data, print_callback, dataclass_registry)
     }
 
     fn __repr__(&self) -> String {
@@ -1482,7 +1298,7 @@ impl PyNameLookupSnapshot {
 /// Used internally by `PyFutureSnapshot` to store execution state when
 /// awaiting resolution of pending async external calls.
 #[derive(Debug)]
-enum EitherFutureSnapshot {
+pub(crate) enum EitherFutureSnapshot {
     NoLimit(ResolveFutures<PySignalTracker<NoLimitTracker>>),
     Limited(ResolveFutures<PySignalTracker<LimitedTracker>>),
     ReplNoLimit(ReplResolveFutures<PySignalTracker<NoLimitTracker>>, Py<PyMontyRepl>),
@@ -1533,51 +1349,6 @@ impl FromReplResolveFutures<PySignalTracker<LimitedTracker>> for EitherFutureSna
     }
 }
 
-/// Serde helper for `EitherFutureSnapshot` without REPL owner.
-#[derive(serde::Serialize, serde::Deserialize)]
-enum SerdeFutureSnapshot {
-    NoLimit(ResolveFutures<PySignalTracker<NoLimitTracker>>),
-    Limited(ResolveFutures<PySignalTracker<LimitedTracker>>),
-    ReplNoLimit(ReplResolveFutures<PySignalTracker<NoLimitTracker>>),
-    ReplLimited(ReplResolveFutures<PySignalTracker<LimitedTracker>>),
-    Done,
-}
-
-#[derive(serde::Serialize)]
-enum SerdeFutureSnapshotRef<'a> {
-    NoLimit(&'a ResolveFutures<PySignalTracker<NoLimitTracker>>),
-    Limited(&'a ResolveFutures<PySignalTracker<LimitedTracker>>),
-    ReplNoLimit(&'a ReplResolveFutures<PySignalTracker<NoLimitTracker>>),
-    ReplLimited(&'a ReplResolveFutures<PySignalTracker<LimitedTracker>>),
-    Done,
-}
-
-impl serde::Serialize for EitherFutureSnapshot {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let r = match self {
-            Self::NoLimit(s) => SerdeFutureSnapshotRef::NoLimit(s),
-            Self::Limited(s) => SerdeFutureSnapshotRef::Limited(s),
-            Self::ReplNoLimit(s, _) => SerdeFutureSnapshotRef::ReplNoLimit(s),
-            Self::ReplLimited(s, _) => SerdeFutureSnapshotRef::ReplLimited(s),
-            Self::Done => SerdeFutureSnapshotRef::Done,
-        };
-        r.serialize(serializer)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for EitherFutureSnapshot {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let v = SerdeFutureSnapshot::deserialize(deserializer)?;
-        Ok(match v {
-            SerdeFutureSnapshot::NoLimit(s) => Self::NoLimit(s),
-            SerdeFutureSnapshot::Limited(s) => Self::Limited(s),
-            SerdeFutureSnapshot::ReplNoLimit(_) | SerdeFutureSnapshot::ReplLimited(_) | SerdeFutureSnapshot::Done => {
-                Self::Done
-            }
-        })
-    }
-}
-
 /// Snapshot generated during execution when monty yields to the host to resolve a future.
 ///
 /// Works for both `Monty.start()` and `MontyRepl.feed_start()`.
@@ -1606,6 +1377,25 @@ impl PyFutureSnapshot {
     {
         let slf = Self {
             snapshot: Mutex::new(EitherFutureSnapshot::from_resolve_futures(state)),
+            print_callback,
+            dc_registry,
+            script_name,
+        };
+        slf.into_bound_py_any(py)
+    }
+
+    /// Constructs a `PyFutureSnapshot` from deserialized parts.
+    ///
+    /// Used by `load_snapshot` and `load_repl_snapshot` to reconstruct snapshot objects.
+    pub(crate) fn from_deserialized(
+        py: Python<'_>,
+        snapshot: EitherFutureSnapshot,
+        print_callback: Option<Py<PyAny>>,
+        dc_registry: DcRegistry,
+        script_name: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let slf = Self {
+            snapshot: Mutex::new(snapshot),
             print_callback,
             dc_registry,
             script_name,
@@ -1722,11 +1512,10 @@ impl PyFutureSnapshot {
 
     /// Serializes the FutureSnapshot instance to a binary format.
     ///
-    /// The serialized data can be stored and later restored with `FutureSnapshot.load()`.
-    /// This allows suspending execution and resuming later, potentially in a different process.
+    /// The serialized data can be stored and later restored with `load_snapshot()`
+    /// or `load_repl_snapshot()`. REPL snapshots automatically include the REPL state.
     ///
-    /// Note: The `print_callback` is not serialized and must be re-provided when resuming
-    /// after loading.
+    /// Note: The `print_callback` is not serialized and must be re-provided when loading.
     ///
     /// # Returns
     /// Bytes containing the serialized FutureSnapshot instance.
@@ -1735,24 +1524,7 @@ impl PyFutureSnapshot {
     /// `ValueError` if serialization fails.
     /// `RuntimeError` if the progress has already been resumed.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        #[derive(serde::Serialize)]
-        struct SerializedSnapshot<'a> {
-            snapshot: &'a EitherFutureSnapshot,
-            script_name: &'a str,
-        }
-
-        let snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
-        if matches!(&*snapshot, EitherFutureSnapshot::Done) {
-            return Err(PyRuntimeError::new_err(
-                "Cannot dump progress that has already been resumed",
-            ));
-        }
-
-        let serialized = SerializedSnapshot {
-            snapshot: &snapshot,
-            script_name: &self.script_name,
-        };
-        let bytes = postcard::to_allocvec(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let bytes = crate::serialization::dump_future_snapshot(&self.snapshot, &self.script_name)?;
         Ok(PyBytes::new(py, &bytes))
     }
 
@@ -1761,41 +1533,21 @@ impl PyFutureSnapshot {
     /// Note: The `print_callback` is not preserved during serialization and must be
     /// re-provided as a keyword argument if print output is needed.
     ///
-    /// # Arguments
-    /// * `data` - The serialized FutureSnapshot data from `dump()`
-    /// * `print_callback` - Optional callback for print output
-    /// * `dataclass_registry` - Optional list of dataclasses to register
-    ///
-    /// # Returns
-    /// A new FutureSnapshot instance.
+    /// **Deprecated**: Use `load_snapshot()` or `load_repl_snapshot()` instead.
+    /// Those module-level functions auto-detect the snapshot type and handle
+    /// REPL round-trips correctly.
     ///
     /// # Raises
     /// `ValueError` if deserialization fails.
     #[staticmethod]
     #[pyo3(signature = (data, *, print_callback=None, dataclass_registry=None))]
-    fn load(
-        py: Python<'_>,
+    fn load<'py>(
+        py: Python<'py>,
         data: &Bound<'_, PyBytes>,
         print_callback: Option<Py<PyAny>>,
         dataclass_registry: Option<&Bound<'_, PyList>>,
-    ) -> PyResult<Self> {
-        #[derive(serde::Deserialize)]
-        struct SerializedSnapshotOwned {
-            snapshot: EitherFutureSnapshot,
-            script_name: String,
-        }
-
-        let bytes = data.as_bytes();
-
-        let serialized: SerializedSnapshotOwned =
-            postcard::from_bytes(bytes).map_err(|e| PyValueError::new_err(e.to_string()))?;
-
-        Ok(Self {
-            snapshot: Mutex::new(serialized.snapshot),
-            print_callback,
-            dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
-            script_name: serialized.script_name,
-        })
+    ) -> PyResult<Bound<'py, PyAny>> {
+        crate::serialization::load_snapshot(py, data, print_callback, dataclass_registry)
     }
 
     fn __repr__(&self) -> String {
