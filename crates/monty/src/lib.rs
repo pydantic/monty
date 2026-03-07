@@ -29,6 +29,7 @@ mod run;
 mod run_progress;
 mod runtime_id;
 mod signature;
+mod snapshot_extension;
 mod sorting;
 mod types;
 mod value;
@@ -58,4 +59,5 @@ pub use crate::{
         ExtFunctionResult, FunctionCall, NameLookup, NameLookupResult, OsCall, ResolveFutures, RunProgress,
     },
     runtime_id::RuntimeValueId,
+    snapshot_extension::SnapshotExtension,
 };
