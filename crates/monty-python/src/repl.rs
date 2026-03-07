@@ -27,7 +27,7 @@ use crate::{
 /// PyO3 classes cannot be generic, so this enum stores REPL sessions for both
 /// resource tracker variants.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-enum EitherRepl {
+pub(crate) enum EitherRepl {
     NoLimit(CoreMontyRepl<PySignalTracker<NoLimitTracker>>),
     Limited(CoreMontyRepl<PySignalTracker<LimitedTracker>>),
 }
@@ -133,6 +133,62 @@ impl PyMontyRepl {
         .map_err(|e| MontyError::new_err(py, e))?;
 
         Ok(monty_to_py(py, &output, &self.dc_registry)?.into_bound(py))
+    }
+
+    /// Starts executing an incremental snippet, yielding snapshots for external calls.
+    ///
+    /// Unlike `feed_run()`, which handles external function dispatch internally via a loop,
+    /// `feed_start()` returns a snapshot object whenever the code needs an external function
+    /// call, OS call, name lookup, or future resolution. The caller then provides the result
+    /// via `snapshot.resume(...)`, which returns the next snapshot or `MontyComplete`.
+    ///
+    /// This enables the same iterative start/resume pattern used by `Monty.start()`,
+    /// including support for async external functions via `FutureSnapshot`.
+    #[pyo3(signature = (code, *, inputs=None, print_callback=None))]
+    fn feed_start<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        code: &str,
+        inputs: Option<&Bound<'_, PyDict>>,
+        print_callback: Option<Py<PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let this = slf.get();
+        let input_values = extract_repl_inputs(inputs, &this.dc_registry)?;
+
+        let mut print_cb;
+        let print_writer = match &print_callback {
+            Some(cb) => {
+                print_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
+                PrintWriter::Callback(&mut print_cb)
+            }
+            None => PrintWriter::Stdout,
+        };
+        let mut print_output = SendWrapper::new(print_writer);
+
+        let repl = this.take_repl()?;
+        let repl_owner: Py<Self> = slf.clone().unbind();
+
+        let code_owned = code.to_owned();
+        let inputs_owned = input_values;
+        let dc_registry = this.dc_registry.clone_ref(py);
+        let script_name = this.script_name.clone();
+
+        match repl {
+            EitherRepl::NoLimit(repl) => {
+                let progress = py
+                    .detach(|| repl.feed_start(&code_owned, inputs_owned, &mut print_output))
+                    .map_err(|e| this.restore_repl_from_start_error(py, *e))?;
+                let either = crate::monty_cls::EitherProgress::ReplNoLimit(progress, repl_owner);
+                either.progress_or_complete(py, script_name, print_callback, dc_registry)
+            }
+            EitherRepl::Limited(repl) => {
+                let progress = py
+                    .detach(|| repl.feed_start(&code_owned, inputs_owned, &mut print_output))
+                    .map_err(|e| this.restore_repl_from_start_error(py, *e))?;
+                let either = crate::monty_cls::EitherProgress::ReplLimited(progress, repl_owner);
+                either.progress_or_complete(py, script_name, print_callback, dc_registry)
+            }
+        }
     }
 
     /// Serializes this REPL session to bytes.
@@ -327,7 +383,7 @@ impl PyMontyRepl {
 
     /// Takes the REPL out of the mutex for `feed_start` (which consumes self),
     /// leaving a lightweight placeholder that will be overwritten before returning.
-    fn take_repl(&self) -> PyResult<EitherRepl> {
+    pub(crate) fn take_repl(&self) -> PyResult<EitherRepl> {
         let mut guard = self
             .repl
             .try_lock()
@@ -342,7 +398,7 @@ impl PyMontyRepl {
     }
 
     /// Restores a REPL into the mutex after `feed_start` completes successfully.
-    fn put_repl(&self, repl: EitherRepl) {
+    pub(crate) fn put_repl(&self, repl: EitherRepl) {
         let mut guard = self.repl.lock().unwrap_or_else(PoisonError::into_inner);
         *guard = repl;
     }
@@ -379,7 +435,7 @@ fn extract_repl_inputs(
 
 /// Helper trait to convert a typed `CoreMontyRepl<T>` back into the
 /// type-erased `EitherRepl` enum.
-trait FromCoreRepl<T: ResourceTracker> {
+pub(crate) trait FromCoreRepl<T: ResourceTracker> {
     /// Wraps a core REPL into the appropriate `EitherRepl` variant.
     fn from_core(repl: CoreMontyRepl<T>) -> Self;
 }

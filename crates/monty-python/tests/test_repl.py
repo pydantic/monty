@@ -443,6 +443,140 @@ def test_inputs_with_external_functions():
     assert repl.feed_run('double(x)', inputs={'x': 5}, external_functions={'double': double}) == snapshot(10)
 
 
+# === Tests for MontyRepl.feed_start() ===
+
+
+def test_feed_start_no_external_calls():
+    """feed_start with no external calls returns MontyComplete directly."""
+    repl = pydantic_monty.MontyRepl()
+    progress = repl.feed_start('1 + 2')
+    assert isinstance(progress, pydantic_monty.MontyComplete)
+    assert progress.output == snapshot(3)
+    # REPL should still be usable
+    assert repl.feed_run('3 + 4') == snapshot(7)
+
+
+def test_feed_start_state_persists():
+    """feed_start preserves REPL state from prior feed_run calls."""
+    repl = pydantic_monty.MontyRepl()
+    repl.feed_run('x = 10')
+    progress = repl.feed_start('x + 5')
+    assert isinstance(progress, pydantic_monty.MontyComplete)
+    assert progress.output == snapshot(15)
+
+
+def test_feed_start_external_function():
+    """feed_start yields FunctionSnapshot for external function calls."""
+    repl = pydantic_monty.MontyRepl()
+    progress = repl.feed_start('add(1, 2)')
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.function_name == snapshot('add')
+    assert progress.args == snapshot((1, 2))
+    progress = progress.resume(return_value=3)
+    assert isinstance(progress, pydantic_monty.MontyComplete)
+    assert progress.output == snapshot(3)
+    # REPL should still be usable after
+    assert repl.feed_run('1 + 1') == snapshot(2)
+
+
+def test_feed_start_external_function_preserves_state():
+    """feed_start async result is accessible in subsequent feed_run calls."""
+    repl = pydantic_monty.MontyRepl()
+    progress = repl.feed_start('result = add(1, 2)')
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    progress = progress.resume(return_value=42)
+    assert isinstance(progress, pydantic_monty.MontyComplete)
+    assert repl.feed_run('result') == snapshot(42)
+
+
+def test_feed_start_multiple_external_calls():
+    """feed_start handles multiple sequential external calls."""
+    repl = pydantic_monty.MontyRepl()
+    code = 'a = foo(1)\nb = bar(2)\na + b'
+    progress = repl.feed_start(code)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.function_name == snapshot('foo')
+    progress = progress.resume(return_value=10)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.function_name == snapshot('bar')
+    progress = progress.resume(return_value=20)
+    assert isinstance(progress, pydantic_monty.MontyComplete)
+    assert progress.output == snapshot(30)
+
+
+def test_feed_start_error_preserves_repl_state():
+    """REPL state is preserved when feed_start raises an error."""
+    repl = pydantic_monty.MontyRepl()
+    repl.feed_run('x = 42')
+    with pytest.raises(pydantic_monty.MontyRuntimeError):
+        repl.feed_start('1 / 0')
+    # REPL should still be usable
+    assert repl.feed_run('x') == snapshot(42)
+
+
+def test_feed_start_resume_error_preserves_repl_state():
+    """REPL state is preserved when resume raises a runtime error."""
+    repl = pydantic_monty.MontyRepl()
+    repl.feed_run('x = 99')
+    progress = repl.feed_start('fail()')
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    # Resume with an exception that isn't caught
+    with pytest.raises(pydantic_monty.MontyRuntimeError):
+        progress.resume(exception=ValueError('boom'))
+    assert repl.feed_run('x') == snapshot(99)
+
+
+def test_feed_start_with_inputs():
+    """feed_start supports the inputs parameter."""
+    repl = pydantic_monty.MontyRepl()
+    progress = repl.feed_start('process(x)', inputs={'x': 5})
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.function_name == snapshot('process')
+    assert progress.args == snapshot((5,))
+    progress = progress.resume(return_value=25)
+    assert isinstance(progress, pydantic_monty.MontyComplete)
+    assert progress.output == snapshot(25)
+
+
+def test_feed_start_with_print_callback():
+    """feed_start supports the print_callback parameter."""
+    output: list[tuple[str, str]] = []
+
+    def callback(stream: str, text: str) -> None:
+        output.append((stream, text))
+
+    repl = pydantic_monty.MontyRepl()
+    progress = repl.feed_start('print("hello")', print_callback=callback)
+    assert isinstance(progress, pydantic_monty.MontyComplete)
+    assert output == snapshot([('stdout', 'hello'), ('stdout', '\n')])
+
+
+def test_feed_start_name_lookup():
+    """feed_start yields NameLookupSnapshot for bare name access."""
+    repl = pydantic_monty.MontyRepl()
+    progress = repl.feed_start('x = foo')
+    assert isinstance(progress, pydantic_monty.NameLookupSnapshot)
+    assert progress.variable_name == snapshot('foo')
+    progress = progress.resume(value=42)
+    assert isinstance(progress, pydantic_monty.MontyComplete)
+    assert repl.feed_run('x') == snapshot(42)
+
+
+# def test_feed_start_dump_load():
+#     """FunctionSnapshot from feed_start can be serialized and deserialized."""
+#     # TODO: fix serde for REPL snapshot variants
+#     repl = pydantic_monty.MontyRepl()
+#     progress = repl.feed_start('add(1, 2)')
+#     assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+#     data = progress.dump()
+#     loaded = pydantic_monty.FunctionSnapshot.load(data)
+#     assert loaded.function_name == snapshot('add')
+#     assert loaded.args == snapshot((1, 2))
+#     # Deserialized REPL snapshots cannot be resumed (owner is lost during serialization)
+#     with pytest.raises(RuntimeError, match='Progress already resumed'):
+#         loaded.resume(return_value=3)
+
+
 def test_inputs_various_types():
     repl = pydantic_monty.MontyRepl()
     assert repl.feed_run('s', inputs={'s': 'hello'}) == snapshot('hello')

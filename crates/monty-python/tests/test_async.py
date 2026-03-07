@@ -405,3 +405,58 @@ p.read_text()
 
     result = await run_monty_async(m, os=fs)
     assert result == snapshot('updated')
+
+
+# === Tests for MontyRepl.feed_start() with async patterns ===
+
+
+def test_repl_feed_start_async_gather():
+    """MontyRepl.feed_start supports asyncio.gather with multiple futures."""
+    code = """
+import asyncio
+
+await asyncio.gather(foo(1), bar(2))
+"""
+    repl = pydantic_monty.MontyRepl()
+    progress = repl.feed_start(code)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.function_name == snapshot('foo')
+    foo_call_id = progress.call_id
+
+    progress = progress.resume(future=...)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.function_name == snapshot('bar')
+    bar_call_id = progress.call_id
+    progress = progress.resume(future=...)
+
+    assert isinstance(progress, pydantic_monty.FutureSnapshot)
+    from dirty_equals import IsList
+
+    assert progress.pending_call_ids == IsList(foo_call_id, bar_call_id, check_order=False)
+    progress = progress.resume({foo_call_id: {'return_value': 3}, bar_call_id: {'return_value': 4}})
+    assert isinstance(progress, pydantic_monty.MontyComplete)
+    assert progress.output == snapshot([3, 4])
+
+    # REPL should still be usable after async completion
+    assert repl.feed_run('1 + 1') == snapshot(2)
+
+
+def test_repl_feed_start_async_state_persistence():
+    """MontyRepl.feed_start async: REPL state persists across async snippets."""
+    repl = pydantic_monty.MontyRepl()
+    repl.feed_run('x = 10')
+
+    progress = repl.feed_start('result = await fetch(x)')
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert progress.function_name == snapshot('fetch')
+    assert progress.args == snapshot((10,))
+    call_id = progress.call_id
+
+    progress = progress.resume(future=...)
+    assert isinstance(progress, pydantic_monty.FutureSnapshot)
+    progress = progress.resume({call_id: {'return_value': 'fetched'}})
+    assert isinstance(progress, pydantic_monty.MontyComplete)
+    assert progress.output is None  # assignment, not expression
+
+    assert repl.feed_run('result') == snapshot('fetched')
+    assert repl.feed_run('x') == snapshot(10)

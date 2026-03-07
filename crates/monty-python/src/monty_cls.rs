@@ -7,7 +7,8 @@ use std::{
 // Use `::monty` to refer to the external crate (not the pymodule)
 use ::monty::{
     ExtFunctionResult, FunctionCall, LimitedTracker, MontyException, MontyObject, MontyRun, NameLookupResult,
-    NoLimitTracker, OsCall, PrintWriter, PrintWriterCallback, ResolveFutures, ResourceTracker, RunProgress,
+    NoLimitTracker, OsCall, PrintWriter, PrintWriterCallback, ReplFunctionCall, ReplNameLookup, ReplOsCall,
+    ReplProgress, ReplResolveFutures, ReplStartError, ResolveFutures, ResourceTracker, RunProgress,
 };
 use monty::{ExcType, NameLookup};
 use monty_type_checking::{SourceFile, type_check};
@@ -26,6 +27,7 @@ use crate::{
     exceptions::{MontyError, MontyTypingError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
     limits::{PySignalTracker, extract_limits},
+    repl::{EitherRepl, FromCoreRepl, PyMontyRepl},
 };
 
 /// A sandboxed Python interpreter instance.
@@ -453,6 +455,10 @@ impl PyMonty {
 pub(crate) enum EitherProgress {
     NoLimit(RunProgress<PySignalTracker<NoLimitTracker>>),
     Limited(RunProgress<PySignalTracker<LimitedTracker>>),
+    /// REPL progress with back-reference to the owning `PyMontyRepl` for auto-restore.
+    ReplNoLimit(ReplProgress<PySignalTracker<NoLimitTracker>>, Py<PyMontyRepl>),
+    /// REPL progress with back-reference to the owning `PyMontyRepl` for auto-restore.
+    ReplLimited(ReplProgress<PySignalTracker<LimitedTracker>>, Py<PyMontyRepl>),
 }
 
 impl EitherProgress {
@@ -534,6 +540,55 @@ impl EitherProgress {
                     dc_registry,
                 ),
             },
+            Self::ReplNoLimit(p, owner) => repl_progress_to_py(py, p, script_name, print_callback, dc_registry, owner),
+            Self::ReplLimited(p, owner) => repl_progress_to_py(py, p, script_name, print_callback, dc_registry, owner),
+        }
+    }
+}
+
+/// Converts a `ReplProgress<T>` into the appropriate Python snapshot type.
+///
+/// On completion, restores the REPL state into `repl_owner` before returning `MontyComplete`.
+/// The `repl_owner` is propagated into snapshot enum variants so the chain can continue.
+fn repl_progress_to_py<T: ResourceTracker>(
+    py: Python<'_>,
+    progress: ReplProgress<T>,
+    script_name: String,
+    print_callback: Option<Py<PyAny>>,
+    dc_registry: DcRegistry,
+    repl_owner: Py<PyMontyRepl>,
+) -> PyResult<Bound<'_, PyAny>>
+where
+    EitherFunctionSnapshot: FromReplFunctionCall<T> + FromReplOsCall<T>,
+    EitherLookupSnapshot: FromReplNameLookup<T>,
+    EitherFutureSnapshot: FromReplResolveFutures<T>,
+    EitherRepl: FromCoreRepl<T>,
+{
+    match progress {
+        ReplProgress::Complete { repl, value } => {
+            repl_owner.get().put_repl(EitherRepl::from_core(repl));
+            PyMontyComplete::create(py, &value, &dc_registry)
+        }
+        ReplProgress::FunctionCall(call) => {
+            PyFunctionSnapshot::repl_function_call(py, call, script_name, print_callback, dc_registry, repl_owner)
+        }
+        ReplProgress::OsCall(call) => {
+            PyFunctionSnapshot::repl_os_call(py, call, script_name, print_callback, dc_registry, repl_owner)
+        }
+        ReplProgress::NameLookup(lookup) => {
+            let variable_name = lookup.name.clone();
+            PyNameLookupSnapshot::repl_name_lookup(
+                py,
+                lookup,
+                script_name,
+                print_callback,
+                dc_registry,
+                repl_owner,
+                variable_name,
+            )
+        }
+        ReplProgress::ResolveFutures(state) => {
+            PyFutureSnapshot::repl_resolve_futures(py, state, script_name, print_callback, dc_registry, repl_owner)
         }
     }
 }
@@ -541,17 +596,30 @@ impl EitherProgress {
 /// Runtime execution snapshot, holds either a `FunctionCall` or `OsCall` for both
 /// resource tracker variants since pyclass structs can't be generic.
 ///
+/// Also holds REPL variants (`ReplFunctionCall`, `ReplOsCall`) for `MontyRepl.feed_start()`.
+/// REPL variants carry a `Py<PyMontyRepl>` back-reference so the REPL can be auto-restored
+/// on completion or error.
+///
 /// Used internally by `PyFunctionSnapshot` to store execution state. Both `FunctionCall`
 /// and `OsCall` have the same `resume()` signature, so we dispatch to the appropriate
 /// inner type based on the variant.
 ///
 /// The `Done` variant indicates the snapshot has been consumed.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+///
+/// Serde: REPL variants serialize as their non-REPL counterparts (stripping the owner).
+/// Deserialization always produces non-REPL variants.
+#[derive(Debug)]
 enum EitherFunctionSnapshot {
+    // Run variants (from Monty.start())
     NoLimitFn(FunctionCall<PySignalTracker<NoLimitTracker>>),
     NoLimitOs(OsCall<PySignalTracker<NoLimitTracker>>),
     LimitedFn(FunctionCall<PySignalTracker<LimitedTracker>>),
     LimitedOs(OsCall<PySignalTracker<LimitedTracker>>),
+    // REPL variants (from MontyRepl.feed_start()) — carry the REPL owner
+    ReplNoLimitFn(ReplFunctionCall<PySignalTracker<NoLimitTracker>>, Py<PyMontyRepl>),
+    ReplNoLimitOs(ReplOsCall<PySignalTracker<NoLimitTracker>>, Py<PyMontyRepl>),
+    ReplLimitedFn(ReplFunctionCall<PySignalTracker<LimitedTracker>>, Py<PyMontyRepl>),
+    ReplLimitedOs(ReplOsCall<PySignalTracker<LimitedTracker>>, Py<PyMontyRepl>),
     /// Sentinel indicating the snapshot has been consumed via `resume()`.
     Done,
 }
@@ -571,6 +639,108 @@ impl EitherFunctionSnapshot {
 
     fn wrap_os_limited(call: OsCall<PySignalTracker<LimitedTracker>>) -> Self {
         Self::LimitedOs(call)
+    }
+}
+
+/// Helper trait for wrapping `ReplFunctionCall<T>` into `EitherFunctionSnapshot`.
+trait FromReplFunctionCall<T: ResourceTracker> {
+    /// Wraps a REPL function call into the appropriate variant.
+    fn from_repl_fn(call: ReplFunctionCall<T>, owner: Py<PyMontyRepl>) -> Self;
+}
+
+impl FromReplFunctionCall<PySignalTracker<NoLimitTracker>> for EitherFunctionSnapshot {
+    fn from_repl_fn(call: ReplFunctionCall<PySignalTracker<NoLimitTracker>>, owner: Py<PyMontyRepl>) -> Self {
+        Self::ReplNoLimitFn(call, owner)
+    }
+}
+
+impl FromReplFunctionCall<PySignalTracker<LimitedTracker>> for EitherFunctionSnapshot {
+    fn from_repl_fn(call: ReplFunctionCall<PySignalTracker<LimitedTracker>>, owner: Py<PyMontyRepl>) -> Self {
+        Self::ReplLimitedFn(call, owner)
+    }
+}
+
+/// Helper trait for wrapping `ReplOsCall<T>` into `EitherFunctionSnapshot`.
+trait FromReplOsCall<T: ResourceTracker> {
+    /// Wraps a REPL OS call into the appropriate variant.
+    fn from_repl_os(call: ReplOsCall<T>, owner: Py<PyMontyRepl>) -> Self;
+}
+
+impl FromReplOsCall<PySignalTracker<NoLimitTracker>> for EitherFunctionSnapshot {
+    fn from_repl_os(call: ReplOsCall<PySignalTracker<NoLimitTracker>>, owner: Py<PyMontyRepl>) -> Self {
+        Self::ReplNoLimitOs(call, owner)
+    }
+}
+
+impl FromReplOsCall<PySignalTracker<LimitedTracker>> for EitherFunctionSnapshot {
+    fn from_repl_os(call: ReplOsCall<PySignalTracker<LimitedTracker>>, owner: Py<PyMontyRepl>) -> Self {
+        Self::ReplLimitedOs(call, owner)
+    }
+}
+
+/// Serde helper: mirrors `EitherFunctionSnapshot` layout but without `Py<PyMontyRepl>`.
+///
+/// REPL variants serialize their snapshot data under the same tag name; on deserialization
+/// they produce `Done` since the REPL owner cannot be restored from serialized data.
+#[derive(serde::Serialize, serde::Deserialize)]
+enum SerdeFunctionSnapshot {
+    NoLimitFn(FunctionCall<PySignalTracker<NoLimitTracker>>),
+    NoLimitOs(OsCall<PySignalTracker<NoLimitTracker>>),
+    LimitedFn(FunctionCall<PySignalTracker<LimitedTracker>>),
+    LimitedOs(OsCall<PySignalTracker<LimitedTracker>>),
+    ReplNoLimitFn(ReplFunctionCall<PySignalTracker<NoLimitTracker>>),
+    ReplNoLimitOs(ReplOsCall<PySignalTracker<NoLimitTracker>>),
+    ReplLimitedFn(ReplFunctionCall<PySignalTracker<LimitedTracker>>),
+    ReplLimitedOs(ReplOsCall<PySignalTracker<LimitedTracker>>),
+    Done,
+}
+
+/// Serde helper: borrows from `EitherFunctionSnapshot` for zero-copy serialization.
+#[derive(serde::Serialize)]
+enum SerdeFunctionSnapshotRef<'a> {
+    NoLimitFn(&'a FunctionCall<PySignalTracker<NoLimitTracker>>),
+    NoLimitOs(&'a OsCall<PySignalTracker<NoLimitTracker>>),
+    LimitedFn(&'a FunctionCall<PySignalTracker<LimitedTracker>>),
+    LimitedOs(&'a OsCall<PySignalTracker<LimitedTracker>>),
+    ReplNoLimitFn(&'a ReplFunctionCall<PySignalTracker<NoLimitTracker>>),
+    ReplNoLimitOs(&'a ReplOsCall<PySignalTracker<NoLimitTracker>>),
+    ReplLimitedFn(&'a ReplFunctionCall<PySignalTracker<LimitedTracker>>),
+    ReplLimitedOs(&'a ReplOsCall<PySignalTracker<LimitedTracker>>),
+    Done,
+}
+
+impl serde::Serialize for EitherFunctionSnapshot {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let r = match self {
+            Self::NoLimitFn(c) => SerdeFunctionSnapshotRef::NoLimitFn(c),
+            Self::NoLimitOs(c) => SerdeFunctionSnapshotRef::NoLimitOs(c),
+            Self::LimitedFn(c) => SerdeFunctionSnapshotRef::LimitedFn(c),
+            Self::LimitedOs(c) => SerdeFunctionSnapshotRef::LimitedOs(c),
+            Self::ReplNoLimitFn(c, _) => SerdeFunctionSnapshotRef::ReplNoLimitFn(c),
+            Self::ReplNoLimitOs(c, _) => SerdeFunctionSnapshotRef::ReplNoLimitOs(c),
+            Self::ReplLimitedFn(c, _) => SerdeFunctionSnapshotRef::ReplLimitedFn(c),
+            Self::ReplLimitedOs(c, _) => SerdeFunctionSnapshotRef::ReplLimitedOs(c),
+            Self::Done => SerdeFunctionSnapshotRef::Done,
+        };
+        r.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for EitherFunctionSnapshot {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let v = SerdeFunctionSnapshot::deserialize(deserializer)?;
+        Ok(match v {
+            SerdeFunctionSnapshot::NoLimitFn(c) => Self::NoLimitFn(c),
+            SerdeFunctionSnapshot::NoLimitOs(c) => Self::NoLimitOs(c),
+            SerdeFunctionSnapshot::LimitedFn(c) => Self::LimitedFn(c),
+            SerdeFunctionSnapshot::LimitedOs(c) => Self::LimitedOs(c),
+            // REPL variants deserialize as Done — the Py<PyMontyRepl> cannot be restored.
+            SerdeFunctionSnapshot::ReplNoLimitFn(_)
+            | SerdeFunctionSnapshot::ReplNoLimitOs(_)
+            | SerdeFunctionSnapshot::ReplLimitedFn(_)
+            | SerdeFunctionSnapshot::ReplLimitedOs(_)
+            | SerdeFunctionSnapshot::Done => todo!(),
+        })
     }
 }
 
@@ -687,6 +857,85 @@ impl PyFunctionSnapshot {
         };
         slf.into_bound_py_any(py)
     }
+
+    /// Creates a `PyFunctionSnapshot` for a REPL external function call.
+    fn repl_function_call<T: ResourceTracker>(
+        py: Python<'_>,
+        call: ReplFunctionCall<T>,
+        script_name: String,
+        print_callback: Option<Py<PyAny>>,
+        dc_registry: DcRegistry,
+        repl_owner: Py<PyMontyRepl>,
+    ) -> PyResult<Bound<'_, PyAny>>
+    where
+        EitherFunctionSnapshot: FromReplFunctionCall<T>,
+    {
+        let function_name = call.function_name.clone();
+        let call_id = call.call_id;
+        let method_call = call.method_call;
+        let items: PyResult<Vec<Py<PyAny>>> = call
+            .args
+            .iter()
+            .map(|item| monty_to_py(py, item, &dc_registry))
+            .collect();
+        let dict = PyDict::new(py);
+        for (k, v) in &call.kwargs {
+            dict.set_item(monty_to_py(py, k, &dc_registry)?, monty_to_py(py, v, &dc_registry)?)?;
+        }
+
+        let slf = Self {
+            snapshot: Mutex::new(EitherFunctionSnapshot::from_repl_fn(call, repl_owner)),
+            print_callback,
+            script_name,
+            is_os_function: false,
+            is_method_call: method_call,
+            function_name,
+            args: PyTuple::new(py, items?)?.unbind(),
+            kwargs: dict.unbind(),
+            call_id,
+            dc_registry,
+        };
+        slf.into_bound_py_any(py)
+    }
+
+    /// Creates a `PyFunctionSnapshot` for a REPL OS-level call.
+    fn repl_os_call<T: ResourceTracker>(
+        py: Python<'_>,
+        call: ReplOsCall<T>,
+        script_name: String,
+        print_callback: Option<Py<PyAny>>,
+        dc_registry: DcRegistry,
+        repl_owner: Py<PyMontyRepl>,
+    ) -> PyResult<Bound<'_, PyAny>>
+    where
+        EitherFunctionSnapshot: FromReplOsCall<T>,
+    {
+        let function_name = call.function.to_string();
+        let call_id = call.call_id;
+        let items: PyResult<Vec<Py<PyAny>>> = call
+            .args
+            .iter()
+            .map(|item| monty_to_py(py, item, &dc_registry))
+            .collect();
+        let dict = PyDict::new(py);
+        for (k, v) in &call.kwargs {
+            dict.set_item(monty_to_py(py, k, &dc_registry)?, monty_to_py(py, v, &dc_registry)?)?;
+        }
+
+        let slf = Self {
+            snapshot: Mutex::new(EitherFunctionSnapshot::from_repl_os(call, repl_owner)),
+            print_callback,
+            script_name,
+            is_os_function: true,
+            is_method_call: false,
+            function_name,
+            args: PyTuple::new(py, items?)?.unbind(),
+            kwargs: dict.unbind(),
+            call_id,
+            dc_registry,
+        };
+        slf.into_bound_py_any(py)
+    }
 }
 
 #[pymethods]
@@ -742,6 +991,30 @@ impl PyFunctionSnapshot {
             EitherFunctionSnapshot::LimitedOs(call) => {
                 let result = py.detach(|| call.resume(external_result, &mut print_writer));
                 EitherProgress::Limited(result.map_err(|e| MontyError::new_err(py, e))?)
+            }
+            EitherFunctionSnapshot::ReplNoLimitFn(call, owner) => {
+                let result = py
+                    .detach(|| call.resume(external_result, &mut print_writer))
+                    .map_err(|e| restore_repl_from_repl_start_error(py, &owner, *e))?;
+                EitherProgress::ReplNoLimit(result, owner)
+            }
+            EitherFunctionSnapshot::ReplNoLimitOs(call, owner) => {
+                let result = py
+                    .detach(|| call.resume(external_result, &mut print_writer))
+                    .map_err(|e| restore_repl_from_repl_start_error(py, &owner, *e))?;
+                EitherProgress::ReplNoLimit(result, owner)
+            }
+            EitherFunctionSnapshot::ReplLimitedFn(call, owner) => {
+                let result = py
+                    .detach(|| call.resume(external_result, &mut print_writer))
+                    .map_err(|e| restore_repl_from_repl_start_error(py, &owner, *e))?;
+                EitherProgress::ReplLimited(result, owner)
+            }
+            EitherFunctionSnapshot::ReplLimitedOs(call, owner) => {
+                let result = py
+                    .detach(|| call.resume(external_result, &mut print_writer))
+                    .map_err(|e| restore_repl_from_repl_start_error(py, &owner, *e))?;
+                EitherProgress::ReplLimited(result, owner)
             }
             EitherFunctionSnapshot::Done => return Err(PyRuntimeError::new_err("Progress already resumed")),
         };
@@ -902,11 +1175,15 @@ impl PyFunctionSnapshot {
 /// Runtime execution snapshot, holds a `NameLookup` for both
 /// resource tracker variants since pyclass structs can't be generic.
 ///
+/// Also holds REPL variants with `Py<PyMontyRepl>` for `MontyRepl.feed_start()`.
+///
 /// The `Done` variant indicates the snapshot has been consumed.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug)]
 enum EitherLookupSnapshot {
     NoLimit(NameLookup<PySignalTracker<NoLimitTracker>>),
     Limited(NameLookup<PySignalTracker<LimitedTracker>>),
+    ReplNoLimit(ReplNameLookup<PySignalTracker<NoLimitTracker>>, Py<PyMontyRepl>),
+    ReplLimited(ReplNameLookup<PySignalTracker<LimitedTracker>>, Py<PyMontyRepl>),
     /// Sentinel indicating the snapshot has been consumed via `resume()`.
     Done,
 }
@@ -918,6 +1195,69 @@ impl EitherLookupSnapshot {
 
     fn wrap_limited(lookup: NameLookup<PySignalTracker<LimitedTracker>>) -> Self {
         Self::Limited(lookup)
+    }
+}
+
+/// Helper trait for wrapping `ReplNameLookup<T>` into `EitherLookupSnapshot`.
+trait FromReplNameLookup<T: ResourceTracker> {
+    /// Wraps a REPL name lookup into the appropriate variant.
+    fn from_repl_name_lookup(lookup: ReplNameLookup<T>, owner: Py<PyMontyRepl>) -> Self;
+}
+
+impl FromReplNameLookup<PySignalTracker<NoLimitTracker>> for EitherLookupSnapshot {
+    fn from_repl_name_lookup(lookup: ReplNameLookup<PySignalTracker<NoLimitTracker>>, owner: Py<PyMontyRepl>) -> Self {
+        Self::ReplNoLimit(lookup, owner)
+    }
+}
+
+impl FromReplNameLookup<PySignalTracker<LimitedTracker>> for EitherLookupSnapshot {
+    fn from_repl_name_lookup(lookup: ReplNameLookup<PySignalTracker<LimitedTracker>>, owner: Py<PyMontyRepl>) -> Self {
+        Self::ReplLimited(lookup, owner)
+    }
+}
+
+/// Serde helper: serializable subset of `EitherLookupSnapshot` without REPL owner.
+#[derive(serde::Serialize, serde::Deserialize)]
+enum SerdeLookupSnapshot {
+    NoLimit(NameLookup<PySignalTracker<NoLimitTracker>>),
+    Limited(NameLookup<PySignalTracker<LimitedTracker>>),
+    ReplNoLimit(ReplNameLookup<PySignalTracker<NoLimitTracker>>),
+    ReplLimited(ReplNameLookup<PySignalTracker<LimitedTracker>>),
+    Done,
+}
+
+#[derive(serde::Serialize)]
+enum SerdeLookupSnapshotRef<'a> {
+    NoLimit(&'a NameLookup<PySignalTracker<NoLimitTracker>>),
+    Limited(&'a NameLookup<PySignalTracker<LimitedTracker>>),
+    ReplNoLimit(&'a ReplNameLookup<PySignalTracker<NoLimitTracker>>),
+    ReplLimited(&'a ReplNameLookup<PySignalTracker<LimitedTracker>>),
+    Done,
+}
+
+impl serde::Serialize for EitherLookupSnapshot {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let r = match self {
+            Self::NoLimit(l) => SerdeLookupSnapshotRef::NoLimit(l),
+            Self::Limited(l) => SerdeLookupSnapshotRef::Limited(l),
+            Self::ReplNoLimit(l, _) => SerdeLookupSnapshotRef::ReplNoLimit(l),
+            Self::ReplLimited(l, _) => SerdeLookupSnapshotRef::ReplLimited(l),
+            Self::Done => SerdeLookupSnapshotRef::Done,
+        };
+        r.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for EitherLookupSnapshot {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let v = SerdeLookupSnapshot::deserialize(deserializer)?;
+        Ok(match v {
+            SerdeLookupSnapshot::NoLimit(l) => Self::NoLimit(l),
+            SerdeLookupSnapshot::Limited(l) => Self::Limited(l),
+            SerdeLookupSnapshot::ReplNoLimit(_) | SerdeLookupSnapshot::ReplLimited(_) | SerdeLookupSnapshot::Done => {
+                Self::Done
+            }
+        })
     }
 }
 
@@ -962,11 +1302,34 @@ impl PyNameLookupSnapshot {
         };
         slf.into_bound_py_any(py)
     }
+
+    /// Creates a `PyNameLookupSnapshot` for a REPL name lookup.
+    fn repl_name_lookup<T: ResourceTracker>(
+        py: Python<'_>,
+        lookup: ReplNameLookup<T>,
+        script_name: String,
+        print_callback: Option<Py<PyAny>>,
+        dc_registry: DcRegistry,
+        repl_owner: Py<PyMontyRepl>,
+        variable_name: String,
+    ) -> PyResult<Bound<'_, PyAny>>
+    where
+        EitherLookupSnapshot: FromReplNameLookup<T>,
+    {
+        let slf = Self {
+            snapshot: Mutex::new(EitherLookupSnapshot::from_repl_name_lookup(lookup, repl_owner)),
+            print_callback,
+            dc_registry,
+            script_name,
+            variable_name,
+        };
+        slf.into_bound_py_any(py)
+    }
 }
 
 #[pymethods]
 impl PyNameLookupSnapshot {
-    /// Resumes execution with either a value or undefined
+    /// Resumes execution with either a value or undefined.
     #[pyo3(signature = (**kwargs))]
     pub fn resume<'py>(&self, py: Python<'py>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Bound<'py, PyAny>> {
         let mut snapshot = self
@@ -1002,6 +1365,18 @@ impl PyNameLookupSnapshot {
             EitherLookupSnapshot::Limited(snapshot) => {
                 let result = py.detach(|| snapshot.resume(lookup_result, &mut print_writer));
                 EitherProgress::Limited(result.map_err(|e| MontyError::new_err(py, e))?)
+            }
+            EitherLookupSnapshot::ReplNoLimit(snapshot, owner) => {
+                let result = py
+                    .detach(|| snapshot.resume(lookup_result, &mut print_writer))
+                    .map_err(|e| restore_repl_from_repl_start_error(py, &owner, *e))?;
+                EitherProgress::ReplNoLimit(result, owner)
+            }
+            EitherLookupSnapshot::ReplLimited(snapshot, owner) => {
+                let result = py
+                    .detach(|| snapshot.resume(lookup_result, &mut print_writer))
+                    .map_err(|e| restore_repl_from_repl_start_error(py, &owner, *e))?;
+                EitherProgress::ReplLimited(result, owner)
             }
             EitherLookupSnapshot::Done => return Err(PyRuntimeError::new_err("Progress already resumed")),
         };
@@ -1108,17 +1483,92 @@ impl PyNameLookupSnapshot {
 
 /// Holds a `ResolveFutures` for either resource tracker variant.
 ///
+/// Also holds REPL variants with `Py<PyMontyRepl>` for `MontyRepl.feed_start()`.
+///
 /// Used internally by `PyFutureSnapshot` to store execution state when
 /// awaiting resolution of pending async external calls.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug)]
 enum EitherFutureSnapshot {
     NoLimit(ResolveFutures<PySignalTracker<NoLimitTracker>>),
     Limited(ResolveFutures<PySignalTracker<LimitedTracker>>),
+    ReplNoLimit(ReplResolveFutures<PySignalTracker<NoLimitTracker>>, Py<PyMontyRepl>),
+    ReplLimited(ReplResolveFutures<PySignalTracker<LimitedTracker>>, Py<PyMontyRepl>),
     /// Sentinel indicating the snapshot has been consumed via `resume()`.
     Done,
 }
 
+/// Helper trait for wrapping `ReplResolveFutures<T>` into `EitherFutureSnapshot`.
+trait FromReplResolveFutures<T: ResourceTracker> {
+    /// Wraps a REPL resolve-futures state into the appropriate variant.
+    fn from_repl_resolve_futures(state: ReplResolveFutures<T>, owner: Py<PyMontyRepl>) -> Self;
+}
+
+impl FromReplResolveFutures<PySignalTracker<NoLimitTracker>> for EitherFutureSnapshot {
+    fn from_repl_resolve_futures(
+        state: ReplResolveFutures<PySignalTracker<NoLimitTracker>>,
+        owner: Py<PyMontyRepl>,
+    ) -> Self {
+        Self::ReplNoLimit(state, owner)
+    }
+}
+
+impl FromReplResolveFutures<PySignalTracker<LimitedTracker>> for EitherFutureSnapshot {
+    fn from_repl_resolve_futures(
+        state: ReplResolveFutures<PySignalTracker<LimitedTracker>>,
+        owner: Py<PyMontyRepl>,
+    ) -> Self {
+        Self::ReplLimited(state, owner)
+    }
+}
+
+/// Serde helper for `EitherFutureSnapshot` without REPL owner.
+#[derive(serde::Serialize, serde::Deserialize)]
+enum SerdeFutureSnapshot {
+    NoLimit(ResolveFutures<PySignalTracker<NoLimitTracker>>),
+    Limited(ResolveFutures<PySignalTracker<LimitedTracker>>),
+    ReplNoLimit(ReplResolveFutures<PySignalTracker<NoLimitTracker>>),
+    ReplLimited(ReplResolveFutures<PySignalTracker<LimitedTracker>>),
+    Done,
+}
+
+#[derive(serde::Serialize)]
+enum SerdeFutureSnapshotRef<'a> {
+    NoLimit(&'a ResolveFutures<PySignalTracker<NoLimitTracker>>),
+    Limited(&'a ResolveFutures<PySignalTracker<LimitedTracker>>),
+    ReplNoLimit(&'a ReplResolveFutures<PySignalTracker<NoLimitTracker>>),
+    ReplLimited(&'a ReplResolveFutures<PySignalTracker<LimitedTracker>>),
+    Done,
+}
+
+impl serde::Serialize for EitherFutureSnapshot {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let r = match self {
+            Self::NoLimit(s) => SerdeFutureSnapshotRef::NoLimit(s),
+            Self::Limited(s) => SerdeFutureSnapshotRef::Limited(s),
+            Self::ReplNoLimit(s, _) => SerdeFutureSnapshotRef::ReplNoLimit(s),
+            Self::ReplLimited(s, _) => SerdeFutureSnapshotRef::ReplLimited(s),
+            Self::Done => SerdeFutureSnapshotRef::Done,
+        };
+        r.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for EitherFutureSnapshot {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let v = SerdeFutureSnapshot::deserialize(deserializer)?;
+        Ok(match v {
+            SerdeFutureSnapshot::NoLimit(s) => Self::NoLimit(s),
+            SerdeFutureSnapshot::Limited(s) => Self::Limited(s),
+            SerdeFutureSnapshot::ReplNoLimit(_) | SerdeFutureSnapshot::ReplLimited(_) | SerdeFutureSnapshot::Done => {
+                Self::Done
+            }
+        })
+    }
+}
+
 /// Snapshot generated during execution when monty yields to the host to resolve a future.
+///
+/// Works for both `Monty.start()` and `MontyRepl.feed_start()`.
 #[pyclass(name = "FutureSnapshot", module = "pydantic_monty", frozen)]
 #[derive(Debug)]
 pub struct PyFutureSnapshot {
@@ -1141,6 +1591,27 @@ impl PyFutureSnapshot {
     ) -> PyResult<Bound<'_, PyAny>> {
         let slf = Self {
             snapshot: Mutex::new(snapshot),
+            print_callback,
+            dc_registry,
+            script_name,
+        };
+        slf.into_bound_py_any(py)
+    }
+
+    /// Creates a `PyFutureSnapshot` for a REPL resolve-futures state.
+    fn repl_resolve_futures<T: ResourceTracker>(
+        py: Python<'_>,
+        state: ReplResolveFutures<T>,
+        script_name: String,
+        print_callback: Option<Py<PyAny>>,
+        dc_registry: DcRegistry,
+        repl_owner: Py<PyMontyRepl>,
+    ) -> PyResult<Bound<'_, PyAny>>
+    where
+        EitherFutureSnapshot: FromReplResolveFutures<T>,
+    {
+        let slf = Self {
+            snapshot: Mutex::new(EitherFutureSnapshot::from_repl_resolve_futures(state, repl_owner)),
             print_callback,
             dc_registry,
             script_name,
@@ -1193,6 +1664,18 @@ impl PyFutureSnapshot {
                 let result = py.detach(|| snapshot.resume(external_results, &mut print_writer));
                 EitherProgress::Limited(result.map_err(|e| MontyError::new_err(py, e))?)
             }
+            EitherFutureSnapshot::ReplNoLimit(snapshot, owner) => {
+                let result = py
+                    .detach(|| snapshot.resume(external_results, &mut print_writer))
+                    .map_err(|e| restore_repl_from_repl_start_error(py, &owner, *e))?;
+                EitherProgress::ReplNoLimit(result, owner)
+            }
+            EitherFutureSnapshot::ReplLimited(snapshot, owner) => {
+                let result = py
+                    .detach(|| snapshot.resume(external_results, &mut print_writer))
+                    .map_err(|e| restore_repl_from_repl_start_error(py, &owner, *e))?;
+                EitherProgress::ReplLimited(result, owner)
+            }
             EitherFutureSnapshot::Done => return Err(PyRuntimeError::new_err("Progress already resumed")),
         };
 
@@ -1216,6 +1699,8 @@ impl PyFutureSnapshot {
         match &*snapshot {
             EitherFutureSnapshot::NoLimit(snapshot) => PyList::new(py, snapshot.pending_call_ids()),
             EitherFutureSnapshot::Limited(snapshot) => PyList::new(py, snapshot.pending_call_ids()),
+            EitherFutureSnapshot::ReplNoLimit(snapshot, _) => PyList::new(py, snapshot.pending_call_ids()),
+            EitherFutureSnapshot::ReplLimited(snapshot, _) => PyList::new(py, snapshot.pending_call_ids()),
             EitherFutureSnapshot::Done => Err(PyRuntimeError::new_err("FutureSnapshot already resumed")),
         }
     }
@@ -1301,8 +1786,10 @@ impl PyFutureSnapshot {
     fn __repr__(&self) -> String {
         let snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
         let pending_call_ids = match &*snapshot {
-            EitherFutureSnapshot::NoLimit(snapshot) => snapshot.pending_call_ids(),
-            EitherFutureSnapshot::Limited(snapshot) => snapshot.pending_call_ids(),
+            EitherFutureSnapshot::NoLimit(s) => s.pending_call_ids(),
+            EitherFutureSnapshot::Limited(s) => s.pending_call_ids(),
+            EitherFutureSnapshot::ReplNoLimit(s, _) => s.pending_call_ids(),
+            EitherFutureSnapshot::ReplLimited(s, _) => s.pending_call_ids(),
             EitherFutureSnapshot::Done => &[],
         };
         format!(
@@ -1445,4 +1932,18 @@ fn extract_external_result(
         // wrong key in kwargs
         Err(PyTypeError::new_err(error_msg))
     }
+}
+
+/// Extracts the REPL from a `ReplStartError`, restores it into the owner,
+/// and returns the Python exception.
+fn restore_repl_from_repl_start_error<T: ResourceTracker>(
+    py: Python<'_>,
+    repl_owner: &Py<PyMontyRepl>,
+    err: ReplStartError<T>,
+) -> PyErr
+where
+    EitherRepl: FromCoreRepl<T>,
+{
+    repl_owner.get().put_repl(EitherRepl::from_core(err.repl));
+    MontyError::new_err(py, err.error)
 }

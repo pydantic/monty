@@ -194,7 +194,7 @@ class MontyRepl:
     """
     Incremental no-replay REPL session.
 
-    Create with ``MontyRepl()`` then call ``feed_run()`` to execute snippets
+    Create with `MontyRepl()` then call `feed_run()` to execute snippets
     incrementally against persistent heap and namespace state.
     """
 
@@ -206,7 +206,7 @@ class MontyRepl:
         dataclass_registry: list[type] | None = None,
     ) -> Self:
         """
-        Create an empty REPL session ready to receive snippets via ``feed_run()``.
+        Create an empty REPL session ready to receive snippets via `feed_run()`.
 
         No code is parsed or executed at construction time.
         """
@@ -232,12 +232,34 @@ class MontyRepl:
         """
         Execute one incremental snippet and return its output.
 
-        When ``inputs`` is provided, the key-value pairs are injected into
+        When `inputs` is provided, the key-value pairs are injected into
         the REPL namespace before executing the snippet.
 
-        When ``external_functions`` is provided, external function calls and
+        When `external_functions` is provided, external function calls and
         name lookups are dispatched to the provided callables — matching the
-        behavior of ``Monty.run(external_functions=...)``.
+        behavior of `Monty.run(external_functions=...)`.
+        """
+
+    def feed_start(
+        self,
+        code: str,
+        *,
+        inputs: dict[str, Any] | None = None,
+        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+    ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
+        """
+        Start executing an incremental snippet, yielding snapshots for external calls.
+
+        Unlike `feed_run()`, which handles external function dispatch internally,
+        `feed_start()` returns a snapshot object whenever the code needs an external
+        function call, OS call, name lookup, or future resolution. The caller provides
+        the result via `snapshot.resume(...)`, which returns the next snapshot or
+        `MontyComplete`.
+
+        This enables the same iterative start/resume pattern used by `Monty.start()`,
+        including support for async external functions via `FutureSnapshot`.
+
+        On completion or error, the REPL state is automatically restored.
         """
 
     def dump(self) -> bytes:
