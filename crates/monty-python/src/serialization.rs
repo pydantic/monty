@@ -31,7 +31,7 @@ use crate::{
         EitherFunctionSnapshot, EitherFutureSnapshot, EitherLookupSnapshot, PyFunctionSnapshot, PyFutureSnapshot,
         PyNameLookupSnapshot,
     },
-    repl::{EitherRepl, PyMontyRepl},
+    repl::PyMontyRepl,
 };
 
 /// Current serialization format version. Incremented on breaking wire-format changes.
@@ -133,9 +133,11 @@ pub(crate) enum SerializedSnapshot {
 #[derive(Serialize, Deserialize)]
 pub(crate) enum SerializedReplSnapshot {
     /// External function or OS call with REPL state.
+    ///
+    /// The REPL state is embedded inside the snapshot's `Repl*` variant — no
+    /// separate `repl` field is needed.
     Function {
         snapshot: SerdeFunctionSnapshot,
-        repl: EitherRepl,
         script_name: String,
         is_os_function: bool,
         is_method_call: bool,
@@ -147,14 +149,12 @@ pub(crate) enum SerializedReplSnapshot {
     /// Name lookup with REPL state.
     NameLookup {
         snapshot: SerdeLookupSnapshot,
-        repl: EitherRepl,
         script_name: String,
         variable_name: String,
     },
     /// Future resolution with REPL state.
     Future {
         snapshot: SerdeFutureSnapshot,
-        repl: EitherRepl,
         script_name: String,
     },
 }
@@ -398,10 +398,8 @@ pub(crate) fn dump_function_snapshot(
     let serde_ref = snapshot.as_serde_ref();
 
     if snapshot.is_repl() {
-        let repl = snapshot.take_repl_state()?;
         let serialized = SerializedReplSnapshotRef::Function {
             snapshot: serde_ref,
-            repl: &repl,
             script_name,
             is_os_function,
             is_method_call,
@@ -442,10 +440,8 @@ pub(crate) fn dump_lookup_snapshot(
     let serde_ref = snapshot.as_serde_ref();
 
     if snapshot.is_repl() {
-        let repl = snapshot.take_repl_state()?;
         let serialized = SerializedReplSnapshotRef::NameLookup {
             snapshot: serde_ref,
-            repl: &repl,
             script_name,
             variable_name,
         };
@@ -475,10 +471,8 @@ pub(crate) fn dump_future_snapshot(
     let serde_ref = snapshot.as_serde_ref();
 
     if snapshot.is_repl() {
-        let repl = snapshot.take_repl_state()?;
         let serialized = SerializedReplSnapshotRef::Future {
             snapshot: serde_ref,
-            repl: &repl,
             script_name,
         };
         serialize_with_header(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))
@@ -524,7 +518,6 @@ enum SerializedSnapshotRef<'a> {
 enum SerializedReplSnapshotRef<'a> {
     Function {
         snapshot: SerdeFunctionSnapshotRef<'a>,
-        repl: &'a EitherRepl,
         script_name: &'a str,
         is_os_function: bool,
         is_method_call: bool,
@@ -535,13 +528,11 @@ enum SerializedReplSnapshotRef<'a> {
     },
     NameLookup {
         snapshot: SerdeLookupSnapshotRef<'a>,
-        repl: &'a EitherRepl,
         script_name: &'a str,
         variable_name: &'a str,
     },
     Future {
         snapshot: SerdeFutureSnapshotRef<'a>,
-        repl: &'a EitherRepl,
         script_name: &'a str,
     },
 }
@@ -628,7 +619,6 @@ pub(crate) fn load_repl_snapshot<'py>(
     match serialized {
         SerializedReplSnapshot::Function {
             snapshot,
-            repl,
             script_name,
             is_os_function,
             is_method_call,
@@ -637,7 +627,7 @@ pub(crate) fn load_repl_snapshot<'py>(
             kwargs,
             call_id,
         } => {
-            let repl_py = create_py_repl(py, repl, &script_name, &dc_registry)?;
+            let repl_py = create_empty_py_repl(py, &script_name, &dc_registry)?;
             let either = snapshot.into_either_with_repl(repl_py.clone_ref(py));
             let py_args = monty_objects_to_py_tuple(py, &args, &dc_registry)?;
             let py_kwargs = monty_pairs_to_py_dict(py, &kwargs, &dc_registry)?;
@@ -658,11 +648,10 @@ pub(crate) fn load_repl_snapshot<'py>(
         }
         SerializedReplSnapshot::NameLookup {
             snapshot,
-            repl,
             script_name,
             variable_name,
         } => {
-            let repl_py = create_py_repl(py, repl, &script_name, &dc_registry)?;
+            let repl_py = create_empty_py_repl(py, &script_name, &dc_registry)?;
             let either = snapshot.into_either_with_repl(repl_py.clone_ref(py));
             let snap = PyNameLookupSnapshot::from_deserialized(
                 py,
@@ -674,12 +663,8 @@ pub(crate) fn load_repl_snapshot<'py>(
             )?;
             Ok((snap, repl_py))
         }
-        SerializedReplSnapshot::Future {
-            snapshot,
-            repl,
-            script_name,
-        } => {
-            let repl_py = create_py_repl(py, repl, &script_name, &dc_registry)?;
+        SerializedReplSnapshot::Future { snapshot, script_name } => {
+            let repl_py = create_empty_py_repl(py, &script_name, &dc_registry)?;
             let either = snapshot.into_either_with_repl(repl_py.clone_ref(py));
             let snap = PyFutureSnapshot::from_deserialized(py, either, print_callback, dc_registry, script_name)?;
             Ok((snap, repl_py))
@@ -687,14 +672,12 @@ pub(crate) fn load_repl_snapshot<'py>(
     }
 }
 
-/// Creates a `Py<PyMontyRepl>` from deserialized REPL state.
-fn create_py_repl(
-    py: Python<'_>,
-    repl: EitherRepl,
-    script_name: &str,
-    dc_registry: &DcRegistry,
-) -> PyResult<Py<PyMontyRepl>> {
-    let repl_obj = PyMontyRepl::from_deserialized(repl, script_name.to_owned(), dc_registry.clone_ref(py));
+/// Creates an empty `Py<PyMontyRepl>` for use as a REPL owner reference.
+///
+/// The REPL starts with `None` inside — the real REPL state lives inside the
+/// snapshot and will be restored via `put_repl` when the snapshot completes.
+fn create_empty_py_repl(py: Python<'_>, script_name: &str, dc_registry: &DcRegistry) -> PyResult<Py<PyMontyRepl>> {
+    let repl_obj = PyMontyRepl::empty_owner(script_name.to_owned(), dc_registry.clone_ref(py));
     Py::new(py, repl_obj)
 }
 
@@ -761,22 +744,6 @@ impl EitherFunctionSnapshot {
             Self::ReplNoLimitFn(..) | Self::ReplNoLimitOs(..) | Self::ReplLimitedFn(..) | Self::ReplLimitedOs(..)
         )
     }
-
-    /// Extracts the REPL state from a REPL variant, taking it from the `Py<PyMontyRepl>`.
-    ///
-    /// This calls `take_repl()` on the owning `PyMontyRepl` to extract its internal state.
-    pub(crate) fn take_repl_state(&self) -> PyResult<EitherRepl> {
-        let (Self::ReplNoLimitFn(_, repl_owner)
-        | Self::ReplNoLimitOs(_, repl_owner)
-        | Self::ReplLimitedFn(_, repl_owner)
-        | Self::ReplLimitedOs(_, repl_owner)) = self
-        else {
-            return Err(PyRuntimeError::new_err(
-                "Cannot extract REPL state from a non-REPL snapshot",
-            ));
-        };
-        repl_owner.get().take_repl()
-    }
 }
 
 impl EitherLookupSnapshot {
@@ -784,31 +751,11 @@ impl EitherLookupSnapshot {
     pub(crate) fn is_repl(&self) -> bool {
         matches!(self, Self::ReplNoLimit(..) | Self::ReplLimited(..))
     }
-
-    /// Extracts the REPL state from a REPL variant.
-    pub(crate) fn take_repl_state(&self) -> PyResult<EitherRepl> {
-        let (Self::ReplNoLimit(_, repl_owner) | Self::ReplLimited(_, repl_owner)) = self else {
-            return Err(PyRuntimeError::new_err(
-                "Cannot extract REPL state from a non-REPL snapshot",
-            ));
-        };
-        repl_owner.get().take_repl()
-    }
 }
 
 impl EitherFutureSnapshot {
     /// Returns `true` if this snapshot is from a REPL `feed_start()` call.
     pub(crate) fn is_repl(&self) -> bool {
         matches!(self, Self::ReplNoLimit(..) | Self::ReplLimited(..))
-    }
-
-    /// Extracts the REPL state from a REPL variant.
-    pub(crate) fn take_repl_state(&self) -> PyResult<EitherRepl> {
-        let (Self::ReplNoLimit(_, repl_owner) | Self::ReplLimited(_, repl_owner)) = self else {
-            return Err(PyRuntimeError::new_err(
-                "Cannot extract REPL state from a non-REPL snapshot",
-            ));
-        };
-        repl_owner.get().take_repl()
     }
 }

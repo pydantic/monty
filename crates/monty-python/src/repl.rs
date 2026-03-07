@@ -43,7 +43,7 @@ pub(crate) enum EitherRepl {
 #[pyclass(name = "MontyRepl", module = "pydantic_monty", frozen)]
 #[derive(Debug)]
 pub struct PyMontyRepl {
-    repl: Mutex<EitherRepl>,
+    repl: Mutex<Option<EitherRepl>>,
     dc_registry: DcRegistry,
 
     /// Name of the script being executed.
@@ -77,7 +77,7 @@ impl PyMontyRepl {
         };
 
         Ok(Self {
-            repl: Mutex::new(repl),
+            repl: Mutex::new(Some(repl)),
             dc_registry,
             script_name,
         })
@@ -118,15 +118,18 @@ impl PyMontyRepl {
         };
 
         if external_functions.is_some() || os.is_some() {
-            return self.feed_run_with_externals(py, code, &input_values, external_functions, os, &mut print_writer);
+            return self.feed_run_with_externals(py, code, input_values, external_functions, os, &mut print_writer);
         }
 
-        let mut repl = self
+        let mut guard = self
             .repl
             .try_lock()
             .map_err(|_| PyRuntimeError::new_err("REPL session is currently executing another snippet"))?;
+        let repl = guard
+            .as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("REPL session is currently executing another snippet"))?;
 
-        let output = match &mut *repl {
+        let output = match repl {
             EitherRepl::NoLimit(repl) => repl.feed_run(code, input_values, &mut print_writer),
             EitherRepl::Limited(repl) => repl.feed_run(code, input_values, &mut print_writer),
         }
@@ -199,10 +202,13 @@ impl PyMontyRepl {
             script_name: &'a str,
         }
 
-        let repl = self.repl.lock().unwrap_or_else(PoisonError::into_inner);
+        let guard = self.repl.lock().unwrap_or_else(PoisonError::into_inner);
+        let repl = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("REPL session is currently executing another snippet"))?;
 
         let serialized = SerializedRepl {
-            repl: &repl,
+            repl,
             script_name: &self.script_name,
         };
         let bytes = postcard::to_allocvec(&serialized).map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -227,7 +233,7 @@ impl PyMontyRepl {
             postcard::from_bytes(data.as_bytes()).map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         Ok(Self {
-            repl: Mutex::new(serialized.repl),
+            repl: Mutex::new(Some(serialized.repl)),
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
             script_name: serialized.script_name,
         })
@@ -245,12 +251,12 @@ impl PyMontyRepl {
     /// calls and name lookups, matching the same dispatch logic as `Monty.run()`.
     ///
     /// `feed_start` consumes the REPL, so we temporarily take it out of the mutex
-    /// (leaving a placeholder) and restore it on both success and error paths.
+    /// (leaving `None`) and restore it on both success and error paths.
     fn feed_run_with_externals<'py>(
         &self,
         py: Python<'py>,
         code: &str,
-        input_values: &[(String, MontyObject)],
+        input_values: Vec<(String, MontyObject)>,
         external_functions: Option<&Bound<'_, PyDict>>,
         os: Option<&Bound<'_, PyAny>>,
         print_writer: &mut PrintWriter<'_>,
@@ -287,7 +293,7 @@ impl PyMontyRepl {
         py: Python<'_>,
         repl: CoreMontyRepl<T>,
         code: &str,
-        input_values: &[(String, MontyObject)],
+        input_values: Vec<(String, MontyObject)>,
         external_functions: Option<&Bound<'_, PyDict>>,
         os: Option<&Bound<'_, PyAny>>,
         print_output: &mut SendWrapper<&mut PrintWriter<'_>>,
@@ -296,9 +302,8 @@ impl PyMontyRepl {
         EitherRepl: FromCoreRepl<T>,
     {
         let code_owned = code.to_owned();
-        let inputs_owned = input_values.to_vec();
         let mut progress = py
-            .detach(|| repl.feed_start(&code_owned, inputs_owned, print_output))
+            .detach(|| repl.feed_start(&code_owned, input_values, print_output))
             .map_err(|e| self.restore_repl_from_start_error(py, *e))?;
 
         loop {
@@ -385,27 +390,25 @@ impl PyMontyRepl {
     }
 
     /// Takes the REPL out of the mutex for `feed_start` (which consumes self),
-    /// leaving a lightweight placeholder that will be overwritten before returning.
+    /// leaving `None` until the REPL is restored via `put_repl`.
     pub(crate) fn take_repl(&self) -> PyResult<EitherRepl> {
         let mut guard = self
             .repl
             .try_lock()
             .map_err(|_| PyRuntimeError::new_err("REPL session is currently executing another snippet"))?;
-        Ok(std::mem::replace(
-            &mut *guard,
-            EitherRepl::NoLimit(CoreMontyRepl::new(
-                "_placeholder_",
-                PySignalTracker::new(NoLimitTracker),
-            )),
-        ))
+        guard
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("REPL session is currently executing another snippet"))
     }
 
-    /// Constructs a `PyMontyRepl` from deserialized REPL state.
+    /// Creates an empty REPL owner for snapshot deserialization.
     ///
-    /// Used by `load_repl_snapshot` to reconstruct the REPL session from serialized data.
-    pub(crate) fn from_deserialized(repl: EitherRepl, script_name: String, dc_registry: DcRegistry) -> Self {
+    /// The REPL mutex starts as `None` — the real REPL state lives inside the
+    /// deserialized snapshot and will be restored via `put_repl` when the
+    /// snapshot is resumed to completion.
+    pub(crate) fn empty_owner(script_name: String, dc_registry: DcRegistry) -> Self {
         Self {
-            repl: Mutex::new(repl),
+            repl: Mutex::new(None),
             dc_registry,
             script_name,
         }
@@ -414,7 +417,7 @@ impl PyMontyRepl {
     /// Restores a REPL into the mutex after `feed_start` completes successfully.
     pub(crate) fn put_repl(&self, repl: EitherRepl) {
         let mut guard = self.repl.lock().unwrap_or_else(PoisonError::into_inner);
-        *guard = repl;
+        *guard = Some(repl);
     }
 
     /// Extracts the REPL from a `ReplStartError`, restores it into `self.repl`,
