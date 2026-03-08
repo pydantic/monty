@@ -1,4 +1,4 @@
-use std::collections::hash_map::Entry;
+use std::{collections::hash_map::Entry, mem};
 
 use ahash::{AHashMap, AHashSet};
 
@@ -30,10 +30,24 @@ pub struct PrepareResult {
     ///
     /// This map is used by:
     /// - ref-count tests for looking up variables by name
-    /// - REPL incremental compilation to preserve stable global slot IDs across snippets
+    /// - initial REPL compilation to seed stable global slot IDs across later snippets
     pub name_map: AHashMap<String, NamespaceId>,
     /// The prepared AST nodes with all names resolved to namespace indices.
     /// Function definitions are inline as `PreparedFunctionDef` variants.
+    pub nodes: Vec<PreparedNode>,
+    /// The string interner containing all interned identifiers and filenames.
+    pub interner: InternerBuilder,
+}
+
+/// Result of preparing a REPL snippet against an existing mutable global name map.
+///
+/// Unlike [`PrepareResult`], this does not return the module name map because the
+/// caller-owned map is mutated in place during preparation. On failure, any newly
+/// reserved global slots remain in that map so later REPL snippets can reuse them.
+pub struct PrepareExistingNamesResult {
+    /// Number of items in the namespace (at module level, this IS the global namespace)
+    pub namespace_size: usize,
+    /// The prepared AST nodes with all names resolved to namespace indices.
     pub nodes: Vec<PreparedNode>,
     /// The string interner containing all interned identifiers and filenames.
     pub interner: InternerBuilder,
@@ -69,15 +83,22 @@ pub(crate) fn prepare(parse_result: ParseResult, input_names: Vec<String>) -> Re
 
 /// Prepares parsed nodes for REPL-style incremental compilation using an existing global namespace map.
 ///
-/// Existing bindings keep their original namespace slots; any new names are appended with new slots.
-/// This ensures snippets can be compiled independently while sharing one persistent global namespace.
+/// Existing bindings keep their original namespace slots; any new names are appended with new slots
+/// directly in `existing_name_map`. This ensures snippets can be compiled independently while sharing
+/// one persistent global namespace.
+///
+/// If preparation fails, any newly reserved slots stay in `existing_name_map`. That is intentional for
+/// REPL compilation: the corresponding namespace entries remain `Undefined`, so preserving the slots is
+/// harmless and avoids cloning the full map before each feed.
 pub(crate) fn prepare_with_existing_names(
     parse_result: ParseResult,
-    existing_name_map: AHashMap<String, NamespaceId>,
-) -> Result<PrepareResult, ParseError> {
+    existing_name_map: &mut AHashMap<String, NamespaceId>,
+) -> Result<PrepareExistingNamesResult, ParseError> {
     let ParseResult { nodes, interner } = parse_result;
     let mut p = Prepare::new_module_with_name_map(existing_name_map, &interner);
-    let mut prepared_nodes = p.prepare_nodes(nodes)?;
+    let prepare_result = p.prepare_nodes(nodes);
+    p.write_back_module_name_map(existing_name_map);
+    let mut prepared_nodes = prepare_result?;
 
     // In the root frame, the last expression is implicitly returned to match REPL behavior.
     if let Some(Node::Expr(expr_loc)) = prepared_nodes.last()
@@ -88,9 +109,8 @@ pub(crate) fn prepare_with_existing_names(
         prepared_nodes.push(Node::Return(new_expr_loc));
     }
 
-    Ok(PrepareResult {
+    Ok(PrepareExistingNamesResult {
         namespace_size: p.namespace_size,
-        name_map: p.name_map,
         nodes: prepared_nodes,
         interner,
     })
@@ -184,10 +204,13 @@ impl<'i> Prepare<'i> {
         }
     }
 
-    /// Creates a module-scope Prepare instance from an existing global name map.
+    /// Creates a module-scope Prepare instance from an existing mutable global name map.
     ///
     /// Used by incremental REPL compilation to keep stable slot assignments across snippets.
-    fn new_module_with_name_map(name_map: AHashMap<String, NamespaceId>, interner: &'i InternerBuilder) -> Self {
+    /// The caller's map is moved into this preparer and must be written back with
+    /// [`Self::write_back_module_name_map`] before returning.
+    fn new_module_with_name_map(name_map: &mut AHashMap<String, NamespaceId>, interner: &'i InternerBuilder) -> Self {
+        let name_map = mem::take(name_map);
         let namespace_size = name_map
             .values()
             .map(|id| id.index())
@@ -208,6 +231,19 @@ impl<'i> Prepare<'i> {
             cell_var_map: AHashMap::new(),
             unassigned_ref_names: AHashSet::new(),
         }
+    }
+
+    /// Writes the mutated module-level name map back to the caller-owned REPL state.
+    ///
+    /// REPL preparation takes ownership of the map so new slots can be appended without cloning.
+    /// Call this before returning from the incremental prepare path, even on errors, so newly
+    /// reserved slots remain visible to later snippets.
+    fn write_back_module_name_map(&mut self, target_name_map: &mut AHashMap<String, NamespaceId>) {
+        debug_assert!(
+            self.is_module_scope,
+            "module name maps can only be written back from module scope"
+        );
+        mem::swap(target_name_map, &mut self.name_map);
     }
 
     /// Creates a new Prepare instance for function-level code.

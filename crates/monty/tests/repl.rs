@@ -82,6 +82,29 @@ fn repl_runtime_error_keeps_partial_state_consistent() {
 }
 
 #[test]
+fn repl_feed_compile_error_keeps_reserved_global_slot() {
+    let (mut repl, init_output) = init_repl("");
+    assert_eq!(init_output, MontyObject::None);
+
+    let error = feed_run_print(&mut repl, "reserved_name = 1\nnonlocal missing_name")
+        .expect_err("snippet should raise a prepare-time SyntaxError");
+    assert_eq!(error.exc_type(), monty::ExcType::SyntaxError);
+    assert_eq!(
+        error.message(),
+        Some("nonlocal declaration not allowed at module level")
+    );
+
+    assert_eq!(
+        feed_run_print(&mut repl, "reserved_name = 42").unwrap(),
+        MontyObject::None
+    );
+    assert_eq!(
+        feed_run_print(&mut repl, "reserved_name").unwrap(),
+        MontyObject::Int(42)
+    );
+}
+
+#[test]
 fn repl_heap_mutations_are_not_replayed() {
     let (mut repl, _) = init_repl("items = []");
 
@@ -258,6 +281,30 @@ fn repl_start_runtime_error_preserves_repl_state() {
     assert_eq!(feed_run_print(&mut repl, "y").unwrap(), MontyObject::Int(20));
     // New snippets continue to work normally.
     assert_eq!(feed_run_print(&mut repl, "x + y + 12").unwrap(), MontyObject::Int(42));
+}
+
+#[test]
+fn repl_start_compile_error_keeps_reserved_global_slot() {
+    let (repl, _) = init_repl("");
+
+    let err = repl
+        .feed_start("reserved_name = 1\nnonlocal missing_name", vec![], PrintWriter::Stdout)
+        .expect_err("expected ReplStartError");
+    let ReplStartError { mut repl, error } = *err;
+    assert_eq!(error.exc_type(), monty::ExcType::SyntaxError);
+    assert_eq!(
+        error.message(),
+        Some("nonlocal declaration not allowed at module level")
+    );
+
+    assert_eq!(
+        feed_run_print(&mut repl, "reserved_name = 42").unwrap(),
+        MontyObject::None
+    );
+    assert_eq!(
+        feed_run_print(&mut repl, "reserved_name").unwrap(),
+        MontyObject::Int(42)
+    );
 }
 
 #[test]

@@ -113,7 +113,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
         let executor = match ReplExecutor::new_repl_snippet(
             code.to_owned(),
             &input_script_name,
-            this.global_name_map.clone(),
+            &mut this.global_name_map,
             &this.interns,
             input_names,
         ) {
@@ -154,6 +154,9 @@ impl<T: ResourceTracker> MontyRepl<T> {
     /// partially mutating globals, those mutations remain visible in later feeds,
     /// matching Python REPL semantics.
     ///
+    /// Compile-time failures may still reserve new global slots in the REPL map.
+    /// Those slots remain `Undefined` until a later successful snippet writes them.
+    ///
     /// # Errors
     /// Returns `MontyException` for syntax/compile/runtime failures.
     pub fn feed_run(
@@ -172,7 +175,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
         let executor = ReplExecutor::new_repl_snippet(
             code.to_owned(),
             &input_script_name,
-            self.global_name_map.clone(),
+            &mut self.global_name_map,
             &self.interns,
             input_names,
         )?;
@@ -205,16 +208,9 @@ impl<T: ResourceTracker> MontyRepl<T> {
         self.globals = vm.take_globals();
         vm.cleanup();
 
-        // Commit compiler metadata even on runtime errors.
-        // Snippets can mutate globals before raising, and those values may contain
-        // FunctionId/StringId values that must be interpreted with the updated tables.
-        let ReplExecutor {
-            name_map,
-            interns,
-            code,
-            ..
-        } = executor;
-        self.global_name_map = name_map;
+        // Commit intern/function metadata even on runtime errors. The REPL global
+        // name map was already updated in place during preparation.
+        let ReplExecutor { interns, code, .. } = executor;
         self.interns = interns;
 
         result.map_err(|e| e.into_python_exception(&self.interns, &code))
@@ -803,22 +799,18 @@ pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
 struct ReplExecutor {
     /// Number of slots needed in the global namespace.
     namespace_size: usize,
-    /// Maps variable names to their indices in the namespace.
-    ///
-    /// Stable slot assignment is required across snippets so previously created
-    /// objects continue to resolve names correctly.
-    name_map: AHashMap<String, NamespaceId>,
     /// Compiled bytecode for the snippet.
     module_code: Code,
     /// Interned strings and compiled functions for this snippet.
     interns: Interns,
     /// Source code used for traceback/error rendering.
     code: String,
-    /// Input variable names that were injected for this snippet.
+    /// Global slots assigned to inputs for this snippet.
     ///
-    /// Stored so that `inject_inputs` can look up their namespace slots
-    /// after compilation assigns them.
-    input_names: Vec<String>,
+    /// Inputs are pre-registered in the REPL-global name map before preparation.
+    /// We store only the assigned slots here so execution can inject values without
+    /// needing a cloned copy of the full global name map.
+    input_slots: Vec<usize>,
 }
 
 impl ReplExecutor {
@@ -828,23 +820,29 @@ impl ReplExecutor {
     /// no-replay execution:
     /// - Seeds parsing from `existing_interns` so old `StringId` values stay stable.
     /// - Seeds compilation with existing functions so old `FunctionId` values remain valid.
-    /// - Reuses `existing_name_map` and appends new global names only.
+    /// - Reuses `existing_name_map` in place and appends new global names only.
     ///
-    /// `input_names` are pre-registered in the name map before preparation so they
+    /// `input_names` are pre-registered in the REPL-global name map before preparation so they
     /// receive stable namespace slots that `inject_inputs` can use to store values.
+    ///
+    /// If snippet preparation fails, newly reserved global slots remain in the
+    /// caller-owned name map. That is harmless because the corresponding runtime
+    /// global entries stay `Undefined` until a later successful assignment.
     fn new_repl_snippet(
         code: String,
         script_name: &str,
-        mut existing_name_map: AHashMap<String, NamespaceId>,
+        existing_name_map: &mut AHashMap<String, NamespaceId>,
         existing_interns: &Interns,
         input_names: Vec<String>,
     ) -> Result<Self, MontyException> {
         // Pre-register input names so they get stable slots before preparation.
+        let mut input_slots = Vec::with_capacity(input_names.len());
         for name in &input_names {
             let next_slot = existing_name_map.len();
-            existing_name_map
+            let slot = *existing_name_map
                 .entry(name.clone())
                 .or_insert_with(|| NamespaceId::new(next_slot));
+            input_slots.push(slot.index());
         }
 
         let seeded_interner = InternerBuilder::from_interns(existing_interns, &code);
@@ -863,11 +861,10 @@ impl ReplExecutor {
 
         Ok(Self {
             namespace_size: prepared.namespace_size,
-            name_map: prepared.name_map,
             module_code: compile_result.code,
             interns,
             code,
-            input_names,
+            input_slots,
         })
     }
 }
@@ -965,12 +962,7 @@ fn inject_inputs_into_vm(
     input_values: Vec<MontyObject>,
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> Result<(), MontyException> {
-    for (name, obj) in executor.input_names.iter().zip(input_values) {
-        let slot = executor
-            .name_map
-            .get(name)
-            .expect("input name should have a namespace slot")
-            .index();
+    for (slot, obj) in executor.input_slots.iter().copied().zip(input_values) {
         let value = obj
             .to_value(vm)
             .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?;
@@ -1048,8 +1040,7 @@ fn build_repl_progress<T: ResourceTracker>(
 
     match converted {
         ConvertedExit::Complete(obj) => {
-            let ReplExecutor { name_map, interns, .. } = executor;
-            repl.global_name_map = name_map;
+            let ReplExecutor { interns, .. } = executor;
             repl.interns = interns;
             Ok(ReplProgress::Complete { repl, value: obj })
         }
@@ -1097,11 +1088,9 @@ fn build_repl_progress<T: ResourceTracker>(
         })),
         ConvertedExit::Error(err) => {
             let error = err.into_python_exception(&executor.interns, &executor.code);
-            // Commit compiler metadata even on runtime errors, matching feed() behavior.
-            // Snippets can create new variables or functions before raising, and those
-            // values may reference FunctionId/StringId values from the new tables.
-            let ReplExecutor { name_map, interns, .. } = executor;
-            repl.global_name_map = name_map;
+            // Commit intern/function metadata even on runtime errors, matching feed() behavior.
+            // The global name map was already updated in place during preparation.
+            let ReplExecutor { interns, .. } = executor;
             repl.interns = interns;
             Err(Box::new(ReplStartError { repl, error }))
         }
