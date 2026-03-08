@@ -963,9 +963,9 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 Opcode::BinaryMod => try_catch_sync!(self, cached_frame, self.binary_mod()),
                 Opcode::BinaryPow => try_catch_sync!(self, cached_frame, self.binary_pow()),
                 // Bitwise operations - only work on integers
-                Opcode::BinaryAnd => try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::And)),
-                Opcode::BinaryOr => try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::Or)),
-                Opcode::BinaryXor => try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::Xor)),
+                Opcode::BinaryAnd => try_catch_sync!(self, cached_frame, self.binary_and()),
+                Opcode::BinaryOr => try_catch_sync!(self, cached_frame, self.binary_or()),
+                Opcode::BinaryXor => try_catch_sync!(self, cached_frame, self.binary_xor()),
                 Opcode::BinaryLShift => {
                     try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::LShift));
                 }

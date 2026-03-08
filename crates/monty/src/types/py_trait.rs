@@ -17,7 +17,7 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::{Heap, HeapId},
+    heap::{DropWithHeap, Heap, HeapId},
     intern::{Interns, StringId},
     os::OsFunction,
     resource::ResourceTracker,
@@ -322,8 +322,13 @@ pub trait PyTrait {
         _self_id: HeapId,
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
-        _args: ArgValues,
+        args: ArgValues,
     ) -> RunResult<AttrCallResult> {
+        // `py_call_attr` takes ownership of the argument bundle. Implementations that
+        // do not recognize the attribute still need to release those values before
+        // reporting `AttributeError`, otherwise method calls on unsupported types leak
+        // references on the error path (caught by `ref-count-panic`).
+        args.drop_with_heap(vm);
         Err(ExcType::attribute_error(self.py_type(vm.heap), attr.as_str(vm.interns)))
     }
 

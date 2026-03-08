@@ -17,8 +17,8 @@ use crate::{
     heap::{Heap, HeapId},
     intern::{FunctionId, Interns},
     types::{
-        AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait,
-        Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type,
+        AttrCallResult, Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt,
+        Module, MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type,
     },
     value::{EitherStr, Value},
 };
@@ -32,6 +32,9 @@ pub(crate) enum HeapDataMut<'a> {
     Tuple(&'a mut Tuple),
     NamedTuple(&'a mut NamedTuple),
     Dict(&'a mut Dict),
+    DictKeysView(&'a mut DictKeysView),
+    DictItemsView(&'a mut DictItemsView),
+    DictValuesView(&'a mut DictValuesView),
     Set(&'a mut Set),
     FrozenSet(&'a mut FrozenSet),
     Closure(&'a mut Closure),
@@ -288,6 +291,9 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Tuple(t) => t.py_type(heap),
             Self::NamedTuple(nt) => nt.py_type(heap),
             Self::Dict(d) => d.py_type(heap),
+            Self::DictKeysView(view) => view.py_type(heap),
+            Self::DictItemsView(view) => view.py_type(heap),
+            Self::DictValuesView(view) => view.py_type(heap),
             Self::Set(s) => s.py_type(heap),
             Self::FrozenSet(fs) => fs.py_type(heap),
             Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => Type::Function,
@@ -315,6 +321,9 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Tuple(t) => t.py_estimate_size(),
             Self::NamedTuple(nt) => nt.py_estimate_size(),
             Self::Dict(d) => d.py_estimate_size(),
+            Self::DictKeysView(view) => view.py_estimate_size(),
+            Self::DictItemsView(view) => view.py_estimate_size(),
+            Self::DictValuesView(view) => view.py_estimate_size(),
             Self::Set(s) => s.py_estimate_size(),
             Self::FrozenSet(fs) => fs.py_estimate_size(),
             // TODO: should include size of captured cells and defaults
@@ -353,6 +362,9 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Tuple(t) => t.py_len(heap, interns),
             Self::NamedTuple(nt) => nt.py_len(heap, interns),
             Self::Dict(d) => d.py_len(heap, interns),
+            Self::DictKeysView(view) => view.py_len(heap, interns),
+            Self::DictItemsView(view) => view.py_len(heap, interns),
+            Self::DictValuesView(view) => view.py_len(heap, interns),
             Self::Set(s) => s.py_len(heap, interns),
             Self::FrozenSet(fs) => fs.py_len(heap, interns),
             Self::Range(r) => Some(r.len()),
@@ -390,6 +402,19 @@ impl PyTrait for HeapDataMut<'_> {
                 Ok(true)
             }
             (Self::Dict(a), Self::Dict(b)) => a.py_eq(b, heap, interns),
+            (Self::DictKeysView(a), Self::DictKeysView(b)) => a.py_eq(b, heap, interns),
+            (Self::DictItemsView(a), Self::DictItemsView(b)) => a.py_eq(b, heap, interns),
+            (Self::DictValuesView(_), Self::DictValuesView(_)) => Ok(false),
+            (Self::DictKeysView(a), Self::Set(b)) | (Self::Set(b), Self::DictKeysView(a)) => a.eq_set(b, heap, interns),
+            (Self::DictKeysView(a), Self::FrozenSet(b)) | (Self::FrozenSet(b), Self::DictKeysView(a)) => {
+                a.eq_frozenset(b, heap, interns)
+            }
+            (Self::DictItemsView(a), Self::Set(b)) | (Self::Set(b), Self::DictItemsView(a)) => {
+                a.eq_set(b, heap, interns)
+            }
+            (Self::DictItemsView(a), Self::FrozenSet(b)) | (Self::FrozenSet(b), Self::DictItemsView(a)) => {
+                a.eq_frozenset(b, heap, interns)
+            }
             (Self::Set(a), Self::Set(b)) => a.py_eq(b, heap, interns),
             (Self::FrozenSet(a), Self::FrozenSet(b)) => a.py_eq(b, heap, interns),
             (Self::Closure(a), Self::Closure(b)) => Ok(a.func_id == b.func_id && a.cells == b.cells),
@@ -425,6 +450,9 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Tuple(t) => t.py_dec_ref_ids(stack),
             Self::NamedTuple(nt) => nt.py_dec_ref_ids(stack),
             Self::Dict(d) => d.py_dec_ref_ids(stack),
+            Self::DictKeysView(view) => view.py_dec_ref_ids(stack),
+            Self::DictItemsView(view) => view.py_dec_ref_ids(stack),
+            Self::DictValuesView(view) => view.py_dec_ref_ids(stack),
             Self::Set(s) => s.py_dec_ref_ids(stack),
             Self::FrozenSet(fs) => fs.py_dec_ref_ids(stack),
             Self::Closure(closure) => {
@@ -478,6 +506,9 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Tuple(t) => t.py_bool(heap, interns),
             Self::NamedTuple(nt) => nt.py_bool(heap, interns),
             Self::Dict(d) => d.py_bool(heap, interns),
+            Self::DictKeysView(view) => view.py_bool(heap, interns),
+            Self::DictItemsView(view) => view.py_bool(heap, interns),
+            Self::DictValuesView(view) => view.py_bool(heap, interns),
             Self::Set(s) => s.py_bool(heap, interns),
             Self::FrozenSet(fs) => fs.py_bool(heap, interns),
             Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => true,
@@ -511,6 +542,9 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Tuple(t) => t.py_repr_fmt(f, heap, heap_ids, interns),
             Self::NamedTuple(nt) => nt.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Dict(d) => d.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::DictKeysView(view) => view.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::DictItemsView(view) => view.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::DictValuesView(view) => view.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Set(s) => s.py_repr_fmt(f, heap, heap_ids, interns),
             Self::FrozenSet(fs) => fs.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Closure(closure) => interns.get_function(closure.func_id).py_repr_fmt(f, interns, 0),
@@ -644,6 +678,9 @@ impl PyTrait for HeapDataMut<'_> {
             Self::List(l) => l.py_call_attr(self_id, vm, attr, args),
             Self::Tuple(t) => t.py_call_attr(self_id, vm, attr, args),
             Self::Dict(d) => d.py_call_attr(self_id, vm, attr, args),
+            Self::DictKeysView(view) => view.py_call_attr(self_id, vm, attr, args),
+            Self::DictItemsView(view) => view.py_call_attr(self_id, vm, attr, args),
+            Self::DictValuesView(view) => view.py_call_attr(self_id, vm, attr, args),
             Self::Set(s) => s.py_call_attr(self_id, vm, attr, args),
             Self::FrozenSet(fs) => fs.py_call_attr(self_id, vm, attr, args),
             Self::Dataclass(dc) => dc.py_call_attr(self_id, vm, attr, args),

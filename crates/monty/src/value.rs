@@ -1558,6 +1558,41 @@ impl Value {
                         Ok(false)
                     }
                     HeapDataMut::Dict(dict) => dict.get(item, heap, interns).map(|m| m.is_some()),
+                    HeapDataMut::DictKeysView(view) => heap.with_entry_mut(view.dict_id(), |heap, data| {
+                        let HeapDataMut::Dict(dict) = data else {
+                            panic!("dict_keys view must reference a dict");
+                        };
+                        dict.get(item, heap, interns).map(|m| m.is_some())
+                    }),
+                    HeapDataMut::DictItemsView(view) => {
+                        let Some((key, value)) = cloned_items_view_candidate(item, heap) else {
+                            return Ok(false);
+                        };
+                        let mut key_guard = crate::heap::HeapGuard::new(key, heap);
+                        let (key, heap) = key_guard.as_parts_mut();
+                        let mut value_guard = crate::heap::HeapGuard::new(value, heap);
+                        let (value, heap) = value_guard.as_parts_mut();
+                        heap.with_entry_mut(view.dict_id(), |heap, data| {
+                            let HeapDataMut::Dict(dict) = data else {
+                                panic!("dict_items view must reference a dict");
+                            };
+                            let Some(existing_value) = dict.get(key, heap, interns)? else {
+                                return Ok(false);
+                            };
+                            Ok(value.py_eq(existing_value, heap, interns)?)
+                        })
+                    }
+                    HeapDataMut::DictValuesView(view) => heap.with_entry_mut(view.dict_id(), |heap, data| {
+                        let HeapDataMut::Dict(dict) = data else {
+                            panic!("dict_values view must reference a dict");
+                        };
+                        for (_, value) in dict.iter() {
+                            if item.py_eq(value, heap, interns)? {
+                                return Ok(true);
+                            }
+                        }
+                        Ok(false)
+                    }),
                     HeapDataMut::Set(set) => set.contains(item, heap, interns),
                     HeapDataMut::FrozenSet(fset) => fset.contains(item, heap, interns),
                     HeapDataMut::Str(s) => str_contains(s.as_str(), item, heap, interns),
@@ -2317,6 +2352,37 @@ fn extract_bigint(value: &Value, heap: &Heap<impl ResourceTracker>) -> Option<Bi
         Value::Ref(id) => {
             if let HeapData::LongInt(li) = heap.get(*id) {
                 Some(li.inner().clone())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extracts and clones the `(key, value)` probe accepted by `dict_items.__contains__`.
+///
+/// CPython treats only 2-tuples as valid probes for items-view membership. Monty
+/// also accepts namedtuples of length two so tuple-like runtime values behave
+/// sensibly even though namedtuples are not modeled as a true tuple subclass.
+fn cloned_items_view_candidate(item: &Value, heap: &impl ContainsHeap) -> Option<(Value, Value)> {
+    let Value::Ref(heap_id) = item else {
+        return None;
+    };
+
+    match heap.heap().get(*heap_id) {
+        HeapData::Tuple(tuple) => {
+            let items = tuple.as_slice();
+            if items.len() == 2 {
+                Some((items[0].clone_with_heap(heap), items[1].clone_with_heap(heap)))
+            } else {
+                None
+            }
+        }
+        HeapData::NamedTuple(namedtuple) => {
+            let items = namedtuple.as_vec();
+            if items.len() == 2 {
+                Some((items[0].clone_with_heap(heap), items[1].clone_with_heap(heap)))
             } else {
                 None
             }

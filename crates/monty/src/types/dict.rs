@@ -8,7 +8,9 @@ use ahash::AHashSet;
 use hashbrown::{HashTable, hash_table::Entry};
 use smallvec::smallvec;
 
-use super::{List, MontyIter, PyTrait, allocate_tuple, py_trait::AttrCallResult};
+use super::{
+    DictItemsView, DictKeysView, DictValuesView, MontyIter, PyTrait, allocate_tuple, py_trait::AttrCallResult,
+};
 use crate::{
     args::{ArgValues, KwargsValues},
     bytecode::VM,
@@ -261,39 +263,6 @@ impl Dict {
         }
     }
 
-    /// Returns a vector of all keys in the dict with proper reference counting.
-    ///
-    /// Each key's reference count is incremented since the returned vector
-    /// now holds additional references to these values.
-    #[must_use]
-    pub fn keys(&self, heap: &mut Heap<impl ResourceTracker>) -> Vec<Value> {
-        self.entries
-            .iter()
-            .map(|entry| entry.key.clone_with_heap(heap))
-            .collect()
-    }
-
-    /// Returns a vector of all values in the dict with proper reference counting.
-    ///
-    /// Each value's reference count is incremented since the returned vector
-    /// now holds additional references to these values.
-    #[must_use]
-    pub fn values(&self, heap: &mut Heap<impl ResourceTracker>) -> Vec<Value> {
-        self.entries
-            .iter()
-            .map(|entry| entry.value.clone_with_heap(heap))
-            .collect()
-    }
-
-    /// Returns a vector of all (key, value) pairs in the dict with proper reference counting.
-    ///
-    /// Each key and value's reference count is incremented since the returned vector
-    /// now holds additional references to these values.
-    #[must_use]
-    pub fn items(&self) -> impl IntoIterator<Item = (&Value, &Value)> {
-        self.entries.iter().map(|entry| (&entry.key, &entry.value))
-    }
-
     /// Returns the number of key-value pairs in the dict.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -317,6 +286,22 @@ impl Dict {
     /// the key at the given position in insertion order.
     pub fn key_at(&self, index: usize) -> Option<&Value> {
         self.entries.get(index).map(|e| &e.key)
+    }
+
+    /// Returns the value at the given iteration index, or None if out of bounds.
+    ///
+    /// Dictionary views use this to produce live `dict_values` iteration directly
+    /// from the underlying storage without copying the dictionary.
+    pub fn value_at(&self, index: usize) -> Option<&Value> {
+        self.entries.get(index).map(|e| &e.value)
+    }
+
+    /// Returns the key-value pair at the given iteration index, or None if out of bounds.
+    ///
+    /// This accessor keeps dict-view iteration logic out of the storage internals
+    /// while still allowing `dict_items` to produce tuples on demand.
+    pub fn item_at(&self, index: usize) -> Option<(&Value, &Value)> {
+        self.entries.get(index).map(|entry| (&entry.key, &entry.value))
     }
 
     /// Creates a dict from the `dict([mapping_or_pairs], **kwargs)` constructor call.
@@ -549,7 +534,7 @@ impl PyTrait for Dict {
 
     fn py_call_attr(
         &mut self,
-        _self_id: HeapId,
+        self_id: HeapId,
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
@@ -578,26 +563,21 @@ impl PyTrait for Dict {
             }
             StaticStrings::Keys => {
                 args.check_zero_args("dict.keys", heap)?;
-                let keys = self.keys(heap);
-                let list_id = heap.allocate(HeapData::List(List::new(keys)))?;
-                Ok(Value::Ref(list_id))
+                let view_id = heap.allocate(HeapData::DictKeysView(DictKeysView::new(self_id)))?;
+                heap.inc_ref(self_id);
+                Ok(Value::Ref(view_id))
             }
             StaticStrings::Values => {
                 args.check_zero_args("dict.values", heap)?;
-                let values = self.values(heap);
-                let list_id = heap.allocate(HeapData::List(List::new(values)))?;
-                Ok(Value::Ref(list_id))
+                let view_id = heap.allocate(HeapData::DictValuesView(DictValuesView::new(self_id)))?;
+                heap.inc_ref(self_id);
+                Ok(Value::Ref(view_id))
             }
             StaticStrings::Items => {
                 args.check_zero_args("dict.items", heap)?;
-                // Return list of tuples
-                let tuples = self
-                    .items()
-                    .into_iter()
-                    .map(|(k, v)| allocate_tuple(smallvec![k.clone_with_heap(heap), v.clone_with_heap(heap)], heap))
-                    .collect::<Result<_, _>>()?;
-                let list_id = heap.allocate(HeapData::List(List::new(tuples)))?;
-                Ok(Value::Ref(list_id))
+                let view_id = heap.allocate(HeapData::DictItemsView(DictItemsView::new(self_id)))?;
+                heap.inc_ref(self_id);
+                Ok(Value::Ref(view_id))
             }
             StaticStrings::Pop => {
                 // dict.pop() accepts 1 or 2 arguments (key, optional default)

@@ -467,7 +467,7 @@ pub(crate) fn advance_on_heap(
 /// Returns `Ok(None)` if the index is out of bounds (for lists that shrunk during iteration).
 /// Returns `Err` if a dict/set changed size during iteration (RuntimeError).
 fn get_heap_item(
-    heap: &Heap<impl ResourceTracker>,
+    heap: &mut Heap<impl ResourceTracker>,
     heap_id: HeapId,
     index: usize,
     expected_len: Option<usize>,
@@ -491,6 +491,49 @@ fn get_heap_item(
             }
             Ok(Some(
                 dict.key_at(index).expect("index should be valid").clone_with_heap(heap),
+            ))
+        }
+        HeapData::DictKeysView(view) => {
+            let HeapData::Dict(dict) = heap.get(view.dict_id()) else {
+                panic!("dict_keys view must reference a dict");
+            };
+            if let Some(expected) = expected_len
+                && dict.len() != expected
+            {
+                return Err(ExcType::runtime_error_dict_changed_size());
+            }
+            Ok(Some(
+                dict.key_at(index).expect("index should be valid").clone_with_heap(heap),
+            ))
+        }
+        HeapData::DictItemsView(view) => {
+            let HeapData::Dict(dict) = heap.get(view.dict_id()) else {
+                panic!("dict_items view must reference a dict");
+            };
+            if let Some(expected) = expected_len
+                && dict.len() != expected
+            {
+                return Err(ExcType::runtime_error_dict_changed_size());
+            }
+            let (key, value) = dict.item_at(index).expect("index should be valid");
+            Ok(Some(crate::types::allocate_tuple(
+                smallvec::smallvec![key.clone_with_heap(heap), value.clone_with_heap(heap)],
+                heap,
+            )?))
+        }
+        HeapData::DictValuesView(view) => {
+            let HeapData::Dict(dict) = heap.get(view.dict_id()) else {
+                panic!("dict_values view must reference a dict");
+            };
+            if let Some(expected) = expected_len
+                && dict.len() != expected
+            {
+                return Err(ExcType::runtime_error_dict_changed_size());
+            }
+            Ok(Some(
+                dict.value_at(index)
+                    .expect("index should be valid")
+                    .clone_with_heap(heap),
             ))
         }
         HeapData::Bytes(bytes) => Ok(Some(Value::Int(i64::from(bytes.as_slice()[index])))),
@@ -718,10 +761,40 @@ impl IterValue {
                 len: Some(frozenset.len()),
                 checks_mutation: false,
             }),
-            // Dict/Set: captured len, WITH mutation check
+            // Dict and dict views: captured len, WITH mutation check
             HeapData::Dict(dict) => Some(Self::HeapRef {
                 heap_id,
                 len: Some(dict.len()),
+                checks_mutation: true,
+            }),
+            HeapData::DictKeysView(view) => Some(Self::HeapRef {
+                heap_id,
+                len: Some({
+                    let HeapData::Dict(dict) = heap.get(view.dict_id()) else {
+                        panic!("dict_keys view must reference a dict");
+                    };
+                    dict.len()
+                }),
+                checks_mutation: true,
+            }),
+            HeapData::DictItemsView(view) => Some(Self::HeapRef {
+                heap_id,
+                len: Some({
+                    let HeapData::Dict(dict) = heap.get(view.dict_id()) else {
+                        panic!("dict_items view must reference a dict");
+                    };
+                    dict.len()
+                }),
+                checks_mutation: true,
+            }),
+            HeapData::DictValuesView(view) => Some(Self::HeapRef {
+                heap_id,
+                len: Some({
+                    let HeapData::Dict(dict) = heap.get(view.dict_id()) else {
+                        panic!("dict_values view must reference a dict");
+                    };
+                    dict.len()
+                }),
                 checks_mutation: true,
             }),
             HeapData::Set(set) => Some(Self::HeapRef {

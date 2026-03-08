@@ -8,6 +8,7 @@
 pub mod bytes;
 pub mod dataclass;
 pub mod dict;
+pub mod dict_view;
 pub mod iter;
 pub mod list;
 pub mod long_int;
@@ -28,6 +29,7 @@ pub mod r#type;
 pub(crate) use bytes::Bytes;
 pub(crate) use dataclass::Dataclass;
 pub(crate) use dict::Dict;
+pub(crate) use dict_view::{DictItemsView, DictKeysView, DictValuesView};
 pub(crate) use iter::MontyIter;
 pub(crate) use list::List;
 pub(crate) use long_int::LongInt;
