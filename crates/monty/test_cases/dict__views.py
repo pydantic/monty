@@ -47,18 +47,27 @@ except TypeError as e:
     )
 
 # === Equality ===
+assert keys == keys, 'keys view equals itself'
+assert items == items, 'items view equals itself'
+assert values == values, 'values view equals itself by identity'
+
 assert keys == {'a', 'b'}, 'keys view compares equal to matching sets'
 assert {'b', 'a'} == keys, 'set equality works when dict_keys is on the right'
 assert keys == frozenset({'a', 'b'}), 'keys view compares equal to matching frozensets'
+assert frozenset({'a', 'b'}) == keys, 'frozenset equality works when dict_keys is on the right'
 assert keys == {'b': 0, 'a': 9}.keys(), 'keys view compares equal to another matching keys view'
 assert keys != {'a'}, 'keys view equality checks the full key set'
+assert keys != {'a', 'x'}, 'keys view inequality checks equal-length mismatches'
 
 assert items == {('a', 1), ('b', 2)}, 'items view compares equal to matching sets'
 assert {('b', 2), ('a', 1)} == items, 'set equality works when dict_items is on the right'
 assert items == frozenset({('a', 1), ('b', 2)}), 'items view compares equal to matching frozensets'
+assert frozenset({('a', 1), ('b', 2)}) == items, 'frozenset equality works when dict_items is on the right'
 assert items == {'b': 2, 'a': 1}.items(), 'items view compares equal to another matching items view'
 assert items != {('a', 1)}, 'items view equality checks the full item set'
 assert items != {('a', 2), ('b', 2)}, 'items view equality checks values as well as keys'
+assert items != {('a', 1), ('x', 9)}, 'items view inequality checks equal-length mismatches'
+assert ({'a': 1}.values() == {'a': 1}.values()) is False, 'distinct values views are never equal'
 
 # === Live behavior after mutation ===
 live = {'x': 10}
@@ -83,6 +92,26 @@ try:
     assert False, 'changing dict size during keys iteration should raise'
 except RuntimeError as e:
     assert str(e) == 'dictionary changed size during iteration', 'keys iteration error matches CPython'
+
+changing = {'a': 1, 'b': 2}
+changing_iter = iter(changing.items())
+assert next(changing_iter) == ('a', 1), 'iterator yields the first item before mutation'
+changing['c'] = 3
+try:
+    next(changing_iter)
+    assert False, 'changing dict size during items iteration should raise'
+except RuntimeError as e:
+    assert str(e) == 'dictionary changed size during iteration', 'items iteration error matches CPython'
+
+changing = {'a': 1, 'b': 2}
+changing_iter = iter(changing.values())
+assert next(changing_iter) == 1, 'iterator yields the first value before mutation'
+changing['c'] = 3
+try:
+    next(changing_iter)
+    assert False, 'changing dict size during values iteration should raise'
+except RuntimeError as e:
+    assert str(e) == 'dictionary changed size during iteration', 'values iteration error matches CPython'
 
 # === dict_keys & iterable ===
 d = {'a': 1, 'b': 2, 'c': 3}
