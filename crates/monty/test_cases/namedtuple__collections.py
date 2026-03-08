@@ -6,10 +6,10 @@ assert collections.namedtuple('ViaModule', ['x'])(1).x == 1, 'collections.namedt
 
 # === Factory creation and repr ===
 Point = namedtuple('Point', ['x', 'y'])
-assert repr(Point) == "<class 'Point'>", 'namedtuple factory should have a class-like repr'
+assert repr(Point) == "<class '__main__.Point'>", 'namedtuple factory should have a class-like repr'
 
 KeywordPoint = namedtuple(typename='KeywordPoint', field_names=['x', 'y'])
-assert repr(KeywordPoint) == "<class 'KeywordPoint'>", 'typename and field_names should accept keyword binding'
+assert repr(KeywordPoint) == "<class '__main__.KeywordPoint'>", 'typename and field_names should accept keyword binding'
 
 Qualified = namedtuple('Qualified', ['x'], module='pkg.mod')
 assert repr(Qualified) == "<class 'pkg.mod.Qualified'>", 'module kwarg should affect factory repr'

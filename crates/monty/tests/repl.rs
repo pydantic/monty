@@ -139,7 +139,7 @@ fn repl_supports_collections_namedtuple_across_snippets() {
 
     assert_eq!(
         repl.feed_no_print("Point").unwrap(),
-        MontyObject::Repr("<class 'Point'>".to_owned())
+        MontyObject::Repr("<class '__main__.Point'>".to_owned())
     );
 
     repl.feed_no_print("point = Point(1, y=2)").unwrap();

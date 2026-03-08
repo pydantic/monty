@@ -3,8 +3,8 @@
 //! CPython's `collections.namedtuple()` returns a new class. Monty does not yet
 //! implement Python class definitions, so this type provides the smallest clean
 //! runtime abstraction that still behaves like a constructor: it captures the
-//! typename, validated field names, defaults, and optional module metadata, and
-//! when called it produces the existing [`NamedTuple`](crate::types::NamedTuple)
+//! typename, validated field names, defaults, and module metadata, and when
+//! called it produces the existing [`NamedTuple`](crate::types::NamedTuple)
 //! runtime value.
 
 use std::fmt::Write;
@@ -40,7 +40,9 @@ pub(crate) struct NamedTupleFactory {
     field_names: Vec<EitherStr>,
     /// Right-aligned trailing defaults for omitted constructor arguments.
     defaults: Vec<Value>,
-    /// Optional module metadata used only for the class-like repr.
+    /// Module metadata used only for the class-like repr.
+    ///
+    /// CPython defaults this to `__main__` when `module` is omitted or `None`.
     module_name: Option<EitherStr>,
     /// Cached reference presence for GC/refcount optimizations.
     contains_refs: bool,
@@ -174,12 +176,13 @@ impl NamedTupleFactory {
     }
 
     /// Returns the fully qualified display name used by the class-like repr.
+    ///
+    /// When the module name is an empty string, CPython still includes the dot
+    /// separator and renders `<class '.Point'>`.
     fn qualified_name(&self, interns: &Interns) -> String {
         let typename = self.typename.as_str(interns);
         match &self.module_name {
-            Some(module_name) if !module_name.as_str(interns).is_empty() => {
-                format!("{}.{}", module_name.as_str(interns), typename)
-            }
+            Some(module_name) => format!("{}.{}", module_name.as_str(interns), typename),
             _ => typename.to_owned(),
         }
     }
@@ -395,11 +398,11 @@ fn parse_module_name(
     interns: &Interns,
 ) -> RunResult<Option<String>> {
     let Some(value) = value else {
-        return Ok(None);
+        return Ok(Some("__main__".to_owned()));
     };
     defer_drop!(value, heap);
     if matches!(value, Value::None) {
-        return Ok(None);
+        return Ok(Some("__main__".to_owned()));
     }
     Ok(Some(value_to_str(value, heap, interns)?.into_owned()))
 }
