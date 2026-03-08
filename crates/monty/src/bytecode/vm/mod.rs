@@ -33,7 +33,7 @@ use crate::{
     os::OsFunction,
     parse::CodeRange,
     resource::ResourceTracker,
-    types::{LongInt, MontyIter, PyTrait, iter::advance_on_heap},
+    types::{Class, LongInt, MontyIter, PyTrait, iter::advance_on_heap},
     value::{BitwiseOp, EitherStr, Value},
 };
 
@@ -1379,7 +1379,22 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
 
                     handle_call_result!(self, cached_frame, self.exec_call_attr_extended(name_id, has_kwargs));
                 }
-                // Function Definition
+                // Function and Class Definition
+                Opcode::MakeClass => {
+                    let name_id = match self.pop() {
+                        Value::InternString(name_id) => name_id,
+                        value => {
+                            let ty = value.py_type(self.heap);
+                            value.drop_with_heap(self.heap);
+                            return Err(RunError::internal(format!(
+                                "MakeClass expected an interned class name, got '{ty}'"
+                            )));
+                        }
+                    };
+
+                    let heap_id = self.heap.allocate(HeapData::Class(Class::new(name_id)))?;
+                    self.push(Value::Ref(heap_id));
+                }
                 Opcode::MakeFunction => {
                     let func_idx = fetch_u16!(cached_frame);
                     let defaults_count = fetch_u8!(cached_frame) as usize;

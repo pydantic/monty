@@ -6,6 +6,7 @@
 /// The `AbstractValue` trait provides a common interface for all heap-allocated
 /// types, enabling efficient dispatch via `enum_dispatch`.
 pub mod bytes;
+pub mod class;
 pub mod dataclass;
 pub mod dict;
 pub mod iter;
@@ -26,6 +27,7 @@ pub mod tuple;
 pub mod r#type;
 
 pub(crate) use bytes::Bytes;
+pub(crate) use class::Class;
 pub(crate) use dataclass::Dataclass;
 pub(crate) use dict::Dict;
 pub(crate) use iter::MontyIter;

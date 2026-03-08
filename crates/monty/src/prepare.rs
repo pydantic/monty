@@ -455,6 +455,12 @@ impl<'i> Prepare<'i> {
                     let func_node = self.prepare_function_def(name, &signature, body, is_async)?;
                     new_nodes.push(func_node);
                 }
+                Node::ClassDef { name } => {
+                    self.names_assigned_in_order
+                        .insert(self.interner.get_str(name.name_id).to_string());
+                    let (name, _) = self.get_id(name);
+                    new_nodes.push(Node::ClassDef { name });
+                }
                 Node::Global { names, position } => {
                     // At module level, `global` is a no-op since all variables are already global.
                     // In functions, the global declarations are already collected in the first pass
@@ -1978,9 +1984,10 @@ fn collect_scope_info_from_node(
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
             }
         }
-        Node::FunctionDef(RawFunctionDef { name, .. }) => {
+        Node::FunctionDef(RawFunctionDef { name, .. }) | Node::ClassDef { name } => {
             // Function definition creates a local binding for the function name
-            // But we don't recurse into the function body - that's a separate scope
+            // Class skeletons also create a local binding for the class name.
+            // We don't recurse into nested scopes here.
             assigned_names.insert(interner.get_str(name.name_id).to_string());
         }
         Node::Try(Try {
@@ -2243,6 +2250,9 @@ fn collect_cell_vars_from_node(
                     cell_vars.insert(name.clone());
                 }
             }
+        }
+        Node::ClassDef { .. } => {
+            // Empty class skeletons do not create nested scopes or captures.
         }
         // Recurse into control flow structures
         Node::For { body, or_else, .. } => {
@@ -2573,8 +2583,9 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
                 collect_referenced_names_from_node(n, referenced, interner);
             }
         }
-        Node::FunctionDef(_) => {
-            // Don't recurse into nested function bodies - they have their own scope
+        Node::FunctionDef(_) | Node::ClassDef { .. } => {
+            // Don't recurse into nested function bodies. Class skeletons also
+            // don't carry an executable class body yet.
         }
         Node::Try(Try {
             body,

@@ -17,8 +17,8 @@ use crate::{
     heap::{Heap, HeapId},
     intern::{FunctionId, Interns},
     types::{
-        AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait,
-        Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type,
+        AttrCallResult, Bytes, Class, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path,
+        PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type,
     },
     value::{EitherStr, Value},
 };
@@ -75,6 +75,8 @@ pub(crate) enum HeapDataMut<'a> {
     /// when values fit, and promote to LongInt on overflow. When LongInt results fit back
     /// in i64, they are demoted back to `Value::Int` for performance.
     LongInt(&'a mut LongInt),
+    /// A skeletal user-defined class object from `class Foo: pass`.
+    Class(&'a mut Class),
     /// A Python module (e.g., `sys`, `typing`).
     ///
     /// Modules have a name and a dictionary of attributes. They are created by
@@ -241,6 +243,12 @@ impl HeapDataMut<'_> {
                 range.step.hash(&mut hasher);
                 Ok(Some(hasher.finish()))
             }
+            Self::Class(class) => {
+                let mut hasher = DefaultHasher::new();
+                discriminant(self).hash(&mut hasher);
+                class.name().hash(&mut hasher);
+                Ok(Some(hasher.finish()))
+            }
             // Dataclass hashability depends on the mutable flag
             // Recursion depth is checked inside compute_hash
             Self::Dataclass(dc) => dc.compute_hash(heap, interns),
@@ -299,6 +307,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Iter(_) => Type::Iterator,
             // LongInt is still `int` in Python - it's an implementation detail
             Self::LongInt(_) => Type::Int,
+            Self::Class(class) => class.py_type(heap),
             Self::Module(_) => Type::Module,
             Self::Coroutine(_) | Self::GatherFuture(_) => Type::Coroutine,
             Self::Path(p) => p.py_type(heap),
@@ -326,6 +335,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Dataclass(dc) => dc.py_estimate_size(),
             Self::Iter(_) => std::mem::size_of::<MontyIter>(),
             Self::LongInt(li) => li.estimate_size(),
+            Self::Class(class) => class.py_estimate_size(),
             Self::Module(m) => std::mem::size_of::<Module>() + m.attrs().py_estimate_size(),
             Self::Coroutine(coro) => {
                 std::mem::size_of::<Coroutine>()
@@ -406,8 +416,9 @@ impl PyTrait for HeapDataMut<'_> {
             (Self::ReMatch(a), Self::ReMatch(b)) => a.py_eq(b, heap, interns),
             // RePattern equality by pattern string and flags
             (Self::RePattern(a), Self::RePattern(b)) => a.py_eq(b, heap, interns),
-            // Cells, Exceptions, Iterators, Modules, and async types compare by identity only (handled at Value level via HeapId comparison)
-            (Self::Cell(_), Self::Cell(_))
+            // Cells, classes, exceptions, iterators, modules, and async types compare by identity only (handled at Value level via HeapId comparison)
+            (Self::Class(_), Self::Class(_))
+            | (Self::Cell(_), Self::Cell(_))
             | (Self::Exception(_), Self::Exception(_))
             | (Self::Iter(_), Self::Iter(_))
             | (Self::Module(_), Self::Module(_))
@@ -444,6 +455,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Cell(cell) => cell.0.py_dec_ref_ids(stack),
             Self::Dataclass(dc) => dc.py_dec_ref_ids(stack),
             Self::Iter(iter) => iter.py_dec_ref_ids(stack),
+            Self::Class(class) => class.py_dec_ref_ids(stack),
             Self::Module(m) => m.py_dec_ref_ids(stack),
             Self::Coroutine(coro) => {
                 // Decrement ref count for frame cells
@@ -488,6 +500,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Dataclass(dc) => dc.py_bool(heap, interns),
             Self::Iter(_) => true, // Iterators are always truthy
             Self::LongInt(li) => !li.is_zero(),
+            Self::Class(_) => true,        // Classes are always truthy
             Self::Module(_) => true,       // Modules are always truthy
             Self::Coroutine(_) => true,    // Coroutines are always truthy
             Self::GatherFuture(_) => true, // GatherFutures are always truthy
@@ -523,6 +536,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Dataclass(dc) => dc.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Iter(_) => write!(f, "<iterator>"),
             Self::LongInt(li) => write!(f, "{li}"),
+            Self::Class(class) => class.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Module(m) => write!(f, "<module '{}'>", interns.get_str(m.name())),
             Self::Coroutine(coro) => {
                 let func = interns.get_function(coro.func_id);
@@ -648,6 +662,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::FrozenSet(fs) => fs.py_call_attr(self_id, vm, attr, args),
             Self::Dataclass(dc) => dc.py_call_attr(self_id, vm, attr, args),
             Self::Path(p) => p.py_call_attr(self_id, vm, attr, args),
+            Self::Class(class) => class.py_call_attr(self_id, vm, attr, args),
             Self::Module(m) => m.py_call_attr(self_id, vm, attr, args),
             Self::ReMatch(m) => m.py_call_attr(self_id, vm, attr, args),
             Self::RePattern(p) => p.py_call_attr(self_id, vm, attr, args),
@@ -694,6 +709,7 @@ impl PyTrait for HeapDataMut<'_> {
     ) -> RunResult<Option<AttrCallResult>> {
         match self {
             Self::Dataclass(dc) => dc.py_getattr(attr, heap, interns),
+            Self::Class(class) => class.py_getattr(attr, heap, interns),
             Self::Module(m) => Ok(m.py_getattr(attr, heap, interns)),
             Self::NamedTuple(nt) => nt.py_getattr(attr, heap, interns),
             Self::Slice(s) => s.py_getattr(attr, heap, interns),

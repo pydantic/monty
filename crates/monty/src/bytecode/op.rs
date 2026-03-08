@@ -345,6 +345,10 @@ pub enum Opcode {
     ForIter,
 
     // === Function Definition ===
+    /// Create a skeletal user-defined class from a name on the stack.
+    ///
+    /// Pops the class name string and pushes a heap-allocated class object.
+    MakeClass,
     /// Create function object. Operand: u16 func_id.
     MakeFunction,
     /// Create closure. Operands: u16 func_id, u8 cell_count.
@@ -437,7 +441,7 @@ impl Opcode {
             InplacePow, InplaceRShift, InplaceSub, InplaceXor, Jump, JumpIfFalse, JumpIfFalseOrPop, JumpIfTrue,
             JumpIfTrueOrPop, ListAppend, ListExtend, ListToTuple, LoadAttr, LoadAttrImport, LoadCell, LoadConst,
             LoadFalse, LoadGlobal, LoadGlobalCallable, LoadLocal, LoadLocal0, LoadLocal1, LoadLocal2, LoadLocal3,
-            LoadLocalCallable, LoadLocalCallableW, LoadLocalW, LoadModule, LoadNone, LoadSmallInt, LoadTrue,
+            LoadLocalCallable, LoadLocalCallableW, LoadLocalW, LoadModule, LoadNone, LoadSmallInt, LoadTrue, MakeClass,
             MakeClosure, MakeFunction, Nop, Pop, Raise, RaiseImportError, Reraise, ReturnValue, Rot2, Rot3, SetAdd,
             StoreAttr, StoreCell, StoreGlobal, StoreLocal, StoreLocalW, StoreSubscr, UnaryInvert, UnaryNeg, UnaryNot,
             UnaryPos, UnpackEx, UnpackSequence,
@@ -512,7 +516,8 @@ impl Opcode {
             // Async/await
             Await => 0, // pop awaitable, push result
 
-            // Function definition - push 1 (the function/closure)
+            // Function/class definition
+            MakeClass => 0, // pop name, push class
             MakeFunction | MakeClosure => 1,
 
             // Exception handling

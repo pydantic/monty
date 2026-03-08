@@ -38,8 +38,14 @@ fn yield_expressions_return_not_implemented_error() {
 }
 
 #[test]
-fn classes_return_not_implemented_error() {
+fn empty_classes_compile_successfully() {
     let result = MontyRun::new("class Foo: pass".to_owned(), "test.py", vec![]);
+    assert!(result.is_ok(), "empty class skeletons should compile");
+}
+
+#[test]
+fn non_empty_classes_return_not_implemented_error() {
+    let result = MontyRun::new("class Foo:\n    x = 1".to_owned(), "test.py", vec![]);
     assert_eq!(get_exc_type(result), ExcType::NotImplementedError);
 }
 

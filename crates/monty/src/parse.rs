@@ -275,10 +275,7 @@ impl<'a> Parser<'a> {
                     is_async,
                 }))
             }
-            Stmt::ClassDef(c) => Err(ParseError::not_implemented(
-                "class definitions",
-                self.convert_range(c.range),
-            )),
+            Stmt::ClassDef(class_def) => self.parse_class_def(&class_def),
             Stmt::Return(ast::StmtReturn { value, .. }) => match value {
                 Some(value) => Ok(Node::Return(self.parse_expression(*value)?)),
                 None => Ok(Node::ReturnNone),
@@ -502,6 +499,40 @@ impl<'a> Parser<'a> {
                 self.convert_range(i.range),
             )),
         }
+    }
+
+    /// Parses the currently supported subset of class definitions.
+    ///
+    /// For now, this accepts only skeletal empty classes like `class Foo: pass`.
+    /// Richer class features need a dedicated class namespace model and remain
+    /// intentionally unsupported until that runtime exists.
+    fn parse_class_def(&mut self, class_def: &ast::StmtClassDef) -> Result<ParseNode, ParseError> {
+        let position = self.convert_range(class_def.range);
+
+        if !class_def.decorator_list.is_empty() {
+            return Err(ParseError::not_implemented("class decorators", position));
+        }
+        if class_def.arguments.is_some() {
+            return Err(ParseError::not_implemented("class inheritance", position));
+        }
+        if class_def.type_params.is_some() {
+            return Err(ParseError::not_implemented("generic class parameters", position));
+        }
+        if !Self::class_body_is_empty(&class_def.body) {
+            return Err(ParseError::not_implemented("non-empty class bodies", position));
+        }
+
+        Ok(Node::ClassDef {
+            name: self.identifier(&class_def.name.id, class_def.name.range),
+        })
+    }
+
+    /// Returns whether a class body is empty enough for the current skeleton support.
+    ///
+    /// Only `pass` statements are accepted. This keeps the initial class support
+    /// honest: no class namespace execution is attempted before that machinery exists.
+    fn class_body_is_empty(body: &[Stmt]) -> bool {
+        body.iter().all(|stmt| matches!(stmt, Stmt::Pass(_)))
     }
 
     /// `lhs = rhs` -> `lhs, rhs`

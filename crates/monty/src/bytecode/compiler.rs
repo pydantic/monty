@@ -360,6 +360,7 @@ impl<'a> Compiler<'a> {
                 }
             }
             Node::FunctionDef(func_def) => self.compile_function_def(func_def)?,
+            Node::ClassDef { name } => self.compile_class_def(name),
             Node::Try(try_block) => self.compile_try(try_block)?,
             Node::Import { module_name, binding } => self.compile_import(*module_name, binding),
             Node::ImportFrom {
@@ -373,6 +374,17 @@ impl<'a> Compiler<'a> {
             Node::Pass | Node::Global { .. } | Node::Nonlocal { .. } => {}
         }
         Ok(())
+    }
+
+    /// Compiles an empty class skeleton definition.
+    ///
+    /// The current implementation pushes the class name constant, creates a
+    /// skeletal runtime class object, and stores it into the resolved binding.
+    fn compile_class_def(&mut self, name: &Identifier) {
+        let name_const = self.code.add_const(Value::InternString(name.name_id));
+        self.code.emit_u16(Opcode::LoadConst, name_const);
+        self.code.emit(Opcode::MakeClass);
+        self.compile_store(name);
     }
 
     /// Compiles a function definition.

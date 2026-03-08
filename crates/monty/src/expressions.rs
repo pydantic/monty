@@ -476,6 +476,14 @@ pub enum Node<F> {
         or_else: Vec<Self>,
     },
     FunctionDef(F),
+    /// Minimal class definition binding.
+    ///
+    /// The current class skeleton stores only the class name because the parser
+    /// rejects non-empty class bodies and inheritance features for now.
+    ClassDef {
+        /// The class name. In prepared form this includes the resolved namespace slot.
+        name: Identifier,
+    },
     /// Global variable declaration. Only present in parsed form, consumed during prepare.
     ///
     /// Declares that the listed names refer to module-level (global) variables,

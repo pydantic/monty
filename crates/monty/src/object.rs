@@ -472,6 +472,7 @@ impl MontyObject {
                         Self::Repr("<iterator>".to_owned())
                     }
                     HeapData::LongInt(li) => Self::BigInt(li.inner().clone()),
+                    HeapData::Class(_) => Self::Repr(object.py_repr(heap, interns).into_owned()),
                     HeapData::Module(m) => {
                         // Modules are represented as a repr string
                         Self::Repr(format!("<module '{}'>", interns.get_str(m.name())))
