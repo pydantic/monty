@@ -13,7 +13,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunError},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
-    heap_data::CellValue,
+    heap_data::{CellValue, HeapDataMut},
     intern::{FunctionId, StringId},
     os::OsFunction,
     resource::ResourceTracker,
@@ -370,7 +370,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 Ok(CallResult::Push(result))
             }
             Value::ModuleFunction(mf) => {
-                let result = mf.call(self.heap, args, self.interns)?;
+                let result = mf.call(self, args)?;
                 Ok(result.into())
             }
             Value::ExtFunction(name_id) => {
@@ -395,6 +395,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
     /// Handles calling a heap-allocated callable (closure, function with defaults, or external function).
     fn call_heap_callable(&mut self, heap_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
+        if matches!(self.heap.get(heap_id), HeapData::NamedTupleFactory(_)) {
+            let interns = self.interns;
+            return self.heap.with_entry_mut(heap_id, |heap, data| match data {
+                HeapDataMut::NamedTupleFactory(factory) => factory.call(args, heap, interns).map(CallResult::Push),
+                _ => unreachable!("heap entry type changed while calling namedtuple factory"),
+            });
+        }
+
         let (func_id, cells, defaults) = match self.heap.get(heap_id) {
             HeapData::Closure(closure) => {
                 let cloned_cells = closure.cells.clone();

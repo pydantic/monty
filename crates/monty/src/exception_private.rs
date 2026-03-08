@@ -678,6 +678,63 @@ impl ExcType {
         SimpleException::new_msg(Self::ValueError, "slice step cannot be zero").into()
     }
 
+    /// Creates a ValueError for invalid namedtuple type or field names.
+    ///
+    /// Matches CPython's format:
+    /// `Type names and field names must be valid identifiers: '{name}'`
+    #[must_use]
+    pub(crate) fn namedtuple_invalid_identifier(name: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::ValueError,
+            format!("Type names and field names must be valid identifiers: '{name}'"),
+        )
+        .into()
+    }
+
+    /// Creates a ValueError for keyword namedtuple type or field names.
+    ///
+    /// Matches CPython's format:
+    /// `Type names and field names cannot be a keyword: '{name}'`
+    #[must_use]
+    pub(crate) fn namedtuple_keyword(name: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::ValueError,
+            format!("Type names and field names cannot be a keyword: '{name}'"),
+        )
+        .into()
+    }
+
+    /// Creates a ValueError for duplicate namedtuple field names.
+    ///
+    /// Matches CPython's format:
+    /// `Encountered duplicate field name: '{name}'`
+    #[must_use]
+    pub(crate) fn namedtuple_duplicate_field(name: &str) -> RunError {
+        SimpleException::new_msg(Self::ValueError, format!("Encountered duplicate field name: '{name}'")).into()
+    }
+
+    /// Creates a ValueError for namedtuple field names beginning with `_`.
+    ///
+    /// Matches CPython's format:
+    /// `Field names cannot start with an underscore: '{name}'`
+    #[must_use]
+    pub(crate) fn namedtuple_field_starts_with_underscore(name: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::ValueError,
+            format!("Field names cannot start with an underscore: '{name}'"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for providing too many namedtuple defaults.
+    ///
+    /// Matches CPython's format:
+    /// `Got more default values than field names`
+    #[must_use]
+    pub(crate) fn namedtuple_too_many_defaults() -> RunError {
+        SimpleException::new_msg(Self::TypeError, "Got more default values than field names").into()
+    }
+
     /// Creates a TypeError for slice indices that are not integers or None.
     ///
     /// Matches CPython's format: `TypeError: slice indices must be integers or None or have an __index__ method`

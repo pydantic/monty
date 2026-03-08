@@ -130,6 +130,31 @@ fn repl_tracebacks_use_incrementing_python_input_filenames() {
 }
 
 #[test]
+fn repl_supports_collections_namedtuple_across_snippets() {
+    let (mut repl, init_output) = init_repl("");
+    assert_eq!(init_output, MontyObject::None);
+
+    repl.feed_no_print("from collections import namedtuple").unwrap();
+    repl.feed_no_print("Point = namedtuple('Point', ['x', 'y'])").unwrap();
+
+    assert_eq!(
+        repl.feed_no_print("Point").unwrap(),
+        MontyObject::Repr("<class 'Point'>".to_owned())
+    );
+
+    repl.feed_no_print("point = Point(1, y=2)").unwrap();
+    assert_eq!(
+        repl.feed_no_print("point").unwrap(),
+        MontyObject::NamedTuple {
+            type_name: "Point".to_owned(),
+            field_names: vec!["x".to_owned(), "y".to_owned()],
+            values: vec![MontyObject::Int(1), MontyObject::Int(2)],
+        }
+    );
+    assert_eq!(repl.feed_no_print("point.y").unwrap(), MontyObject::Int(2));
+}
+
+#[test]
 fn repl_dump_load_survives_between_snippets() {
     let (mut repl, _) = init_repl("total = 1");
     repl.feed_no_print("total = total + 1").unwrap();
@@ -140,6 +165,23 @@ fn repl_dump_load_survives_between_snippets() {
     loaded.feed_no_print("total = total * 21").unwrap();
     let output = loaded.feed_no_print("total").unwrap();
     assert_eq!(output, MontyObject::Int(42));
+}
+
+#[test]
+fn repl_dump_load_preserves_namedtuple_factories() {
+    let (repl, _) = init_repl("from collections import namedtuple\nPoint = namedtuple('Point', 'x y', defaults=[20])");
+
+    let bytes = repl.dump().unwrap();
+    let mut loaded: MontyRepl<NoLimitTracker> = MontyRepl::load(&bytes).unwrap();
+
+    assert_eq!(
+        loaded.feed_no_print("Point(1)").unwrap(),
+        MontyObject::NamedTuple {
+            type_name: "Point".to_owned(),
+            field_names: vec!["x".to_owned(), "y".to_owned()],
+            values: vec![MontyObject::Int(1), MontyObject::Int(20)],
+        }
+    );
 }
 
 #[test]

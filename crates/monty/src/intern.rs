@@ -190,6 +190,8 @@ pub enum StaticStrings {
     // ==========================
     // sys module strings
     Sys,
+    Collections,
+    Namedtuple,
     #[strum(serialize = "sys.version_info")]
     SysVersionInfo,
     Version,

@@ -433,7 +433,7 @@ impl MontyObject {
                         // Show the cell's contents
                         Self::from_value_inner(&cell.0, heap, visited, interns)
                     }
-                    HeapData::Closure(..) | HeapData::FunctionDefaults(..) => {
+                    HeapData::Closure(..) | HeapData::FunctionDefaults(..) | HeapData::NamedTupleFactory(..) => {
                         Self::Repr(object.py_repr(heap, interns).into_owned())
                     }
                     HeapData::Range(range) => {

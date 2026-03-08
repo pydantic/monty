@@ -24,8 +24,8 @@ use crate::{
     intern::Interns,
     resource::{ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
     types::{
-        AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait,
-        Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, allocate_tuple,
+        AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple,
+        NamedTupleFactory, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, allocate_tuple,
     },
     value::{EitherStr, Value},
 };
@@ -57,6 +57,7 @@ pub(crate) enum HeapData {
     List(List),
     Tuple(Tuple),
     NamedTuple(NamedTuple),
+    NamedTupleFactory(NamedTupleFactory),
     Dict(Dict),
     Set(Set),
     FrozenSet(FrozenSet),
@@ -156,6 +157,7 @@ impl HeapData {
             Self::List(_)
                 | Self::Tuple(_)
                 | Self::NamedTuple(_)
+                | Self::NamedTupleFactory(_)
                 | Self::Dict(_)
                 | Self::Set(_)
                 | Self::FrozenSet(_)
@@ -183,6 +185,7 @@ impl HeapData {
             Self::List(list) => list.contains_refs(),
             Self::Tuple(tuple) => tuple.contains_refs(),
             Self::NamedTuple(nt) => nt.contains_refs(),
+            Self::NamedTupleFactory(factory) => factory.contains_refs(),
             Self::Dict(dict) => dict.has_refs(),
             Self::Set(set) => set.has_refs(),
             Self::FrozenSet(fset) => fset.has_refs(),
@@ -232,6 +235,7 @@ impl HeapData {
             Self::List(l) => HeapDataMut::List(l),
             Self::Tuple(t) => HeapDataMut::Tuple(t),
             Self::NamedTuple(nt) => HeapDataMut::NamedTuple(nt),
+            Self::NamedTupleFactory(factory) => HeapDataMut::NamedTupleFactory(factory),
             Self::Dict(d) => HeapDataMut::Dict(d),
             Self::Set(s) => HeapDataMut::Set(s),
             Self::FrozenSet(fs) => HeapDataMut::FrozenSet(fs),
@@ -267,6 +271,7 @@ impl PyTrait for HeapData {
             Self::List(l) => l.py_type(heap),
             Self::Tuple(t) => t.py_type(heap),
             Self::NamedTuple(nt) => nt.py_type(heap),
+            Self::NamedTupleFactory(factory) => factory.py_type(heap),
             Self::Dict(d) => d.py_type(heap),
             Self::Set(s) => s.py_type(heap),
             Self::FrozenSet(fs) => fs.py_type(heap),
@@ -294,6 +299,7 @@ impl PyTrait for HeapData {
             Self::List(l) => l.py_estimate_size(),
             Self::Tuple(t) => t.py_estimate_size(),
             Self::NamedTuple(nt) => nt.py_estimate_size(),
+            Self::NamedTupleFactory(factory) => factory.py_estimate_size(),
             Self::Dict(d) => d.py_estimate_size(),
             Self::Set(s) => s.py_estimate_size(),
             Self::FrozenSet(fs) => fs.py_estimate_size(),
@@ -332,6 +338,7 @@ impl PyTrait for HeapData {
             Self::List(l) => PyTrait::py_len(l, heap, interns),
             Self::Tuple(t) => PyTrait::py_len(t, heap, interns),
             Self::NamedTuple(nt) => PyTrait::py_len(nt, heap, interns),
+            Self::NamedTupleFactory(factory) => PyTrait::py_len(factory, heap, interns),
             Self::Dict(d) => PyTrait::py_len(d, heap, interns),
             Self::Set(s) => PyTrait::py_len(s, heap, interns),
             Self::FrozenSet(fs) => PyTrait::py_len(fs, heap, interns),
@@ -353,6 +360,7 @@ impl PyTrait for HeapData {
             (Self::List(a), Self::List(b)) => a.py_eq(b, heap, interns),
             (Self::Tuple(a), Self::Tuple(b)) => a.py_eq(b, heap, interns),
             (Self::NamedTuple(a), Self::NamedTuple(b)) => a.py_eq(b, heap, interns),
+            (Self::NamedTupleFactory(_), Self::NamedTupleFactory(_)) => Ok(false),
             // NamedTuple can compare with Tuple by elements (matching CPython behavior)
             (Self::NamedTuple(nt), Self::Tuple(t)) | (Self::Tuple(t), Self::NamedTuple(nt)) => {
                 let nt_items = nt.as_vec();
@@ -404,6 +412,7 @@ impl PyTrait for HeapData {
             Self::List(l) => l.py_dec_ref_ids(stack),
             Self::Tuple(t) => t.py_dec_ref_ids(stack),
             Self::NamedTuple(nt) => nt.py_dec_ref_ids(stack),
+            Self::NamedTupleFactory(factory) => factory.py_dec_ref_ids(stack),
             Self::Dict(d) => d.py_dec_ref_ids(stack),
             Self::Set(s) => s.py_dec_ref_ids(stack),
             Self::FrozenSet(fs) => fs.py_dec_ref_ids(stack),
@@ -457,6 +466,7 @@ impl PyTrait for HeapData {
             Self::List(l) => l.py_bool(heap, interns),
             Self::Tuple(t) => t.py_bool(heap, interns),
             Self::NamedTuple(nt) => nt.py_bool(heap, interns),
+            Self::NamedTupleFactory(factory) => factory.py_bool(heap, interns),
             Self::Dict(d) => d.py_bool(heap, interns),
             Self::Set(s) => s.py_bool(heap, interns),
             Self::FrozenSet(fs) => fs.py_bool(heap, interns),
@@ -490,6 +500,7 @@ impl PyTrait for HeapData {
             Self::List(l) => l.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Tuple(t) => t.py_repr_fmt(f, heap, heap_ids, interns),
             Self::NamedTuple(nt) => nt.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::NamedTupleFactory(factory) => factory.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Dict(d) => d.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Set(s) => s.py_repr_fmt(f, heap, heap_ids, interns),
             Self::FrozenSet(fs) => fs.py_repr_fmt(f, heap, heap_ids, interns),
@@ -724,6 +735,7 @@ impl HashState {
             | HeapData::Bytes(_)
             | HeapData::Tuple(_)
             | HeapData::NamedTuple(_)
+            | HeapData::NamedTupleFactory(_)
             | HeapData::FrozenSet(_)
             | HeapData::Cell(_)
             | HeapData::Closure(_)
@@ -1612,6 +1624,16 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
             }
             for value in nt.as_vec() {
                 if let Value::Ref(id) = value {
+                    work_list.push(*id);
+                }
+            }
+        }
+        HeapData::NamedTupleFactory(factory) => {
+            if !factory.contains_refs() {
+                return;
+            }
+            for default in factory.defaults() {
+                if let Value::Ref(id) = default {
                     work_list.push(*id);
                 }
             }

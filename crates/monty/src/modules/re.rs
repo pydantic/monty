@@ -29,6 +29,7 @@ use std::borrow::Cow;
 use crate::{
     args::ArgValues,
     builtins::Builtins,
+    bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapId},
@@ -206,11 +207,12 @@ pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -
 /// `RePattern` method. All functions return `AttrCallResult::Value` since regex
 /// operations don't need host involvement.
 pub(super) fn call(
-    heap: &mut Heap<impl ResourceTracker>,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
     function: ReFunctions,
     args: ArgValues,
-    interns: &Interns,
 ) -> RunResult<AttrCallResult> {
+    let heap = &mut *vm.heap;
+    let interns = vm.interns;
     match function {
         ReFunctions::Compile => call_compile(heap, args, interns).map(AttrCallResult::Value),
         ReFunctions::Search => call_search(heap, args, interns).map(AttrCallResult::Value),

@@ -10,6 +10,7 @@
 use crate::{
     args::ArgValues,
     asyncio::{GatherFuture, GatherItem},
+    bytecode::VM,
     defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
@@ -57,13 +58,13 @@ pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -
     heap.allocate(HeapData::Module(module))
 }
 pub(super) fn call(
-    heap: &mut Heap<impl ResourceTracker>,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
     functions: AsyncioFunctions,
     args: ArgValues,
 ) -> RunResult<AttrCallResult> {
     match functions {
-        AsyncioFunctions::Gather => gather(heap, args).map(AttrCallResult::Value),
-        AsyncioFunctions::Run => run(heap, args),
+        AsyncioFunctions::Gather => gather(vm.heap, args).map(AttrCallResult::Value),
+        AsyncioFunctions::Run => run(vm.heap, args),
     }
 }
 

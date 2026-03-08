@@ -4,7 +4,7 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapGuard, HeapId},
+    heap::{ContainsHeap, Heap, HeapGuard, HeapId},
     intern::{Interns, StringId},
     resource::ResourceTracker,
     types::{AttrCallResult, Dict, PyTrait},
@@ -132,9 +132,8 @@ impl Module {
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<AttrCallResult> {
-        let heap = &mut *vm.heap;
         let interns = vm.interns;
-        let mut args_guard = HeapGuard::new(args, heap);
+        let mut args_guard = HeapGuard::new(args, vm);
 
         let attr_key = match attr {
             EitherStr::Interned(id) => Value::InternString(*id),
@@ -144,19 +143,19 @@ impl Module {
             }
         };
 
-        match self.get_attr(&attr_key, args_guard.heap(), interns) {
+        match self.get_attr(&attr_key, args_guard.heap().heap_mut(), interns) {
             Some(Value::ModuleFunction(mf)) => {
-                let (args, heap) = args_guard.into_parts();
-                mf.call(heap, args, interns)
+                let (args, vm) = args_guard.into_parts();
+                mf.call(vm, args)
             }
             Some(func) => {
                 // Found attribute but it's not callable
-                func.drop_with_heap(args_guard.heap());
+                func.drop_with_heap(args_guard.heap().heap_mut());
                 Err(ExcType::type_error("module attribute is not callable"))
             }
             None => Err(ExcType::attribute_error_module(
                 interns.get_str(self.name),
-                attr.as_str(vm.interns),
+                attr.as_str(interns),
             )),
         }
     }

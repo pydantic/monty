@@ -9,6 +9,7 @@ use strum::FromRepr;
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     exception_private::RunResult,
     heap::{Heap, HeapId},
     intern::{Interns, StaticStrings, StringId},
@@ -17,6 +18,7 @@ use crate::{
 };
 
 pub(crate) mod asyncio;
+pub(crate) mod collections;
 pub(crate) mod os;
 pub(crate) mod pathlib;
 pub(crate) mod re;
@@ -29,6 +31,8 @@ pub(crate) mod typing;
 pub(crate) enum BuiltinModule {
     /// The `sys` module providing system-specific parameters and functions.
     Sys,
+    /// The `collections` module providing collection helpers like `namedtuple`.
+    Collections,
     /// The `typing` module providing type hints support.
     Typing,
     /// The `asyncio` module providing async/await support (only `gather()` implemented).
@@ -46,6 +50,7 @@ impl BuiltinModule {
     pub fn from_string_id(string_id: StringId) -> Option<Self> {
         match StaticStrings::from_string_id(string_id)? {
             StaticStrings::Sys => Some(Self::Sys),
+            StaticStrings::Collections => Some(Self::Collections),
             StaticStrings::Typing => Some(Self::Typing),
             StaticStrings::Asyncio => Some(Self::Asyncio),
             StaticStrings::Pathlib => Some(Self::Pathlib),
@@ -65,6 +70,7 @@ impl BuiltinModule {
     pub fn create(self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Result<HeapId, ResourceError> {
         match self {
             Self::Sys => sys::create_module(heap, interns),
+            Self::Collections => collections::create_module(heap, interns),
             Self::Typing => typing::create_module(heap, interns),
             Self::Asyncio => asyncio::create_module(heap, interns),
             Self::Pathlib => pathlib::create_module(heap, interns),
@@ -78,6 +84,7 @@ impl BuiltinModule {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ModuleFunctions {
     Asyncio(asyncio::AsyncioFunctions),
+    Collections(collections::CollectionsFunctions),
     Os(os::OsFunctions),
     Re(re::ReFunctions),
 }
@@ -86,6 +93,7 @@ impl fmt::Display for ModuleFunctions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Asyncio(func) => write!(f, "{func}"),
+            Self::Collections(func) => write!(f, "{func}"),
             Self::Os(func) => write!(f, "{func}"),
             Self::Re(func) => write!(f, "{func}"),
         }
@@ -99,16 +107,12 @@ impl ModuleFunctions {
     /// require host involvement (e.g., `os.getenv()` needs the host to provide environment variables).
     /// The `interns` parameter is needed by modules that must extract string values from
     /// `Value::InternString` arguments (e.g., the `re` module).
-    pub fn call(
-        self,
-        heap: &mut Heap<impl ResourceTracker>,
-        args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<AttrCallResult> {
+    pub fn call(self, vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<AttrCallResult> {
         match self {
-            Self::Asyncio(functions) => asyncio::call(heap, functions, args),
-            Self::Os(functions) => os::call(heap, functions, args),
-            Self::Re(functions) => re::call(heap, functions, args, interns),
+            Self::Asyncio(functions) => asyncio::call(vm, functions, args),
+            Self::Collections(functions) => collections::call(vm, functions, args),
+            Self::Os(functions) => os::call(vm, functions, args),
+            Self::Re(functions) => re::call(vm, functions, args),
         }
     }
 

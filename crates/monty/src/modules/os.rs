@@ -10,6 +10,7 @@
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
@@ -67,12 +68,12 @@ pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -
 /// Returns `AttrCallResult::OsCall` for functions that need host involvement,
 /// or `AttrCallResult::Value` for functions that can be computed immediately.
 pub(super) fn call(
-    heap: &mut Heap<impl ResourceTracker>,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
     functions: OsFunctions,
     args: ArgValues,
 ) -> RunResult<AttrCallResult> {
     match functions {
-        OsFunctions::Getenv => getenv(heap, args),
+        OsFunctions::Getenv => getenv(vm.heap, args),
     }
 }
 

@@ -443,7 +443,7 @@ fn call_str_method_impl(
         StaticStrings::Encode => str_encode(s, args, heap, interns),
         StaticStrings::Isidentifier => {
             args.check_zero_args("str.isidentifier", heap)?;
-            Ok(Value::Bool(str_isidentifier(s)))
+            Ok(Value::Bool(is_python_identifier(s)))
         }
         StaticStrings::Istitle => {
             args.check_zero_args("str.istitle", heap)?;
@@ -2024,7 +2024,7 @@ fn parse_encode_args(
 /// Returns True if the string is a valid Python identifier according to
 /// the language definition (starts with letter or underscore, followed by
 /// letters, digits, or underscores). Empty strings return False.
-fn str_isidentifier(s: &str) -> bool {
+pub(crate) fn is_python_identifier(s: &str) -> bool {
     if s.is_empty() {
         return false;
     }
@@ -2039,6 +2039,54 @@ fn str_isidentifier(s: &str) -> bool {
 
     // Remaining characters must be letters, digits (Unicode), or underscores
     chars.all(is_xid_continue)
+}
+
+/// Returns whether the string is a reserved Python keyword.
+///
+/// This list matches the language keywords that cannot be used for identifiers
+/// like namedtuple type and field names.
+pub(crate) fn is_python_keyword(s: &str) -> bool {
+    matches!(
+        s,
+        "False"
+            | "None"
+            | "True"
+            | "and"
+            | "as"
+            | "assert"
+            | "async"
+            | "await"
+            | "break"
+            | "class"
+            | "continue"
+            | "def"
+            | "del"
+            | "elif"
+            | "else"
+            | "except"
+            | "finally"
+            | "for"
+            | "from"
+            | "global"
+            | "if"
+            | "import"
+            | "in"
+            | "is"
+            | "lambda"
+            | "nonlocal"
+            | "not"
+            | "or"
+            | "pass"
+            | "raise"
+            | "return"
+            | "try"
+            | "while"
+            | "with"
+            | "yield"
+            | "match"
+            | "case"
+            | "type"
+    )
 }
 
 /// Checks if a character is valid at the start of an identifier (XID_Start).

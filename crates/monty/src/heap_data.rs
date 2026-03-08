@@ -17,8 +17,8 @@ use crate::{
     heap::{Heap, HeapId},
     intern::{FunctionId, Interns},
     types::{
-        AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait,
-        Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type,
+        AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple,
+        NamedTupleFactory, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type,
     },
     value::{EitherStr, Value},
 };
@@ -31,6 +31,7 @@ pub(crate) enum HeapDataMut<'a> {
     List(&'a mut List),
     Tuple(&'a mut Tuple),
     NamedTuple(&'a mut NamedTuple),
+    NamedTupleFactory(&'a mut NamedTupleFactory),
     Dict(&'a mut Dict),
     Set(&'a mut Set),
     FrozenSet(&'a mut FrozenSet),
@@ -219,6 +220,7 @@ impl HeapDataMut<'_> {
                 }
                 Ok(Some(hasher.finish()))
             }
+            Self::NamedTupleFactory(_) => Ok(None),
             Self::Closure(closure) => {
                 let mut hasher = DefaultHasher::new();
                 discriminant(self).hash(&mut hasher);
@@ -287,6 +289,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::List(l) => l.py_type(heap),
             Self::Tuple(t) => t.py_type(heap),
             Self::NamedTuple(nt) => nt.py_type(heap),
+            Self::NamedTupleFactory(factory) => factory.py_type(heap),
             Self::Dict(d) => d.py_type(heap),
             Self::Set(s) => s.py_type(heap),
             Self::FrozenSet(fs) => fs.py_type(heap),
@@ -314,6 +317,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::List(l) => l.py_estimate_size(),
             Self::Tuple(t) => t.py_estimate_size(),
             Self::NamedTuple(nt) => nt.py_estimate_size(),
+            Self::NamedTupleFactory(factory) => factory.py_estimate_size(),
             Self::Dict(d) => d.py_estimate_size(),
             Self::Set(s) => s.py_estimate_size(),
             Self::FrozenSet(fs) => fs.py_estimate_size(),
@@ -352,6 +356,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::List(l) => l.py_len(heap, interns),
             Self::Tuple(t) => t.py_len(heap, interns),
             Self::NamedTuple(nt) => nt.py_len(heap, interns),
+            Self::NamedTupleFactory(factory) => factory.py_len(heap, interns),
             Self::Dict(d) => d.py_len(heap, interns),
             Self::Set(s) => s.py_len(heap, interns),
             Self::FrozenSet(fs) => fs.py_len(heap, interns),
@@ -373,6 +378,7 @@ impl PyTrait for HeapDataMut<'_> {
             (Self::List(a), Self::List(b)) => a.py_eq(b, heap, interns),
             (Self::Tuple(a), Self::Tuple(b)) => a.py_eq(b, heap, interns),
             (Self::NamedTuple(a), Self::NamedTuple(b)) => a.py_eq(b, heap, interns),
+            (Self::NamedTupleFactory(_), Self::NamedTupleFactory(_)) => Ok(false),
             // NamedTuple can compare with Tuple by elements (matching CPython behavior)
             (Self::NamedTuple(nt), Self::Tuple(t)) | (Self::Tuple(t), Self::NamedTuple(nt)) => {
                 let nt_items = nt.as_vec();
@@ -424,6 +430,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::List(l) => l.py_dec_ref_ids(stack),
             Self::Tuple(t) => t.py_dec_ref_ids(stack),
             Self::NamedTuple(nt) => nt.py_dec_ref_ids(stack),
+            Self::NamedTupleFactory(factory) => factory.py_dec_ref_ids(stack),
             Self::Dict(d) => d.py_dec_ref_ids(stack),
             Self::Set(s) => s.py_dec_ref_ids(stack),
             Self::FrozenSet(fs) => fs.py_dec_ref_ids(stack),
@@ -477,6 +484,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::List(l) => l.py_bool(heap, interns),
             Self::Tuple(t) => t.py_bool(heap, interns),
             Self::NamedTuple(nt) => nt.py_bool(heap, interns),
+            Self::NamedTupleFactory(factory) => factory.py_bool(heap, interns),
             Self::Dict(d) => d.py_bool(heap, interns),
             Self::Set(s) => s.py_bool(heap, interns),
             Self::FrozenSet(fs) => fs.py_bool(heap, interns),
@@ -510,6 +518,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::List(l) => l.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Tuple(t) => t.py_repr_fmt(f, heap, heap_ids, interns),
             Self::NamedTuple(nt) => nt.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::NamedTupleFactory(factory) => factory.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Dict(d) => d.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Set(s) => s.py_repr_fmt(f, heap, heap_ids, interns),
             Self::FrozenSet(fs) => fs.py_repr_fmt(f, heap, heap_ids, interns),
