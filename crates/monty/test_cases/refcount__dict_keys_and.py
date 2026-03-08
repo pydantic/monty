@@ -1,5 +1,7 @@
 inner = ('x',)
-rhs = [(inner,), []]
+wrapped = (inner,)
+empty = []
+rhs = [wrapped, empty]
 
 try:
     {}.keys() & rhs
@@ -9,4 +11,4 @@ except TypeError as e:
         'dict_keys intersection should surface the recoverable set-element hash error'
     )
 
-# ref-counts={'inner': 2, 'rhs': 1}
+# ref-counts={'inner': 2, 'wrapped': 2, 'empty': 2, 'rhs': 1}
