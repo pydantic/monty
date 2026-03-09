@@ -50,6 +50,23 @@ totals[key()] += 5
 assert totals == {'photo': 15}, 'subscript += stores the computed result back'
 assert calls == 1, 'subscript += evaluates the index expression once'
 
+captured_total = {'photo': 1}
+captured_likes = 2
+
+
+def apply_captured_increment():
+    captured_total['photo'] += captured_likes
+
+
+apply_captured_increment()
+assert captured_total == {'photo': 3}, 'subscript += works with closure-captured names'
+
+walrus_key = None
+walrus_total = {'photo': 10}
+walrus_total[(walrus_key := 'photo')] += 4
+assert walrus_key == 'photo', 'subscript += allows walrus in the index expression'
+assert walrus_total == {'photo': 14}, 'subscript += with walrus index updates the selected item'
+
 try:
     missing = {}
     missing['photo'] += 1
