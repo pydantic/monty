@@ -65,13 +65,6 @@ impl SetStorage {
         storage
     }
 
-    /// Drops all values in this storage, decrementing their reference counts.
-    fn drop_all_values(self, heap: &mut impl ContainsHeap) {
-        for entry in self.entries {
-            entry.value.drop_with_heap(heap);
-        }
-    }
-
     /// Clones entries with proper reference counting.
     fn clone_entries(&self, heap: &impl ContainsHeap) -> Vec<(Value, u64)> {
         self.entries
@@ -220,9 +213,7 @@ impl SetStorage {
 
     /// Removes all elements from the set.
     fn clear(&mut self, heap: &mut Heap<impl ResourceTracker>) {
-        for entry in self.entries.drain(..) {
-            entry.value.drop_with_heap(heap);
-        }
+        self.entries.drain(..).drop_with_heap(heap);
         self.indices.clear();
     }
 
@@ -725,13 +716,19 @@ impl DropWithHeap for Set {
 
 impl DropWithHeap for SetStorage {
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        self.drop_all_values(heap);
+        self.entries.drop_with_heap(heap);
     }
 }
 
 impl DropWithHeap for FrozenSet {
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         self.0.drop_with_heap(heap);
+    }
+}
+
+impl DropWithHeap for SetEntry {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        self.value.drop_with_heap(heap);
     }
 }
 

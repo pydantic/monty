@@ -626,10 +626,14 @@ impl PyTrait for Dict {
 
 impl DropWithHeap for Dict {
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        for entry in self.entries {
-            entry.key.drop_with_heap(heap);
-            entry.value.drop_with_heap(heap);
-        }
+        self.entries.drop_with_heap(heap);
+    }
+}
+
+impl DropWithHeap for DictEntry {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        self.key.drop_with_heap(heap);
+        self.value.drop_with_heap(heap);
     }
 }
 
@@ -637,10 +641,7 @@ impl DropWithHeap for Dict {
 ///
 /// Removes all items from the dict.
 fn dict_clear(dict: &mut Dict, heap: &mut Heap<impl ResourceTracker>) {
-    for entry in dict.entries.drain(..) {
-        entry.key.drop_with_heap(heap);
-        entry.value.drop_with_heap(heap);
-    }
+    dict.entries.drain(..).drop_with_heap(heap);
     dict.indices.clear();
     // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
 }

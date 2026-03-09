@@ -24,7 +24,7 @@ use crate::{
     asyncio::{CallId, TaskId},
     bytecode::{code::Code, op::Opcode},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, Heap, HeapData, HeapGuard, HeapId},
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
     heap_data::{Closure, FunctionDefaults, HeapDataMut},
     intern::{FunctionId, Interns, StringId},
     io::PrintWriter,
@@ -748,21 +748,14 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// proper reference counting cleanup for any exception values and scheduler state.
     pub fn cleanup(&mut self) {
         // Drop all exceptions in the exception stack
-        for exc in self.exception_stack.drain(..) {
-            exc.drop_with_heap(self.heap);
-        }
+        self.exception_stack.drain(..).drop_with_heap(self.heap);
         // Clean up current task's stack values and frame cell references
         self.cleanup_current_task();
         // Clean up scheduler state (task stacks, pending calls, resolved values, frame cells)
         if let Some(scheduler) = &mut self.scheduler {
             scheduler.cleanup(self.heap);
         }
-        // Clean up globals (only needed with ref-count-panic since Drop impl panics on unfreed Refs)
-        #[cfg(feature = "ref-count-panic")]
-        for value in &mut self.globals {
-            let v = std::mem::replace(value, Value::Undefined);
-            v.drop_with_heap(self.heap);
-        }
+        self.globals.drain(..).drop_with_heap(self.heap);
     }
 
     /// Takes ownership of the globals vector, replacing it with an empty vec.
@@ -1721,9 +1714,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// Drains the stack with proper `drop_with_heap` for each value (since locals
     /// are inlined on the stack), then cleans up each frame's cell references.
     pub(super) fn cleanup_current_task(&mut self) {
-        for value in self.stack.drain(..) {
-            value.drop_with_heap(self.heap);
-        }
+        self.stack.drain(..).drop_with_heap(self.heap);
         self.frames.clear();
     }
 

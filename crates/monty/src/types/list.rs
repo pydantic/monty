@@ -585,9 +585,7 @@ fn list_remove(
 ///
 /// Removes all items from the list.
 fn list_clear(list: &mut List, heap: &mut Heap<impl ResourceTracker>) {
-    for item in list.items.drain(..) {
-        item.drop_with_heap(heap);
-    }
+    list.items.drain(..).drop_with_heap(heap);
     // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
 }
 
