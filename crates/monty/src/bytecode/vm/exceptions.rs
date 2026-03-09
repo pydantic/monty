@@ -151,7 +151,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             if let Some(entry) = frame.code.find_exception_handler(ip) {
                 // Found a handler! Unwind stack and jump to it.
                 let handler_offset = usize::try_from(entry.handler()).expect("handler offset exceeds usize");
-                let target_stack_depth = frame.stack_base + entry.stack_depth() as usize;
+                let target_stack_depth = frame.stack_base + frame.locals_count as usize + entry.stack_depth() as usize;
 
                 // Unwind stack to target depth (drop excess values)
                 while this.stack.len() > target_stack_depth {

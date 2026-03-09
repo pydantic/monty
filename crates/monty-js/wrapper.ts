@@ -599,6 +599,8 @@ export interface RunMontyAsyncOptions {
   externalFunctions?: Record<string, (...args: unknown[]) => unknown>
   /** Resource limits. */
   limits?: ResourceLimits
+  /** Callback invoked on each print() call. The first argument is the stream name (always "stdout"), the second is the printed text. */
+  printCallback?: (stream: string, text: string) => void
 }
 
 /**
@@ -630,11 +632,12 @@ export interface RunMontyAsyncOptions {
  * });
  */
 export async function runMontyAsync(montyRunner: Monty, options: RunMontyAsyncOptions = {}): Promise<JsMontyObject> {
-  const { inputs, externalFunctions = {}, limits } = options
+  const { inputs, externalFunctions = {}, limits, printCallback } = options
 
   let progress: MontySnapshot | MontyNameLookup | MontyComplete = montyRunner.start({
     inputs,
     limits,
+    printCallback,
   })
 
   while (!(progress instanceof MontyComplete)) {

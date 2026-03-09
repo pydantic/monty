@@ -212,7 +212,7 @@ fn run_script(file_path: &str, code: String, type_check_enabled: bool, tracker: 
 
     if EXT_FUNCTIONS {
         let start = Instant::now();
-        let progress = match runner.start(inputs, tracker, &mut PrintWriter::Stdout) {
+        let progress = match runner.start(inputs, tracker, PrintWriter::Stdout) {
             Ok(p) => p,
             Err(err) => {
                 let elapsed = start.elapsed();
@@ -244,7 +244,7 @@ fn run_script(file_path: &str, code: String, type_check_enabled: bool, tracker: 
         }
     } else {
         let start = Instant::now();
-        let value = match runner.run(inputs, tracker, &mut PrintWriter::Stdout) {
+        let value = match runner.run(inputs, tracker, PrintWriter::Stdout) {
             Ok(p) => p,
             Err(err) => {
                 let elapsed = start.elapsed();
@@ -358,7 +358,7 @@ fn run_repl(file_path: &str, code: &str, tracker: impl ResourceTracker) -> ExitC
 
 /// Executes one collected REPL snippet, printing the result or error.
 fn execute_repl_snippet(repl: &mut MontyRepl<impl ResourceTracker>, snippet: &str) {
-    match repl.feed_run(snippet, vec![], &mut PrintWriter::Stdout) {
+    match repl.feed_run(snippet, vec![], PrintWriter::Stdout) {
         Ok(output) => {
             if output != MontyObject::None {
                 println!("{output}");
@@ -385,7 +385,7 @@ fn run_until_complete(mut progress: RunProgress<impl ResourceTracker>) -> Result
             RunProgress::FunctionCall(call) => {
                 let return_value = resolve_external_call(&call.function_name, &call.args)?;
                 progress = call
-                    .resume(return_value, &mut PrintWriter::Stdout)
+                    .resume(return_value, PrintWriter::Stdout)
                     .map_err(|err| format!("{err}"))?;
             }
             RunProgress::ResolveFutures(state) => {
@@ -404,7 +404,7 @@ fn run_until_complete(mut progress: RunProgress<impl ResourceTracker>) -> Result
                     NameLookupResult::Undefined
                 };
                 progress = lookup
-                    .resume(result, &mut PrintWriter::Stdout)
+                    .resume(result, PrintWriter::Stdout)
                     .map_err(|err| format!("{err}"))?;
             }
             RunProgress::OsCall(call) => {

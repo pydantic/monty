@@ -34,6 +34,7 @@ def check_file(path: Path) -> list[str]:
         r'|#\['  # attributes
         r'|#!\['  # inner attributes
         r'|pub use '  # pub use statements
+        r'|pub\(crate\) use '  # pub(crate) use statements
         r'|use '  # use statements
         r'|(pub )?mod (r#)?\w+;'  # mod declarations (mod foo; or pub mod r#type;)
         r'|\}'  # closing braces

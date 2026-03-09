@@ -9,7 +9,7 @@ use crate::{
     defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     expressions::Identifier,
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard},
+    heap::{Heap, HeapData, HeapGuard},
     intern::{Interns, StringId},
     resource::ResourceTracker,
     types::{Dict, allocate_tuple},
@@ -190,7 +190,7 @@ impl Signature {
     /// * `heap` - The heap for allocating *args tuple and **kwargs dict
     /// * `interns` - For looking up parameter names in error messages
     /// * `func_name` - Function name for error messages
-    /// * `namespace_size` - The size of the namespace to allocate
+    /// * `namespace` - The namespace to populate with bound arguments. This is mutated in place and will need to be cleaned up on error.
     ///
     /// # Errors
     /// Returns an error if:
@@ -216,9 +216,7 @@ impl Signature {
         let keyword_args = keyword_args.into_iter();
         defer_drop_mut!(keyword_args, heap);
 
-        // On error paths need to empty the namespace
-        let mut namespace_guard = HeapGuard::new(NamespaceGuard { namespace }, heap);
-        let (NamespaceGuard { namespace }, heap) = namespace_guard.as_parts_mut();
+        let namespace_base = namespace.len();
 
         // Fast path for simple signatures (no defaults, no special params) and
         // signatures with only positional-or-keyword params and defaults.
@@ -239,12 +237,11 @@ impl Signature {
                 }
             }
 
-            let actual_count = namespace.len();
+            let actual_count = namespace.len() - namespace_base;
             let param_count = self.param_count();
 
             if actual_count == param_count {
                 // Exact match - no defaults needed
-                std::mem::forget(namespace_guard);
                 return Ok(());
             } else if self.bind_mode == BindMode::SimpleWithDefaults {
                 let required = self.required_positional_count();
@@ -256,7 +253,6 @@ impl Signature {
                     for i in 0..defaults_needed {
                         namespace.push(defaults[defaults_start + i].clone_with_heap(heap));
                     }
-                    std::mem::forget(namespace_guard);
                     return Ok(());
                 }
             }
@@ -301,7 +297,7 @@ impl Signature {
         // 1. Bind positional args to pos_args, then args
 
         // Bind to pos_args
-        for (i, slot) in namespace.iter_mut().enumerate().take(pos_param_count) {
+        for (i, slot) in namespace[namespace_base..].iter_mut().enumerate().take(pos_param_count) {
             if let Some(val) = pos_iter.next() {
                 *slot = val;
                 bound_params |= 1 << i;
@@ -309,7 +305,7 @@ impl Signature {
         }
 
         // Bind to args
-        for (i, slot) in namespace
+        for (i, slot) in namespace[namespace_base..]
             .iter_mut()
             .enumerate()
             .take(total_positional_params)
@@ -323,7 +319,7 @@ impl Signature {
 
         // 2. Collect excess positional args into *args tuple
         if self.var_args.is_some() {
-            namespace[total_positional_params] = allocate_tuple(pos_iter.collect(), heap)?;
+            namespace[namespace_base + total_positional_params] = allocate_tuple(pos_iter.collect(), heap)?;
         } else {
             // If no *args, excess was already checked above via max_positional_count
             debug_assert_eq!(pos_iter.len(), 0);
@@ -369,7 +365,7 @@ impl Signature {
                             return Err(ExcType::type_error_duplicate_arg(func, param));
                         }
                         let (value, _) = value_guard.into_parts();
-                        namespace[ns_idx] = value;
+                        namespace[namespace_base + ns_idx] = value;
                         bound_params |= 1 << ns_idx;
                         continue 'kwargs;
                     }
@@ -388,7 +384,7 @@ impl Signature {
                             return Err(ExcType::type_error_duplicate_arg(func, param));
                         }
                         let (value, _) = value_guard.into_parts();
-                        namespace[ns_idx] = value;
+                        namespace[namespace_base + ns_idx] = value;
                         bound_params |= 1 << bit_idx;
                         continue 'kwargs;
                     }
@@ -418,7 +414,7 @@ impl Signature {
             let first_optional = pos_param_count - self.pos_defaults_count;
             for i in first_optional..pos_param_count {
                 if (bound_params & (1 << i)) == 0 {
-                    namespace[i] = defaults[default_idx + (i - first_optional)].clone_with_heap(heap);
+                    namespace[namespace_base + i] = defaults[default_idx + (i - first_optional)].clone_with_heap(heap);
                     bound_params |= 1 << i;
                 }
             }
@@ -431,7 +427,8 @@ impl Signature {
             for i in first_optional..arg_param_count {
                 let ns_idx = pos_param_count + i;
                 if (bound_params & (1 << ns_idx)) == 0 {
-                    namespace[ns_idx] = defaults[default_idx + (i - first_optional)].clone_with_heap(heap);
+                    namespace[namespace_base + ns_idx] =
+                        defaults[default_idx + (i - first_optional)].clone_with_heap(heap);
                     bound_params |= 1 << ns_idx;
                 }
             }
@@ -446,7 +443,7 @@ impl Signature {
                     // Skip past *args slot if present
                     let ns_idx = total_positional_params + var_args_offset + i;
                     if (bound_params & (1 << bound_idx)) == 0 {
-                        namespace[ns_idx] = defaults[default_idx + slot_idx].clone_with_heap(heap);
+                        namespace[namespace_base + ns_idx] = defaults[default_idx + slot_idx].clone_with_heap(heap);
                         bound_params |= 1 << bound_idx;
                     }
                 }
@@ -513,9 +510,6 @@ impl Signature {
             let last_slot = namespace.len() - 1;
             namespace[last_slot] = Value::Ref(dict_id);
         }
-
-        std::mem::drop(pos_iter_guard); // So that `namespace_guard` can be forgotten
-        std::mem::forget(namespace_guard); // Because we have fully constructed the namespace and don't want it cleared
 
         Ok(())
     }
@@ -650,18 +644,5 @@ impl Signature {
         Err(SimpleException::new_msg(ExcType::TypeError, msg)
             .with_position(func_name.position)
             .into())
-    }
-}
-
-/// Empties the namespace on error paths by draining it.
-struct NamespaceGuard<'a> {
-    namespace: &'a mut Vec<Value>,
-}
-
-impl DropWithHeap for NamespaceGuard<'_> {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        for value in self.namespace.drain(..) {
-            value.drop_with_heap(heap);
-        }
     }
 }

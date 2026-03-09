@@ -46,12 +46,12 @@ pub fn builtin_filter(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues
         let (item, vm) = item_guard.as_parts_mut();
         let should_include = if let Value::None = function {
             // No predicate - use truthiness of element
-            item.py_bool(vm.heap, vm.interns)
+            item.py_bool(vm)
         } else {
             // Clone for predicate call - the clone is consumed by evaluate_function
             let item_for_predicate = item.clone_with_heap(vm);
             let result = vm.evaluate_function("filter()", function, ArgValues::One(item_for_predicate))?;
-            let is_truthy = result.py_bool(vm.heap, vm.interns);
+            let is_truthy = result.py_bool(vm);
             result.drop_with_heap(vm);
             is_truthy
         };

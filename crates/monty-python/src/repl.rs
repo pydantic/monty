@@ -118,7 +118,7 @@ impl PyMontyRepl {
         };
 
         if external_functions.is_some() || os.is_some() {
-            return self.feed_run_with_externals(py, code, input_values, external_functions, os, &mut print_writer);
+            return self.feed_run_with_externals(py, code, input_values, external_functions, os, print_writer);
         }
 
         let mut guard = self
@@ -130,8 +130,8 @@ impl PyMontyRepl {
             .ok_or_else(|| PyRuntimeError::new_err("REPL session is currently executing another snippet"))?;
 
         let output = match repl {
-            EitherRepl::NoLimit(repl) => repl.feed_run(code, input_values, &mut print_writer),
-            EitherRepl::Limited(repl) => repl.feed_run(code, input_values, &mut print_writer),
+            EitherRepl::NoLimit(repl) => repl.feed_run(code, input_values, print_writer.reborrow()),
+            EitherRepl::Limited(repl) => repl.feed_run(code, input_values, print_writer.reborrow()),
         }
         .map_err(|e| MontyError::new_err(py, e))?;
 
@@ -179,14 +179,14 @@ impl PyMontyRepl {
         match repl {
             EitherRepl::NoLimit(repl) => {
                 let progress = py
-                    .detach(|| repl.feed_start(&code_owned, inputs_owned, &mut print_output))
+                    .detach(|| repl.feed_start(&code_owned, inputs_owned, print_output.reborrow()))
                     .map_err(|e| this.restore_repl_from_start_error(py, *e))?;
                 let either = crate::monty_cls::EitherProgress::ReplNoLimit(progress, repl_owner);
                 either.progress_or_complete(py, script_name, print_callback, dc_registry)
             }
             EitherRepl::Limited(repl) => {
                 let progress = py
-                    .detach(|| repl.feed_start(&code_owned, inputs_owned, &mut print_output))
+                    .detach(|| repl.feed_start(&code_owned, inputs_owned, print_output.reborrow()))
                     .map_err(|e| this.restore_repl_from_start_error(py, *e))?;
                 let either = crate::monty_cls::EitherProgress::ReplLimited(progress, repl_owner);
                 either.progress_or_complete(py, script_name, print_callback, dc_registry)
@@ -259,9 +259,9 @@ impl PyMontyRepl {
         input_values: Vec<(String, MontyObject)>,
         external_functions: Option<&Bound<'_, PyDict>>,
         os: Option<&Bound<'_, PyAny>>,
-        print_writer: &mut PrintWriter<'_>,
+        mut print_writer: PrintWriter<'_>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let mut print_output = SendWrapper::new(print_writer);
+        let mut print_output = SendWrapper::new(&mut print_writer);
 
         let repl = self.take_repl()?;
 
@@ -303,7 +303,7 @@ impl PyMontyRepl {
     {
         let code_owned = code.to_owned();
         let mut progress = py
-            .detach(|| repl.feed_start(&code_owned, input_values, print_output))
+            .detach(|| repl.feed_start(&code_owned, input_values, print_output.reborrow()))
             .map_err(|e| self.restore_repl_from_start_error(py, *e))?;
 
         loop {
@@ -327,7 +327,7 @@ impl PyMontyRepl {
                     };
 
                     progress = py
-                        .detach(|| call.resume(return_value, print_output))
+                        .detach(|| call.resume(return_value, print_output.reborrow()))
                         .map_err(|e| self.restore_repl_from_start_error(py, *e))?;
                 }
                 ReplProgress::NameLookup(lookup) => {
@@ -343,7 +343,7 @@ impl PyMontyRepl {
                     };
 
                     progress = py
-                        .detach(|| lookup.resume(result, print_output))
+                        .detach(|| lookup.resume(result, print_output.reborrow()))
                         .map_err(|e| self.restore_repl_from_start_error(py, *e))?;
                 }
                 ReplProgress::OsCall(call) => {
@@ -376,7 +376,7 @@ impl PyMontyRepl {
                     };
 
                     progress = py
-                        .detach(|| call.resume(result, print_output))
+                        .detach(|| call.resume(result, print_output.reborrow()))
                         .map_err(|e| self.restore_repl_from_start_error(py, *e))?;
                 }
                 ReplProgress::ResolveFutures(state) => {

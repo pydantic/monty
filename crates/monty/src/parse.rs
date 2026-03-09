@@ -291,11 +291,29 @@ impl<'a> Parser<'a> {
             Stmt::Assign(ast::StmtAssign {
                 targets, value, range, ..
             }) => self.parse_assignment(first(targets, self.convert_range(range))?, *value),
-            Stmt::AugAssign(ast::StmtAugAssign { target, op, value, .. }) => Ok(Node::OpAssign {
-                target: self.parse_identifier(*target)?,
-                op: convert_op(op),
-                object: self.parse_expression(*value)?,
-            }),
+            Stmt::AugAssign(ast::StmtAugAssign { target, op, value, .. }) => {
+                let op = convert_op(op);
+                let value = self.parse_expression(*value)?;
+                match *target {
+                    AstExpr::Subscript(ast::ExprSubscript {
+                        value: object,
+                        slice,
+                        range,
+                        ..
+                    }) => Ok(Node::SubscriptOpAssign {
+                        target: self.parse_identifier(*object)?,
+                        index: self.parse_expression(*slice)?,
+                        op,
+                        object: value,
+                        target_position: self.convert_range(range),
+                    }),
+                    other => Ok(Node::OpAssign {
+                        target: self.parse_identifier(other)?,
+                        op,
+                        object: value,
+                    }),
+                }
+            }
             Stmt::AnnAssign(ast::StmtAnnAssign { target, value, .. }) => match value {
                 Some(value) => self.parse_assignment(*target, *value),
                 None => Ok(Node::Pass),

@@ -1152,7 +1152,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<()
     match MontyRun::new(code.to_owned(), &test_name, vec![]) {
         Ok(ex) => {
             let limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
-            let result = ex.run(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout);
+            let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
             match result {
                 Ok(obj) => match expectation {
                     Expectation::ReturnStr(expected) => {
@@ -1425,7 +1425,7 @@ fn try_run_iter_test(path: &Path, code: &str, expectation: &Expectation) -> Resu
 /// - Async functions: `state.run_pending()` creates a future, resolved via `ResolveFutures`
 fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
     let limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
-    let mut progress = exec.start(vec![], LimitedTracker::new(limits), &mut PrintWriter::Stdout)?;
+    let mut progress = exec.start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)?;
 
     // Track pending async calls: (call_id, result_value)
     let mut pending_results: Vec<(u32, MontyObject)> = Vec::new();
@@ -1446,19 +1446,19 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                 // Dispatch known methods; return AttributeError for unknown ones.
                 if call.method_call {
                     let result = dispatch_method_call(&call.function_name, &call.args, &call.kwargs);
-                    progress = call.resume(result, &mut PrintWriter::Stdout)?;
+                    progress = call.resume(result, PrintWriter::Stdout)?;
                     continue;
                 }
                 let dispatch_result = dispatch_external_call(&call.function_name, call.args.clone());
                 match dispatch_result {
                     DispatchResult::Sync(return_value) => {
-                        progress = call.resume(return_value, &mut PrintWriter::Stdout)?;
+                        progress = call.resume(return_value, PrintWriter::Stdout)?;
                     }
                     DispatchResult::Async(result_value) => {
                         // Store the result for later resolution
                         pending_results.push((call.call_id, result_value));
                         // Continue execution with a pending future
-                        progress = call.resume_pending(&mut PrintWriter::Stdout)?;
+                        progress = call.resume_pending(PrintWriter::Stdout)?;
                     }
                 }
             }
@@ -1481,7 +1481,7 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                     state.pending_call_ids().iter().collect::<Vec<_>>()
                 );
 
-                progress = state.resume(results, &mut PrintWriter::Stdout)?;
+                progress = state.resume(results, PrintWriter::Stdout)?;
             }
             RunProgress::NameLookup(lookup) => {
                 let result = match lookup.name.as_str() {
@@ -1508,11 +1508,11 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                     // Unknown names → NameError
                     _ => NameLookupResult::Undefined,
                 };
-                progress = lookup.resume(result, &mut PrintWriter::Stdout)?;
+                progress = lookup.resume(result, PrintWriter::Stdout)?;
             }
             RunProgress::OsCall(call) => {
                 let result = dispatch_os_call(call.function, &call.args, &call.kwargs);
-                progress = call.resume(result, &mut PrintWriter::Stdout)?;
+                progress = call.resume(result, PrintWriter::Stdout)?;
             }
         }
     }

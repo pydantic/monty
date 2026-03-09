@@ -18,14 +18,14 @@ pub(crate) use crate::heap_traits::{ContainsHeap, DropWithHeap, HeapGuard, Immut
 use crate::{
     args::ArgValues,
     asyncio::{Coroutine, GatherFuture, GatherItem},
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, SimpleException},
     heap_data::{CellValue, Closure, FunctionDefaults, HeapDataMut},
     intern::Interns,
     resource::{ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
     types::{
-        AttrCallResult, Bytes, Dataclass, Dict, FrozenSet, List, LongInt, Module, MontyIter, NamedTuple, Path, PyTrait,
-        Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, allocate_tuple,
+        Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
+        MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, allocate_tuple,
     },
     value::{EitherStr, Value},
 };
@@ -58,6 +58,9 @@ pub(crate) enum HeapData {
     Tuple(Tuple),
     NamedTuple(NamedTuple),
     Dict(Dict),
+    DictKeysView(DictKeysView),
+    DictItemsView(DictItemsView),
+    DictValuesView(DictValuesView),
     Set(Set),
     FrozenSet(FrozenSet),
     Closure(Closure),
@@ -157,6 +160,9 @@ impl HeapData {
                 | Self::Tuple(_)
                 | Self::NamedTuple(_)
                 | Self::Dict(_)
+                | Self::DictKeysView(_)
+                | Self::DictItemsView(_)
+                | Self::DictValuesView(_)
                 | Self::Set(_)
                 | Self::FrozenSet(_)
                 | Self::Closure(_)
@@ -184,6 +190,7 @@ impl HeapData {
             Self::Tuple(tuple) => tuple.contains_refs(),
             Self::NamedTuple(nt) => nt.contains_refs(),
             Self::Dict(dict) => dict.has_refs(),
+            Self::DictKeysView(_) | Self::DictItemsView(_) | Self::DictValuesView(_) => true,
             Self::Set(set) => set.has_refs(),
             Self::FrozenSet(fset) => fset.has_refs(),
             // Closures always have refs when they have captured cells (HeapIds)
@@ -195,10 +202,8 @@ impl HeapData {
             Self::Dataclass(dc) => dc.has_refs(),
             Self::Iter(iter) => iter.has_refs(),
             Self::Module(m) => m.has_refs(),
-            // Coroutines always have refs (namespace values, frame_cells)
-            Self::Coroutine(coro) => {
-                !coro.frame_cells.is_empty() || coro.namespace.iter().any(|v| matches!(v, Value::Ref(_)))
-            }
+            // Coroutines have refs from namespace values (params, cell/free vars)
+            Self::Coroutine(coro) => coro.namespace.iter().any(|v| matches!(v, Value::Ref(_))),
             // GatherFutures have refs from coroutine items and results
             Self::GatherFuture(gather) => {
                 gather
@@ -233,6 +238,9 @@ impl HeapData {
             Self::Tuple(t) => HeapDataMut::Tuple(t),
             Self::NamedTuple(nt) => HeapDataMut::NamedTuple(nt),
             Self::Dict(d) => HeapDataMut::Dict(d),
+            Self::DictKeysView(view) => HeapDataMut::DictKeysView(view),
+            Self::DictItemsView(view) => HeapDataMut::DictItemsView(view),
+            Self::DictValuesView(view) => HeapDataMut::DictValuesView(view),
             Self::Set(s) => HeapDataMut::Set(s),
             Self::FrozenSet(fs) => HeapDataMut::FrozenSet(fs),
             Self::Closure(closure) => HeapDataMut::Closure(closure),
@@ -268,6 +276,9 @@ impl PyTrait for HeapData {
             Self::Tuple(t) => t.py_type(heap),
             Self::NamedTuple(nt) => nt.py_type(heap),
             Self::Dict(d) => d.py_type(heap),
+            Self::DictKeysView(view) => view.py_type(heap),
+            Self::DictItemsView(view) => view.py_type(heap),
+            Self::DictValuesView(view) => view.py_type(heap),
             Self::Set(s) => s.py_type(heap),
             Self::FrozenSet(fs) => fs.py_type(heap),
             Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => Type::Function,
@@ -295,6 +306,9 @@ impl PyTrait for HeapData {
             Self::Tuple(t) => t.py_estimate_size(),
             Self::NamedTuple(nt) => nt.py_estimate_size(),
             Self::Dict(d) => d.py_estimate_size(),
+            Self::DictKeysView(view) => view.py_estimate_size(),
+            Self::DictItemsView(view) => view.py_estimate_size(),
+            Self::DictValuesView(view) => view.py_estimate_size(),
             Self::Set(s) => s.py_estimate_size(),
             Self::FrozenSet(fs) => fs.py_estimate_size(),
             // TODO: should include size of captured cells and defaults
@@ -308,9 +322,7 @@ impl PyTrait for HeapData {
             Self::LongInt(li) => li.estimate_size(),
             Self::Module(m) => std::mem::size_of::<Module>() + m.attrs().py_estimate_size(),
             Self::Coroutine(coro) => {
-                std::mem::size_of::<Coroutine>()
-                    + coro.namespace.len() * std::mem::size_of::<Value>()
-                    + coro.frame_cells.len() * std::mem::size_of::<HeapId>()
+                std::mem::size_of::<Coroutine>() + coro.namespace.len() * std::mem::size_of::<Value>()
             }
             Self::GatherFuture(gather) => {
                 std::mem::size_of::<GatherFuture>()
@@ -325,16 +337,19 @@ impl PyTrait for HeapData {
         }
     }
 
-    fn py_len(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Option<usize> {
+    fn py_len(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         match self {
-            Self::Str(s) => PyTrait::py_len(s, heap, interns),
-            Self::Bytes(b) => PyTrait::py_len(b, heap, interns),
-            Self::List(l) => PyTrait::py_len(l, heap, interns),
-            Self::Tuple(t) => PyTrait::py_len(t, heap, interns),
-            Self::NamedTuple(nt) => PyTrait::py_len(nt, heap, interns),
-            Self::Dict(d) => PyTrait::py_len(d, heap, interns),
-            Self::Set(s) => PyTrait::py_len(s, heap, interns),
-            Self::FrozenSet(fs) => PyTrait::py_len(fs, heap, interns),
+            Self::Str(s) => PyTrait::py_len(s, vm),
+            Self::Bytes(b) => PyTrait::py_len(b, vm),
+            Self::List(l) => PyTrait::py_len(l, vm),
+            Self::Tuple(t) => PyTrait::py_len(t, vm),
+            Self::NamedTuple(nt) => PyTrait::py_len(nt, vm),
+            Self::Dict(d) => PyTrait::py_len(d, vm),
+            Self::DictKeysView(view) => PyTrait::py_len(view, vm),
+            Self::DictItemsView(view) => PyTrait::py_len(view, vm),
+            Self::DictValuesView(view) => PyTrait::py_len(view, vm),
+            Self::Set(s) => PyTrait::py_len(s, vm),
+            Self::FrozenSet(fs) => PyTrait::py_len(fs, vm),
             Self::Range(r) => Some(r.len()),
             // other types don't have length
             _ => None,
@@ -370,6 +385,19 @@ impl PyTrait for HeapData {
                 Ok(true)
             }
             (Self::Dict(a), Self::Dict(b)) => a.py_eq(b, heap, interns),
+            (Self::DictKeysView(a), Self::DictKeysView(b)) => a.py_eq(b, heap, interns),
+            (Self::DictItemsView(a), Self::DictItemsView(b)) => a.py_eq(b, heap, interns),
+            (Self::DictValuesView(_), Self::DictValuesView(_)) => Ok(false),
+            (Self::DictKeysView(a), Self::Set(b)) | (Self::Set(b), Self::DictKeysView(a)) => a.eq_set(b, heap, interns),
+            (Self::DictKeysView(a), Self::FrozenSet(b)) | (Self::FrozenSet(b), Self::DictKeysView(a)) => {
+                a.eq_frozenset(b, heap, interns)
+            }
+            (Self::DictItemsView(a), Self::Set(b)) | (Self::Set(b), Self::DictItemsView(a)) => {
+                a.eq_set(b, heap, interns)
+            }
+            (Self::DictItemsView(a), Self::FrozenSet(b)) | (Self::FrozenSet(b), Self::DictItemsView(a)) => {
+                a.eq_frozenset(b, heap, interns)
+            }
             (Self::Set(a), Self::Set(b)) => a.py_eq(b, heap, interns),
             (Self::FrozenSet(a), Self::FrozenSet(b)) => a.py_eq(b, heap, interns),
             (Self::Closure(a), Self::Closure(b)) => Ok(a.func_id == b.func_id && a.cells == b.cells),
@@ -405,6 +433,9 @@ impl PyTrait for HeapData {
             Self::Tuple(t) => t.py_dec_ref_ids(stack),
             Self::NamedTuple(nt) => nt.py_dec_ref_ids(stack),
             Self::Dict(d) => d.py_dec_ref_ids(stack),
+            Self::DictKeysView(view) => view.py_dec_ref_ids(stack),
+            Self::DictItemsView(view) => view.py_dec_ref_ids(stack),
+            Self::DictValuesView(view) => view.py_dec_ref_ids(stack),
             Self::Set(s) => s.py_dec_ref_ids(stack),
             Self::FrozenSet(fs) => fs.py_dec_ref_ids(stack),
             Self::Closure(closure) => {
@@ -426,8 +457,6 @@ impl PyTrait for HeapData {
             Self::Iter(iter) => iter.py_dec_ref_ids(stack),
             Self::Module(m) => m.py_dec_ref_ids(stack),
             Self::Coroutine(coro) => {
-                // Decrement ref count for frame cells
-                stack.extend(coro.frame_cells.iter().copied());
                 // Decrement ref count for namespace values that are heap references
                 for value in &mut coro.namespace {
                     value.py_dec_ref_ids(stack);
@@ -450,28 +479,31 @@ impl PyTrait for HeapData {
         }
     }
 
-    fn py_bool(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> bool {
+    fn py_bool(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         match self {
-            Self::Str(s) => s.py_bool(heap, interns),
-            Self::Bytes(b) => b.py_bool(heap, interns),
-            Self::List(l) => l.py_bool(heap, interns),
-            Self::Tuple(t) => t.py_bool(heap, interns),
-            Self::NamedTuple(nt) => nt.py_bool(heap, interns),
-            Self::Dict(d) => d.py_bool(heap, interns),
-            Self::Set(s) => s.py_bool(heap, interns),
-            Self::FrozenSet(fs) => fs.py_bool(heap, interns),
+            Self::Str(s) => s.py_bool(vm),
+            Self::Bytes(b) => b.py_bool(vm),
+            Self::List(l) => l.py_bool(vm),
+            Self::Tuple(t) => t.py_bool(vm),
+            Self::NamedTuple(nt) => nt.py_bool(vm),
+            Self::Dict(d) => d.py_bool(vm),
+            Self::DictKeysView(view) => view.py_bool(vm),
+            Self::DictItemsView(view) => view.py_bool(vm),
+            Self::DictValuesView(view) => view.py_bool(vm),
+            Self::Set(s) => s.py_bool(vm),
+            Self::FrozenSet(fs) => fs.py_bool(vm),
             Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => true,
             Self::Cell(_) => true, // Cells are always truthy
-            Self::Range(r) => r.py_bool(heap, interns),
-            Self::Slice(s) => s.py_bool(heap, interns),
+            Self::Range(r) => r.py_bool(vm),
+            Self::Slice(s) => s.py_bool(vm),
             Self::Exception(_) => true, // Exceptions are always truthy
-            Self::Dataclass(dc) => dc.py_bool(heap, interns),
+            Self::Dataclass(dc) => dc.py_bool(vm),
             Self::Iter(_) => true, // Iterators are always truthy
             Self::LongInt(li) => !li.is_zero(),
             Self::Module(_) => true,       // Modules are always truthy
             Self::Coroutine(_) => true,    // Coroutines are always truthy
             Self::GatherFuture(_) => true, // GatherFutures are always truthy
-            Self::Path(p) => p.py_bool(heap, interns),
+            Self::Path(p) => p.py_bool(vm),
             Self::RePattern(_) => true, // RePattern objects are always truthy
             Self::ReMatch(_) => true,   // ReMatch objects are always truthy
         }
@@ -491,6 +523,9 @@ impl PyTrait for HeapData {
             Self::Tuple(t) => t.py_repr_fmt(f, heap, heap_ids, interns),
             Self::NamedTuple(nt) => nt.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Dict(d) => d.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::DictKeysView(view) => view.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::DictItemsView(view) => view.py_repr_fmt(f, heap, heap_ids, interns),
+            Self::DictValuesView(view) => view.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Set(s) => s.py_repr_fmt(f, heap, heap_ids, interns),
             Self::FrozenSet(fs) => fs.py_repr_fmt(f, heap, heap_ids, interns),
             Self::Closure(closure) => interns.get_function(closure.func_id).py_repr_fmt(f, interns, 0),
@@ -631,13 +666,16 @@ impl PyTrait for HeapData {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         match self {
             Self::Str(s) => s.py_call_attr(self_id, vm, attr, args),
             Self::Bytes(b) => b.py_call_attr(self_id, vm, attr, args),
             Self::List(l) => l.py_call_attr(self_id, vm, attr, args),
             Self::Tuple(t) => t.py_call_attr(self_id, vm, attr, args),
             Self::Dict(d) => d.py_call_attr(self_id, vm, attr, args),
+            Self::DictKeysView(view) => view.py_call_attr(self_id, vm, attr, args),
+            Self::DictItemsView(view) => view.py_call_attr(self_id, vm, attr, args),
+            Self::DictValuesView(view) => view.py_call_attr(self_id, vm, attr, args),
             Self::Set(s) => s.py_call_attr(self_id, vm, attr, args),
             Self::FrozenSet(fs) => fs.py_call_attr(self_id, vm, attr, args),
             Self::Dataclass(dc) => dc.py_call_attr(self_id, vm, attr, args),
@@ -684,7 +722,7 @@ impl PyTrait for HeapData {
         attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<Option<AttrCallResult>> {
+    ) -> RunResult<Option<CallResult>> {
         match self {
             Self::Dataclass(dc) => dc.py_getattr(attr, heap, interns),
             Self::Module(m) => Ok(m.py_getattr(attr, heap, interns)),
@@ -1213,23 +1251,18 @@ impl<T: ResourceTracker> Heap<T> {
         Ok(hash)
     }
 
-    /// Calls an attribute on the heap entry, returning an `AttrCallResult` that may signal
+    /// Calls an attribute on the heap entry, returning an `CallResult` that may signal
     /// OS, external, or method calls.
     ///
     /// Temporarily takes ownership of the payload to avoid borrow conflicts when attribute
     /// implementations also need mutable heap access (e.g. for refcounting).
     ///
-    /// Returns `AttrCallResult` which may be:
+    /// Returns `CallResult` which may be:
     /// - `Value(v)` - Method completed synchronously with value `v`
     /// - `OsCall(func, args)` - Method needs OS operation; VM should yield to host
     /// - `ExternalCall(id, args)` - Method needs external function call
     /// - `MethodCall(name, args)` - Dataclass method call; VM should yield to host
-    pub fn call_attr(
-        vm: &mut VM<'_, '_, T>,
-        id: HeapId,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    pub fn call_attr(vm: &mut VM<'_, '_, T>, id: HeapId, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         // Take data out so the borrow of self.entries ends
         let heap = &mut *vm.heap;
         let mut data = take_data!(heap, id, "call_attr");
@@ -1322,32 +1355,6 @@ impl<T: ResourceTracker> Heap<T> {
     pub fn entry_count(&self) -> usize {
         // 1.. to skip index 0 which is the empty tuple singleton
         self.entries[1..].iter().filter(|o| o.is_some()).count()
-    }
-
-    /// Gets the value inside a cell, cloning it with proper refcount handling.
-    ///
-    /// # Panics
-    /// Panics if the ID is invalid, the value has been freed, or the entry is not a Cell.
-    pub fn get_cell_value(&self, id: HeapId) -> Value {
-        match self.get(id) {
-            HeapData::Cell(c) => c.0.clone_with_heap(self),
-            _ => panic!("Heap::get_cell_value: entry is not a Cell"),
-        }
-    }
-
-    /// Sets the value inside a cell, properly dropping the old value.
-    ///
-    /// # Panics
-    /// Panics if the ID is invalid, the value has been freed, or the entry is not a Cell.
-    pub fn set_cell_value(&mut self, id: HeapId, value: Value) {
-        // The guard will clean up the new value if we panic, or the old value if we swap
-        let mut guard = HeapGuard::new(value, self);
-        let (value, this) = guard.as_parts_mut();
-
-        match this.get_mut(id) {
-            HeapDataMut::Cell(c) => std::mem::swap(&mut c.0, value),
-            _ => panic!("Heap::set_cell_value: entry is not a Cell"),
-        }
     }
 
     /// Helper for List in-place add: extends the destination vec with items from a heap list.
@@ -1479,7 +1486,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// Runs mark-sweep garbage collection to free unreachable cycles.
     ///
     /// This method takes a closure that provides an iterator of root HeapIds
-    /// (typically from Namespaces). It marks all reachable objects starting
+    /// (typically from the VM's globals and stack). It marks all reachable objects starting
     /// from roots, then sweeps (frees) any unreachable objects.
     ///
     /// This is necessary because reference counting alone cannot free cycles
@@ -1630,6 +1637,15 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
                 }
             }
         }
+        HeapData::DictKeysView(view) => {
+            work_list.push(view.dict_id());
+        }
+        HeapData::DictItemsView(view) => {
+            work_list.push(view.dict_id());
+        }
+        HeapData::DictValuesView(view) => {
+            work_list.push(view.dict_id());
+        }
         HeapData::Set(set) => {
             for value in set.storage().iter() {
                 if let Value::Ref(id) = value {
@@ -1702,10 +1718,6 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
             }
         }
         HeapData::Coroutine(coro) => {
-            // Add captured cells to work list
-            for cell_id in &coro.frame_cells {
-                work_list.push(*cell_id);
-            }
             // Add namespace values that are heap references
             for value in &coro.namespace {
                 if let Value::Ref(id) = value {

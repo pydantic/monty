@@ -10,13 +10,14 @@
 
 use crate::{
     args::ArgValues,
+    bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings},
+    intern::StaticStrings,
     modules::ModuleFunctions,
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
-    types::{AttrCallResult, Module, Property, PyTrait},
+    types::{Module, Property, PyTrait},
     value::Value,
 };
 
@@ -40,37 +41,35 @@ pub(crate) enum OsFunctions {
 ///
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Os);
 
     // os.getenv - function to get a single environment variable
     module.set_attr(
         StaticStrings::Getenv,
         Value::ModuleFunction(ModuleFunctions::Os(OsFunctions::Getenv)),
-        heap,
-        interns,
+        vm,
     );
 
     // os.environ - property that returns the entire environment as a dict
     module.set_attr(
         StaticStrings::Environ,
         Value::Property(Property::Os(OsFunction::GetEnviron)),
-        heap,
-        interns,
+        vm,
     );
 
-    heap.allocate(HeapData::Module(module))
+    vm.heap.allocate(HeapData::Module(module))
 }
 
 /// Dispatches a call to an os module function.
 ///
-/// Returns `AttrCallResult::OsCall` for functions that need host involvement,
-/// or `AttrCallResult::Value` for functions that can be computed immediately.
+/// Returns `CallResult::OsCall` for functions that need host involvement,
+/// or `CallResult::Value` for functions that can be computed immediately.
 pub(super) fn call(
     heap: &mut Heap<impl ResourceTracker>,
     functions: OsFunctions,
     args: ArgValues,
-) -> RunResult<AttrCallResult> {
+) -> RunResult<CallResult> {
     match functions {
         OsFunctions::Getenv => getenv(heap, args),
     }
@@ -86,7 +85,7 @@ pub(super) fn call(
 /// * `args` - Function arguments: `key` (required string), `default` (optional, defaults to None)
 ///
 /// # Returns
-/// `AttrCallResult::OsCall` with `OsFunction::Getenv` - the host should look up the
+/// `CallResult::OsCall` with `OsFunction::Getenv` - the host should look up the
 /// environment variable and return the value, or the default if not found.
 ///
 /// # Errors
@@ -94,7 +93,7 @@ pub(super) fn call(
 /// - No arguments are provided
 /// - More than 2 arguments are provided
 /// - `key` is not a string
-fn getenv(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<AttrCallResult> {
+fn getenv(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
     // getenv(key, default=None) - accepts 1 or 2 positional arguments
     let (key, default) = args.get_one_two_args("os.getenv", heap)?;
 
@@ -105,7 +104,7 @@ fn getenv(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<A
         let final_default = default.unwrap_or(Value::None);
         let args = ArgValues::Two(key, final_default);
 
-        Ok(AttrCallResult::OsCall(OsFunction::Getenv, args))
+        Ok(CallResult::OsCall(OsFunction::Getenv, args))
     } else {
         let type_name = key.py_type(heap);
         key.drop_with_heap(heap);

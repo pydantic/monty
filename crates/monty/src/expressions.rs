@@ -422,6 +422,20 @@ pub enum Node<F> {
         op: Operator,
         object: ExprLoc,
     },
+    /// Augmented subscript assignment (e.g., `totals[key] += value`).
+    ///
+    /// This evaluates the container and index exactly once, then performs the
+    /// inplace operation on the current item before storing the result back.
+    /// Limiting duplicate evaluation is important because index expressions may
+    /// have side effects and CPython only evaluates them once.
+    SubscriptOpAssign {
+        target: Identifier,
+        index: ExprLoc,
+        op: Operator,
+        object: ExprLoc,
+        /// Position of the subscript expression (e.g., `totals[key]`) for traceback carets.
+        target_position: CodeRange,
+    },
     SubscriptAssign {
         target: Identifier,
         index: ExprLoc,

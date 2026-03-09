@@ -20,7 +20,6 @@ use crate::{
     exception_private::RunError,
     heap::{DropWithHeap, HeapId},
     heap_data::HeapDataMut,
-    namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
     parse::CodeRange,
     value::Value,
 };
@@ -93,12 +92,10 @@ pub(crate) struct SerializedTaskFrame {
     pub function_id: Option<crate::intern::FunctionId>,
     /// Instruction pointer within this frame's bytecode.
     pub ip: usize,
-    /// Base index into operand stack for this frame.
+    /// Base index into the VM stack for this frame's locals region.
     pub stack_base: usize,
-    /// Namespace index for this frame's locals.
-    pub namespace_idx: NamespaceId,
-    /// Captured cells for closures.
-    pub cells: Vec<HeapId>,
+    /// Number of local variable slots (0 for module-level frames).
+    pub locals_count: u16,
     /// Call site position (for tracebacks).
     pub call_position: Option<CodeRange>,
 }
@@ -216,12 +213,6 @@ impl Scheduler {
     #[inline]
     pub fn current_task_id(&self) -> Option<TaskId> {
         self.current_task
-    }
-
-    /// Returns the total number of tasks (including main task).
-    #[inline]
-    pub fn task_count(&self) -> usize {
-        self.tasks.len()
     }
 
     /// Returns a reference to a task by ID.
@@ -466,13 +457,11 @@ impl Scheduler {
     ///
     /// # Arguments
     /// * `task_id` - ID of the task to cancel
-    /// * `heap` - Heap for dropping values
-    /// * `namespaces` - VM namespaces for cleaning up frame namespaces
+    /// * `heap` - Heap for dropping values and cell cleanup
     pub fn cancel_task(
         &mut self,
         task_id: TaskId,
         heap: &mut crate::heap::Heap<impl crate::resource::ResourceTracker>,
-        namespaces: &mut Namespaces,
     ) {
         // If task already finished, clean up its result value and return
         if self.get_task(task_id).is_finished() {
@@ -505,7 +494,7 @@ impl Scheduler {
         // Recursively cancel inner gather's tasks first
         if let Some((inner_gather_id, inner_task_ids)) = inner_gather_info {
             for inner_task_id in inner_task_ids {
-                self.cancel_task(inner_task_id, heap, namespaces);
+                self.cancel_task(inner_task_id, heap);
             }
 
             // Cleanup the inner GatherFuture - extract data first to avoid borrow conflict
@@ -542,22 +531,12 @@ impl Scheduler {
             value.drop_with_heap(heap);
         }
 
-        // Restore this task's depth contribution before dropping namespaces,
-        // since save_task_context subtracted it and drop_with_heap will decrement.
+        // Restore this task's depth contribution before cleanup,
+        // since save_task_context subtracted it.
         let task_depth = task.frames.len();
         let global_depth = heap.get_recursion_depth();
         heap.set_recursion_depth(global_depth + task_depth);
-
-        // Clean up frame cell references and namespaces
-        for frame in std::mem::take(&mut task.frames) {
-            for cell_id in frame.cells {
-                heap.dec_ref(cell_id);
-            }
-            // Clean up the namespace (but not the global namespace)
-            if frame.namespace_idx != GLOBAL_NS_IDX {
-                namespaces.drop_with_heap(frame.namespace_idx, heap);
-            }
-        }
+        task.frames.clear();
 
         // Mark as failed with a cancellation error
         task.state = TaskState::Failed(
@@ -599,9 +578,12 @@ impl Scheduler {
         matches!(self.tasks.get(task_id.raw() as usize), Some(task) if matches!(task.state, TaskState::Failed(_)))
     }
 
-    /// Cleans up resources when dropping the scheduler.
+    /// Cleans up all scheduler resources: pending calls, resolved values, task
+    /// stacks/exception stacks, completed results, and task frame cell references.
     ///
-    /// Drops any pending call arguments, resolved values, and task state.
+    /// Each task's `recursion_depth` is restored to the global counter before
+    /// dropping cells, because `save_task_context` subtracted the recursion depth
+    /// and cleanup needs the correct depth to avoid underflow.
     pub fn cleanup(&mut self, heap: &mut crate::heap::Heap<impl crate::resource::ResourceTracker>) {
         // Drop pending call arguments
         for (_, data) in std::mem::take(&mut self.pending_calls) {
@@ -611,7 +593,7 @@ impl Scheduler {
         for (_, value) in std::mem::take(&mut self.resolved) {
             value.drop_with_heap(heap);
         }
-        // Drop task stack/exception values
+        // Drop task stack/exception values and completed results
         for task in &mut self.tasks {
             for value in std::mem::take(&mut task.stack) {
                 value.drop_with_heap(heap);
@@ -619,10 +601,14 @@ impl Scheduler {
             for value in std::mem::take(&mut task.exception_stack) {
                 value.drop_with_heap(heap);
             }
-            // Drop completed task results
             if let TaskState::Completed(value) = std::mem::replace(&mut task.state, TaskState::Ready) {
                 value.drop_with_heap(heap);
             }
+            // Restore recursion depth and clear frames
+            let task_depth = task.frames.len();
+            let global_depth = heap.get_recursion_depth();
+            heap.set_recursion_depth(global_depth + task_depth);
+            task.frames.clear();
         }
     }
 }

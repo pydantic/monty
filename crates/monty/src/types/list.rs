@@ -4,10 +4,10 @@ use ahash::AHashSet;
 use itertools::Itertools;
 use smallvec::SmallVec;
 
-use super::{AttrCallResult, MontyIter, PyTrait};
+use super::{MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
@@ -209,7 +209,7 @@ impl PyTrait for List {
         std::mem::size_of::<Self>() + self.items.len() * std::mem::size_of::<Value>()
     }
 
-    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         Some(self.items.len())
     }
 
@@ -336,7 +336,7 @@ impl PyTrait for List {
         }
     }
 
-    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
+    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         !self.items.is_empty()
     }
 
@@ -419,10 +419,10 @@ impl PyTrait for List {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         if attr.static_string() == Some(StaticStrings::Sort) {
             do_list_sort(self, args, vm)?;
-            return Ok(AttrCallResult::Value(Value::None));
+            return Ok(CallResult::Value(Value::None));
         }
         let args_guard = HeapGuard::new(args, vm.heap);
         let Some(method) = attr.static_string() else {
@@ -430,7 +430,7 @@ impl PyTrait for List {
         };
 
         let args = args_guard.into_inner();
-        call_list_method(self, method, args, vm).map(AttrCallResult::Value)
+        call_list_method(self, method, args, vm).map(CallResult::Value)
     }
 }
 
@@ -585,9 +585,7 @@ fn list_remove(
 ///
 /// Removes all items from the list.
 fn list_clear(list: &mut List, heap: &mut Heap<impl ResourceTracker>) {
-    for item in list.items.drain(..) {
-        item.drop_with_heap(heap);
-    }
+    list.items.drain(..).drop_with_heap(heap);
     // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
 }
 
@@ -697,7 +695,7 @@ fn do_list_sort(list: &mut List, args: ArgValues, vm: &mut VM<'_, '_, impl Resou
 
     // Convert reverse to bool (default false)
     let reverse = if let Some(v) = reverse_arg {
-        let result = v.py_bool(vm.heap, vm.interns);
+        let result = v.py_bool(vm);
         v.drop_with_heap(vm);
         result
     } else {

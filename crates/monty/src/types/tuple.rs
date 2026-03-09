@@ -14,6 +14,7 @@
 /// - `count(value)` - Count occurrences
 ///
 /// All tuple methods from Python's builtins are implemented.
+use std::cmp::Ordering;
 use std::fmt::Write;
 
 use ahash::AHashSet;
@@ -29,11 +30,10 @@ pub(crate) type TupleVec = SmallVec<[Value; TUPLE_INLINE_CAPACITY]>;
 use super::{
     MontyIter, PyTrait,
     list::{get_slice_items, repr_sequence_fmt},
-    py_trait::AttrCallResult,
 };
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapGuard, HeapId},
@@ -164,7 +164,7 @@ impl PyTrait for Tuple {
         std::mem::size_of::<Self>() + self.items.len() * std::mem::size_of::<Value>()
     }
 
-    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         Some(self.items.len())
     }
 
@@ -220,6 +220,43 @@ impl PyTrait for Tuple {
         Ok(true)
     }
 
+    /// Lexicographic comparison for tuples.
+    ///
+    /// Compares element-by-element left-to-right. The first non-equal pair
+    /// determines the result. If all compared elements are equal, the shorter
+    /// tuple is considered less than the longer one — matching Python semantics:
+    /// `(1, 2) < (1, 2, 3)` is `True`.
+    ///
+    /// Returns `None` if any element pair is incomparable (e.g. `int` vs `str`).
+    fn py_cmp(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> Result<Option<Ordering>, ResourceError> {
+        let token = heap.incr_recursion_depth()?;
+        defer_drop!(token, heap);
+
+        for (a, b) in self.items.iter().zip(&other.items) {
+            heap.check_time()?;
+            match a.py_cmp(b, heap, interns)? {
+                Some(Ordering::Equal) => {}
+                Some(ord) => return Ok(Some(ord)),
+                None => {
+                    // py_cmp returned None — the elements don't support ordering.
+                    // CPython checks __eq__ first and only calls __lt__ for non-equal
+                    // pairs, so equal-but-unorderable elements (e.g. None == None)
+                    // should be treated as equal and not block comparison.
+                    if !a.py_eq(b, heap, interns)? {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+        // All compared elements equal — shorter tuple is less
+        Ok(Some(self.items.len().cmp(&other.items.len())))
+    }
+
     fn py_add(
         &self,
         other: &Self,
@@ -257,24 +294,24 @@ impl PyTrait for Tuple {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         let heap = &mut *vm.heap;
         let interns = vm.interns;
         let args_guard = HeapGuard::new(args, heap);
         match attr.static_string() {
             Some(StaticStrings::Index) => {
                 let (args, heap) = args_guard.into_parts();
-                tuple_index(self, args, heap, interns).map(AttrCallResult::Value)
+                tuple_index(self, args, heap, interns).map(CallResult::Value)
             }
             Some(StaticStrings::Count) => {
                 let (args, heap) = args_guard.into_parts();
-                tuple_count(self, args, heap, interns).map(AttrCallResult::Value)
+                tuple_count(self, args, heap, interns).map(CallResult::Value)
             }
             _ => Err(ExcType::attribute_error(Type::Tuple, attr.as_str(interns))),
         }
     }
 
-    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
+    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         !self.items.is_empty()
     }
 

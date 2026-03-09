@@ -471,6 +471,9 @@ impl MontyObject {
                         // Iterators are internal objects - represent as a type string
                         Self::Repr("<iterator>".to_owned())
                     }
+                    HeapData::DictKeysView(_) | HeapData::DictItemsView(_) | HeapData::DictValuesView(_) => {
+                        Self::Repr(object.py_repr(heap, interns).into_owned())
+                    }
                     HeapData::LongInt(li) => Self::BigInt(li.inner().clone()),
                     HeapData::Module(m) => {
                         // Modules are represented as a repr string

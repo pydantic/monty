@@ -67,13 +67,6 @@ pub struct Compiler<'a> {
     /// Each entry tracks the loop start offset and pending break jumps.
     loop_stack: Vec<LoopInfo>,
 
-    /// Base namespace slot for cell variables.
-    ///
-    /// For functions, this is the parameter count. Cell/free variable namespace slots
-    /// start at `cell_base`, so we subtract this when emitting LoadCell/StoreCell
-    /// to convert to the cells array index.
-    cell_base: u16,
-
     /// Stack of finally targets for handling returns inside try-finally.
     ///
     /// When a return statement is compiled inside a try-finally block, instead
@@ -87,6 +80,14 @@ pub struct Compiler<'a> {
     /// clear the current exception (`ClearException`) and pop the exception
     /// value from the stack before jumping to the finally path or loop target.
     except_handler_depth: usize,
+
+    /// Whether the compiler is currently compiling module-level code.
+    ///
+    /// At module level, `Local` and `LocalUnassigned` scopes map to global opcodes
+    /// (`LoadGlobal`/`StoreGlobal`/`DeleteGlobal`) because module locals live in the
+    /// globals array. In function bodies this is `false` and these scopes use local
+    /// opcodes that index into the stack.
+    is_module_scope: bool,
 }
 
 /// Information about a loop for break/continue handling.
@@ -152,22 +153,9 @@ impl<'a> Compiler<'a> {
             interns,
             functions,
             loop_stack: Vec::new(),
-            cell_base: 0,
             finally_targets: Vec::new(),
             except_handler_depth: 0,
-        }
-    }
-
-    /// Creates a new compiler with a specific cell base offset.
-    fn new_with_cell_base(interns: &'a Interns, functions: Vec<Function>, cell_base: u16) -> Self {
-        Self {
-            code: CodeBuilder::new(),
-            interns,
-            functions,
-            loop_stack: Vec::new(),
-            cell_base,
-            finally_targets: Vec::new(),
-            except_handler_depth: 0,
+            is_module_scope: false,
         }
     }
 
@@ -197,6 +185,7 @@ impl<'a> Compiler<'a> {
     ) -> Result<CompileResult, CompileError> {
         let mut compiler = Compiler::new(interns, Vec::new());
         compiler.functions = existing_functions;
+        compiler.is_module_scope = true;
         compiler.compile_block(nodes)?;
 
         // Module returns None if no explicit return
@@ -215,9 +204,6 @@ impl<'a> Compiler<'a> {
     /// compiled to bytecode with an implicit `return None` at the end if there's
     /// no explicit return statement.
     ///
-    /// The `cell_base` parameter is the number of parameter slots, used to convert
-    /// cell variable namespace slots to cells array indices.
-    ///
     /// The `functions` parameter receives any previously compiled functions, and
     /// any nested functions found in the body will be added to it.
     fn compile_function_body(
@@ -225,9 +211,8 @@ impl<'a> Compiler<'a> {
         interns: &Interns,
         functions: Vec<Function>,
         num_locals: u16,
-        cell_base: u16,
     ) -> Result<(Code, Vec<Function>), CompileError> {
-        let mut compiler = Compiler::new_with_cell_base(interns, functions, cell_base);
+        let mut compiler = Compiler::new(interns, functions);
         compiler.compile_block(body)?;
 
         // Implicit return None if no explicit return
@@ -310,6 +295,30 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(object)?;
                 self.code.emit(opcode);
                 self.compile_store(target);
+            }
+            Node::SubscriptOpAssign {
+                target,
+                index,
+                op,
+                object,
+                target_position,
+            } => {
+                let Some(opcode) = operator_to_inplace_opcode(op) else {
+                    return Err(CompileError::new(
+                        "matrix multiplication augmented assignment (@=) is not yet supported",
+                        *target_position,
+                    ));
+                };
+                self.compile_name(target);
+                self.compile_expr(index)?;
+                self.code.emit(Opcode::Dup2);
+                self.code.set_location(*target_position, None);
+                self.code.emit(Opcode::BinarySubscr);
+                self.compile_expr(object)?;
+                self.code.emit(opcode);
+                self.code.emit(Opcode::Rot3);
+                self.code.set_location(*target_position, None);
+                self.code.emit(Opcode::StoreSubscr);
             }
             Node::SubscriptAssign {
                 target,
@@ -402,10 +411,9 @@ impl<'a> Compiler<'a> {
         // 1. Compile the function body recursively
         // Take ownership of functions for the recursive compile, then restore
         let functions = std::mem::take(&mut self.functions);
-        let cell_base = u16::try_from(func_def.signature.param_count()).expect("function parameter count exceeds u16");
         let namespace_size = u16::try_from(func_def.namespace_size).expect("function namespace size exceeds u16");
         let (body_code, mut functions) =
-            Self::compile_function_body(&func_def.body, self.interns, functions, namespace_size, cell_base)?;
+            Self::compile_function_body(&func_def.body, self.interns, functions, namespace_size)?;
 
         // 2. Create the compiled Function and add to the vector
         let func_id = functions.len();
@@ -482,10 +490,9 @@ impl<'a> Compiler<'a> {
 
         // 1. Compile the function body recursively
         let functions = std::mem::take(&mut self.functions);
-        let cell_base = u16::try_from(func_def.signature.param_count()).expect("function parameter count exceeds u16");
         let namespace_size = u16::try_from(func_def.namespace_size).expect("function namespace size exceeds u16");
         let (body_code, mut functions) =
-            Self::compile_function_body(&func_def.body, self.interns, functions, namespace_size, cell_base)?;
+            Self::compile_function_body(&func_def.body, self.interns, functions, namespace_size)?;
 
         // 2. Create the compiled Function and add to the vector
         let func_id = functions.len();
@@ -858,6 +865,9 @@ impl<'a> Compiler<'a> {
     // ========================================================================
 
     /// Compiles loading a variable onto the stack.
+    ///
+    /// At module level, `Local` and `LocalUnassigned` scopes emit global opcodes
+    /// because module-level locals live in the globals array.
     fn compile_name(&mut self, ident: &Identifier) {
         let slot = u16::try_from(ident.namespace_id().index()).expect("local slot exceeds u16");
         match ident.scope {
@@ -865,22 +875,31 @@ impl<'a> Compiler<'a> {
                 // True local - register name and mark as assigned for UnboundLocalError
                 self.code.register_local_name(slot, ident.name_id);
                 self.code.register_assigned_local(slot);
-                self.code.emit_load_local(slot);
+                if self.is_module_scope {
+                    self.code.emit_u16(Opcode::LoadGlobal, slot);
+                } else {
+                    self.code.emit_load_local(slot);
+                }
             }
             NameScope::LocalUnassigned => {
                 // Undefined reference - register name but NOT as assigned for NameError
                 self.code.register_local_name(slot, ident.name_id);
-                self.code.emit_load_local(slot);
+                if self.is_module_scope {
+                    self.code.emit_u16(Opcode::LoadGlobal, slot);
+                } else {
+                    self.code.emit_load_local(slot);
+                }
             }
             NameScope::Global => {
+                // Register the name for NameError/NameLookup messages
+                self.code.register_local_name(slot, ident.name_id);
                 self.code.emit_u16(Opcode::LoadGlobal, slot);
             }
             NameScope::Cell => {
-                // Convert namespace slot to cells array index
-                let cell_index = slot.saturating_sub(self.cell_base);
                 // Register the name for NameError messages (unbound free variable)
-                self.code.register_local_name(cell_index, ident.name_id);
-                self.code.emit_u16(Opcode::LoadCell, cell_index);
+                self.code.register_local_name(slot, ident.name_id);
+                // Emit local slot index — the VM reads the cell HeapId from the stack
+                self.code.emit_u16(Opcode::LoadCell, slot);
             }
         }
     }
@@ -898,9 +917,14 @@ impl<'a> Compiler<'a> {
         let slot = u16::try_from(ident.namespace_id().index()).expect("local slot exceeds u16");
         match ident.scope {
             NameScope::LocalUnassigned => {
-                // Undefined reference in call context - use callable-aware load
+                // Undefined reference in call context - use callable-aware load.
+                // At module level, use global callable since locals are in the globals array.
                 self.code.register_local_name(slot, ident.name_id);
-                self.code.emit_load_local_callable(slot, ident.name_id);
+                if self.is_module_scope {
+                    self.code.emit_load_global_callable(slot, ident.name_id);
+                } else {
+                    self.code.emit_load_local_callable(slot, ident.name_id);
+                }
             }
             NameScope::Global => {
                 // Global scope - name_id is encoded in the operand because global slot
@@ -914,21 +938,26 @@ impl<'a> Compiler<'a> {
     }
 
     /// Compiles storing the top of stack to a variable.
+    ///
+    /// At module level, `Local` and `LocalUnassigned` scopes emit `StoreGlobal`
+    /// because module-level locals live in the globals array.
     fn compile_store(&mut self, target: &Identifier) {
         let slot = u16::try_from(target.namespace_id().index()).expect("local slot exceeds u16");
         match target.scope {
             NameScope::Local | NameScope::LocalUnassigned => {
-                // Both true locals and initially-unassigned slots use local storage
                 self.code.register_local_name(slot, target.name_id);
-                self.code.emit_store_local(slot);
+                if self.is_module_scope {
+                    self.code.emit_u16(Opcode::StoreGlobal, slot);
+                } else {
+                    self.code.emit_store_local(slot);
+                }
             }
             NameScope::Global => {
                 self.code.emit_u16(Opcode::StoreGlobal, slot);
             }
             NameScope::Cell => {
-                // Convert namespace slot to cells array index
-                let cell_index = slot.saturating_sub(self.cell_base);
-                self.code.emit_u16(Opcode::StoreCell, cell_index);
+                // Emit local slot index — the VM reads the cell HeapId from the stack
+                self.code.emit_u16(Opcode::StoreCell, slot);
             }
         }
     }
@@ -1793,6 +1822,10 @@ impl<'a> Compiler<'a> {
         body: &[PreparedNode],
         or_else: &[PreparedNode],
     ) -> Result<(), CompileError> {
+        // Record stack depth at loop start (before iterator is pushed)
+        // This is the depth we return to when the loop finishes (iterator popped)
+        let loop_exit_depth = self.code.stack_depth();
+
         // Compile iterator expression
         self.compile_expr(iter)?;
         // Convert to iterator
@@ -1822,6 +1855,8 @@ impl<'a> Compiler<'a> {
 
         // End of loop - ForIter jumps here when iterator is exhausted
         self.code.patch_jump(end_jump);
+        // Iterator is popped when loop ends normally, so restore depth to before loop
+        self.code.set_stack_depth(loop_exit_depth);
 
         // Pop loop info before compiling else block
         let loop_info = self.loop_stack.pop().expect("loop stack underflow");
@@ -2162,6 +2197,10 @@ impl<'a> Compiler<'a> {
     ) -> Result<(), CompileError> {
         let generator = &generators[index];
 
+        // Record stack depth before iterator expression
+        // This is the depth we return to when the loop finishes (iterator popped)
+        let loop_exit_depth = self.code.stack_depth();
+
         // Compile iterator expression
         self.compile_expr(&generator.iter)?;
         self.code.emit(Opcode::GetIter);
@@ -2196,6 +2235,8 @@ impl<'a> Compiler<'a> {
 
         // End of loop
         self.code.patch_jump(end_jump);
+        // Iterator is popped when loop ends normally, so restore depth to before loop
+        self.code.set_stack_depth(loop_exit_depth);
 
         Ok(())
     }
@@ -2774,20 +2815,28 @@ impl<'a> Compiler<'a> {
     }
 
     /// Compiles deletion of a variable.
+    ///
+    /// At module level, `Local` and `LocalUnassigned` scopes emit `DeleteGlobal`
+    /// because module-level locals live in the globals array.
     fn compile_delete(&mut self, target: &Identifier) {
         let slot = u16::try_from(target.namespace_id().index()).expect("local slot exceeds u16");
         match target.scope {
             NameScope::Local | NameScope::LocalUnassigned => {
-                if let Ok(s) = u8::try_from(slot) {
+                if self.is_module_scope {
+                    self.code.emit_u16(Opcode::DeleteGlobal, slot);
+                } else if let Ok(s) = u8::try_from(slot) {
                     self.code.emit_u8(Opcode::DeleteLocal, s);
                 } else {
                     // Wide variant not implemented yet
                     todo!("DeleteLocalW for slot > 255");
                 }
             }
-            NameScope::Global | NameScope::Cell => {
-                // Delete global/cell not commonly needed
-                // For now, just store Undefined
+            NameScope::Global => {
+                self.code.emit_u16(Opcode::DeleteGlobal, slot);
+            }
+            NameScope::Cell => {
+                // Delete cell not commonly needed
+                // For now, just store None
                 self.code.emit(Opcode::LoadNone);
                 self.compile_store(target);
             }

@@ -3,10 +3,10 @@ use std::fmt::Write;
 use ahash::AHashSet;
 use hashbrown::HashTable;
 
-use super::{MontyIter, PyTrait, py_trait::AttrCallResult};
+use super::{MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
@@ -63,13 +63,6 @@ impl SetStorage {
             storage.indices.insert_unique(hash, idx, |&i| storage.entries[i].hash);
         }
         storage
-    }
-
-    /// Drops all values in this storage, decrementing their reference counts.
-    fn drop_all_values(self, heap: &mut impl ContainsHeap) {
-        for entry in self.entries {
-            entry.value.drop_with_heap(heap);
-        }
     }
 
     /// Clones entries with proper reference counting.
@@ -220,9 +213,7 @@ impl SetStorage {
 
     /// Removes all elements from the set.
     fn clear(&mut self, heap: &mut Heap<impl ResourceTracker>) {
-        for entry in self.entries.drain(..) {
-            entry.value.drop_with_heap(heap);
-        }
+        self.entries.drain(..).drop_with_heap(heap);
         self.indices.clear();
     }
 
@@ -355,6 +346,25 @@ impl SetStorage {
         Ok(result_guard.into_inner())
     }
 
+    /// Returns a new set containing elements in either set (union).
+    ///
+    /// This heap/interns variant is used by binary operator dispatch where we
+    /// already have direct access to the heap and interns instead of a full VM.
+    fn union_heap_interns(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<Self> {
+        let mut result_guard = HeapGuard::new(self.clone_with_heap(heap), heap);
+        let (result, heap) = result_guard.as_parts_mut();
+        for entry in &other.entries {
+            let value = entry.value.clone_with_heap(heap);
+            result.add_heap_interns(value, heap, interns)?;
+        }
+        Ok(result_guard.into_inner())
+    }
+
     /// Returns a new set containing elements in both sets (intersection).
     fn intersection(&self, other: &Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Self> {
         let mut result_guard = HeapGuard::new(Self::new(), vm);
@@ -375,6 +385,30 @@ impl SetStorage {
         Ok(result_guard.into_inner())
     }
 
+    /// Returns a new set containing elements in both sets (intersection).
+    fn intersection_heap_interns(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<Self> {
+        let mut result_guard = HeapGuard::new(Self::new(), heap);
+        let (result, heap) = result_guard.as_parts_mut();
+        let (smaller, larger) = if self.len() <= other.len() {
+            (self, other)
+        } else {
+            (other, self)
+        };
+
+        for entry in &smaller.entries {
+            if larger.contains_heap_interns(&entry.value, heap, interns)? {
+                let value = entry.value.clone_with_heap(heap);
+                result.add_heap_interns(value, heap, interns)?;
+            }
+        }
+        Ok(result_guard.into_inner())
+    }
+
     /// Returns a new set containing elements in self but not in other (difference).
     fn difference(&self, other: &Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Self> {
         let mut result_guard = HeapGuard::new(Self::new(), vm);
@@ -383,6 +417,24 @@ impl SetStorage {
             if !other.contains(&entry.value, vm)? {
                 let value = entry.value.clone_with_heap(vm);
                 result.add(value, vm)?;
+            }
+        }
+        Ok(result_guard.into_inner())
+    }
+
+    /// Returns a new set containing elements in self but not in other (difference).
+    fn difference_heap_interns(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<Self> {
+        let mut result_guard = HeapGuard::new(Self::new(), heap);
+        let (result, heap) = result_guard.as_parts_mut();
+        for entry in &self.entries {
+            if !other.contains_heap_interns(&entry.value, heap, interns)? {
+                let value = entry.value.clone_with_heap(heap);
+                result.add_heap_interns(value, heap, interns)?;
             }
         }
         Ok(result_guard.into_inner())
@@ -406,6 +458,33 @@ impl SetStorage {
             if !self.contains(&entry.value, vm)? {
                 let value = entry.value.clone_with_heap(vm);
                 result.add(value, vm)?;
+            }
+        }
+
+        Ok(result_guard.into_inner())
+    }
+
+    /// Returns a new set containing elements in either set but not both.
+    fn symmetric_difference_heap_interns(
+        &self,
+        other: &Self,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<Self> {
+        let mut result_guard = HeapGuard::new(Self::new(), heap);
+        let (result, heap) = result_guard.as_parts_mut();
+
+        for entry in &self.entries {
+            if !other.contains_heap_interns(&entry.value, heap, interns)? {
+                let value = entry.value.clone_with_heap(heap);
+                result.add_heap_interns(value, heap, interns)?;
+            }
+        }
+
+        for entry in &other.entries {
+            if !self.contains_heap_interns(&entry.value, heap, interns)? {
+                let value = entry.value.clone_with_heap(heap);
+                result.add_heap_interns(value, heap, interns)?;
             }
         }
 
@@ -582,6 +661,15 @@ impl Set {
         &self.0
     }
 
+    /// Returns an iterator over the set's elements in insertion order.
+    ///
+    /// This is primarily used by other runtime helpers that need to implement
+    /// set-like protocols while still preserving Monty's single canonical set
+    /// storage implementation.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Value> {
+        self.0.iter()
+    }
+
     /// Creates a set from the `set()` constructor call.
     ///
     /// - `set()` with no args returns an empty set
@@ -628,13 +716,19 @@ impl DropWithHeap for Set {
 
 impl DropWithHeap for SetStorage {
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        self.drop_all_values(heap);
+        self.entries.drop_with_heap(heap);
     }
 }
 
 impl DropWithHeap for FrozenSet {
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         self.0.drop_with_heap(heap);
+    }
+}
+
+impl DropWithHeap for SetEntry {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        self.value.drop_with_heap(heap);
     }
 }
 
@@ -647,7 +741,7 @@ impl PyTrait for Set {
         self.0.estimate_size()
     }
 
-    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         Some(self.len())
     }
 
@@ -664,7 +758,7 @@ impl PyTrait for Set {
         self.0.collect_dec_ref_ids(stack);
     }
 
-    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
+    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         !self.is_empty()
     }
 
@@ -684,7 +778,7 @@ impl PyTrait for Set {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         let heap = &mut *vm.heap;
         let interns = vm.interns;
         let value = match attr.static_string() {
@@ -769,7 +863,7 @@ impl PyTrait for Set {
                 return Err(ExcType::attribute_error(Type::Set, attr.as_str(interns)));
             }
         };
-        value.map(AttrCallResult::Value)
+        value.map(CallResult::Value)
     }
 
     fn py_sub(
@@ -785,8 +879,45 @@ impl PyTrait for Set {
     }
 }
 
+/// Pure set/frozenset binary operators shared by both concrete container types.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SetBinaryOp {
+    And,
+    Or,
+    Xor,
+    Sub,
+}
+
 /// Helper methods for set operations with arbitrary iterables.
 impl Set {
+    /// Implements operator-form set algebra, which only accepts set/frozenset operands.
+    ///
+    /// Unlike method forms such as `set.union(iterable)`, the binary operators
+    /// `& | ^ -` are intentionally strict and return `None` for operands outside
+    /// the set-like values CPython accepts here (`set`, `frozenset`,
+    /// `dict_keys`, and `dict_items`) so the VM can raise the standard
+    /// unsupported-operands `TypeError`.
+    pub(crate) fn binary_op_value(
+        &self,
+        other: &Value,
+        op: SetBinaryOp,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<Option<Self>> {
+        let Some(other_storage) = get_storage_from_set_operand(other, heap, interns)? else {
+            return Ok(None);
+        };
+        defer_drop!(other_storage, heap);
+
+        let result = match op {
+            SetBinaryOp::And => Self(self.0.intersection_heap_interns(other_storage, heap, interns)?),
+            SetBinaryOp::Or => Self(self.0.union_heap_interns(other_storage, heap, interns)?),
+            SetBinaryOp::Xor => Self(self.0.symmetric_difference_heap_interns(other_storage, heap, interns)?),
+            SetBinaryOp::Sub => Self(self.0.difference_heap_interns(other_storage, heap, interns)?),
+        };
+        Ok(Some(result))
+    }
+
     /// Updates this set with elements from an iterable value.
     fn update_from_value(&mut self, other: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<()> {
         let heap = &mut *vm.heap;
@@ -1083,7 +1214,7 @@ impl PyTrait for FrozenSet {
         self.0.estimate_size()
     }
 
-    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         Some(self.len())
     }
 
@@ -1100,7 +1231,7 @@ impl PyTrait for FrozenSet {
         self.0.collect_dec_ref_ids(stack);
     }
 
-    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
+    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         !self.is_empty()
     }
 
@@ -1120,7 +1251,7 @@ impl PyTrait for FrozenSet {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         let heap = &mut *vm.heap;
         let interns = vm.interns;
         let value = match attr.static_string() {
@@ -1182,7 +1313,7 @@ impl PyTrait for FrozenSet {
                 return Err(ExcType::attribute_error(Type::FrozenSet, attr.as_str(interns)));
             }
         };
-        value.map(AttrCallResult::Value)
+        value.map(CallResult::Value)
     }
 
     fn py_sub(
@@ -1197,6 +1328,33 @@ impl PyTrait for FrozenSet {
 
 /// Helper methods for frozenset operations with arbitrary iterables.
 impl FrozenSet {
+    /// Implements operator-form set algebra, which only accepts set/frozenset operands.
+    ///
+    /// CPython returns the type of the left operand for pure set/frozenset binary
+    /// operators, so this helper keeps the result as `frozenset` even when the
+    /// right operand is a mutable `set`. Like `set`, the accepted right-hand
+    /// side includes CPython's set-like dict views.
+    pub(crate) fn binary_op_value(
+        &self,
+        other: &Value,
+        op: SetBinaryOp,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> RunResult<Option<Self>> {
+        let Some(other_storage) = get_storage_from_set_operand(other, heap, interns)? else {
+            return Ok(None);
+        };
+        defer_drop!(other_storage, heap);
+
+        let result = match op {
+            SetBinaryOp::And => Self(self.0.intersection_heap_interns(other_storage, heap, interns)?),
+            SetBinaryOp::Or => Self(self.0.union_heap_interns(other_storage, heap, interns)?),
+            SetBinaryOp::Xor => Self(self.0.symmetric_difference_heap_interns(other_storage, heap, interns)?),
+            SetBinaryOp::Sub => Self(self.0.difference_heap_interns(other_storage, heap, interns)?),
+        };
+        Ok(Some(result))
+    }
+
     /// Checks if this frozenset is a subset of an iterable.
     fn issubset_from_value(&self, other: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
         // Try to get entries from a Set/FrozenSet directly
@@ -1270,6 +1428,37 @@ impl FrozenSet {
         let temp = Set::from_iterable(other.clone_with_heap(vm), vm)?;
         defer_drop!(temp, vm);
         self.0.is_disjoint(&temp.0, vm)
+    }
+}
+
+/// Returns temporary set storage only for operator-valid set operands.
+///
+/// This is stricter than `Set::get_storage_from_value(...)`: operator forms
+/// only accept CPython's set-like operands (`set`, `frozenset`, `dict_keys`,
+/// and `dict_items`), while method forms accept any iterable.
+fn get_storage_from_set_operand(
+    value: &Value,
+    heap: &mut Heap<impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Option<SetStorage>> {
+    let Value::Ref(id) = value else {
+        return Ok(None);
+    };
+
+    match heap.get(*id) {
+        HeapData::Set(set) => Ok(Some(SetStorage::from_entries(set.0.clone_entries(heap)))),
+        HeapData::FrozenSet(set) => Ok(Some(SetStorage::from_entries(set.0.clone_entries(heap)))),
+        // Dict views are `Copy` — matched value is not borrowed from the heap,
+        // so `to_set` can take `&mut heap` below without conflict.
+        HeapData::DictKeysView(view) => {
+            let Set(storage) = view.to_set(heap, interns)?;
+            Ok(Some(storage))
+        }
+        HeapData::DictItemsView(view) => {
+            let Set(storage) = view.to_set(heap, interns)?;
+            Ok(Some(storage))
+        }
+        _ => Ok(None),
     }
 }
 

@@ -395,6 +395,24 @@ test('start can reuse monty instance', (t) => {
 })
 
 // =============================================================================
+// OS call handling in start() tests
+// =============================================================================
+
+test('os.environ via start() throws NotImplementedError instead of panicking', (t) => {
+  const m = new Monty('import os\nx = os.environ')
+  const error = t.throws(() => m.start(), { instanceOf: MontyRuntimeError })
+  t.is(error.exception.typeName, 'NotImplementedError')
+  t.is(error.exception.message, "OS function 'os.environ' not implemented")
+})
+
+test('os.getenv via start() throws NotImplementedError instead of panicking', (t) => {
+  const m = new Monty("import os\nx = os.getenv('HOME')")
+  const error = t.throws(() => m.start(), { instanceOf: MontyRuntimeError })
+  t.is(error.exception.typeName, 'NotImplementedError')
+  t.is(error.exception.message, "OS function 'os.getenv' not implemented")
+})
+
+// =============================================================================
 // repr() tests
 // =============================================================================
 

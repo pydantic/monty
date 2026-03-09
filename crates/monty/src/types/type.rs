@@ -40,6 +40,9 @@ pub enum Type {
     Tuple,
     NamedTuple,
     Dict,
+    DictKeys,
+    DictItems,
+    DictValues,
     Set,
     FrozenSet,
     Dataclass,
@@ -82,6 +85,9 @@ impl fmt::Display for Type {
             Self::Tuple => f.write_str("tuple"),
             Self::NamedTuple => f.write_str("namedtuple"),
             Self::Dict => f.write_str("dict"),
+            Self::DictKeys => f.write_str("dict_keys"),
+            Self::DictItems => f.write_str("dict_items"),
+            Self::DictValues => f.write_str("dict_values"),
             Self::Set => f.write_str("set"),
             Self::FrozenSet => f.write_str("frozenset"),
             Self::Dataclass => f.write_str("dataclass"),
@@ -266,13 +272,11 @@ impl Type {
                 }
             }
             Self::Bool => {
-                let heap = &mut *vm.heap;
-                let interns = vm.interns;
-                let Some(v) = args.get_zero_one_arg("bool", heap)? else {
+                let Some(v) = args.get_zero_one_arg("bool", vm.heap)? else {
                     return Ok(Value::Bool(false));
                 };
-                defer_drop!(v, heap);
-                Ok(Value::Bool(v.py_bool(heap, interns)))
+                defer_drop!(v, vm);
+                Ok(Value::Bool(v.py_bool(vm)))
             }
 
             // Non-callable types - raise TypeError

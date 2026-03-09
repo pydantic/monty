@@ -191,12 +191,12 @@ impl PyMonty {
         };
 
         let runner = self.runner.clone();
-        let mut print_writer = SendWrapper::new(print_writer);
+        let print_writer = SendWrapper::new(print_writer);
 
         // Helper macro to start execution with GIL released
         macro_rules! start_impl {
             ($tracker:expr) => {{
-                py.detach(|| runner.start(input_values, $tracker, &mut print_writer))
+                py.detach(|| runner.start(input_values, $tracker, print_writer.take()))
                     .map_err(|e| MontyError::new_err(py, e))?
             }};
         }
@@ -346,11 +346,11 @@ impl PyMonty {
         tracker: impl ResourceTracker + Send,
         external_functions: Option<&Bound<'_, PyDict>>,
         os: Option<&Bound<'_, PyAny>>,
-        mut print_output: PrintWriter<'_>,
+        print_output: PrintWriter<'_>,
     ) -> PyResult<Py<PyAny>> {
         // wrap print_output in SendWrapper so that it can be accessed inside the py.detach calls despite
         // no `Send` bound - py.detach() is overly restrictive to prevent `Bound` types going inside
-        let mut print_output = SendWrapper::new(&mut print_output);
+        let mut print_output = SendWrapper::new(print_output);
 
         // Check if any inputs contain dataclasses (including nested in containers) —
         // if so, we need the iterative path because method calls could happen lazily
@@ -358,7 +358,7 @@ impl PyMonty {
         let has_dataclass_inputs = || input_values.iter().any(contains_dataclass);
 
         if external_functions.is_none() && os.is_none() && !has_dataclass_inputs() {
-            return match py.detach(|| self.runner.run(input_values, tracker, &mut print_output)) {
+            return match py.detach(|| self.runner.run(input_values, tracker, print_output.reborrow())) {
                 Ok(v) => monty_to_py(py, &v, &self.dc_registry),
                 Err(err) => Err(MontyError::new_err(py, err)),
             };
@@ -366,7 +366,7 @@ impl PyMonty {
         // Clone the runner since start() consumes it - allows reuse of the parsed code
         let runner = self.runner.clone();
         let mut progress = py
-            .detach(|| runner.start(input_values, tracker, &mut print_output))
+            .detach(|| runner.start(input_values, tracker, print_output.reborrow()))
             .map_err(|e| MontyError::new_err(py, e))?;
 
         loop {
@@ -387,7 +387,7 @@ impl PyMonty {
                     };
 
                     progress = py
-                        .detach(|| call.resume(return_value, &mut print_output))
+                        .detach(|| call.resume(return_value, print_output.reborrow()))
                         .map_err(|e| MontyError::new_err(py, e))?;
                 }
                 RunProgress::NameLookup(lookup) => {
@@ -403,7 +403,7 @@ impl PyMonty {
                     };
 
                     progress = py
-                        .detach(|| lookup.resume(result, &mut print_output))
+                        .detach(|| lookup.resume(result, print_output.reborrow()))
                         .map_err(|e| MontyError::new_err(py, e))?;
                 }
                 RunProgress::ResolveFutures(_) => {
@@ -442,7 +442,7 @@ impl PyMonty {
                     };
 
                     progress = py
-                        .detach(|| call.resume(result, &mut print_output))
+                        .detach(|| call.resume(result, print_output.reborrow()))
                         .map_err(|e| MontyError::new_err(py, e))?;
                 }
             }
@@ -927,42 +927,42 @@ impl PyFunctionSnapshot {
 
         let progress = match snapshot {
             EitherFunctionSnapshot::NoLimitFn(call) => {
-                let result = py.detach(|| call.resume(external_result, &mut print_writer));
+                let result = py.detach(|| call.resume(external_result, print_writer.reborrow()));
                 EitherProgress::NoLimit(result.map_err(|e| MontyError::new_err(py, e))?)
             }
             EitherFunctionSnapshot::NoLimitOs(call) => {
-                let result = py.detach(|| call.resume(external_result, &mut print_writer));
+                let result = py.detach(|| call.resume(external_result, print_writer.reborrow()));
                 EitherProgress::NoLimit(result.map_err(|e| MontyError::new_err(py, e))?)
             }
             EitherFunctionSnapshot::LimitedFn(call) => {
-                let result = py.detach(|| call.resume(external_result, &mut print_writer));
+                let result = py.detach(|| call.resume(external_result, print_writer.reborrow()));
                 EitherProgress::Limited(result.map_err(|e| MontyError::new_err(py, e))?)
             }
             EitherFunctionSnapshot::LimitedOs(call) => {
-                let result = py.detach(|| call.resume(external_result, &mut print_writer));
+                let result = py.detach(|| call.resume(external_result, print_writer.reborrow()));
                 EitherProgress::Limited(result.map_err(|e| MontyError::new_err(py, e))?)
             }
             EitherFunctionSnapshot::ReplNoLimitFn(call, owner) => {
                 let result = py
-                    .detach(|| call.resume(external_result, &mut print_writer))
+                    .detach(|| call.resume(external_result, print_writer.reborrow()))
                     .map_err(|e| restore_repl_from_repl_start_error(py, &owner, *e))?;
                 EitherProgress::ReplNoLimit(result, owner)
             }
             EitherFunctionSnapshot::ReplNoLimitOs(call, owner) => {
                 let result = py
-                    .detach(|| call.resume(external_result, &mut print_writer))
+                    .detach(|| call.resume(external_result, print_writer.reborrow()))
                     .map_err(|e| restore_repl_from_repl_start_error(py, &owner, *e))?;
                 EitherProgress::ReplNoLimit(result, owner)
             }
             EitherFunctionSnapshot::ReplLimitedFn(call, owner) => {
                 let result = py
-                    .detach(|| call.resume(external_result, &mut print_writer))
+                    .detach(|| call.resume(external_result, print_writer.reborrow()))
                     .map_err(|e| restore_repl_from_repl_start_error(py, &owner, *e))?;
                 EitherProgress::ReplLimited(result, owner)
             }
             EitherFunctionSnapshot::ReplLimitedOs(call, owner) => {
                 let result = py
-                    .detach(|| call.resume(external_result, &mut print_writer))
+                    .detach(|| call.resume(external_result, print_writer.reborrow()))
                     .map_err(|e| restore_repl_from_repl_start_error(py, &owner, *e))?;
                 EitherProgress::ReplLimited(result, owner)
             }
@@ -1189,22 +1189,22 @@ impl PyNameLookupSnapshot {
 
         let progress = match snapshot {
             EitherLookupSnapshot::NoLimit(snapshot) => {
-                let result = py.detach(|| snapshot.resume(lookup_result, &mut print_writer));
+                let result = py.detach(|| snapshot.resume(lookup_result, print_writer.reborrow()));
                 EitherProgress::NoLimit(result.map_err(|e| MontyError::new_err(py, e))?)
             }
             EitherLookupSnapshot::Limited(snapshot) => {
-                let result = py.detach(|| snapshot.resume(lookup_result, &mut print_writer));
+                let result = py.detach(|| snapshot.resume(lookup_result, print_writer.reborrow()));
                 EitherProgress::Limited(result.map_err(|e| MontyError::new_err(py, e))?)
             }
             EitherLookupSnapshot::ReplNoLimit(snapshot, owner) => {
                 let result = py
-                    .detach(|| snapshot.resume(lookup_result, &mut print_writer))
+                    .detach(|| snapshot.resume(lookup_result, print_writer.reborrow()))
                     .map_err(|e| restore_repl_from_repl_start_error(py, &owner, *e))?;
                 EitherProgress::ReplNoLimit(result, owner)
             }
             EitherLookupSnapshot::ReplLimited(snapshot, owner) => {
                 let result = py
-                    .detach(|| snapshot.resume(lookup_result, &mut print_writer))
+                    .detach(|| snapshot.resume(lookup_result, print_writer.reborrow()))
                     .map_err(|e| restore_repl_from_repl_start_error(py, &owner, *e))?;
                 EitherProgress::ReplLimited(result, owner)
             }
@@ -1418,22 +1418,22 @@ impl PyFutureSnapshot {
 
         let progress = match snapshot {
             EitherFutureSnapshot::NoLimit(snapshot) => {
-                let result = py.detach(|| snapshot.resume(external_results, &mut print_writer));
+                let result = py.detach(|| snapshot.resume(external_results, print_writer.reborrow()));
                 EitherProgress::NoLimit(result.map_err(|e| MontyError::new_err(py, e))?)
             }
             EitherFutureSnapshot::Limited(snapshot) => {
-                let result = py.detach(|| snapshot.resume(external_results, &mut print_writer));
+                let result = py.detach(|| snapshot.resume(external_results, print_writer.reborrow()));
                 EitherProgress::Limited(result.map_err(|e| MontyError::new_err(py, e))?)
             }
             EitherFutureSnapshot::ReplNoLimit(snapshot, owner) => {
                 let result = py
-                    .detach(|| snapshot.resume(external_results, &mut print_writer))
+                    .detach(|| snapshot.resume(external_results, print_writer.reborrow()))
                     .map_err(|e| restore_repl_from_repl_start_error(py, &owner, *e))?;
                 EitherProgress::ReplNoLimit(result, owner)
             }
             EitherFutureSnapshot::ReplLimited(snapshot, owner) => {
                 let result = py
-                    .detach(|| snapshot.resume(external_results, &mut print_writer))
+                    .detach(|| snapshot.resume(external_results, print_writer.reborrow()))
                     .map_err(|e| restore_repl_from_repl_start_error(py, &owner, *e))?;
                 EitherProgress::ReplLimited(result, owner)
             }
