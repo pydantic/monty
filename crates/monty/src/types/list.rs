@@ -209,7 +209,7 @@ impl PyTrait for List {
         std::mem::size_of::<Self>() + self.items.len() * std::mem::size_of::<Value>()
     }
 
-    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         Some(self.items.len())
     }
 
@@ -336,7 +336,7 @@ impl PyTrait for List {
         }
     }
 
-    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
+    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         !self.items.is_empty()
     }
 
@@ -697,7 +697,7 @@ fn do_list_sort(list: &mut List, args: ArgValues, vm: &mut VM<'_, '_, impl Resou
 
     // Convert reverse to bool (default false)
     let reverse = if let Some(v) = reverse_arg {
-        let result = v.py_bool(vm.heap, vm.interns);
+        let result = v.py_bool(vm);
         v.drop_with_heap(vm);
         result
     } else {

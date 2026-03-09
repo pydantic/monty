@@ -196,7 +196,7 @@ impl PyTrait for Dataclass {
             + self.attrs.py_estimate_size()
     }
 
-    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         // Dataclasses don't have a length
         None
     }
@@ -216,7 +216,7 @@ impl PyTrait for Dataclass {
         self.attrs.py_dec_ref_ids(stack);
     }
 
-    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
+    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         // Dataclass instances are always truthy (like Python objects)
         true
     }

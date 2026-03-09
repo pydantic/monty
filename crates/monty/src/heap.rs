@@ -341,19 +341,19 @@ impl PyTrait for HeapData {
         }
     }
 
-    fn py_len(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Option<usize> {
+    fn py_len(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         match self {
-            Self::Str(s) => PyTrait::py_len(s, heap, interns),
-            Self::Bytes(b) => PyTrait::py_len(b, heap, interns),
-            Self::List(l) => PyTrait::py_len(l, heap, interns),
-            Self::Tuple(t) => PyTrait::py_len(t, heap, interns),
-            Self::NamedTuple(nt) => PyTrait::py_len(nt, heap, interns),
-            Self::Dict(d) => PyTrait::py_len(d, heap, interns),
-            Self::DictKeysView(view) => PyTrait::py_len(view, heap, interns),
-            Self::DictItemsView(view) => PyTrait::py_len(view, heap, interns),
-            Self::DictValuesView(view) => PyTrait::py_len(view, heap, interns),
-            Self::Set(s) => PyTrait::py_len(s, heap, interns),
-            Self::FrozenSet(fs) => PyTrait::py_len(fs, heap, interns),
+            Self::Str(s) => PyTrait::py_len(s, vm),
+            Self::Bytes(b) => PyTrait::py_len(b, vm),
+            Self::List(l) => PyTrait::py_len(l, vm),
+            Self::Tuple(t) => PyTrait::py_len(t, vm),
+            Self::NamedTuple(nt) => PyTrait::py_len(nt, vm),
+            Self::Dict(d) => PyTrait::py_len(d, vm),
+            Self::DictKeysView(view) => PyTrait::py_len(view, vm),
+            Self::DictItemsView(view) => PyTrait::py_len(view, vm),
+            Self::DictValuesView(view) => PyTrait::py_len(view, vm),
+            Self::Set(s) => PyTrait::py_len(s, vm),
+            Self::FrozenSet(fs) => PyTrait::py_len(fs, vm),
             Self::Range(r) => Some(r.len()),
             // other types don't have length
             _ => None,
@@ -485,31 +485,31 @@ impl PyTrait for HeapData {
         }
     }
 
-    fn py_bool(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> bool {
+    fn py_bool(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         match self {
-            Self::Str(s) => s.py_bool(heap, interns),
-            Self::Bytes(b) => b.py_bool(heap, interns),
-            Self::List(l) => l.py_bool(heap, interns),
-            Self::Tuple(t) => t.py_bool(heap, interns),
-            Self::NamedTuple(nt) => nt.py_bool(heap, interns),
-            Self::Dict(d) => d.py_bool(heap, interns),
-            Self::DictKeysView(view) => view.py_bool(heap, interns),
-            Self::DictItemsView(view) => view.py_bool(heap, interns),
-            Self::DictValuesView(view) => view.py_bool(heap, interns),
-            Self::Set(s) => s.py_bool(heap, interns),
-            Self::FrozenSet(fs) => fs.py_bool(heap, interns),
+            Self::Str(s) => s.py_bool(vm),
+            Self::Bytes(b) => b.py_bool(vm),
+            Self::List(l) => l.py_bool(vm),
+            Self::Tuple(t) => t.py_bool(vm),
+            Self::NamedTuple(nt) => nt.py_bool(vm),
+            Self::Dict(d) => d.py_bool(vm),
+            Self::DictKeysView(view) => view.py_bool(vm),
+            Self::DictItemsView(view) => view.py_bool(vm),
+            Self::DictValuesView(view) => view.py_bool(vm),
+            Self::Set(s) => s.py_bool(vm),
+            Self::FrozenSet(fs) => fs.py_bool(vm),
             Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => true,
             Self::Cell(_) => true, // Cells are always truthy
-            Self::Range(r) => r.py_bool(heap, interns),
-            Self::Slice(s) => s.py_bool(heap, interns),
+            Self::Range(r) => r.py_bool(vm),
+            Self::Slice(s) => s.py_bool(vm),
             Self::Exception(_) => true, // Exceptions are always truthy
-            Self::Dataclass(dc) => dc.py_bool(heap, interns),
+            Self::Dataclass(dc) => dc.py_bool(vm),
             Self::Iter(_) => true, // Iterators are always truthy
             Self::LongInt(li) => !li.is_zero(),
             Self::Module(_) => true,       // Modules are always truthy
             Self::Coroutine(_) => true,    // Coroutines are always truthy
             Self::GatherFuture(_) => true, // GatherFutures are always truthy
-            Self::Path(p) => p.py_bool(heap, interns),
+            Self::Path(p) => p.py_bool(vm),
             Self::RePattern(_) => true, // RePattern objects are always truthy
             Self::ReMatch(_) => true,   // ReMatch objects are always truthy
         }

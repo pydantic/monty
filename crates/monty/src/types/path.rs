@@ -455,7 +455,7 @@ impl PyTrait for Path {
         Type::Path
     }
 
-    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         // Paths don't have a length in Python
         None
     }
@@ -469,7 +469,7 @@ impl PyTrait for Path {
         Ok(self.path == other.path)
     }
 
-    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
+    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         // Paths are always truthy (even empty paths)
         true
     }

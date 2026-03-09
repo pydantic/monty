@@ -170,8 +170,8 @@ impl PyTrait for DictKeysView {
         std::mem::size_of::<Self>()
     }
 
-    fn py_len(&self, heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
-        Some(self.dict(heap).len())
+    fn py_len(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
+        Some(self.dict(vm.heap).len())
     }
 
     fn py_eq(
@@ -349,8 +349,8 @@ impl PyTrait for DictItemsView {
         std::mem::size_of::<Self>()
     }
 
-    fn py_len(&self, heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
-        Some(self.dict(heap).len())
+    fn py_len(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
+        Some(self.dict(vm.heap).len())
     }
 
     fn py_eq(
@@ -435,8 +435,8 @@ impl PyTrait for DictValuesView {
         std::mem::size_of::<Self>()
     }
 
-    fn py_len(&self, heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
-        Some(self.dict(heap).len())
+    fn py_len(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
+        Some(self.dict(vm.heap).len())
     }
 
     fn py_eq(

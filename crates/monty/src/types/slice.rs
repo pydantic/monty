@@ -187,7 +187,7 @@ impl PyTrait for Slice {
         std::mem::size_of::<Self>()
     }
 
-    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         // Slices don't have a length in Python
         None
     }
@@ -201,7 +201,7 @@ impl PyTrait for Slice {
         Ok(self.start == other.start && self.stop == other.stop && self.step == other.step)
     }
 
-    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
+    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         // Slices are always truthy in Python
         true
     }

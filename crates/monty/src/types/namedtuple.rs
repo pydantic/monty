@@ -21,7 +21,7 @@ use ahash::AHashSet;
 
 use super::PyTrait;
 use crate::{
-    bytecode::CallResult,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapId},
@@ -162,7 +162,7 @@ impl PyTrait for NamedTuple {
             + self.items.len() * std::mem::size_of::<Value>()
     }
 
-    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         Some(self.items.len())
     }
 
@@ -219,7 +219,7 @@ impl PyTrait for NamedTuple {
         }
     }
 
-    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
+    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         !self.items.is_empty()
     }
 

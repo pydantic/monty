@@ -21,8 +21,7 @@ pub fn builtin_all(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
 
     while let Some(item) = iter.for_next(vm)? {
         defer_drop!(item, vm);
-        let is_truthy = item.py_bool(vm.heap, vm.interns);
-        if !is_truthy {
+        if !item.py_bool(vm) {
             return Ok(Value::Bool(false));
         }
     }

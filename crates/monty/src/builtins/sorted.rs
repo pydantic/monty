@@ -7,8 +7,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard},
-    intern::Interns,
+    heap::{DropWithHeap, HeapData, HeapGuard},
     resource::ResourceTracker,
     sorting::{apply_permutation, sort_indices},
     types::{List, MontyIter, PyTrait},
@@ -21,7 +20,7 @@ use crate::{
 /// Supports `key` and `reverse` keyword arguments matching Python's
 /// `sorted(iterable, /, *, key=None, reverse=False)` signature.
 pub fn builtin_sorted(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (iterable, key_fn, reverse) = parse_sorted_args(args, vm.heap, vm.interns)?;
+    let (iterable, key_fn, reverse) = parse_sorted_args(args, vm)?;
     defer_drop!(key_fn, vm);
 
     let items: Vec<_> = MontyIter::new(iterable, vm)?.collect(vm)?;
@@ -71,17 +70,16 @@ pub fn builtin_sorted(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues
 /// to `false`.
 fn parse_sorted_args(
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<(Value, Option<Value>, bool)> {
     let (mut positional, kwargs) = args.into_parts();
     let kwargs = kwargs.into_iter();
-    defer_drop_mut!(kwargs, heap);
+    defer_drop_mut!(kwargs, vm);
 
     // Extract the single required positional argument
     let positional_len = positional.len();
     let Some(iterable) = positional.next() else {
-        positional.drop_with_heap(heap);
+        positional.drop_with_heap(vm);
         return Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!("sorted expected 1 argument, got {positional_len}"),
@@ -92,30 +90,30 @@ fn parse_sorted_args(
     // Reject extra positional arguments
     if positional.len() > 0 {
         let total = positional_len;
-        iterable.drop_with_heap(heap);
-        positional.drop_with_heap(heap);
+        iterable.drop_with_heap(vm);
+        positional.drop_with_heap(vm);
         return Err(
             SimpleException::new_msg(ExcType::TypeError, format!("sorted expected 1 argument, got {total}")).into(),
         );
     }
 
     // Parse keyword arguments: key and reverse
-    let mut iterable_guard = HeapGuard::new(iterable, heap);
-    let heap = iterable_guard.heap();
-    let mut key_guard = HeapGuard::new(None::<Value>, heap);
-    let (key_val, heap) = key_guard.as_parts_mut();
-    let mut reverse_guard = HeapGuard::new(None::<Value>, heap);
-    let (reverse_val, heap) = reverse_guard.as_parts_mut();
+    let mut iterable_guard = HeapGuard::new(iterable, vm);
+    let vm = iterable_guard.heap();
+    let mut key_guard = HeapGuard::new(None::<Value>, vm);
+    let (key_val, vm) = key_guard.as_parts_mut();
+    let mut reverse_guard = HeapGuard::new(None::<Value>, vm);
+    let (reverse_val, vm) = reverse_guard.as_parts_mut();
 
     for (kw_key, value) in kwargs {
-        defer_drop!(kw_key, heap);
-        let mut value = HeapGuard::new(value, heap);
+        defer_drop!(kw_key, vm);
+        let mut value = HeapGuard::new(value, vm);
 
-        let Some(keyword_name) = kw_key.as_either_str(value.heap()) else {
+        let Some(keyword_name) = kw_key.as_either_str(value.heap().heap) else {
             return Err(ExcType::type_error("keywords must be strings"));
         };
 
-        let key_str = keyword_name.as_str(interns);
+        let key_str = keyword_name.as_str(value.heap().interns);
         let old = if key_str == "key" {
             key_val.replace(value.into_inner())
         } else if key_str == "reverse" {
@@ -126,15 +124,15 @@ fn parse_sorted_args(
             )));
         };
 
-        old.drop_with_heap(heap);
+        old.drop_with_heap(vm);
     }
 
     // Convert reverse to bool (default false)
     let reverse_val = reverse_guard.into_inner();
-    let heap = key_guard.heap();
+    let vm = key_guard.heap();
     let reverse = if let Some(v) = reverse_val {
-        let result = v.py_bool(heap, interns);
-        v.drop_with_heap(heap);
+        let result = v.py_bool(vm);
+        v.drop_with_heap(vm);
         result
     } else {
         false

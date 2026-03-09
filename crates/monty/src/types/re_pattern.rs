@@ -265,7 +265,7 @@ impl PyTrait for RePattern {
         Type::RePattern
     }
 
-    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         None
     }
 
@@ -282,7 +282,7 @@ impl PyTrait for RePattern {
         // No heap references — all data is owned.
     }
 
-    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
+    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         // Pattern objects are always truthy (matching CPython).
         true
     }

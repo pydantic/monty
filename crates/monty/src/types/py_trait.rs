@@ -48,7 +48,7 @@ pub trait PyTrait {
     /// Returns `None` if the type doesn't support `len()`.
     ///
     /// The `interns` parameter provides access to interned string content for InternString/InternBytes.
-    fn py_len(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Option<usize>;
+    fn py_len(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize>;
 
     /// Python equality comparison (`==`).
     ///
@@ -103,8 +103,8 @@ pub trait PyTrait {
     /// Container types should typically report `false` when empty.
     ///
     /// The `interns` parameter provides access to interned string content.
-    fn py_bool(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> bool {
-        self.py_len(heap, interns) != Some(0)
+    fn py_bool(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
+        self.py_len(vm) != Some(0)
     }
 
     /// Writes the Python `repr()` string for this value to a formatter.

@@ -272,13 +272,11 @@ impl Type {
                 }
             }
             Self::Bool => {
-                let heap = &mut *vm.heap;
-                let interns = vm.interns;
-                let Some(v) = args.get_zero_one_arg("bool", heap)? else {
+                let Some(v) = args.get_zero_one_arg("bool", vm.heap)? else {
                     return Ok(Value::Bool(false));
                 };
-                defer_drop!(v, heap);
-                Ok(Value::Bool(v.py_bool(heap, interns)))
+                defer_drop!(v, vm);
+                Ok(Value::Bool(v.py_bool(vm)))
             }
 
             // Non-callable types - raise TypeError
