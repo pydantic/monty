@@ -1448,31 +1448,21 @@ fn get_storage_from_set_operand(
         return Ok(None);
     };
 
-    if let Some(entries) = match heap.get(*id) {
-        HeapData::Set(set) => Some(set.0.clone_entries(heap)),
-        HeapData::FrozenSet(set) => Some(set.0.clone_entries(heap)),
-        _ => None,
-    } {
-        return Ok(Some(SetStorage::from_entries(entries)));
+    match heap.get(*id) {
+        HeapData::Set(set) => Ok(Some(SetStorage::from_entries(set.0.clone_entries(heap)))),
+        HeapData::FrozenSet(set) => Ok(Some(SetStorage::from_entries(set.0.clone_entries(heap)))),
+        // Dict views are `Copy` — matched value is not borrowed from the heap,
+        // so `to_set` can take `&mut heap` below without conflict.
+        HeapData::DictKeysView(view) => {
+            let Set(storage) = view.to_set(heap, interns)?;
+            Ok(Some(storage))
+        }
+        HeapData::DictItemsView(view) => {
+            let Set(storage) = view.to_set(heap, interns)?;
+            Ok(Some(storage))
+        }
+        _ => Ok(None),
     }
-
-    if let Some(view) = match heap.get(*id) {
-        HeapData::DictKeysView(view) => Some(*view),
-        _ => None,
-    } {
-        let Set(storage) = view.to_set(heap, interns)?;
-        return Ok(Some(storage));
-    }
-
-    if let Some(view) = match heap.get(*id) {
-        HeapData::DictItemsView(view) => Some(*view),
-        _ => None,
-    } {
-        let Set(storage) = view.to_set(heap, interns)?;
-        return Ok(Some(storage));
-    }
-
-    Ok(None)
 }
 
 // Custom serde implementations for SetStorage, Set, and FrozenSet.
