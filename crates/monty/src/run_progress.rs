@@ -15,7 +15,6 @@ use crate::{
     exception_private::{RunError, RunResult},
     heap::Heap,
     io::PrintWriter,
-    namespace::{GLOBAL_NS_IDX, NamespaceId, Namespaces},
     object::MontyObject,
     os::OsFunction,
     resource::ResourceTracker,
@@ -305,8 +304,8 @@ impl<T: ResourceTracker> NameLookup<T> {
 
     /// Resumes execution after name resolution.
     ///
-    /// Caches the resolved value in the namespace slot before restoring the VM,
-    /// then either pushes the value onto the stack or raises `NameError`.
+    /// Caches the resolved value in the appropriate slot (globals or stack)
+    /// before restoring the VM, then either pushes the value or raises `NameError`.
     ///
     /// # Arguments
     /// * `result` — The resolved value or `Undefined`.
@@ -317,22 +316,22 @@ impl<T: ResourceTracker> NameLookup<T> {
         print: PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         // Resolve the name lookup result BEFORE restoring the VM, since the VM
-        // borrows heap/namespaces mutably and we need direct access for caching.
+        // borrows heap mutably and we need direct access for caching.
         let resolved_value = match result.into() {
             NameLookupResult::Value(obj) => {
                 let value = obj
                     .to_value(&mut self.snapshot.heap, &self.snapshot.executor.interns)
                     .map_err(|e| MontyException::runtime_error(format!("invalid name lookup result: {e}")))?;
 
-                // Cache the resolved value in the appropriate namespace slot.
-                let ns_slot = NamespaceId::new(self.namespace_slot as usize);
-                let ns_idx = if self.is_global {
-                    GLOBAL_NS_IDX
+                // Cache the resolved value in the appropriate slot.
+                let slot = self.namespace_slot as usize;
+                let target = if self.is_global {
+                    &mut self.snapshot.vm_state.globals[slot]
                 } else {
-                    self.snapshot.vm_state.current_namespace_idx()
+                    let stack_base = self.snapshot.vm_state.current_stack_base();
+                    &mut self.snapshot.vm_state.stack[stack_base + slot]
                 };
-                let namespace = self.snapshot.namespaces.get_mut(ns_idx);
-                let old = mem::replace(namespace.get_mut(ns_slot), value.clone_with_heap(&self.snapshot.heap));
+                let old = mem::replace(target, value.clone_with_heap(&self.snapshot.heap));
                 old.drop_with_heap(&mut self.snapshot.heap);
 
                 Some(value)
@@ -340,12 +339,11 @@ impl<T: ResourceTracker> NameLookup<T> {
             NameLookupResult::Undefined => None,
         };
 
-        // Now restore the VM (borrows heap and namespaces)
+        // Now restore the VM
         let mut vm = VM::restore(
             self.snapshot.vm_state,
             &self.snapshot.executor.module_code,
             &mut self.snapshot.heap,
-            &mut self.snapshot.namespaces,
             &self.snapshot.executor.interns,
             print,
         );
@@ -360,13 +358,7 @@ impl<T: ResourceTracker> NameLookup<T> {
             vm.resume_with_exception(err.into())
         };
         let vm_state = vm.check_snapshot(&vm_result);
-        handle_vm_result(
-            vm_result,
-            vm_state,
-            self.snapshot.executor,
-            self.snapshot.heap,
-            self.snapshot.namespaces,
-        )
+        handle_vm_result(vm_result, vm_state, self.snapshot.executor, self.snapshot.heap)
     }
 }
 
@@ -386,30 +378,21 @@ impl<T: ResourceTracker> NameLookup<T> {
 pub struct ResolveFutures<T: ResourceTracker> {
     /// The executor containing compiled code and interns.
     executor: Executor,
-    /// The VM state containing stack, frames, and exception state.
+    /// The VM state containing stack, frames, globals, and exception state.
     vm_state: VMSnapshot,
     /// The heap containing all allocated objects.
     heap: Heap<T>,
-    /// The namespaces containing all variable bindings.
-    namespaces: Namespaces,
     /// The pending call_ids that this snapshot is waiting on.
     pending_call_ids: Vec<u32>,
 }
 
 impl<T: ResourceTracker> ResolveFutures<T> {
     /// Creates a new `ResolveFutures` from its parts.
-    fn new(
-        executor: Executor,
-        vm_state: VMSnapshot,
-        heap: Heap<T>,
-        namespaces: Namespaces,
-        pending_call_ids: Vec<u32>,
-    ) -> Self {
+    fn new(executor: Executor, vm_state: VMSnapshot, heap: Heap<T>, pending_call_ids: Vec<u32>) -> Self {
         Self {
             executor,
             vm_state,
             heap,
-            namespaces,
             pending_call_ids,
         }
     }
@@ -444,7 +427,6 @@ impl<T: ResourceTracker> ResolveFutures<T> {
             executor,
             vm_state,
             mut heap,
-            mut namespaces,
             pending_call_ids,
         } = self;
 
@@ -455,20 +437,11 @@ impl<T: ResourceTracker> ResolveFutures<T> {
             .map(|(call_id, _)| *call_id);
 
         // Restore the VM from the snapshot (must happen before any error return to clean up properly).
-        let mut vm = VM::restore(
-            vm_state,
-            &executor.module_code,
-            &mut heap,
-            &mut namespaces,
-            &executor.interns,
-            print,
-        );
+        let mut vm = VM::restore(vm_state, &executor.module_code, &mut heap, &executor.interns, print);
 
         // Now check for invalid call_ids after VM is restored.
         if let Some(call_id) = invalid_call_id {
             vm.cleanup();
-            #[cfg(feature = "ref-count-panic")]
-            namespaces.drop_global_with_heap(&mut heap);
             return Err(MontyException::runtime_error(format!(
                 "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
             )));
@@ -490,8 +463,6 @@ impl<T: ResourceTracker> ResolveFutures<T> {
         // Check if the current task has failed.
         if let Some(error) = vm.take_failed_task_error() {
             vm.cleanup();
-            #[cfg(feature = "ref-count-panic")]
-            namespaces.drop_global_with_heap(&mut heap);
             return Err(error.into_python_exception(&executor.interns, &executor.code));
         }
 
@@ -502,8 +473,6 @@ impl<T: ResourceTracker> ResolveFutures<T> {
             Ok(loaded) => loaded,
             Err(e) => {
                 vm.cleanup();
-                #[cfg(feature = "ref-count-panic")]
-                namespaces.drop_global_with_heap(&mut heap);
                 return Err(e.into_python_exception(&executor.interns, &executor.code));
             }
         };
@@ -518,7 +487,6 @@ impl<T: ResourceTracker> ResolveFutures<T> {
                     executor,
                     vm_state,
                     heap,
-                    namespaces,
                     pending_call_ids,
                 }));
             }
@@ -526,7 +494,7 @@ impl<T: ResourceTracker> ResolveFutures<T> {
 
         let result = vm.run();
         let vm_state = vm.check_snapshot(&result);
-        handle_vm_result(result, vm_state, executor, heap, namespaces)
+        handle_vm_result(result, vm_state, executor, heap)
     }
 }
 
@@ -544,12 +512,10 @@ impl<T: ResourceTracker> ResolveFutures<T> {
 pub(crate) struct Snapshot<T: ResourceTracker> {
     /// The executor containing compiled code and interns.
     pub(crate) executor: Executor,
-    /// The VM state containing stack, frames, and exception state.
+    /// The VM state containing stack, frames, globals, and exception state.
     pub(crate) vm_state: VMSnapshot,
     /// The heap containing all allocated objects.
     pub(crate) heap: Heap<T>,
-    /// The namespaces containing all variable bindings.
-    pub(crate) namespaces: Namespaces,
 }
 
 impl<T: ResourceTracker> Snapshot<T> {
@@ -565,7 +531,6 @@ impl<T: ResourceTracker> Snapshot<T> {
             self.vm_state,
             &self.executor.module_code,
             &mut self.heap,
-            &mut self.namespaces,
             &self.executor.interns,
             print,
         );
@@ -585,7 +550,7 @@ impl<T: ResourceTracker> Snapshot<T> {
         };
 
         let vm_state = vm.check_snapshot(&vm_result);
-        handle_vm_result(vm_result, vm_state, self.executor, self.heap, self.namespaces)
+        handle_vm_result(vm_result, vm_state, self.executor, self.heap)
     }
 }
 
@@ -656,13 +621,11 @@ impl From<MontyException> for ExtFunctionResult {
 ///
 /// This is used by both `Snapshot::run()` and `ResolveFutures::resume()` to
 /// convert raw VM results into typed progress values.
-#[cfg_attr(not(feature = "ref-count-panic"), expect(unused_mut))]
 pub(crate) fn handle_vm_result<T: ResourceTracker>(
     result: RunResult<FrameExit>,
     vm_state: Option<VMSnapshot>,
     executor: Executor,
     mut heap: Heap<T>,
-    mut namespaces: Namespaces,
 ) -> Result<RunProgress<T>, MontyException> {
     macro_rules! new_snapshot {
         () => {
@@ -670,16 +633,12 @@ pub(crate) fn handle_vm_result<T: ResourceTracker>(
                 executor,
                 vm_state: vm_state.expect("snapshot should exist"),
                 heap,
-                namespaces,
             }
         };
     }
 
     match result {
         Ok(FrameExit::Return(value)) => {
-            #[cfg(feature = "ref-count-panic")]
-            namespaces.drop_global_with_heap(&mut heap);
-
             let obj = MontyObject::new(value, &mut heap, &executor.interns);
             Ok(RunProgress::Complete(obj))
         }
@@ -739,7 +698,6 @@ pub(crate) fn handle_vm_result<T: ResourceTracker>(
                 executor,
                 vm_state.expect("snapshot should exist for ResolveFutures"),
                 heap,
-                namespaces,
                 pending_call_ids,
             )))
         }
@@ -756,11 +714,6 @@ pub(crate) fn handle_vm_result<T: ResourceTracker>(
                 new_snapshot!(),
             )))
         }
-        Err(err) => {
-            #[cfg(feature = "ref-count-panic")]
-            namespaces.drop_global_with_heap(&mut heap);
-
-            Err(err.into_python_exception(&executor.interns, &executor.code))
-        }
+        Err(err) => Err(err.into_python_exception(&executor.interns, &executor.code)),
     }
 }

@@ -645,7 +645,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         defer_drop!(defaults, this);
         let func = this.interns.get_function(func_id);
 
-        // 1. Create namespace vector (not registered with Namespaces)
+        // 1. Create locals vector (will be pushed onto the stack)
         let namespace = Vec::with_capacity(func.namespace_size);
         let mut namespace_guard = HeapGuard::new(namespace, this);
         let (namespace, this) = namespace_guard.as_parts_mut();
@@ -697,8 +697,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
     /// Calls a sync function by pushing a new frame.
     ///
-    /// Sets up the function's namespace with bound arguments, cell variables,
+    /// Sets up the function's locals with bound arguments, cell variables,
     /// and free variables (captured from enclosing scope for closures).
+    ///
+    /// The locals are built in a temporary `Vec<Value>`, then extended onto
+    /// the VM stack. The frame's `stack_base` points to the start of this
+    /// locals region, and operands are pushed above it.
     fn call_sync_function(
         &mut self,
         func_id: FunctionId,
@@ -706,24 +710,30 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         defaults: Vec<Value>,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
-        // Get call position BEFORE borrowing namespaces mutably
         let call_position = self.current_position();
 
-        // Get function info (interns is a shared reference so no conflict)
         let func = self.interns.get_function(func_id);
+        let namespace_size = func.namespace_size;
+        let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
 
-        // 1. Create new namespace for function
-        let namespace_idx = self.namespaces.new_namespace(func.namespace_size, self.heap)?;
+        // Track memory for this frame's locals
+        let size = namespace_size * std::mem::size_of::<Value>();
+        self.heap.tracker_mut().on_allocate(|| size)?;
 
-        let namespace = self.namespaces.get_mut(namespace_idx).mut_vec();
+        // 1. Build locals in a temporary vec
+        let mut namespace = Vec::with_capacity(namespace_size);
+
         // 2. Bind arguments to parameters
         {
             let bind_result = func
                 .signature
-                .bind(args, &defaults, self.heap, self.interns, func.name, namespace);
+                .bind(args, &defaults, self.heap, self.interns, func.name, &mut namespace);
 
             if let Err(e) = bind_result {
-                self.namespaces.drop_with_heap(namespace_idx, self.heap);
+                for value in namespace.drain(..) {
+                    value.drop_with_heap(self.heap);
+                }
+                self.heap.tracker_mut().on_free(|| size);
                 for default in defaults {
                     default.drop_with_heap(self);
                 }
@@ -731,7 +741,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
         }
 
-        // Clean up defaults - they were copied into the namespace by bind()
+        // Clean up defaults — they were copied into the namespace by bind()
         for default in defaults {
             default.drop_with_heap(self.heap);
         }
@@ -766,15 +776,19 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
 
             // 5. Fill remaining slots with Undefined
-            namespace.resize_with(func.namespace_size, || Value::Undefined);
+            namespace.resize_with(namespace_size, || Value::Undefined);
         }
 
         let code = &func.code;
-        // 6. Push new frame
+
+        // 6. Extend the VM stack with the locals, then push the frame
+        let stack_base = self.stack.len();
+        self.stack.extend(namespace);
+
         self.push_frame(CallFrame::new_function(
             code,
-            self.stack.len(),
-            namespace_idx,
+            stack_base,
+            locals_count,
             func_id,
             frame_cells,
             Some(call_position),

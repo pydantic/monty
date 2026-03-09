@@ -1518,7 +1518,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// Runs mark-sweep garbage collection to free unreachable cycles.
     ///
     /// This method takes a closure that provides an iterator of root HeapIds
-    /// (typically from Namespaces). It marks all reachable objects starting
+    /// (typically from the VM's globals and stack). It marks all reachable objects starting
     /// from roots, then sweeps (frees) any unreachable objects.
     ///
     /// This is necessary because reference counting alone cannot free cycles
