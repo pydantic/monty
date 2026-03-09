@@ -500,11 +500,7 @@ impl<T: ResourceTracker + serde::de::DeserializeOwned> MontyRepl<T> {
 
 impl<T: ResourceTracker> Drop for MontyRepl<T> {
     fn drop(&mut self) {
-        #[cfg(feature = "ref-count-panic")]
-        for value in &mut self.globals {
-            let v = mem::replace(value, Value::Undefined);
-            v.drop_with_heap(&mut self.heap);
-        }
+        self.globals.drain(..).drop_with_heap(&mut self.heap);
     }
 }
 

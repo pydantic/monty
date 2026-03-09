@@ -1718,7 +1718,7 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
             }
         }
         HeapData::Coroutine(coro) => {
-            // Add namespace values that are heap references (includes cell refs)
+            // Add namespace values that are heap references
             for value in &coro.namespace {
                 if let Value::Ref(id) = value {
                     work_list.push(*id);
