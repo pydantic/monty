@@ -631,6 +631,20 @@ impl PyTrait for HeapDataMut<'_> {
         }
     }
 
+    fn py_iadd(
+        &mut self,
+        other: &Value,
+        heap: &mut Heap<impl ResourceTracker>,
+        self_id: Option<HeapId>,
+        interns: &Interns,
+    ) -> Result<bool, ResourceError> {
+        match self {
+            Self::List(list) => list.py_iadd(other, heap, self_id, interns),
+            Self::Dict(dict) => dict.py_iadd(other, heap, self_id, interns),
+            _ => Ok(false),
+        }
+    }
+
     fn py_call_attr(
         &mut self,
         self_id: HeapId,

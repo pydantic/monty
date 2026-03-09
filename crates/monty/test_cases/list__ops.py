@@ -11,6 +11,12 @@ lst = [1, 2]
 lst += [3, 4]
 assert lst == [1, 2, 3, 4], 'basic iadd'
 
+lst = [1]
+alias = lst
+lst += [2]
+assert lst is alias, 'list += preserves identity'
+assert alias == [1, 2], 'list += mutates through aliases'
+
 lst = [1, 2, 3]
 index = 1
 lst[index] += 5

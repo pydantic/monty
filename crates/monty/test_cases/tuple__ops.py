@@ -46,6 +46,15 @@ assert (1,) * -1 == (), 'tuple mult negative'
 assert () * 5 == (), 'empty tuple mult'
 assert (1, 2) * 1 == (1, 2), 'tuple mult one'
 
+# === Tuple augmented assignment edge cases ===
+t = ([1],)
+try:
+    t[0] += [2]
+    assert False, 'tuple item augmented assignment should fail'
+except TypeError as e:
+    assert e.args == ("'tuple' object does not support item assignment",), 'tuple += error matches CPython'
+    assert t == ([1, 2],), 'inner list mutation happens before tuple store fails'
+
 # === tuple() constructor ===
 assert tuple() == (), 'tuple() empty'
 assert tuple([1, 2, 3]) == (1, 2, 3), 'tuple from list'
