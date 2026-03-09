@@ -3,6 +3,7 @@
 use crate::{
     args::ArgValues,
     bytecode::VM,
+    defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapGuard, HeapId},
     intern::{Interns, StringId},
@@ -132,52 +133,20 @@ impl Module {
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<AttrCallResult> {
+        let mut args_guard = HeapGuard::new(args, vm);
+        let vm = args_guard.heap();
         let attr_key = match attr {
             EitherStr::Interned(id) => Value::InternString(*id),
             EitherStr::Heap(s) => {
-                // Module attributes are always interned, so owned strings won't match
-                args.drop_with_heap(&mut *vm.heap);
                 return Err(ExcType::attribute_error_module(vm.interns.get_str(self.name), s));
             }
         };
 
-        // Scope the heap borrow to ensure we can use `vm` later for Builtin::call
-        let attr_val = {
-            let heap = &mut *vm.heap;
-            let interns = vm.interns;
-            let mut args_guard = HeapGuard::new(args, heap);
-
-            if let Some(val) = self.get_attr(&attr_key, args_guard.heap(), interns) {
-                let (args, _) = args_guard.into_parts();
-                Some((val, args))
-            } else {
-                // Not found - args_guard will drop args automatically
-                None
-            }
-        };
-
-        match attr_val {
-            Some((val, args)) => {
-                // Found attribute - try to call it based on type
-                match val {
-                    Value::ModuleFunction(mf) => {
-                        let heap = &mut *vm.heap;
-                        mf.call(heap, args, vm.interns)
-                    }
-                    Value::Builtin(builtin) => {
-                        // Builtin types/functions can be called with VM access
-                        let result = builtin.call(vm, args)?;
-                        Ok(AttrCallResult::Value(result))
-                    }
-                    func => {
-                        // Found attribute but it's not a supported callable type
-                        // Drop function and args manually
-                        let heap = &mut *vm.heap;
-                        func.drop_with_heap(heap);
-                        args.drop_with_heap(heap);
-                        Err(ExcType::type_error("module attribute is not callable"))
-                    }
-                }
+        match self.get_attr(&attr_key, vm.heap, vm.interns) {
+            Some(value) => {
+                let (args, vm) = args_guard.into_parts();
+                defer_drop!(value, vm);
+                vm.call_function(value, args)
             }
             None => Err(ExcType::attribute_error_module(
                 vm.interns.get_str(self.name),

@@ -27,7 +27,7 @@ use crate::{
 ///
 /// Used by the `exec_*` methods to communicate what action the VM's main loop
 /// should take after the call completes.
-pub(super) enum CallResult {
+pub(crate) enum CallResult {
     /// Call completed successfully - push this value onto the stack.
     Push(Value),
     /// A new frame was pushed for a defined function call.
@@ -363,7 +363,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// - `Value::ExtFunction`: returns `External` for caller to execute
     /// - `Value::DefFunction`: pushes a new frame, returns `FramePushed`
     /// - `Value::Ref`: checks for closure/function on heap
-    fn call_function(&mut self, callable: &Value, args: ArgValues) -> Result<CallResult, RunError> {
+    pub(crate) fn call_function(&mut self, callable: &Value, args: ArgValues) -> Result<CallResult, RunError> {
         match callable {
             Value::Builtin(builtin) => {
                 let result = builtin.call(self, args)?;
