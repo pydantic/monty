@@ -685,9 +685,9 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Sets up the function's namespace with bound arguments, cell variables,
     /// and free variables (captured from enclosing scope for closures).
     ///
-    /// The namespace is built in a temporary `Vec<Value>`, then extended onto
-    /// the VM stack. The frame's `stack_base` points to the start of this
-    /// locals region, and operands are pushed above it.
+    /// Locals are built directly on the VM stack using a [`StackGuard`] that
+    /// automatically rolls back on error. The frame's `stack_base` points to
+    /// the start of this locals region, and operands are pushed above it.
     fn call_sync_function(
         &mut self,
         func_id: FunctionId,
@@ -705,19 +705,20 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let size = namespace_size * std::mem::size_of::<Value>();
         self.heap.tracker_mut().on_allocate(|| size)?;
 
-        // 1. Build locals in a temporary vec
-        let namespace = Vec::with_capacity(namespace_size);
-        let mut namespace_guard = HeapGuard::new(namespace, self);
-        let (namespace, this) = namespace_guard.as_parts_mut();
+        // 1. Build locals directly on the VM stack. The StackGuard ensures
+        //    rollback (drain + drop_with_heap) on any error path.
+        let guard = StackGuard::new(&mut self.stack, &mut *self.heap);
+        let stack_base = guard.base;
+        guard.stack.reserve(namespace_size);
 
         // 2. Bind arguments to parameters
         {
             let bind_result = func
                 .signature
-                .bind(args, defaults, this.heap, this.interns, func.name, namespace);
+                .bind(args, defaults, guard.heap, self.interns, func.name, guard.stack);
 
             if let Err(e) = bind_result {
-                this.heap.tracker_mut().on_free(|| size);
+                guard.heap.tracker_mut().on_free(|| size);
                 return Err(e);
             }
         }
@@ -728,36 +729,36 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             for (i, maybe_param_idx) in func.cell_param_indices.iter().enumerate() {
                 let cell_slot = param_count + i;
                 let cell_value = if let Some(param_idx) = maybe_param_idx {
-                    namespace[*param_idx].clone_with_heap(this.heap)
+                    guard.stack[stack_base + *param_idx].clone_with_heap(guard.heap)
                 } else {
                     Value::Undefined
                 };
-                let cell_id = this.heap.allocate(HeapData::Cell(CellValue(cell_value)))?;
-                namespace.resize_with(cell_slot, || Value::Undefined);
-                namespace.push(Value::Ref(cell_id));
+                let cell_id = guard.heap.allocate(HeapData::Cell(CellValue(cell_value)))?;
+                guard.stack.resize_with(stack_base + cell_slot, || Value::Undefined);
+                guard.stack.push(Value::Ref(cell_id));
             }
 
             // 4. Copy captured cells (free vars) into namespace
             let free_var_start = param_count + func.cell_var_count;
             for (i, &cell_id) in cells.iter().enumerate() {
-                this.heap.inc_ref(cell_id);
+                guard.heap.inc_ref(cell_id);
                 let slot = free_var_start + i;
-                namespace.resize_with(slot, || Value::Undefined);
-                namespace.push(Value::Ref(cell_id));
+                guard.stack.resize_with(stack_base + slot, || Value::Undefined);
+                guard.stack.push(Value::Ref(cell_id));
             }
 
             // 5. Fill remaining slots with Undefined
-            namespace.resize_with(namespace_size, || Value::Undefined);
+            guard
+                .stack
+                .resize_with(stack_base + namespace_size, || Value::Undefined);
         }
 
         let code = &func.code;
 
-        // 6. Extend the VM stack with the locals, then push the frame
-        let stack_base = this.stack.len();
-        let (namespace, this) = namespace_guard.into_parts();
-        this.stack.extend(namespace);
+        // 6. Commit the guard (no rollback) and push the frame
+        std::mem::forget(guard);
 
-        this.push_frame(CallFrame::new_function(
+        self.push_frame(CallFrame::new_function(
             code,
             stack_base,
             locals_count,
@@ -766,5 +767,41 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         ))?;
 
         Ok(CallResult::FramePushed)
+    }
+}
+
+/// RAII guard that protects values pushed onto a `Vec<Value>` during frame setup.
+///
+/// Records the vec's length at creation. On drop, drains all values pushed since
+/// then and properly drops them via [`DropWithHeap::drop_with_heap`]. Call [`commit`](Self::commit)
+/// on the success path to consume the guard without cleanup.
+///
+/// This enables pushing function locals directly onto the VM stack instead of
+/// building them in a temporary `Vec` — the guard guarantees rollback on any
+/// error path (`?`, early return, etc.) so partially-constructed namespaces
+/// never leak reference counts.
+struct StackGuard<'a, T: ResourceTracker> {
+    /// The stack vec being guarded — values are pushed here directly.
+    stack: &'a mut Vec<Value>,
+    /// Heap reference for dropping values on rollback.
+    heap: &'a mut Heap<T>,
+    /// Stack length when the guard was created — rollback drains from here.
+    base: usize,
+}
+
+impl<'a, T: ResourceTracker> StackGuard<'a, T> {
+    /// Creates a new guard, recording the current stack length as the rollback point.
+    #[inline]
+    fn new(stack: &'a mut Vec<Value>, heap: &'a mut Heap<T>) -> Self {
+        let base = stack.len();
+        Self { stack, heap, base }
+    }
+}
+
+impl<T: ResourceTracker> Drop for StackGuard<'_, T> {
+    fn drop(&mut self) {
+        self.stack
+            .drain(self.base..)
+            .for_each(|v| v.drop_with_heap(&mut *self.heap));
     }
 }
