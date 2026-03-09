@@ -12,13 +12,13 @@ use crate::{
     ExcType, ResourceError, ResourceTracker,
     args::ArgValues,
     asyncio::{Coroutine, GatherFuture, GatherItem},
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     exception_private::{RunResult, SimpleException},
     heap::{Heap, HeapId},
     intern::{FunctionId, Interns},
     types::{
-        AttrCallResult, Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt,
-        Module, MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type,
+        Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
+        MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type,
     },
     value::{EitherStr, Value},
 };
@@ -671,7 +671,7 @@ impl PyTrait for HeapDataMut<'_> {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         match self {
             Self::Str(s) => s.py_call_attr(self_id, vm, attr, args),
             Self::Bytes(b) => b.py_call_attr(self_id, vm, attr, args),
@@ -728,7 +728,7 @@ impl PyTrait for HeapDataMut<'_> {
         attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<Option<AttrCallResult>> {
+    ) -> RunResult<Option<CallResult>> {
         match self {
             Self::Dataclass(dc) => dc.py_getattr(attr, heap, interns),
             Self::Module(m) => Ok(m.py_getattr(attr, heap, interns)),

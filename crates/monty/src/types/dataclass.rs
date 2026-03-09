@@ -5,13 +5,13 @@ use ahash::AHashSet;
 use super::{Dict, PyTrait};
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapId},
     intern::Interns,
     resource::{ResourceError, ResourceTracker},
-    types::{AttrCallResult, Type},
+    types::Type,
     value::{EitherStr, Value},
 };
 
@@ -276,7 +276,7 @@ impl PyTrait for Dataclass {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         let heap = &mut *vm.heap;
         let interns = vm.interns;
         let attr_str = attr.as_str(interns);
@@ -287,7 +287,7 @@ impl PyTrait for Dataclass {
             heap.inc_ref(self_id);
             let self_arg = Value::Ref(self_id);
             let args_with_self = args.prepend(self_arg);
-            Ok(AttrCallResult::MethodCall(attr.clone(), args_with_self))
+            Ok(CallResult::MethodCall(attr.clone(), args_with_self))
         } else {
             // Not a method call — handle directly
             let method_name = attr.as_str(interns);
@@ -309,10 +309,10 @@ impl PyTrait for Dataclass {
         attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<Option<AttrCallResult>> {
+    ) -> RunResult<Option<CallResult>> {
         let attr_name = attr.as_str(interns);
         match self.attrs.get_by_str(attr_name, heap, interns) {
-            Some(value) => Ok(Some(AttrCallResult::Value(value.clone_with_heap(heap)))),
+            Some(value) => Ok(Some(CallResult::Value(value.clone_with_heap(heap)))),
             // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
             None => Err(ExcType::attribute_error(self.name(interns), attr_name)),
         }

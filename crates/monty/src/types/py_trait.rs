@@ -15,62 +15,13 @@ use super::Type;
 use crate::{
     ResourceError,
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{DropWithHeap, Heap, HeapId},
-    intern::{Interns, StringId},
-    os::OsFunction,
+    intern::Interns,
     resource::ResourceTracker,
     value::{EitherStr, Value},
 };
-
-/// Result of calling an attribute method via `py_call_attr`.
-///
-/// This enum enables attribute methods to signal different outcomes to the VM:
-/// - `Value`: The call completed synchronously with a return value
-/// - `OsCall`: The method needs an OS operation; VM should yield to host
-/// - `ExternalCall`: The method needs to call an external function
-///
-/// This unifies the pattern where `call_function` returns `CallResult` to indicate
-/// different outcomes. Types that only support synchronous attribute calls should
-/// wrap their return value with `AttrCallResult::Value`.
-///
-/// # Future Extensibility
-///
-/// When needed for features like `list.sort(key=func)`, we can add:
-/// ```ignore
-/// CallFunction(Value, ArgValues)  // Call a callable, result becomes attr result
-/// ```
-#[derive(Debug)]
-pub enum AttrCallResult {
-    /// Call completed synchronously with a value to return.
-    Value(Value),
-
-    /// The method needs an OS operation. VM should yield `FrameExit::OsCall` to host.
-    ///
-    /// The host executes the OS operation and resumes the VM with the result.
-    /// Used by `Path` filesystem methods like `exists()`, `read_text()`, etc.
-    OsCall(OsFunction, ArgValues),
-
-    /// The method needs to call an external function. VM should yield `FrameExit::ExternalCall`.
-    ///
-    /// Used when attribute methods delegate to registered external functions.
-    /// Currently unused - will be used when types need to call external functions from attribute methods.
-    #[expect(dead_code)]
-    ExternalCall(StringId, ArgValues),
-
-    /// Dataclass method call — VM should yield `FrameExit::MethodCall` to host.
-    ///
-    /// Carries the method name (e.g. `"distance"`) and args with self prepended.
-    /// This is detected by `Dataclass::py_call_attr` when a public attribute name is not
-    /// found in the dataclass's attrs dict.
-    MethodCall(EitherStr, ArgValues),
-    /// The method returned a value that should be implicitly awaited.
-    ///
-    /// Used by `asyncio.run()` to execute a coroutine without an explicit `await`.
-    /// The VM will push the value onto the stack and execute `exec_get_awaitable`.
-    AwaitValue(Value),
-}
 
 /// Common operations for heap-allocated Python values.
 ///
@@ -294,17 +245,17 @@ pub trait PyTrait {
         Ok(None)
     }
 
-    /// Calls an attribute method on this value (e.g., `list.append()`), returning an
-    /// `AttrCallResult` that may signal OS, external, or method calls.
+    /// Calls an attribute method on this value (e.g., `list.append()`), returning a
+    /// `CallResult` that may signal OS, external, or method calls.
     ///
     /// This method enables types to signal that they need operations the VM cannot perform
     /// directly (OS operations, external function calls, dataclass method calls). The VM
     /// converts the result to the appropriate `FrameExit` variant.
     ///
     /// Types that only support synchronous attribute calls should wrap their return value
-    /// with `AttrCallResult::Value`. Types that need to perform OS/external operations,
+    /// with `CallResult::Value`. Types that need to perform OS/external operations,
     /// intercept specific methods (e.g. `list.sort`), or detect method calls (e.g. dataclass
-    /// methods) should return the appropriate `AttrCallResult` variant.
+    /// methods) should return the appropriate `CallResult` variant.
     ///
     /// # Arguments
     /// * `self_id` - The heap ID of this value, needed by types that must reference themselves
@@ -312,10 +263,10 @@ pub trait PyTrait {
     ///
     /// # Returns
     ///
-    /// - `Ok(AttrCallResult::Value(v))` - Method completed synchronously with value `v`
-    /// - `Ok(AttrCallResult::OsCall(func, args))` - Method needs OS operation; VM yields to host
-    /// - `Ok(AttrCallResult::ExternalCall(id, args))` - Method needs external function call
-    /// - `Ok(AttrCallResult::MethodCall(attr, args))` - Dataclass method call; VM yields to host
+    /// - `Ok(CallResult::Value(v))` - Method completed synchronously with value `v`
+    /// - `Ok(CallResult::OsCall(func, args))` - Method needs OS operation; VM yields to host
+    /// - `Ok(CallResult::External(name, args))` - Method needs external function call
+    /// - `Ok(CallResult::MethodCall(attr, args))` - Dataclass method call; VM yields to host
     /// - `Err(e)` - Method call failed with error
     fn py_call_attr(
         &mut self,
@@ -323,7 +274,7 @@ pub trait PyTrait {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         // `py_call_attr` takes ownership of the argument bundle. Implementations that
         // do not recognize the attribute still need to release those values before
         // reporting `AttributeError`, otherwise method calls on unsupported types leak
@@ -399,7 +350,7 @@ pub trait PyTrait {
         _attr: &EitherStr,
         _heap: &mut Heap<impl ResourceTracker>,
         _interns: &Interns,
-    ) -> RunResult<Option<AttrCallResult>> {
+    ) -> RunResult<Option<CallResult>> {
         Ok(None)
     }
 }

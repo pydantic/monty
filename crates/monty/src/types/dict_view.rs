@@ -5,14 +5,14 @@ use smallvec::smallvec;
 
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunError, RunResult},
     heap::{Heap, HeapData, HeapId},
     heap_data::HeapDataMut,
     intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
-    types::{AttrCallResult, Dict, FrozenSet, MontyIter, PyTrait, Set, Type, allocate_tuple, iter::advance_on_heap},
+    types::{Dict, FrozenSet, MontyIter, PyTrait, Set, Type, allocate_tuple, iter::advance_on_heap},
     value::Value,
 };
 
@@ -205,14 +205,12 @@ impl PyTrait for DictKeysView {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &crate::value::EitherStr,
         args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         match attr.static_string() {
             Some(StaticStrings::Isdisjoint) => {
                 let other = args.get_one_arg("dict_keys.isdisjoint", vm.heap)?;
                 defer_drop!(other, vm);
-                Ok(AttrCallResult::Value(Value::Bool(
-                    self.isdisjoint_from_value(other, vm)?,
-                )))
+                Ok(CallResult::Value(Value::Bool(self.isdisjoint_from_value(other, vm)?)))
             }
             _ => Err(ExcType::attribute_error(Type::DictKeys, attr.as_str(vm.interns))),
         }
@@ -386,14 +384,12 @@ impl PyTrait for DictItemsView {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &crate::value::EitherStr,
         args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         match attr.static_string() {
             Some(StaticStrings::Isdisjoint) => {
                 let other = args.get_one_arg("dict_items.isdisjoint", vm.heap)?;
                 defer_drop!(other, vm);
-                Ok(AttrCallResult::Value(Value::Bool(
-                    self.isdisjoint_from_value(other, vm)?,
-                )))
+                Ok(CallResult::Value(Value::Bool(self.isdisjoint_from_value(other, vm)?)))
             }
             _ => Err(ExcType::attribute_error(Type::DictItems, attr.as_str(vm.interns))),
         }

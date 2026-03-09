@@ -9,7 +9,7 @@ use strum::{Display, EnumString, IntoStaticStr};
 
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_public::{MontyException, StackFrame},
     fstring::FormatError,
@@ -18,7 +18,7 @@ use crate::{
     parse::CodeRange,
     resource::ResourceTracker,
     types::{
-        AttrCallResult, PyTrait, Str, Type, allocate_tuple,
+        PyTrait, Str, Type, allocate_tuple,
         str::{StringRepr, string_repr_fmt},
     },
     value::{EitherStr, Value},
@@ -1233,7 +1233,7 @@ impl SimpleException {
         attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<Option<AttrCallResult>> {
+    ) -> RunResult<Option<CallResult>> {
         // Fast path: interned strings can be matched by ID
         let is_args = attr
             .static_string()
@@ -1247,7 +1247,7 @@ impl SimpleException {
             } else {
                 smallvec![]
             };
-            Ok(Some(AttrCallResult::Value(allocate_tuple(elements, heap)?)))
+            Ok(Some(CallResult::Value(allocate_tuple(elements, heap)?)))
         } else {
             Ok(None)
         }

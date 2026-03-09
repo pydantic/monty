@@ -10,13 +10,14 @@
 use crate::{
     args::ArgValues,
     asyncio::{GatherFuture, GatherItem},
+    bytecode::CallResult,
     defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
-    types::{AttrCallResult, Module},
+    types::Module,
     value::Value,
 };
 
@@ -60,9 +61,9 @@ pub(super) fn call(
     heap: &mut Heap<impl ResourceTracker>,
     functions: AsyncioFunctions,
     args: ArgValues,
-) -> RunResult<AttrCallResult> {
+) -> RunResult<CallResult> {
     match functions {
-        AsyncioFunctions::Gather => gather(heap, args).map(AttrCallResult::Value),
+        AsyncioFunctions::Gather => gather(heap, args).map(CallResult::Value),
         AsyncioFunctions::Run => run(heap, args),
     }
 }
@@ -72,11 +73,11 @@ pub(super) fn call(
 /// Runs a single coroutine to completion, equivalent to `await coro` at the top level.
 /// Accepts exactly one positional argument (the coroutine) and no keyword arguments.
 ///
-/// Returns `AttrCallResult::AwaitValue` so the VM executes `exec_get_awaitable` on
+/// Returns `CallResult::AwaitValue` so the VM executes `exec_get_awaitable` on
 /// the value, which handles validation that it's actually a coroutine/awaitable.
-fn run(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<AttrCallResult> {
+fn run(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
     let coroutine = args.get_one_arg("asyncio.run", heap)?;
-    Ok(AttrCallResult::AwaitValue(coroutine))
+    Ok(CallResult::AwaitValue(coroutine))
 }
 
 /// Implementation of `asyncio.gather(*awaitables)`.

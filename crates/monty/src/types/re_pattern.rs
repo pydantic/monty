@@ -18,7 +18,7 @@ use smallvec::SmallVec;
 
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapId},
@@ -324,14 +324,14 @@ impl PyTrait for RePattern {
         attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<Option<super::AttrCallResult>> {
+    ) -> RunResult<Option<CallResult>> {
         match attr.static_string() {
             Some(StaticStrings::PatternAttr) => {
                 let s = Str::new(self.pattern.clone());
                 let v = Value::Ref(heap.allocate(HeapData::Str(s))?);
-                Ok(Some(super::AttrCallResult::Value(v)))
+                Ok(Some(CallResult::Value(v)))
             }
-            Some(StaticStrings::Flags) => Ok(Some(super::AttrCallResult::Value(Value::Int(i64::from(self.flags))))),
+            Some(StaticStrings::Flags) => Ok(Some(CallResult::Value(Value::Int(i64::from(self.flags))))),
             _ => Err(ExcType::attribute_error(Type::RePattern, attr.as_str(interns))),
         }
     }
@@ -342,7 +342,7 @@ impl PyTrait for RePattern {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-    ) -> RunResult<super::AttrCallResult> {
+    ) -> RunResult<CallResult> {
         let result = match attr.static_string() {
             Some(StaticStrings::Search) => {
                 let arg = args.get_one_arg("Pattern.search", vm.heap)?;
@@ -378,7 +378,7 @@ impl PyTrait for RePattern {
             }
             _ => return Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns))),
         }?;
-        Ok(super::AttrCallResult::Value(result))
+        Ok(CallResult::Value(result))
     }
 }
 

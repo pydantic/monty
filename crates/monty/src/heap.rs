@@ -18,15 +18,14 @@ pub(crate) use crate::heap_traits::{ContainsHeap, DropWithHeap, HeapGuard, Immut
 use crate::{
     args::ArgValues,
     asyncio::{Coroutine, GatherFuture, GatherItem},
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, SimpleException},
     heap_data::{CellValue, Closure, FunctionDefaults, HeapDataMut},
     intern::Interns,
     resource::{ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
     types::{
-        AttrCallResult, Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt,
-        Module, MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type,
-        allocate_tuple,
+        Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
+        MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, allocate_tuple,
     },
     value::{EitherStr, Value},
 };
@@ -673,7 +672,7 @@ impl PyTrait for HeapData {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         match self {
             Self::Str(s) => s.py_call_attr(self_id, vm, attr, args),
             Self::Bytes(b) => b.py_call_attr(self_id, vm, attr, args),
@@ -729,7 +728,7 @@ impl PyTrait for HeapData {
         attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<Option<AttrCallResult>> {
+    ) -> RunResult<Option<CallResult>> {
         match self {
             Self::Dataclass(dc) => dc.py_getattr(attr, heap, interns),
             Self::Module(m) => Ok(m.py_getattr(attr, heap, interns)),
@@ -1258,23 +1257,18 @@ impl<T: ResourceTracker> Heap<T> {
         Ok(hash)
     }
 
-    /// Calls an attribute on the heap entry, returning an `AttrCallResult` that may signal
+    /// Calls an attribute on the heap entry, returning an `CallResult` that may signal
     /// OS, external, or method calls.
     ///
     /// Temporarily takes ownership of the payload to avoid borrow conflicts when attribute
     /// implementations also need mutable heap access (e.g. for refcounting).
     ///
-    /// Returns `AttrCallResult` which may be:
+    /// Returns `CallResult` which may be:
     /// - `Value(v)` - Method completed synchronously with value `v`
     /// - `OsCall(func, args)` - Method needs OS operation; VM should yield to host
     /// - `ExternalCall(id, args)` - Method needs external function call
     /// - `MethodCall(name, args)` - Dataclass method call; VM should yield to host
-    pub fn call_attr(
-        vm: &mut VM<'_, '_, T>,
-        id: HeapId,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    pub fn call_attr(vm: &mut VM<'_, '_, T>, id: HeapId, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         // Take data out so the borrow of self.entries ends
         let heap = &mut *vm.heap;
         let mut data = take_data!(heap, id, "call_attr");

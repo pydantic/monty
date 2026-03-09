@@ -11,14 +11,14 @@ use smallvec::SmallVec;
 
 use crate::{
     args::{ArgValues, KwargsValues},
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
-    types::{AttrCallResult, PyTrait, Str, Type, allocate_tuple},
+    types::{PyTrait, Str, Type, allocate_tuple},
     value::{EitherStr, Value},
 };
 
@@ -497,7 +497,7 @@ impl PyTrait for Path {
     /// and OS methods that require host system access.
     ///
     /// OS methods (exists, read_text, etc.) are detected via `OsFunction::try_from`
-    /// and returned as `AttrCallResult::OsCall` for the VM to yield to the host.
+    /// and returned as `CallResult::OsCall` for the VM to yield to the host.
     /// Pure methods (is_absolute, joinpath, etc.) are handled directly.
     fn py_call_attr(
         &mut self,
@@ -505,7 +505,7 @@ impl PyTrait for Path {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         let heap = &mut *vm.heap;
         let interns = vm.interns;
         let Some(method) = attr.static_string() else {
@@ -518,7 +518,7 @@ impl PyTrait for Path {
             // Package path as first argument for OS call (as Path, not string)
             let path_arg = Value::Ref(heap.allocate(HeapData::Path(self.clone()))?);
             let os_args = prepend_path_arg(path_arg, args);
-            return Ok(AttrCallResult::OsCall(os_fn, os_args));
+            return Ok(CallResult::OsCall(os_fn, os_args));
         }
 
         // Pure methods (no I/O)
@@ -572,7 +572,7 @@ impl PyTrait for Path {
                 return Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)));
             }
         };
-        value.map(AttrCallResult::Value)
+        value.map(CallResult::Value)
     }
 
     fn py_getattr(
@@ -580,11 +580,11 @@ impl PyTrait for Path {
         attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<Option<AttrCallResult>> {
+    ) -> RunResult<Option<CallResult>> {
         // Fast path: interned strings can be matched by ID without string comparison
         if let Some(ss) = attr.static_string() {
             if let Some(v) = self.getattr_by_static(ss, heap)? {
-                return Ok(Some(AttrCallResult::Value(v)));
+                return Ok(Some(CallResult::Value(v)));
             }
             return Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)));
         }
@@ -602,6 +602,6 @@ impl PyTrait for Path {
         let v = self
             .getattr_by_static(ss, heap)?
             .expect("matched attribute must produce a value");
-        Ok(Some(AttrCallResult::Value(v)))
+        Ok(Some(CallResult::Value(v)))
     }
 }

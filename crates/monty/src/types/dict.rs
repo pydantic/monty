@@ -8,12 +8,10 @@ use ahash::AHashSet;
 use hashbrown::{HashTable, hash_table::Entry};
 use smallvec::smallvec;
 
-use super::{
-    DictItemsView, DictKeysView, DictValuesView, MontyIter, PyTrait, allocate_tuple, py_trait::AttrCallResult,
-};
+use super::{DictItemsView, DictKeysView, DictValuesView, MontyIter, PyTrait, allocate_tuple};
 use crate::{
     args::{ArgValues, KwargsValues},
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
@@ -538,7 +536,7 @@ impl PyTrait for Dict {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         let heap = &mut *vm.heap;
         let interns = vm.interns;
         let Some(method) = attr.static_string() else {
@@ -622,7 +620,7 @@ impl PyTrait for Dict {
                 return Err(ExcType::attribute_error(Type::Dict, attr.as_str(interns)));
             }
         };
-        value.map(AttrCallResult::Value)
+        value.map(CallResult::Value)
     }
 }
 

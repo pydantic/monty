@@ -3,10 +3,10 @@ use std::fmt::Write;
 use ahash::AHashSet;
 use hashbrown::HashTable;
 
-use super::{MontyIter, PyTrait, py_trait::AttrCallResult};
+use super::{MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
@@ -781,7 +781,7 @@ impl PyTrait for Set {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         let heap = &mut *vm.heap;
         let interns = vm.interns;
         let value = match attr.static_string() {
@@ -866,7 +866,7 @@ impl PyTrait for Set {
                 return Err(ExcType::attribute_error(Type::Set, attr.as_str(interns)));
             }
         };
-        value.map(AttrCallResult::Value)
+        value.map(CallResult::Value)
     }
 
     fn py_sub(
@@ -1254,7 +1254,7 @@ impl PyTrait for FrozenSet {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         let heap = &mut *vm.heap;
         let interns = vm.interns;
         let value = match attr.static_string() {
@@ -1316,7 +1316,7 @@ impl PyTrait for FrozenSet {
                 return Err(ExcType::attribute_error(Type::FrozenSet, attr.as_str(interns)));
             }
         };
-        value.map(AttrCallResult::Value)
+        value.map(CallResult::Value)
     }
 
     fn py_sub(

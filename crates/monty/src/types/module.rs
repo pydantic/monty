@@ -2,12 +2,12 @@
 
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapGuard, HeapId},
     intern::{Interns, StringId},
     resource::ResourceTracker,
-    types::{AttrCallResult, Dict, PyTrait},
+    types::{Dict, PyTrait},
     value::{EitherStr, Value},
 };
 
@@ -107,14 +107,14 @@ impl Module {
         attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> Option<AttrCallResult> {
+    ) -> Option<CallResult> {
         let value = self.attrs.get_by_str(attr.as_str(interns), heap, interns)?;
 
         // If the value is a Property, invoke its getter to compute the actual value
         if let Value::Property(prop) = *value {
             Some(prop.get())
         } else {
-            Some(AttrCallResult::Value(value.clone_with_heap(heap)))
+            Some(CallResult::Value(value.clone_with_heap(heap)))
         }
     }
 
@@ -123,7 +123,7 @@ impl Module {
     /// Modules don't have methods - they have callable attributes. This looks up
     /// the attribute and calls it if it's a `ModuleFunction`.
     ///
-    /// Returns `AttrCallResult` because module functions may need OS operations
+    /// Returns `CallResult` because module functions may need OS operations
     /// (e.g., `os.getenv()`) that require host involvement.
     pub fn py_call_attr(
         &self,
@@ -131,7 +131,7 @@ impl Module {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         let heap = &mut *vm.heap;
         let interns = vm.interns;
         let mut args_guard = HeapGuard::new(args, heap);

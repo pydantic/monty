@@ -17,19 +17,21 @@ use crate::{
     intern::{FunctionId, StringId},
     os::OsFunction,
     resource::ResourceTracker,
-    types::{
-        AttrCallResult, Dict, PyTrait, Type, bytes::call_bytes_method, str::call_str_method, r#type::call_type_method,
-    },
+    types::{Dict, PyTrait, Type, bytes::call_bytes_method, str::call_str_method, r#type::call_type_method},
     value::{EitherStr, Value},
 };
 
-/// Result of executing a call opcode.
+/// Result of executing a call or attribute method.
 ///
-/// Used by the `exec_*` methods to communicate what action the VM's main loop
-/// should take after the call completes.
-pub(super) enum CallResult {
-    /// Call completed successfully - push this value onto the stack.
-    Push(Value),
+/// Used by the `exec_*` methods and `py_call_attr` implementations to communicate
+/// what action the VM's main loop should take after the call completes.
+///
+/// For attribute methods that complete synchronously, use `CallResult::Value`.
+/// For operations requiring host involvement (OS calls, external functions, etc.),
+/// use the appropriate variant to signal the VM to yield.
+pub(crate) enum CallResult {
+    /// Call completed synchronously with a return value.
+    Value(Value),
     /// A new frame was pushed for a defined function call.
     /// The VM should reload its cached frame state.
     FramePushed,
@@ -52,18 +54,6 @@ pub(super) enum CallResult {
     /// Used by `asyncio.run()` to execute a coroutine without an explicit `await`.
     /// The VM will push the value onto the stack and execute `exec_get_awaitable`.
     AwaitValue(Value),
-}
-
-impl From<AttrCallResult> for CallResult {
-    fn from(result: AttrCallResult) -> Self {
-        match result {
-            AttrCallResult::Value(v) => Self::Push(v),
-            AttrCallResult::OsCall(func, args) => Self::OsCall(func, args),
-            AttrCallResult::ExternalCall(ext_id, args) => Self::External(EitherStr::Interned(ext_id), args),
-            AttrCallResult::MethodCall(name, args) => Self::MethodCall(name, args),
-            AttrCallResult::AwaitValue(v) => Self::AwaitValue(v),
-        }
-    }
 }
 
 impl<T: ResourceTracker> VM<'_, '_, T> {
@@ -267,8 +257,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     ///
     /// For heap-allocated objects (`Value::Ref`), dispatches to the type's
     /// attribute call implementation via `Heap::call_attr()`, which may return
-    /// `AttrCallResult::OsCall`, `AttrCallResult::ExternalCall`, or
-    /// `AttrCallResult::MethodCall` for operations that require host involvement.
+    /// `CallResult::OsCall`, `CallResult::External`, or
+    /// `CallResult::MethodCall` for operations that require host involvement.
     ///
     /// For interned strings (`Value::InternString`), uses the unified `call_str_method`.
     /// For interned bytes (`Value::InternBytes`), uses the unified `call_bytes_method`.
@@ -279,22 +269,21 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         match obj {
             Value::Ref(heap_id) => {
                 defer_drop!(obj, this);
-                let result = Heap::call_attr(this, heap_id, &attr, args);
-                result.map(Into::into)
+                Heap::call_attr(this, heap_id, &attr, args)
             }
             Value::InternString(string_id) => {
                 // Call string method on interned string literal using the unified dispatcher
                 let s = this.interns.get_str(string_id);
-                call_str_method(s, name_id, args, this).map(CallResult::Push)
+                call_str_method(s, name_id, args, this).map(CallResult::Value)
             }
             Value::InternBytes(bytes_id) => {
                 // Call bytes method on interned bytes literal using the unified dispatcher
                 let b = this.interns.get_bytes(bytes_id);
-                call_bytes_method(b, name_id, args, this).map(CallResult::Push)
+                call_bytes_method(b, name_id, args, this).map(CallResult::Value)
             }
             Value::Builtin(Builtins::Type(t)) => {
                 // Handle classmethods on type objects like dict.fromkeys()
-                call_type_method(t, name_id, args, this).map(CallResult::Push)
+                call_type_method(t, name_id, args, this).map(CallResult::Value)
             }
             _ => {
                 // Non-heap values without method support
@@ -319,7 +308,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         args: ArgValues,
     ) -> Result<Value, RunError> {
         match self.call_function(callable, args)? {
-            CallResult::Push(v) => Ok(v),
+            CallResult::Value(v) => Ok(v),
             CallResult::FramePushed => {
                 // A new frame was pushed for a defined function call - we need to run it
                 // to completion.
@@ -367,12 +356,9 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         match callable {
             Value::Builtin(builtin) => {
                 let result = builtin.call(self, args)?;
-                Ok(CallResult::Push(result))
+                Ok(CallResult::Value(result))
             }
-            Value::ModuleFunction(mf) => {
-                let result = mf.call(self.heap, args, self.interns)?;
-                Ok(result.into())
-            }
+            Value::ModuleFunction(mf) => mf.call(self.heap, args, self.interns),
             Value::ExtFunction(name_id) => {
                 // External function - return to caller to execute
                 Ok(CallResult::External(EitherStr::Interned(*name_id), args))
@@ -706,7 +692,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let coroutine = Coroutine::new(func_id, namespace, frame_cells);
         let coroutine_id = this.heap.allocate(HeapData::Coroutine(coroutine))?;
 
-        Ok(CallResult::Push(Value::Ref(coroutine_id)))
+        Ok(CallResult::Value(Value::Ref(coroutine_id)))
     }
 
     /// Calls a sync function by pushing a new frame.

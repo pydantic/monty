@@ -30,11 +30,10 @@ pub(crate) type TupleVec = SmallVec<[Value; TUPLE_INLINE_CAPACITY]>;
 use super::{
     MontyIter, PyTrait,
     list::{get_slice_items, repr_sequence_fmt},
-    py_trait::AttrCallResult,
 };
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapGuard, HeapId},
@@ -295,18 +294,18 @@ impl PyTrait for Tuple {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         let heap = &mut *vm.heap;
         let interns = vm.interns;
         let args_guard = HeapGuard::new(args, heap);
         match attr.static_string() {
             Some(StaticStrings::Index) => {
                 let (args, heap) = args_guard.into_parts();
-                tuple_index(self, args, heap, interns).map(AttrCallResult::Value)
+                tuple_index(self, args, heap, interns).map(CallResult::Value)
             }
             Some(StaticStrings::Count) => {
                 let (args, heap) = args_guard.into_parts();
-                tuple_count(self, args, heap, interns).map(AttrCallResult::Value)
+                tuple_count(self, args, heap, interns).map(CallResult::Value)
             }
             _ => Err(ExcType::attribute_error(Type::Tuple, attr.as_str(interns))),
         }

@@ -15,7 +15,7 @@ mod scheduler;
 
 use std::cmp::Ordering;
 
-use call::CallResult;
+pub(crate) use call::CallResult;
 use scheduler::Scheduler;
 
 use crate::{
@@ -187,7 +187,7 @@ macro_rules! handle_load_result {
 macro_rules! handle_call_result {
     ($self:expr, $cached_frame:ident, $result:expr) => {
         match $result {
-            Ok(CallResult::Push(result)) => $self.push(result),
+            Ok(CallResult::Value(result)) => $self.push(result),
             Ok(CallResult::FramePushed) => reload_cache!($self, $cached_frame),
             Ok(CallResult::External(name, args)) => {
                 let call_id = $self.allocate_call_id();

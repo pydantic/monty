@@ -29,13 +29,14 @@ use std::borrow::Cow;
 use crate::{
     args::ArgValues,
     builtins::Builtins,
+    bytecode::CallResult,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
-    types::{AttrCallResult, Module, PyTrait, RePattern, Str, Type, re_pattern::value_to_str},
+    types::{Module, PyTrait, RePattern, Str, Type, re_pattern::value_to_str},
     value::Value,
 };
 
@@ -203,24 +204,24 @@ pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -
 /// Dispatches a call to a `re` module function.
 ///
 /// Extracts arguments, compiles patterns as needed, and delegates to the appropriate
-/// `RePattern` method. All functions return `AttrCallResult::Value` since regex
+/// `RePattern` method. All functions return `CallResult::Value` since regex
 /// operations don't need host involvement.
 pub(super) fn call(
     heap: &mut Heap<impl ResourceTracker>,
     function: ReFunctions,
     args: ArgValues,
     interns: &Interns,
-) -> RunResult<AttrCallResult> {
+) -> RunResult<CallResult> {
     match function {
-        ReFunctions::Compile => call_compile(heap, args, interns).map(AttrCallResult::Value),
-        ReFunctions::Search => call_search(heap, args, interns).map(AttrCallResult::Value),
-        ReFunctions::Match => call_match(heap, args, interns).map(AttrCallResult::Value),
-        ReFunctions::Fullmatch => call_fullmatch(heap, args, interns).map(AttrCallResult::Value),
-        ReFunctions::Findall => call_findall(heap, args, interns).map(AttrCallResult::Value),
-        ReFunctions::Sub => call_sub(heap, args, interns).map(AttrCallResult::Value),
-        ReFunctions::Split => call_split(heap, args, interns).map(AttrCallResult::Value),
-        ReFunctions::Finditer => call_finditer(heap, args, interns).map(AttrCallResult::Value),
-        ReFunctions::Escape => call_escape(heap, args, interns).map(AttrCallResult::Value),
+        ReFunctions::Compile => call_compile(heap, args, interns).map(CallResult::Value),
+        ReFunctions::Search => call_search(heap, args, interns).map(CallResult::Value),
+        ReFunctions::Match => call_match(heap, args, interns).map(CallResult::Value),
+        ReFunctions::Fullmatch => call_fullmatch(heap, args, interns).map(CallResult::Value),
+        ReFunctions::Findall => call_findall(heap, args, interns).map(CallResult::Value),
+        ReFunctions::Sub => call_sub(heap, args, interns).map(CallResult::Value),
+        ReFunctions::Split => call_split(heap, args, interns).map(CallResult::Value),
+        ReFunctions::Finditer => call_finditer(heap, args, interns).map(CallResult::Value),
+        ReFunctions::Escape => call_escape(heap, args, interns).map(CallResult::Value),
     }
 }
 

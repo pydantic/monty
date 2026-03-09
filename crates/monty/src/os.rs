@@ -2,7 +2,7 @@
 //!
 //! This module defines the `OsFunction` enum, which represents operations that
 //! cannot be performed in a sandboxed environment. When a type method needs to
-//! perform one of these operations, it returns an `AttrCallResult::OsCall` variant
+//! perform one of these operations, it returns an `CallResult::OsCall` variant
 //! with the function and arguments. The VM then yields control to the host via
 //! `FrameExit::OsCall`, allowing the host to execute the operation and resume.
 //!
