@@ -361,11 +361,13 @@ pub trait PyTrait {
     /// Default implementation returns TypeError.
     fn py_setitem(
         &mut self,
-        _key: Value,
-        _value: Value,
+        key: Value,
+        value: Value,
         heap: &mut Heap<impl ResourceTracker>,
         _interns: &Interns,
     ) -> RunResult<()> {
+        key.drop_with_heap(heap);
+        value.drop_with_heap(heap);
         Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!("'{}' object does not support item assignment", self.py_type(heap)),
