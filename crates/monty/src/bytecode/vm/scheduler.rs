@@ -217,12 +217,6 @@ impl Scheduler {
         self.current_task
     }
 
-    /// Returns the total number of tasks (including main task).
-    #[inline]
-    pub fn task_count(&self) -> usize {
-        self.tasks.len()
-    }
-
     /// Returns a reference to a task by ID.
     ///
     /// # Panics
@@ -593,9 +587,12 @@ impl Scheduler {
         matches!(self.tasks.get(task_id.raw() as usize), Some(task) if matches!(task.state, TaskState::Failed(_)))
     }
 
-    /// Cleans up resources when dropping the scheduler.
+    /// Cleans up all scheduler resources: pending calls, resolved values, task
+    /// stacks/exception stacks, completed results, and task frame cell references.
     ///
-    /// Drops any pending call arguments, resolved values, and task state.
+    /// Each task's `recursion_depth` is restored to the global counter before
+    /// dropping cells, because `save_task_context` subtracted the recursion depth
+    /// and cleanup needs the correct depth to avoid underflow.
     pub fn cleanup(&mut self, heap: &mut crate::heap::Heap<impl crate::resource::ResourceTracker>) {
         // Drop pending call arguments
         for (_, data) in std::mem::take(&mut self.pending_calls) {
@@ -605,7 +602,7 @@ impl Scheduler {
         for (_, value) in std::mem::take(&mut self.resolved) {
             value.drop_with_heap(heap);
         }
-        // Drop task stack/exception values
+        // Drop task stack/exception values and clean up frame cell references
         for task in &mut self.tasks {
             for value in std::mem::take(&mut task.stack) {
                 value.drop_with_heap(heap);
@@ -616,6 +613,11 @@ impl Scheduler {
             // Drop completed task results
             if let TaskState::Completed(value) = std::mem::replace(&mut task.state, TaskState::Ready) {
                 value.drop_with_heap(heap);
+            }
+            for frame in std::mem::take(&mut task.frames) {
+                for cell_id in frame.cells {
+                    heap.dec_ref(cell_id);
+                }
             }
         }
     }

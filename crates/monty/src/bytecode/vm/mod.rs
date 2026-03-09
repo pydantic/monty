@@ -762,15 +762,9 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
         for exc in self.exception_stack.drain(..) {
             exc.drop_with_heap(self.heap);
         }
-        // Stack should be empty, but clean up just in case
-        for value in self.stack.drain(..) {
-            value.drop_with_heap(self.heap);
-        }
-        // Clean up current frames (cell references)
-        self.cleanup_current_frames();
-        // Clean up task frame cell references
-        self.cleanup_all_task_frames();
-        // Clean up scheduler state (task stacks, pending calls, resolved values)
+        // Clean up current task's stack values and frame cell references
+        self.cleanup_current_task();
+        // Clean up scheduler state (task stacks, pending calls, resolved values, frame cells)
         if let Some(scheduler) = &mut self.scheduler {
             scheduler.cleanup(self.heap);
         }
@@ -788,37 +782,6 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// before calling `cleanup()` (which would destroy them in ref-count-panic mode).
     pub fn take_globals(&mut self) -> Vec<Value> {
         std::mem::take(&mut self.globals)
-    }
-
-    /// Cleans up frames stored in all scheduler tasks.
-    ///
-    /// Task frames reference cells that need to be cleaned up before the VM is dropped.
-    /// This is separate from `scheduler.cleanup()` because the scheduler doesn't
-    /// have access to the VM's heap for cell cleanup.
-    ///
-    /// Each task's `recursion_depth` must be restored to the global counter before
-    /// dropping cells, because `save_task_context` subtracted the recursion depth
-    /// and cleanup needs the correct depth to avoid underflow.
-    fn cleanup_all_task_frames(&mut self) {
-        let Some(scheduler) = &mut self.scheduler else {
-            return;
-        };
-        // Clean up each task's saved frames
-        for task_idx in 0..scheduler.task_count() {
-            let task_id = TaskId::new(u32::try_from(task_idx).expect("task_idx exceeds u32"));
-            let task = scheduler.get_task_mut(task_id);
-            // Restore this task's depth contribution so decr_recursion_depth doesn't underflow.
-            let task_depth = task.frames.len();
-            let global_depth = self.heap.get_recursion_depth();
-            self.heap.set_recursion_depth(global_depth + task_depth);
-
-            for frame in std::mem::take(&mut task.frames) {
-                // Clean up cell references
-                for cell_id in frame.cells {
-                    self.heap.dec_ref(cell_id);
-                }
-            }
-        }
     }
 
     /// Allocates a new `CallId` for an external function call.
@@ -1763,14 +1726,16 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
         }
     }
 
-    /// Cleans up all frames for the current task before switching tasks.
+    /// Cleans up all frames and stack values for the current task.
     ///
     /// Used when a task completes or fails and we need to switch to another task.
-    /// Properly cleans up each frame's cell references. Stack values are handled
-    /// separately by the caller (moved to task storage or cleared).
-    pub(super) fn cleanup_current_frames(&mut self) {
+    /// Drains the stack with proper `drop_with_heap` for each value (since locals
+    /// are inlined on the stack), then cleans up each frame's cell references.
+    pub(super) fn cleanup_current_task(&mut self) {
+        for value in self.stack.drain(..) {
+            value.drop_with_heap(self.heap);
+        }
         for frame in self.frames.drain(..) {
-            // Clean up cell references
             for cell_id in frame.cells {
                 self.heap.dec_ref(cell_id);
             }

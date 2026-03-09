@@ -431,10 +431,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
                         // Switch to waiter so error is raised in its context
                         if let Some(waiter_id) = waiter {
-                            self.cleanup_current_frames();
-                            for value in self.stack.drain(..) {
-                                value.drop_with_heap(self.heap);
-                            }
+                            self.cleanup_current_task();
                             self.scheduler_mut().set_current_task(Some(waiter_id));
                             self.load_or_init_task(waiter_id)?;
                         }
@@ -468,10 +465,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     // Remove from ready queue since we're switching directly to it
                     scheduler.remove_from_ready_queue(waiter_id);
                     // Clear current task's state since it's done
-                    self.cleanup_current_frames();
-                    for value in self.stack.drain(..) {
-                        value.drop_with_heap(self.heap);
-                    }
+                    self.cleanup_current_task();
                     // Switch to waiter
                     self.scheduler_mut().set_current_task(Some(waiter_id));
                     self.load_or_init_task(waiter_id)?;
@@ -489,12 +483,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         }
 
         // Gather not complete or no gather - switch to next task
-        // Clear current task's state since it's done
-        self.cleanup_current_frames();
-        // Drain stack values with proper ref counting (locals are inlined on the stack)
-        for value in self.stack.drain(..) {
-            value.drop_with_heap(self.heap);
-        }
+        self.cleanup_current_task();
 
         // Get next ready task
         let scheduler = self.scheduler_mut();
@@ -573,11 +562,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
             // Switch to waiter and propagate the error
             if let Some(waiter_id) = waiter {
-                // Properly clean up current task's frames and stack values
-                self.cleanup_current_frames();
-                for value in self.stack.drain(..) {
-                    value.drop_with_heap(self.heap);
-                }
+                self.cleanup_current_task();
                 self.scheduler_mut().set_current_task(Some(waiter_id));
                 self.load_or_init_task(waiter_id)?;
                 // Get error back from task state to return
@@ -592,10 +577,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         }
 
         // No gather or no waiter - switch to next task
-        self.cleanup_current_frames();
-        for value in self.stack.drain(..) {
-            value.drop_with_heap(self.heap);
-        }
+        self.cleanup_current_task();
 
         let scheduler = self.scheduler_mut();
         scheduler.set_current_task(None);
