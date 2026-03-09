@@ -17,6 +17,10 @@ use strum::FromRepr;
 /// Operands (if any) follow in the bytecode stream and are fetched separately.
 /// With `#[repr(u8)]`, each opcode is exactly 1 byte. Uses `strum::FromRepr` for
 /// efficient byte-to-opcode conversion (bounds check + transmute).
+///
+/// Opcode bytes are part of Monty's serialized `Code` format, so existing values
+/// must remain stable across releases. Append new opcodes to the end of the enum
+/// instead of inserting them into the middle.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr)]
 pub enum Opcode {
@@ -407,6 +411,10 @@ pub enum Opcode {
     ///
     /// The operand is an index into the constant pool where the module name string is stored.
     RaiseImportError,
+    /// Duplicate the top two stack values, preserving order: `[a, b] -> [a, b, a, b]`.
+    ///
+    /// Appended at the end to preserve the serialized byte values of all older opcodes.
+    Dup2,
 }
 
 impl TryFrom<u8> for Opcode {
@@ -432,7 +440,7 @@ impl Opcode {
             BuildSet, BuildSlice, BuildTuple, CallAttr, CallAttrExtended, CallAttrKw, CallBuiltinFunction,
             CallBuiltinType, CallFunction, CallFunctionExtended, CallFunctionKw, CheckExcMatch, ClearException,
             CompareEq, CompareGe, CompareGt, CompareIn, CompareIs, CompareIsNot, CompareLe, CompareLt, CompareModEq,
-            CompareNe, CompareNotIn, DeleteLocal, DictMerge, DictSetItem, Dup, ForIter, FormatValue, GetIter,
+            CompareNe, CompareNotIn, DeleteLocal, DictMerge, DictSetItem, Dup, Dup2, ForIter, FormatValue, GetIter,
             InplaceAdd, InplaceAnd, InplaceDiv, InplaceFloorDiv, InplaceLShift, InplaceMod, InplaceMul, InplaceOr,
             InplacePow, InplaceRShift, InplaceSub, InplaceXor, Jump, JumpIfFalse, JumpIfFalseOrPop, JumpIfTrue,
             JumpIfTrueOrPop, ListAppend, ListExtend, ListToTuple, LoadAttr, LoadAttrImport, LoadCell, LoadConst,
@@ -446,6 +454,7 @@ impl Opcode {
             // Stack operations
             Pop => -1,
             Dup => 1,
+            Dup2 => 2,
             Rot2 | Rot3 => 0, // reorder, no net change
 
             // Constants & Literals (all push 1)
@@ -555,17 +564,26 @@ mod tests {
 
     #[test]
     fn test_opcode_roundtrip() {
-        // Verify that all opcodes from 0 to RaiseImportError (last opcode) can be converted to u8 and back
-        for byte in 0..=Opcode::RaiseImportError as u8 {
+        // Verify that all opcodes from 0 to Dup2 (last opcode) can be converted to u8 and back.
+        for byte in 0..=Opcode::Dup2 as u8 {
             let opcode = Opcode::try_from(byte).unwrap();
             assert_eq!(opcode as u8, byte, "opcode {opcode:?} has wrong discriminant");
         }
     }
 
     #[test]
+    fn test_serialized_opcode_values_remain_stable() {
+        // `RaiseImportError` was the tail opcode before `Dup2` was introduced. Keeping it at
+        // byte 110 preserves compatibility for serialized runners and snapshots compiled by
+        // older versions.
+        assert_eq!(Opcode::RaiseImportError as u8, 110);
+        assert_eq!(Opcode::Dup2 as u8, 111);
+    }
+
+    #[test]
     fn test_invalid_opcode() {
         // Byte just after the last valid opcode should fail
-        let result = Opcode::try_from(Opcode::RaiseImportError as u8 + 1);
+        let result = Opcode::try_from(Opcode::Dup2 as u8 + 1);
         assert!(result.is_err());
         // 255 should also fail
         let result = Opcode::try_from(255u8);

@@ -311,6 +311,30 @@ impl<'a> Compiler<'a> {
                 self.code.emit(opcode);
                 self.compile_store(target);
             }
+            Node::SubscriptOpAssign {
+                target,
+                index,
+                op,
+                object,
+                target_position,
+            } => {
+                let Some(opcode) = operator_to_inplace_opcode(op) else {
+                    return Err(CompileError::new(
+                        "matrix multiplication augmented assignment (@=) is not yet supported",
+                        *target_position,
+                    ));
+                };
+                self.compile_name(target);
+                self.compile_expr(index)?;
+                self.code.emit(Opcode::Dup2);
+                self.code.set_location(*target_position, None);
+                self.code.emit(Opcode::BinarySubscr);
+                self.compile_expr(object)?;
+                self.code.emit(opcode);
+                self.code.emit(Opcode::Rot3);
+                self.code.set_location(*target_position, None);
+                self.code.emit(Opcode::StoreSubscr);
+            }
             Node::SubscriptAssign {
                 target,
                 index,

@@ -379,6 +379,24 @@ impl<'i> Prepare<'i> {
                     let object = self.prepare_expression(object)?;
                     new_nodes.push(Node::OpAssign { target, op, object });
                 }
+                Node::SubscriptOpAssign {
+                    target,
+                    index,
+                    op,
+                    object,
+                    target_position,
+                } => {
+                    let target = self.get_id(target).0;
+                    let index = self.prepare_expression(index)?;
+                    let object = self.prepare_expression(object)?;
+                    new_nodes.push(Node::SubscriptOpAssign {
+                        target,
+                        index,
+                        op,
+                        object,
+                        target_position,
+                    });
+                }
                 Node::SubscriptAssign {
                     target,
                     index,
@@ -1926,6 +1944,10 @@ fn collect_scope_info_from_node(
             // Scan value expression for walrus operators
             collect_assigned_names_from_expr(object, assigned_names, interner);
         }
+        Node::SubscriptOpAssign { index, object, .. } => {
+            collect_assigned_names_from_expr(index, assigned_names, interner);
+            collect_assigned_names_from_expr(object, assigned_names, interner);
+        }
         Node::SubscriptAssign { index, value, .. } => {
             // Subscript assignment doesn't create a new name, it modifies existing container
             // But scan expressions for walrus operators
@@ -2300,6 +2322,10 @@ fn collect_cell_vars_from_node(
         Node::OpAssign { object, .. } => {
             collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
         }
+        Node::SubscriptOpAssign { index, object, .. } => {
+            collect_cell_vars_from_expr(index, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+        }
         Node::SubscriptAssign { index, value, .. } => {
             collect_cell_vars_from_expr(index, our_locals, cell_vars, interner);
             collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
@@ -2531,6 +2557,13 @@ fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSe
         Node::OpAssign { target, object, .. } => {
             // OpAssign reads the target before writing
             referenced.insert(interner.get_str(target.name_id).to_string());
+            collect_referenced_names_from_expr(object, referenced, interner);
+        }
+        Node::SubscriptOpAssign {
+            target, index, object, ..
+        } => {
+            referenced.insert(interner.get_str(target.name_id).to_string());
+            collect_referenced_names_from_expr(index, referenced, interner);
             collect_referenced_names_from_expr(object, referenced, interner);
         }
         Node::SubscriptAssign {

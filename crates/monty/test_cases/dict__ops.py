@@ -29,6 +29,42 @@ d = {'a': 1}
 d['a'] = 99
 assert d == {'a': 99}, 'subscript set existing key'
 
+# === Dict subscript augmented assignment ===
+totals = {'photo': 1}
+rtype = 'photo'
+likes = 2
+totals[rtype] += likes
+assert totals == {'photo': 3}, 'subscript += updates existing dict item'
+
+calls = 0
+
+
+def key():
+    global calls
+    calls += 1
+    return 'photo'
+
+
+totals = {'photo': 10}
+totals[key()] += 5
+assert totals == {'photo': 15}, 'subscript += stores the computed result back'
+assert calls == 1, 'subscript += evaluates the index expression once'
+
+try:
+    missing = {}
+    missing['photo'] += 1
+    assert False, 'subscript += on a missing dict key should raise KeyError'
+except KeyError as e:
+    assert e.args == ('photo',), 'subscript += missing key preserves the missing key in KeyError'
+
+try:
+    existing = {'photo': 'a'}
+    existing['photo'] += 1
+    assert False, 'subscript += with incompatible operand types should raise TypeError'
+except TypeError as e:
+    assert e.args == ('can only concatenate str (not "int") to str',), 'subscript += type error matches CPython'
+    assert existing == {'photo': 'a'}, 'failed subscript += does not overwrite the original dict item'
+
 # === Dict.get() method ===
 d = {'a': 1, 'b': 2}
 assert d.get('a') == 1, 'get existing'

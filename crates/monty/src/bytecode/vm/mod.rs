@@ -859,6 +859,13 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                     let value = self.peek().clone_with_heap(self);
                     self.push(value);
                 }
+                Opcode::Dup2 => {
+                    let len = self.stack.len();
+                    let first = self.stack[len - 2].clone_with_heap(self);
+                    let second = self.stack[len - 1].clone_with_heap(self);
+                    self.push(first);
+                    self.push(second);
+                }
                 Opcode::Rot2 => {
                     // Swap top two: [a, b] → [b, a]
                     let len = self.stack.len();
