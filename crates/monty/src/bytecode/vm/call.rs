@@ -402,11 +402,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
         };
 
-        // Increment refcounts for captured cells
-        for &cell_id in &cells {
-            self.heap.inc_ref(cell_id);
-        }
-
         let this = self;
         defer_drop!(defaults, this);
         this.call_def_function(func_id, &cells, defaults, args)
@@ -619,14 +614,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         defaults: &[Value],
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
-        // Get function info (interns is a shared reference so no conflict)
         let func = self.interns.get_function(func_id);
 
         if func.is_async {
-            // Async function: create a Coroutine instead of pushing a frame
             self.create_coroutine(func_id, cells, defaults, args)
         } else {
-            // Sync function: push a new frame
             self.call_sync_function(func_id, cells, defaults, args)
         }
     }
@@ -652,9 +644,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         func.signature
             .bind(args, defaults, this.heap, this.interns, func.name, namespace)?;
 
-        // Track created cell HeapIds for the coroutine
-        let mut frame_cells: Vec<HeapId> = Vec::with_capacity(func.cell_var_count + cells.len());
-
         // 3. Create cells for variables captured by nested functions
         {
             let param_count = func.signature.total_slots();
@@ -666,7 +655,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     Value::Undefined
                 };
                 let cell_id = this.heap.allocate(HeapData::Cell(CellValue(cell_value)))?;
-                frame_cells.push(cell_id);
                 namespace.resize_with(cell_slot, || Value::Undefined);
                 namespace.push(Value::Ref(cell_id));
             }
@@ -675,7 +663,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             let free_var_start = param_count + func.cell_var_count;
             for (i, &cell_id) in cells.iter().enumerate() {
                 this.heap.inc_ref(cell_id);
-                frame_cells.push(cell_id);
                 let slot = free_var_start + i;
                 namespace.resize_with(slot, || Value::Undefined);
                 namespace.push(Value::Ref(cell_id));
@@ -687,7 +674,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // 6. Create Coroutine on heap
         let (namespace, this) = namespace_guard.into_parts();
-        let coroutine = Coroutine::new(func_id, namespace, frame_cells);
+        let coroutine = Coroutine::new(func_id, namespace);
         let coroutine_id = this.heap.allocate(HeapData::Coroutine(coroutine))?;
 
         Ok(CallResult::Value(Value::Ref(coroutine_id)))
@@ -735,9 +722,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
         }
 
-        // Track created cell HeapIds for the frame
-        let mut frame_cells: Vec<HeapId> = Vec::with_capacity(func.cell_var_count + cells.len());
-
         // 3. Create cells for variables captured by nested functions
         {
             let param_count = func.signature.total_slots();
@@ -749,7 +733,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     Value::Undefined
                 };
                 let cell_id = this.heap.allocate(HeapData::Cell(CellValue(cell_value)))?;
-                frame_cells.push(cell_id);
                 namespace.resize_with(cell_slot, || Value::Undefined);
                 namespace.push(Value::Ref(cell_id));
             }
@@ -758,7 +741,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             let free_var_start = param_count + func.cell_var_count;
             for (i, &cell_id) in cells.iter().enumerate() {
                 this.heap.inc_ref(cell_id);
-                frame_cells.push(cell_id);
                 let slot = free_var_start + i;
                 namespace.resize_with(slot, || Value::Undefined);
                 namespace.push(Value::Ref(cell_id));
@@ -780,7 +762,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             stack_base,
             locals_count,
             func_id,
-            frame_cells,
             Some(call_position),
         ))?;
 

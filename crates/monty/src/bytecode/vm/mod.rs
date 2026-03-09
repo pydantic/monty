@@ -24,8 +24,8 @@ use crate::{
     asyncio::{CallId, TaskId},
     bytecode::{code::Code, op::Opcode},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, Heap, HeapData, HeapId},
-    heap_data::{Closure, FunctionDefaults},
+    heap::{ContainsHeap, Heap, HeapData, HeapGuard, HeapId},
+    heap_data::{Closure, FunctionDefaults, HeapDataMut},
     intern::{FunctionId, Interns, StringId},
     io::PrintWriter,
     modules::BuiltinModule,
@@ -352,9 +352,6 @@ pub struct CallFrame<'code> {
     /// Function ID (for tracebacks). None for module-level code.
     function_id: Option<FunctionId>,
 
-    /// Captured cells for closures.
-    cells: Vec<HeapId>,
-
     /// Call site position (for tracebacks).
     call_position: Option<CodeRange>,
 
@@ -375,7 +372,6 @@ impl<'code> CallFrame<'code> {
             stack_base: 0,
             locals_count: 0,
             function_id: None,
-            cells: Vec::new(),
             call_position: None,
             should_return: false,
         }
@@ -390,7 +386,6 @@ impl<'code> CallFrame<'code> {
         stack_base: usize,
         locals_count: u16,
         function_id: FunctionId,
-        cells: Vec<HeapId>,
         call_position: Option<CodeRange>,
     ) -> Self {
         Self {
@@ -399,7 +394,6 @@ impl<'code> CallFrame<'code> {
             stack_base,
             locals_count,
             function_id: Some(function_id),
-            cells,
             call_position,
             should_return: false,
         }
@@ -454,9 +448,6 @@ pub struct SerializedFrame {
     /// Number of local variable slots (0 for module-level frames).
     locals_count: u16,
 
-    /// Captured cells for closures (HeapIds remain valid after heap deserialization).
-    cells: Vec<HeapId>,
-
     /// Call site position (for tracebacks).
     call_position: Option<CodeRange>,
 }
@@ -473,7 +464,6 @@ impl CallFrame<'_> {
             ip: self.ip,
             stack_base: self.stack_base,
             locals_count: self.locals_count,
-            cells: self.cells.clone(),
             call_position: self.call_position,
         }
     }
@@ -678,7 +668,6 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                     stack_base: sf.stack_base,
                     locals_count: sf.locals_count,
                     function_id: sf.function_id,
-                    cells: sf.cells,
                     call_position: sf.call_position,
                     should_return: false,
                 }
@@ -953,11 +942,11 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 // Variables - Cell Operations (closures)
                 Opcode::LoadCell => {
                     let slot = fetch_u16!(cached_frame);
-                    try_catch_sync!(self, cached_frame, self.load_cell(slot));
+                    try_catch_sync!(self, cached_frame, self.load_cell(&cached_frame, slot));
                 }
                 Opcode::StoreCell => {
                     let slot = fetch_u16!(cached_frame);
-                    self.store_cell(slot);
+                    self.store_cell(&cached_frame, slot);
                 }
                 // Binary Operations - route through exception handling for tracebacks
                 Opcode::BinaryAdd => try_catch_sync!(self, cached_frame, self.binary_add()),
@@ -1735,11 +1724,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
         for value in self.stack.drain(..) {
             value.drop_with_heap(self.heap);
         }
-        for frame in self.frames.drain(..) {
-            for cell_id in frame.cells {
-                self.heap.dec_ref(cell_id);
-            }
-        }
+        self.frames.clear();
     }
 
     /// Runs garbage collection with proper GC roots.
@@ -1931,20 +1916,35 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
 
     /// Loads from a closure cell and pushes onto the stack.
     ///
-    /// Returns a NameError if the cell value is undefined (free variable not bound).
-    fn load_cell(&mut self, slot: u16) -> RunResult<()> {
-        let cell_id = self.current_frame().cells[slot as usize];
-        // get_cell_value already clones with proper refcount via clone_with_heap
-        let value = self.heap.get_cell_value(cell_id);
+    /// The cell `HeapId` is read from the frame's local variable slot on the stack
+    /// (cells are stored as `Value::Ref(cell_id)` at known positions in the locals region).
+    /// Returns a `NameError` if the cell value is undefined (free variable not bound).
+    fn load_cell(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) -> RunResult<()> {
+        let cell_id = self.cell_id_from_local(cached_frame, slot);
+        let value = match self.heap.get(cell_id) {
+            HeapData::Cell(c) => c.0.clone_with_heap(self),
+            _ => panic!("LoadCell: entry is not a Cell"),
+        };
 
         // Check for undefined value - raise NameError for unbound free variable
         if matches!(value, Value::Undefined) {
-            let name = self.current_frame().code.local_name(slot);
+            value.drop_with_heap(self);
+            let name = cached_frame.code.local_name(slot);
             return Err(self.free_var_error(name));
         }
 
         self.push(value);
         Ok(())
+    }
+
+    /// Extracts the cell `HeapId` from a local variable slot on the stack.
+    ///
+    /// Cell variables are stored as `Value::Ref(cell_id)` in the frame's locals region.
+    fn cell_id_from_local(&self, cached_frame: &CachedFrame<'_>, slot: u16) -> HeapId {
+        match &self.stack[cached_frame.stack_base + slot as usize] {
+            Value::Ref(cell_id) => *cell_id,
+            other => panic!("LoadCell/StoreCell: expected cell reference in local slot {slot}, found {other:?}"),
+        }
     }
 
     /// Creates a NameError for an unbound free variable.
@@ -1957,10 +1957,19 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     }
 
     /// Pops the top of stack and stores it in a closure cell.
-    fn store_cell(&mut self, slot: u16) {
+    ///
+    /// The cell `HeapId` is read from the frame's local variable slot on the stack.
+    fn store_cell(&mut self, cached_frame: &CachedFrame<'_>, slot: u16) {
         let value = self.pop();
-        let cell_id = self.current_frame().cells[slot as usize];
-        self.heap.set_cell_value(cell_id, value);
+        // The guard will clean up the new value if we panic, or the old value if we swap
+        let mut guard = HeapGuard::new(value, self);
+        let (value, this) = guard.as_parts_mut();
+
+        let cell_id = this.cell_id_from_local(cached_frame, slot);
+        match this.heap.get_mut(cell_id) {
+            HeapDataMut::Cell(c) => std::mem::swap(&mut c.0, value),
+            _ => panic!("StoreCell: entry is not a Cell"),
+        }
     }
 }
 

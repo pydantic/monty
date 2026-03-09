@@ -202,10 +202,8 @@ impl HeapData {
             Self::Dataclass(dc) => dc.has_refs(),
             Self::Iter(iter) => iter.has_refs(),
             Self::Module(m) => m.has_refs(),
-            // Coroutines always have refs (namespace values, frame_cells)
-            Self::Coroutine(coro) => {
-                !coro.frame_cells.is_empty() || coro.namespace.iter().any(|v| matches!(v, Value::Ref(_)))
-            }
+            // Coroutines have refs from namespace values (params, cell/free vars)
+            Self::Coroutine(coro) => coro.namespace.iter().any(|v| matches!(v, Value::Ref(_))),
             // GatherFutures have refs from coroutine items and results
             Self::GatherFuture(gather) => {
                 gather
@@ -324,9 +322,7 @@ impl PyTrait for HeapData {
             Self::LongInt(li) => li.estimate_size(),
             Self::Module(m) => std::mem::size_of::<Module>() + m.attrs().py_estimate_size(),
             Self::Coroutine(coro) => {
-                std::mem::size_of::<Coroutine>()
-                    + coro.namespace.len() * std::mem::size_of::<Value>()
-                    + coro.frame_cells.len() * std::mem::size_of::<HeapId>()
+                std::mem::size_of::<Coroutine>() + coro.namespace.len() * std::mem::size_of::<Value>()
             }
             Self::GatherFuture(gather) => {
                 std::mem::size_of::<GatherFuture>()
@@ -461,8 +457,6 @@ impl PyTrait for HeapData {
             Self::Iter(iter) => iter.py_dec_ref_ids(stack),
             Self::Module(m) => m.py_dec_ref_ids(stack),
             Self::Coroutine(coro) => {
-                // Decrement ref count for frame cells
-                stack.extend(coro.frame_cells.iter().copied());
                 // Decrement ref count for namespace values that are heap references
                 for value in &mut coro.namespace {
                     value.py_dec_ref_ids(stack);
@@ -1363,32 +1357,6 @@ impl<T: ResourceTracker> Heap<T> {
         self.entries[1..].iter().filter(|o| o.is_some()).count()
     }
 
-    /// Gets the value inside a cell, cloning it with proper refcount handling.
-    ///
-    /// # Panics
-    /// Panics if the ID is invalid, the value has been freed, or the entry is not a Cell.
-    pub fn get_cell_value(&self, id: HeapId) -> Value {
-        match self.get(id) {
-            HeapData::Cell(c) => c.0.clone_with_heap(self),
-            _ => panic!("Heap::get_cell_value: entry is not a Cell"),
-        }
-    }
-
-    /// Sets the value inside a cell, properly dropping the old value.
-    ///
-    /// # Panics
-    /// Panics if the ID is invalid, the value has been freed, or the entry is not a Cell.
-    pub fn set_cell_value(&mut self, id: HeapId, value: Value) {
-        // The guard will clean up the new value if we panic, or the old value if we swap
-        let mut guard = HeapGuard::new(value, self);
-        let (value, this) = guard.as_parts_mut();
-
-        match this.get_mut(id) {
-            HeapDataMut::Cell(c) => std::mem::swap(&mut c.0, value),
-            _ => panic!("Heap::set_cell_value: entry is not a Cell"),
-        }
-    }
-
     /// Helper for List in-place add: extends the destination vec with items from a heap list.
     ///
     /// This method exists to work around borrow checker limitations when List::py_iadd
@@ -1750,11 +1718,7 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
             }
         }
         HeapData::Coroutine(coro) => {
-            // Add captured cells to work list
-            for cell_id in &coro.frame_cells {
-                work_list.push(*cell_id);
-            }
-            // Add namespace values that are heap references
+            // Add namespace values that are heap references (includes cell refs)
             for value in &coro.namespace {
                 if let Value::Ref(id) = value {
                     work_list.push(*id);

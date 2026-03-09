@@ -96,8 +96,6 @@ pub(crate) struct SerializedTaskFrame {
     pub stack_base: usize,
     /// Number of local variable slots (0 for module-level frames).
     pub locals_count: u16,
-    /// Captured cells for closures.
-    pub cells: Vec<HeapId>,
     /// Call site position (for tracebacks).
     pub call_position: Option<CodeRange>,
 }
@@ -538,14 +536,7 @@ impl Scheduler {
         let task_depth = task.frames.len();
         let global_depth = heap.get_recursion_depth();
         heap.set_recursion_depth(global_depth + task_depth);
-
-        // Clean up frame cell references (locals are in the task's stack,
-        // which was already cleaned up above)
-        for frame in std::mem::take(&mut task.frames) {
-            for cell_id in frame.cells {
-                heap.dec_ref(cell_id);
-            }
-        }
+        task.frames.clear();
 
         // Mark as failed with a cancellation error
         task.state = TaskState::Failed(
@@ -602,7 +593,7 @@ impl Scheduler {
         for (_, value) in std::mem::take(&mut self.resolved) {
             value.drop_with_heap(heap);
         }
-        // Drop task stack/exception values and clean up frame cell references
+        // Drop task stack/exception values and completed results
         for task in &mut self.tasks {
             for value in std::mem::take(&mut task.stack) {
                 value.drop_with_heap(heap);
@@ -610,15 +601,14 @@ impl Scheduler {
             for value in std::mem::take(&mut task.exception_stack) {
                 value.drop_with_heap(heap);
             }
-            // Drop completed task results
             if let TaskState::Completed(value) = std::mem::replace(&mut task.state, TaskState::Ready) {
                 value.drop_with_heap(heap);
             }
-            for frame in std::mem::take(&mut task.frames) {
-                for cell_id in frame.cells {
-                    heap.dec_ref(cell_id);
-                }
-            }
+            // Restore recursion depth and clear frames
+            let task_depth = task.frames.len();
+            let global_depth = heap.get_recursion_depth();
+            heap.set_recursion_depth(global_depth + task_depth);
+            task.frames.clear();
         }
     }
 }

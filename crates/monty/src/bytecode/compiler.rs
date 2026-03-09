@@ -67,13 +67,6 @@ pub struct Compiler<'a> {
     /// Each entry tracks the loop start offset and pending break jumps.
     loop_stack: Vec<LoopInfo>,
 
-    /// Base namespace slot for cell variables.
-    ///
-    /// For functions, this is the parameter count. Cell/free variable namespace slots
-    /// start at `cell_base`, so we subtract this when emitting LoadCell/StoreCell
-    /// to convert to the cells array index.
-    cell_base: u16,
-
     /// Stack of finally targets for handling returns inside try-finally.
     ///
     /// When a return statement is compiled inside a try-finally block, instead
@@ -152,20 +145,6 @@ impl<'a> Compiler<'a> {
             interns,
             functions,
             loop_stack: Vec::new(),
-            cell_base: 0,
-            finally_targets: Vec::new(),
-            except_handler_depth: 0,
-        }
-    }
-
-    /// Creates a new compiler with a specific cell base offset.
-    fn new_with_cell_base(interns: &'a Interns, functions: Vec<Function>, cell_base: u16) -> Self {
-        Self {
-            code: CodeBuilder::new(),
-            interns,
-            functions,
-            loop_stack: Vec::new(),
-            cell_base,
             finally_targets: Vec::new(),
             except_handler_depth: 0,
         }
@@ -215,9 +194,6 @@ impl<'a> Compiler<'a> {
     /// compiled to bytecode with an implicit `return None` at the end if there's
     /// no explicit return statement.
     ///
-    /// The `cell_base` parameter is the number of parameter slots, used to convert
-    /// cell variable namespace slots to cells array indices.
-    ///
     /// The `functions` parameter receives any previously compiled functions, and
     /// any nested functions found in the body will be added to it.
     fn compile_function_body(
@@ -225,9 +201,8 @@ impl<'a> Compiler<'a> {
         interns: &Interns,
         functions: Vec<Function>,
         num_locals: u16,
-        cell_base: u16,
     ) -> Result<(Code, Vec<Function>), CompileError> {
-        let mut compiler = Compiler::new_with_cell_base(interns, functions, cell_base);
+        let mut compiler = Compiler::new(interns, functions);
         compiler.compile_block(body)?;
 
         // Implicit return None if no explicit return
@@ -426,10 +401,9 @@ impl<'a> Compiler<'a> {
         // 1. Compile the function body recursively
         // Take ownership of functions for the recursive compile, then restore
         let functions = std::mem::take(&mut self.functions);
-        let cell_base = u16::try_from(func_def.signature.param_count()).expect("function parameter count exceeds u16");
         let namespace_size = u16::try_from(func_def.namespace_size).expect("function namespace size exceeds u16");
         let (body_code, mut functions) =
-            Self::compile_function_body(&func_def.body, self.interns, functions, namespace_size, cell_base)?;
+            Self::compile_function_body(&func_def.body, self.interns, functions, namespace_size)?;
 
         // 2. Create the compiled Function and add to the vector
         let func_id = functions.len();
@@ -506,10 +480,9 @@ impl<'a> Compiler<'a> {
 
         // 1. Compile the function body recursively
         let functions = std::mem::take(&mut self.functions);
-        let cell_base = u16::try_from(func_def.signature.param_count()).expect("function parameter count exceeds u16");
         let namespace_size = u16::try_from(func_def.namespace_size).expect("function namespace size exceeds u16");
         let (body_code, mut functions) =
-            Self::compile_function_body(&func_def.body, self.interns, functions, namespace_size, cell_base)?;
+            Self::compile_function_body(&func_def.body, self.interns, functions, namespace_size)?;
 
         // 2. Create the compiled Function and add to the vector
         let func_id = functions.len();
@@ -900,11 +873,10 @@ impl<'a> Compiler<'a> {
                 self.code.emit_u16(Opcode::LoadGlobal, slot);
             }
             NameScope::Cell => {
-                // Convert namespace slot to cells array index
-                let cell_index = slot.saturating_sub(self.cell_base);
                 // Register the name for NameError messages (unbound free variable)
-                self.code.register_local_name(cell_index, ident.name_id);
-                self.code.emit_u16(Opcode::LoadCell, cell_index);
+                self.code.register_local_name(slot, ident.name_id);
+                // Emit local slot index — the VM reads the cell HeapId from the stack
+                self.code.emit_u16(Opcode::LoadCell, slot);
             }
         }
     }
@@ -950,9 +922,8 @@ impl<'a> Compiler<'a> {
                 self.code.emit_u16(Opcode::StoreGlobal, slot);
             }
             NameScope::Cell => {
-                // Convert namespace slot to cells array index
-                let cell_index = slot.saturating_sub(self.cell_base);
-                self.code.emit_u16(Opcode::StoreCell, cell_index);
+                // Emit local slot index — the VM reads the cell HeapId from the stack
+                self.code.emit_u16(Opcode::StoreCell, slot);
             }
         }
     }

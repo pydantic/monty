@@ -95,9 +95,6 @@ pub(crate) struct Coroutine {
     /// Pre-bound namespace values (sized to function namespace).
     /// Contains bound parameters, captured cells, and uninitialized locals.
     pub namespace: Vec<Value>,
-    /// HeapIds of captured cells from enclosing scopes.
-    /// These are passed to the frame when execution starts.
-    pub frame_cells: Vec<HeapId>,
     /// Current execution state.
     pub state: CoroutineState,
 }
@@ -107,12 +104,10 @@ impl Coroutine {
     /// # Arguments
     /// * `func_id` - The async function to execute
     /// * `namespace` - Pre-bound namespace with parameters and captured variables
-    /// * `frame_cells` - HeapIds of captured cells from enclosing scopes
-    pub fn new(func_id: FunctionId, namespace: Vec<Value>, frame_cells: Vec<HeapId>) -> Self {
+    pub fn new(func_id: FunctionId, namespace: Vec<Value>) -> Self {
         Self {
             func_id,
             namespace,
-            frame_cells,
             state: CoroutineState::New,
         }
     }

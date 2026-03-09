@@ -337,9 +337,7 @@ impl PyTrait for HeapDataMut<'_> {
             Self::LongInt(li) => li.estimate_size(),
             Self::Module(m) => std::mem::size_of::<Module>() + m.attrs().py_estimate_size(),
             Self::Coroutine(coro) => {
-                std::mem::size_of::<Coroutine>()
-                    + coro.namespace.len() * std::mem::size_of::<Value>()
-                    + coro.frame_cells.len() * std::mem::size_of::<HeapId>()
+                std::mem::size_of::<Coroutine>() + coro.namespace.len() * std::mem::size_of::<Value>()
             }
             Self::GatherFuture(gather) => {
                 std::mem::size_of::<GatherFuture>()
@@ -474,8 +472,6 @@ impl PyTrait for HeapDataMut<'_> {
             Self::Iter(iter) => iter.py_dec_ref_ids(stack),
             Self::Module(m) => m.py_dec_ref_ids(stack),
             Self::Coroutine(coro) => {
-                // Decrement ref count for frame cells
-                stack.extend(coro.frame_cells.iter().copied());
                 // Decrement ref count for namespace values that are heap references
                 for value in &mut coro.namespace {
                     value.py_dec_ref_ids(stack);

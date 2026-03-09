@@ -123,12 +123,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // Extract coroutine data before mutating
         let func_id = coro.func_id;
         let namespace_values: Vec<Value> = coro.namespace.iter().map(|v| v.clone_with_heap(this.heap)).collect();
-        let frame_cells: Vec<HeapId> = coro.frame_cells.clone();
-
-        // Increment refcounts for shared cell references
-        for &cell_id in &frame_cells {
-            this.heap.inc_ref(cell_id);
-        }
 
         // Mark coroutine as Running
         if let HeapDataMut::Coroutine(coro_mut) = this.heap.get_mut(heap_id) {
@@ -136,7 +130,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         }
 
         // Create namespace and push frame (guard drops awaitable at scope exit)
-        this.start_coroutine_frame(func_id, namespace_values, frame_cells)?;
+        this.start_coroutine_frame(func_id, namespace_values)?;
 
         Ok(AwaitResult::FramePushed)
     }
@@ -291,12 +285,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     ///
     /// Extends the VM stack with the coroutine's pre-bound namespace values
     /// and pushes a new frame to execute the coroutine's function body.
-    fn start_coroutine_frame(
-        &mut self,
-        func_id: FunctionId,
-        namespace_values: Vec<Value>,
-        frame_cells: Vec<HeapId>,
-    ) -> Result<(), RunError> {
+    fn start_coroutine_frame(&mut self, func_id: FunctionId, namespace_values: Vec<Value>) -> Result<(), RunError> {
         let call_position = self.current_position();
         let func = self.interns.get_function(func_id);
         let locals_count = u16::try_from(namespace_values.len()).expect("coroutine namespace size exceeds u16");
@@ -315,7 +304,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             stack_base,
             locals_count,
             func_id,
-            frame_cells,
             Some(call_position),
         ))?;
 
@@ -604,7 +592,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 ip: f.ip,
                 stack_base: f.stack_base,
                 locals_count: f.locals_count,
-                cells: f.cells,
                 call_position: f.call_position,
             })
             .collect();
@@ -677,7 +664,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                         stack_base: sf.stack_base,
                         locals_count: sf.locals_count,
                         function_id: sf.function_id,
-                        cells: sf.cells,
                         call_position: sf.call_position,
                         should_return: false,
                     }
@@ -722,12 +708,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // Extract coroutine data
         let func_id = coro.func_id;
         let namespace_values: Vec<Value> = coro.namespace.iter().map(|v| v.clone_with_heap(self)).collect();
-        let frame_cells: Vec<HeapId> = coro.frame_cells.clone();
-
-        // Increment refcounts for shared cell references
-        for &cell_id in &frame_cells {
-            self.heap.inc_ref(cell_id);
-        }
 
         // Mark coroutine as Running
         if let HeapDataMut::Coroutine(coro_mut) = self.heap.get_mut(coroutine_id) {
@@ -752,7 +732,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             stack_base,
             locals_count,
             func_id,
-            frame_cells,
             None, // No call position — this is the root frame for a spawned task
         ))?;
 
