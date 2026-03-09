@@ -414,9 +414,6 @@ pub struct CachedFrame<'code> {
 
     /// Base index into the VM stack for this frame's locals.
     stack_base: usize,
-
-    /// Number of local variable slots (0 for module-level frames).
-    locals_count: u16,
 }
 
 impl<'code> From<&CallFrame<'code>> for CachedFrame<'code> {
@@ -425,7 +422,6 @@ impl<'code> From<&CallFrame<'code>> for CachedFrame<'code> {
             code: frame.code,
             ip: frame.ip,
             stack_base: frame.stack_base,
-            locals_count: frame.locals_count,
         }
     }
 }
@@ -906,6 +902,10 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 Opcode::DeleteLocal => {
                     let slot = u16::from(fetch_u8!(cached_frame));
                     self.delete_local(&cached_frame, slot);
+                }
+                Opcode::DeleteGlobal => {
+                    let slot = fetch_u16!(cached_frame);
+                    self.delete_global(slot);
                 }
                 // Variables - Callable-context Local Loads
                 Opcode::LoadLocalCallable => {
@@ -1761,12 +1761,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// Returns `Ok(None)` for normal loads, `Ok(Some(FrameExit::NameLookup))` when
     /// the host needs to resolve an unknown name, or `Err` for true unbound locals.
     fn load_local(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) -> Result<Option<FrameExit>, RunError> {
-        // Module-level frames (locals_count == 0) share locals with globals.
-        let value = if cached_frame.locals_count == 0 {
-            &self.globals[slot as usize]
-        } else {
-            &self.stack[cached_frame.stack_base + slot as usize]
-        };
+        let value = &self.stack[cached_frame.stack_base + slot as usize];
 
         // Check for undefined value — raise appropriate error based on whether
         // this is a true local (assigned somewhere) or an undefined reference
@@ -1781,7 +1776,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
             return Ok(Some(FrameExit::NameLookup {
                 name_id,
                 namespace_slot: slot,
-                is_global: cached_frame.locals_count == 0,
+                is_global: false,
             }));
         }
 
@@ -1795,12 +1790,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// (a `LocalUnassigned` name), it pushes `Value::ExtFunction(name_id)` so that the
     /// subsequent `CallFunction` opcode can yield `FunctionCall` instead.
     fn load_local_callable(&mut self, cached_frame: &CachedFrame<'a>, slot: u16, name_id: StringId) {
-        // Module-level frames (locals_count == 0) share locals with globals.
-        let value = if cached_frame.locals_count == 0 {
-            &self.globals[slot as usize]
-        } else {
-            &self.stack[cached_frame.stack_base + slot as usize]
-        };
+        let value = &self.stack[cached_frame.stack_base + slot as usize];
 
         if matches!(value, Value::Undefined) {
             // LocalUnassigned in call context — push ExtFunction for the host to handle.
@@ -1847,28 +1837,16 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     }
 
     /// Pops the top of stack and stores it in a local variable.
-    ///
-    /// Module-level frames (locals_count == 0) redirect to globals.
     fn store_local(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) {
         let value = self.pop();
-        let target = if cached_frame.locals_count == 0 {
-            &mut self.globals[slot as usize]
-        } else {
-            &mut self.stack[cached_frame.stack_base + slot as usize]
-        };
+        let target = &mut self.stack[cached_frame.stack_base + slot as usize];
         let old_value = std::mem::replace(target, value);
         old_value.drop_with_heap(self);
     }
 
     /// Deletes a local variable (sets it to Undefined).
-    ///
-    /// Module-level frames (locals_count == 0) redirect to globals.
     fn delete_local(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) {
-        let target = if cached_frame.locals_count == 0 {
-            &mut self.globals[slot as usize]
-        } else {
-            &mut self.stack[cached_frame.stack_base + slot as usize]
-        };
+        let target = &mut self.stack[cached_frame.stack_base + slot as usize];
         let old_value = std::mem::replace(target, Value::Undefined);
         old_value.drop_with_heap(self);
     }
@@ -1881,9 +1859,18 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     fn load_global(&mut self, slot: u16) -> Result<Option<FrameExit>, RunError> {
         let value = self.globals[slot as usize].clone_with_heap(self.heap);
 
-        // Check for undefined value — yield to host for name resolution
+        // Check for undefined value — raise appropriate error or yield to host
         if matches!(value, Value::Undefined) {
-            let Some(name_id) = self.current_frame().code.local_name(slot) else {
+            let name = self.current_frame().code.local_name(slot);
+
+            // If the name is registered as an assigned local (e.g. a module-level
+            // variable or comprehension loop variable), raise UnboundLocalError
+            // immediately rather than yielding NameLookup.
+            if self.current_frame().code.is_assigned_local(slot) {
+                return Err(self.unbound_local_error(slot, name));
+            }
+
+            let Some(name_id) = name else {
                 // No name available — raise NameError directly
                 return Err(self.name_error(slot, None));
             };
@@ -1902,6 +1889,12 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     fn store_global(&mut self, slot: u16) {
         let value = self.pop();
         let old_value = std::mem::replace(&mut self.globals[slot as usize], value);
+        old_value.drop_with_heap(self);
+    }
+
+    /// Deletes a global variable (sets it to Undefined).
+    fn delete_global(&mut self, slot: u16) {
+        let old_value = std::mem::replace(&mut self.globals[slot as usize], Value::Undefined);
         old_value.drop_with_heap(self);
     }
 

@@ -1585,7 +1585,9 @@ impl<'i> Prepare<'i> {
     fn get_id(&mut self, ident: Identifier) -> (Identifier, bool) {
         let name_str = self.interner.get_str(ident.name_id);
 
-        // At module level, all names are local (which is also the global namespace)
+        // At module level, all names are local (which is also the global namespace).
+        // The compiler emits global opcodes for these, so the VM reads/writes
+        // directly from the globals array rather than the stack.
         if self.is_module_scope {
             return match self.name_map.entry(name_str.to_string()) {
                 Entry::Occupied(e) => {

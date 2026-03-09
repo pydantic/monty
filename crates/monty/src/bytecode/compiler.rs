@@ -80,6 +80,14 @@ pub struct Compiler<'a> {
     /// clear the current exception (`ClearException`) and pop the exception
     /// value from the stack before jumping to the finally path or loop target.
     except_handler_depth: usize,
+
+    /// Whether the compiler is currently compiling module-level code.
+    ///
+    /// At module level, `Local` and `LocalUnassigned` scopes map to global opcodes
+    /// (`LoadGlobal`/`StoreGlobal`/`DeleteGlobal`) because module locals live in the
+    /// globals array. In function bodies this is `false` and these scopes use local
+    /// opcodes that index into the stack.
+    is_module_scope: bool,
 }
 
 /// Information about a loop for break/continue handling.
@@ -147,6 +155,7 @@ impl<'a> Compiler<'a> {
             loop_stack: Vec::new(),
             finally_targets: Vec::new(),
             except_handler_depth: 0,
+            is_module_scope: false,
         }
     }
 
@@ -176,6 +185,7 @@ impl<'a> Compiler<'a> {
     ) -> Result<CompileResult, CompileError> {
         let mut compiler = Compiler::new(interns, Vec::new());
         compiler.functions = existing_functions;
+        compiler.is_module_scope = true;
         compiler.compile_block(nodes)?;
 
         // Module returns None if no explicit return
@@ -855,6 +865,9 @@ impl<'a> Compiler<'a> {
     // ========================================================================
 
     /// Compiles loading a variable onto the stack.
+    ///
+    /// At module level, `Local` and `LocalUnassigned` scopes emit global opcodes
+    /// because module-level locals live in the globals array.
     fn compile_name(&mut self, ident: &Identifier) {
         let slot = u16::try_from(ident.namespace_id().index()).expect("local slot exceeds u16");
         match ident.scope {
@@ -862,14 +875,24 @@ impl<'a> Compiler<'a> {
                 // True local - register name and mark as assigned for UnboundLocalError
                 self.code.register_local_name(slot, ident.name_id);
                 self.code.register_assigned_local(slot);
-                self.code.emit_load_local(slot);
+                if self.is_module_scope {
+                    self.code.emit_u16(Opcode::LoadGlobal, slot);
+                } else {
+                    self.code.emit_load_local(slot);
+                }
             }
             NameScope::LocalUnassigned => {
                 // Undefined reference - register name but NOT as assigned for NameError
                 self.code.register_local_name(slot, ident.name_id);
-                self.code.emit_load_local(slot);
+                if self.is_module_scope {
+                    self.code.emit_u16(Opcode::LoadGlobal, slot);
+                } else {
+                    self.code.emit_load_local(slot);
+                }
             }
             NameScope::Global => {
+                // Register the name for NameError/NameLookup messages
+                self.code.register_local_name(slot, ident.name_id);
                 self.code.emit_u16(Opcode::LoadGlobal, slot);
             }
             NameScope::Cell => {
@@ -894,9 +917,14 @@ impl<'a> Compiler<'a> {
         let slot = u16::try_from(ident.namespace_id().index()).expect("local slot exceeds u16");
         match ident.scope {
             NameScope::LocalUnassigned => {
-                // Undefined reference in call context - use callable-aware load
+                // Undefined reference in call context - use callable-aware load.
+                // At module level, use global callable since locals are in the globals array.
                 self.code.register_local_name(slot, ident.name_id);
-                self.code.emit_load_local_callable(slot, ident.name_id);
+                if self.is_module_scope {
+                    self.code.emit_load_global_callable(slot, ident.name_id);
+                } else {
+                    self.code.emit_load_local_callable(slot, ident.name_id);
+                }
             }
             NameScope::Global => {
                 // Global scope - name_id is encoded in the operand because global slot
@@ -910,13 +938,19 @@ impl<'a> Compiler<'a> {
     }
 
     /// Compiles storing the top of stack to a variable.
+    ///
+    /// At module level, `Local` and `LocalUnassigned` scopes emit `StoreGlobal`
+    /// because module-level locals live in the globals array.
     fn compile_store(&mut self, target: &Identifier) {
         let slot = u16::try_from(target.namespace_id().index()).expect("local slot exceeds u16");
         match target.scope {
             NameScope::Local | NameScope::LocalUnassigned => {
-                // Both true locals and initially-unassigned slots use local storage
                 self.code.register_local_name(slot, target.name_id);
-                self.code.emit_store_local(slot);
+                if self.is_module_scope {
+                    self.code.emit_u16(Opcode::StoreGlobal, slot);
+                } else {
+                    self.code.emit_store_local(slot);
+                }
             }
             NameScope::Global => {
                 self.code.emit_u16(Opcode::StoreGlobal, slot);
@@ -2781,20 +2815,28 @@ impl<'a> Compiler<'a> {
     }
 
     /// Compiles deletion of a variable.
+    ///
+    /// At module level, `Local` and `LocalUnassigned` scopes emit `DeleteGlobal`
+    /// because module-level locals live in the globals array.
     fn compile_delete(&mut self, target: &Identifier) {
         let slot = u16::try_from(target.namespace_id().index()).expect("local slot exceeds u16");
         match target.scope {
             NameScope::Local | NameScope::LocalUnassigned => {
-                if let Ok(s) = u8::try_from(slot) {
+                if self.is_module_scope {
+                    self.code.emit_u16(Opcode::DeleteGlobal, slot);
+                } else if let Ok(s) = u8::try_from(slot) {
                     self.code.emit_u8(Opcode::DeleteLocal, s);
                 } else {
                     // Wide variant not implemented yet
                     todo!("DeleteLocalW for slot > 255");
                 }
             }
-            NameScope::Global | NameScope::Cell => {
-                // Delete global/cell not commonly needed
-                // For now, just store Undefined
+            NameScope::Global => {
+                self.code.emit_u16(Opcode::DeleteGlobal, slot);
+            }
+            NameScope::Cell => {
+                // Delete cell not commonly needed
+                // For now, just store None
                 self.code.emit(Opcode::LoadNone);
                 self.compile_store(target);
             }

@@ -415,6 +415,10 @@ pub enum Opcode {
     ///
     /// Appended at the end to preserve the serialized byte values of all older opcodes.
     Dup2,
+    /// Delete global variable (set to Undefined). Operand: u16 slot.
+    ///
+    /// Appended at the end to preserve the serialized byte values of all older opcodes.
+    DeleteGlobal,
 }
 
 impl TryFrom<u8> for Opcode {
@@ -440,15 +444,15 @@ impl Opcode {
             BuildSet, BuildSlice, BuildTuple, CallAttr, CallAttrExtended, CallAttrKw, CallBuiltinFunction,
             CallBuiltinType, CallFunction, CallFunctionExtended, CallFunctionKw, CheckExcMatch, ClearException,
             CompareEq, CompareGe, CompareGt, CompareIn, CompareIs, CompareIsNot, CompareLe, CompareLt, CompareModEq,
-            CompareNe, CompareNotIn, DeleteLocal, DictMerge, DictSetItem, Dup, Dup2, ForIter, FormatValue, GetIter,
-            InplaceAdd, InplaceAnd, InplaceDiv, InplaceFloorDiv, InplaceLShift, InplaceMod, InplaceMul, InplaceOr,
-            InplacePow, InplaceRShift, InplaceSub, InplaceXor, Jump, JumpIfFalse, JumpIfFalseOrPop, JumpIfTrue,
-            JumpIfTrueOrPop, ListAppend, ListExtend, ListToTuple, LoadAttr, LoadAttrImport, LoadCell, LoadConst,
-            LoadFalse, LoadGlobal, LoadGlobalCallable, LoadLocal, LoadLocal0, LoadLocal1, LoadLocal2, LoadLocal3,
-            LoadLocalCallable, LoadLocalCallableW, LoadLocalW, LoadModule, LoadNone, LoadSmallInt, LoadTrue,
-            MakeClosure, MakeFunction, Nop, Pop, Raise, RaiseImportError, Reraise, ReturnValue, Rot2, Rot3, SetAdd,
-            StoreAttr, StoreCell, StoreGlobal, StoreLocal, StoreLocalW, StoreSubscr, UnaryInvert, UnaryNeg, UnaryNot,
-            UnaryPos, UnpackEx, UnpackSequence,
+            CompareNe, CompareNotIn, DeleteGlobal, DeleteLocal, DictMerge, DictSetItem, Dup, Dup2, ForIter,
+            FormatValue, GetIter, InplaceAdd, InplaceAnd, InplaceDiv, InplaceFloorDiv, InplaceLShift, InplaceMod,
+            InplaceMul, InplaceOr, InplacePow, InplaceRShift, InplaceSub, InplaceXor, Jump, JumpIfFalse,
+            JumpIfFalseOrPop, JumpIfTrue, JumpIfTrueOrPop, ListAppend, ListExtend, ListToTuple, LoadAttr,
+            LoadAttrImport, LoadCell, LoadConst, LoadFalse, LoadGlobal, LoadGlobalCallable, LoadLocal, LoadLocal0,
+            LoadLocal1, LoadLocal2, LoadLocal3, LoadLocalCallable, LoadLocalCallableW, LoadLocalW, LoadModule,
+            LoadNone, LoadSmallInt, LoadTrue, MakeClosure, MakeFunction, Nop, Pop, Raise, RaiseImportError, Reraise,
+            ReturnValue, Rot2, Rot3, SetAdd, StoreAttr, StoreCell, StoreGlobal, StoreLocal, StoreLocalW, StoreSubscr,
+            UnaryInvert, UnaryNeg, UnaryNot, UnaryPos, UnpackEx, UnpackSequence,
         };
         Some(match self {
             // Stack operations
@@ -465,7 +469,7 @@ impl Opcode {
             LoadLocal | LoadLocalW | LoadLocalCallable | LoadLocalCallableW | LoadGlobal | LoadGlobalCallable
             | LoadCell => 1,
             StoreLocal | StoreLocalW | StoreGlobal | StoreCell => -1,
-            DeleteLocal => 0, // doesn't affect stack
+            DeleteLocal | DeleteGlobal => 0, // doesn't affect stack
 
             // Binary operations: pop 2, push 1 = -1
             BinaryAdd | BinarySub | BinaryMul | BinaryDiv | BinaryFloorDiv | BinaryMod | BinaryPow | BinaryAnd
@@ -564,8 +568,8 @@ mod tests {
 
     #[test]
     fn test_opcode_roundtrip() {
-        // Verify that all opcodes from 0 to Dup2 (last opcode) can be converted to u8 and back.
-        for byte in 0..=Opcode::Dup2 as u8 {
+        // Verify that all opcodes from 0 to DeleteGlobal (last opcode) can be converted to u8 and back.
+        for byte in 0..=Opcode::DeleteGlobal as u8 {
             let opcode = Opcode::try_from(byte).unwrap();
             assert_eq!(opcode as u8, byte, "opcode {opcode:?} has wrong discriminant");
         }
@@ -578,12 +582,13 @@ mod tests {
         // older versions.
         assert_eq!(Opcode::RaiseImportError as u8, 110);
         assert_eq!(Opcode::Dup2 as u8, 111);
+        assert_eq!(Opcode::DeleteGlobal as u8, 112);
     }
 
     #[test]
     fn test_invalid_opcode() {
         // Byte just after the last valid opcode should fail
-        let result = Opcode::try_from(Opcode::Dup2 as u8 + 1);
+        let result = Opcode::try_from(Opcode::DeleteGlobal as u8 + 1);
         assert!(result.is_err());
         // 255 should also fail
         let result = Opcode::try_from(255u8);
