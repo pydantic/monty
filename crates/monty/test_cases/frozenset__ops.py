@@ -35,6 +35,38 @@ fs2 = frozenset([2, 3, 4])
 sd = fs1.symmetric_difference(fs2)
 assert len(sd) == 2, 'symmetric_difference len'
 
+# === Binary operators ===
+fs = frozenset([1, 2])
+other_fs = frozenset([2, 3])
+s = {2, 3}
+
+assert fs & other_fs == frozenset([2]), 'frozenset & frozenset works'
+assert fs | other_fs == frozenset([1, 2, 3]), 'frozenset | frozenset works'
+assert fs ^ other_fs == frozenset([1, 3]), 'frozenset ^ frozenset works'
+assert fs - other_fs == frozenset([1]), 'frozenset - frozenset works'
+
+assert fs & s == frozenset([2]), 'frozenset & set works'
+assert fs | s == frozenset([1, 2, 3]), 'frozenset | set works'
+assert fs ^ s == frozenset([1, 3]), 'frozenset ^ set works'
+assert fs - s == frozenset([1]), 'frozenset - set works'
+
+keys = {'a': 1, 'b': 2}.keys()
+items = {'a': 1, 'b': 2}.items()
+assert frozenset({'a'}) & keys == frozenset({'a'}), 'frozenset & dict_keys works'
+assert frozenset({'a'}) | keys == frozenset({'a', 'b'}), 'frozenset | dict_keys works'
+assert frozenset({('a', 1)}) ^ items == frozenset({('b', 2)}), 'frozenset ^ dict_items works'
+assert frozenset({('a', 1), ('b', 2)}) - items == frozenset(), 'frozenset - dict_items works'
+
+assert type(fs | s).__name__ == 'frozenset', 'frozenset operators keep the left operand type'
+
+try:
+    fs & [1, 2]
+    assert False, 'frozenset operators reject non-set rhs'
+except TypeError as e:
+    assert str(e) == "unsupported operand type(s) for &: 'frozenset' and 'list'", (
+        'frozenset & rhs error matches CPython'
+    )
+
 # === Issubset ===
 fs1 = frozenset([1, 2])
 fs2 = frozenset([1, 2, 3])

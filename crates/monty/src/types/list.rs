@@ -4,10 +4,10 @@ use ahash::AHashSet;
 use itertools::Itertools;
 use smallvec::SmallVec;
 
-use super::{AttrCallResult, MontyIter, PyTrait};
+use super::{MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
@@ -419,10 +419,10 @@ impl PyTrait for List {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         if attr.static_string() == Some(StaticStrings::Sort) {
             do_list_sort(self, args, vm)?;
-            return Ok(AttrCallResult::Value(Value::None));
+            return Ok(CallResult::Value(Value::None));
         }
         let args_guard = HeapGuard::new(args, vm.heap);
         let Some(method) = attr.static_string() else {
@@ -430,7 +430,7 @@ impl PyTrait for List {
         };
 
         let args = args_guard.into_inner();
-        call_list_method(self, method, args, vm).map(AttrCallResult::Value)
+        call_list_method(self, method, args, vm).map(CallResult::Value)
     }
 }
 

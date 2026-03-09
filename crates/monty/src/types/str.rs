@@ -8,10 +8,10 @@ use std::{cmp::Ordering, fmt::Write};
 use ahash::AHashSet;
 use smallvec::smallvec;
 
-use super::{Bytes, MontyIter, PyTrait, py_trait::AttrCallResult};
+use super::{Bytes, MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
@@ -294,14 +294,14 @@ impl PyTrait for Str {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         let args_guard = HeapGuard::new(args, vm.heap);
         let Some(method) = attr.static_string() else {
             return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
         };
 
         let args = args_guard.into_inner();
-        call_str_method_impl(&self.0, method, args, vm).map(AttrCallResult::Value)
+        call_str_method_impl(&self.0, method, args, vm).map(CallResult::Value)
     }
 }
 

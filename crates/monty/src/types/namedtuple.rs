@@ -21,12 +21,13 @@ use ahash::AHashSet;
 
 use super::PyTrait;
 use crate::{
+    bytecode::CallResult,
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapId},
     intern::{Interns, StringId},
     resource::{ResourceError, ResourceTracker},
-    types::{AttrCallResult, Type},
+    types::Type,
     value::{EitherStr, Value},
 };
 
@@ -258,10 +259,10 @@ impl PyTrait for NamedTuple {
         attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<Option<AttrCallResult>> {
+    ) -> RunResult<Option<CallResult>> {
         let attr_name = attr.as_str(interns);
         if let Some(value) = self.get_by_name(attr_name, interns) {
-            Ok(Some(AttrCallResult::Value(value.clone_with_heap(heap))))
+            Ok(Some(CallResult::Value(value.clone_with_heap(heap))))
         } else {
             // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
             Err(ExcType::attribute_error(self.name(interns), attr_name))

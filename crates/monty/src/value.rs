@@ -16,6 +16,7 @@ use num_traits::{ToPrimitive, Zero};
 use crate::{
     asyncio::CallId,
     builtins::Builtins,
+    bytecode::CallResult,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, Heap, HeapData, HeapId},
     heap_data::HeapDataMut,
@@ -23,7 +24,7 @@ use crate::{
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker, check_div_size, check_lshift_size, check_pow_size, check_repeat_size},
     types::{
-        AttrCallResult, LongInt, Property, PyTrait, Str, Type,
+        LongInt, Property, PyTrait, Str, Type,
         bytes::{bytes_repr_fmt, get_byte_at_index, get_bytes_slice},
         path,
         str::{allocate_char, get_char_at_index, get_str_slice, string_repr_fmt},
@@ -263,8 +264,8 @@ impl PyTrait for Value {
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> Result<Option<Ordering>, ResourceError> {
-        // py_cmp currently only handles non-recursive types (numbers, strings, bytes)
-        // so recursion depth tracking is not needed here.
+        // py_cmp handles numbers, strings, bytes, and tuples.
+        // Recursion depth tracking for tuples is handled in Tuple::py_cmp.
         match (self, other) {
             (Self::Int(s), Self::Int(o)) => Ok(s.partial_cmp(o)),
             (Self::Float(s), Self::Float(o)) => Ok(s.partial_cmp(o)),
@@ -290,10 +291,16 @@ impl PyTrait for Value {
                     Ok(None)
                 }
             }
-            // Ref vs Ref comparison: handles LongInt and Str
+            // Ref vs Ref comparison: handles LongInt, Str, and Tuple
             (Self::Ref(id1), Self::Ref(id2)) => match (heap.get(*id1), heap.get(*id2)) {
                 (HeapData::LongInt(a), HeapData::LongInt(b)) => Ok(a.inner().partial_cmp(b.inner())),
                 (HeapData::Str(a), HeapData::Str(b)) => Ok(a.as_str().partial_cmp(b.as_str())),
+                (HeapData::Tuple(_), HeapData::Tuple(_)) => heap.with_two(*id1, *id2, |heap, left, right| {
+                    let (HeapData::Tuple(a), HeapData::Tuple(b)) = (left, right) else {
+                        unreachable!()
+                    };
+                    a.py_cmp(b, heap, interns)
+                }),
                 _ => Ok(None),
             },
             // Interned string comparisons
@@ -1558,6 +1565,41 @@ impl Value {
                         Ok(false)
                     }
                     HeapDataMut::Dict(dict) => dict.get(item, heap, interns).map(|m| m.is_some()),
+                    HeapDataMut::DictKeysView(view) => heap.with_entry_mut(view.dict_id(), |heap, data| {
+                        let HeapDataMut::Dict(dict) = data else {
+                            panic!("dict_keys view must reference a dict");
+                        };
+                        dict.get(item, heap, interns).map(|m| m.is_some())
+                    }),
+                    HeapDataMut::DictItemsView(view) => {
+                        let Some((key, value)) = cloned_items_view_candidate(item, heap) else {
+                            return Ok(false);
+                        };
+                        let mut key_guard = crate::heap::HeapGuard::new(key, heap);
+                        let (key, heap) = key_guard.as_parts_mut();
+                        let mut value_guard = crate::heap::HeapGuard::new(value, heap);
+                        let (value, heap) = value_guard.as_parts_mut();
+                        heap.with_entry_mut(view.dict_id(), |heap, data| {
+                            let HeapDataMut::Dict(dict) = data else {
+                                panic!("dict_items view must reference a dict");
+                            };
+                            let Some(existing_value) = dict.get(key, heap, interns)? else {
+                                return Ok(false);
+                            };
+                            Ok(value.py_eq(existing_value, heap, interns)?)
+                        })
+                    }
+                    HeapDataMut::DictValuesView(view) => heap.with_entry_mut(view.dict_id(), |heap, data| {
+                        let HeapDataMut::Dict(dict) = data else {
+                            panic!("dict_values view must reference a dict");
+                        };
+                        for (_, value) in dict.iter() {
+                            if item.py_eq(value, heap, interns)? {
+                                return Ok(true);
+                            }
+                        }
+                        Ok(false)
+                    }),
                     HeapDataMut::Set(set) => set.contains(item, heap, interns),
                     HeapDataMut::FrozenSet(fset) => fset.contains(item, heap, interns),
                     HeapDataMut::Str(s) => str_contains(s.as_str(), item, heap, interns),
@@ -1619,7 +1661,7 @@ impl Value {
         attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         match self {
             Self::Ref(heap_id) => {
                 // Use with_entry_mut to get access to both data and heap without borrow conflicts.
@@ -1638,7 +1680,7 @@ impl Value {
                 if is_dunder_name {
                     let name_str = t.to_string();
                     let str_id = heap.allocate(HeapData::Str(Str::from(name_str)))?;
-                    return Ok(AttrCallResult::Value(Self::Ref(str_id)));
+                    return Ok(CallResult::Value(Self::Ref(str_id)));
                 }
             }
             _ => {}
@@ -2317,6 +2359,37 @@ fn extract_bigint(value: &Value, heap: &Heap<impl ResourceTracker>) -> Option<Bi
         Value::Ref(id) => {
             if let HeapData::LongInt(li) = heap.get(*id) {
                 Some(li.inner().clone())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extracts and clones the `(key, value)` probe accepted by `dict_items.__contains__`.
+///
+/// CPython treats only 2-tuples as valid probes for items-view membership. Monty
+/// also accepts namedtuples of length two so tuple-like runtime values behave
+/// sensibly even though namedtuples are not modeled as a true tuple subclass.
+fn cloned_items_view_candidate(item: &Value, heap: &impl ContainsHeap) -> Option<(Value, Value)> {
+    let Value::Ref(heap_id) = item else {
+        return None;
+    };
+
+    match heap.heap().get(*heap_id) {
+        HeapData::Tuple(tuple) => {
+            let items = tuple.as_slice();
+            if items.len() == 2 {
+                Some((items[0].clone_with_heap(heap), items[1].clone_with_heap(heap)))
+            } else {
+                None
+            }
+        }
+        HeapData::NamedTuple(namedtuple) => {
+            let items = namedtuple.as_vec();
+            if items.len() == 2 {
+                Some((items[0].clone_with_heap(heap), items[1].clone_with_heap(heap)))
             } else {
                 None
             }

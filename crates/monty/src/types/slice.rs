@@ -9,13 +9,13 @@ use ahash::AHashSet;
 
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
-    types::{AttrCallResult, PyTrait, Type},
+    types::{PyTrait, Type},
     value::{EitherStr, Value},
 };
 
@@ -231,21 +231,21 @@ impl PyTrait for Slice {
         attr: &EitherStr,
         _heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<Option<AttrCallResult>> {
+    ) -> RunResult<Option<CallResult>> {
         // Fast path: interned strings can be matched by ID without string comparison
         if let Some(ss) = attr.static_string() {
             return match ss {
-                StaticStrings::Start => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.start)))),
-                StaticStrings::Stop => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.stop)))),
-                StaticStrings::Step => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.step)))),
+                StaticStrings::Start => Ok(Some(CallResult::Value(option_i64_to_value(self.start)))),
+                StaticStrings::Stop => Ok(Some(CallResult::Value(option_i64_to_value(self.stop)))),
+                StaticStrings::Step => Ok(Some(CallResult::Value(option_i64_to_value(self.step)))),
                 _ => Ok(None),
             };
         }
         // Slow path: heap-allocated strings need string comparison
         match attr.as_str(interns) {
-            "start" => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.start)))),
-            "stop" => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.stop)))),
-            "step" => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.step)))),
+            "start" => Ok(Some(CallResult::Value(option_i64_to_value(self.start)))),
+            "stop" => Ok(Some(CallResult::Value(option_i64_to_value(self.stop)))),
+            "step" => Ok(Some(CallResult::Value(option_i64_to_value(self.step)))),
             _ => Ok(None),
         }
     }

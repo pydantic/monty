@@ -9,11 +9,11 @@ use strum::FromRepr;
 
 use crate::{
     args::ArgValues,
+    bytecode::CallResult,
     exception_private::RunResult,
     heap::{Heap, HeapId},
     intern::{Interns, StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker},
-    types::AttrCallResult,
 };
 
 pub(crate) mod asyncio;
@@ -95,7 +95,7 @@ impl fmt::Display for ModuleFunctions {
 impl ModuleFunctions {
     /// Calls the module function with the given arguments.
     ///
-    /// Returns `AttrCallResult` to support both immediate values and OS calls that
+    /// Returns `CallResult` to support both immediate values and OS calls that
     /// require host involvement (e.g., `os.getenv()` needs the host to provide environment variables).
     /// The `interns` parameter is needed by modules that must extract string values from
     /// `Value::InternString` arguments (e.g., the `re` module).
@@ -104,7 +104,7 @@ impl ModuleFunctions {
         heap: &mut Heap<impl ResourceTracker>,
         args: ArgValues,
         interns: &Interns,
-    ) -> RunResult<AttrCallResult> {
+    ) -> RunResult<CallResult> {
         match self {
             Self::Asyncio(functions) => asyncio::call(heap, functions, args),
             Self::Os(functions) => os::call(heap, functions, args),
