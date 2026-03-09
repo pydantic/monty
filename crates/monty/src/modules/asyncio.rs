@@ -10,11 +10,11 @@
 use crate::{
     args::ArgValues,
     asyncio::{GatherFuture, GatherItem},
-    bytecode::CallResult,
+    bytecode::{CallResult, VM},
     defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings},
+    intern::StaticStrings,
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
     types::Module,
@@ -39,23 +39,21 @@ pub(crate) enum AsyncioFunctions {
 ///
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Asyncio);
 
     module.set_attr(
         StaticStrings::Gather,
         Value::ModuleFunction(ModuleFunctions::Asyncio(AsyncioFunctions::Gather)),
-        heap,
-        interns,
+        vm,
     );
     module.set_attr(
         StaticStrings::Run,
         Value::ModuleFunction(ModuleFunctions::Asyncio(AsyncioFunctions::Run)),
-        heap,
-        interns,
+        vm,
     );
 
-    heap.allocate(HeapData::Module(module))
+    vm.heap.allocate(HeapData::Module(module))
 }
 pub(super) fn call(
     heap: &mut Heap<impl ResourceTracker>,

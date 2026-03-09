@@ -1586,7 +1586,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
         let module = BuiltinModule::from_repr(module_id).expect("unknown module id");
 
         // Create the module on the heap using pre-interned strings
-        let heap_id = module.create(self.heap, self.interns)?;
+        let heap_id = module.create(self)?;
         self.push(Value::Ref(heap_id));
         Ok(())
     }

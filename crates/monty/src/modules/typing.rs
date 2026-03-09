@@ -8,8 +8,9 @@
 //! though Monty doesn't perform static type checking.
 
 use crate::{
-    heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings},
+    bytecode::VM,
+    heap::{HeapData, HeapId},
+    intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::Module,
     value::{Marker, Value},
@@ -22,18 +23,18 @@ use crate::{
 /// # Panics
 ///
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Typing);
 
     // typing.TYPE_CHECKING - always False
-    module.set_attr(StaticStrings::TypeChecking, Value::Bool(false), heap, interns);
+    module.set_attr(StaticStrings::TypeChecking, Value::Bool(false), vm);
 
     // Export all typing markers as module attributes
     for ss in MARKER_ATTRS {
-        module.set_attr(*ss, Value::Marker(Marker(*ss)), heap, interns);
+        module.set_attr(*ss, Value::Marker(Marker(*ss)), vm);
     }
 
-    heap.allocate(HeapData::Module(module))
+    vm.heap.allocate(HeapData::Module(module))
 }
 
 /// Typing marker attributes exported by this module.

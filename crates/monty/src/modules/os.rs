@@ -10,10 +10,10 @@
 
 use crate::{
     args::ArgValues,
-    bytecode::CallResult,
+    bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings},
+    intern::StaticStrings,
     modules::ModuleFunctions,
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
@@ -41,26 +41,24 @@ pub(crate) enum OsFunctions {
 ///
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Os);
 
     // os.getenv - function to get a single environment variable
     module.set_attr(
         StaticStrings::Getenv,
         Value::ModuleFunction(ModuleFunctions::Os(OsFunctions::Getenv)),
-        heap,
-        interns,
+        vm,
     );
 
     // os.environ - property that returns the entire environment as a dict
     module.set_attr(
         StaticStrings::Environ,
         Value::Property(Property::Os(OsFunction::GetEnviron)),
-        heap,
-        interns,
+        vm,
     );
 
-    heap.allocate(HeapData::Module(module))
+    vm.heap.allocate(HeapData::Module(module))
 }
 
 /// Dispatches a call to an os module function.

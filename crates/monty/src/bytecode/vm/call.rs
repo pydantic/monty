@@ -358,7 +358,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 let result = builtin.call(self, args)?;
                 Ok(CallResult::Value(result))
             }
-            Value::ModuleFunction(mf) => mf.call(self.heap, args, self.interns),
+            Value::ModuleFunction(mf) => mf.call(self, args),
             Value::ExtFunction(name_id) => {
                 // External function - return to caller to execute
                 Ok(CallResult::External(EitherStr::Interned(*name_id), args))

@@ -8,8 +8,9 @@
 //! - `stderr`: Marker for standard error (no real functionality)
 
 use crate::{
-    heap::{Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings},
+    bytecode::VM,
+    heap::{HeapData, HeapId},
+    intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::{Module, NamedTuple},
     value::{Marker, Value},
@@ -22,33 +23,18 @@ use crate::{
 /// # Panics
 ///
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Sys);
 
     // sys.platform
-    module.set_attr(StaticStrings::Platform, StaticStrings::Monty.into(), heap, interns);
+    module.set_attr(StaticStrings::Platform, StaticStrings::Monty.into(), vm);
 
     // sys.stdout / sys.stderr - markers for standard output/error
-    module.set_attr(
-        StaticStrings::Stdout,
-        Value::Marker(Marker(StaticStrings::Stdout)),
-        heap,
-        interns,
-    );
-    module.set_attr(
-        StaticStrings::Stderr,
-        Value::Marker(Marker(StaticStrings::Stderr)),
-        heap,
-        interns,
-    );
+    module.set_attr(StaticStrings::Stdout, Value::Marker(Marker(StaticStrings::Stdout)), vm);
+    module.set_attr(StaticStrings::Stderr, Value::Marker(Marker(StaticStrings::Stderr)), vm);
 
     // sys.version
-    module.set_attr(
-        StaticStrings::Version,
-        StaticStrings::MontyVersionString.into(),
-        heap,
-        interns,
-    );
+    module.set_attr(StaticStrings::Version, StaticStrings::MontyVersionString.into(), vm);
     // sys.version_info - named tuple (major=3, minor=14, micro=0, releaselevel='final', serial=0)
     let version_info = NamedTuple::new(
         StaticStrings::SysVersionInfo,
@@ -67,8 +53,8 @@ pub fn create_module(heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -
             Value::Int(0),
         ],
     );
-    let version_info_id = heap.allocate(HeapData::NamedTuple(version_info))?;
-    module.set_attr(StaticStrings::VersionInfo, Value::Ref(version_info_id), heap, interns);
+    let version_info_id = vm.heap.allocate(HeapData::NamedTuple(version_info))?;
+    module.set_attr(StaticStrings::VersionInfo, Value::Ref(version_info_id), vm);
 
-    heap.allocate(HeapData::Module(module))
+    vm.heap.allocate(HeapData::Module(module))
 }

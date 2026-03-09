@@ -57,16 +57,10 @@ impl Module {
     /// # Panics
     ///
     /// Panics if the attribute name string has not been pre-interned.
-    pub fn set_attr(
-        &mut self,
-        name: impl Into<StringId>,
-        value: Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) {
+    pub fn set_attr(&mut self, name: impl Into<StringId>, value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) {
         let key = Value::InternString(name.into());
         // Unwrap is safe because InternString keys are always hashable
-        self.attrs.set(key, value, heap, interns).unwrap();
+        self.attrs.set(key, value, vm.heap, vm.interns).unwrap();
     }
 
     /// Looks up an attribute by name in the module's attribute dictionary.
