@@ -192,7 +192,7 @@ impl Monty {
         let external_functions = options.external_functions;
 
         let mut print_cb;
-        let mut print_writer = match &options.print_callback {
+        let print_writer = match &options.print_callback {
             Some(func) => {
                 print_cb = CallbackStringPrint::new_js(env, func)?;
                 PrintWriter::Callback(&mut print_cb)
@@ -214,10 +214,10 @@ impl Monty {
 
         let result = if let Some(limits) = options.limits {
             let tracker = LimitedTracker::new(limits.into());
-            self.runner.run(input_values, tracker, &mut print_writer)
+            self.runner.run(input_values, tracker, print_writer)
         } else {
             let tracker = NoLimitTracker;
-            self.runner.run(input_values, tracker, &mut print_writer)
+            self.runner.run(input_values, tracker, print_writer)
         };
 
         match result {
@@ -244,7 +244,7 @@ impl Monty {
         // Helper macro to handle the execution loop for both tracker types
         macro_rules! run_loop {
             ($tracker:expr) => {{
-                let progress = runner.start(input_values, $tracker, &mut print_output);
+                let progress = runner.start(input_values, $tracker, print_output.reborrow());
 
                 let mut progress = match progress {
                     Ok(p) => p,
@@ -265,14 +265,14 @@ impl Monty {
                                 &call.kwargs,
                             )?;
 
-                            progress = match call.resume(return_value, &mut print_output) {
+                            progress = match call.resume(return_value, print_output.reborrow()) {
                                 Ok(p) => p,
                                 Err(exc) => return Ok(Either::B(JsMontyException::new(exc))),
                             };
                         }
                         RunProgress::NameLookup(lookup) => {
                             let result = resolve_name_lookup(external_functions.as_ref(), &lookup.name)?;
-                            progress = match lookup.resume(result, &mut print_output) {
+                            progress = match lookup.resume(result, print_output.reborrow()) {
                                 Ok(p) => p,
                                 Err(exc) => return Ok(Either::B(JsMontyException::new(exc))),
                             };
@@ -324,7 +324,7 @@ impl Monty {
 
         // Build print writer and capture the callback ref for the snapshot
         let mut print_cb;
-        let mut print_writer = match &options.print_callback {
+        let print_writer = match &options.print_callback {
             Some(func) => {
                 print_cb = CallbackStringPrint::new_js(env, func)?;
                 PrintWriter::Callback(&mut print_cb)
@@ -336,14 +336,14 @@ impl Monty {
         // Start execution with appropriate tracker
         if let Some(limits) = options.limits {
             let tracker = LimitedTracker::new(limits.into());
-            let progress = match runner.start(input_values, tracker, &mut print_writer) {
+            let progress = match runner.start(input_values, tracker, print_writer) {
                 Ok(p) => p,
                 Err(exc) => return Ok(Either4::D(JsMontyException::new(exc))),
             };
             Ok(progress_to_result(progress, print_callback_ref, self.script_name()))
         } else {
             let tracker = NoLimitTracker;
-            let progress = match runner.start(input_values, tracker, &mut print_writer) {
+            let progress = match runner.start(input_values, tracker, print_writer) {
                 Ok(p) => p,
                 Err(exc) => return Ok(Either4::D(JsMontyException::new(exc))),
             };
@@ -496,7 +496,7 @@ impl MontyRepl {
         let start_options = start_options.unwrap_or_default();
 
         let mut print_cb;
-        let mut print_writer = match &start_options.print_callback {
+        let print_writer = match &start_options.print_callback {
             Some(func) => {
                 print_cb = CallbackStringPrint::new_js(env, func)?;
                 PrintWriter::Callback(&mut print_cb)
@@ -507,14 +507,7 @@ impl MontyRepl {
         let input_values = extract_input_values_in_order(&input_names, start_options.inputs, *env)?;
         if let Some(limits) = start_options.limits {
             let tracker = LimitedTracker::new(limits.into());
-            match CoreMontyRepl::new(
-                code,
-                &script_name,
-                input_names,
-                input_values,
-                tracker,
-                &mut print_writer,
-            ) {
+            match CoreMontyRepl::new(code, &script_name, input_names, input_values, tracker, print_writer) {
                 Ok((repl, _output)) => Ok(Either3::A(Self {
                     repl: EitherRepl::Limited(repl),
                     script_name,
@@ -528,7 +521,7 @@ impl MontyRepl {
                 input_names,
                 input_values,
                 NoLimitTracker,
-                &mut print_writer,
+                print_writer,
             ) {
                 Ok((repl, _output)) => Ok(Either3::A(Self {
                     repl: EitherRepl::NoLimit(repl),
@@ -554,8 +547,8 @@ impl MontyRepl {
         code: String,
     ) -> Result<Either<JsMontyObject<'env>, JsMontyException>> {
         let output = match &mut self.repl {
-            EitherRepl::NoLimit(repl) => repl.feed(&code, &mut PrintWriter::Stdout),
-            EitherRepl::Limited(repl) => repl.feed(&code, &mut PrintWriter::Stdout),
+            EitherRepl::NoLimit(repl) => repl.feed(&code, PrintWriter::Stdout),
+            EitherRepl::Limited(repl) => repl.feed(&code, PrintWriter::Stdout),
         };
 
         match output {
@@ -804,7 +797,7 @@ impl MontySnapshot {
 
         // Build print writer from the callback ref
         let mut print_cb;
-        let mut print_writer = match &print_callback {
+        let print_writer = match &print_callback {
             Some(func) => {
                 print_cb = CallbackStringPrint::new_js_ref(env, func)?;
                 PrintWriter::Callback(&mut print_cb)
@@ -815,14 +808,14 @@ impl MontySnapshot {
         // Resume execution based on the snapshot type
         match snapshot {
             EitherSnapshot::NoLimit(call) => {
-                let progress = match call.resume(external_result, &mut print_writer) {
+                let progress = match call.resume(external_result, print_writer) {
                     Ok(p) => p,
                     Err(exc) => return Ok(Either4::D(JsMontyException::new(exc))),
                 };
                 Ok(progress_to_result(progress, print_callback, self.script_name.clone()))
             }
             EitherSnapshot::Limited(call) => {
-                let progress = match call.resume(external_result, &mut print_writer) {
+                let progress = match call.resume(external_result, print_writer) {
                     Ok(p) => p,
                     Err(exc) => return Ok(Either4::D(JsMontyException::new(exc))),
                 };
@@ -1036,7 +1029,7 @@ impl MontyNameLookup {
 
         // Build print writer from the callback ref
         let mut print_cb;
-        let mut print_writer = match &print_callback {
+        let print_writer = match &print_callback {
             Some(func) => {
                 print_cb = CallbackStringPrint::new_js_ref(env, func)?;
                 PrintWriter::Callback(&mut print_cb)
@@ -1046,14 +1039,14 @@ impl MontyNameLookup {
 
         match snapshot {
             EitherLookupSnapshot::NoLimit(lookup) => {
-                let progress = match lookup.resume(lookup_result, &mut print_writer) {
+                let progress = match lookup.resume(lookup_result, print_writer) {
                     Ok(p) => p,
                     Err(exc) => return Ok(Either4::D(JsMontyException::new(exc))),
                 };
                 Ok(progress_to_result(progress, print_callback, self.script_name.clone()))
             }
             EitherLookupSnapshot::Limited(lookup) => {
-                let progress = match lookup.resume(lookup_result, &mut print_writer) {
+                let progress = match lookup.resume(lookup_result, print_writer) {
                     Ok(p) => p,
                     Err(exc) => return Ok(Either4::D(JsMontyException::new(exc))),
                 };

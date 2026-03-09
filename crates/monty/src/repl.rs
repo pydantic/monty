@@ -280,7 +280,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
         input_names: Vec<String>,
         inputs: Vec<MontyObject>,
         resource_tracker: T,
-        print: &mut PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<(Self, MontyObject), MontyException> {
         let executor = ReplExecutor::new(code, script_name, input_names)?;
 
@@ -332,7 +332,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
     /// # Errors
     /// Returns `Err(Box<ReplStartError>)` for syntax, compile-time, or runtime
     /// failures — the REPL session is always preserved inside the error.
-    pub fn start(self, code: &str, print: &mut PrintWriter<'_>) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    pub fn start(self, code: &str, print: PrintWriter<'_>) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         let mut this = self;
         if code.is_empty() {
             return Ok(ReplProgress::Complete {
@@ -366,7 +366,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
 
     /// Starts snippet execution with `PrintWriter::Stdout` and no additional host output wiring.
     pub fn start_no_print(self, code: &str) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
-        self.start(code, &mut PrintWriter::Stdout)
+        self.start(code, PrintWriter::Stdout)
     }
 
     /// Feeds and executes a new snippet against the current REPL state.
@@ -379,7 +379,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
     ///
     /// # Errors
     /// Returns `MontyException` for syntax/compile/runtime failures.
-    pub fn feed(&mut self, code: &str, print: &mut PrintWriter<'_>) -> Result<MontyObject, MontyException> {
+    pub fn feed(&mut self, code: &str, print: PrintWriter<'_>) -> Result<MontyObject, MontyException> {
         if code.is_empty() {
             return Ok(MontyObject::None);
         }
@@ -429,7 +429,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
 
     /// Executes a snippet with no additional host output wiring.
     pub fn feed_no_print(&mut self, code: &str) -> Result<MontyObject, MontyException> {
-        self.feed(code, &mut PrintWriter::Stdout)
+        self.feed(code, PrintWriter::Stdout)
     }
 
     /// Grows the global namespace to at least `namespace_size`.
@@ -617,7 +617,7 @@ impl<T: ResourceTracker> ReplFunctionCall<T> {
     pub fn resume(
         self,
         result: impl Into<ExtFunctionResult>,
-        print: &mut PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         self.snapshot.run(result, print)
     }
@@ -625,7 +625,7 @@ impl<T: ResourceTracker> ReplFunctionCall<T> {
     /// Resumes execution by pushing an `ExternalFuture` for async resolution.
     ///
     /// Uses `self.call_id` internally — no need to pass it again.
-    pub fn resume_pending(self, print: &mut PrintWriter<'_>) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    pub fn resume_pending(self, print: PrintWriter<'_>) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         self.snapshot.run(ExtFunctionResult::Future(self.call_id), print)
     }
 }
@@ -657,7 +657,7 @@ impl<T: ResourceTracker> ReplOsCall<T> {
     pub fn resume(
         self,
         result: impl Into<ExtFunctionResult>,
-        print: &mut PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         self.snapshot.run(result, print)
     }
@@ -693,7 +693,7 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
     pub fn resume(
         self,
         result: NameLookupResult,
-        print: &mut PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         let Self {
             name,
@@ -798,7 +798,7 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
     pub fn resume(
         self,
         results: Vec<(u32, ExtFunctionResult)>,
-        print: &mut PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         let Self {
             mut repl,
@@ -909,7 +909,7 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
     fn run(
         self,
         result: impl Into<ExtFunctionResult>,
-        print: &mut PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         let Self {
             mut repl,

@@ -33,5 +33,5 @@ fuzz_target!(|code: String| {
     };
 
     // Try to execute with resource limits - ignore all errors, we only care about panics/crashes
-    let _ = runner.run(vec![], fuzz_limits(), &mut PrintWriter::Disabled);
+    let _ = runner.run(vec![], fuzz_limits(), PrintWriter::Disabled);
 });

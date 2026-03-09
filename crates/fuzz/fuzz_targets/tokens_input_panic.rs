@@ -548,5 +548,5 @@ fuzz_target!(|tokens: Tokens| {
     };
 
     // Try to execute with resource limits
-    let _ = runner.run(vec![], fuzz_limits(), &mut PrintWriter::Disabled);
+    let _ = runner.run(vec![], fuzz_limits(), PrintWriter::Disabled);
 });

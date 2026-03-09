@@ -15,7 +15,7 @@ fn init_repl(code: &str) -> (MontyRepl<NoLimitTracker>, MontyObject) {
         vec![],
         vec![],
         NoLimitTracker,
-        &mut PrintWriter::Stdout,
+        PrintWriter::Stdout,
     )
     .unwrap()
 }
@@ -168,12 +168,12 @@ fn repl_start_external_call_resumes_to_updated_repl() {
     assert_eq!(init_output, MontyObject::None);
 
     // With LoadGlobalCallable, function calls go directly to FunctionCall
-    let progress = repl.start("ext_fn(41) + 1", &mut PrintWriter::Stdout).unwrap();
+    let progress = repl.start("ext_fn(41) + 1", PrintWriter::Stdout).unwrap();
     let call = progress.into_function_call().expect("expected function call");
     assert_eq!(call.function_name, "ext_fn");
     assert_eq!(call.args, vec![MontyObject::Int(41)]);
 
-    let progress = call.resume(MontyObject::Int(41), &mut PrintWriter::Stdout).unwrap();
+    let progress = call.resume(MontyObject::Int(41), PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
     assert_eq!(value, MontyObject::Int(42));
     assert_eq!(repl.feed_no_print("x = 5").unwrap(), MontyObject::None);
@@ -185,7 +185,7 @@ fn repl_progress_dump_load_roundtrip() {
     let (repl, _) = init_repl("");
 
     // With LoadGlobalCallable, ext_fn goes directly to FunctionCall
-    let progress = repl.start("ext_fn(20) + 22", &mut PrintWriter::Stdout).unwrap();
+    let progress = repl.start("ext_fn(20) + 22", PrintWriter::Stdout).unwrap();
 
     let bytes = progress.dump().unwrap();
     let loaded: ReplProgress<NoLimitTracker> = ReplProgress::load(&bytes).unwrap();
@@ -193,7 +193,7 @@ fn repl_progress_dump_load_roundtrip() {
     let call = loaded.into_function_call().expect("expected function call");
     assert_eq!(call.args, vec![MontyObject::Int(20)]);
 
-    let progress = call.resume(MontyObject::Int(20), &mut PrintWriter::Stdout).unwrap();
+    let progress = call.resume(MontyObject::Int(20), PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
     assert_eq!(value, MontyObject::Int(42));
     assert_eq!(repl.feed_no_print("z = 1").unwrap(), MontyObject::None);
@@ -210,12 +210,12 @@ async def main():
 ",
     );
 
-    let progress = repl.start("await main()", &mut PrintWriter::Stdout).unwrap();
+    let progress = repl.start("await main()", PrintWriter::Stdout).unwrap();
     // With LoadGlobalCallable, foo() goes directly to FunctionCall
     let call = progress.into_function_call().expect("expected function call");
     let call_id = call.call_id;
 
-    let progress = call.resume_pending(&mut PrintWriter::Stdout).unwrap();
+    let progress = call.resume_pending(PrintWriter::Stdout).unwrap();
     let bytes = progress.dump().unwrap();
     let loaded: ReplProgress<NoLimitTracker> = ReplProgress::load(&bytes).unwrap();
     let state = loaded.into_resolve_futures().expect("expected resolve futures");
@@ -224,7 +224,7 @@ async def main():
     let progress = state
         .resume(
             vec![(call_id, ExtFunctionResult::Return(MontyObject::Int(41)))],
-            &mut PrintWriter::Stdout,
+            PrintWriter::Stdout,
         )
         .unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
@@ -241,7 +241,7 @@ fn repl_start_runtime_error_preserves_repl_state() {
 
     // Snippet that sets a new variable then raises — returned via ReplStartError.
     let err = repl
-        .start("y = 20\nraise ValueError('boom')", &mut PrintWriter::Stdout)
+        .start("y = 20\nraise ValueError('boom')", PrintWriter::Stdout)
         .expect_err("expected ReplStartError");
     let ReplStartError { mut repl, error } = *err;
     assert_eq!(error.exc_type(), monty::ExcType::ValueError);
@@ -261,13 +261,13 @@ fn repl_start_runtime_error_during_external_call_preserves_repl_state() {
     // with the REPL session preserved.
     let (repl, _) = init_repl("z = 99");
 
-    let progress = repl.start("ext_fn(1)", &mut PrintWriter::Stdout).unwrap();
+    let progress = repl.start("ext_fn(1)", PrintWriter::Stdout).unwrap();
     let call = progress.into_function_call().expect("expected function call");
 
     // Resume with an exception from the external function.
     let exc = monty::MontyException::new(monty::ExcType::RuntimeError, Some("ext failed".to_string()));
     let err = call
-        .resume(ExtFunctionResult::Error(exc), &mut PrintWriter::Stdout)
+        .resume(ExtFunctionResult::Error(exc), PrintWriter::Stdout)
         .expect_err("expected ReplStartError");
     let ReplStartError { mut repl, error } = *err;
     assert_eq!(error.exc_type(), monty::ExcType::RuntimeError);
@@ -298,12 +298,12 @@ fn repl_dataclass_method_call_yields_function_call_with_method_flag() {
         vec!["point".to_string()],
         vec![point],
         NoLimitTracker,
-        &mut PrintWriter::Stdout,
+        PrintWriter::Stdout,
     )
     .unwrap();
 
     // Calling point.sum() should yield a FunctionCall with method_call=true
-    let progress = repl.start("point.sum()", &mut PrintWriter::Stdout).unwrap();
+    let progress = repl.start("point.sum()", PrintWriter::Stdout).unwrap();
     let call = progress.into_function_call().expect("expected method call");
 
     assert_eq!(call.function_name, "sum");
@@ -312,7 +312,7 @@ fn repl_dataclass_method_call_yields_function_call_with_method_flag() {
     assert!(matches!(&call.args[0], MontyObject::Dataclass { name, .. } if name == "Point"));
 
     // Resume with a return value (sum of x + y = 3)
-    let progress = call.resume(MontyObject::Int(3), &mut PrintWriter::Stdout).unwrap();
+    let progress = call.resume(MontyObject::Int(3), PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
     assert_eq!(value, MontyObject::Int(3));
 

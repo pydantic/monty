@@ -11,7 +11,7 @@ use crate::exception_public::MontyException;
 /// # Variants
 /// - `Disabled` - Silently discards all output (useful for benchmarking or suppressing output)
 /// - `Stdout` - Writes to standard output (the default behavior)
-/// - `Collect` - Accumulates output into an owned `String` for programmatic access
+/// - `Collect` - Accumulates output into a target `String` for programmatic access
 /// - `Callback` - Delegates to a user-provided [`PrintWriterCallback`] implementation
 pub enum PrintWriter<'a> {
     /// Silently discard all output.
@@ -19,12 +19,27 @@ pub enum PrintWriter<'a> {
     /// Write to standard output.
     Stdout,
     /// Collect all output into a string.
-    Collect(String),
+    Collect(&'a mut String),
     /// Delegate to a custom callback.
     Callback(&'a mut dyn PrintWriterCallback),
 }
 
 impl PrintWriter<'_> {
+    /// Creates a new `PrintWriter` that reborrows the same underlying target.
+    ///
+    /// This is useful in iterative execution (`start`/`resume` loops) where each
+    /// step takes `PrintWriter` by value but you want all steps to write to the
+    /// same output target. The original writer remains valid after the reborrowed
+    /// copy is dropped.
+    pub fn reborrow(&mut self) -> PrintWriter<'_> {
+        match self {
+            Self::Disabled => PrintWriter::Disabled,
+            Self::Stdout => PrintWriter::Stdout,
+            Self::Collect(buf) => PrintWriter::Collect(buf),
+            Self::Callback(cb) => PrintWriter::Callback(&mut **cb),
+        }
+    }
+
     /// Called once for each formatted argument passed to `print()`.
     ///
     /// This method writes only the given argument's text, without adding
@@ -61,17 +76,6 @@ impl PrintWriter<'_> {
                 Ok(())
             }
             Self::Callback(cb) => cb.stdout_push(end),
-        }
-    }
-
-    /// Returns the collected output if this is a `Collect` variant.
-    ///
-    /// Returns `None` for other variants.
-    #[must_use]
-    pub fn collected_output(&self) -> Option<&str> {
-        match self {
-            Self::Collect(buf) => Some(buf.as_str()),
-            _ => None,
         }
     }
 }

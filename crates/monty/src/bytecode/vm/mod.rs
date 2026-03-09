@@ -531,8 +531,8 @@ impl VMSnapshot {
 /// to avoid sync bugs on call/return.
 ///
 /// # Lifetimes
-/// * `'a` - Lifetime of the heap, namespaces, interns, and the print writer borrow
-/// * `'p` - Lifetime of the callback reference inside [`PrintWriter::Callback`]
+/// * `'a` - Lifetime of the heap, namespaces, and interns
+/// * `'p` - Lifetime of the print writer's internal references
 pub struct VM<'a, 'p, T: ResourceTracker> {
     /// Operand stack - values being computed.
     stack: Vec<Value>,
@@ -550,7 +550,7 @@ pub struct VM<'a, 'p, T: ResourceTracker> {
     pub(crate) interns: &'a Interns,
 
     /// Print output writer, borrowed so callers retain access to collected output.
-    pub(crate) print_writer: &'a mut PrintWriter<'p>,
+    pub(crate) print_writer: PrintWriter<'p>,
 
     /// Stack of exceptions being handled for nested except blocks.
     ///
@@ -599,7 +599,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
         heap: &'a mut Heap<T>,
         namespaces: &'a mut Namespaces,
         interns: &'a Interns,
-        print_writer: &'a mut PrintWriter<'p>,
+        print_writer: PrintWriter<'p>,
     ) -> Self {
         Self {
             stack: Vec::with_capacity(64),
@@ -636,7 +636,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
         heap: &'a mut Heap<T>,
         namespaces: &'a mut Namespaces,
         interns: &'a Interns,
-        print_writer: &'a mut PrintWriter<'p>,
+        print_writer: PrintWriter<'p>,
     ) -> Self {
         // Reconstruct call frames from serialized form
         let frames: Vec<CallFrame<'_>> = snapshot

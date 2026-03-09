@@ -14,7 +14,7 @@ fn resolve_name_lookups<T: monty::ResourceTracker>(
         let name = lookup.name.clone();
         progress = lookup.resume(
             NameLookupResult::Value(MontyObject::Function { name, docstring: None }),
-            &mut PrintWriter::Stdout,
+            PrintWriter::Stdout,
         )?;
     }
     Ok(progress)
@@ -120,7 +120,7 @@ fn run_progress_dump_load_roundtrip() {
     // Start execution with an external function, dump at the call, load and resume
     let runner = MontyRun::new("ext_fn(42) + 1".to_owned(), "test.py", vec![]).unwrap();
 
-    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
 
     // First resolve the NameLookup for ext_fn
     let progress = resolve_name_lookups(progress).unwrap();
@@ -137,7 +137,7 @@ fn run_progress_dump_load_roundtrip() {
     assert_eq!(call.args, vec![MontyObject::Int(42)]);
 
     // Resume execution with a return value
-    let result = call.resume(MontyObject::Int(100), &mut PrintWriter::Stdout).unwrap();
+    let result = call.resume(MontyObject::Int(100), PrintWriter::Stdout).unwrap();
     assert_eq!(result.into_complete().unwrap(), MontyObject::Int(101)); // 100 + 1
 }
 
@@ -147,7 +147,7 @@ fn run_progress_dump_load_multiple_calls() {
     let runner = MontyRun::new("x = ext_fn(1); y = ext_fn(2); x + y".to_owned(), "test.py", vec![]).unwrap();
 
     // First call - resolve NameLookup for ext_fn first
-    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
     let progress = resolve_name_lookups(progress).unwrap();
     let bytes = progress.dump().unwrap();
     let loaded: RunProgress<NoLimitTracker> = RunProgress::load(&bytes).unwrap();
@@ -156,7 +156,7 @@ fn run_progress_dump_load_multiple_calls() {
     assert_eq!(call.args, vec![MontyObject::Int(1)]);
 
     // Resume first call
-    let progress = call.resume(MontyObject::Int(10), &mut PrintWriter::Stdout).unwrap();
+    let progress = call.resume(MontyObject::Int(10), PrintWriter::Stdout).unwrap();
     // Resolve any NameLookup for the second ext_fn reference
     let progress = resolve_name_lookups(progress).unwrap();
 
@@ -168,7 +168,7 @@ fn run_progress_dump_load_multiple_calls() {
     assert_eq!(call.args, vec![MontyObject::Int(2)]);
 
     // Resume second call to completion
-    let result = call.resume(MontyObject::Int(20), &mut PrintWriter::Stdout).unwrap();
+    let result = call.resume(MontyObject::Int(20), PrintWriter::Stdout).unwrap();
     assert_eq!(result.into_complete().unwrap(), MontyObject::Int(30)); // 10 + 20
 }
 
@@ -176,7 +176,7 @@ fn run_progress_dump_load_multiple_calls() {
 fn run_progress_complete_roundtrip() {
     // When execution completes, we can still dump/load the Complete variant
     let runner = MontyRun::new("1 + 2".to_owned(), "test.py", vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, &mut PrintWriter::Stdout).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
 
     let bytes = progress.dump().unwrap();
     let loaded: RunProgress<NoLimitTracker> = RunProgress::load(&bytes).unwrap();

@@ -188,7 +188,7 @@ impl<T: ResourceTracker> FunctionCall<T> {
     pub fn resume(
         self,
         result: impl Into<ExtFunctionResult>,
-        print: &mut PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         self.snapshot.run(result, print)
     }
@@ -204,7 +204,7 @@ impl<T: ResourceTracker> FunctionCall<T> {
     ///
     /// # Arguments
     /// * `print` — Writer for print output.
-    pub fn resume_pending(self, print: &mut PrintWriter<'_>) -> Result<RunProgress<T>, MontyException> {
+    pub fn resume_pending(self, print: PrintWriter<'_>) -> Result<RunProgress<T>, MontyException> {
         self.snapshot.run(ExtFunctionResult::Future(self.call_id), print)
     }
 }
@@ -260,7 +260,7 @@ impl<T: ResourceTracker> OsCall<T> {
     pub fn resume(
         self,
         result: impl Into<ExtFunctionResult>,
-        print: &mut PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         self.snapshot.run(result, print)
     }
@@ -314,7 +314,7 @@ impl<T: ResourceTracker> NameLookup<T> {
     pub fn resume(
         mut self,
         result: impl Into<NameLookupResult>,
-        print: &mut PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         // Resolve the name lookup result BEFORE restoring the VM, since the VM
         // borrows heap/namespaces mutably and we need direct access for caching.
@@ -438,7 +438,7 @@ impl<T: ResourceTracker> ResolveFutures<T> {
     pub fn resume(
         self,
         results: Vec<(u32, ExtFunctionResult)>,
-        print: &mut PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         let Self {
             executor,
@@ -557,7 +557,7 @@ impl<T: ResourceTracker> Snapshot<T> {
     pub(crate) fn run(
         mut self,
         result: impl Into<ExtFunctionResult>,
-        print: &mut PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         let ext_result = result.into();
 
