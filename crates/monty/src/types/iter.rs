@@ -38,7 +38,7 @@ use crate::{
     heap_data::HeapDataMut,
     intern::{BytesId, Interns, StringId},
     resource::ResourceTracker,
-    types::{PyTrait, Range, str::allocate_char},
+    types::{PyTrait, Range, dict_view::DictView, str::allocate_char},
     value::Value,
 };
 
@@ -494,9 +494,7 @@ fn get_heap_item(
             ))
         }
         HeapData::DictKeysView(view) => {
-            let HeapData::Dict(dict) = heap.get(view.dict_id()) else {
-                panic!("dict_keys view must reference a dict");
-            };
+            let dict = view.dict(heap);
             if let Some(expected) = expected_len
                 && dict.len() != expected
             {
@@ -507,9 +505,7 @@ fn get_heap_item(
             ))
         }
         HeapData::DictItemsView(view) => {
-            let HeapData::Dict(dict) = heap.get(view.dict_id()) else {
-                panic!("dict_items view must reference a dict");
-            };
+            let dict = view.dict(heap);
             if let Some(expected) = expected_len
                 && dict.len() != expected
             {
@@ -522,9 +518,7 @@ fn get_heap_item(
             )?))
         }
         HeapData::DictValuesView(view) => {
-            let HeapData::Dict(dict) = heap.get(view.dict_id()) else {
-                panic!("dict_values view must reference a dict");
-            };
+            let dict = view.dict(heap);
             if let Some(expected) = expected_len
                 && dict.len() != expected
             {
@@ -769,32 +763,17 @@ impl IterValue {
             }),
             HeapData::DictKeysView(view) => Some(Self::HeapRef {
                 heap_id,
-                len: Some({
-                    let HeapData::Dict(dict) = heap.get(view.dict_id()) else {
-                        panic!("dict_keys view must reference a dict");
-                    };
-                    dict.len()
-                }),
+                len: Some(view.dict(heap).len()),
                 checks_mutation: true,
             }),
             HeapData::DictItemsView(view) => Some(Self::HeapRef {
                 heap_id,
-                len: Some({
-                    let HeapData::Dict(dict) = heap.get(view.dict_id()) else {
-                        panic!("dict_items view must reference a dict");
-                    };
-                    dict.len()
-                }),
+                len: Some(view.dict(heap).len()),
                 checks_mutation: true,
             }),
             HeapData::DictValuesView(view) => Some(Self::HeapRef {
                 heap_id,
-                len: Some({
-                    let HeapData::Dict(dict) = heap.get(view.dict_id()) else {
-                        panic!("dict_values view must reference a dict");
-                    };
-                    dict.len()
-                }),
+                len: Some(view.dict(heap).len()),
                 checks_mutation: true,
             }),
             HeapData::Set(set) => Some(Self::HeapRef {

@@ -22,7 +22,7 @@ use crate::{
 /// not snapshot keys, items, or values; instead every observable operation reads
 /// through to the current dict state. Keeping that behavior centralized avoids
 /// subtle divergence between keys/items/values views.
-trait DictView {
+pub(crate) trait DictView {
     /// Returns the heap id of the underlying dictionary this view keeps alive.
     fn dict_id(&self) -> HeapId;
 
