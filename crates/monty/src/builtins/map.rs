@@ -25,7 +25,7 @@ use crate::{
 /// map(pow, [2, 3], [3, 2])          # [8, 9]
 /// map(str, [1, 2, 3])               # ['1', '2', '3']
 /// ```
-pub fn builtin_map(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_map(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (positional, kwargs) = args.into_parts();
     defer_drop_mut!(positional, vm);
 
@@ -39,14 +39,14 @@ pub fn builtin_map(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunRes
     defer_drop!(function, vm);
 
     let first_iterable = positional.next().expect("checked length above");
-    let first_iter = MontyIter::new(first_iterable, vm.heap, vm.interns)?;
+    let first_iter = MontyIter::new(first_iterable, vm)?;
     defer_drop_mut!(first_iter, vm);
 
     let extra_iterators: Vec<MontyIter> = Vec::with_capacity(positional.len());
     defer_drop_mut!(extra_iterators, vm);
 
     for iterable in positional {
-        extra_iterators.push(MontyIter::new(iterable, vm.heap, vm.interns)?);
+        extra_iterators.push(MontyIter::new(iterable, vm)?);
     }
 
     let mut out = Vec::with_capacity(first_iter.size_hint(vm.heap));
@@ -55,16 +55,16 @@ pub fn builtin_map(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunRes
     match extra_iterators.as_mut_slice() {
         // map(f, iter)
         [] => {
-            while let Some(item) = first_iter.for_next(vm.heap, vm.interns)? {
+            while let Some(item) = first_iter.for_next(vm)? {
                 let args = ArgValues::One(item);
                 out.push(vm.evaluate_function("map()", function, args)?);
             }
         }
         // map(f, iter1, iter2)
         [single] => {
-            while let Some(arg1) = first_iter.for_next(vm.heap, vm.interns)? {
-                let Some(arg2) = single.for_next(vm.heap, vm.interns)? else {
-                    arg1.drop_with_heap(vm.heap);
+            while let Some(arg1) = first_iter.for_next(vm)? {
+                let Some(arg2) = single.for_next(vm)? else {
+                    arg1.drop_with_heap(vm);
                     break;
                 };
                 let args = ArgValues::Two(arg1, arg2);
@@ -76,10 +76,10 @@ pub fn builtin_map(vm: &mut VM<impl ResourceTracker>, args: ArgValues) -> RunRes
             let mut items = Vec::with_capacity(1 + multiple.len());
 
             for iter in std::iter::once(&mut *first_iter).chain(multiple.iter_mut()) {
-                if let Some(item) = iter.for_next(vm.heap, vm.interns)? {
+                if let Some(item) = iter.for_next(vm)? {
                     items.push(item);
                 } else {
-                    items.drop_with_heap(vm.heap);
+                    items.drop_with_heap(vm);
                     break 'outer;
                 }
             }

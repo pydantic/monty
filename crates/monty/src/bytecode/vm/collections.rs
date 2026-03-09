@@ -7,6 +7,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, SimpleException},
     heap::{HeapData, HeapGuard},
+    heap_data::HeapDataMut,
     intern::StringId,
     resource::ResourceTracker,
     types::{Dict, List, PyTrait, Set, Slice, Type, allocate_tuple, slice::value_to_option_i64, str::allocate_char},
@@ -140,7 +141,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Extend the list
         if let Value::Ref(id) = list_ref
-            && let HeapData::List(list) = this.heap.get_mut(*id)
+            && let HeapDataMut::List(list) = this.heap.get_mut(*id)
         {
             // Update contains_refs before extending
             if has_refs {
@@ -238,8 +239,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 _ => false,
             };
             if !is_string {
-                key.drop_with_heap(this.heap);
-                value.drop_with_heap(this.heap);
+                key.drop_with_heap(this);
+                value.drop_with_heap(this);
                 return Err(ExcType::type_error_kwargs_nonstring_key());
             }
 
@@ -258,7 +259,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
             // Use with_entry_mut to avoid borrow conflict: takes data out temporarily
             let result = this.heap.with_entry_mut(dict_id, |heap, data| {
-                if let HeapData::Dict(dict) = data {
+                if let HeapDataMut::Dict(dict) = data {
                     dict.set(key, value, heap, this.interns)
                 } else {
                     Err(RunError::internal("DictMerge: entry is not a Dict"))
@@ -267,7 +268,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
             // If set returned Some, the key already existed (duplicate kwarg)
             if let Some(old_value) = result? {
-                old_value.drop_with_heap(this.heap);
+                old_value.drop_with_heap(this);
                 return Err(ExcType::type_error_multiple_values(&func_name, &key_str));
             }
         }
@@ -294,13 +295,13 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Get the list reference
         let Value::Ref(list_id) = self.stack[list_pos] else {
-            value.drop_with_heap(self.heap);
+            value.drop_with_heap(self);
             return Err(RunError::internal("ListAppend: expected list ref on stack"));
         };
 
         // Append to the list using with_entry_mut to handle proper contains_refs tracking
         self.heap.with_entry_mut(list_id, |heap, data| {
-            if let HeapData::List(list) = data {
+            if let HeapDataMut::List(list) = data {
                 list.append(heap, value);
                 Ok(())
             } else {
@@ -322,13 +323,13 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Get the set reference
         let Value::Ref(set_id) = self.stack[set_pos] else {
-            value.drop_with_heap(self.heap);
+            value.drop_with_heap(self);
             return Err(RunError::internal("SetAdd: expected set ref on stack"));
         };
 
         // Add to the set using with_entry_mut to avoid borrow conflicts
         self.heap.with_entry_mut(set_id, |heap, data| {
-            if let HeapData::Set(set) = data {
+            if let HeapDataMut::Set(set) = data {
                 set.add(value, heap, self.interns)
             } else {
                 value.drop_with_heap(heap);
@@ -352,14 +353,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Get the dict reference
         let Value::Ref(dict_id) = self.stack[dict_pos] else {
-            key.drop_with_heap(self.heap);
-            value.drop_with_heap(self.heap);
+            key.drop_with_heap(self);
+            value.drop_with_heap(self);
             return Err(RunError::internal("DictSetItem: expected dict ref on stack"));
         };
 
         // Set item in the dict using with_entry_mut to avoid borrow conflicts
         let old_value = self.heap.with_entry_mut(dict_id, |heap, data| {
-            if let HeapData::Dict(dict) = data {
+            if let HeapDataMut::Dict(dict) = data {
                 dict.set(key, value, heap, self.interns)
             } else {
                 key.drop_with_heap(heap);
@@ -370,7 +371,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Drop old value if key already existed
         if let Some(old) = old_value {
-            old.drop_with_heap(self.heap);
+            old.drop_with_heap(self);
         }
 
         Ok(())

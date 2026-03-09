@@ -55,7 +55,7 @@ assert result == 3
 import pydantic_monty
 
 # Code that calls an external function
-m = pydantic_monty.Monty('double(x)', inputs=['x'], external_functions=['double'])
+m = pydantic_monty.Monty('double(x)', inputs=['x'])
 
 # Provide the external function implementation at runtime
 result = m.run(inputs={'x': 5}, external_functions={'double': lambda x: x * 2})
@@ -76,13 +76,13 @@ data = fetch(url)
 len(data)
 """
 
-m = pydantic_monty.Monty(code, inputs=['url'], external_functions=['fetch'])
+m = pydantic_monty.Monty(code, inputs=['url'])
 
 # Start execution - pauses when fetch() is called
 result = m.start(inputs={'url': 'https://example.com'})
 
 print(type(result))
-#> <class 'pydantic_monty.MontySnapshot'>
+#> <class 'pydantic_monty.FunctionSnapshot'>
 print(result.function_name)  # fetch
 #> fetch
 print(result.args)
@@ -99,7 +99,7 @@ print(result.output)
 
 ### Serialization
 
-Both `Monty` and `MontySnapshot` can be serialized to bytes and restored later.
+Both `Monty` and `FunctionSnapshot` can be serialized to bytes and restored later.
 This allows caching parsed code or suspending execution across process boundaries:
 
 ```python
@@ -120,14 +120,14 @@ Execution state can also be serialized mid-flight:
 ```python
 import pydantic_monty
 
-m = pydantic_monty.Monty('fetch(url)', inputs=['url'], external_functions=['fetch'])
+m = pydantic_monty.Monty('fetch(url)', inputs=['url'])
 progress = m.start(inputs={'url': 'https://example.com'})
 
 # Serialize the execution state
 state = progress.dump()
 
 # Later, restore and resume (e.g., in a different process)
-progress2 = pydantic_monty.MontySnapshot.load(state)
+progress2 = pydantic_monty.FunctionSnapshot.load(state)
 result = progress2.resume(return_value='response data')
 print(result.output)
 #> response data

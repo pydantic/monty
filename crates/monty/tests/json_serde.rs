@@ -28,7 +28,7 @@ fn json_output_primitives() {
 
 #[test]
 fn json_output_list() {
-    let ex = MontyRun::new("[1, 'two', 3.0]".to_owned(), "test.py", vec![], vec![]).unwrap();
+    let ex = MontyRun::new("[1, 'two', 3.0]".to_owned(), "test.py", vec![]).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     assert_eq!(
         serde_json::to_string(&result).unwrap(),
@@ -38,7 +38,7 @@ fn json_output_list() {
 
 #[test]
 fn json_output_dict() {
-    let ex = MontyRun::new("{'a': 1, 'b': 2}".to_owned(), "test.py", vec![], vec![]).unwrap();
+    let ex = MontyRun::new("{'a': 1, 'b': 2}".to_owned(), "test.py", vec![]).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     assert_eq!(
         serde_json::to_string(&result).unwrap(),
@@ -48,7 +48,7 @@ fn json_output_dict() {
 
 #[test]
 fn json_output_tuple() {
-    let ex = MontyRun::new("(1, 'two')".to_owned(), "test.py", vec![], vec![]).unwrap();
+    let ex = MontyRun::new("(1, 'two')".to_owned(), "test.py", vec![]).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     assert_eq!(
         serde_json::to_string(&result).unwrap(),
@@ -58,14 +58,14 @@ fn json_output_tuple() {
 
 #[test]
 fn json_output_bytes() {
-    let ex = MontyRun::new("b'hi'".to_owned(), "test.py", vec![], vec![]).unwrap();
+    let ex = MontyRun::new("b'hi'".to_owned(), "test.py", vec![]).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     assert_eq!(serde_json::to_string(&result).unwrap(), r#"{"Bytes":[104,105]}"#);
 }
 
 #[test]
 fn json_output_ellipsis() {
-    let ex = MontyRun::new("...".to_owned(), "test.py", vec![], vec![]).unwrap();
+    let ex = MontyRun::new("...".to_owned(), "test.py", vec![]).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     assert_eq!(serde_json::to_string(&result).unwrap(), r#""Ellipsis""#);
 }
@@ -91,7 +91,7 @@ fn json_output_repr() {
 #[test]
 fn json_output_cycle_list() {
     // Test JSON serialization of cyclic list
-    let ex = MontyRun::new("a = []; a.append(a); a".to_owned(), "test.py", vec![], vec![]).unwrap();
+    let ex = MontyRun::new("a = []; a.append(a); a".to_owned(), "test.py", vec![]).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     // The cyclic reference becomes MontyObject::Cycle
     assert_eq!(
@@ -103,7 +103,7 @@ fn json_output_cycle_list() {
 #[test]
 fn json_output_cycle_dict() {
     // Test JSON serialization of cyclic dict
-    let ex = MontyRun::new("d = {}; d['self'] = d; d".to_owned(), "test.py", vec![], vec![]).unwrap();
+    let ex = MontyRun::new("d = {}; d['self'] = d; d".to_owned(), "test.py", vec![]).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     assert_eq!(
         serde_json::to_string(&result).unwrap(),
@@ -171,7 +171,6 @@ fn json_roundtrip() {
         "{'items': [1, 'two', None], 'flag': True}".to_owned(),
         "test.py",
         vec![],
-        vec![],
     )
     .unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
@@ -194,7 +193,7 @@ fn json_roundtrip_empty() {
 #[test]
 fn cycle_equality_same_id() {
     // Multiple references to the same cyclic object should produce equal Cycle values
-    let ex = MontyRun::new("a = []; a.append(a); [a, a]".to_owned(), "test.py", vec![], vec![]).unwrap();
+    let ex = MontyRun::new("a = []; a.append(a); [a, a]".to_owned(), "test.py", vec![]).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
 
     if let MontyObject::List(outer) = &result {
@@ -219,7 +218,6 @@ fn cycle_equality_different_ids() {
     let ex = MontyRun::new(
         "a = []; a.append(a); b = []; b.append(b); [a, b]".to_owned(),
         "test.py",
-        vec![],
         vec![],
     )
     .unwrap();

@@ -9,15 +9,16 @@ use strum::{Display, EnumString, IntoStaticStr};
 
 use crate::{
     args::ArgValues,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_public::{MontyException, StackFrame},
     fstring::FormatError,
     heap::{Heap, HeapData},
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
-    resource::{DepthGuard, ResourceTracker},
+    resource::ResourceTracker,
     types::{
-        AttrCallResult, PyTrait, Str, Type, allocate_tuple,
+        PyTrait, Str, Type, allocate_tuple,
         str::{StringRepr, string_repr_fmt},
     },
     value::{EitherStr, Value},
@@ -104,6 +105,21 @@ pub enum ExcType {
     SyntaxError,
     TimeoutError,
     TypeError,
+
+    // --- Module-specific exception types ---
+
+    // --- re module ---
+    /// `re.PatternError` - raised for invalid regex patterns or unsupported regex features.
+    ///
+    /// # Behavior Note
+    ///
+    /// Limited to monty's exception type, `PatternError` does not provide `pattern`, `pos`,
+    /// `lineno` and `colno` attributes.
+    ///
+    /// As per CPython's implementation, it would be hard to convert `fancy-regex`'s error
+    /// representations into the required attributes.
+    #[strum(serialize = "re.PatternError")]
+    RePatternError,
 }
 
 impl ExcType {
@@ -157,21 +173,17 @@ impl ExcType {
     ///
     /// The `interns` parameter provides access to interned string content.
     /// Returns a heap-allocated exception value.
-    pub(crate) fn call(
-        self,
-        heap: &mut Heap<impl ResourceTracker>,
-        args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
-        defer_drop!(args, heap);
+    pub(crate) fn call(self, vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        defer_drop!(args, vm);
         let exc = match args {
             ArgValues::Empty => Ok(SimpleException::new_none(self)),
             ArgValues::One(value) => match value {
-                Value::InternString(string_id) => {
-                    Ok(SimpleException::new_msg(self, interns.get_str(*string_id).to_owned()))
-                }
+                Value::InternString(string_id) => Ok(SimpleException::new_msg(
+                    self,
+                    vm.interns.get_str(*string_id).to_owned(),
+                )),
                 Value::Ref(heap_id) => {
-                    if let HeapData::Str(s) = heap.get(*heap_id) {
+                    if let HeapData::Str(s) = vm.heap.get(*heap_id) {
                         Ok(SimpleException::new_msg(self, s.as_str().to_owned()))
                     } else {
                         Err(RunError::internal(
@@ -187,7 +199,7 @@ impl ExcType {
                 "exceptions can only be called with zero or one string argument",
             )),
         }?;
-        let heap_id = heap.allocate(HeapData::Exception(exc))?;
+        let heap_id = vm.heap.allocate(HeapData::Exception(exc))?;
         Ok(Value::Ref(heap_id))
     }
 
@@ -313,8 +325,7 @@ impl ExcType {
     /// For string keys, uses the raw string value without extra quoting.
     #[must_use]
     pub(crate) fn key_error(key: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunError {
-        let mut guard = DepthGuard::default();
-        let key_str = key.py_str(heap, &mut guard, interns).into_owned();
+        let key_str = key.py_str(heap, interns).into_owned();
         SimpleException::new_msg(Self::KeyError, key_str).into()
     }
 
@@ -751,6 +762,14 @@ impl ExcType {
         SimpleException::new_msg(Self::IndexError, "range object index out of range").into()
     }
 
+    /// Creates an IndexError for `re.Match` group index out of range.
+    ///
+    /// Matches CPython's format: `IndexError('no such group')`
+    #[must_use]
+    pub(crate) fn re_match_group_index_error() -> RunError {
+        SimpleException::new_msg(Self::IndexError, "no such group").into()
+    }
+
     /// Creates a TypeError for non-integer sequence indices (getitem).
     ///
     /// Matches CPython's format: `TypeError('{type}' indices must be integers, not '{index_type}')`
@@ -794,7 +813,7 @@ impl ExcType {
     pub(crate) fn name_error(name: &str) -> SimpleException {
         let mut msg = format!("name '{name}' is not defined");
         // add the same suffix as cpython, but only for the modules supported by Monty
-        if matches!(name, "asyncio" | "sys" | "typing" | "types") {
+        if matches!(name, "asyncio" | "sys" | "typing" | "types" | "re") {
             write!(&mut msg, ". Did you forget to import '{name}'?").unwrap();
         }
         SimpleException::new_msg(Self::NameError, msg)
@@ -1096,6 +1115,14 @@ impl ExcType {
     pub(crate) fn lookup_error_unknown_error_handler(name: &str) -> RunError {
         SimpleException::new_msg(Self::LookupError, format!("unknown error handler name '{name}'")).into()
     }
+
+    /// Creates a `re.PatternError` for an invalid regex pattern or unsupported regex feature.
+    ///
+    /// Matches CPython's exception type: `re.PatternError: {message}`
+    #[must_use]
+    pub(crate) fn re_pattern_error(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(Self::RePatternError, msg).into()
+    }
 }
 
 /// Simple lightweight representation of an exception.
@@ -1206,7 +1233,7 @@ impl SimpleException {
         attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<Option<AttrCallResult>> {
+    ) -> RunResult<Option<CallResult>> {
         // Fast path: interned strings can be matched by ID
         let is_args = attr
             .static_string()
@@ -1220,7 +1247,7 @@ impl SimpleException {
             } else {
                 smallvec![]
             };
-            Ok(Some(AttrCallResult::Value(allocate_tuple(elements, heap)?)))
+            Ok(Some(CallResult::Value(allocate_tuple(elements, heap)?)))
         } else {
             Ok(None)
         }
@@ -1387,7 +1414,7 @@ pub(crate) enum RunError {
     Internal(Cow<'static, str>),
     /// Catchable Python exception (e.g., ValueError, TypeError).
     Exc(ExceptionRaise),
-    /// Uncatchable Python exception from resource limits (MemoryError, TimeoutError, RecursionError).
+    /// Uncatchable Python exception from resource limits (MemoryError, TimeoutError).
     ///
     /// These exceptions display with proper tracebacks like normal Python exceptions,
     /// but cannot be caught by try/except blocks. This prevents untrusted code from

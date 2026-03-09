@@ -179,9 +179,8 @@ jobs:
       - if: steps.cache-rust.outputs.cache-hit != 'true'
         run: cargo install cargo-fuzz
 
-      # venv is not used by the fuzz target but cargo config expects it
-      - name: Set up empty venv
-        run: python -m venv .venv
+      # don't use .venv python in CI
+      - run: rm .cargo/config.toml
 
       - name: Run ${{ matrix.target }} fuzzer
         run: |
@@ -511,6 +510,8 @@ jobs:
             .cargo-cache
             target/
           key: ${{ matrix.settings.target }}-cargo-${{ matrix.settings.host }}
+      # don't use .venv python in CI
+      - run: rm .cargo/config.toml
       - uses: mlugg/setup-zig@v2
         if: ${{ contains(matrix.settings.target, 'musl') }}
         with:
@@ -679,13 +680,7 @@ jobs:
         if: ${{ contains(matrix.target, 'armv7') }}
       - name: Test bindings
         run: >
-          docker run
-          --rm
-          -v ${{ github.workspace }}:${{ github.workspace }}
-          -w ${{ github.workspace }}/crates/monty-js
-          --platform ${{ steps.docker.outputs.PLATFORM }}
-          ${{ steps.docker.outputs.IMAGE }}
-          npm test
+          docker run --rm -v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }}/crates/monty-js --platform ${{ steps.docker.outputs.PLATFORM }} ${{ steps.docker.outputs.IMAGE }} npm test
 
   test-js-wasi:
     name: Test WASI target

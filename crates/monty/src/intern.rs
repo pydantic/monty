@@ -349,6 +349,87 @@ pub enum StaticStrings {
     Start,
     Stop,
     Step,
+
+    // ==========================
+    // module strings
+    // ==========================
+
+    // re module strings
+    /// Module name for `import re`.
+    Re,
+    /// `re.compile()` function
+    Compile,
+    /// `re.match()` / `pattern.match()` method
+    Match,
+    /// `re.search()` / `pattern.search()` method
+    Search,
+    /// `re.fullmatch()` / `pattern.fullmatch()` method
+    Fullmatch,
+    /// `re.findall()` / `pattern.findall()` method
+    Findall,
+    /// `re.sub()` / `pattern.sub()` method
+    Sub,
+    /// `match.group()` method
+    Group,
+    /// `match.groups()` method
+    Groups,
+    /// `match.span()` method
+    Span,
+    /// `match.end()` method
+    End,
+    /// `re.Pattern`
+    #[strum(serialize = "Pattern")]
+    PatternClass,
+    /// `re.Match`
+    #[strum(serialize = "Match")]
+    MatchClass,
+    /// `pattern.pattern`
+    #[strum(serialize = "pattern")]
+    PatternAttr,
+    /// `match.string`
+    #[strum(serialize = "string")]
+    StringAttr,
+    /// `pattern.flags`
+    Flags,
+    /// `re.IGNORECASE` flag
+    #[strum(serialize = "IGNORECASE")]
+    Ignorecase,
+    /// `re.I` flag, alias
+    #[strum(serialize = "I")]
+    I,
+    /// `re.MULTILINE` flag
+    #[strum(serialize = "MULTILINE")]
+    MultilineFlag,
+    /// `re.M` flag, alias
+    #[strum(serialize = "M")]
+    M,
+    /// `re.DOTALL` flag
+    #[strum(serialize = "DOTALL")]
+    DotallFlag,
+    /// `re.S` flag, alias
+    #[strum(serialize = "S")]
+    S,
+    /// `re.NOFLAG` flag
+    #[strum(serialize = "NOFLAG")]
+    NoFlag,
+    /// `re.ASCII` flag
+    #[strum(serialize = "ASCII")]
+    AsciiFlag,
+    /// `re.A` flag, alias
+    #[strum(serialize = "A")]
+    A,
+    /// `re.PatternError` exception
+    #[strum(serialize = "PatternError")]
+    PatternError,
+    /// `re.error` exception alias (same as `re.PatternError`)
+    #[strum(serialize = "error")]
+    Error,
+    /// `re.escape()` function
+    Escape,
+    /// `re.finditer()` / `pattern.finditer()` method
+    Finditer,
+    /// `match.groupdict()` method
+    Groupdict,
 }
 
 impl StaticStrings {
@@ -429,22 +510,6 @@ impl FunctionId {
     #[inline]
     pub fn from_index(index: u16) -> Self {
         Self(u32::from(index))
-    }
-
-    /// Returns the raw index value.
-    #[inline]
-    pub fn index(self) -> usize {
-        self.0 as usize
-    }
-}
-
-/// Unique identifier for external functions
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-pub struct ExtFunctionId(u32);
-
-impl ExtFunctionId {
-    pub fn new(index: usize) -> Self {
-        Self(index.try_into().expect("Invalid external function id"))
     }
 
     /// Returns the raw index value.
@@ -600,17 +665,15 @@ pub(crate) struct Interns {
     bytes: Vec<Vec<u8>>,
     long_ints: Vec<BigInt>,
     functions: Vec<Function>,
-    external_functions: Vec<String>,
 }
 
 impl Interns {
-    pub fn new(interner: InternerBuilder, functions: Vec<Function>, external_functions: Vec<String>) -> Self {
+    pub fn new(interner: InternerBuilder, functions: Vec<Function>) -> Self {
         Self {
             strings: interner.strings,
             bytes: interner.bytes,
             long_ints: interner.long_ints,
             functions,
-            external_functions,
         }
     }
 
@@ -654,17 +717,29 @@ impl Interns {
         self.functions.get(id.index()).expect("Function not found")
     }
 
-    /// Lookup an external function name by its `ExtFunctionId`
+    /// Looks up the `StringId` for a string, checking ASCII, static strings, and interned strings.
     ///
-    /// # Panics
+    /// This is the reverse of `get_str`: given a string, find its StringId.
+    /// Used when the host provides a name (e.g., from a NameLookup response) that was
+    /// previously interned during preparation.
     ///
-    /// Panics if the `ExtFunctionId` is invalid.
-    #[inline]
-    pub fn get_external_function_name(&self, id: ExtFunctionId) -> String {
-        self.external_functions
-            .get(id.index())
-            .expect("External function not found")
-            .clone()
+    /// Error if the string was never interned.
+    pub fn get_string_id_by_name(&self, s: &str) -> Option<StringId> {
+        // Check single ASCII char
+        if s.len() == 1 {
+            return Some(StringId::from_ascii(s.as_bytes()[0]));
+        }
+        // Check static strings
+        if let Ok(ss) = StaticStrings::from_str(s) {
+            return Some(ss.into());
+        }
+        // Check interned strings
+        for (i, interned) in self.strings.iter().enumerate() {
+            if interned == s {
+                return u32::try_from(INTERN_STRING_ID_OFFSET + i).ok().map(StringId);
+            }
+        }
+        None
     }
 
     /// Sets the compiled functions.

@@ -11,14 +11,14 @@ use smallvec::SmallVec;
 
 use crate::{
     args::{ArgValues, KwargsValues},
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     os::OsFunction,
-    resource::{DepthGuard, ResourceError, ResourceTracker},
-    types::{AttrCallResult, PyTrait, Str, Type, allocate_tuple},
+    resource::{ResourceError, ResourceTracker},
+    types::{PyTrait, Str, Type, allocate_tuple},
     value::{EitherStr, Value},
 };
 
@@ -261,7 +261,9 @@ impl Path {
     /// - `Path('a')` returns `Path('a')`
     /// - `Path('a', 'b', 'c')` returns `Path('a/b/c')`
     /// - If an absolute path appears, it replaces everything before it.
-    pub fn init(heap: &mut Heap<impl ResourceTracker>, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+    pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
         let pos_args = args.into_pos_only("Path", heap)?;
         defer_drop!(pos_args, heap);
 
@@ -453,7 +455,7 @@ impl PyTrait for Path {
         Type::Path
     }
 
-    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         // Paths don't have a length in Python
         None
     }
@@ -462,13 +464,12 @@ impl PyTrait for Path {
         &self,
         other: &Self,
         _heap: &mut Heap<impl ResourceTracker>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> Result<bool, ResourceError> {
         Ok(self.path == other.path)
     }
 
-    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
+    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         // Paths are always truthy (even empty paths)
         true
     }
@@ -478,7 +479,6 @@ impl PyTrait for Path {
         f: &mut impl Write,
         _heap: &Heap<impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-        _guard: &mut DepthGuard,
         _interns: &Interns,
     ) -> std::fmt::Result {
         // Format like: PosixPath('/usr/bin')
@@ -493,20 +493,36 @@ impl PyTrait for Path {
         std::mem::size_of::<Self>() + self.path.capacity()
     }
 
+    /// Handles attribute calls on Path objects, including both pure methods (no I/O)
+    /// and OS methods that require host system access.
+    ///
+    /// OS methods (exists, read_text, etc.) are detected via `OsFunction::try_from`
+    /// and returned as `CallResult::OsCall` for the VM to yield to the host.
+    /// Pure methods (is_absolute, joinpath, etc.) are handled directly.
     fn py_call_attr(
         &mut self,
-        heap: &mut Heap<impl ResourceTracker>,
+        _self_id: HeapId,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<Value> {
+    ) -> RunResult<CallResult> {
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
         let Some(method) = attr.static_string() else {
             args.drop_with_heap(heap);
             return Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)));
         };
 
-        match method {
-            // Pure methods (no I/O)
+        // Check if this is an OS method that requires host system access
+        if let Ok(os_fn) = OsFunction::try_from(method) {
+            // Package path as first argument for OS call (as Path, not string)
+            let path_arg = Value::Ref(heap.allocate(HeapData::Path(self.clone()))?);
+            let os_args = prepend_path_arg(path_arg, args);
+            return Ok(CallResult::OsCall(os_fn, os_args));
+        }
+
+        // Pure methods (no I/O)
+        let value = match method {
             StaticStrings::IsAbsolute => {
                 args.check_zero_args("is_absolute", heap)?;
                 Ok(Value::Bool(self.is_absolute()))
@@ -553,35 +569,10 @@ impl PyTrait for Path {
             }
             _ => {
                 args.drop_with_heap(heap);
-                Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)))
+                return Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)));
             }
-        }
-    }
-
-    fn py_call_attr_raw(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<AttrCallResult> {
-        let Some(method) = attr.static_string() else {
-            return self
-                .py_call_attr(vm.heap, attr, args, vm.interns)
-                .map(AttrCallResult::Value);
         };
-
-        // Check if this is an OS method that requires host system access
-        if let Ok(os_fn) = OsFunction::try_from(method) {
-            // Package path as first argument for OS call (as Path, not string)
-            let path_arg = Value::Ref(vm.heap.allocate(HeapData::Path(self.clone()))?);
-            let os_args = prepend_path_arg(path_arg, args);
-            return Ok(AttrCallResult::OsCall(os_fn, os_args));
-        }
-
-        // Fall back to py_call_attr for pure methods
-        self.py_call_attr(vm.heap, attr, args, vm.interns)
-            .map(AttrCallResult::Value)
+        value.map(CallResult::Value)
     }
 
     fn py_getattr(
@@ -589,11 +580,11 @@ impl PyTrait for Path {
         attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<Option<AttrCallResult>> {
+    ) -> RunResult<Option<CallResult>> {
         // Fast path: interned strings can be matched by ID without string comparison
         if let Some(ss) = attr.static_string() {
             if let Some(v) = self.getattr_by_static(ss, heap)? {
-                return Ok(Some(AttrCallResult::Value(v)));
+                return Ok(Some(CallResult::Value(v)));
             }
             return Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)));
         }
@@ -611,6 +602,6 @@ impl PyTrait for Path {
         let v = self
             .getattr_by_static(ss, heap)?
             .expect("matched attribute must produce a value");
-        Ok(Some(AttrCallResult::Value(v)))
+        Ok(Some(CallResult::Value(v)))
     }
 }

@@ -1,9 +1,10 @@
 import asyncio
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import assert_type
+from typing import Any, assert_type
 
 # === Type checking helper functions ===
 
@@ -428,3 +429,47 @@ assert_type(y, str | int)
 
 x2 = os.environ.get('foobar')
 assert_type(x2, str | None)
+
+
+# === re module ===
+
+# re.search returns Match or None
+s1 = re.search(r'\d+', 'abc 42')
+assert_type(s1, re.Match[str] | None)
+
+# re.match returns Match or None
+s2 = re.match(r'\w+', 'hello')
+assert_type(s2, re.Match[str] | None)
+
+# re.fullmatch returns Match or None
+s3 = re.fullmatch(r'\w+', 'hello')
+assert_type(s3, re.Match[str] | None)
+
+# re.compile returns Pattern
+p_re = re.compile(r'\d+')
+assert_type(p_re, re.Pattern[str])
+
+# re.findall returns list of Any
+fa = re.findall(r'\d+', 'a1 b2 c3')
+assert_type(fa, list[Any])
+
+# re.sub returns str
+s4 = re.sub(r'\d+', 'X', 'a1 b2')
+assert_type(s4, str)
+
+# Pattern.search returns Match or None
+p_re2 = re.compile(r'(\w+)')
+s5 = p_re2.search('hello world')
+assert_type(s5, re.Match[str] | None)
+
+# Pattern.match returns Match or None
+s6 = p_re2.match('hello world')
+assert_type(s6, re.Match[str] | None)
+
+# Pattern.sub returns str
+s7 = p_re2.sub('X', 'hello world')
+assert_type(s7, str)
+
+# Pattern.findall returns list of Any
+fa2 = p_re2.findall('hello world')
+assert_type(fa2, list[Any])

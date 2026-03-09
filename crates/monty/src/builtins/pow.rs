@@ -5,6 +5,7 @@ use num_traits::{Signed, ToPrimitive, Zero};
 
 use crate::{
     args::ArgValues,
+    bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapData},
@@ -17,16 +18,16 @@ use crate::{
 ///
 /// Returns base to the power exp. With three arguments, returns (base ** exp) % mod.
 /// Handles negative exponents by returning a float.
-pub fn builtin_pow(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_pow(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     // pow() accepts 2 or 3 arguments
-    let positional = args.into_pos_only("pow", heap)?;
-    defer_drop!(positional, heap);
+    let positional = args.into_pos_only("pow", vm.heap)?;
+    defer_drop!(positional, vm);
 
     match positional.as_slice() {
         [base, exp] => {
             let base = normalize_bool(base);
             let exp = normalize_bool(exp);
-            two_arg_pow(base, exp, heap)
+            two_arg_pow(base, exp, vm.heap)
         }
         [base, exp, m] => {
             let base = normalize_bool(base);

@@ -96,13 +96,6 @@ test('os.getenv via run() raises NotImplementedError', (t) => {
   t.is(error.exception.message, "OS function 'os.getenv' not implemented with standard execution")
 })
 
-test('os.environ via run() with external functions raises NotImplementedError', (t) => {
-  const m = new Monty('import os\nx = os.environ', { externalFunctions: ['func'] })
-  const error = t.throws(() => m.run(), isRuntimeError)
-  t.is(error.exception.typeName, 'NotImplementedError')
-  t.is(error.exception.message, "OS function 'os.environ' not implemented")
-})
-
 // =============================================================================
 // MontySyntaxError tests
 // =============================================================================

@@ -67,6 +67,54 @@ s2 = set([2, 3, 4])
 sd = s1.symmetric_difference(s2)
 assert len(sd) == 2, 'symmetric_difference len'
 
+# === Binary operators ===
+s = {1, 2}
+t = {2, 3}
+fs = frozenset([2, 3])
+
+assert s & t == {2}, 'set & set works'
+assert s | t == {1, 2, 3}, 'set | set works'
+assert s ^ t == {1, 3}, 'set ^ set works'
+assert s - t == {1}, 'set - set works'
+
+assert s & fs == {2}, 'set & frozenset works'
+assert s | fs == {1, 2, 3}, 'set | frozenset works'
+assert s ^ fs == {1, 3}, 'set ^ frozenset works'
+assert s - fs == {1}, 'set - frozenset works'
+
+keys = {'a': 1, 'b': 2}.keys()
+items = {'a': 1, 'b': 2}.items()
+assert {'a'} & keys == {'a'}, 'set & dict_keys works'
+assert {'a'} | keys == {'a', 'b'}, 'set | dict_keys works'
+assert {('a', 1)} ^ items == {('b', 2)}, 'set ^ dict_items works'
+assert {('a', 1), ('b', 2)} - items == set(), 'set - dict_items works'
+
+assert type(s & fs).__name__ == 'set', 'set operators keep the left operand type'
+
+try:
+    s & [1, 2]
+    assert False, 'set operators reject non-set rhs'
+except TypeError as e:
+    assert str(e) == "unsupported operand type(s) for &: 'set' and 'list'", 'set & rhs error matches CPython'
+
+try:
+    s | [1, 2]
+    assert False, 'set union operator rejects non-set rhs'
+except TypeError as e:
+    assert str(e) == "unsupported operand type(s) for |: 'set' and 'list'", 'set | rhs error matches CPython'
+
+try:
+    s ^ [1, 2]
+    assert False, 'set xor operator rejects non-set rhs'
+except TypeError as e:
+    assert str(e) == "unsupported operand type(s) for ^: 'set' and 'list'", 'set ^ rhs error matches CPython'
+
+try:
+    s - [1, 2]
+    assert False, 'set subtraction operator rejects non-set rhs'
+except TypeError as e:
+    assert str(e) == "unsupported operand type(s) for -: 'set' and 'list'", 'set - rhs error matches CPython'
+
 # === Issubset ===
 s1 = set([1, 2])
 s2 = set([1, 2, 3])

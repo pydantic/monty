@@ -67,3 +67,24 @@ assert val == 65, 'bytes getitem value is correct'
 b = b'abc'
 assert b[False] == 97, 'bytes getitem with False'
 assert b[True] == 98, 'bytes getitem with True'
+
+# === Bytes comparisons ===
+assert b'abc' < b'abd', 'bytes < bytes'
+assert b'abd' > b'abc', 'bytes > bytes'
+assert b'abc' <= b'abc', 'bytes <= bytes equal'
+assert b'abc' <= b'abd', 'bytes <= bytes less'
+assert b'abd' >= b'abd', 'bytes >= bytes equal'
+assert b'abd' >= b'abc', 'bytes >= bytes greater'
+
+# Different lengths
+assert b'ab' < b'abc', 'shorter prefix is less'
+assert b'' < b'a', 'empty bytes is less'
+assert b'abc' > b'ab', 'longer bytes with same prefix is greater'
+
+# Non-ASCII byte values
+assert b'\x00' < b'\xff', 'null byte < 0xff'
+assert b'\xfe' < b'\xff', '0xfe < 0xff'
+
+# Sorting
+assert sorted([b'c', b'a', b'b']) == [b'a', b'b', b'c'], 'sorted bytes list'
+assert sorted([b'bb', b'a', b'ba']) == [b'a', b'ba', b'bb'], 'sorted different length bytes'

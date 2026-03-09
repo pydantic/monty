@@ -8,13 +8,13 @@
 //! This module provides [`sort_indices`] for the comparison step and
 //! [`apply_permutation`] for the in-place rearrangement step.
 
-use std::{cell::RefCell, cmp::Ordering};
+use std::cmp::Ordering;
 
 use crate::{
     exception_private::{ExcType, RunError},
     heap::Heap,
     intern::Interns,
-    resource::{DepthGuard, ResourceTracker},
+    resource::ResourceTracker,
     types::PyTrait,
     value::Value,
 };
@@ -35,7 +35,6 @@ pub fn sort_indices(
     interns: &Interns,
 ) -> Result<(), RunError> {
     let mut sort_error: Option<RunError> = None;
-    let guard = RefCell::new(DepthGuard::default());
 
     indices.sort_by(|&a, &b| {
         if sort_error.is_some() {
@@ -45,7 +44,7 @@ pub fn sort_indices(
             sort_error = Some(e.into());
             return Ordering::Equal;
         }
-        match values[a].py_cmp(&values[b], heap, &mut guard.borrow_mut(), interns) {
+        match values[a].py_cmp(&values[b], heap, interns) {
             Ok(Some(ord)) => {
                 if reverse {
                     ord.reverse()

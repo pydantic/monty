@@ -16,7 +16,7 @@ use pyo3::prelude::*;
 /// Runs a benchmark using the Monty interpreter.
 /// Parses once, then benchmarks repeated execution.
 fn run_monty(bench: &mut Bencher, code: &str, expected: i64) {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], vec![]).unwrap();
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
     let r = ex.run_no_limits(vec![]).unwrap();
     let int_value: i64 = r.as_ref().try_into().unwrap();
     assert_eq!(int_value, expected);
@@ -147,7 +147,7 @@ const PAIR_TUPLES: &str = "len([(i, i + 1) for i in range(100_000)])";
 /// This is different from other benchmarks as it includes parsing in the loop.
 fn end_to_end_monty(bench: &mut Bencher) {
     bench.iter(|| {
-        let ex = MontyRun::new(black_box("1 + 2").to_owned(), "test.py", vec![], vec![]).unwrap();
+        let ex = MontyRun::new(black_box("1 + 2").to_owned(), "test.py", vec![]).unwrap();
         let r = ex.run_no_limits(vec![]).unwrap();
         let int_value: i64 = r.as_ref().try_into().unwrap();
         black_box(int_value);

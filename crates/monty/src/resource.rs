@@ -17,10 +17,11 @@ use crate::{
 /// the allocation check can catch them.
 pub const LARGE_RESULT_THRESHOLD: usize = 100_000;
 
-/// Pre-checks that a sequence repeat won't exceed resource limits before allocating.
+/// Pre-checks that an operation producing `item_len * count` bytes won't exceed resource limits.
 ///
-/// This prevents DoS via expressions like `'x' * 999_999_999` or `b'ab' * huge_int`
-/// by estimating the result size and checking against the resource tracker.
+/// Used for sequence repeats (`'x' * 999_999_999`), padding operations
+/// (`str.ljust`, `str.center`, `str.zfill`, etc.), and any other operation
+/// where the result size is a simple product of two known values.
 pub fn check_repeat_size(item_len: usize, count: usize, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
     check_estimated_size(item_len.saturating_mul(count), tracker)
 }
@@ -77,11 +78,49 @@ pub fn check_div_size(dividend_bits: u64, tracker: &impl ResourceTracker) -> Res
     check_estimated_size(estimate_bits_to_bytes(dividend_bits), tracker)
 }
 
+/// Pre-checks that a string/bytes replace won't exceed resource limits before allocating.
+///
+/// This prevents DoS via expressions like `('a' * 1000).replace('a', 'b' * 10_000_000)`
+/// where a small tracked input is amplified into a huge untracked Rust `String`/`Vec`
+/// by `String::replace()` before `allocate_string()` can check the result.
+///
+/// The upper bound on result size is: if `old` is non-empty, at most `input_len / old_len`
+/// replacements can occur, each producing `new_len` bytes instead of `old_len`. When `count`
+/// is specified, replacements are capped to that value.
+pub fn check_replace_size(
+    input_len: usize,
+    old_len: usize,
+    new_len: usize,
+    count: i64,
+    tracker: &impl ResourceTracker,
+) -> Result<(), ResourceError> {
+    // Empty pattern (old_len == 0): inserts before each element + after the last = input_len + 1
+    let max_replacements = input_len
+        .checked_div(old_len)
+        .unwrap_or_else(|| input_len.saturating_add(1));
+
+    let replacements = if count < 0 {
+        max_replacements
+    } else {
+        max_replacements.min(usize::try_from(count).unwrap_or(usize::MAX))
+    };
+
+    // Result = input_len - (replacements * old_len) + (replacements * new_len)
+    let removed = replacements.saturating_mul(old_len);
+    let added = replacements.saturating_mul(new_len);
+    let estimated = input_len.saturating_sub(removed).saturating_add(added);
+
+    check_estimated_size(estimated, tracker)
+}
+
 /// Checks an estimated result size against the resource tracker.
 ///
 /// Only calls the tracker when the estimate exceeds `LARGE_RESULT_THRESHOLD`
 /// to avoid overhead on small operations.
-fn check_estimated_size(estimated_bytes: usize, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
+pub(crate) fn check_estimated_size(
+    estimated_bytes: usize,
+    tracker: &impl ResourceTracker,
+) -> Result<(), ResourceError> {
     if estimated_bytes > LARGE_RESULT_THRESHOLD {
         tracker.check_large_result(estimated_bytes)?;
     }
@@ -94,87 +133,6 @@ fn check_estimated_size(estimated_bytes: usize, tracker: &impl ResourceTracker) 
 /// the resource limit check always triggers rather than being silently skipped.
 fn estimate_bits_to_bytes(bits: u64) -> usize {
     usize::try_from(bits.saturating_add(7) / 8).unwrap_or(usize::MAX)
-}
-
-/// Maximum recursion depth for data structure operations (repr, eq, hash, etc.).
-///
-/// Separate from the function call stack limit. This protects against stack overflow
-/// when traversing deeply nested structures.
-///
-/// Lower in debug mode to avoid stack overflow (debug builds use more stack space
-/// per call frame).
-#[cfg(debug_assertions)]
-pub const MAX_DATA_RECURSION_DEPTH: u16 = 100;
-
-/// Maximum recursion depth for data structure operations (repr, eq, hash, etc.).
-///
-/// Separate from the function call stack limit. This protects against stack overflow
-/// when traversing deeply nested structures.
-#[cfg(not(debug_assertions))]
-pub const MAX_DATA_RECURSION_DEPTH: u16 = 500;
-
-/// Tracks recursion depth for container operations (repr, eq, cmp, hash).
-///
-/// The guard tracks remaining depth rather than current depth, making the
-/// check a simple decrement-and-check operation.
-#[derive(Debug, Clone)]
-pub struct DepthGuard {
-    /// Remaining depth before limit is exceeded.
-    depth_remaining: u16,
-}
-
-impl DepthGuard {
-    /// Increases recursion depth, returning `true` if within limits, `false` if exceeded.
-    ///
-    /// When this returns `true`, you MUST call `decrease()` on every return path.
-    /// When it returns `false`, the depth was not incremented, so `decrease()` must NOT be called.
-    ///
-    /// Use this in contexts like `py_repr_fmt` where exceeding the limit should
-    /// produce a truncated representation (e.g. `...`) rather than an error.
-    #[inline]
-    pub fn increase(&mut self) -> bool {
-        if let Some(decr) = self.depth_remaining.checked_sub(1) {
-            self.depth_remaining = decr;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Increases recursion depth, returning `Err(ResourceError::Recursion)` if
-    /// the limit is exceeded.
-    ///
-    /// MUST call `decrease()` on every return path after a successful call.
-    /// For complex control flow with multiple exit points, use the `*_inner` pattern
-    /// where the outer function handles `increase_err()/decrease()` and delegates to
-    /// an inner function for the actual implementation.
-    #[inline]
-    pub fn increase_err(&mut self) -> Result<(), ResourceError> {
-        if self.increase() {
-            Ok(())
-        } else {
-            Err(ResourceError::Recursion {
-                limit: MAX_DATA_RECURSION_DEPTH as usize,
-                depth: MAX_DATA_RECURSION_DEPTH as usize + 1,
-            })
-        }
-    }
-
-    /// Decreases recursion depth (must be called after a successful `increase()` or `increase_err()`).
-    ///
-    /// This restores the guard's remaining depth after exiting a level of recursion.
-    #[inline]
-    pub fn decrease(&mut self) {
-        self.depth_remaining += 1;
-    }
-}
-
-impl Default for DepthGuard {
-    fn default() -> Self {
-        Self {
-            depth_remaining: MAX_DATA_RECURSION_DEPTH,
-        }
-    }
 }
 
 /// Error returned when a resource limit is exceeded during execution.
@@ -258,7 +216,14 @@ impl ResourceError {
 
 impl From<ResourceError> for RunError {
     fn from(err: ResourceError) -> Self {
-        Self::UncatchableExc(err.into_exception(None))
+        // RecursionError is catchable in CPython, so it must be catchable here too.
+        // Other resource errors (memory, time, allocation) remain uncatchable to prevent
+        // untrusted code from suppressing resource limit violations.
+        if matches!(err, ResourceError::Recursion { .. }) {
+            Self::Exc(err.into_exception(None))
+        } else {
+            Self::UncatchableExc(err.into_exception(None))
+        }
     }
 }
 
