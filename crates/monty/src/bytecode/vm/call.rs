@@ -365,7 +365,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
             Value::DefFunction(func_id) => {
                 // Defined function without defaults or captured variables
-                self.call_def_function(*func_id, &[], Vec::new(), args)
+                self.call_def_function(*func_id, &[], &[], args)
             }
             Value::Ref(heap_id) => {
                 // Could be a closure or function with defaults - check heap
@@ -407,7 +407,9 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             self.heap.inc_ref(cell_id);
         }
 
-        self.call_def_function(func_id, &cells, defaults, args)
+        let this = self;
+        defer_drop!(defaults, this);
+        this.call_def_function(func_id, &cells, defaults, args)
     }
 
     /// Calls a function with unpacked args tuple and optional kwargs dict.
@@ -614,7 +616,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         &mut self,
         func_id: FunctionId,
         cells: &[HeapId],
-        defaults: Vec<Value>,
+        defaults: &[Value],
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
         // Get function info (interns is a shared reference so no conflict)
@@ -631,23 +633,19 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
     /// Creates a Coroutine for an async function call.
     ///
-    /// Binds arguments immediately (errors are raised at call time, not await time)
-    /// but stores the namespace in the Coroutine instead of registering it.
     /// The coroutine is executed when awaited via Await.
     fn create_coroutine(
         &mut self,
         func_id: FunctionId,
         cells: &[HeapId],
-        defaults: Vec<Value>,
+        defaults: &[Value],
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
-        let this = self;
-        defer_drop!(defaults, this);
-        let func = this.interns.get_function(func_id);
+        let func = self.interns.get_function(func_id);
 
-        // 1. Create locals vector (will be pushed onto the stack)
+        // 1. Create namespace for the coroutine with bound arguments and captured cells.
         let namespace = Vec::with_capacity(func.namespace_size);
-        let mut namespace_guard = HeapGuard::new(namespace, this);
+        let mut namespace_guard = HeapGuard::new(namespace, self);
         let (namespace, this) = namespace_guard.as_parts_mut();
 
         // 2. Bind arguments to parameters
@@ -697,17 +695,17 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
     /// Calls a sync function by pushing a new frame.
     ///
-    /// Sets up the function's locals with bound arguments, cell variables,
+    /// Sets up the function's namespace with bound arguments, cell variables,
     /// and free variables (captured from enclosing scope for closures).
     ///
-    /// The locals are built in a temporary `Vec<Value>`, then extended onto
+    /// The namespace is built in a temporary `Vec<Value>`, then extended onto
     /// the VM stack. The frame's `stack_base` points to the start of this
     /// locals region, and operands are pushed above it.
     fn call_sync_function(
         &mut self,
         func_id: FunctionId,
         cells: &[HeapId],
-        defaults: Vec<Value>,
+        defaults: &[Value],
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
         let call_position = self.current_position();
@@ -721,29 +719,20 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         self.heap.tracker_mut().on_allocate(|| size)?;
 
         // 1. Build locals in a temporary vec
-        let mut namespace = Vec::with_capacity(namespace_size);
+        let namespace = Vec::with_capacity(namespace_size);
+        let mut namespace_guard = HeapGuard::new(namespace, self);
+        let (namespace, this) = namespace_guard.as_parts_mut();
 
         // 2. Bind arguments to parameters
         {
             let bind_result = func
                 .signature
-                .bind(args, &defaults, self.heap, self.interns, func.name, &mut namespace);
+                .bind(args, defaults, this.heap, this.interns, func.name, namespace);
 
             if let Err(e) = bind_result {
-                for value in namespace.drain(..) {
-                    value.drop_with_heap(self.heap);
-                }
-                self.heap.tracker_mut().on_free(|| size);
-                for default in defaults {
-                    default.drop_with_heap(self);
-                }
+                this.heap.tracker_mut().on_free(|| size);
                 return Err(e);
             }
-        }
-
-        // Clean up defaults — they were copied into the namespace by bind()
-        for default in defaults {
-            default.drop_with_heap(self.heap);
         }
 
         // Track created cell HeapIds for the frame
@@ -755,11 +744,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             for (i, maybe_param_idx) in func.cell_param_indices.iter().enumerate() {
                 let cell_slot = param_count + i;
                 let cell_value = if let Some(param_idx) = maybe_param_idx {
-                    namespace[*param_idx].clone_with_heap(self.heap)
+                    namespace[*param_idx].clone_with_heap(this.heap)
                 } else {
                     Value::Undefined
                 };
-                let cell_id = self.heap.allocate(HeapData::Cell(CellValue(cell_value)))?;
+                let cell_id = this.heap.allocate(HeapData::Cell(CellValue(cell_value)))?;
                 frame_cells.push(cell_id);
                 namespace.resize_with(cell_slot, || Value::Undefined);
                 namespace.push(Value::Ref(cell_id));
@@ -768,7 +757,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             // 4. Copy captured cells (free vars) into namespace
             let free_var_start = param_count + func.cell_var_count;
             for (i, &cell_id) in cells.iter().enumerate() {
-                self.heap.inc_ref(cell_id);
+                this.heap.inc_ref(cell_id);
                 frame_cells.push(cell_id);
                 let slot = free_var_start + i;
                 namespace.resize_with(slot, || Value::Undefined);
@@ -782,10 +771,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let code = &func.code;
 
         // 6. Extend the VM stack with the locals, then push the frame
-        let stack_base = self.stack.len();
-        self.stack.extend(namespace);
+        let stack_base = this.stack.len();
+        let (namespace, this) = namespace_guard.into_parts();
+        this.stack.extend(namespace);
 
-        self.push_frame(CallFrame::new_function(
+        this.push_frame(CallFrame::new_function(
             code,
             stack_base,
             locals_count,
