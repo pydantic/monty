@@ -8,7 +8,6 @@ use crate::{
     heap::{DropWithHeap, Heap},
     intern::Interns,
     io::PrintWriter,
-    namespace::Namespaces,
     object::MontyObject,
     parse::parse,
     prepare::prepare,
@@ -75,19 +74,19 @@ impl MontyRun {
     /// # Arguments
     /// * `inputs` - Values to fill the first N slots of the namespace
     /// * `resource_tracker` - Custom resource tracker implementation
-    /// * `print` - print output writer (mutably borrowed so `Collect` data is preserved)
+    /// * `print` - print output writer
     pub fn run(
         &self,
         inputs: Vec<MontyObject>,
         resource_tracker: impl ResourceTracker,
-        print: &mut PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
         self.executor.run(inputs, resource_tracker, print)
     }
 
     /// Executes the code to completion with no resource limits, printing to stdout/stderr.
     pub fn run_no_limits(&self, inputs: Vec<MontyObject>) -> Result<MontyObject, MontyException> {
-        self.run(inputs, NoLimitTracker, &mut PrintWriter::Stdout)
+        self.run(inputs, NoLimitTracker, PrintWriter::Stdout)
     }
 
     /// Serializes the runner to a binary format.
@@ -141,16 +140,16 @@ impl MontyRun {
         self,
         inputs: Vec<MontyObject>,
         resource_tracker: T,
-        print: &mut PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         let executor = self.executor;
 
-        // Create heap and prepare namespaces
+        // Create heap and prepare globals
         let mut heap = Heap::new(executor.namespace_size, resource_tracker);
-        let mut namespaces = executor.prepare_namespaces(inputs, &mut heap)?;
+        let globals = executor.prepare_globals(inputs, &mut heap)?;
 
         // Create and run VM
-        let mut vm = VM::new(&mut heap, &mut namespaces, &executor.interns, print);
+        let mut vm = VM::new(globals, &mut heap, &executor.interns, print);
 
         // Start execution
         let vm_result = vm.run_module(&executor.module_code);
@@ -158,7 +157,7 @@ impl MontyRun {
         let vm_state = vm.check_snapshot(&vm_result);
 
         // Handle the result using the destructured parts
-        handle_vm_result(vm_result, vm_state, executor, heap, namespaces)
+        handle_vm_result(vm_result, vm_state, executor, heap)
     }
 }
 
@@ -235,19 +234,19 @@ impl Executor {
     /// # Arguments
     /// * `inputs` - Values to fill the first N slots of the namespace
     /// * `resource_tracker` - Custom resource tracker implementation
-    /// * `print` - Print output writer (mutably borrowed so `Collect` data is preserved)
+    /// * `print` - Print output writer
     fn run(
         &self,
         inputs: Vec<MontyObject>,
         resource_tracker: impl ResourceTracker,
-        print: &mut PrintWriter<'_>,
+        print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
         let heap_capacity = self.heap_capacity.load(Ordering::Relaxed);
         let mut heap = Heap::new(heap_capacity, resource_tracker);
-        let mut namespaces = self.prepare_namespaces(inputs, &mut heap)?;
+        let globals = self.prepare_globals(inputs, &mut heap)?;
 
         // Create and run VM
-        let mut vm = VM::new(&mut heap, &mut namespaces, &self.interns, print);
+        let mut vm = VM::new(globals, &mut heap, &self.interns, print);
         let mut frame_exit_result = vm.run_module(&self.module_code);
 
         // Handle NameLookup and ExternalCall exits by raising NameError through the VM
@@ -289,10 +288,6 @@ impl Executor {
             self.heap_capacity.store(heap.size(), Ordering::Relaxed);
         }
 
-        // Clean up the global namespace before returning (only needed with ref-count-panic)
-        #[cfg(feature = "ref-count-panic")]
-        namespaces.drop_global_with_heap(&mut heap);
-
         frame_exit_to_object(frame_exit_result, &mut heap, &self.interns)
             .map_err(|e| e.into_python_exception(&self.interns, &self.code))
     }
@@ -315,20 +310,25 @@ impl Executor {
         use std::collections::HashSet;
 
         let mut heap = Heap::new(self.namespace_size, NoLimitTracker);
-        let mut namespaces = self.prepare_namespaces(inputs, &mut heap)?;
+        let globals = self.prepare_globals(inputs, &mut heap)?;
 
         // Create and run VM with Stdout for output
-        let mut print = PrintWriter::Stdout;
-        let mut vm = VM::new(&mut heap, &mut namespaces, &self.interns, &mut print);
+        let mut vm = VM::new(globals, &mut heap, &self.interns, PrintWriter::Stdout);
         let frame_exit_result = vm.run_module(&self.module_code);
 
-        // Compute ref counts before consuming the heap - return value is still alive
-        let final_namespace = namespaces.into_global();
+        // Take globals out of the VM so we can access the heap for refcount queries.
+        let globals = vm.take_globals();
+        vm.cleanup();
+
+        // Compute ref counts from globals
         let mut counts = ahash::AHashMap::new();
         let mut unique_ids = HashSet::new();
 
         for (name, &namespace_id) in &self.name_map {
-            if let Some(Value::Ref(id)) = final_namespace.get_opt(namespace_id) {
+            let idx = namespace_id.index();
+            if idx < globals.len()
+                && let Value::Ref(id) = &globals[idx]
+            {
                 counts.insert(name.clone(), heap.get_refcount(*id));
                 unique_ids.insert(*id);
             }
@@ -336,9 +336,9 @@ impl Executor {
         let unique_refs = unique_ids.len();
         let heap_count = heap.entry_count();
 
-        // Clean up the namespace after reading ref counts but before moving the heap
-        for obj in final_namespace {
-            obj.drop_with_heap(&mut heap);
+        // Drop globals with proper ref counting
+        for value in globals {
+            value.drop_with_heap(&mut heap);
         }
 
         // Now convert the return value to MontyObject (this drops the Value, decrementing refcount)
@@ -356,32 +356,32 @@ impl Executor {
         })
     }
 
-    /// Prepares the namespace for execution.
+    /// Prepares the global variable storage for execution.
     ///
     /// Fills input values into the first N slots, then fills remaining slots with `Undefined`.
     /// External function names are no longer pre-populated; they are resolved lazily
     /// via `NameLookup` at runtime when the code first accesses them.
-    pub(crate) fn prepare_namespaces(
+    pub(crate) fn prepare_globals(
         &self,
         inputs: Vec<MontyObject>,
         heap: &mut Heap<impl ResourceTracker>,
-    ) -> Result<Namespaces, MontyException> {
+    ) -> Result<Vec<Value>, MontyException> {
         let Some(extra) = self.namespace_size.checked_sub(inputs.len()) else {
             return Err(MontyException::runtime_error("too many inputs for namespace"));
         };
-        let mut namespace: Vec<Value> = Vec::with_capacity(self.namespace_size);
+        let mut globals: Vec<Value> = Vec::with_capacity(self.namespace_size);
         // Convert each MontyObject to a Value, propagating any invalid input errors
         for input in inputs {
-            namespace.push(
+            globals.push(
                 input
                     .to_value(heap, &self.interns)
                     .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?,
             );
         }
         if extra > 0 {
-            namespace.extend((0..extra).map(|_| Value::Undefined));
+            globals.extend((0..extra).map(|_| Value::Undefined));
         }
-        Ok(Namespaces::new(namespace))
+        Ok(globals)
     }
 }
 

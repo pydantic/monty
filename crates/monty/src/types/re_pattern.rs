@@ -18,13 +18,13 @@ use smallvec::SmallVec;
 
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
-    resource::{ResourceError, ResourceTracker},
+    resource::{ResourceError, ResourceTracker, check_estimated_size},
     types::{List, PyTrait, ReMatch, Str, Type, allocate_tuple, str::string_repr_fmt},
     value::{EitherStr, Value},
 };
@@ -186,15 +186,32 @@ impl RePattern {
     /// When `count` is 0, all matches are replaced. Otherwise, at most `count`
     /// replacements are made. The replacement string supports `$1`, `$2`, etc.
     /// for backreferences to captured groups.
+    ///
+    /// Builds the result string in a single pass by iterating matches and appending
+    /// replacements directly. Checks the running output size against resource limits
+    /// after each match, bailing out immediately if the budget is exceeded. This
+    /// avoids both false rejections from conservative pre-estimates and untracked
+    /// Rust heap allocations from delegating to `fancy_regex::replace_all()`.
     pub fn sub(&self, repl: &str, text: &str, count: usize, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
         // Translate Python-style backreferences (\1, \2) to regex crate style ($1, $2)
         let rust_repl = translate_replacement(repl);
-        let result = if count == 0 {
-            self.compiled.replace_all(text, rust_repl.as_ref())
-        } else {
-            self.compiled.replacen(text, count, rust_repl.as_ref())
-        };
-        let s = Str::new(result.into_owned());
+        let effective_count = if count == 0 { usize::MAX } else { count };
+
+        let mut result = String::new();
+        let mut last_end = 0;
+
+        for caps in self.compiled.captures_iter(text).take(effective_count) {
+            let caps = caps.map_err(ExcType::re_pattern_error)?;
+            let m = caps.get(0).expect("capture group 0 always exists");
+            result.push_str(&text[last_end..m.start()]);
+            caps.expand(rust_repl.as_ref(), &mut result);
+            last_end = m.end();
+            // Check running size: current result + remaining unprocessed text.
+            check_estimated_size(result.len() + (text.len() - last_end), heap.tracker())?;
+        }
+
+        result.push_str(&text[last_end..]);
+        let s = Str::new(result);
         Ok(Value::Ref(heap.allocate(HeapData::Str(s))?))
     }
 
@@ -248,7 +265,7 @@ impl PyTrait for RePattern {
         Type::RePattern
     }
 
-    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         None
     }
 
@@ -265,7 +282,7 @@ impl PyTrait for RePattern {
         // No heap references — all data is owned.
     }
 
-    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
+    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         // Pattern objects are always truthy (matching CPython).
         true
     }
@@ -307,14 +324,14 @@ impl PyTrait for RePattern {
         attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<Option<super::AttrCallResult>> {
+    ) -> RunResult<Option<CallResult>> {
         match attr.static_string() {
             Some(StaticStrings::PatternAttr) => {
                 let s = Str::new(self.pattern.clone());
                 let v = Value::Ref(heap.allocate(HeapData::Str(s))?);
-                Ok(Some(super::AttrCallResult::Value(v)))
+                Ok(Some(CallResult::Value(v)))
             }
-            Some(StaticStrings::Flags) => Ok(Some(super::AttrCallResult::Value(Value::Int(i64::from(self.flags))))),
+            Some(StaticStrings::Flags) => Ok(Some(CallResult::Value(Value::Int(i64::from(self.flags))))),
             _ => Err(ExcType::attribute_error(Type::RePattern, attr.as_str(interns))),
         }
     }
@@ -325,7 +342,7 @@ impl PyTrait for RePattern {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-    ) -> RunResult<super::AttrCallResult> {
+    ) -> RunResult<CallResult> {
         let result = match attr.static_string() {
             Some(StaticStrings::Search) => {
                 let arg = args.get_one_arg("Pattern.search", vm.heap)?;
@@ -361,7 +378,7 @@ impl PyTrait for RePattern {
             }
             _ => return Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns))),
         }?;
-        Ok(super::AttrCallResult::Value(result))
+        Ok(CallResult::Value(result))
     }
 }
 

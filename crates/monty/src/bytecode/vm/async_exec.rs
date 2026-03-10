@@ -123,12 +123,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // Extract coroutine data before mutating
         let func_id = coro.func_id;
         let namespace_values: Vec<Value> = coro.namespace.iter().map(|v| v.clone_with_heap(this.heap)).collect();
-        let frame_cells: Vec<HeapId> = coro.frame_cells.clone();
-
-        // Increment refcounts for shared cell references
-        for &cell_id in &frame_cells {
-            this.heap.inc_ref(cell_id);
-        }
 
         // Mark coroutine as Running
         if let HeapDataMut::Coroutine(coro_mut) = this.heap.get_mut(heap_id) {
@@ -136,7 +130,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         }
 
         // Create namespace and push frame (guard drops awaitable at scope exit)
-        this.start_coroutine_frame(func_id, namespace_values, frame_cells)?;
+        this.start_coroutine_frame(func_id, namespace_values)?;
 
         Ok(AwaitResult::FramePushed)
     }
@@ -287,29 +281,29 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         }
     }
 
-    /// Starts execution of a coroutine by pushing a new frame.
+    /// Starts execution of a coroutine by pushing its locals onto the stack.
     ///
-    /// Registers the pre-bound namespace with the VM's Namespaces and pushes
-    /// a new frame to execute the coroutine's function body.
-    fn start_coroutine_frame(
-        &mut self,
-        func_id: FunctionId,
-        namespace_values: Vec<Value>,
-        frame_cells: Vec<HeapId>,
-    ) -> Result<(), RunError> {
+    /// Extends the VM stack with the coroutine's pre-bound namespace values
+    /// and pushes a new frame to execute the coroutine's function body.
+    fn start_coroutine_frame(&mut self, func_id: FunctionId, namespace_values: Vec<Value>) -> Result<(), RunError> {
         let call_position = self.current_position();
         let func = self.interns.get_function(func_id);
+        let locals_count = u16::try_from(namespace_values.len()).expect("coroutine namespace size exceeds u16");
 
-        // Register the pre-bound namespace
-        let namespace_idx = self.namespaces.register_prebuilt(namespace_values, self.heap)?;
+        // Track memory for the locals
+        let size = namespace_values.len() * std::mem::size_of::<Value>();
+        self.heap.tracker_mut().on_allocate(|| size)?;
+
+        // Extend the stack with the coroutine's pre-bound locals
+        let stack_base = self.stack.len();
+        self.stack.extend(namespace_values);
 
         // Push frame to execute the coroutine
         self.push_frame(CallFrame::new_function(
             &func.code,
-            self.stack.len(),
-            namespace_idx,
+            stack_base,
+            locals_count,
             func_id,
-            frame_cells,
             Some(call_position),
         ))?;
 
@@ -425,8 +419,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
                         // Switch to waiter so error is raised in its context
                         if let Some(waiter_id) = waiter {
-                            self.cleanup_current_frames();
-                            self.stack.clear();
+                            self.cleanup_current_task();
                             self.scheduler_mut().set_current_task(Some(waiter_id));
                             self.load_or_init_task(waiter_id)?;
                         }
@@ -460,8 +453,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     // Remove from ready queue since we're switching directly to it
                     scheduler.remove_from_ready_queue(waiter_id);
                     // Clear current task's state since it's done
-                    self.cleanup_current_frames();
-                    self.stack.clear();
+                    self.cleanup_current_task();
                     // Switch to waiter
                     self.scheduler_mut().set_current_task(Some(waiter_id));
                     self.load_or_init_task(waiter_id)?;
@@ -479,9 +471,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         }
 
         // Gather not complete or no gather - switch to next task
-        // Clear current task's state since it's done
-        self.cleanup_current_frames();
-        self.stack.clear();
+        self.cleanup_current_task();
 
         // Get next ready task
         let scheduler = self.scheduler_mut();
@@ -548,11 +538,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             // Cancel sibling tasks (filter out self and already-finished tasks inline)
             for sibling_id in task_ids {
                 if sibling_id != task_id && !self.scheduler().get_task(sibling_id).is_finished() {
-                    self.scheduler.as_mut().expect("scheduler must exist").cancel_task(
-                        sibling_id,
-                        self.heap,
-                        self.namespaces,
-                    );
+                    self.scheduler
+                        .as_mut()
+                        .expect("scheduler must exist")
+                        .cancel_task(sibling_id, self.heap);
                 }
             }
 
@@ -561,9 +550,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
             // Switch to waiter and propagate the error
             if let Some(waiter_id) = waiter {
-                // Properly clean up current task's frames (namespaces and cells)
-                self.cleanup_current_frames();
-                self.stack.clear();
+                self.cleanup_current_task();
                 self.scheduler_mut().set_current_task(Some(waiter_id));
                 self.load_or_init_task(waiter_id)?;
                 // Get error back from task state to return
@@ -578,8 +565,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         }
 
         // No gather or no waiter - switch to next task
-        self.cleanup_current_frames();
-        self.stack.clear();
+        self.cleanup_current_task();
 
         let scheduler = self.scheduler_mut();
         scheduler.set_current_task(None);
@@ -605,8 +591,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 function_id: f.function_id,
                 ip: f.ip,
                 stack_base: f.stack_base,
-                namespace_idx: f.namespace_idx,
-                cells: f.cells,
+                locals_count: f.locals_count,
                 call_position: f.call_position,
             })
             .collect();
@@ -677,9 +662,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                         code,
                         ip: sf.ip,
                         stack_base: sf.stack_base,
-                        namespace_idx: sf.namespace_idx,
+                        locals_count: sf.locals_count,
                         function_id: sf.function_id,
-                        cells: sf.cells,
                         call_position: sf.call_position,
                         should_return: false,
                     }
@@ -724,30 +708,31 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // Extract coroutine data
         let func_id = coro.func_id;
         let namespace_values: Vec<Value> = coro.namespace.iter().map(|v| v.clone_with_heap(self)).collect();
-        let frame_cells: Vec<HeapId> = coro.frame_cells.clone();
-
-        // Increment refcounts for shared cell references
-        for &cell_id in &frame_cells {
-            self.heap.inc_ref(cell_id);
-        }
 
         // Mark coroutine as Running
         if let HeapDataMut::Coroutine(coro_mut) = self.heap.get_mut(coroutine_id) {
             coro_mut.state = CoroutineState::Running;
         }
 
-        // Create namespace and push frame directly (can't use start_coroutine_frame
+        // Push locals onto stack and push frame directly (can't use start_coroutine_frame
         // because that needs a current frame for call_position, but spawned tasks
-        // don't have a parent frame - the coroutine is the root)
+        // don't have a parent frame — the coroutine is the root)
         let func = self.interns.get_function(func_id);
-        let namespace_idx = self.namespaces.register_prebuilt(namespace_values, self.heap)?;
+        let locals_count = u16::try_from(namespace_values.len()).expect("coroutine namespace size exceeds u16");
+
+        // Track memory for the locals
+        let size = namespace_values.len() * std::mem::size_of::<Value>();
+        self.heap.tracker_mut().on_allocate(|| size)?;
+
+        let stack_base = self.stack.len();
+        self.stack.extend(namespace_values);
+
         self.push_frame(CallFrame::new_function(
             &func.code,
-            self.stack.len(),
-            namespace_idx,
+            stack_base,
+            locals_count,
             func_id,
-            frame_cells,
-            None, // No call position - this is the root frame for a spawned task
+            None, // No call position — this is the root frame for a spawned task
         ))?;
 
         Ok(())
@@ -892,11 +877,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
             // Cancel all sibling tasks in the gather
             for sibling_id in task_ids {
-                self.scheduler.as_mut().expect("scheduler must exist").cancel_task(
-                    sibling_id,
-                    self.heap,
-                    self.namespaces,
-                );
+                self.scheduler
+                    .as_mut()
+                    .expect("scheduler must exist")
+                    .cancel_task(sibling_id, self.heap);
             }
 
             // Fail the waiter task (the task that awaited the gather)
@@ -918,11 +902,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             // Cancel sibling tasks (filter out self and already-finished tasks)
             for sibling_id in task_ids {
                 if sibling_id != task_id && !self.scheduler().get_task(sibling_id).is_finished() {
-                    self.scheduler.as_mut().expect("scheduler must exist").cancel_task(
-                        sibling_id,
-                        self.heap,
-                        self.namespaces,
-                    );
+                    self.scheduler
+                        .as_mut()
+                        .expect("scheduler must exist")
+                        .cancel_task(sibling_id, self.heap);
                 }
             }
         }

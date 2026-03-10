@@ -9,11 +9,11 @@ use strum::FromRepr;
 
 use crate::{
     args::ArgValues,
+    bytecode::{CallResult, VM},
     exception_private::RunResult,
-    heap::{Heap, HeapId},
-    intern::{Interns, StaticStrings, StringId},
+    heap::HeapId,
+    intern::{StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker},
-    types::AttrCallResult,
 };
 
 pub(crate) mod asyncio;
@@ -62,14 +62,14 @@ impl BuiltinModule {
     /// # Panics
     ///
     /// Panics if the required strings have not been pre-interned during prepare phase.
-    pub fn create(self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Result<HeapId, ResourceError> {
+    pub fn create(self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
         match self {
-            Self::Sys => sys::create_module(heap, interns),
-            Self::Typing => typing::create_module(heap, interns),
-            Self::Asyncio => asyncio::create_module(heap, interns),
-            Self::Pathlib => pathlib::create_module(heap, interns),
-            Self::Os => os::create_module(heap, interns),
-            Self::Re => re::create_module(heap, interns),
+            Self::Sys => sys::create_module(vm),
+            Self::Typing => typing::create_module(vm),
+            Self::Asyncio => asyncio::create_module(vm),
+            Self::Pathlib => pathlib::create_module(vm),
+            Self::Os => os::create_module(vm),
+            Self::Re => re::create_module(vm),
         }
     }
 }
@@ -95,20 +95,13 @@ impl fmt::Display for ModuleFunctions {
 impl ModuleFunctions {
     /// Calls the module function with the given arguments.
     ///
-    /// Returns `AttrCallResult` to support both immediate values and OS calls that
+    /// Returns `CallResult` to support both immediate values and OS calls that
     /// require host involvement (e.g., `os.getenv()` needs the host to provide environment variables).
-    /// The `interns` parameter is needed by modules that must extract string values from
-    /// `Value::InternString` arguments (e.g., the `re` module).
-    pub fn call(
-        self,
-        heap: &mut Heap<impl ResourceTracker>,
-        args: ArgValues,
-        interns: &Interns,
-    ) -> RunResult<AttrCallResult> {
+    pub fn call(self, vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
         match self {
-            Self::Asyncio(functions) => asyncio::call(heap, functions, args),
-            Self::Os(functions) => os::call(heap, functions, args),
-            Self::Re(functions) => re::call(heap, functions, args, interns),
+            Self::Asyncio(functions) => asyncio::call(vm.heap, functions, args),
+            Self::Os(functions) => os::call(vm.heap, functions, args),
+            Self::Re(functions) => re::call(vm, functions, args),
         }
     }
 

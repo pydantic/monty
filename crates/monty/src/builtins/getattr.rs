@@ -3,11 +3,11 @@
 use crate::{
     ExcType,
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{RunResult, SimpleException},
     resource::ResourceTracker,
-    types::{AttrCallResult, PyTrait},
+    types::PyTrait,
     value::Value,
 };
 
@@ -47,7 +47,7 @@ pub fn builtin_getattr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValue
     };
 
     match object.py_getattr(&attr, heap, vm.interns) {
-        Ok(AttrCallResult::Value(value)) => Ok(value),
+        Ok(CallResult::Value(value)) => Ok(value),
         Ok(_) => {
             // getattr() only retrieves attribute values — OS calls, external calls,
             // method calls, and awaits are not supported here

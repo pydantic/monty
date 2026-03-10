@@ -15,7 +15,7 @@ use smallvec::smallvec;
 
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
@@ -317,7 +317,7 @@ impl PyTrait for ReMatch {
         Type::ReMatch
     }
 
-    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         None
     }
 
@@ -335,7 +335,7 @@ impl PyTrait for ReMatch {
         // No heap references — all data is owned strings and integers.
     }
 
-    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
+    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         // Match objects are always truthy
         true
     }
@@ -374,12 +374,12 @@ impl PyTrait for ReMatch {
         attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<Option<super::AttrCallResult>> {
+    ) -> RunResult<Option<CallResult>> {
         match attr.static_string() {
             Some(StaticStrings::StringAttr) => {
                 let s = Str::new(self.input_string.clone());
                 let v = Value::Ref(heap.allocate(HeapData::Str(s))?);
-                Ok(Some(super::AttrCallResult::Value(v)))
+                Ok(Some(CallResult::Value(v)))
             }
             _ => Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(interns))),
         }
@@ -391,7 +391,7 @@ impl PyTrait for ReMatch {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
-    ) -> RunResult<super::AttrCallResult> {
+    ) -> RunResult<CallResult> {
         let result = match attr.static_string() {
             Some(StaticStrings::Group) => call_group(self, args, vm.heap, vm.interns)?,
             Some(StaticStrings::Groups) => {
@@ -419,7 +419,7 @@ impl PyTrait for ReMatch {
             }
             _ => return Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns))),
         };
-        Ok(super::AttrCallResult::Value(result))
+        Ok(CallResult::Value(result))
     }
 }
 

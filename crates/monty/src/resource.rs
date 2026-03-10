@@ -117,7 +117,10 @@ pub fn check_replace_size(
 ///
 /// Only calls the tracker when the estimate exceeds `LARGE_RESULT_THRESHOLD`
 /// to avoid overhead on small operations.
-fn check_estimated_size(estimated_bytes: usize, tracker: &impl ResourceTracker) -> Result<(), ResourceError> {
+pub(crate) fn check_estimated_size(
+    estimated_bytes: usize,
+    tracker: &impl ResourceTracker,
+) -> Result<(), ResourceError> {
     if estimated_bytes > LARGE_RESULT_THRESHOLD {
         tracker.check_large_result(estimated_bytes)?;
     }

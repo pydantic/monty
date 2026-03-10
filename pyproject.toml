@@ -141,6 +141,8 @@ reportFunctionMemberAccess = false
 reportDeprecated = false
 # star import test intentionally uses `from sys import *`
 reportWildcardImportFromLibrary = false
+# some test cases intentionally exercise invalid index assignment/runtime error paths
+reportIndexIssue = false
 
 [[tool.pyright.executionEnvironments]]
 root = "crates/monty-type-checking"

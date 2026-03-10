@@ -122,7 +122,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
         return if cli.interactive {
-            dispatch_repl("<string>", cmd, limits)
+            dispatch_repl("<string>", &cmd, limits)
         } else {
             dispatch_script("<string>", cmd, type_check_enabled, limits)
         };
@@ -137,13 +137,13 @@ fn main() -> ExitCode {
             }
         };
         return if cli.interactive {
-            dispatch_repl(file_path, code, limits)
+            dispatch_repl(file_path, &code, limits)
         } else {
             dispatch_script(file_path, code, type_check_enabled, limits)
         };
     }
 
-    dispatch_repl("repl.py", String::new(), limits)
+    dispatch_repl("repl.py", "", limits)
 }
 
 /// Dispatches script execution with either `LimitedTracker` or `NoLimitTracker`.
@@ -164,7 +164,7 @@ fn dispatch_script(
 }
 
 /// Dispatches REPL startup with either `LimitedTracker` or `NoLimitTracker`.
-fn dispatch_repl(file_path: &str, code: String, limits: Option<ResourceLimits>) -> ExitCode {
+fn dispatch_repl(file_path: &str, code: &str, limits: Option<ResourceLimits>) -> ExitCode {
     if let Some(limits) = limits {
         run_repl(file_path, code, LimitedTracker::new(limits))
     } else {
@@ -212,7 +212,7 @@ fn run_script(file_path: &str, code: String, type_check_enabled: bool, tracker: 
 
     if EXT_FUNCTIONS {
         let start = Instant::now();
-        let progress = match runner.start(inputs, tracker, &mut PrintWriter::Stdout) {
+        let progress = match runner.start(inputs, tracker, PrintWriter::Stdout) {
             Ok(p) => p,
             Err(err) => {
                 let elapsed = start.elapsed();
@@ -244,7 +244,7 @@ fn run_script(file_path: &str, code: String, type_check_enabled: bool, tracker: 
         }
     } else {
         let start = Instant::now();
-        let value = match runner.run(inputs, tracker, &mut PrintWriter::Stdout) {
+        let value = match runner.run(inputs, tracker, PrintWriter::Stdout) {
             Ok(p) => p,
             Err(err) => {
                 let elapsed = start.elapsed();
@@ -274,21 +274,11 @@ fn run_script(file_path: &str, code: String, type_check_enabled: bool, tracker: 
 ///
 /// Returns `ExitCode::SUCCESS` on EOF or `exit`, and `ExitCode::FAILURE` on
 /// initialization or I/O errors.
-fn run_repl(file_path: &str, code: String, tracker: impl ResourceTracker) -> ExitCode {
-    let input_names = vec![];
-    let inputs = vec![];
+fn run_repl(file_path: &str, code: &str, tracker: impl ResourceTracker) -> ExitCode {
+    let mut repl = MontyRepl::new(file_path, tracker);
 
-    let (mut repl, init_output) =
-        match MontyRepl::new(code, file_path, input_names, inputs, tracker, &mut PrintWriter::Stdout) {
-            Ok(v) => v,
-            Err(err) => {
-                eprintln!("{BOLD_RED}error{RESET} initializing repl:\n{err}");
-                return ExitCode::FAILURE;
-            }
-        };
-
-    if init_output != MontyObject::None {
-        println!("{init_output}");
+    if !code.is_empty() {
+        execute_repl_snippet(&mut repl, code);
     }
 
     eprintln!("Monty v{} REPL. Type `exit` to exit.", env!("CARGO_PKG_VERSION"));
@@ -368,7 +358,7 @@ fn run_repl(file_path: &str, code: String, tracker: impl ResourceTracker) -> Exi
 
 /// Executes one collected REPL snippet, printing the result or error.
 fn execute_repl_snippet(repl: &mut MontyRepl<impl ResourceTracker>, snippet: &str) {
-    match repl.feed_no_print(snippet) {
+    match repl.feed_run(snippet, vec![], PrintWriter::Stdout) {
         Ok(output) => {
             if output != MontyObject::None {
                 println!("{output}");
@@ -395,7 +385,7 @@ fn run_until_complete(mut progress: RunProgress<impl ResourceTracker>) -> Result
             RunProgress::FunctionCall(call) => {
                 let return_value = resolve_external_call(&call.function_name, &call.args)?;
                 progress = call
-                    .resume(return_value, &mut PrintWriter::Stdout)
+                    .resume(return_value, PrintWriter::Stdout)
                     .map_err(|err| format!("{err}"))?;
             }
             RunProgress::ResolveFutures(state) => {
@@ -414,7 +404,7 @@ fn run_until_complete(mut progress: RunProgress<impl ResourceTracker>) -> Result
                     NameLookupResult::Undefined
                 };
                 progress = lookup
-                    .resume(result, &mut PrintWriter::Stdout)
+                    .resume(result, PrintWriter::Stdout)
                     .map_err(|err| format!("{err}"))?;
             }
             RunProgress::OsCall(call) => {

@@ -10,15 +10,16 @@ mod exceptions;
 mod external;
 mod limits;
 mod monty_cls;
+mod repl;
+mod serialization;
 
 use std::sync::OnceLock;
 
 // Use `::monty` to refer to the external crate (not the pymodule)
 pub use exceptions::{MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, PyFrame};
-pub use monty_cls::{
-    PyFunctionSnapshot, PyFutureSnapshot, PyMonty, PyMontyComplete, PyMontyRepl, PyNameLookupSnapshot,
-};
+pub use monty_cls::{PyFunctionSnapshot, PyFutureSnapshot, PyMonty, PyMontyComplete, PyNameLookupSnapshot};
 use pyo3::prelude::*;
+pub use repl::PyMontyRepl;
 
 /// Copied from `get_pydantic_core_version` in pydantic
 fn get_version() -> &'static str {
@@ -63,6 +64,10 @@ mod _monty {
     #[pymodule_export]
     use super::PyNameLookupSnapshot as NameLookupSnapshot;
     use super::get_version;
+    #[pymodule_export]
+    use super::serialization::load_repl_snapshot;
+    #[pymodule_export]
+    use super::serialization::load_snapshot;
 
     #[pymodule_init]
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {

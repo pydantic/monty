@@ -21,12 +21,13 @@ use ahash::AHashSet;
 
 use super::PyTrait;
 use crate::{
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapId},
     intern::{Interns, StringId},
     resource::{ResourceError, ResourceTracker},
-    types::{AttrCallResult, Type},
+    types::Type,
     value::{EitherStr, Value},
 };
 
@@ -161,7 +162,7 @@ impl PyTrait for NamedTuple {
             + self.items.len() * std::mem::size_of::<Value>()
     }
 
-    fn py_len(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         Some(self.items.len())
     }
 
@@ -218,7 +219,7 @@ impl PyTrait for NamedTuple {
         }
     }
 
-    fn py_bool(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> bool {
+    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         !self.items.is_empty()
     }
 
@@ -258,10 +259,10 @@ impl PyTrait for NamedTuple {
         attr: &EitherStr,
         heap: &mut Heap<impl ResourceTracker>,
         interns: &Interns,
-    ) -> RunResult<Option<AttrCallResult>> {
+    ) -> RunResult<Option<CallResult>> {
         let attr_name = attr.as_str(interns);
         if let Some(value) = self.get_by_name(attr_name, interns) {
-            Ok(Some(AttrCallResult::Value(value.clone_with_heap(heap))))
+            Ok(Some(CallResult::Value(value.clone_with_heap(heap))))
         } else {
             // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
             Err(ExcType::attribute_error(self.name(interns), attr_name))

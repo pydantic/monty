@@ -19,6 +19,8 @@ __all__ = [
     'MontyRuntimeError',
     'MontyTypingError',
     'Frame',
+    'load_snapshot',
+    'load_repl_snapshot',
 ]
 __version__: str
 
@@ -156,7 +158,7 @@ class Monty:
         data: bytes,
         *,
         dataclass_registry: list[type] | None = None,
-    ) -> 'Monty':
+    ) -> Monty:
         """
         Deserialize a Monty instance from binary format.
 
@@ -194,39 +196,72 @@ class MontyRepl:
     """
     Incremental no-replay REPL session.
 
-    Each `feed()` call compiles and executes only the provided snippet against
-    preserved heap/global state.
+    Create with `MontyRepl()` then call `feed_run()` to execute snippets
+    incrementally against persistent heap and namespace state.
     """
 
-    @staticmethod
-    def create(
-        code: str,
+    def __new__(
+        cls,
         *,
         script_name: str = 'main.py',
-        inputs: list[str] | None = None,
-        start_inputs: dict[str, Any] | None = None,
         limits: ResourceLimits | None = None,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
         dataclass_registry: list[type] | None = None,
-    ) -> tuple['MontyRepl', Any]:
+    ) -> Self:
         """
-        Create a REPL session directly from source code.
+        Create an empty REPL session ready to receive snippets via `feed_run()`.
 
-        Returns `(repl, output)` where `output` is the initial execution result.
+        No code is parsed or executed at construction time.
         """
 
     @property
     def script_name(self) -> str:
         """The name of the script being executed."""
 
-    def feed(
+    def register_dataclass(self, cls: type) -> None:
+        """
+        Register a dataclass type for proper isinstance() support on output.
+        """
+
+    def feed_run(
         self,
         code: str,
         *,
+        inputs: dict[str, Any] | None = None,
+        external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        os: Callable[[str, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> Any:
         """
         Execute one incremental snippet and return its output.
+
+        When `inputs` is provided, the key-value pairs are injected into
+        the REPL namespace before executing the snippet.
+
+        When `external_functions` is provided, external function calls and
+        name lookups are dispatched to the provided callables — matching the
+        behavior of `Monty.run(external_functions=...)`.
+        """
+
+    def feed_start(
+        self,
+        code: str,
+        *,
+        inputs: dict[str, Any] | None = None,
+        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+    ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
+        """
+        Start executing an incremental snippet, yielding snapshots for external calls.
+
+        Unlike `feed_run()`, which handles external function dispatch internally,
+        `feed_start()` returns a snapshot object whenever the code needs an external
+        function call, OS call, name lookup, or future resolution. The caller provides
+        the result via `snapshot.resume(...)`, which returns the next snapshot or
+        `MontyComplete`.
+
+        This enables the same iterative start/resume pattern used by `Monty.start()`,
+        including support for async external functions via `FutureSnapshot`.
+
+        On completion or error, the REPL state is automatically restored.
         """
 
     def dump(self) -> bytes:
@@ -236,9 +271,8 @@ class MontyRepl:
     def load(
         data: bytes,
         *,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
         dataclass_registry: list[type] | None = None,
-    ) -> 'MontyRepl':
+    ) -> MontyRepl:
         """Restore a REPL session from bytes."""
 
 @final
@@ -328,7 +362,7 @@ class FunctionSnapshot:
         """
         Serialize the FunctionSnapshot instance to a binary format.
 
-        The serialized data can be stored and later restored with `FunctionSnapshot.load()`.
+        The serialized data can be restored with `load_snapshot()` or `load_repl_snapshot()`.
         This allows suspending execution and resuming later, potentially in a different process.
 
         Note: The `print_callback` is not serialized and must be re-provided via
@@ -340,32 +374,6 @@ class FunctionSnapshot:
         Raises:
             ValueError: If serialization fails.
             RuntimeError: If the progress has already been resumed.
-        """
-
-    @staticmethod
-    def load(
-        data: bytes,
-        *,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-        dataclass_registry: list[type] | None = None,
-    ) -> FunctionSnapshot:
-        """
-        Deserialize a FunctionSnapshot instance from binary format.
-
-        Note: The `print_callback` is not preserved during serialization and must be
-        re-provided as a keyword argument if print output is needed.
-
-        Arguments:
-            data: The serialized FunctionSnapshot data from `dump()`
-            print_callback: Optional callback for print output
-            dataclass_registry: Optional list of dataclass types to register for proper
-                isinstance() support on output, see `register_dataclass()` above.
-
-        Returns:
-            A new FunctionSnapshot instance.
-
-        Raises:
-            ValueError: If deserialization fails.
         """
 
     def __repr__(self) -> str: ...
@@ -419,7 +427,7 @@ class NameLookupSnapshot:
         """
         Serialize the NameLookupSnapshot instance to a binary format.
 
-        The serialized data can be stored and later restored with `NameLookupSnapshot.load()`.
+        The serialized data can be restored with `load_snapshot()` or `load_repl_snapshot()`.
         This allows suspending execution and resuming later, potentially in a different process.
 
         Note: The `print_callback` is not serialized and must be re-provided via
@@ -431,32 +439,6 @@ class NameLookupSnapshot:
         Raises:
             ValueError: If serialization fails.
             RuntimeError: If the progress has already been resumed.
-        """
-
-    @staticmethod
-    def load(
-        data: bytes,
-        *,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-        dataclass_registry: list[type] | None = None,
-    ) -> NameLookupSnapshot:
-        """
-        Deserialize a NameLookupSnapshot instance from binary format.
-
-        Note: The `print_callback` is not preserved during serialization and must be
-        re-provided as a keyword argument if print output is needed.
-
-        Arguments:
-            data: The serialized NameLookupSnapshot data from `dump()`
-            print_callback: Optional callback for print output
-            dataclass_registry: Optional list of dataclass types to register for proper
-                isinstance() support on output, see `register_dataclass()` above.
-
-        Returns:
-            A new NameLookupSnapshot instance.
-
-        Raises:
-            ValueError: If deserialization fails.
         """
 
     def __repr__(self) -> str: ...
@@ -511,7 +493,7 @@ class FutureSnapshot:
         """
         Serialize the FutureSnapshot instance to a binary format.
 
-        The serialized data can be stored and later restored with `FutureSnapshot.load()`.
+        The serialized data can be restored with `load_snapshot()` or `load_repl_snapshot()`.
         This allows suspending execution and resuming later, potentially in a different process.
 
         Note: The `print_callback` is not serialized and must be re-provided via
@@ -523,32 +505,6 @@ class FutureSnapshot:
         Raises:
             ValueError: If serialization fails.
             RuntimeError: If the progress has already been resumed.
-        """
-
-    @staticmethod
-    def load(
-        data: bytes,
-        *,
-        print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-        dataclass_registry: list[type] | None = None,
-    ) -> 'FutureSnapshot':
-        """
-        Deserialize a FutureSnapshot instance from binary format.
-
-        Note: The `print_callback` is not preserved during serialization and must be
-        re-provided as a keyword argument if print output is needed.
-
-        Arguments:
-            data: The serialized FutureSnapshot data from `dump()`
-            print_callback: Optional callback for print output
-            dataclass_registry: Optional list of dataclass types to register for proper
-                isinstance() support on output, see `register_dataclass()` above.
-
-        Returns:
-            A new FutureSnapshot instance.
-
-        Raises:
-            ValueError: If deserialization fails.
         """
 
     def __repr__(self) -> str: ...
@@ -671,3 +627,51 @@ class Frame:
 
     def dict(self) -> dict[str, int | str | None]:
         """dict of attributes."""
+
+def load_snapshot(
+    data: bytes,
+    *,
+    print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+    dataclass_registry: list[type] | None = None,
+) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot:
+    """Load a non-REPL snapshot from serialized bytes.
+
+    Auto-detects the snapshot type (FunctionSnapshot, NameLookupSnapshot, or
+    FutureSnapshot) from the serialized data.
+
+    Arguments:
+        data: Serialized snapshot bytes from `.dump()`
+        print_callback: Optional callback for print output
+        dataclass_registry: Optional list of dataclass types to register
+
+    Returns:
+        The deserialized snapshot, ready to be resumed.
+
+    Raises:
+        ValueError: If deserialization fails or data contains a REPL snapshot
+            (use `load_repl_snapshot` for those).
+    """
+
+def load_repl_snapshot(
+    data: bytes,
+    *,
+    print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+    dataclass_registry: list[type] | None = None,
+) -> tuple[FunctionSnapshot | NameLookupSnapshot | FutureSnapshot, MontyRepl]:
+    """Load a REPL snapshot from serialized bytes.
+
+    Returns both the snapshot and a reconstructed `MontyRepl` session.
+    The snapshot's REPL variant is wired to the returned `MontyRepl`,
+    so resuming the snapshot will update the REPL state.
+
+    Arguments:
+        data: Serialized snapshot bytes from `.dump()` on a REPL snapshot
+        print_callback: Optional callback for print output
+        dataclass_registry: Optional list of dataclass types to register
+
+    Returns:
+        A tuple of (snapshot, MontyRepl).
+
+    Raises:
+        ValueError: If deserialization fails.
+    """

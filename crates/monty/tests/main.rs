@@ -53,3 +53,19 @@ fn dataclass_method_call_in_standard_mode_errors() {
         "Expected NotImplementedError for method call, got: {msg}"
     );
 }
+
+/// Test that subscript augmented matrix multiplication reports the dedicated
+/// unsupported-operation compile error.
+///
+/// CPython supports `@=` syntax, so the comparative Python test-case suite
+/// cannot cover Monty's current compile-time rejection of this operator. Keep
+/// this as a Rust-side regression test until matrix multiplication support
+/// exists.
+#[test]
+fn subscript_augassign_matmul_reports_not_supported() {
+    let err = MontyRun::new("d = {'x': 1}\nd['x'] @= 2".to_owned(), "test.py", vec![]).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Traceback (most recent call last):\n  File \"test.py\", line 2\n    d['x'] @= 2\n    ~~~~~~\nSyntaxError: matrix multiplication augmented assignment (@=) is not yet supported"
+    );
+}

@@ -4,7 +4,7 @@
 //! When a Property is retrieved via `py_getattr`, its getter is invoked
 //! rather than returning the Property itself.
 
-use crate::{args::ArgValues, os::OsFunction, types::AttrCallResult};
+use crate::{args::ArgValues, bytecode::CallResult, os::OsFunction};
 
 /// Property descriptor for computed attributes.
 ///
@@ -23,13 +23,13 @@ pub(crate) enum Property {
 }
 
 impl Property {
-    /// Invokes the property getter, returning the appropriate `AttrCallResult`.
+    /// Invokes the property getter, returning the appropriate `CallResult`.
     ///
-    /// For OS properties, returns `AttrCallResult::OsCall` to signal the VM
+    /// For OS properties, returns `CallResult::OsCall` to signal the VM
     /// should yield to the host for the value.
-    pub fn get(self) -> AttrCallResult {
+    pub fn get(self) -> CallResult {
         match self {
-            Self::Os(os_fn) => AttrCallResult::OsCall(os_fn, ArgValues::Empty),
+            Self::Os(os_fn) => CallResult::OsCall(os_fn, ArgValues::Empty),
         }
     }
 }

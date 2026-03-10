@@ -12,6 +12,24 @@ lst += [3, 4]
 assert lst == [1, 2, 3, 4], 'basic iadd'
 
 lst = [1]
+alias = lst
+lst += [2]
+assert lst is alias, 'list += preserves identity'
+assert alias == [1, 2], 'list += mutates through aliases'
+
+lst = [1, 2, 3]
+index = 1
+lst[index] += 5
+assert lst == [1, 7, 3], 'subscript += updates the selected list item'
+
+try:
+    lst = [1]
+    lst[5] += 1
+    assert False, 'subscript += past the end of a list should raise IndexError'
+except IndexError as e:
+    assert e.args == ('list index out of range',), 'subscript += list index error matches normal setitem'
+
+lst = [1]
 lst += []
 assert lst == [1], 'iadd empty'
 

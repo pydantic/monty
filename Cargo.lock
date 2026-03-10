@@ -2133,6 +2133,7 @@ dependencies = [
  "pyo3-build-config",
  "send_wrapper",
  "serde",
+ "sha2",
 ]
 
 [[package]]

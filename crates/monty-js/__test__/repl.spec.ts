@@ -2,26 +2,29 @@ import test from 'ava'
 
 import { MontyRepl } from '../wrapper'
 
-test('create and feed preserve state without replay', (t) => {
-  const repl = MontyRepl.create('counter = 0')
+test('feed preserves state without replay', (t) => {
+  const repl = new MontyRepl()
 
-  t.true(repl instanceof MontyRepl)
+  repl.feed('counter = 0')
   t.is(repl.feed('counter = counter + 1'), null)
   t.is(repl.feed('counter'), 1)
   t.is(repl.feed('counter = counter + 1'), null)
   t.is(repl.feed('counter'), 2)
 })
 
-test('create accepts start inputs', (t) => {
-  const repl = MontyRepl.create('counter = start', { inputs: ['start'] }, { inputs: { start: 3 } })
+test('constructor accepts scriptName option', (t) => {
+  const repl = new MontyRepl({ scriptName: 'test.py' })
+  t.is(repl.scriptName, 'test.py')
+})
 
-  t.is(repl.feed('counter'), 3)
-  t.is(repl.feed('counter = counter + 2'), null)
-  t.is(repl.feed('counter'), 5)
+test('default scriptName is main.py', (t) => {
+  const repl = new MontyRepl()
+  t.is(repl.scriptName, 'main.py')
 })
 
 test('repl dump/load roundtrip', (t) => {
-  const repl = MontyRepl.create('x = 40')
+  const repl = new MontyRepl()
+  repl.feed('x = 40')
   t.is(repl.feed('x = x + 1'), null)
 
   const serialized = repl.dump()
