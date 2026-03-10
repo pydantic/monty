@@ -404,6 +404,46 @@ impl Dict {
 }
 
 impl<'h> HeapRead<'h, Dict> {
+    /// Checks whether the dict contains a given key.
+    ///
+    /// Uses `find_index_hash` internally so it handles the short-lived borrow
+    /// pattern correctly — the dict is only accessed through temporary borrows,
+    /// allowing `py_eq` calls on keys in between.
+    pub(crate) fn contains_key(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
+        let (opt_index, _hash) = self.find_index_hash(key, vm)?;
+        Ok(opt_index.is_some())
+    }
+
+    /// Looks up a key and returns a clone of the associated value.
+    ///
+    /// Returns `Ok(Some(value))` if the key exists (value is cloned with refcount
+    /// increment), `Ok(None)` if the key is not found, or `Err` if the key is
+    /// unhashable. The caller owns the returned value.
+    pub(crate) fn get_cloned(
+        &self,
+        key: &Value,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<Option<Value>> {
+        let (opt_index, _hash) = self.find_index_hash(key, vm)?;
+        if let Some(index) = opt_index {
+            // Clone the value using the two-phase pattern:
+            // 1. Read the value discriminant (shared borrow)
+            // 2. Increment refcount if Ref (mutable borrow)
+            let ref_id = match &self.get(vm.heap).entries[index].value {
+                Value::Ref(id) => Some(*id),
+                _ => None,
+            };
+            if let Some(id) = ref_id {
+                vm.heap.inc_ref(id);
+                Ok(Some(Value::Ref(id)))
+            } else {
+                Ok(Some(self.get(vm.heap).entries[index].value.clone_immediate()))
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
     fn find_index_hash(
         &self,
         key: &Value,
@@ -436,6 +476,91 @@ impl<'h> HeapRead<'h, Dict> {
         }
 
         Ok((None, hash))
+    }
+
+    /// Two-phase clone of the key at a given entry index.
+    fn clone_key_at(&self, index: usize, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Value {
+        let ref_id = match self.get(vm.heap).key_at(index) {
+            Some(Value::Ref(id)) => Some(*id),
+            _ => None,
+        };
+        if let Some(id) = ref_id {
+            vm.heap.inc_ref(id);
+            Value::Ref(id)
+        } else {
+            self.get(vm.heap).key_at(index).expect("index valid").clone_immediate()
+        }
+    }
+
+    /// Two-phase clone of the value at a given entry index.
+    fn clone_value_at(&self, index: usize, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Value {
+        let ref_id = match self.get(vm.heap).value_at(index) {
+            Some(Value::Ref(id)) => Some(*id),
+            _ => None,
+        };
+        if let Some(id) = ref_id {
+            vm.heap.inc_ref(id);
+            Value::Ref(id)
+        } else {
+            self.get(vm.heap)
+                .value_at(index)
+                .expect("index valid")
+                .clone_immediate()
+        }
+    }
+
+    /// Element-wise equality comparison using the short-lived borrow pattern.
+    ///
+    /// For each entry in self, looks up the key in other and compares values.
+    /// Both keys and values are cloned temporarily for comparison.
+    pub(crate) fn eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        if self.get(vm.heap).len() != other.get(vm.heap).len() {
+            return Ok(false);
+        }
+        let token = vm.heap.incr_recursion_depth()?;
+        defer_drop!(token, vm);
+        let len = self.get(vm.heap).len();
+        for i in 0..len {
+            vm.heap.check_time()?;
+            // Clone key from self to use as lookup key in other
+            let key = self.clone_key_at(i, vm);
+            defer_drop!(key, vm);
+            // Swallow RunErrors from get_cloned (e.g. unhashable key) and treat as not-equal,
+            // matching the pattern used in the original Dict::py_eq.
+            if let Ok(Some(other_value)) = other.get_cloned(key, vm) {
+                let self_value = self.clone_value_at(i, vm);
+                let eq = self_value.py_eq(&other_value, vm);
+                self_value.drop_with_heap(vm);
+                other_value.drop_with_heap(vm);
+                if !eq? {
+                    return Ok(false);
+                }
+            } else {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Subscript access via HeapRead, returning a cloned value or KeyError.
+    pub(crate) fn getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        match self.get_cloned(key, vm)? {
+            Some(value) => Ok(value),
+            None => Err(ExcType::key_error(key, vm)),
+        }
+    }
+
+    /// Subscript assignment via HeapRead. Drops old value if key already exists.
+    pub(crate) fn setitem(
+        &mut self,
+        key: Value,
+        value: Value,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<()> {
+        if let Some(old_value) = self.set(key, value, vm)? {
+            old_value.drop_with_heap(vm);
+        }
+        Ok(())
     }
 }
 
@@ -482,7 +607,7 @@ impl IntoIterator for Dict {
     }
 }
 
-impl PyTrait for Dict {
+impl PyTrait<'_> for Dict {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::Dict
     }

@@ -140,6 +140,30 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
             }
         }
 
+        /// Like `heap_read` but for `Box<T>` fields inside `HeapData` variants.
+        ///
+        /// For boxed variants, the `Box`'s heap allocation lives at a separate
+        /// address from the `HeapData` enum, so the offset-from-base trick used
+        /// by `heap_read` doesn't work. Instead we derive the pointer directly
+        /// from the `Box`'s inner allocation. The pointer remains valid for the
+        /// `HeapReader`'s lifetime because the `HeapData` (and its `Box`) stay
+        /// alive as long as the reader exists.
+        #[expect(
+            clippy::borrowed_box,
+            reason = "We intentionally take &Box<T> to signal this is for boxed HeapData variants; &T would lose that context"
+        )]
+        fn heap_read_boxed<'a, T>(boxed: &Box<T>) -> HeapRead<'a, T> {
+            HeapRead {
+                // SAFETY: The Box's allocation is valid for reads/writes as long as the
+                // HeapData containing it is alive. The HeapReader guarantees the entry
+                // won't be deallocated. We cast away the shared reference to get a mutable
+                // pointer — this is sound because all mutation goes through `get_mut` which
+                // requires `&mut HeapReader`, ensuring exclusive access.
+                value: unsafe { NonNull::new_unchecked(std::ptr::from_ref(boxed.as_ref()).cast_mut()) },
+                borrow: PhantomData,
+            }
+        }
+
         let heap = self.heap.heap_mut();
         let entry = heap
             .entries
@@ -185,7 +209,7 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
             HeapData::Coroutine(coroutine) => HeapReadOutput::Coroutine(heap_read(base, coroutine)),
             HeapData::GatherFuture(gather_future) => HeapReadOutput::GatherFuture(heap_read(base, gather_future)),
             HeapData::Path(path) => HeapReadOutput::Path(heap_read(base, path)),
-            HeapData::RePattern(re_pattern) => HeapReadOutput::RePattern(heap_read(base, re_pattern)),
+            HeapData::RePattern(re_pattern) => HeapReadOutput::RePattern(heap_read_boxed(re_pattern)),
             HeapData::ReMatch(re_match) => HeapReadOutput::ReMatch(heap_read(base, re_match)),
         }
     }
@@ -286,6 +310,7 @@ impl<'a, T: ?Sized> HeapRead<'a, T> {
 
     /// Cast this reader around some type T which is a transparent wrapper around U
     /// to its inner type. Name peel comes from `TransparentWrapper::peel` method.
+    #[expect(dead_code)]
     pub fn peel<U>(self) -> HeapRead<'a, U>
     where
         T: TransparentWrapper<U>,
@@ -299,6 +324,7 @@ impl<'a, T: ?Sized> HeapRead<'a, T> {
         }
     }
 
+    #[expect(dead_code)]
     pub fn peel_ref<U>(&self) -> &HeapRead<'a, U>
     where
         T: TransparentWrapper<U>,
@@ -873,6 +899,8 @@ impl<T: ResourceTracker> Heap<T> {
             let heap = &mut *vm.heap;
             let data = take_data!(heap, left, "with_two");
 
+            // SAFETY: data was taken from the heap above and is valid; we create two shared
+            // references to the same value which is sound since both are &-references.
             let result = f(vm, unsafe { &*data.0.get() }, unsafe { &*data.0.get() });
 
             let heap = &mut *vm.heap;
@@ -884,6 +912,8 @@ impl<T: ResourceTracker> Heap<T> {
             let left_data = take_data!(heap, left, "with_two (left)");
             let right_data = take_data!(heap, right, "with_two (right)");
 
+            // SAFETY: left_data and right_data were taken from different heap slots above;
+            // creating shared references to each is sound since they are distinct values.
             let result = f(vm, unsafe { &*left_data.0.get() }, unsafe { &*right_data.0.get() });
 
             // Restore in reverse order

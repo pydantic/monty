@@ -10,7 +10,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     sorting::{apply_permutation, sort_indices},
@@ -194,13 +194,273 @@ impl List {
     }
 }
 
+impl<'h> HeapRead<'h, List> {
+    /// Appends an element to the end of the list.
+    ///
+    /// The caller transfers ownership of `item` to the list. The item's refcount
+    /// is NOT incremented here - the caller is responsible for ensuring the refcount
+    /// was already incremented (e.g., via `clone_with_heap` or `evaluate_use`).
+    pub fn append(&mut self, item: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) {
+        // Track if we're adding a reference and mark potential cycle
+        if matches!(item, Value::Ref(_)) {
+            self.get_mut(vm.heap).contains_refs = true;
+            vm.heap.mark_potential_cycle();
+        }
+        // Ownership transfer - refcount was already handled by caller
+        self.get_mut(vm.heap).items.push(item);
+    }
+
+    /// Clones the item at the given index with proper refcount management.
+    ///
+    /// Uses the short-lived borrow pattern: reads the value discriminant through
+    /// a shared heap borrow, releases it, then increments refcount if needed
+    /// through a mutable heap borrow.
+    pub(crate) fn clone_item(&self, index: usize, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Value {
+        let ref_id = match &self.get(vm.heap).items[index] {
+            Value::Ref(id) => Some(*id),
+            _ => None,
+        };
+        if let Some(id) = ref_id {
+            vm.heap.inc_ref(id);
+            Value::Ref(id)
+        } else {
+            self.get(vm.heap).items[index].clone_immediate()
+        }
+    }
+
+    /// Clones all items from this list with proper refcount management.
+    ///
+    /// Uses the short-lived borrow pattern per element to avoid holding
+    /// a heap borrow across refcount increments.
+    fn clone_all_items(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Vec<Value> {
+        let len = self.get(vm.heap).items.len();
+        let mut result = Vec::with_capacity(len);
+        for i in 0..len {
+            result.push(self.clone_item(i, vm));
+        }
+        result
+    }
+
+    /// Concatenates two lists, producing a new heap-allocated list.
+    pub(crate) fn add(
+        &self,
+        other: &Self,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<Option<Value>, ResourceError> {
+        let mut items = self.clone_all_items(vm);
+        items.extend(other.clone_all_items(vm));
+        let id = vm.heap.allocate(HeapData::List(List::new(items)))?;
+        Ok(Some(Value::Ref(id)))
+    }
+
+    /// Element-wise equality comparison using the short-lived borrow pattern.
+    ///
+    /// Clones each element pair temporarily for comparison, then drops them.
+    /// This avoids holding heap borrows across `Value::py_eq` calls.
+    pub(crate) fn eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        let a_len = self.get(vm.heap).items.len();
+        if a_len != other.get(vm.heap).items.len() {
+            return Ok(false);
+        }
+        let token = vm.heap.incr_recursion_depth()?;
+        defer_drop!(token, vm);
+        for i in 0..a_len {
+            vm.heap.check_time()?;
+            let a_val = self.clone_item(i, vm);
+            let b_val = other.clone_item(i, vm);
+            let result = a_val.py_eq(&b_val, vm);
+            a_val.drop_with_heap(vm);
+            b_val.drop_with_heap(vm);
+            if !result? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Subscript access via HeapRead. Handles both integer indices and slices.
+    ///
+    /// For integer indices: normalizes negative indices, bounds checks, and returns
+    /// a cloned item. For slices: computes indices and returns a new list with
+    /// cloned elements.
+    pub(crate) fn getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        // Check for slice first
+        if let Value::Ref(id) = key
+            && let HeapData::Slice(slice) = vm.heap.get(*id)
+        {
+            let slice = slice.clone();
+            let len = self.get(vm.heap).len();
+            let (start, stop, step) = slice
+                .indices(len)
+                .map_err(|()| ExcType::value_error_slice_step_zero())?;
+            // Collect cloned items using short-lived borrows to avoid
+            // holding a borrow across allocation
+            let items = self.getitem_slice_items(start, stop, step, vm)?;
+            let heap_id = vm.heap.allocate(HeapData::List(List::new(items)))?;
+            return Ok(Value::Ref(heap_id));
+        }
+
+        let index = key.as_index(vm.heap, Type::List)?;
+        let len = i64::try_from(self.get(vm.heap).len()).expect("list length exceeds i64::MAX");
+        let normalized = if index < 0 { index + len } else { index };
+
+        if normalized < 0 || normalized >= len {
+            return Err(ExcType::list_index_error());
+        }
+
+        let idx = usize::try_from(normalized).expect("list index validated non-negative");
+        Ok(self.clone_item(idx, vm))
+    }
+
+    /// Subscript assignment via HeapRead. Takes ownership of key and value.
+    ///
+    /// Normalizes negative indices, bounds checks, swaps in the new value,
+    /// and drops the old value. Updates `contains_refs` flag for GC tracking.
+    pub(crate) fn setitem(
+        &mut self,
+        key: Value,
+        value: Value,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<()> {
+        defer_drop!(key, vm);
+        defer_drop_mut!(value, vm);
+
+        let index = match *key {
+            Value::Int(i) => i,
+            Value::Bool(b) => i64::from(b),
+            Value::Ref(heap_id) => {
+                if let HeapData::LongInt(li) = vm.heap.get(heap_id) {
+                    if let Some(i) = li.to_i64() {
+                        i
+                    } else {
+                        return Err(ExcType::index_error_int_too_large());
+                    }
+                } else {
+                    let key_type = key.py_type(vm.heap);
+                    return Err(ExcType::type_error_list_assignment_indices(key_type));
+                }
+            }
+            _ => {
+                let key_type = key.py_type(vm.heap);
+                return Err(ExcType::type_error_list_assignment_indices(key_type));
+            }
+        };
+
+        let len = i64::try_from(self.get(vm.heap).len()).expect("list length exceeds i64::MAX");
+        let normalized = if index < 0 { index + len } else { index };
+
+        if normalized < 0 || normalized >= len {
+            return Err(ExcType::list_assignment_index_error());
+        }
+
+        let idx = usize::try_from(normalized).expect("index validated non-negative");
+
+        if matches!(*value, Value::Ref(_)) {
+            self.get_mut(vm.heap).contains_refs = true;
+            vm.heap.mark_potential_cycle();
+        }
+
+        // Replace value (old one dropped by defer_drop_mut guard)
+        std::mem::swap(&mut self.get_mut(vm.heap).items[idx], value);
+
+        Ok(())
+    }
+
+    /// Collects sliced items using the two-phase clone pattern.
+    ///
+    /// Unlike `get_slice_items` which takes `&[Value]` + `&mut Heap`, this method
+    /// uses short-lived borrows through HeapRead to avoid holding the heap borrow
+    /// across clone_with_heap calls.
+    fn getitem_slice_items(
+        &self,
+        start: usize,
+        stop: usize,
+        step: i64,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<Vec<Value>> {
+        let items_len = self.get(vm.heap).len();
+        let mut result = Vec::new();
+
+        if let Ok(step_usize) = usize::try_from(step) {
+            let mut i = start;
+            while i < stop && i < items_len {
+                vm.heap.check_time()?;
+                result.push(self.clone_item(i, vm));
+                i += step_usize;
+            }
+        } else {
+            let step_abs = usize::try_from(-step).expect("step is negative so -step is positive");
+            let step_abs_i64 = i64::try_from(step_abs).expect("step magnitude fits in i64");
+            let mut i = i64::try_from(start).expect("start index fits in i64");
+            let stop_i64 = if stop > items_len {
+                -1
+            } else {
+                i64::try_from(stop).expect("stop bounded by items.len() fits in i64")
+            };
+            while i > stop_i64 {
+                vm.heap.check_time()?;
+                let idx = usize::try_from(i).expect("i is non-negative");
+                if idx < items_len {
+                    result.push(self.clone_item(idx, vm));
+                }
+                i -= step_abs_i64;
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// In-place addition (list extend) via HeapRead.
+    ///
+    /// Extends this list with elements from `other`. Handles the special case
+    /// where `other` is the same list (self-extend) by cloning items first.
+    #[expect(clippy::unnecessary_wraps)]
+    pub(crate) fn iadd(
+        &mut self,
+        other: &Value,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        self_id: Option<HeapId>,
+    ) -> Result<bool, crate::resource::ResourceError> {
+        let Value::Ref(other_id) = other else {
+            return Ok(false);
+        };
+
+        if Some(*other_id) == self_id {
+            // Self-extend: clone our own items with proper refcounting
+            let items = self.clone_all_items(vm);
+            if self.get(vm.heap).contains_refs {
+                vm.heap.mark_potential_cycle();
+            }
+            self.get_mut(vm.heap).items.extend(items);
+        } else {
+            // Read source list via HeapRead, clone items into a temporary Vec
+            let source = vm.heap.read(*other_id);
+            let HeapReadOutput::List(source_list) = source else {
+                return Ok(false);
+            };
+            let source_items = source_list.clone_all_items(vm);
+            // Check if new items contain refs
+            let has_new_refs = source_items.iter().any(|v| matches!(v, Value::Ref(_)));
+            self.get_mut(vm.heap).items.extend(source_items);
+            if self.get(vm.heap).contains_refs || has_new_refs {
+                if has_new_refs {
+                    self.get_mut(vm.heap).contains_refs = true;
+                }
+                vm.heap.mark_potential_cycle();
+            }
+        }
+
+        Ok(true)
+    }
+}
+
 impl From<List> for Vec<Value> {
     fn from(list: List) -> Self {
         list.items
     }
 }
 
-impl PyTrait for List {
+impl PyTrait<'_> for List {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::List
     }
@@ -861,14 +1121,16 @@ mod tests {
             create_heap_with_list_and_longint(vec![Value::Int(10), Value::Int(20), Value::Int(30)], BigInt::from(1));
         let interns = create_test_interns();
 
-        // Use heap.with_entry_mut to avoid double mutable borrow
         let key = Value::Ref(index_id);
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
         let result = HeapReader::with(&mut heap, |heap| {
             let mut vm = VM::new(Vec::new(), heap, &interns, PrintWriter::Disabled);
-            Heap::with_entry_mut(&mut vm, list_id, |vm, mut data| data.py_setitem(key, new_value, vm))
+            let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
+                panic!("expected list");
+            };
+            list.setitem(key, new_value, &mut vm)
         });
 
         assert!(result.is_ok());
@@ -898,7 +1160,10 @@ mod tests {
 
         let result = HeapReader::with(&mut heap, |heap| {
             let mut vm = VM::new(Vec::new(), heap, &interns, PrintWriter::Disabled);
-            Heap::with_entry_mut(&mut vm, list_id, |vm, mut data| data.py_setitem(key, new_value, vm))
+            let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
+                panic!("expected list");
+            };
+            list.setitem(key, new_value, &mut vm)
         });
 
         assert!(result.is_ok());
@@ -926,7 +1191,10 @@ mod tests {
         // This should fail with IndexError because i64::MAX is out of bounds for a 1-element list
         let result = HeapReader::with(&mut heap, |heap| {
             let mut vm = VM::new(Vec::new(), heap, &interns, PrintWriter::Disabled);
-            Heap::with_entry_mut(&mut vm, list_id, |vm, mut data| data.py_setitem(key, new_value, vm))
+            let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
+                panic!("expected list");
+            };
+            list.setitem(key, new_value, &mut vm)
         });
 
         assert!(result.is_err());

@@ -9,14 +9,13 @@ use ahash::AHashSet;
 
 use crate::{
     args::ArgValues,
-    bytecode::{CallResult, VM},
+    bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId},
-    intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::{PyTrait, Type},
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Python slice object representing start:stop:step indices.
@@ -178,7 +177,7 @@ fn normalize_index(index: i64, length: i64, lower: i64, upper: i64) -> i64 {
     normalized.clamp(lower, upper)
 }
 
-impl PyTrait for Slice {
+impl PyTrait<'_> for Slice {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::Slice
     }
@@ -218,25 +217,6 @@ impl PyTrait for Slice {
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // Slice doesn't contain heap references, nothing to do
-    }
-
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
-        // Fast path: interned strings can be matched by ID without string comparison
-        if let Some(ss) = attr.static_string() {
-            return match ss {
-                StaticStrings::Start => Ok(Some(CallResult::Value(option_i64_to_value(self.start)))),
-                StaticStrings::Stop => Ok(Some(CallResult::Value(option_i64_to_value(self.stop)))),
-                StaticStrings::Step => Ok(Some(CallResult::Value(option_i64_to_value(self.step)))),
-                _ => Ok(None),
-            };
-        }
-        // Slow path: heap-allocated strings need string comparison
-        match attr.as_str(vm.interns) {
-            "start" => Ok(Some(CallResult::Value(option_i64_to_value(self.start)))),
-            "stop" => Ok(Some(CallResult::Value(option_i64_to_value(self.stop)))),
-            "step" => Ok(Some(CallResult::Value(option_i64_to_value(self.step)))),
-            _ => Ok(None),
-        }
     }
 }
 

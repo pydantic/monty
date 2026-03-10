@@ -5,8 +5,8 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapGuard, HeapId},
-    intern::{Interns, StringId},
+    heap::{HeapGuard, HeapId},
+    intern::StringId,
     resource::ResourceTracker,
     types::{Dict, PyTrait},
     value::{EitherStr, Value},
@@ -85,27 +85,6 @@ impl Module {
     /// Collects child HeapIds for reference counting.
     pub fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.attrs.py_dec_ref_ids(stack);
-    }
-
-    /// Gets an attribute by string ID for the `py_getattr` trait method.
-    ///
-    /// Returns the attribute value if found, or `None` if the attribute doesn't exist.
-    /// For `Property` values, invokes the property getter rather than returning
-    /// the Property itself - this implements Python's descriptor protocol.
-    pub fn py_getattr(
-        &self,
-        attr: &EitherStr,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> Option<CallResult> {
-        let value = self.attrs.get_by_str(attr.as_str(interns), heap, interns)?;
-
-        // If the value is a Property, invoke its getter to compute the actual value
-        if let Value::Property(prop) = *value {
-            Some(prop.get())
-        } else {
-            Some(CallResult::Value(value.clone_with_heap(heap)))
-        }
     }
 
     /// Calls an attribute as a function on this module.

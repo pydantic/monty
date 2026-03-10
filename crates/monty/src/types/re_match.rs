@@ -125,6 +125,30 @@ impl ReMatch {
         }
     }
 
+    /// Returns a reference to the named groups mapping (name, 1-based index).
+    #[must_use]
+    pub(crate) fn named_groups(&self) -> &[(String, usize)] {
+        &self.named_groups
+    }
+
+    /// Returns the full matched text (equivalent to `group(0)`).
+    #[must_use]
+    pub(crate) fn full_match(&self) -> &str {
+        &self.full_match
+    }
+
+    /// Returns a reference to the captured group strings.
+    #[must_use]
+    pub(crate) fn groups(&self) -> &[Option<String>] {
+        &self.groups
+    }
+
+    /// Returns the original input string that was matched against.
+    #[must_use]
+    pub(crate) fn input_string(&self) -> &str {
+        &self.input_string
+    }
+
     /// Returns the match for a given group number.
     ///
     /// Group 0 is the full match, groups 1..N are capture groups.
@@ -302,7 +326,7 @@ impl ReMatch {
     }
 }
 
-impl PyTrait for ReMatch {
+impl PyTrait<'_> for ReMatch {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::ReMatch
     }
@@ -351,17 +375,6 @@ impl PyTrait for ReMatch {
                 .iter()
                 .map(|(name, _)| name.len() + std::mem::size_of::<usize>())
                 .sum::<usize>()
-    }
-
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
-        match attr.static_string() {
-            Some(StaticStrings::StringAttr) => {
-                let s = Str::new(self.input_string.clone());
-                let v = Value::Ref(vm.heap.allocate(HeapData::Str(s))?);
-                Ok(Some(CallResult::Value(v)))
-            }
-            _ => Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns))),
-        }
     }
 
     fn py_call_attr(

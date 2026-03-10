@@ -4,7 +4,7 @@ use super::VM;
 use crate::{
     defer_drop,
     exception_private::{ExcType, RunError},
-    heap::{Heap, HeapData, HeapGuard},
+    heap::{HeapData, HeapGuard, HeapReadOutput},
     resource::ResourceTracker,
     types::{PyTrait, Set, dict_view::collect_iterable_to_set, set::SetBinaryOp},
     value::BitwiseOp,
@@ -406,13 +406,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Ok(None);
         };
 
-        let result = Heap::with_entry_mut(this, *lhs_id, |this, data| match data {
-            crate::heap_data::HeapDataMut::Set(set) => set.binary_op_value(rhs, op, this).map(|v| v.map(HeapData::Set)),
-            crate::heap_data::HeapDataMut::FrozenSet(set) => {
-                set.binary_op_value(rhs, op, this).map(|v| v.map(HeapData::FrozenSet))
-            }
-            _ => Ok(None),
-        })?;
+        let output = this.heap.read(*lhs_id);
+        let result = match output {
+            HeapReadOutput::Set(set) => set.binary_op_value(rhs, op, this)?.map(HeapData::Set),
+            HeapReadOutput::FrozenSet(fset) => fset.binary_op_value(rhs, op, this)?.map(HeapData::FrozenSet),
+            _ => None,
+        };
 
         let Some(result) = result else {
             return Ok(None);

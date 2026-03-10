@@ -2,6 +2,7 @@ use std::fmt::Write;
 
 use ahash::AHashSet;
 use hashbrown::HashTable;
+use smallvec::SmallVec;
 
 use super::{MontyIter, PyTrait};
 use crate::{
@@ -9,7 +10,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapRead},
     intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -580,6 +581,139 @@ impl Set {
     }
 }
 
+impl<'h> HeapRead<'h, Set> {
+    /// Adds an element to the set, transferring ownership.
+    ///
+    /// Returns `Ok(true)` if the element was added (not already present),
+    /// `Ok(false)` if the element was already in the set (and the value is dropped).
+    /// Returns `Err` if the element is unhashable (and the value is dropped).
+    ///
+    /// Uses a two-phase lookup (collect candidates, then compare) to avoid
+    /// holding a borrow on the set storage during `py_eq` calls.
+    pub fn add(&mut self, value: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
+        let hash = match value.py_hash(vm.heap, vm.interns) {
+            Ok(Some(h)) => h,
+            Ok(None) => {
+                let err = ExcType::type_error_unhashable_set_element(value.py_type(vm.heap));
+                value.drop_with_heap(vm);
+                return Err(err);
+            }
+            Err(e) => {
+                value.drop_with_heap(vm);
+                return Err(e.into());
+            }
+        };
+
+        // Collect candidate indices to avoid borrow conflict between set storage and py_eq
+        let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
+        let storage = &self.get(vm.heap).0;
+        storage.indices.find(hash, |&idx| {
+            if storage.entries[idx].hash == hash {
+                candidates.push(idx);
+            }
+            false
+        });
+
+        for candidate_index in candidates {
+            let candidate_value = self.get(vm.heap).0.entries[candidate_index].value.clone_with_heap(vm);
+            defer_drop!(candidate_value, vm);
+            if value.py_eq(candidate_value, vm)? {
+                // Value already in set, drop the new value
+                value.drop_with_heap(vm);
+                return Ok(false);
+            }
+        }
+
+        // Add new entry
+        let storage = &mut self.get_mut(vm.heap).0;
+        let index = storage.entries.len();
+        storage.entries.push(SetEntry { value, hash });
+        storage
+            .indices
+            .insert_unique(hash, index, |&idx| storage.entries[idx].hash);
+        Ok(true)
+    }
+
+    /// Checks if the set contains a value, using the candidate collection pattern
+    /// to avoid holding a borrow on the set storage during `py_eq` calls.
+    pub(crate) fn contains(&self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
+        let hash = value
+            .py_hash(vm.heap, vm.interns)?
+            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm.heap)))?;
+
+        // Collect candidate indices (hash match only) via shared borrow
+        let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
+        let storage = &self.get(vm.heap).0;
+        storage.indices.find(hash, |&idx| {
+            if storage.entries[idx].hash == hash {
+                candidates.push(idx);
+            }
+            false
+        });
+
+        for candidate_index in candidates {
+            let candidate_value = self.get(vm.heap).0.entries[candidate_index].value.clone_with_heap(vm);
+            defer_drop!(candidate_value, vm);
+            if value.py_eq(candidate_value, vm)? {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// Set equality via HeapRead. Checks that every element in self is in other.
+    ///
+    /// Uses `HeapRead<Set>::contains` for the membership checks, which handles
+    /// the candidate collection pattern internally.
+    pub(crate) fn eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        if self.get(vm.heap).len() != other.get(vm.heap).len() {
+            return Ok(false);
+        }
+        let token = vm.heap.incr_recursion_depth()?;
+        defer_drop!(token, vm);
+        let len = self.get(vm.heap).0.entries.len();
+        for i in 0..len {
+            let elem = self.get(vm.heap).0.entries[i].value.clone_with_heap(vm);
+            defer_drop!(elem, vm);
+            if !matches!(other.contains(elem, vm), Ok(true)) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Binary set operation via HeapRead. Creates a new set from the operation result.
+    ///
+    /// Clones self's storage entries to release the heap borrow before calling
+    /// the set operations (which need `&mut VM` for hashing and equality checks).
+    pub(crate) fn binary_op_value(
+        &self,
+        other: &Value,
+        op: SetBinaryOp,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<Option<Set>> {
+        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
+            return Ok(None);
+        };
+        defer_drop!(other_storage, vm);
+
+        let self_storage = {
+            let entries = self.get(vm.heap).0.clone_entries(vm.heap);
+            SetStorage::from_entries(entries)
+        };
+        defer_drop!(self_storage, vm);
+
+        let result = match op {
+            SetBinaryOp::And => Set(self_storage.intersection(other_storage, vm)?),
+            SetBinaryOp::Or => Set(self_storage.union(other_storage, vm)?),
+            SetBinaryOp::Xor => Set(self_storage.symmetric_difference(other_storage, vm)?),
+            SetBinaryOp::Sub => Set(self_storage.difference(other_storage, vm)?),
+        };
+        Ok(Some(result))
+    }
+}
+
 impl DropWithHeap for Set {
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         self.0.drop_with_heap(heap);
@@ -598,13 +732,91 @@ impl DropWithHeap for FrozenSet {
     }
 }
 
+impl<'h> HeapRead<'h, FrozenSet> {
+    /// Checks if the frozenset contains a value, using the candidate collection pattern
+    /// to avoid holding a borrow on the storage during `py_eq` calls.
+    pub(crate) fn contains(&self, value: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
+        let hash = value
+            .py_hash(vm.heap, vm.interns)?
+            .ok_or_else(|| ExcType::type_error_unhashable_set_element(value.py_type(vm.heap)))?;
+
+        // Collect candidate indices (hash match only) via shared borrow
+        let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
+        let storage = &self.get(vm.heap).0;
+        storage.indices.find(hash, |&idx| {
+            if storage.entries[idx].hash == hash {
+                candidates.push(idx);
+            }
+            false
+        });
+
+        for candidate_index in candidates {
+            let candidate_value = self.get(vm.heap).0.entries[candidate_index].value.clone_with_heap(vm);
+            defer_drop!(candidate_value, vm);
+            if value.py_eq(candidate_value, vm)? {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// FrozenSet equality via HeapRead. Checks that every element in self is in other.
+    pub(crate) fn eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        if self.get(vm.heap).len() != other.get(vm.heap).len() {
+            return Ok(false);
+        }
+        let token = vm.heap.incr_recursion_depth()?;
+        defer_drop!(token, vm);
+        let len = self.get(vm.heap).0.entries.len();
+        for i in 0..len {
+            let elem = self.get(vm.heap).0.entries[i].value.clone_with_heap(vm);
+            defer_drop!(elem, vm);
+            if !matches!(other.contains(elem, vm), Ok(true)) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Binary set operation via HeapRead. Creates a new frozenset from the result.
+    ///
+    /// Clones self's storage entries to release the heap borrow before calling
+    /// the set operations (which need `&mut VM` for hashing and equality checks).
+    pub(crate) fn binary_op_value(
+        &self,
+        other: &Value,
+        op: SetBinaryOp,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<Option<FrozenSet>> {
+        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
+            return Ok(None);
+        };
+        defer_drop!(other_storage, vm);
+
+        let self_storage = {
+            let entries = self.get(vm.heap).0.clone_entries(vm.heap);
+            SetStorage::from_entries(entries)
+        };
+        defer_drop!(self_storage, vm);
+
+        let result = match op {
+            SetBinaryOp::And => FrozenSet(self_storage.intersection(other_storage, vm)?),
+            SetBinaryOp::Or => FrozenSet(self_storage.union(other_storage, vm)?),
+            SetBinaryOp::Xor => FrozenSet(self_storage.symmetric_difference(other_storage, vm)?),
+            SetBinaryOp::Sub => FrozenSet(self_storage.difference(other_storage, vm)?),
+        };
+        Ok(Some(result))
+    }
+}
+
 impl DropWithHeap for SetEntry {
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         self.value.drop_with_heap(heap);
     }
 }
 
-impl PyTrait for Set {
+impl PyTrait<'_> for Set {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::Set
     }
@@ -766,6 +978,7 @@ impl Set {
     /// the set-like values CPython accepts here (`set`, `frozenset`,
     /// `dict_keys`, and `dict_items`) so the VM can raise the standard
     /// unsupported-operands `TypeError`.
+    #[expect(dead_code)]
     pub(crate) fn binary_op_value(
         &self,
         other: &Value,
@@ -1073,7 +1286,7 @@ impl FrozenSet {
     }
 }
 
-impl PyTrait for FrozenSet {
+impl PyTrait<'_> for FrozenSet {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::FrozenSet
     }
@@ -1201,6 +1414,7 @@ impl FrozenSet {
     /// operators, so this helper keeps the result as `frozenset` even when the
     /// right operand is a mutable `set`. Like `set`, the accepted right-hand
     /// side includes CPython's set-like dict views.
+    #[expect(dead_code)]
     pub(crate) fn binary_op_value(
         &self,
         other: &Value,

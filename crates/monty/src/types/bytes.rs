@@ -246,7 +246,7 @@ impl std::ops::Deref for Bytes {
     }
 }
 
-impl PyTrait for Bytes {
+impl PyTrait<'_> for Bytes {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::Bytes
     }

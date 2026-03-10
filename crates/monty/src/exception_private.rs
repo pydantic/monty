@@ -4,24 +4,23 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use smallvec::smallvec;
 use strum::{Display, EnumString, IntoStaticStr};
 
 use crate::{
     args::ArgValues,
-    bytecode::{CallResult, VM},
+    bytecode::VM,
     defer_drop,
     exception_public::{MontyException, StackFrame},
     fstring::FormatError,
-    heap::{Heap, HeapData},
-    intern::{Interns, StaticStrings, StringId},
+    heap::HeapData,
+    intern::{Interns, StringId},
     parse::CodeRange,
     resource::ResourceTracker,
     types::{
-        PyTrait, Str, Type, allocate_tuple,
+        PyTrait, Type,
         str::{StringRepr, string_repr_fmt},
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Result type alias for operations that can produce a runtime error.
@@ -1247,35 +1246,6 @@ impl SimpleException {
             exc: self,
             frame: Some(RawStackFrame::from_position(position)),
             hide_caret: false,
-        }
-    }
-
-    /// Gets an attribute from this exception.
-    ///
-    /// Handles the `.args` attribute by allocating a tuple containing the message.
-    /// Returns `Err(AttributeError)` for all other attributes.
-    pub fn py_getattr(
-        &self,
-        attr: &EitherStr,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<Option<CallResult>> {
-        // Fast path: interned strings can be matched by ID
-        let is_args = attr
-            .static_string()
-            .map_or_else(|| attr.as_str(interns) == "args", |ss| ss == StaticStrings::Args);
-
-        if is_args {
-            // Construct tuple with 0 or 1 elements based on whether arg exists
-            let elements = if let Some(arg_str) = &self.arg {
-                let str_id = heap.allocate(HeapData::Str(Str::from(arg_str.clone())))?;
-                smallvec![Value::Ref(str_id)]
-            } else {
-                smallvec![]
-            };
-            Ok(Some(CallResult::Value(allocate_tuple(elements, heap)?)))
-        } else {
-            Ok(None)
         }
     }
 }

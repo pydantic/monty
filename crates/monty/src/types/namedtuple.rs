@@ -21,10 +21,10 @@ use ahash::AHashSet;
 
 use super::PyTrait;
 use crate::{
-    bytecode::{CallResult, VM},
+    bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapId},
+    heap::{Heap, HeapId, HeapRead},
     intern::{Interns, StringId},
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -120,6 +120,26 @@ impl NamedTuple {
         self.contains_refs
     }
 
+    /// Returns the number of items in the tuple.
+    ///
+    /// Alias for `len()` used by `HeapReader` for direct item access.
+    #[must_use]
+    pub(crate) fn items_len(&self) -> usize {
+        self.items.len()
+    }
+
+    /// Returns a reference to the item at the given index.
+    ///
+    /// Used by `HeapReader` for direct item access without cloning.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx >= self.items.len()`.
+    #[must_use]
+    pub(crate) fn item_ref(&self, idx: usize) -> &Value {
+        &self.items[idx]
+    }
+
     /// Gets a field value by name.
     ///
     /// Compares field names by actual string content, not just variant type.
@@ -150,7 +170,81 @@ impl NamedTuple {
     }
 }
 
-impl PyTrait for NamedTuple {
+impl<'h> HeapRead<'h, NamedTuple> {
+    /// Clones a single item using the two-phase borrow pattern.
+    ///
+    /// For `Value::Ref`, copies the `HeapId` via a short-lived shared borrow, then
+    /// increments the refcount via a separate mutable operation. For immediate values,
+    /// reads via a short-lived borrow and clones without touching the heap.
+    pub(crate) fn clone_item(&self, index: usize, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Value {
+        let ref_id = match self.get(vm.heap).item_ref(index) {
+            Value::Ref(id) => Some(*id),
+            _ => None,
+        };
+        if let Some(id) = ref_id {
+            vm.heap.inc_ref(id);
+            Value::Ref(id)
+        } else {
+            self.get(vm.heap).item_ref(index).clone_immediate()
+        }
+    }
+
+    /// Element-wise equality using the short-lived borrow pattern.
+    ///
+    /// Compares only by items (not type name) to match tuple semantics,
+    /// allowing `sys.version_info == (3, 14, 0, 'final', 0)` to work.
+    pub(crate) fn eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        let a_len = self.get(vm.heap).len();
+        if a_len != other.get(vm.heap).len() {
+            return Ok(false);
+        }
+        let token = vm.heap.incr_recursion_depth()?;
+        defer_drop!(token, vm);
+        for i in 0..a_len {
+            vm.heap.check_time()?;
+            let a_val = self.clone_item(i, vm);
+            let b_val = other.clone_item(i, vm);
+            let result = a_val.py_eq(&b_val, vm);
+            a_val.drop_with_heap(vm);
+            b_val.drop_with_heap(vm);
+            if !result? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Cross-type equality between NamedTuple and Tuple via HeapRead.
+    ///
+    /// Uses index-based item access with short-lived borrows to compare elements
+    /// without holding a heap borrow across `py_eq` calls.
+    pub(crate) fn eq_tuple(
+        &self,
+        other: &HeapRead<'h, super::Tuple>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<bool, ResourceError> {
+        let a_len = self.get(vm.heap).len();
+        if a_len != other.get(vm.heap).as_slice().len() {
+            return Ok(false);
+        }
+        let token = vm.heap.incr_recursion_depth()?;
+        defer_drop!(token, vm);
+        for i in 0..a_len {
+            vm.heap.check_time()?;
+            let a_val = self.clone_item(i, vm);
+            let b_val = other.clone_item(i, vm);
+            let result = a_val.py_eq(&b_val, vm);
+            a_val.drop_with_heap(vm);
+            b_val.drop_with_heap(vm);
+            if !result? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+}
+
+impl PyTrait<'_> for NamedTuple {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::NamedTuple
     }
@@ -247,15 +341,5 @@ impl PyTrait for NamedTuple {
 
         f.write_char(')')?;
         Ok(())
-    }
-
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
-        let attr_name = attr.as_str(vm.interns);
-        if let Some(value) = self.get_by_name(attr_name, vm.interns) {
-            Ok(Some(CallResult::Value(value.clone_with_heap(vm))))
-        } else {
-            // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
-            Err(ExcType::attribute_error(self.name(vm.interns), attr_name))
-        }
     }
 }

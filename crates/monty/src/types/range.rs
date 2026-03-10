@@ -42,7 +42,7 @@ impl Range {
     /// # Panics
     /// Panics if step is 0. Use `new_checked` for fallible construction.
     #[must_use]
-    fn new(start: i64, stop: i64, step: i64) -> Self {
+    pub(crate) fn new(start: i64, stop: i64, step: i64) -> Self {
         debug_assert!(step != 0, "range step cannot be 0");
         Self { start, stop, step }
     }
@@ -203,7 +203,7 @@ impl Default for Range {
     }
 }
 
-impl PyTrait for Range {
+impl PyTrait<'_> for Range {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::Range
     }

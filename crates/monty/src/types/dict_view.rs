@@ -8,8 +8,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{Heap, HeapData, HeapId},
-    heap_data::HeapDataMut,
+    heap::{Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::{Dict, FrozenSet, MontyIter, PyTrait, Set, Type, allocate_tuple, iter::advance_on_heap},
@@ -67,27 +66,43 @@ impl DictKeysView {
             return Ok(true);
         }
 
-        Heap::with_two(vm, self.dict_id, other.dict_id, |vm, left, right| {
-            let (HeapData::Dict(left_dict), HeapData::Dict(right_dict)) = (left, right) else {
-                panic!("dict_keys view must always reference dicts");
-            };
-            dict_keys_eq_dict(left_dict, right_dict, vm)
-        })
+        let HeapReadOutput::Dict(left) = vm.heap.read(self.dict_id) else {
+            panic!("dict_keys view must always reference a dict");
+        };
+        let HeapReadOutput::Dict(right) = vm.heap.read(other.dict_id) else {
+            panic!("dict_keys view must always reference a dict");
+        };
+        dict_keys_eq_dict_via_reader(&left, &right, vm)
     }
 
     /// Compares this keys view to a mutable set using set membership semantics.
     pub(crate) fn eq_set(self, other: &Set, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Heap::with_entry_mut(vm, self.dict_id, |vm, data| {
-            let HeapDataMut::Dict(dict) = data else {
-                panic!("dict_keys view must always reference a dict");
-            };
-            dict_keys_eq_set_like(
-                dict,
-                other.len(),
-                |key, vm| matches!(other.contains(key, vm), Ok(true)),
-                vm,
-            )
-        })
+        let HeapReadOutput::Dict(dict) = vm.heap.read(self.dict_id) else {
+            panic!("dict_keys view must always reference a dict");
+        };
+        dict_keys_eq_set_like_via_reader(
+            &dict,
+            other.len(),
+            |key, vm| matches!(other.contains(key, vm), Ok(true)),
+            vm,
+        )
+    }
+
+    /// Compares this keys view to a set via HeapRead, avoiding borrow conflicts.
+    pub(crate) fn eq_set_read<'h>(
+        self,
+        other: &HeapRead<'h, Set>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<bool, ResourceError> {
+        let HeapReadOutput::Dict(dict) = vm.heap.read(self.dict_id) else {
+            panic!("dict_keys view must always reference a dict");
+        };
+        dict_keys_eq_set_like_via_reader(
+            &dict,
+            other.get(vm.heap).len(),
+            |key, vm| matches!(other.contains(key, vm), Ok(true)),
+            vm,
+        )
     }
 
     /// Compares this keys view to a frozenset using set membership semantics.
@@ -96,17 +111,32 @@ impl DictKeysView {
         other: &FrozenSet,
         vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> Result<bool, ResourceError> {
-        Heap::with_entry_mut(vm, self.dict_id, |vm, data| {
-            let HeapDataMut::Dict(dict) = data else {
-                panic!("dict_keys view must always reference a dict");
-            };
-            dict_keys_eq_set_like(
-                dict,
-                other.len(),
-                |key, vm| matches!(other.contains(key, vm), Ok(true)),
-                vm,
-            )
-        })
+        let HeapReadOutput::Dict(dict) = vm.heap.read(self.dict_id) else {
+            panic!("dict_keys view must always reference a dict");
+        };
+        dict_keys_eq_set_like_via_reader(
+            &dict,
+            other.len(),
+            |key, vm| matches!(other.contains(key, vm), Ok(true)),
+            vm,
+        )
+    }
+
+    /// Compares this keys view to a frozenset via HeapRead, avoiding borrow conflicts.
+    pub(crate) fn eq_frozenset_read<'h>(
+        self,
+        other: &HeapRead<'h, FrozenSet>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<bool, ResourceError> {
+        let HeapReadOutput::Dict(dict) = vm.heap.read(self.dict_id) else {
+            panic!("dict_keys view must always reference a dict");
+        };
+        dict_keys_eq_set_like_via_reader(
+            &dict,
+            other.get(vm.heap).len(),
+            |key, vm| matches!(other.contains(key, vm), Ok(true)),
+            vm,
+        )
     }
 
     /// Materializes the view's current live keys into a plain `set`.
@@ -115,17 +145,17 @@ impl DictKeysView {
     /// so the VM uses this helper as the left-hand-side snapshot for `& | ^ -`
     /// and for `isdisjoint(...)`.
     pub(crate) fn to_set(self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Set> {
-        Heap::with_entry_mut(vm, self.dict_id, |vm, data| {
-            let HeapDataMut::Dict(dict) = data else {
-                panic!("dict_keys view must always reference a dict");
-            };
+        let HeapReadOutput::Dict(dict) = vm.heap.read(self.dict_id) else {
+            panic!("dict_keys view must always reference a dict");
+        };
 
-            let mut result = Set::with_capacity(dict.len());
-            for (key, _) in dict.iter() {
-                result.add(key.clone_with_heap(vm), vm)?;
-            }
-            Ok(result)
-        })
+        let len = dict.get(vm.heap).len();
+        let mut result = Set::with_capacity(len);
+        for i in 0..len {
+            let key = dict.get(vm.heap).key_at(i).unwrap().clone_with_heap(vm);
+            result.add(key, vm)?;
+        }
+        Ok(result)
     }
 
     /// Implements `dict_keys.isdisjoint(iterable)` with CPython's iterable semantics.
@@ -148,7 +178,7 @@ impl DictView for DictKeysView {
     }
 }
 
-impl PyTrait for DictKeysView {
+impl PyTrait<'_> for DictKeysView {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::DictKeys
     }
@@ -231,42 +261,43 @@ impl DictItemsView {
             return Ok(true);
         }
 
-        Heap::with_two(vm, self.dict_id, other.dict_id, |vm, left, right| {
-            let (HeapData::Dict(left), HeapData::Dict(right)) = (left, right) else {
-                panic!("dict_items view must always reference dicts");
-            };
-            if left.len() != right.len() {
-                return Ok(false);
-            }
-            let token = vm.heap.incr_recursion_depth()?;
-            defer_drop!(token, vm);
-            for (key, value) in left {
-                vm.heap.check_time()?;
-                if let Ok(Some(other_v)) = right.get(key, vm) {
-                    if !value.py_eq(other_v, vm)? {
-                        return Ok(false);
-                    }
-                } else {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
-        })
+        let HeapReadOutput::Dict(left) = vm.heap.read(self.dict_id) else {
+            panic!("dict_items view must always reference a dict");
+        };
+        let HeapReadOutput::Dict(right) = vm.heap.read(other.dict_id) else {
+            panic!("dict_items view must always reference a dict");
+        };
+        left.eq(&right, vm)
     }
 
     /// Compares this items view to a mutable set using set membership semantics.
     pub(crate) fn eq_set(self, other: &Set, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Heap::with_entry_mut(vm, self.dict_id, |vm, data| {
-            let HeapDataMut::Dict(dict) = data else {
-                panic!("dict_items view must always reference a dict");
-            };
-            dict_items_eq_set_like(
-                dict,
-                other.len(),
-                |item, vm| matches!(other.contains(item, vm), Ok(true)),
-                vm,
-            )
-        })
+        let HeapReadOutput::Dict(dict) = vm.heap.read(self.dict_id) else {
+            panic!("dict_items view must always reference a dict");
+        };
+        dict_items_eq_set_like_via_reader(
+            &dict,
+            other.len(),
+            |item, vm| matches!(other.contains(item, vm), Ok(true)),
+            vm,
+        )
+    }
+
+    /// Compares this items view to a set via HeapRead, avoiding borrow conflicts.
+    pub(crate) fn eq_set_read<'h>(
+        self,
+        other: &HeapRead<'h, Set>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<bool, ResourceError> {
+        let HeapReadOutput::Dict(dict) = vm.heap.read(self.dict_id) else {
+            panic!("dict_items view must always reference a dict");
+        };
+        dict_items_eq_set_like_via_reader(
+            &dict,
+            other.get(vm.heap).len(),
+            |item, vm| matches!(other.contains(item, vm), Ok(true)),
+            vm,
+        )
     }
 
     /// Compares this items view to a frozenset using set membership semantics.
@@ -275,17 +306,32 @@ impl DictItemsView {
         other: &FrozenSet,
         vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> Result<bool, ResourceError> {
-        Heap::with_entry_mut(vm, self.dict_id, |vm, data| {
-            let HeapDataMut::Dict(dict) = data else {
-                panic!("dict_items view must always reference a dict");
-            };
-            dict_items_eq_set_like(
-                dict,
-                other.len(),
-                |item, vm| matches!(other.contains(item, vm), Ok(true)),
-                vm,
-            )
-        })
+        let HeapReadOutput::Dict(dict) = vm.heap.read(self.dict_id) else {
+            panic!("dict_items view must always reference a dict");
+        };
+        dict_items_eq_set_like_via_reader(
+            &dict,
+            other.len(),
+            |item, vm| matches!(other.contains(item, vm), Ok(true)),
+            vm,
+        )
+    }
+
+    /// Compares this items view to a frozenset via HeapRead, avoiding borrow conflicts.
+    pub(crate) fn eq_frozenset_read<'h>(
+        self,
+        other: &HeapRead<'h, FrozenSet>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<bool, ResourceError> {
+        let HeapReadOutput::Dict(dict) = vm.heap.read(self.dict_id) else {
+            panic!("dict_items view must always reference a dict");
+        };
+        dict_items_eq_set_like_via_reader(
+            &dict,
+            other.get(vm.heap).len(),
+            |item, vm| matches!(other.contains(item, vm), Ok(true)),
+            vm,
+        )
     }
 
     /// Materializes the view's current live `(key, value)` pairs into a plain `set`.
@@ -293,18 +339,18 @@ impl DictItemsView {
     /// Each item is allocated as a 2-tuple so later set-like operators and
     /// membership checks observe standard Python tuple semantics.
     pub(crate) fn to_set(self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Set> {
-        Heap::with_entry_mut(vm, self.dict_id, |vm, data| {
-            let HeapDataMut::Dict(dict) = data else {
-                panic!("dict_items view must always reference a dict");
-            };
+        let HeapReadOutput::Dict(dict) = vm.heap.read(self.dict_id) else {
+            panic!("dict_items view must always reference a dict");
+        };
 
-            let mut result = Set::with_capacity(dict.len());
-            for (key, value) in dict.iter() {
-                let item = allocate_tuple(smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)], vm.heap)?;
-                result.add(item, vm)?;
-            }
-            Ok(result)
-        })
+        let len = dict.get(vm.heap).len();
+        let mut result = Set::with_capacity(len);
+        for i in 0..len {
+            let (key, value) = dict.get(vm.heap).item_at(i).unwrap();
+            let item = allocate_tuple(smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)], vm.heap)?;
+            result.add(item, vm)?;
+        }
+        Ok(result)
     }
 
     /// Implements `dict_items.isdisjoint(iterable)` with CPython's iterable semantics.
@@ -327,7 +373,7 @@ impl DictView for DictItemsView {
     }
 }
 
-impl PyTrait for DictItemsView {
+impl PyTrait<'_> for DictItemsView {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::DictItems
     }
@@ -411,7 +457,7 @@ impl DictView for DictValuesView {
     }
 }
 
-impl PyTrait for DictValuesView {
+impl PyTrait<'_> for DictValuesView {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::DictValues
     }
@@ -448,35 +494,26 @@ impl PyTrait for DictValuesView {
     }
 }
 
-/// Compares two dicts for key-set equality using membership checks.
-fn dict_keys_eq_dict(
-    left: &Dict,
-    right: &Dict,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
-) -> Result<bool, ResourceError> {
-    dict_keys_eq_set_like(
-        left,
-        right.len(),
-        |key, vm| matches!(right.get(key, vm), Ok(Some(_))),
-        vm,
-    )
-}
-
-/// Compares a dict's live keys to another set-like container by membership.
-fn dict_keys_eq_set_like<T: ResourceTracker>(
-    dict: &Dict,
+/// Compares a dict's live keys to a set-like container via `HeapRead`.
+///
+/// Iterates by index to avoid holding a borrow on the dict across `py_eq` calls.
+fn dict_keys_eq_set_like_via_reader<'h, T: ResourceTracker>(
+    dict: &HeapRead<'h, Dict>,
     other_len: usize,
-    mut contains: impl FnMut(&Value, &mut VM<'_, '_, T>) -> bool,
-    vm: &mut VM<'_, '_, T>,
+    mut contains: impl FnMut(&Value, &mut VM<'h, '_, T>) -> bool,
+    vm: &mut VM<'h, '_, T>,
 ) -> Result<bool, ResourceError> {
-    if dict.len() != other_len {
+    if dict.get(vm.heap).len() != other_len {
         return Ok(false);
     }
 
     let token = vm.heap.incr_recursion_depth()?;
     defer_drop!(token, vm);
-    for (key, _) in dict {
+    let len = dict.get(vm.heap).len();
+    for i in 0..len {
         vm.heap.check_time()?;
+        let key = dict.get(vm.heap).key_at(i).unwrap().clone_with_heap(vm);
+        defer_drop!(key, vm);
         if !contains(key, vm) {
             return Ok(false);
         }
@@ -484,21 +521,42 @@ fn dict_keys_eq_set_like<T: ResourceTracker>(
     Ok(true)
 }
 
-/// Compares a dict's live items to another set-like container by membership.
-fn dict_items_eq_set_like<T: ResourceTracker>(
-    dict: &Dict,
-    other_len: usize,
-    mut contains: impl FnMut(&Value, &mut VM<'_, '_, T>) -> bool,
-    vm: &mut VM<'_, '_, T>,
+/// Compares two dicts' keys using set semantics, both accessed via `HeapRead`.
+///
+/// Two key sets are equal when they have the same length and every key in `left`
+/// is present in `right`.
+fn dict_keys_eq_dict_via_reader<'h>(
+    left: &HeapRead<'h, Dict>,
+    right: &HeapRead<'h, Dict>,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> Result<bool, ResourceError> {
-    if dict.len() != other_len {
+    dict_keys_eq_set_like_via_reader(
+        left,
+        right.get(vm.heap).len(),
+        |key, vm| matches!(right.contains_key(key, vm), Ok(true)),
+        vm,
+    )
+}
+
+/// Compares a dict's live items to a set-like container via `HeapRead`.
+///
+/// Iterates by index to avoid holding a borrow on the dict across `py_eq` calls.
+fn dict_items_eq_set_like_via_reader<'h, T: ResourceTracker>(
+    dict: &HeapRead<'h, Dict>,
+    other_len: usize,
+    mut contains: impl FnMut(&Value, &mut VM<'h, '_, T>) -> bool,
+    vm: &mut VM<'h, '_, T>,
+) -> Result<bool, ResourceError> {
+    if dict.get(vm.heap).len() != other_len {
         return Ok(false);
     }
 
     let token = vm.heap.incr_recursion_depth()?;
     defer_drop!(token, vm);
-    for (key, value) in dict {
+    let len = dict.get(vm.heap).len();
+    for i in 0..len {
         vm.heap.check_time()?;
+        let (key, value) = dict.get(vm.heap).item_at(i).unwrap();
         let item = allocate_tuple(smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)], vm.heap)?;
         defer_drop!(item, vm);
         if !contains(item, vm) {

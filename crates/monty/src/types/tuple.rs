@@ -36,7 +36,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapRead},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -155,7 +155,111 @@ pub fn allocate_tuple(
     }
 }
 
-impl PyTrait for Tuple {
+impl<'h> HeapRead<'h, Tuple> {
+    /// Clones the item at the given index with proper refcount management.
+    ///
+    /// Uses the short-lived borrow pattern: reads the value discriminant through
+    /// a shared heap borrow, releases it, then increments refcount if needed.
+    pub(crate) fn clone_item(&self, index: usize, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Value {
+        let ref_id = match &self.get(vm.heap).items[index] {
+            Value::Ref(id) => Some(*id),
+            _ => None,
+        };
+        if let Some(id) = ref_id {
+            vm.heap.inc_ref(id);
+            Value::Ref(id)
+        } else {
+            self.get(vm.heap).items[index].clone_immediate()
+        }
+    }
+
+    /// Clones all items from this tuple with proper refcount management.
+    fn clone_all_items(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> TupleVec {
+        let len = self.get(vm.heap).items.len();
+        let mut result = TupleVec::with_capacity(len);
+        for i in 0..len {
+            result.push(self.clone_item(i, vm));
+        }
+        result
+    }
+
+    /// Concatenates two tuples, producing a new heap-allocated tuple.
+    pub(crate) fn add(
+        &self,
+        other: &Self,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<Option<Value>, ResourceError> {
+        let mut items = self.clone_all_items(vm);
+        items.extend(other.clone_all_items(vm));
+        Ok(Some(allocate_tuple(items, vm.heap)?))
+    }
+
+    /// Element-wise equality comparison using the short-lived borrow pattern.
+    pub(crate) fn eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        let a_len = self.get(vm.heap).items.len();
+        if a_len != other.get(vm.heap).items.len() {
+            return Ok(false);
+        }
+        let token = vm.heap.incr_recursion_depth()?;
+        defer_drop!(token, vm);
+        for i in 0..a_len {
+            vm.heap.check_time()?;
+            let a_val = self.clone_item(i, vm);
+            let b_val = other.clone_item(i, vm);
+            let result = a_val.py_eq(&b_val, vm);
+            a_val.drop_with_heap(vm);
+            b_val.drop_with_heap(vm);
+            if !result? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Lexicographic comparison using the short-lived borrow pattern.
+    ///
+    /// Compares element-by-element left-to-right. The first non-equal pair
+    /// determines the result. If all compared elements are equal, the shorter
+    /// tuple is less — matching Python semantics.
+    pub(crate) fn cmp(
+        &self,
+        other: &Self,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<Option<Ordering>, ResourceError> {
+        let a_len = self.get(vm.heap).items.len();
+        let b_len = other.get(vm.heap).items.len();
+        let min_len = a_len.min(b_len);
+        let token = vm.heap.incr_recursion_depth()?;
+        defer_drop!(token, vm);
+        for i in 0..min_len {
+            vm.heap.check_time()?;
+            let a_val = self.clone_item(i, vm);
+            let b_val = other.clone_item(i, vm);
+            let cmp_result = a_val.py_cmp(&b_val, vm);
+            let eq_fallback = if matches!(cmp_result, Ok(None)) {
+                Some(a_val.py_eq(&b_val, vm))
+            } else {
+                None
+            };
+            a_val.drop_with_heap(vm);
+            b_val.drop_with_heap(vm);
+            match cmp_result? {
+                Some(Ordering::Equal) => {}
+                Some(ord) => return Ok(Some(ord)),
+                None => {
+                    // py_cmp returned None — check if elements are equal
+                    // (CPython checks __eq__ first for None==None case)
+                    if !eq_fallback.unwrap()? {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+        Ok(Some(a_len.cmp(&b_len)))
+    }
+}
+
+impl PyTrait<'_> for Tuple {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::Tuple
     }

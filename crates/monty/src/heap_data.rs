@@ -501,7 +501,7 @@ impl HeapDataMut<'_> {
 /// each method. The caller provides `self` and the method body for each variant.
 macro_rules! impl_py_trait_dispatch {
     ($self_ty:ty) => {
-        impl PyTrait for $self_ty {
+        impl PyTrait<'_> for $self_ty {
             fn py_type(&self, heap: &Heap<impl ResourceTracker>) -> Type {
                 match self {
                     Self::Str(s) => s.py_type(heap),
@@ -959,24 +959,7 @@ macro_rules! impl_py_trait_dispatch {
                 }
             }
 
-            fn py_getattr(
-                &self,
-                attr: &EitherStr,
-                vm: &mut VM<'_, '_, impl ResourceTracker>,
-            ) -> RunResult<Option<CallResult>> {
-                match self {
-                    Self::Dataclass(dc) => dc.py_getattr(attr, vm),
-                    Self::Module(m) => Ok(m.py_getattr(attr, vm.heap, vm.interns)),
-                    Self::NamedTuple(nt) => nt.py_getattr(attr, vm),
-                    Self::Slice(s) => s.py_getattr(attr, vm),
-                    Self::Exception(exc) => exc.py_getattr(attr, vm.heap, vm.interns),
-                    Self::Path(p) => p.py_getattr(attr, vm),
-                    Self::ReMatch(m) => m.py_getattr(attr, vm),
-                    Self::RePattern(p) => p.py_getattr(attr, vm),
-                    // All other types don't support attribute access via py_getattr
-                    _ => Ok(None),
-                }
-            }
+            // py_getattr dispatch was moved to HeapReadOutput in value.rs
         }
     };
 }

@@ -6,7 +6,7 @@ use super::VM;
 use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, SimpleException},
-    heap::{Heap, HeapData, HeapGuard, HeapReadOutput},
+    heap::{HeapData, HeapGuard, HeapReadOutput},
     heap_data::HeapDataMut,
     intern::StringId,
     resource::ResourceTracker,
@@ -323,15 +323,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         };
 
         for (key, value) in copied_items {
-            let old = Heap::with_entry_mut(this, dict_id, |this, data| {
-                if let HeapDataMut::Dict(dict) = data {
-                    dict.set(key, value, this)
-                } else {
-                    // SAFETY: dict_id was obtained from a Value::Ref on the stack that
-                    // was created by BuildDict; it always refers to a HeapData::Dict.
-                    unreachable!("DictUpdate: heap entry is always a Dict — compiler invariant")
-                }
-            })?;
+            let HeapReadOutput::Dict(mut dict) = this.heap.read(dict_id) else {
+                unreachable!("DictUpdate: heap entry is always a Dict — compiler invariant")
+            };
+            let old = dict.set(key, value, this)?;
             // Silently drop any old value — PEP 448 dict literals allow duplicate keys
             if let Some(old_val) = old {
                 old_val.drop_with_heap(this);
@@ -403,15 +398,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         };
 
         for item in copied_items {
-            Heap::with_entry_mut(this, set_id, |this, data| {
-                if let HeapDataMut::Set(set) = data {
-                    set.add(item, this)
-                } else {
-                    // SAFETY: set_id was obtained from a Value::Ref on the stack that
-                    // was created by BuildSet; it always refers to a HeapData::Set.
-                    unreachable!("SetExtend: heap entry is always a Set — compiler invariant")
-                }
-            })?;
+            let HeapReadOutput::Set(mut set) = this.heap.read(set_id) else {
+                unreachable!("SetExtend: heap entry is always a Set — compiler invariant")
+            };
+            set.add(item, this)?;
         }
 
         Ok(())
@@ -437,16 +427,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Err(RunError::internal("ListAppend: expected list ref on stack"));
         };
 
-        // Append to the list using with_entry_mut to handle proper contains_refs tracking
-        Heap::with_entry_mut(self, list_id, |this, data| {
-            if let HeapDataMut::List(list) = data {
-                list.append(this.heap, value);
-                Ok(())
-            } else {
-                value.drop_with_heap(this);
-                Err(RunError::internal("ListAppend: expected list on heap"))
-            }
-        })
+        let HeapReadOutput::List(mut list) = self.heap.read(list_id) else {
+            value.drop_with_heap(self);
+            return Err(RunError::internal("ListAppend: expected list on heap"));
+        };
+        list.append(value, self);
+        Ok(())
     }
 
     /// Adds TOS to set for comprehension.
@@ -465,15 +451,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Err(RunError::internal("SetAdd: expected set ref on stack"));
         };
 
-        // Add to the set using with_entry_mut to avoid borrow conflicts
-        Heap::with_entry_mut(self, set_id, |this, data| {
-            if let HeapDataMut::Set(set) = data {
-                set.add(value, this)
-            } else {
-                value.drop_with_heap(this);
-                Err(RunError::internal("SetAdd: expected set on heap"))
-            }
-        })?;
+        let HeapReadOutput::Set(mut set) = self.heap.read(set_id) else {
+            value.drop_with_heap(self);
+            return Err(RunError::internal("SetAdd: expected set on heap"));
+        };
+        set.add(value, self)?;
 
         Ok(())
     }
@@ -496,16 +478,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Err(RunError::internal("DictSetItem: expected dict ref on stack"));
         };
 
-        // Set item in the dict using with_entry_mut to avoid borrow conflicts
-        let old_value = Heap::with_entry_mut(self, dict_id, |this, data| {
-            if let HeapDataMut::Dict(dict) = data {
-                dict.set(key, value, this)
-            } else {
-                key.drop_with_heap(this);
-                value.drop_with_heap(this);
-                Err(RunError::internal("DictSetItem: expected dict on heap"))
-            }
-        })?;
+        let HeapReadOutput::Dict(mut dict) = self.heap.read(dict_id) else {
+            key.drop_with_heap(self);
+            value.drop_with_heap(self);
+            return Err(RunError::internal("DictSetItem: expected dict on heap"));
+        };
+        let old_value = dict.set(key, value, self)?;
 
         // Drop old value if key already existed
         if let Some(old) = old_value {

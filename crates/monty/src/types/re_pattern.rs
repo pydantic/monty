@@ -62,6 +62,12 @@ pub(crate) struct RePattern {
     compiled_fullmatch: Regex,
 }
 
+impl PartialEq for RePattern {
+    fn eq(&self, other: &Self) -> bool {
+        self.pattern == other.pattern && self.flags == other.flags
+    }
+}
+
 impl RePattern {
     /// Creates a compiled pattern from a Python regex string and flags.
     ///
@@ -83,6 +89,18 @@ impl RePattern {
             compiled_match,
             compiled_fullmatch,
         })
+    }
+
+    /// Returns the original pattern string.
+    #[must_use]
+    pub(crate) fn pattern(&self) -> &str {
+        &self.pattern
+    }
+
+    /// Returns the Python regex flags bitmask.
+    #[must_use]
+    pub(crate) fn flags(&self) -> u16 {
+        self.flags
     }
 
     /// `pattern.search(string)` — find first match anywhere in the string.
@@ -260,7 +278,7 @@ impl RePattern {
     }
 }
 
-impl PyTrait for RePattern {
+impl PyTrait<'_> for RePattern {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::RePattern
     }
@@ -270,7 +288,7 @@ impl PyTrait for RePattern {
     }
 
     fn py_eq(&self, other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Ok(self.pattern == other.pattern && self.flags == other.flags)
+        Ok(self == other)
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
@@ -311,18 +329,6 @@ impl PyTrait for RePattern {
 
     fn py_estimate_size(&self) -> usize {
         std::mem::size_of::<Self>() + self.pattern.len()
-    }
-
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
-        match attr.static_string() {
-            Some(StaticStrings::PatternAttr) => {
-                let s = Str::new(self.pattern.clone());
-                let v = Value::Ref(vm.heap.allocate(HeapData::Str(s))?);
-                Ok(Some(CallResult::Value(v)))
-            }
-            Some(StaticStrings::Flags) => Ok(Some(CallResult::Value(Value::Int(i64::from(self.flags))))),
-            _ => Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns))),
-        }
     }
 
     fn py_call_attr(
