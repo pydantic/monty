@@ -125,6 +125,14 @@ test-ref-count-return: ## Run rust tests with ref-count-return enabled
 test-cases: ## Run tests cases only
 	cargo test -p monty --test datatest_runner
 
+.PHONY: miri
+miri: ## Run library inline tests under miri (particularly relevant for heap.rs)
+	cargo +nightly miri test -p monty --lib
+
+.PHONY: miri-test-cases
+miri-test-cases: ## Run library inline tests under miri (particularly relevant for heap.rs)
+	MIRIFLAGS=-Zmiri-disable-isolation cargo +nightly miri test -p monty --test datatest_runner -- run_test_cases_monty
+
 .PHONY: test-type-checking
 test-type-checking: ## Run rust tests on monty_type_checking
 	cargo test -p monty_type_checking -p monty_typeshed

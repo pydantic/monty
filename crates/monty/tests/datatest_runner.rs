@@ -1884,8 +1884,13 @@ fn format_cpython_exception(py: Python<'_>, e: &PyErr) -> String {
 /// Timeout duration for Monty tests.
 ///
 /// Tests that exceed this duration are considered to be hanging (infinite loop)
-/// and will fail with a timeout error.
-const TEST_TIMEOUT: Duration = Duration::from_secs(2);
+/// and will fail with a timeout error. Disabled under miri since the interpreter
+/// overhead makes normal tests exceed the 2s limit.
+const TEST_TIMEOUT: Duration = if cfg!(miri) {
+    Duration::from_secs(600)
+} else {
+    Duration::from_secs(2)
+};
 
 /// Result from running a test with a timeout.
 enum TimeoutResult<T> {
