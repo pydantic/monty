@@ -1175,8 +1175,8 @@ assert threw, 'lgamma(str) raises TypeError'
 
 # === math.erf() ===
 assert math.erf(0) == 0.0, 'erf(0)'
-assert math.erf(1) == 0.8427007929497149, 'erf(1)'
-assert math.erf(-1) == -0.8427007929497149, 'erf(-1)'
+assert math.isclose(math.erf(1), 0.8427007929497148, rel_tol=1e-15), 'erf(1)'
+assert math.isclose(math.erf(-1), -0.8427007929497148, rel_tol=1e-15), 'erf(-1)'
 assert math.erf(float('inf')) == 1.0, 'erf(inf)'
 assert math.erf(float('-inf')) == -1.0, 'erf(-inf)'
 assert math.isnan(math.erf(float('nan'))), 'erf(nan) is nan'

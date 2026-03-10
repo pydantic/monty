@@ -31,6 +31,7 @@ num-traits = { workspace = true }
 num-integer = { workspace = true }
 smallvec = { version = "1.13", features = ["serde"] }
 fancy-regex = "0.17.0"
+libm = "0.2"
 itertools = "0.14.0"
 
 [features]

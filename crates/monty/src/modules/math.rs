@@ -42,35 +42,6 @@ use crate::{
 // Shared constants and error helpers
 // ==========================
 
-/// Lanczos approximation coefficients for g=7, n=9 (from Paul Godfrey's tables).
-///
-/// Used by both `gamma_impl` and `lgamma_impl` to compute the Lanczos series.
-#[expect(
-    clippy::excessive_precision,
-    clippy::inconsistent_digit_grouping,
-    reason = "Lanczos coefficients require full precision and exact values"
-)]
-const LANCZOS_P: [f64; 9] = [
-    0.999_999_999_999_809_93,
-    676.520_368_121_885_1,
-    -1259.139_216_722_402_8,
-    771.323_428_777_653_08,
-    -176.615_029_162_140_6,
-    12.507_343_278_686_905,
-    -0.138_571_095_265_720_12,
-    9.984_369_578_019_572e-6,
-    1.505_632_735_149_311_6e-7,
-];
-
-/// Lanczos `g` parameter — controls the trade-off between accuracy and convergence.
-const LANCZOS_G: f64 = 7.0;
-
-/// Precomputed `sqrt(2π)` for the Lanczos gamma computation.
-const SQRT_2PI: f64 = 2.506_628_274_631_000_5;
-
-/// Precomputed `0.5 * ln(2π)` for the Lanczos lgamma computation.
-const HALF_LN_2PI: f64 = 0.918_938_533_204_672_8;
-
 /// Returns a `ValueError` with the standard CPython "math domain error" message.
 fn math_domain_error() -> crate::exception_private::RunError {
     SimpleException::new_msg(ExcType::ValueError, "math domain error").into()
@@ -128,29 +99,6 @@ fn check_gamma_pole(f: f64) -> RunResult<()> {
     } else {
         Ok(())
     }
-}
-
-/// Computes the Lanczos series sum for the given `z = x - 1`.
-///
-/// This is the shared core of both `lanczos_gamma` and `lanczos_lgamma`.
-/// Returns `(sum, t)` where `t = z + G + 0.5`.
-fn lanczos_series(z: f64) -> (f64, f64) {
-    let mut sum = LANCZOS_P[0];
-    for (i, &coeff) in LANCZOS_P.iter().enumerate().skip(1) {
-        sum += coeff / (z + i as f64);
-    }
-    let t = z + LANCZOS_G + 0.5;
-    (sum, t)
-}
-
-/// Evaluates the erf/erfc rational polynomial for the `0.84375 ≤ |x| < 1.25` range.
-///
-/// Returns `P(s) / Q(s)` where `s = |x| - 1`.
-fn erf_range2_poly(abs_x: f64) -> f64 {
-    let s = abs_x - 1.0;
-    let p = PA0 + s * (PA1 + s * (PA2 + s * (PA3 + s * (PA4 + s * (PA5 + s * PA6)))));
-    let q = 1.0 + s * (QA1 + s * (QA2 + s * (QA3 + s * (QA4 + s * (QA5 + s * QA6)))));
-    p / q
 }
 
 /// Math module functions — each variant corresponds to a Python-visible function.
@@ -827,12 +775,7 @@ fn math_nextafter(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Run
     let x = value_to_float(x_val, heap)?;
     let y = value_to_float(y_val, heap)?;
 
-    // Use bit manipulation to compute nextafter, matching C's nextafter behavior:
-    // - If x == y, return y
-    // - If x or y is NaN, return NaN
-    // - Otherwise, step x towards y by one ULP
-    let result = nextafter_impl(x, y);
-    Ok(Value::Float(result))
+    Ok(Value::Float(libm::nextafter(x, y)))
 }
 
 /// `math.ulp(x)` — returns the value of the least significant bit of x.
@@ -856,7 +799,7 @@ fn math_ulp(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult
         return Ok(Value::Float(f64::from_bits(1)));
     }
     // ULP = nextafter(f, inf) - f
-    let next = nextafter_impl(f, f64::INFINITY);
+    let next = libm::nextafter(f, f64::INFINITY);
     Ok(Value::Float(next - f))
 }
 
@@ -1281,10 +1224,7 @@ fn math_remainder(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> Run
         return Ok(Value::Float(x));
     }
 
-    // IEEE 754 remainder: result = x - round_half_even(x/y) * y
-    let n = round_half_even(x / y);
-    let result = x - n * y;
-    Ok(Value::Float(result))
+    Ok(Value::Float(libm::remainder(x, y)))
 }
 
 /// `math.modf(x)` — returns the fractional and integer parts of x as a tuple.
@@ -1295,24 +1235,7 @@ fn math_modf(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResul
     defer_drop!(value, heap);
 
     let f = value_to_float(value, heap)?;
-
-    // Special cases: modf(inf) = (0.0, inf), modf(nan) = (nan, nan)
-    if f.is_nan() {
-        let tuple = allocate_tuple(smallvec![Value::Float(f64::NAN), Value::Float(f64::NAN)], heap)?;
-        return Ok(tuple);
-    }
-    if f.is_infinite() {
-        // The fractional part is ±0.0 (signed to match the input sign)
-        let frac = if f > 0.0 { 0.0 } else { -0.0_f64 };
-        let tuple = allocate_tuple(smallvec![Value::Float(frac), Value::Float(f)], heap)?;
-        return Ok(tuple);
-    }
-
-    let integer = f.trunc();
-    // Preserve the sign of the input on the fractional part — e.g. modf(-0.0)
-    // should return (-0.0, -0.0), not (0.0, -0.0). Using copysign ensures the
-    // fractional part carries the correct sign even when it's zero.
-    let fractional = (f - integer).copysign(f);
+    let (fractional, integer) = libm::modf(f);
     let tuple = allocate_tuple(smallvec![Value::Float(fractional), Value::Float(integer)], heap)?;
     Ok(tuple)
 }
@@ -1321,56 +1244,21 @@ fn math_modf(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResul
 ///
 /// The mantissa is always in the range [0.5, 1.0) or zero.
 /// Returns a tuple `(float, int)`.
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "IEEE 754 bit manipulation requires u64-to-i64 casts for exponent values masked to 11 bits"
-)]
 fn math_frexp(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("math.frexp", heap)?;
     defer_drop!(value, heap);
 
     let f = value_to_float(value, heap)?;
-
-    if f == 0.0 || f.is_nan() || f.is_infinite() {
-        // Special cases: frexp(0) = (0.0, 0), frexp(nan) = (nan, 0), frexp(inf) = (inf, 0)
-        let tuple = allocate_tuple(smallvec![Value::Float(f), Value::Int(0)], heap)?;
-        return Ok(tuple);
-    }
-
-    // Decompose using bit manipulation of IEEE 754 representation
-    let bits = f.to_bits();
-    let sign = bits & (1u64 << 63);
-    let exponent_bits = ((bits >> 52) & 0x7ff) as i64;
-    let mantissa_bits = bits & 0x000f_ffff_ffff_ffff;
-
-    if exponent_bits == 0 {
-        // Subnormal: multiply by 2^53 to normalize, then adjust
-        let normalized = f * (1u64 << 53) as f64;
-        let n_bits = normalized.to_bits();
-        let n_exp = ((n_bits >> 52) & 0x7ff) as i64;
-        let n_mant = n_bits & 0x000f_ffff_ffff_ffff;
-        // Exponent: (biased_exp - 1022) gives the frexp exponent for normal numbers,
-        // minus 53 to compensate for the 2^53 normalization factor
-        let exp = n_exp - 1022 - 53;
-        let m = f64::from_bits(sign | (0x3fe_u64 << 52) | n_mant);
-        let tuple = allocate_tuple(smallvec![Value::Float(m), Value::Int(exp)], heap)?;
-        return Ok(tuple);
-    }
-
-    // For normal numbers: frexp exponent = biased_exponent - 1022
-    // (1022 = IEEE 754 bias 1023 minus 1, since mantissa is in [0.5, 1.0) not [1.0, 2.0))
-    let exp = exponent_bits - 1022;
-    let m = f64::from_bits(sign | (0x3fe_u64 << 52) | mantissa_bits);
-
-    let tuple = allocate_tuple(smallvec![Value::Float(m), Value::Int(exp)], heap)?;
+    let (m, exp) = libm::frexp(f);
+    let tuple = allocate_tuple(smallvec![Value::Float(m), Value::Int(i64::from(exp))], heap)?;
     Ok(tuple)
 }
 
 /// `math.ldexp(x, i)` — returns `x * 2**i`, the inverse of `frexp`.
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "exponent values are validated to be in range before casting"
-)]
+///
+/// Clamps the exponent to `i32` range before calling `libm::ldexp`, which is safe
+/// because IEEE 754 double exponents only span -1074 to +1023 — any `i64` outside
+/// `i32` range would trivially overflow or underflow anyway.
 fn math_ldexp(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (x_val, i_val) = args.get_two_args("math.ldexp", heap)?;
     defer_drop!(x_val, heap);
@@ -1384,24 +1272,10 @@ fn math_ldexp(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResu
         return Ok(Value::Float(x));
     }
 
-    // Clamp extreme exponents to bound the loop iterations. IEEE 754 double precision
-    // has exponents from -1074 (smallest subnormal) to +1023 (largest finite). A finite
-    // float `x` has exponent in [-1074, 1023], so the result exponent is `exp_x + i`.
-    // If `i > 2100`, even the smallest subnormal (exp -1074) would overflow to infinity.
-    // If `i < -2100`, even the largest finite (exp 1023) would underflow to zero.
-    // Clamping to ±2100 is safe and limits the loop to at most ~3 iterations.
-    let mut result = x;
-    let mut exp = i.clamp(-2100, 2100);
-    while exp > 0 {
-        let step = exp.min(1023);
-        result *= f64::from_bits(((1023 + step) as u64) << 52);
-        exp -= step;
-    }
-    while exp < 0 {
-        let step = (-exp).min(1022);
-        result *= f64::from_bits(((1023 - step) as u64) << 52);
-        exp += step;
-    }
+    // Clamp i64 to i32 range — exponents beyond ±2 billion trivially overflow/underflow
+    #[expect(clippy::cast_possible_truncation, reason = "clamped to i32 range first")]
+    let exp = i.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    let result = libm::ldexp(x, exp);
 
     // If the result overflowed to infinity, CPython raises OverflowError
     if result.is_infinite() {
@@ -1434,7 +1308,7 @@ fn math_gamma(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResu
     }
     check_gamma_pole(f)?;
 
-    let result = gamma_impl(f);
+    let result = libm::tgamma(f);
     check_range_error(result, f)?;
     Ok(Value::Float(result))
 }
@@ -1447,7 +1321,7 @@ fn math_lgamma(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunRes
     let f = value_to_float(value, heap)?;
     check_gamma_pole(f)?;
 
-    let result = lgamma_impl(f);
+    let result = libm::lgamma(f);
     check_range_error(result, f)?;
     Ok(Value::Float(result))
 }
@@ -1458,7 +1332,7 @@ fn math_erf(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult
     defer_drop!(value, heap);
 
     let f = value_to_float(value, heap)?;
-    Ok(Value::Float(erf_impl(f)))
+    Ok(Value::Float(libm::erf(f)))
 }
 
 /// `math.erfc(x)` — returns the complementary error function at x (1 - erf(x)).
@@ -1469,7 +1343,7 @@ fn math_erfc(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResul
     defer_drop!(value, heap);
 
     let f = value_to_float(value, heap)?;
-    Ok(Value::Float(erfc_impl(f)))
+    Ok(Value::Float(libm::erfc(f)))
 }
 
 // ==========================
@@ -1577,314 +1451,3 @@ fn u64_to_value(n: u64, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Valu
         Ok(LongInt::new(BigInt::from(n)).into_value(heap)?)
     }
 }
-
-/// Rounds a float using "round half to even" (banker's rounding).
-///
-/// When the fractional part is exactly 0.5, rounds to the nearest even integer.
-/// This matches IEEE 754 rounding behavior used by `math.remainder`.
-#[expect(clippy::float_cmp, reason = "exact comparison needed for halfway detection")]
-fn round_half_even(x: f64) -> f64 {
-    let rounded = x.round();
-    // Check if we're exactly at a halfway point
-    if (x - rounded).abs() == 0.5 {
-        // Round to even: if rounded is odd, go the other way
-        let truncated = x.trunc();
-        if truncated % 2.0 == 0.0 { truncated } else { rounded }
-    } else {
-        rounded
-    }
-}
-
-/// Computes `nextafter(x, y)` — the next representable float from x towards y.
-///
-/// Matches C's `nextafter` behavior: if x == y returns y, NaN propagates.
-#[expect(clippy::float_cmp, reason = "exact comparison is correct for nextafter semantics")]
-fn nextafter_impl(x: f64, y: f64) -> f64 {
-    if x.is_nan() || y.is_nan() {
-        return f64::NAN;
-    }
-    if x == y {
-        return y;
-    }
-    if x == 0.0 {
-        // Step from zero towards y: smallest subnormal with sign of y
-        return if y > 0.0 {
-            f64::from_bits(1)
-        } else {
-            f64::from_bits(1 | (1u64 << 63))
-        };
-    }
-    let bits = x.to_bits();
-    let result_bits = if (x < y) == (x > 0.0) { bits + 1 } else { bits - 1 };
-    f64::from_bits(result_bits)
-}
-
-/// Lanczos approximation of the Gamma function for positive arguments.
-///
-/// Uses a 7-term Lanczos series with g=7, which provides ~15 digits of
-/// precision for positive real arguments. For negative non-integer arguments,
-/// uses the reflection formula: Γ(x) = π / (sin(πx) · Γ(1-x)).
-#[expect(
-    clippy::float_cmp,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "mathematical function needs exact comparisons and integer factorial computation"
-)]
-fn gamma_impl(x: f64) -> f64 {
-    // Note: NEG_INFINITY and non-positive integers are handled by `math_gamma` before
-    // calling this function, so we don't need to check for them here.
-    if x.is_nan() || x == f64::INFINITY {
-        return x;
-    }
-    // For positive integers, return exact factorial
-    if x > 0.0 && x == x.floor() && x <= 21.0 {
-        let n = x as u64;
-        let mut result: u64 = 1;
-        for i in 2..n {
-            result *= i;
-        }
-        return result as f64;
-    }
-    if x < 0.5 {
-        // Reflection formula: Γ(x) = π / (sin(πx) · Γ(1-x))
-        let sin_px = (std::f64::consts::PI * x).sin();
-        return std::f64::consts::PI / (sin_px * gamma_impl(1.0 - x));
-    }
-    lanczos_gamma(x)
-}
-
-/// Lanczos series computation for Γ(x) where x >= 0.5.
-fn lanczos_gamma(x: f64) -> f64 {
-    let z = x - 1.0;
-    let (sum, t) = lanczos_series(z);
-    SQRT_2PI * t.powf(z + 0.5) * (-t).exp() * sum
-}
-
-/// Computes ln(|Γ(x)|) using the Lanczos approximation.
-#[expect(
-    clippy::float_cmp,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "mathematical function needs exact comparisons and integer factorial computation"
-)]
-fn lgamma_impl(x: f64) -> f64 {
-    if x.is_nan() || x.is_infinite() {
-        if x == f64::NEG_INFINITY {
-            return f64::INFINITY;
-        }
-        return x.abs();
-    }
-    // Exact results for small positive integers: lgamma(n) = ln((n-1)!)
-    if x > 0.0 && x == x.floor() && x <= 23.0 {
-        let n = x as u64;
-        let mut fact: u64 = 1;
-        for i in 2..n {
-            fact *= i;
-        }
-        return (fact as f64).ln();
-    }
-    if x < 0.5 {
-        // Reflection: ln|Γ(x)| = ln(π) - ln|sin(πx)| - ln|Γ(1-x)|
-        // Note: non-positive integers (where sin(πx) == 0) are handled by `math_lgamma`
-        // before calling this function.
-        let sin_px = (std::f64::consts::PI * x).sin().abs();
-        return std::f64::consts::PI.ln() - sin_px.ln() - lgamma_impl(1.0 - x);
-    }
-    lanczos_lgamma(x)
-}
-
-/// Lanczos series computation for ln(Γ(x)) where x >= 0.5.
-fn lanczos_lgamma(x: f64) -> f64 {
-    let z = x - 1.0;
-    let (sum, t) = lanczos_series(z);
-    HALF_LN_2PI + (z + 0.5) * t.ln() - t + sum.ln()
-}
-
-/// Error function with full double precision (~15 significant digits).
-///
-/// Uses a piecewise rational polynomial approximation derived from the
-/// Sun Microsystems / FreeBSD implementation (also used by musl and glibc).
-/// The algorithm splits the domain into ranges with tailored rational
-/// approximations for each:
-///
-/// - `|x| < 0.84375`: Direct rational approximation `x + x * P(x²)/Q(x²)`
-/// - `0.84375 ≤ |x| < 1.25`: Approximation around `erf(1) ≈ 0.8450629`
-/// - `1.25 ≤ |x| < 28`: Computed via `erfc` with rational approximations
-/// - `|x| ≥ 28`: Returns ±1 (erfc is below f64 precision)
-fn erf_impl(x: f64) -> f64 {
-    if x.is_nan() {
-        return f64::NAN;
-    }
-    let abs_x = x.abs();
-    let sign = x.signum();
-
-    if abs_x < 0.843_75 {
-        // |x| < 0.84375: erf(x) = x + x * P(x²) / Q(x²)
-        if abs_x < f64::from_bits(0x3E30_0000_0000_0000) {
-            // |x| < 2^-28: erf(x) ≈ x * (2/√π) to avoid underflow
-            return x + EFX * x;
-        }
-        let z = x * x;
-        let r = PP0 + z * (PP1 + z * (PP2 + z * (PP3 + z * PP4)));
-        let s = 1.0 + z * (QQ1 + z * (QQ2 + z * (QQ3 + z * (QQ4 + z * QQ5))));
-        x + x * (r / s)
-    } else if abs_x < 1.25 {
-        // 0.84375 ≤ |x| < 1.25: erf(x) = erx + P1(|x|-1) / Q1(|x|-1)
-        sign * (ERX + erf_range2_poly(abs_x))
-    } else if abs_x >= 28.0 {
-        sign
-    } else {
-        // 1.25 ≤ |x| < 28: compute via erfc
-        sign * (1.0 - erfc_inner(abs_x))
-    }
-}
-
-/// Complementary error function with full double precision (~15 significant digits).
-///
-/// Uses the same piecewise rational polynomial as `erf_impl`. Avoids catastrophic
-/// cancellation for large `|x|` by computing `erfc` directly rather than `1 - erf(x)`.
-///
-/// The algorithm uses range-specific rational approximations:
-/// - `|x| < 0.84375`: Computed via `1 - erf(x)` (safe, no cancellation)
-/// - `0.84375 ≤ |x| < 1.25`: Direct approximation around `erfc(1) ≈ 0.1549370`
-/// - `1.25 ≤ |x| < 28`: `erfc(x) = exp(-x²) * R(1/x²) / S(1/x²)` with two sub-ranges
-/// - `|x| ≥ 28`: Returns 0 (positive x) or 2 (negative x)
-fn erfc_impl(x: f64) -> f64 {
-    if x.is_nan() {
-        return f64::NAN;
-    }
-    let abs_x = x.abs();
-
-    if abs_x < 0.843_75 {
-        // Small x: no cancellation risk, safe to compute 1 - erf(x) directly
-        return 1.0 - erf_impl(x);
-    }
-    if abs_x >= 28.0 {
-        return if x < 0.0 { 2.0 } else { 0.0 };
-    }
-
-    let result = if abs_x < 1.25 {
-        // 0.84375 ≤ |x| < 1.25
-        let pq = erf_range2_poly(abs_x);
-        if x < 0.0 { 1.0 + ERX + pq } else { 1.0 - ERX - pq }
-    } else {
-        erfc_inner(abs_x)
-    };
-
-    if x < 0.0 { 2.0 - result } else { result }
-}
-
-/// Inner erfc computation for `1.25 ≤ |x| < 28` using rational polynomial
-/// approximation of exp(x²) · erfc(x).
-///
-/// Uses two sub-ranges with different coefficient sets for optimal accuracy:
-/// - `1.25 ≤ |x| < 1/0.35 ≈ 2.857`: Coefficients RA0-RA7 / SA1-SA8
-/// - `2.857 ≤ |x| < 28`: Coefficients RB0-RB6 / SB1-SB7
-///
-/// The result is computed as `exp(-x² - 0.5625) * exp(correction) * R/S`
-/// where the exp is split to preserve precision.
-fn erfc_inner(abs_x: f64) -> f64 {
-    let s = 1.0 / (abs_x * abs_x);
-    let (r, sv) = if abs_x < 1.0 / 0.35 {
-        // 1.25 ≤ |x| < ~2.857
-        let r = RA0 + s * (RA1 + s * (RA2 + s * (RA3 + s * (RA4 + s * (RA5 + s * (RA6 + s * RA7))))));
-        let sv = 1.0 + s * (SA1 + s * (SA2 + s * (SA3 + s * (SA4 + s * (SA5 + s * (SA6 + s * (SA7 + s * SA8)))))));
-        (r, sv)
-    } else {
-        // 2.857 ≤ |x| < 28
-        let r = RB0 + s * (RB1 + s * (RB2 + s * (RB3 + s * (RB4 + s * (RB5 + s * RB6)))));
-        let sv = 1.0 + s * (SB1 + s * (SB2 + s * (SB3 + s * (SB4 + s * (SB5 + s * (SB6 + s * SB7))))));
-        (r, sv)
-    };
-    // Split exp(-x²) into exp(-z²) * exp(z²-x²) for precision.
-    // Zero the low 32 bits of abs_x to get z (the "high word" trick).
-    let z = f64::from_bits(abs_x.to_bits() & 0xFFFF_FFFF_0000_0000);
-    (-z * z - 0.5625).exp() * ((z - abs_x) * (z + abs_x) + r / sv).exp() / abs_x
-}
-
-// =============================
-// erf/erfc rational polynomial coefficients
-// =============================
-// From Sun Microsystems / FreeBSD libm (s_erf.c), also used by musl and glibc.
-// These provide full double-precision accuracy (~15 significant digits).
-
-// Coefficients from Sun Microsystems / FreeBSD libm (s_erf.c), also used by musl and glibc.
-// Trailing digits are kept exactly as the reference to guarantee bit-identical constants.
-// Some constants have trailing zeros that trigger clippy::excessive_precision but are
-// preserved for traceability back to the reference implementation.
-
-/// erf(0.84375) — the precomputed value at the first range boundary.
-const ERX: f64 = 8.450_629_115_104_675e-01;
-
-/// Coefficient for tiny-x approximation: 2/√π - 1.
-const EFX: f64 = 1.283_791_670_955_125_7e-01;
-
-// --- Range 1: |x| < 0.84375 ---
-#[expect(clippy::excessive_precision, reason = "FreeBSD libm reference constant")]
-const PP0: f64 = 1.283_791_670_955_125_59e-01;
-const PP1: f64 = -3.250_421_072_470_015e-01;
-const PP2: f64 = -2.848_174_957_559_851e-02;
-const PP3: f64 = -5.770_270_296_489_442e-03;
-const PP4: f64 = -2.376_301_665_665_016_3e-05;
-const QQ1: f64 = 3.979_172_239_591_554e-01;
-#[expect(clippy::excessive_precision, reason = "FreeBSD libm reference constant")]
-const QQ2: f64 = 6.502_224_998_876_729e-02;
-const QQ3: f64 = 5.081_306_281_875_766e-03;
-const QQ4: f64 = 1.324_947_380_043_216e-04;
-const QQ5: f64 = -3.960_228_278_775_368e-06;
-
-// --- Range 2: 0.84375 ≤ |x| < 1.25 ---
-const PA0: f64 = -2.362_118_560_752_659e-03;
-const PA1: f64 = 4.148_561_186_837_483e-01;
-const PA2: f64 = -3.722_078_760_357_013e-01;
-const PA3: f64 = 3.183_466_199_011_618e-01;
-const PA4: f64 = -1.108_946_942_823_967e-01;
-const PA5: f64 = 3.547_830_432_561_824e-02;
-const PA6: f64 = -2.166_375_594_868_791e-03;
-const QA1: f64 = 1.064_208_804_008_442e-01;
-#[expect(clippy::excessive_precision, reason = "FreeBSD libm reference constant")]
-const QA2: f64 = 5.403_979_177_021_710e-01;
-const QA3: f64 = 7.182_865_441_419_627e-02;
-const QA4: f64 = 1.261_712_198_087_616e-01;
-const QA5: f64 = 1.363_708_391_202_905e-02;
-const QA6: f64 = 1.198_449_984_679_911e-02;
-
-// --- Range 3: 1.25 ≤ |x| < ~2.857 ---
-const RA0: f64 = -9.864_944_034_847_148e-03;
-const RA1: f64 = -6.938_585_727_071_818e-01;
-const RA2: f64 = -1.055_862_622_532_329_1e+01;
-const RA3: f64 = -6.237_533_245_032_601e+01;
-const RA4: f64 = -1.623_966_694_625_735e+02;
-#[expect(clippy::excessive_precision, reason = "FreeBSD libm reference constant")]
-const RA5: f64 = -1.846_050_929_067_110e+02;
-#[expect(clippy::excessive_precision, reason = "FreeBSD libm reference constant")]
-const RA6: f64 = -8.128_743_550_630_659e+01;
-const RA7: f64 = -9.814_329_344_169_145e+00;
-const SA1: f64 = 1.965_127_166_743_926e+01;
-#[expect(clippy::excessive_precision, reason = "FreeBSD libm reference constant")]
-const SA2: f64 = 1.376_577_541_435_190e+02;
-const SA3: f64 = 4.345_658_774_752_292e+02;
-const SA4: f64 = 6.453_872_717_332_679e+02;
-const SA5: f64 = 4.290_081_400_275_678e+02;
-const SA6: f64 = 1.086_350_055_417_794e+02;
-const SA7: f64 = 6.570_249_770_319_282e+00;
-#[expect(clippy::excessive_precision, reason = "FreeBSD libm reference constant")]
-const SA8: f64 = -6.042_441_521_485_810e-02;
-
-// --- Range 4: ~2.857 ≤ |x| < 28 ---
-#[expect(clippy::excessive_precision, reason = "FreeBSD libm reference constant")]
-const RB0: f64 = -9.864_942_924_700_099e-03;
-#[expect(clippy::excessive_precision, reason = "FreeBSD libm reference constant")]
-const RB1: f64 = -7.992_832_376_805_230e-01;
-const RB2: f64 = -1.775_795_491_775_475_2e+01;
-const RB3: f64 = -1.606_363_848_558_219_2e+02;
-const RB4: f64 = -6.375_664_433_683_896e+02;
-const RB5: f64 = -1.025_095_131_611_077e+03;
-const RB6: f64 = -4.835_191_916_086_514e+02;
-const SB1: f64 = 3.033_806_074_348_246e+01;
-const SB2: f64 = 3.257_925_129_965_739e+02;
-const SB3: f64 = 1.536_729_586_084_437e+03;
-const SB4: f64 = 3.199_858_219_508_596e+03;
-const SB5: f64 = 2.553_050_406_433_164e+03;
-const SB6: f64 = 4.745_285_412_069_554e+02;
-const SB7: f64 = -2.244_095_244_658_582e+01;
