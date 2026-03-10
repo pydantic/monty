@@ -18,7 +18,6 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{DropWithHeap, Heap, HeapId},
-    intern::Interns,
     resource::ResourceTracker,
     value::{EitherStr, Value},
 };
@@ -26,8 +25,8 @@ use crate::{
 /// Common operations for heap-allocated Python values.
 ///
 /// Implementers should provide Python-compatible semantics for all operations.
-/// Most methods take a `&Heap` reference to allow nested lookups for containers
-/// holding `Value::Ref` values.
+/// Most methods take a `&VM` or `&mut VM` reference to access the heap and interned
+/// strings for nested lookups in containers holding `Value::Ref` values.
 ///
 /// This trait is used with `enum_dispatch` on `HeapData` to enable efficient
 /// virtual dispatch without boxing overhead.
@@ -46,35 +45,26 @@ pub trait PyTrait {
     ///
     /// For interns, returns the number of Unicode codepoints (characters), matching Python.
     /// Returns `None` if the type doesn't support `len()`.
-    ///
-    /// The `interns` parameter provides access to interned string content for InternString/InternBytes.
     fn py_len(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize>;
 
     /// Python equality comparison (`==`).
     ///
     /// For containers, this performs element-wise comparison using the heap
-    /// to resolve nested references. Takes `&mut Heap` to allow lazy hash
-    /// computation for dict key lookups.
+    /// to resolve nested references. Takes `&mut VM` to allow lazy hash
+    /// computation for dict key lookups and access to interned string content.
     ///
-    /// The `interns` parameter provides access to interned string content.
     /// Recursion depth is tracked via `heap.incr_recursion_depth()`.
     ///
     /// Returns `Ok(true)` if equal, `Ok(false)` if not equal, or
     /// `Err(ResourceError::Recursion)` if maximum depth is exceeded.
-    fn py_eq(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> Result<bool, ResourceError>;
+    fn py_eq(&self, other: &Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError>;
 
     /// Python comparison (`<`, `>`, etc.).
     ///
     /// For containers, this performs element-wise comparison using the heap
-    /// to resolve nested references. Takes `&mut Heap` to allow lazy hash
-    /// computation for dict key lookups.
+    /// to resolve nested references. Takes `&mut VM` to allow lazy hash
+    /// computation for dict key lookups and access to interned string content.
     ///
-    /// The `interns` parameter provides access to interned string content.
     /// Recursion depth is tracked via `heap.incr_recursion_depth()`.
     ///
     /// Returns `Ok(Some(Ordering))` for comparable values, `Ok(None)` if not comparable,
@@ -82,8 +72,7 @@ pub trait PyTrait {
     fn py_cmp(
         &self,
         _other: &Self,
-        _heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
+        _vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> Result<Option<Ordering>, ResourceError> {
         Ok(None)
     }
@@ -101,8 +90,6 @@ pub trait PyTrait {
     /// Returns the truthiness of the value following Python semantics.
     ///
     /// Container types should typically report `false` when empty.
-    ///
-    /// The `interns` parameter provides access to interned string content.
     fn py_bool(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         self.py_len(vm) != Some(0)
     }
@@ -117,46 +104,41 @@ pub trait PyTrait {
     ///
     /// # Arguments
     /// * `f` - The formatter to write to
-    /// * `heap` - The heap for resolving value references
+    /// * `vm` - The VM for resolving value references and looking up interned strings
     /// * `heap_ids` - Set of heap IDs currently being repr'd (for cycle detection)
-    /// * `interns` - The interned strings table for looking up string/bytes literals
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        heap: &Heap<impl ResourceTracker>,
+        vm: &VM<'_, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-        interns: &Interns,
     ) -> std::fmt::Result;
 
     /// Returns the Python `repr()` string for this value.
     ///
     /// Convenience wrapper around `py_repr_fmt` that returns an owned string.
-    fn py_repr(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Cow<'static, str> {
+    fn py_repr(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Cow<'static, str> {
         let mut s = String::new();
         let mut heap_ids = AHashSet::new();
         // Unwrap is safe: writing to String never fails
-        self.py_repr_fmt(&mut s, heap, &mut heap_ids, interns).unwrap();
+        self.py_repr_fmt(&mut s, vm, &mut heap_ids).unwrap();
         Cow::Owned(s)
     }
 
     /// Returns the Python `str()` string for this value.
     ///
     /// Recursion depth is tracked via the heap's recursion depth counter.
-    fn py_str(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Cow<'static, str> {
-        self.py_repr(heap, interns)
+    fn py_str(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Cow<'static, str> {
+        self.py_repr(vm)
     }
 
     /// Python addition (`__add__`).
     ///
     /// Returns `Ok(None)` if the operation is not supported for these types,
     /// `Ok(Some(value))` on success, or `Err(ResourceError)` if allocation fails.
-    ///
-    /// The `interns` parameter provides access to interned string content for InternString/InternBytes.
     fn py_add(
         &self,
         _other: &Self,
-        _heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
+        _vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> Result<Option<Value>, ResourceError> {
         Ok(None)
     }
@@ -165,7 +147,11 @@ pub trait PyTrait {
     ///
     /// Returns `Ok(None)` if the operation is not supported for these types,
     /// `Ok(Some(value))` on success, or `Err(ResourceError)` if allocation fails.
-    fn py_sub(&self, _other: &Self, _heap: &mut Heap<impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
+    fn py_sub(
+        &self,
+        _other: &Self,
+        _vm: &mut VM<'_, '_, impl ResourceTracker>,
+    ) -> Result<Option<Value>, ResourceError> {
         Ok(None)
     }
 
@@ -173,7 +159,7 @@ pub trait PyTrait {
     ///
     /// Returns `Ok(None)` if the operation is not supported for these types,
     /// `Ok(Some(value))` on success, or `Err(RunError)` if an error occurs.
-    fn py_mod(&self, _other: &Self, _heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_mod(&self, _other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -188,14 +174,11 @@ pub trait PyTrait {
     ///
     /// Returns `Ok(true)` if the operation was successful, `Ok(false)` if not supported,
     /// or `Err(ResourceError)` if allocation fails.
-    ///
-    /// The `interns` parameter provides access to interned string content for InternString/InternBytes.
     fn py_iadd(
         &mut self,
         _other: &Value,
-        _heap: &mut Heap<impl ResourceTracker>,
+        _vm: &mut VM<'_, '_, impl ResourceTracker>,
         _self_id: Option<HeapId>,
-        _interns: &Interns,
     ) -> Result<bool, ResourceError> {
         Ok(false)
     }
@@ -205,12 +188,7 @@ pub trait PyTrait {
     /// Returns `Ok(None)` if the operation is not supported for these types.
     /// For numeric types: Int * Int, Float * Float, Int * Float, etc.
     /// For sequences: str * int, list * int for repetition.
-    fn py_mult(
-        &self,
-        _other: &Self,
-        _heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
-    ) -> RunResult<Option<Value>> {
+    fn py_mult(&self, _other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -218,12 +196,7 @@ pub trait PyTrait {
     ///
     /// Always returns float for numeric types. Returns `Ok(None)` if not supported.
     /// Returns `Err(ZeroDivisionError)` for division by zero.
-    fn py_div(
-        &self,
-        _other: &Self,
-        _heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
-    ) -> RunResult<Option<Value>> {
+    fn py_div(&self, _other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -232,7 +205,7 @@ pub trait PyTrait {
     /// Returns int for int//int, float for float operations.
     /// Returns `Ok(None)` if not supported.
     /// Returns `Err(ZeroDivisionError)` for division by zero.
-    fn py_floordiv(&self, _other: &Self, _heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_floordiv(&self, _other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -241,7 +214,7 @@ pub trait PyTrait {
     /// Int ** positive_int returns int, int ** negative_int returns float.
     /// Returns `Ok(None)` if not supported.
     /// Returns `Err(ZeroDivisionError)` for 0 ** negative.
-    fn py_pow(&self, _other: &Self, _heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_pow(&self, _other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -299,12 +272,12 @@ pub trait PyTrait {
     /// Returns the value associated with the key, or an error if the key doesn't exist
     /// or the type doesn't support subscripting.
     ///
-    /// The `&mut Heap` parameter is needed for proper reference counting when cloning
-    /// the returned value. The `interns` parameter provides access to interned string content.
+    /// Takes `&mut VM` for proper reference counting when cloning the returned value
+    /// and access to interned string content.
     ///
     /// Default implementation returns TypeError.
-    fn py_getitem(&self, _key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
-        Err(ExcType::type_error_not_sub(self.py_type(heap)))
+    fn py_getitem(&self, _key: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+        Err(ExcType::type_error_not_sub(self.py_type(vm.heap)))
     }
 
     /// Python subscript set operation (`__setitem__`), e.g., `d[key] = value`.
@@ -312,21 +285,13 @@ pub trait PyTrait {
     /// Sets the value associated with the key, or returns an error if the key is invalid
     /// or the type doesn't support subscript assignment.
     ///
-    /// The `interns` parameter provides access to interned string content.
-    ///
     /// Default implementation returns TypeError.
-    fn py_setitem(
-        &mut self,
-        key: Value,
-        value: Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
-    ) -> RunResult<()> {
-        key.drop_with_heap(heap);
-        value.drop_with_heap(heap);
+    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<()> {
+        key.drop_with_heap(vm.heap);
+        value.drop_with_heap(vm.heap);
         Err(SimpleException::new_msg(
             ExcType::TypeError,
-            format!("'{}' object does not support item assignment", self.py_type(heap)),
+            format!("'{}' object does not support item assignment", self.py_type(vm.heap)),
         )
         .into())
     }
@@ -341,7 +306,7 @@ pub trait PyTrait {
     /// - For stored values (Dataclass, Module, NamedTuple fields): clone with `clone_with_heap`
     /// - For computed values (Exception.args, Slice.start, Path.name): return newly created value
     ///
-    /// Takes `&mut Heap` to allow:
+    /// Takes `&mut VM` to allow:
     /// - Cloning stored values with proper reference counting
     /// - Allocating computed values that need heap storage
     ///
@@ -350,8 +315,7 @@ pub trait PyTrait {
     fn py_getattr(
         &self,
         _attr: &EitherStr,
-        _heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
+        _vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> RunResult<Option<CallResult>> {
         Ok(None)
     }

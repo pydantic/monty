@@ -1140,7 +1140,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                 Opcode::BinarySubscr => {
                     let index = self.pop();
                     let obj = self.pop();
-                    let result = obj.py_getitem(&index, self.heap, self.interns);
+                    let result = obj.py_getitem(&index, self);
                     obj.drop_with_heap(self);
                     index.drop_with_heap(self);
                     match result {
@@ -1153,7 +1153,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
                     let index = self.pop();
                     let mut obj = self.pop();
                     let value = self.pop();
-                    let result = obj.py_setitem(index, value, self.heap, self.interns);
+                    let result = obj.py_setitem(index, value, self);
                     obj.drop_with_heap(self);
                     if let Err(e) = result {
                         catch_sync!(self, cached_frame, e);

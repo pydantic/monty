@@ -259,7 +259,8 @@ impl PyTrait for Bytes {
         Some(self.0.len())
     }
 
-    fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+        let heap = &mut *vm.heap;
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = heap.get(*id)
@@ -281,12 +282,7 @@ impl PyTrait for Bytes {
         Ok(Value::Int(i64::from(byte)))
     }
 
-    fn py_eq(
-        &self,
-        other: &Self,
-        _heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
-    ) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         Ok(self.0 == other.0)
     }
 
@@ -298,8 +294,7 @@ impl PyTrait for Bytes {
     fn py_cmp(
         &self,
         other: &Self,
-        _heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
+        _vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> Result<Option<Ordering>, ResourceError> {
         Ok(Some(self.0.cmp(&other.0)))
     }
@@ -311,9 +306,8 @@ impl PyTrait for Bytes {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        _heap: &Heap<impl ResourceTracker>,
+        _vm: &VM<'_, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-        _interns: &Interns,
     ) -> std::fmt::Result {
         bytes_repr_fmt(&self.0, f)
     }

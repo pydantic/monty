@@ -9,10 +9,10 @@
 use std::str::FromStr;
 
 use crate::{
+    bytecode::VM,
     exception_private::{ExcType, RunError, SimpleException},
     expressions::ExprLoc,
-    heap::Heap,
-    intern::{Interns, StringId},
+    intern::StringId,
     resource::ResourceTracker,
     types::{PyTrait, Type},
     value::Value,
@@ -260,10 +260,9 @@ impl std::fmt::Display for FormatError {
 pub fn format_with_spec(
     value: &Value,
     spec: &ParsedFormatSpec,
-    heap: &Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &VM<'_, '_, impl ResourceTracker>,
 ) -> Result<String, RunError> {
-    let value_type = value.py_type(heap);
+    let value_type = value.py_type(vm.heap);
 
     match (value, spec.type_char) {
         // Integer formatting
@@ -290,7 +289,7 @@ pub fn format_with_spec(
 
         // String formatting (including InternString and heap strings)
         (_, None | Some('s')) if value_type == Type::Str => {
-            let s = value.py_str(heap, interns);
+            let s = value.py_str(vm);
             Ok(format_string(&s, spec)?)
         }
 
@@ -299,7 +298,7 @@ pub fn format_with_spec(
 
         // No type specifier: convert to string and format
         (_, None) => {
-            let s = value.py_str(heap, interns);
+            let s = value.py_str(vm);
             Ok(format_string(&s, spec)?)
         }
 

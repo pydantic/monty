@@ -21,7 +21,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         defer_drop!(obj, this);
 
         let attr = EitherStr::Interned(name_id);
-        obj.py_getattr(&attr, this.heap, this.interns)
+        obj.py_getattr(&attr, this)
     }
 
     /// Loads an attribute from a module for `from ... import` and pushes it onto the stack.
@@ -35,7 +35,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         defer_drop!(obj, this);
 
         let attr = EitherStr::Interned(name_id);
-        match obj.py_getattr(&attr, this.heap, this.interns) {
+        match obj.py_getattr(&attr, this) {
             Ok(result) => Ok(result),
             Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => {
                 // Only compute module_name when we need it for the error message
@@ -58,6 +58,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         let value = this.pop();
         // py_set_attr takes ownership of value and drops it on error
-        obj.py_set_attr(name_id, value, this.heap, this.interns)
+        obj.py_set_attr(name_id, value, this)
     }
 }

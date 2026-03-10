@@ -11,9 +11,8 @@
 use std::cmp::Ordering;
 
 use crate::{
+    bytecode::VM,
     exception_private::{ExcType, RunError},
-    heap::Heap,
-    intern::Interns,
     resource::ResourceTracker,
     types::PyTrait,
     value::Value,
@@ -31,8 +30,7 @@ pub fn sort_indices(
     indices: &mut [usize],
     values: &[Value],
     reverse: bool,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> Result<(), RunError> {
     let mut sort_error: Option<RunError> = None;
 
@@ -40,11 +38,11 @@ pub fn sort_indices(
         if sort_error.is_some() {
             return Ordering::Equal;
         }
-        if let Err(e) = heap.check_time() {
+        if let Err(e) = vm.heap.check_time() {
             sort_error = Some(e.into());
             return Ordering::Equal;
         }
-        match values[a].py_cmp(&values[b], heap, interns) {
+        match values[a].py_cmp(&values[b], vm) {
             Ok(Some(ord)) => {
                 if reverse {
                     ord.reverse()
@@ -55,8 +53,8 @@ pub fn sort_indices(
             Ok(None) => {
                 sort_error = Some(ExcType::type_error(format!(
                     "'<' not supported between instances of '{}' and '{}'",
-                    values[a].py_type(heap),
-                    values[b].py_type(heap)
+                    values[a].py_type(vm.heap),
+                    values[b].py_type(vm.heap)
                 )));
                 Ordering::Equal
             }

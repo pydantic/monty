@@ -38,7 +38,7 @@ pub fn builtin_print(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues)
         } else {
             vm.print_writer.stdout_push(' ')?;
         }
-        vm.print_writer.stdout_write(value.py_str(vm.heap, vm.interns))?;
+        vm.print_writer.stdout_write(value.py_str(vm))?;
     }
 
     // Append end string

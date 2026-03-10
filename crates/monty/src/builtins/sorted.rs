@@ -52,7 +52,7 @@ pub fn builtin_sorted(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues
         let len = compare_values.len();
         let mut indices: Vec<usize> = (0..len).collect();
 
-        sort_indices(&mut indices, compare_values, reverse, vm.heap, vm.interns)?;
+        sort_indices(&mut indices, compare_values, reverse, vm)?;
 
         // Rearrange items in-place according to the sorted permutation
         apply_permutation(items, &mut indices);

@@ -15,7 +15,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
-    intern::{Interns, StaticStrings, StringId},
+    intern::{StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
     types::Type,
     value::{EitherStr, Value},
@@ -46,15 +46,13 @@ impl Str {
     /// - `str()` with no args returns an empty string
     /// - `str(x)` converts x to its string representation using `py_str`
     pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let heap = &mut *vm.heap;
-        let interns = vm.interns;
-        let value = args.get_zero_one_arg("str", heap)?;
+        let value = args.get_zero_one_arg("str", vm.heap)?;
         match value {
             None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
             Some(v) => {
-                defer_drop!(v, heap);
-                let s = v.py_str(heap, interns).into_owned();
-                allocate_string(s, heap)
+                defer_drop!(v, vm);
+                let s = v.py_str(vm).into_owned();
+                allocate_string(s, vm.heap)
             }
         }
     }
@@ -218,7 +216,8 @@ impl PyTrait for Str {
         Some(self.0.chars().count())
     }
 
-    fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+        let heap = &mut *vm.heap;
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = heap.get(*id)
@@ -236,12 +235,7 @@ impl PyTrait for Str {
         Ok(allocate_char(c, heap)?)
     }
 
-    fn py_eq(
-        &self,
-        other: &Self,
-        _heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
-    ) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         Ok(self.0 == other.0)
     }
 
@@ -257,8 +251,7 @@ impl PyTrait for Str {
     fn py_cmp(
         &self,
         other: &Self,
-        _heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
+        _vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> Result<Option<Ordering>, ResourceError> {
         Ok(Some(self.0.cmp(&other.0)))
     }
@@ -266,25 +259,23 @@ impl PyTrait for Str {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        _heap: &Heap<impl ResourceTracker>,
+        _vm: &VM<'_, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-        _interns: &Interns,
     ) -> fmt::Result {
         string_repr_fmt(&self.0, f)
     }
 
-    fn py_str(&self, _heap: &Heap<impl ResourceTracker>, _interns: &Interns) -> Cow<'static, str> {
+    fn py_str(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Cow<'static, str> {
         self.0.clone().into_string().into()
     }
 
     fn py_add(
         &self,
         other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> Result<Option<Value>, crate::resource::ResourceError> {
         let result = format!("{}{}", self.0, other.0);
-        let id = heap.allocate(HeapData::Str(result.into()))?;
+        let id = vm.heap.allocate(HeapData::Str(result.into()))?;
         Ok(Some(Value::Ref(id)))
     }
 

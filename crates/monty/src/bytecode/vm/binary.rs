@@ -4,7 +4,7 @@ use super::VM;
 use crate::{
     defer_drop,
     exception_private::{ExcType, RunError},
-    heap::{HeapData, HeapGuard},
+    heap::{Heap, HeapData, HeapGuard},
     resource::ResourceTracker,
     types::{PyTrait, Set, dict_view::collect_iterable_to_set, set::SetBinaryOp},
     value::BitwiseOp,
@@ -23,7 +23,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        match lhs.py_add(rhs, this.heap, this.interns) {
+        match lhs.py_add(rhs, this) {
             Ok(Some(v)) => {
                 this.push(v);
                 Ok(())
@@ -61,7 +61,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Ok(());
         }
 
-        match lhs.py_sub(rhs, this.heap) {
+        match lhs.py_sub(rhs, this) {
             Ok(Some(v)) => {
                 this.push(v);
                 Ok(())
@@ -86,7 +86,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        match lhs.py_mult(rhs, this.heap, this.interns) {
+        match lhs.py_mult(rhs, this) {
             Ok(Some(v)) => {
                 this.push(v);
                 Ok(())
@@ -111,7 +111,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        match lhs.py_div(rhs, this.heap, this.interns) {
+        match lhs.py_div(rhs, this) {
             Ok(Some(v)) => {
                 this.push(v);
                 Ok(())
@@ -136,7 +136,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        match lhs.py_floordiv(rhs, this.heap) {
+        match lhs.py_floordiv(rhs, this) {
             Ok(Some(v)) => {
                 this.push(v);
                 Ok(())
@@ -161,7 +161,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        match lhs.py_mod(rhs, this.heap) {
+        match lhs.py_mod(rhs, this) {
             Ok(Some(v)) => {
                 this.push(v);
                 Ok(())
@@ -187,7 +187,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        match lhs.py_pow(rhs, this.heap) {
+        match lhs.py_pow(rhs, this) {
             Ok(Some(v)) => {
                 this.push(v);
                 Ok(())
@@ -330,7 +330,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let (lhs, this) = lhs_guard.as_parts_mut();
 
         // Try in-place operation first (for mutable types like lists)
-        if lhs.py_iadd(rhs, this.heap, lhs.ref_id(), this.interns)? {
+        if lhs.py_iadd(rhs, this, lhs.ref_id())? {
             // In-place operation succeeded - push lhs back
             let (lhs, this) = lhs_guard.into_parts();
             this.push(lhs);
@@ -338,7 +338,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         }
 
         // Next try regular addition
-        if let Some(v) = lhs.py_add(rhs, this.heap, this.interns)? {
+        if let Some(v) = lhs.py_add(rhs, this)? {
             this.push(v);
             return Ok(());
         }
@@ -376,8 +376,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         };
 
         let lhs_set = match this.heap.get(*lhs_id) {
-            HeapData::DictKeysView(view) => view.to_set(this.heap, this.interns)?,
-            HeapData::DictItemsView(view) => view.to_set(this.heap, this.interns)?,
+            HeapData::DictKeysView(view) => view.to_set(this)?,
+            HeapData::DictItemsView(view) => view.to_set(this)?,
             _ => return Ok(None),
         };
         defer_drop!(lhs_set, this);
@@ -406,13 +406,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Ok(None);
         };
 
-        let result = this.heap.with_entry_mut(*lhs_id, |heap, data| match data {
-            crate::heap_data::HeapDataMut::Set(set) => set
-                .binary_op_value(rhs, op, heap, this.interns)
-                .map(|v| v.map(HeapData::Set)),
-            crate::heap_data::HeapDataMut::FrozenSet(set) => set
-                .binary_op_value(rhs, op, heap, this.interns)
-                .map(|v| v.map(HeapData::FrozenSet)),
+        let result = Heap::with_entry_mut(this, *lhs_id, |this, data| match data {
+            crate::heap_data::HeapDataMut::Set(set) => set.binary_op_value(rhs, op, this).map(|v| v.map(HeapData::Set)),
+            crate::heap_data::HeapDataMut::FrozenSet(set) => {
+                set.binary_op_value(rhs, op, this).map(|v| v.map(HeapData::FrozenSet))
+            }
             _ => Ok(None),
         })?;
 
@@ -451,35 +449,35 @@ fn apply_dict_view_binary_op(
         DictViewBinaryOp::And => {
             let (smaller, larger) = if lhs.len() <= rhs.len() { (lhs, rhs) } else { (rhs, lhs) };
             for value in smaller.iter() {
-                if larger.contains(value, vm.heap, vm.interns)? {
-                    result.add(value.clone_with_heap(vm), vm.heap, vm.interns)?;
+                if larger.contains(value, vm)? {
+                    result.add(value.clone_with_heap(vm), vm)?;
                 }
             }
         }
         DictViewBinaryOp::Or => {
             for value in lhs.iter() {
-                result.add(value.clone_with_heap(vm), vm.heap, vm.interns)?;
+                result.add(value.clone_with_heap(vm), vm)?;
             }
             for value in rhs.iter() {
-                result.add(value.clone_with_heap(vm), vm.heap, vm.interns)?;
+                result.add(value.clone_with_heap(vm), vm)?;
             }
         }
         DictViewBinaryOp::Xor => {
             for value in lhs.iter() {
-                if !rhs.contains(value, vm.heap, vm.interns)? {
-                    result.add(value.clone_with_heap(vm), vm.heap, vm.interns)?;
+                if !rhs.contains(value, vm)? {
+                    result.add(value.clone_with_heap(vm), vm)?;
                 }
             }
             for value in rhs.iter() {
-                if !lhs.contains(value, vm.heap, vm.interns)? {
-                    result.add(value.clone_with_heap(vm), vm.heap, vm.interns)?;
+                if !lhs.contains(value, vm)? {
+                    result.add(value.clone_with_heap(vm), vm)?;
                 }
             }
         }
         DictViewBinaryOp::Sub => {
             for value in lhs.iter() {
-                if !rhs.contains(value, vm.heap, vm.interns)? {
-                    result.add(value.clone_with_heap(vm), vm.heap, vm.interns)?;
+                if !rhs.contains(value, vm)? {
+                    result.add(value.clone_with_heap(vm), vm)?;
                 }
             }
         }

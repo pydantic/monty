@@ -11,7 +11,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
-    intern::{Interns, StaticStrings},
+    intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     sorting::{apply_permutation, sort_indices},
     types::Type,
@@ -213,7 +213,8 @@ impl PyTrait for List {
         Some(self.items.len())
     }
 
-    fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+        let heap = &mut *vm.heap;
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = heap.get(*id)
@@ -241,13 +242,8 @@ impl PyTrait for List {
         Ok(self.items[idx].clone_with_heap(heap))
     }
 
-    fn py_setitem(
-        &mut self,
-        key: Value,
-        value: Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
-    ) -> RunResult<()> {
+    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<()> {
+        let heap = &mut *vm.heap;
         defer_drop!(key, heap);
         defer_drop_mut!(value, heap);
 
@@ -301,21 +297,15 @@ impl PyTrait for List {
         Ok(())
     }
 
-    fn py_eq(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         if self.items.len() != other.items.len() {
             return Ok(false);
         }
-        let token = heap.incr_recursion_depth()?;
-        defer_drop!(token, heap);
-
+        let token = vm.heap.incr_recursion_depth()?;
+        defer_drop!(token, vm);
         for (i1, i2) in self.items.iter().zip(&other.items) {
-            heap.check_time()?;
-            if !i1.py_eq(i2, heap, interns)? {
+            vm.heap.check_time()?;
+            if !i1.py_eq(i2, vm)? {
                 return Ok(false);
             }
         }
@@ -343,19 +333,18 @@ impl PyTrait for List {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        heap: &Heap<impl ResourceTracker>,
+        vm: &VM<'_, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-        interns: &Interns,
     ) -> std::fmt::Result {
-        repr_sequence_fmt('[', ']', &self.items, f, heap, heap_ids, interns)
+        repr_sequence_fmt('[', ']', &self.items, f, vm, heap_ids)
     }
 
     fn py_add(
         &self,
         other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> Result<Option<Value>, crate::resource::ResourceError> {
+        let heap = &mut *vm.heap;
         // Clone both lists' contents with proper refcounting
         let mut result: Vec<Value> = self.items.iter().map(|obj| obj.clone_with_heap(heap)).collect();
         let other_cloned: Vec<Value> = other.items.iter().map(|obj| obj.clone_with_heap(heap)).collect();
@@ -367,10 +356,10 @@ impl PyTrait for List {
     fn py_iadd(
         &mut self,
         other: &Value,
-        heap: &mut Heap<impl ResourceTracker>,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         self_id: Option<HeapId>,
-        _interns: &Interns,
     ) -> Result<bool, crate::resource::ResourceError> {
+        let heap = &mut *vm.heap;
         // Extract the value ID first, keeping `other` around to drop later
         let Value::Ref(other_id) = other else { return Ok(false) };
 
@@ -443,7 +432,6 @@ impl PyTrait for List {
 /// * `method` - The method to call (e.g., `StaticStrings::Append`)
 /// * `args` - The method arguments
 /// * `heap` - The heap for allocation and reference counting
-/// * `interns` - The interns table for resolving interned strings
 fn call_list_method(
     list: &mut List,
     method: StaticStrings,
@@ -451,7 +439,6 @@ fn call_list_method(
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let heap = &mut *vm.heap;
-    let interns = vm.interns;
     match method {
         StaticStrings::Append => {
             let item = args.get_one_arg("list.append", heap)?;
@@ -460,7 +447,7 @@ fn call_list_method(
         }
         StaticStrings::Insert => list_insert(list, args, heap),
         StaticStrings::Pop => list_pop(list, args, heap),
-        StaticStrings::Remove => list_remove(list, args, heap, interns),
+        StaticStrings::Remove => list_remove(list, args, vm),
         StaticStrings::Clear => {
             args.check_zero_args("list.clear", heap)?;
             list_clear(list, heap);
@@ -471,8 +458,8 @@ fn call_list_method(
             Ok(list_copy(list, heap)?)
         }
         StaticStrings::Extend => list_extend(list, args, vm),
-        StaticStrings::Index => list_index(list, args, heap, interns),
-        StaticStrings::Count => list_count(list, args, heap, interns),
+        StaticStrings::Index => list_index(list, args, vm),
+        StaticStrings::Count => list_count(list, args, vm),
         StaticStrings::Reverse => {
             args.check_zero_args("list.reverse", heap)?;
             list.items.reverse();
@@ -551,20 +538,15 @@ fn list_pop(list: &mut List, args: ArgValues, heap: &mut Heap<impl ResourceTrack
 /// Implements Python's `list.remove(value)` method.
 ///
 /// Removes the first occurrence of value. Raises ValueError if not found.
-fn list_remove(
-    list: &mut List,
-    args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<Value> {
-    let value = args.get_one_arg("list.remove", heap)?;
-    defer_drop!(value, heap);
+fn list_remove(list: &mut List, args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+    let value = args.get_one_arg("list.remove", vm.heap)?;
+    defer_drop!(value, vm);
 
     // Find the first matching element
     let mut found_idx = None;
     for (i, item) in list.items.iter().enumerate() {
-        heap.check_time()?;
-        if value.py_eq(item, heap, interns)? {
+        vm.heap.check_time()?;
+        if value.py_eq(item, vm)? {
             found_idx = Some(i);
             break;
         }
@@ -574,7 +556,7 @@ fn list_remove(
         Some(idx) => {
             // Remove the element and drop its refcount
             let removed = list.items.remove(idx);
-            removed.drop_with_heap(heap);
+            removed.drop_with_heap(vm.heap);
             Ok(Value::None)
         }
         None => Err(ExcType::value_error_remove_not_in_list()),
@@ -617,26 +599,21 @@ fn list_extend(list: &mut List, args: ArgValues, vm: &mut VM<'_, '_, impl Resour
 ///
 /// Returns the index of the first occurrence of value.
 /// Raises ValueError if the value is not found.
-fn list_index(
-    list: &List,
-    args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<Value> {
-    let pos_args = args.into_pos_only("list.index", heap)?;
-    defer_drop!(pos_args, heap);
+fn list_index(list: &List, args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+    let pos_args = args.into_pos_only("list.index", vm.heap)?;
+    defer_drop!(pos_args, vm);
 
     let len = list.items.len();
     let (value, start, end) = match pos_args.as_slice() {
         [] => return Err(ExcType::type_error_at_least("list.index", 1, 0)),
         [value] => (value, 0, len),
         [value, start_arg] => {
-            let start = normalize_list_index(start_arg.as_int(heap)?, len);
+            let start = normalize_list_index(start_arg.as_int(vm.heap)?, len);
             (value, start, len)
         }
         [value, start_arg, end_arg] => {
-            let start = normalize_list_index(start_arg.as_int(heap)?, len);
-            let end = normalize_list_index(end_arg.as_int(heap)?, len).max(start);
+            let start = normalize_list_index(start_arg.as_int(vm.heap)?, len);
+            let end = normalize_list_index(end_arg.as_int(vm.heap)?, len).max(start);
             (value, start, end)
         }
         other => return Err(ExcType::type_error_at_most("list.index", 3, other.len())),
@@ -644,8 +621,8 @@ fn list_index(
 
     // Search for the value in the specified range
     for (i, item) in list.items[start..end].iter().enumerate() {
-        heap.check_time()?;
-        if value.py_eq(item, heap, interns)? {
+        vm.heap.check_time()?;
+        if value.py_eq(item, vm)? {
             let idx = i64::try_from(start + i).expect("index exceeds i64::MAX");
             return Ok(Value::Int(idx));
         }
@@ -657,19 +634,14 @@ fn list_index(
 /// Implements Python's `list.count(value)` method.
 ///
 /// Returns the number of occurrences of value in the list.
-fn list_count(
-    list: &List,
-    args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<Value> {
-    let value = args.get_one_arg("list.count", heap)?;
-    defer_drop!(value, heap);
+fn list_count(list: &List, args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+    let value = args.get_one_arg("list.count", vm.heap)?;
+    defer_drop!(value, vm);
 
     let mut count: usize = 0;
     for item in &list.items {
-        heap.check_time()?;
-        if value.py_eq(item, heap, interns)? {
+        vm.heap.check_time()?;
+        if value.py_eq(item, vm)? {
             count += 1;
         }
     }
@@ -739,7 +711,7 @@ fn do_list_sort(list: &mut List, args: ArgValues, vm: &mut VM<'_, '_, impl Resou
     let len = compare_values.len();
     let mut indices: Vec<usize> = (0..len).collect();
 
-    sort_indices(&mut indices, compare_values, reverse, vm.heap, vm.interns)?;
+    sort_indices(&mut indices, compare_values, reverse, vm)?;
 
     // 4. Rearrange items in-place according to the sorted permutation
     apply_permutation(items, &mut indices);
@@ -756,19 +728,18 @@ fn do_list_sort(list: &mut List, args: ArgValues, vm: &mut VM<'_, '_, impl Resou
 /// * `end` - The closing character (e.g., ']' for lists, ')' for tuples)
 /// * `items` - The slice of values to format
 /// * `f` - The formatter to write to
-/// * `heap` - The heap for resolving value references
+/// * `vm` - The VM for resolving value references and looking up interned strings
 /// * `heap_ids` - Set of heap IDs being repr'd (for cycle detection)
-/// * `interns` - The interned strings table for looking up string/bytes literals
 pub(crate) fn repr_sequence_fmt(
     start: char,
     end: char,
     items: &[Value],
     f: &mut impl Write,
-    heap: &Heap<impl ResourceTracker>,
+    vm: &VM<'_, '_, impl ResourceTracker>,
     heap_ids: &mut AHashSet<HeapId>,
-    interns: &Interns,
 ) -> std::fmt::Result {
     // Check depth limit before recursing
+    let heap = &*vm.heap;
     let Some(token) = heap.incr_recursion_depth_for_repr() else {
         return f.write_str("...");
     };
@@ -777,14 +748,14 @@ pub(crate) fn repr_sequence_fmt(
     f.write_char(start)?;
     let mut iter = items.iter();
     if let Some(first) = iter.next() {
-        first.py_repr_fmt(f, heap, heap_ids, interns)?;
+        first.py_repr_fmt(f, vm, heap_ids)?;
         for item in iter {
             if heap.check_time().is_err() {
                 f.write_str(", ...[timeout]")?;
                 break;
             }
             f.write_str(", ")?;
-            item.py_repr_fmt(f, heap, heap_ids, interns)?;
+            item.py_repr_fmt(f, vm, heap_ids)?;
         }
     }
     f.write_char(end)?;
@@ -851,6 +822,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        PrintWriter,
         intern::{InternerBuilder, Interns},
         resource::NoLimitTracker,
         types::LongInt,
@@ -893,9 +865,8 @@ mod tests {
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
-        let result = heap.with_entry_mut(list_id, |heap, mut data| {
-            data.py_setitem(key, new_value, heap, &interns)
-        });
+        let mut vm = VM::new(Vec::new(), &mut heap, &interns, PrintWriter::Disabled);
+        let result = Heap::with_entry_mut(&mut vm, list_id, |vm, mut data| data.py_setitem(key, new_value, vm));
 
         assert!(result.is_ok());
 
@@ -922,9 +893,8 @@ mod tests {
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
-        let result = heap.with_entry_mut(list_id, |heap, mut data| {
-            data.py_setitem(key, new_value, heap, &interns)
-        });
+        let mut vm = VM::new(Vec::new(), &mut heap, &interns, PrintWriter::Disabled);
+        let result = Heap::with_entry_mut(&mut vm, list_id, |vm, mut data| data.py_setitem(key, new_value, vm));
 
         assert!(result.is_ok());
 
@@ -949,9 +919,8 @@ mod tests {
         heap.inc_ref(index_id);
 
         // This should fail with IndexError because i64::MAX is out of bounds for a 1-element list
-        let result = heap.with_entry_mut(list_id, |heap, mut data| {
-            data.py_setitem(key, new_value, heap, &interns)
-        });
+        let mut vm = VM::new(Vec::new(), &mut heap, &interns, PrintWriter::Disabled);
+        let result = Heap::with_entry_mut(&mut vm, list_id, |vm, mut data| data.py_setitem(key, new_value, vm));
 
         assert!(result.is_err());
 

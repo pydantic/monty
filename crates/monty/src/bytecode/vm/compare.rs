@@ -19,7 +19,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        let result = lhs.py_eq(rhs, this.heap, this.interns)?;
+        let result = lhs.py_eq(rhs, this)?;
         this.push(Value::Bool(result));
         Ok(())
     }
@@ -33,7 +33,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        let result = !lhs.py_eq(rhs, this.heap, this.interns)?;
+        let result = !lhs.py_eq(rhs, this)?;
         this.push(Value::Bool(result));
         Ok(())
     }
@@ -50,7 +50,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        let result = lhs.py_cmp(rhs, this.heap, this.interns)?.is_some_and(check);
+        let result = lhs.py_cmp(rhs, this)?.is_some_and(check);
         this.push(Value::Bool(result));
         Ok(())
     }
@@ -85,7 +85,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let item = this.pop(); // item to find (lhs)
         defer_drop!(item, this);
 
-        let contained = container.py_contains(item, this.heap, this.interns)?;
+        let contained = container.py_contains(item, this)?;
         this.push(Value::Bool(if negate { !contained } else { contained }));
         Ok(())
     }
@@ -119,7 +119,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         } else {
             // Fallback: compute py_mod then compare with py_eq
             // This handles LongInt and other Ref types
-            let mod_value = lhs.py_mod(rhs, this.heap);
+            let mod_value = lhs.py_mod(rhs, this);
 
             match mod_value {
                 Ok(Some(v)) => {
@@ -135,7 +135,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     };
                     defer_drop!(k_value, this);
 
-                    let is_equal = v.py_eq(k_value, this.heap, this.interns)?;
+                    let is_equal = v.py_eq(k_value, this)?;
                     this.push(Value::Bool(is_equal));
                     Ok(())
                 }

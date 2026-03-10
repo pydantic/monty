@@ -1,32 +1,26 @@
 use std::{
-    borrow::Cow,
     cell::Cell,
     collections::hash_map::DefaultHasher,
-    fmt::Write,
     hash::{Hash, Hasher},
     mem::size_of,
     vec,
 };
 
-use ahash::AHashSet;
-use num_integer::Integer;
 use smallvec::SmallVec;
 
 // Re-export items moved to `heap_traits` so that `crate::heap::HeapGuard` etc. continue
 // to resolve (used by the `defer_drop!` macros and throughout the codebase).
+pub(crate) use crate::heap_data::HeapData;
 pub(crate) use crate::heap_traits::{ContainsHeap, DropWithHeap, HeapGuard, ImmutableHeapGuard};
 use crate::{
     args::ArgValues,
-    asyncio::{Coroutine, GatherFuture, GatherItem},
+    asyncio::GatherItem,
     bytecode::{CallResult, VM},
-    exception_private::{ExcType, RunResult, SimpleException},
-    heap_data::{CellValue, Closure, FunctionDefaults, HeapDataMut},
+    exception_private::{ExcType, RunResult},
+    heap_data::HeapDataMut,
     intern::Interns,
     resource::{ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
-    types::{
-        Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
-        MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, allocate_tuple,
-    },
+    types::{List, LongInt, PyTrait, Tuple, allocate_tuple},
     value::{EitherStr, Value},
 };
 
@@ -44,699 +38,6 @@ impl HeapId {
 
 /// The empty tuple is a singleton which is allocated at startup.
 const EMPTY_TUPLE_ID: HeapId = HeapId(0);
-
-/// HeapData captures every runtime value that must live in the arena.
-///
-/// Each variant wraps a type that implements `AbstractValue`, providing
-/// Python-compatible operations. The trait is manually implemented to dispatch
-/// to the appropriate variant's implementation.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) enum HeapData {
-    Str(Str),
-    Bytes(Bytes),
-    List(List),
-    Tuple(Tuple),
-    NamedTuple(NamedTuple),
-    Dict(Dict),
-    DictKeysView(DictKeysView),
-    DictItemsView(DictItemsView),
-    DictValuesView(DictValuesView),
-    Set(Set),
-    FrozenSet(FrozenSet),
-    Closure(Closure),
-    FunctionDefaults(FunctionDefaults),
-    /// A cell wrapping a single mutable value for closure support.
-    ///
-    /// Cells enable nonlocal variable access by providing a heap-allocated
-    /// container that can be shared between a function and its nested functions.
-    /// Both the outer function and inner function hold references to the same
-    /// cell, allowing modifications to propagate across scope boundaries.
-    Cell(CellValue),
-    /// A range object (e.g., `range(10)` or `range(1, 10, 2)`).
-    ///
-    /// Stored on the heap to keep `Value` enum small (16 bytes). Range objects
-    /// are immutable and hashable.
-    Range(Range),
-    /// A slice object (e.g., `slice(1, 10, 2)` or from `x[1:10:2]`).
-    ///
-    /// Stored on the heap to keep `Value` enum small. Slice objects represent
-    /// start:stop:step indices for sequence slicing operations.
-    Slice(Slice),
-    /// An exception instance (e.g., `ValueError('message')`).
-    ///
-    /// Stored on the heap to keep `Value` enum small (16 bytes). Exceptions
-    /// are created when exception types are called or when `raise` is executed.
-    Exception(SimpleException),
-    /// A dataclass instance with fields and method references.
-    ///
-    /// Contains a class name, a Dict of field name -> value mappings, and a set
-    /// of method names that trigger external function calls when invoked.
-    Dataclass(Dataclass),
-    /// An iterator for for-loop iteration and the `iter()` type constructor.
-    ///
-    /// Created by the `GetIter` opcode or `iter()` builtin, advanced by `ForIter`.
-    /// Stores iteration state for lists, tuples, strings, ranges, dicts, and sets.
-    Iter(MontyIter),
-    /// An arbitrary precision integer (LongInt).
-    ///
-    /// Stored on the heap to keep `Value` enum at 16 bytes. Python has one `int` type,
-    /// so LongInt is an implementation detail - we use `Value::Int(i64)` for performance
-    /// when values fit, and promote to LongInt on overflow. When LongInt results fit back
-    /// in i64, they are demoted back to `Value::Int` for performance.
-    LongInt(LongInt),
-    /// A Python module (e.g., `sys`, `typing`).
-    ///
-    /// Modules have a name and a dictionary of attributes. They are created by
-    /// import statements and can have refs to other heap values in their attributes.
-    Module(Module),
-    /// A coroutine object from an async function call.
-    ///
-    /// Contains pre-bound arguments and captured cells, ready to be awaited.
-    /// When awaited, a new frame is pushed using the stored namespace.
-    Coroutine(Coroutine),
-    /// A gather() result tracking multiple coroutines/tasks.
-    ///
-    /// Created by asyncio.gather() and spawns tasks when awaited.
-    GatherFuture(GatherFuture),
-    /// A filesystem path from `pathlib.Path`.
-    ///
-    /// Stored on the heap to provide Python-compatible path operations.
-    /// Pure methods (name, parent, etc.) are handled directly by the VM.
-    /// I/O methods (exists, read_text, etc.) yield external function calls.
-    Path(Path),
-    /// A compiled regex pattern from `re.compile()`.
-    ///
-    /// Contains the original pattern string, flags, and compiled regex engine.
-    /// Leaf type: no heap references, not GC-tracked.
-    RePattern(Box<RePattern>),
-    /// A regex match result from a successful regex operation.
-    ///
-    /// Contains the matched text, capture groups, positions, and input string.
-    /// Leaf type: no heap references, not GC-tracked.
-    ReMatch(ReMatch),
-    /// Reference to an external function whose name was not found in the intern table.
-    ///
-    /// Created when the host resolves a `NameLookup` to a callable whose name does not
-    /// match any interned string (e.g., the host returns a function with a different
-    /// `__name__` than the variable it was assigned to). When called, the VM yields
-    /// `FrameExit::ExternalCall` with an `EitherStr::Heap` containing this name.
-    ExtFunction(String),
-}
-
-impl HeapData {
-    /// Returns whether this heap data type can participate in reference cycles.
-    ///
-    /// Only container types that can hold references to other heap objects need to be
-    /// tracked for GC purposes. Leaf types like Str, Bytes, Range, and Exception cannot
-    /// form cycles and should not count toward the GC allocation threshold.
-    ///
-    /// This optimization allows programs that allocate many leaf objects (like strings)
-    /// to avoid triggering unnecessary GC cycles.
-    #[inline]
-    fn is_gc_tracked(&self) -> bool {
-        matches!(
-            self,
-            Self::List(_)
-                | Self::Tuple(_)
-                | Self::NamedTuple(_)
-                | Self::Dict(_)
-                | Self::DictKeysView(_)
-                | Self::DictItemsView(_)
-                | Self::DictValuesView(_)
-                | Self::Set(_)
-                | Self::FrozenSet(_)
-                | Self::Closure(_)
-                | Self::FunctionDefaults(_)
-                | Self::Cell(_)
-                | Self::Dataclass(_)
-                | Self::Iter(_)
-                | Self::Module(_)
-                | Self::Coroutine(_)
-                | Self::GatherFuture(_)
-        )
-    }
-
-    /// Returns whether this heap data currently contains any heap references (`Value::Ref`).
-    ///
-    /// Used during allocation to determine if this data could create reference cycles.
-    /// When true, `mark_potential_cycle()` should be called to enable GC.
-    ///
-    /// Note: This is separate from `is_gc_tracked()` - a container may be GC-tracked
-    /// (capable of holding refs) but not currently contain any refs.
-    #[inline]
-    fn has_refs(&self) -> bool {
-        match self {
-            Self::List(list) => list.contains_refs(),
-            Self::Tuple(tuple) => tuple.contains_refs(),
-            Self::NamedTuple(nt) => nt.contains_refs(),
-            Self::Dict(dict) => dict.has_refs(),
-            Self::DictKeysView(_) | Self::DictItemsView(_) | Self::DictValuesView(_) => true,
-            Self::Set(set) => set.has_refs(),
-            Self::FrozenSet(fset) => fset.has_refs(),
-            // Closures always have refs when they have captured cells (HeapIds)
-            Self::Closure(closure) => {
-                !closure.cells.is_empty() || closure.defaults.iter().any(|v| matches!(v, Value::Ref(_)))
-            }
-            Self::FunctionDefaults(fd) => fd.defaults.iter().any(|v| matches!(v, Value::Ref(_))),
-            Self::Cell(cell) => matches!(&cell.0, Value::Ref(_)),
-            Self::Dataclass(dc) => dc.has_refs(),
-            Self::Iter(iter) => iter.has_refs(),
-            Self::Module(m) => m.has_refs(),
-            // Coroutines have refs from namespace values (params, cell/free vars)
-            Self::Coroutine(coro) => coro.namespace.iter().any(|v| matches!(v, Value::Ref(_))),
-            // GatherFutures have refs from coroutine items and results
-            Self::GatherFuture(gather) => {
-                gather
-                    .items
-                    .iter()
-                    .any(|item| matches!(item, crate::asyncio::GatherItem::Coroutine(_)))
-                    || gather
-                        .results
-                        .iter()
-                        .any(|r| r.as_ref().is_some_and(|v| matches!(v, Value::Ref(_))))
-            }
-            // Leaf types cannot have refs
-            _ => false,
-        }
-    }
-
-    /// Returns true if this heap data is a coroutine.
-    #[inline]
-    pub fn is_coroutine(&self) -> bool {
-        matches!(self, Self::Coroutine(_))
-    }
-
-    /// Re-cast this as `HeapDataMut` for mutation.
-    ///
-    /// This is an important part of the Heap invariants: we never allow `&mut HeapData` to
-    /// outside of this module to prevent heap data changing type during execution.
-    fn to_mut(&mut self) -> HeapDataMut<'_> {
-        match self {
-            Self::Str(s) => HeapDataMut::Str(s),
-            Self::Bytes(b) => HeapDataMut::Bytes(b),
-            Self::List(l) => HeapDataMut::List(l),
-            Self::Tuple(t) => HeapDataMut::Tuple(t),
-            Self::NamedTuple(nt) => HeapDataMut::NamedTuple(nt),
-            Self::Dict(d) => HeapDataMut::Dict(d),
-            Self::DictKeysView(view) => HeapDataMut::DictKeysView(view),
-            Self::DictItemsView(view) => HeapDataMut::DictItemsView(view),
-            Self::DictValuesView(view) => HeapDataMut::DictValuesView(view),
-            Self::Set(s) => HeapDataMut::Set(s),
-            Self::FrozenSet(fs) => HeapDataMut::FrozenSet(fs),
-            Self::Closure(closure) => HeapDataMut::Closure(closure),
-            Self::FunctionDefaults(fd) => HeapDataMut::FunctionDefaults(fd),
-            Self::Cell(cell) => HeapDataMut::Cell(cell),
-            Self::Range(r) => HeapDataMut::Range(r),
-            Self::Slice(s) => HeapDataMut::Slice(s),
-            Self::Exception(e) => HeapDataMut::Exception(e),
-            Self::Dataclass(dc) => HeapDataMut::Dataclass(dc),
-            Self::Iter(iter) => HeapDataMut::Iter(iter),
-            Self::LongInt(li) => HeapDataMut::LongInt(li),
-            Self::Module(m) => HeapDataMut::Module(m),
-            Self::Coroutine(coro) => HeapDataMut::Coroutine(coro),
-            Self::GatherFuture(gather) => HeapDataMut::GatherFuture(gather),
-            Self::Path(p) => HeapDataMut::Path(p),
-            Self::ReMatch(m) => HeapDataMut::ReMatch(m),
-            Self::RePattern(p) => HeapDataMut::RePattern(p),
-            Self::ExtFunction(s) => HeapDataMut::ExtFunction(s),
-        }
-    }
-}
-
-/// Manual implementation of AbstractValue dispatch for HeapData.
-///
-/// This provides efficient dispatch without boxing overhead by matching on
-/// the enum variant and delegating to the inner type's implementation.
-impl PyTrait for HeapData {
-    fn py_type(&self, heap: &Heap<impl ResourceTracker>) -> Type {
-        match self {
-            Self::Str(s) => s.py_type(heap),
-            Self::Bytes(b) => b.py_type(heap),
-            Self::List(l) => l.py_type(heap),
-            Self::Tuple(t) => t.py_type(heap),
-            Self::NamedTuple(nt) => nt.py_type(heap),
-            Self::Dict(d) => d.py_type(heap),
-            Self::DictKeysView(view) => view.py_type(heap),
-            Self::DictItemsView(view) => view.py_type(heap),
-            Self::DictValuesView(view) => view.py_type(heap),
-            Self::Set(s) => s.py_type(heap),
-            Self::FrozenSet(fs) => fs.py_type(heap),
-            Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => Type::Function,
-            Self::Cell(_) => Type::Cell,
-            Self::Range(_) => Type::Range,
-            Self::Slice(_) => Type::Slice,
-            Self::Exception(e) => e.py_type(),
-            Self::Dataclass(dc) => dc.py_type(heap),
-            Self::Iter(_) => Type::Iterator,
-            // LongInt is still `int` in Python - it's an implementation detail
-            Self::LongInt(_) => Type::Int,
-            Self::Module(_) => Type::Module,
-            Self::Coroutine(_) | Self::GatherFuture(_) => Type::Coroutine,
-            Self::Path(p) => p.py_type(heap),
-            Self::RePattern(p) => p.py_type(heap),
-            Self::ReMatch(m) => m.py_type(heap),
-        }
-    }
-
-    fn py_estimate_size(&self) -> usize {
-        match self {
-            Self::Str(s) => s.py_estimate_size(),
-            Self::Bytes(b) => b.py_estimate_size(),
-            Self::List(l) => l.py_estimate_size(),
-            Self::Tuple(t) => t.py_estimate_size(),
-            Self::NamedTuple(nt) => nt.py_estimate_size(),
-            Self::Dict(d) => d.py_estimate_size(),
-            Self::DictKeysView(view) => view.py_estimate_size(),
-            Self::DictItemsView(view) => view.py_estimate_size(),
-            Self::DictValuesView(view) => view.py_estimate_size(),
-            Self::Set(s) => s.py_estimate_size(),
-            Self::FrozenSet(fs) => fs.py_estimate_size(),
-            // TODO: should include size of captured cells and defaults
-            Self::Closure(_) | Self::FunctionDefaults(_) => 0,
-            Self::Cell(cell) => std::mem::size_of::<Value>() + cell.0.py_estimate_size(),
-            Self::Range(_) => std::mem::size_of::<Range>(),
-            Self::Slice(s) => s.py_estimate_size(),
-            Self::Exception(e) => std::mem::size_of::<SimpleException>() + e.arg().map_or(0, String::len),
-            Self::Dataclass(dc) => dc.py_estimate_size(),
-            Self::Iter(_) => std::mem::size_of::<MontyIter>(),
-            Self::LongInt(li) => li.estimate_size(),
-            Self::Module(m) => std::mem::size_of::<Module>() + m.attrs().py_estimate_size(),
-            Self::Coroutine(coro) => {
-                std::mem::size_of::<Coroutine>() + coro.namespace.len() * std::mem::size_of::<Value>()
-            }
-            Self::GatherFuture(gather) => {
-                std::mem::size_of::<GatherFuture>()
-                    + gather.items.len() * std::mem::size_of::<crate::asyncio::GatherItem>()
-                    + gather.results.len() * std::mem::size_of::<Option<Value>>()
-                    + gather.pending_calls.len() * std::mem::size_of::<crate::asyncio::CallId>()
-            }
-            Self::Path(p) => p.py_estimate_size(),
-            Self::RePattern(p) => p.py_estimate_size(),
-            Self::ReMatch(m) => m.py_estimate_size(),
-            Self::ExtFunction(s) => std::mem::size_of::<String>() + s.len(),
-        }
-    }
-
-    fn py_len(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
-        match self {
-            Self::Str(s) => PyTrait::py_len(s, vm),
-            Self::Bytes(b) => PyTrait::py_len(b, vm),
-            Self::List(l) => PyTrait::py_len(l, vm),
-            Self::Tuple(t) => PyTrait::py_len(t, vm),
-            Self::NamedTuple(nt) => PyTrait::py_len(nt, vm),
-            Self::Dict(d) => PyTrait::py_len(d, vm),
-            Self::DictKeysView(view) => PyTrait::py_len(view, vm),
-            Self::DictItemsView(view) => PyTrait::py_len(view, vm),
-            Self::DictValuesView(view) => PyTrait::py_len(view, vm),
-            Self::Set(s) => PyTrait::py_len(s, vm),
-            Self::FrozenSet(fs) => PyTrait::py_len(fs, vm),
-            Self::Range(r) => Some(r.len()),
-            // other types don't have length
-            _ => None,
-        }
-    }
-
-    fn py_eq(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> Result<bool, ResourceError> {
-        match (self, other) {
-            (Self::Str(a), Self::Str(b)) => a.py_eq(b, heap, interns),
-            (Self::Bytes(a), Self::Bytes(b)) => a.py_eq(b, heap, interns),
-            (Self::List(a), Self::List(b)) => a.py_eq(b, heap, interns),
-            (Self::Tuple(a), Self::Tuple(b)) => a.py_eq(b, heap, interns),
-            (Self::NamedTuple(a), Self::NamedTuple(b)) => a.py_eq(b, heap, interns),
-            // NamedTuple can compare with Tuple by elements (matching CPython behavior)
-            (Self::NamedTuple(nt), Self::Tuple(t)) | (Self::Tuple(t), Self::NamedTuple(nt)) => {
-                let nt_items = nt.as_vec();
-                let t_items = t.as_slice();
-                if nt_items.len() != t_items.len() {
-                    return Ok(false);
-                }
-                let token = heap.incr_recursion_depth()?;
-                crate::defer_drop!(token, heap);
-                for (a, b) in nt_items.iter().zip(t_items.iter()) {
-                    if !a.py_eq(b, heap, interns)? {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
-            }
-            (Self::Dict(a), Self::Dict(b)) => a.py_eq(b, heap, interns),
-            (Self::DictKeysView(a), Self::DictKeysView(b)) => a.py_eq(b, heap, interns),
-            (Self::DictItemsView(a), Self::DictItemsView(b)) => a.py_eq(b, heap, interns),
-            (Self::DictValuesView(_), Self::DictValuesView(_)) => Ok(false),
-            (Self::DictKeysView(a), Self::Set(b)) | (Self::Set(b), Self::DictKeysView(a)) => a.eq_set(b, heap, interns),
-            (Self::DictKeysView(a), Self::FrozenSet(b)) | (Self::FrozenSet(b), Self::DictKeysView(a)) => {
-                a.eq_frozenset(b, heap, interns)
-            }
-            (Self::DictItemsView(a), Self::Set(b)) | (Self::Set(b), Self::DictItemsView(a)) => {
-                a.eq_set(b, heap, interns)
-            }
-            (Self::DictItemsView(a), Self::FrozenSet(b)) | (Self::FrozenSet(b), Self::DictItemsView(a)) => {
-                a.eq_frozenset(b, heap, interns)
-            }
-            (Self::Set(a), Self::Set(b)) => a.py_eq(b, heap, interns),
-            (Self::FrozenSet(a), Self::FrozenSet(b)) => a.py_eq(b, heap, interns),
-            (Self::Closure(a), Self::Closure(b)) => Ok(a.func_id == b.func_id && a.cells == b.cells),
-            (Self::FunctionDefaults(a), Self::FunctionDefaults(b)) => Ok(a.func_id == b.func_id),
-            (Self::Range(a), Self::Range(b)) => a.py_eq(b, heap, interns),
-            (Self::Dataclass(a), Self::Dataclass(b)) => a.py_eq(b, heap, interns),
-            // LongInt equality
-            (Self::LongInt(a), Self::LongInt(b)) => Ok(a == b),
-            // Slice equality
-            (Self::Slice(a), Self::Slice(b)) => a.py_eq(b, heap, interns),
-            // Path equality
-            (Self::Path(a), Self::Path(b)) => a.py_eq(b, heap, interns),
-            // RePattern equality
-            (Self::RePattern(a), Self::RePattern(b)) => a.py_eq(b, heap, interns),
-            // ReMatch equality
-            (Self::ReMatch(a), Self::ReMatch(b)) => a.py_eq(b, heap, interns),
-            // Cells, Exceptions, Iterators, Modules, and async types compare by identity only (handled at Value level via HeapId comparison)
-            (Self::Cell(_), Self::Cell(_))
-            | (Self::Exception(_), Self::Exception(_))
-            | (Self::Iter(_), Self::Iter(_))
-            | (Self::Module(_), Self::Module(_))
-            | (Self::Coroutine(_), Self::Coroutine(_))
-            | (Self::GatherFuture(_), Self::GatherFuture(_)) => Ok(false),
-            _ => Ok(false), // Different types are never equal
-        }
-    }
-
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        match self {
-            Self::Str(s) => s.py_dec_ref_ids(stack),
-            Self::Bytes(b) => b.py_dec_ref_ids(stack),
-            Self::List(l) => l.py_dec_ref_ids(stack),
-            Self::Tuple(t) => t.py_dec_ref_ids(stack),
-            Self::NamedTuple(nt) => nt.py_dec_ref_ids(stack),
-            Self::Dict(d) => d.py_dec_ref_ids(stack),
-            Self::DictKeysView(view) => view.py_dec_ref_ids(stack),
-            Self::DictItemsView(view) => view.py_dec_ref_ids(stack),
-            Self::DictValuesView(view) => view.py_dec_ref_ids(stack),
-            Self::Set(s) => s.py_dec_ref_ids(stack),
-            Self::FrozenSet(fs) => fs.py_dec_ref_ids(stack),
-            Self::Closure(closure) => {
-                // Decrement ref count for captured cells
-                stack.extend(closure.cells.iter().copied());
-                // Decrement ref count for default values that are heap references
-                for default in &mut closure.defaults {
-                    default.py_dec_ref_ids(stack);
-                }
-            }
-            Self::FunctionDefaults(fd) => {
-                // Decrement ref count for default values that are heap references
-                for default in &mut fd.defaults {
-                    default.py_dec_ref_ids(stack);
-                }
-            }
-            Self::Cell(cell) => cell.0.py_dec_ref_ids(stack),
-            Self::Dataclass(dc) => dc.py_dec_ref_ids(stack),
-            Self::Iter(iter) => iter.py_dec_ref_ids(stack),
-            Self::Module(m) => m.py_dec_ref_ids(stack),
-            Self::Coroutine(coro) => {
-                // Decrement ref count for namespace values that are heap references
-                for value in &mut coro.namespace {
-                    value.py_dec_ref_ids(stack);
-                }
-            }
-            Self::GatherFuture(gather) => {
-                // Decrement ref count for coroutine HeapIds
-                for item in &gather.items {
-                    if let GatherItem::Coroutine(id) = item {
-                        stack.push(*id);
-                    }
-                }
-                // Decrement ref count for result values that are heap references
-                for result in gather.results.iter_mut().flatten() {
-                    result.py_dec_ref_ids(stack);
-                }
-            }
-            // other types have no nested heap references
-            _ => {}
-        }
-    }
-
-    fn py_bool(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
-        match self {
-            Self::Str(s) => s.py_bool(vm),
-            Self::Bytes(b) => b.py_bool(vm),
-            Self::List(l) => l.py_bool(vm),
-            Self::Tuple(t) => t.py_bool(vm),
-            Self::NamedTuple(nt) => nt.py_bool(vm),
-            Self::Dict(d) => d.py_bool(vm),
-            Self::DictKeysView(view) => view.py_bool(vm),
-            Self::DictItemsView(view) => view.py_bool(vm),
-            Self::DictValuesView(view) => view.py_bool(vm),
-            Self::Set(s) => s.py_bool(vm),
-            Self::FrozenSet(fs) => fs.py_bool(vm),
-            Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => true,
-            Self::Cell(_) => true, // Cells are always truthy
-            Self::Range(r) => r.py_bool(vm),
-            Self::Slice(s) => s.py_bool(vm),
-            Self::Exception(_) => true, // Exceptions are always truthy
-            Self::Dataclass(dc) => dc.py_bool(vm),
-            Self::Iter(_) => true, // Iterators are always truthy
-            Self::LongInt(li) => !li.is_zero(),
-            Self::Module(_) => true,       // Modules are always truthy
-            Self::Coroutine(_) => true,    // Coroutines are always truthy
-            Self::GatherFuture(_) => true, // GatherFutures are always truthy
-            Self::Path(p) => p.py_bool(vm),
-            Self::RePattern(_) => true, // RePattern objects are always truthy
-            Self::ReMatch(_) => true,   // ReMatch objects are always truthy
-        }
-    }
-
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        heap: &Heap<impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
-        interns: &Interns,
-    ) -> std::fmt::Result {
-        match self {
-            Self::Str(s) => s.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::Bytes(b) => b.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::List(l) => l.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::Tuple(t) => t.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::NamedTuple(nt) => nt.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::Dict(d) => d.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::DictKeysView(view) => view.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::DictItemsView(view) => view.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::DictValuesView(view) => view.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::Set(s) => s.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::FrozenSet(fs) => fs.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::Closure(closure) => interns.get_function(closure.func_id).py_repr_fmt(f, interns, 0),
-            Self::FunctionDefaults(fd) => interns.get_function(fd.func_id).py_repr_fmt(f, interns, 0),
-            // Cell repr shows the contained value's type
-            Self::Cell(cell) => write!(f, "<cell: {} object>", cell.0.py_type(heap)),
-            Self::Range(r) => r.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::Slice(s) => s.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::Exception(e) => e.py_repr_fmt(f),
-            Self::Dataclass(dc) => dc.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::Iter(_) => write!(f, "<iterator>"),
-            Self::LongInt(li) => write!(f, "{li}"),
-            Self::Module(m) => write!(f, "<module '{}'>", interns.get_str(m.name())),
-            Self::Coroutine(coro) => {
-                let func = interns.get_function(coro.func_id);
-                let name = interns.get_str(func.name.name_id);
-                write!(f, "<coroutine object {name}>")
-            }
-            Self::GatherFuture(gather) => write!(f, "<gather({})>", gather.item_count()),
-            Self::Path(p) => p.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::RePattern(p) => p.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::ReMatch(m) => m.py_repr_fmt(f, heap, heap_ids, interns),
-            Self::ExtFunction(name) => write!(f, "<function '{name}' external>"),
-        }
-    }
-
-    fn py_str(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Cow<'static, str> {
-        match self {
-            // Strings return their value directly without quotes
-            Self::Str(s) => s.py_str(heap, interns),
-            // LongInt returns its string representation
-            Self::LongInt(li) => Cow::Owned(li.to_string()),
-            // Exceptions return just the message (or empty string if no message)
-            Self::Exception(e) => Cow::Owned(e.py_str()),
-            // Paths return the path string without the PosixPath() wrapper
-            Self::Path(p) => Cow::Owned(p.as_str().to_owned()),
-            // All other types use repr
-            _ => self.py_repr(heap, interns),
-        }
-    }
-
-    fn py_add(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> Result<Option<Value>, crate::resource::ResourceError> {
-        match (self, other) {
-            (Self::Str(a), Self::Str(b)) => a.py_add(b, heap, interns),
-            (Self::Bytes(a), Self::Bytes(b)) => a.py_add(b, heap, interns),
-            (Self::List(a), Self::List(b)) => a.py_add(b, heap, interns),
-            (Self::Tuple(a), Self::Tuple(b)) => a.py_add(b, heap, interns),
-            (Self::Dict(a), Self::Dict(b)) => a.py_add(b, heap, interns),
-            (Self::LongInt(a), Self::LongInt(b)) => {
-                let bi = a.inner() + b.inner();
-                Ok(LongInt::new(bi).into_value(heap).map(Some)?)
-            }
-            // Cells and Dataclasses don't support arithmetic operations
-            _ => Ok(None),
-        }
-    }
-
-    fn py_sub(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
-    ) -> Result<Option<Value>, crate::resource::ResourceError> {
-        match (self, other) {
-            (Self::Str(a), Self::Str(b)) => a.py_sub(b, heap),
-            (Self::Bytes(a), Self::Bytes(b)) => a.py_sub(b, heap),
-            (Self::List(a), Self::List(b)) => a.py_sub(b, heap),
-            (Self::Tuple(a), Self::Tuple(b)) => a.py_sub(b, heap),
-            (Self::Dict(a), Self::Dict(b)) => a.py_sub(b, heap),
-            (Self::Set(a), Self::Set(b)) => a.py_sub(b, heap),
-            (Self::FrozenSet(a), Self::FrozenSet(b)) => a.py_sub(b, heap),
-            (Self::LongInt(a), Self::LongInt(b)) => {
-                let bi = a.inner() - b.inner();
-                Ok(LongInt::new(bi).into_value(heap).map(Some)?)
-            }
-            // Cells don't support arithmetic operations
-            _ => Ok(None),
-        }
-    }
-
-    fn py_mod(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
-    ) -> crate::exception_private::RunResult<Option<Value>> {
-        match (self, other) {
-            (Self::Str(a), Self::Str(b)) => a.py_mod(b, heap),
-            (Self::Bytes(a), Self::Bytes(b)) => a.py_mod(b, heap),
-            (Self::List(a), Self::List(b)) => a.py_mod(b, heap),
-            (Self::Tuple(a), Self::Tuple(b)) => a.py_mod(b, heap),
-            (Self::Dict(a), Self::Dict(b)) => a.py_mod(b, heap),
-            (Self::LongInt(a), Self::LongInt(b)) => {
-                if b.is_zero() {
-                    Err(crate::exception_private::ExcType::zero_division().into())
-                } else {
-                    let bi = a.inner().mod_floor(b.inner());
-                    Ok(LongInt::new(bi).into_value(heap).map(Some)?)
-                }
-            }
-            // Cells don't support arithmetic operations
-            _ => Ok(None),
-        }
-    }
-
-    fn py_mod_eq(&self, other: &Self, right_value: i64) -> Option<bool> {
-        match (self, other) {
-            (Self::Str(a), Self::Str(b)) => a.py_mod_eq(b, right_value),
-            (Self::Bytes(a), Self::Bytes(b)) => a.py_mod_eq(b, right_value),
-            (Self::List(a), Self::List(b)) => a.py_mod_eq(b, right_value),
-            (Self::Tuple(a), Self::Tuple(b)) => a.py_mod_eq(b, right_value),
-            (Self::Dict(a), Self::Dict(b)) => a.py_mod_eq(b, right_value),
-            // Cells don't support arithmetic operations
-            _ => None,
-        }
-    }
-
-    fn py_iadd(
-        &mut self,
-        other: &Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        self_id: Option<HeapId>,
-        interns: &Interns,
-    ) -> Result<bool, crate::resource::ResourceError> {
-        match self {
-            Self::List(l) => l.py_iadd(other, heap, self_id, interns),
-            Self::Dict(d) => d.py_iadd(other, heap, self_id, interns),
-            _ => Ok(false),
-        }
-    }
-
-    fn py_call_attr(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
-        match self {
-            Self::Str(s) => s.py_call_attr(self_id, vm, attr, args),
-            Self::Bytes(b) => b.py_call_attr(self_id, vm, attr, args),
-            Self::List(l) => l.py_call_attr(self_id, vm, attr, args),
-            Self::Tuple(t) => t.py_call_attr(self_id, vm, attr, args),
-            Self::Dict(d) => d.py_call_attr(self_id, vm, attr, args),
-            Self::DictKeysView(view) => view.py_call_attr(self_id, vm, attr, args),
-            Self::DictItemsView(view) => view.py_call_attr(self_id, vm, attr, args),
-            Self::DictValuesView(view) => view.py_call_attr(self_id, vm, attr, args),
-            Self::Set(s) => s.py_call_attr(self_id, vm, attr, args),
-            Self::FrozenSet(fs) => fs.py_call_attr(self_id, vm, attr, args),
-            Self::Dataclass(dc) => dc.py_call_attr(self_id, vm, attr, args),
-            Self::Path(p) => p.py_call_attr(self_id, vm, attr, args),
-            Self::Module(m) => m.py_call_attr(self_id, vm, attr, args),
-            Self::RePattern(p) => p.py_call_attr(self_id, vm, attr, args),
-            Self::ReMatch(m) => m.py_call_attr(self_id, vm, attr, args),
-            _ => Err(ExcType::attribute_error(self.py_type(vm.heap), attr.as_str(vm.interns))),
-        }
-    }
-
-    fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Value> {
-        match self {
-            Self::Str(s) => s.py_getitem(key, heap, interns),
-            Self::Bytes(b) => b.py_getitem(key, heap, interns),
-            Self::List(l) => l.py_getitem(key, heap, interns),
-            Self::Tuple(t) => t.py_getitem(key, heap, interns),
-            Self::NamedTuple(nt) => nt.py_getitem(key, heap, interns),
-            Self::Dict(d) => d.py_getitem(key, heap, interns),
-            Self::Range(r) => r.py_getitem(key, heap, interns),
-            _ => Err(ExcType::type_error_not_sub(self.py_type(heap))),
-        }
-    }
-
-    fn py_setitem(
-        &mut self,
-        key: Value,
-        value: Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<()> {
-        match self {
-            Self::Str(s) => s.py_setitem(key, value, heap, interns),
-            Self::Bytes(b) => b.py_setitem(key, value, heap, interns),
-            Self::List(l) => l.py_setitem(key, value, heap, interns),
-            Self::Tuple(t) => t.py_setitem(key, value, heap, interns),
-            Self::Dict(d) => d.py_setitem(key, value, heap, interns),
-            _ => Err(ExcType::type_error_not_sub_assignment(self.py_type(heap))),
-        }
-    }
-
-    fn py_getattr(
-        &self,
-        attr: &EitherStr,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<Option<CallResult>> {
-        match self {
-            Self::Dataclass(dc) => dc.py_getattr(attr, heap, interns),
-            Self::Module(m) => Ok(m.py_getattr(attr, heap, interns)),
-            Self::NamedTuple(nt) => nt.py_getattr(attr, heap, interns),
-            Self::Slice(s) => s.py_getattr(attr, heap, interns),
-            Self::Exception(exc) => exc.py_getattr(attr, heap, interns),
-            Self::Path(p) => p.py_getattr(attr, heap, interns),
-            Self::RePattern(p) => p.py_getattr(attr, heap, interns),
-            Self::ReMatch(m) => m.py_getattr(attr, heap, interns),
-            // All other types don't support attribute access via py_getattr
-            _ => Ok(None),
-        }
-    }
-}
 
 /// Hash caching state stored alongside each heap entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1281,46 +582,56 @@ impl<T: ResourceTracker> Heap<T> {
     /// The data is temporarily taken from the heap entry, so the closure can safely
     /// mutate both the entry data and the heap (e.g. to allocate new values).
     /// The data is automatically restored after the closure completes.
-    pub fn with_entry_mut<F, R>(&mut self, id: HeapId, f: F) -> R
+    pub fn with_entry_mut<'a, 'p, F, R>(vm: &mut VM<'a, 'p, T>, id: HeapId, f: F) -> R
     where
-        F: FnOnce(&mut Self, HeapDataMut) -> R,
+        F: FnOnce(&mut VM<'a, 'p, T>, HeapDataMut) -> R,
     {
         // Take data out in a block so the borrow of self.entries ends
-        let mut data = take_data!(self, id, "with_entry_mut");
+        let heap = &mut *vm.heap;
+        let mut data = take_data!(heap, id, "with_entry_mut");
 
-        let result = f(self, data.to_mut());
+        let result = f(vm, data.to_mut());
 
         // Restore data
-        restore_data!(self, id, data, "with_entry_mut");
+        let heap = &mut *vm.heap;
+        restore_data!(heap, id, data, "with_entry_mut");
         result
     }
 
     /// Temporarily takes ownership of two heap entries so their data can be borrowed
-    /// simultaneously while still permitting mutable access to the heap (e.g. to
+    /// simultaneously while still permitting mutable access to the VM (e.g. to
     /// allocate results). Automatically restores both entries after the closure
     /// finishes executing.
-    pub fn with_two<F, R>(&mut self, left: HeapId, right: HeapId, f: F) -> R
+    ///
+    /// This is a static method that takes `&mut VM` instead of `&mut self` so that
+    /// the closure receives `&mut VM` — matching the `with_entry_mut` pattern and
+    /// allowing the closure to call methods that need `vm` (e.g. `py_eq`).
+    pub fn with_two<'a, 'p, F, R>(vm: &mut VM<'a, 'p, T>, left: HeapId, right: HeapId, f: F) -> R
     where
-        F: FnOnce(&mut Self, &HeapData, &HeapData) -> R,
+        F: FnOnce(&mut VM<'a, 'p, T>, &HeapData, &HeapData) -> R,
     {
         if left == right {
             // Same value - take data once and pass it twice
-            let data = take_data!(self, left, "with_two");
+            let heap = &mut *vm.heap;
+            let data = take_data!(heap, left, "with_two");
 
-            let result = f(self, &data, &data);
+            let result = f(vm, &data, &data);
 
-            restore_data!(self, left, data, "with_two");
+            let heap = &mut *vm.heap;
+            restore_data!(heap, left, data, "with_two");
             result
         } else {
             // Different values - take both
-            let left_data = take_data!(self, left, "with_two (left)");
-            let right_data = take_data!(self, right, "with_two (right)");
+            let heap = &mut *vm.heap;
+            let left_data = take_data!(heap, left, "with_two (left)");
+            let right_data = take_data!(heap, right, "with_two (right)");
 
-            let result = f(self, &left_data, &right_data);
+            let result = f(vm, &left_data, &right_data);
 
             // Restore in reverse order
-            restore_data!(self, right, right_data, "with_two (right)");
-            restore_data!(self, left, left_data, "with_two (left)");
+            let heap = &mut *vm.heap;
+            restore_data!(heap, right, right_data, "with_two (right)");
+            restore_data!(heap, left, left_data, "with_two (left)");
             result
         }
     }

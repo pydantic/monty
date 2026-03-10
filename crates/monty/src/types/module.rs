@@ -60,26 +60,21 @@ impl Module {
     pub fn set_attr(&mut self, name: impl Into<StringId>, value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) {
         let key = Value::InternString(name.into());
         // Unwrap is safe because InternString keys are always hashable
-        self.attrs.set(key, value, vm.heap, vm.interns).unwrap();
+        self.attrs.set(key, value, vm).unwrap();
     }
 
     /// Looks up an attribute by name in the module's attribute dictionary.
     ///
     /// Returns `Some(value)` if the attribute exists, `None` otherwise.
     /// The returned value is cloned with proper refcount handling.
-    pub fn get_attr(
-        &self,
-        attr_value: &Value,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> Option<Value> {
+    pub fn get_attr(&self, attr_value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Option<Value> {
         // Dict::get returns Result because of hash computation, but InternString keys
-        // are always hashable, so unwrap is safe here.
+        // are always hashable, so `.ok()` is safe here.
         self.attrs
-            .get(attr_value, heap, interns)
+            .get(attr_value, vm)
             .ok()
             .flatten()
-            .map(|v| v.clone_with_heap(heap))
+            .map(|v| v.clone_with_heap(vm))
     }
 
     /// Returns whether this module has any heap references in its attributes.
@@ -136,7 +131,7 @@ impl Module {
             }
         };
 
-        match self.get_attr(&attr_key, vm.heap, vm.interns) {
+        match self.get_attr(&attr_key, vm) {
             Some(value) => {
                 let (args, vm) = args_guard.into_parts();
                 defer_drop!(value, vm);

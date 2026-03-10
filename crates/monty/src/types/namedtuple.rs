@@ -166,35 +166,30 @@ impl PyTrait for NamedTuple {
         Some(self.items.len())
     }
 
-    fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
         // Extract integer index from key, returning TypeError if not an int
         let index = match key {
             Value::Int(i) => *i,
-            _ => return Err(ExcType::type_error_indices(Type::NamedTuple, key.py_type(heap))),
+            _ => return Err(ExcType::type_error_indices(Type::NamedTuple, key.py_type(vm.heap))),
         };
 
         // Get by index with bounds checking
         match self.get_by_index(index) {
-            Some(value) => Ok(value.clone_with_heap(heap)),
+            Some(value) => Ok(value.clone_with_heap(vm.heap)),
             None => Err(ExcType::tuple_index_error()),
         }
     }
 
-    fn py_eq(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         // Compare only by items (not type_name) to match tuple semantics
         // This allows sys.version_info == (3, 14, 0, 'final', 0) to work
         if self.items.len() != other.items.len() {
             return Ok(false);
         }
-        let token = heap.incr_recursion_depth()?;
-        defer_drop!(token, heap);
+        let token = vm.heap.incr_recursion_depth()?;
+        defer_drop!(token, vm);
         for (i1, i2) in self.items.iter().zip(&other.items) {
-            if !i1.py_eq(i2, heap, interns)? {
+            if !i1.py_eq(i2, vm)? {
                 return Ok(false);
             }
         }
@@ -226,18 +221,18 @@ impl PyTrait for NamedTuple {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        heap: &Heap<impl ResourceTracker>,
+        vm: &VM<'_, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
-        interns: &Interns,
     ) -> std::fmt::Result {
         // Check depth limit before recursing
+        let heap = &*vm.heap;
         let Some(token) = heap.incr_recursion_depth_for_repr() else {
             return f.write_str("...");
         };
         crate::defer_drop_immutable_heap!(token, heap);
 
         // Format: type_name(field1=value1, field2=value2, ...)
-        write!(f, "{}(", self.name.as_str(interns))?;
+        write!(f, "{}(", self.name.as_str(vm.interns))?;
 
         let mut first = true;
         for (field_name, value) in self.field_names.iter().zip(&self.items) {
@@ -245,27 +240,22 @@ impl PyTrait for NamedTuple {
                 f.write_str(", ")?;
             }
             first = false;
-            f.write_str(field_name.as_str(interns))?;
+            f.write_str(field_name.as_str(vm.interns))?;
             f.write_char('=')?;
-            value.py_repr_fmt(f, heap, heap_ids, interns)?;
+            value.py_repr_fmt(f, vm, heap_ids)?;
         }
 
         f.write_char(')')?;
         Ok(())
     }
 
-    fn py_getattr(
-        &self,
-        attr: &EitherStr,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<Option<CallResult>> {
-        let attr_name = attr.as_str(interns);
-        if let Some(value) = self.get_by_name(attr_name, interns) {
-            Ok(Some(CallResult::Value(value.clone_with_heap(heap))))
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+        let attr_name = attr.as_str(vm.interns);
+        if let Some(value) = self.get_by_name(attr_name, vm.interns) {
+            Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap))))
         } else {
             // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
-            Err(ExcType::attribute_error(self.name(interns), attr_name))
+            Err(ExcType::attribute_error(self.name(vm.interns), attr_name))
         }
     }
 }

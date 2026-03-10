@@ -72,7 +72,7 @@ fn builtin_min_max(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, i
         while let Some(item) = iter.for_next(vm)? {
             defer_drop_mut!(item, vm);
 
-            let Some(ordering) = result.py_cmp(item, vm.heap, vm.interns)? else {
+            let Some(ordering) = result.py_cmp(item, vm)? else {
                 return Err(ord_not_supported(result, item, vm.heap));
             };
 
@@ -90,7 +90,7 @@ fn builtin_min_max(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, i
         for item in positional {
             defer_drop_mut!(item, vm);
 
-            let Some(ordering) = result.py_cmp(item, vm.heap, vm.interns)? else {
+            let Some(ordering) = result.py_cmp(item, vm)? else {
                 return Err(ord_not_supported(result, item, vm.heap));
             };
 

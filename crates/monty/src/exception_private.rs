@@ -324,8 +324,8 @@ impl ExcType {
     ///
     /// For string keys, uses the raw string value without extra quoting.
     #[must_use]
-    pub(crate) fn key_error(key: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunError {
-        let key_str = key.py_str(heap, interns).into_owned();
+    pub(crate) fn key_error(key: &Value, vm: &VM<'_, '_, impl ResourceTracker>) -> RunError {
+        let key_str = key.py_str(vm).into_owned();
         SimpleException::new_msg(Self::KeyError, key_str).into()
     }
 

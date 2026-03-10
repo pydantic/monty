@@ -129,15 +129,15 @@ impl DropWithImmutableHeap for RecursionToken {
 /// On the normal path, the guarded value can be borrowed via [`as_parts`](Self::as_parts).
 /// The guard's `Drop` impl calls [`DropWithImmutableHeap::drop_with_immutable_heap`]
 /// automatically, so cleanup happens on all exit paths.
-pub(crate) struct ImmutableHeapGuard<'a, T: ResourceTracker, V: DropWithImmutableHeap> {
+pub(crate) struct ImmutableHeapGuard<'a, H: ContainsHeap, V: DropWithImmutableHeap> {
     value: ManuallyDrop<V>,
-    heap: &'a Heap<T>,
+    heap: &'a H,
 }
 
-impl<'a, T: ResourceTracker, V: DropWithImmutableHeap> ImmutableHeapGuard<'a, T, V> {
+impl<'a, H: ContainsHeap, V: DropWithImmutableHeap> ImmutableHeapGuard<'a, H, V> {
     /// Creates a new `ImmutableHeapGuard` for the given value and immutable heap reference.
     #[inline]
-    pub fn new(value: V, heap: &'a Heap<T>) -> Self {
+    pub fn new(value: V, heap: &'a H) -> Self {
         Self {
             value: ManuallyDrop::new(value),
             heap,
@@ -149,15 +149,15 @@ impl<'a, T: ResourceTracker, V: DropWithImmutableHeap> ImmutableHeapGuard<'a, T,
     /// This is what [`defer_drop_immutable_heap!`] calls internally. The returned
     /// references are tied to the guard's lifetime, so the value cannot escape.
     #[inline]
-    pub fn as_parts(&self) -> (&V, &'a Heap<T>) {
+    pub fn as_parts(&self) -> (&V, &'a H) {
         (&self.value, self.heap)
     }
 }
 
-impl<T: ResourceTracker, V: DropWithImmutableHeap> Drop for ImmutableHeapGuard<'_, T, V> {
+impl<H: ContainsHeap, V: DropWithImmutableHeap> Drop for ImmutableHeapGuard<'_, H, V> {
     fn drop(&mut self) {
         // SAFETY: [DH] - value is never manually dropped until this point
-        unsafe { ManuallyDrop::take(&mut self.value) }.drop_with_immutable_heap(self.heap);
+        unsafe { ManuallyDrop::take(&mut self.value) }.drop_with_immutable_heap(self.heap.heap());
     }
 }
 

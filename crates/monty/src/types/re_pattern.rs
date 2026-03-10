@@ -269,12 +269,7 @@ impl PyTrait for RePattern {
         None
     }
 
-    fn py_eq(
-        &self,
-        other: &Self,
-        _heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
-    ) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         Ok(self.pattern == other.pattern && self.flags == other.flags)
     }
 
@@ -290,9 +285,8 @@ impl PyTrait for RePattern {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        _heap: &Heap<impl ResourceTracker>,
+        _vm: &VM<'_, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-        _interns: &Interns,
     ) -> std::fmt::Result {
         write!(f, "re.compile(")?;
         string_repr_fmt(&self.pattern, f)?;
@@ -319,20 +313,15 @@ impl PyTrait for RePattern {
         std::mem::size_of::<Self>() + self.pattern.len()
     }
 
-    fn py_getattr(
-        &self,
-        attr: &EitherStr,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         match attr.static_string() {
             Some(StaticStrings::PatternAttr) => {
                 let s = Str::new(self.pattern.clone());
-                let v = Value::Ref(heap.allocate(HeapData::Str(s))?);
+                let v = Value::Ref(vm.heap.allocate(HeapData::Str(s))?);
                 Ok(Some(CallResult::Value(v)))
             }
             Some(StaticStrings::Flags) => Ok(Some(CallResult::Value(Value::Int(i64::from(self.flags))))),
-            _ => Err(ExcType::attribute_error(Type::RePattern, attr.as_str(interns))),
+            _ => Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns))),
         }
     }
 

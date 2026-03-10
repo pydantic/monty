@@ -460,12 +460,7 @@ impl PyTrait for Path {
         None
     }
 
-    fn py_eq(
-        &self,
-        other: &Self,
-        _heap: &mut Heap<impl ResourceTracker>,
-        _interns: &Interns,
-    ) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         Ok(self.path == other.path)
     }
 
@@ -477,9 +472,8 @@ impl PyTrait for Path {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        _heap: &Heap<impl ResourceTracker>,
+        _vm: &VM<'_, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
-        _interns: &Interns,
     ) -> std::fmt::Result {
         // Format like: PosixPath('/usr/bin')
         write!(f, "PosixPath('{}')", self.path)
@@ -575,21 +569,16 @@ impl PyTrait for Path {
         value.map(CallResult::Value)
     }
 
-    fn py_getattr(
-        &self,
-        attr: &EitherStr,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         // Fast path: interned strings can be matched by ID without string comparison
         if let Some(ss) = attr.static_string() {
-            if let Some(v) = self.getattr_by_static(ss, heap)? {
+            if let Some(v) = self.getattr_by_static(ss, vm.heap)? {
                 return Ok(Some(CallResult::Value(v)));
             }
-            return Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)));
+            return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
         }
         // Slow path: heap-allocated strings need string comparison
-        let attr_str = attr.as_str(interns);
+        let attr_str = attr.as_str(vm.interns);
         let ss = match attr_str {
             "name" => StaticStrings::Name,
             "parent" => StaticStrings::Parent,
@@ -600,7 +589,7 @@ impl PyTrait for Path {
             _ => return Err(ExcType::attribute_error(Type::Path, attr_str)),
         };
         let v = self
-            .getattr_by_static(ss, heap)?
+            .getattr_by_static(ss, vm.heap)?
             .expect("matched attribute must produce a value");
         Ok(Some(CallResult::Value(v)))
     }
