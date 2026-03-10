@@ -9,10 +9,6 @@ use monty::{
 use rstest::fixture;
 use rstest_bdd_macros::{given, scenario, then, when};
 
-#[expect(
-    dead_code,
-    reason = "shared helper module defines utilities consumed by sibling integration tests"
-)]
 #[path = "support/test_utils.rs"]
 mod test_utils;
 

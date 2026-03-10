@@ -1,6 +1,9 @@
-//! Shared helpers for runtime-observer integration tests.
+//! Shared helpers for Track A integration tests.
+// Each integration test crate compiles this shared helper module independently,
+// so some helpers are intentionally unused in a given crate.
+#![allow(dead_code)]
 
-use monty::{FunctionCall, OsCall, ResourceTracker, RunProgress};
+use monty::{FunctionCall, MontyException, OsCall, ReplFunctionCall, ReplOsCall, ResourceTracker, RunProgress};
 
 /// Extracts a function-call progress variant with a contextual panic message.
 ///
@@ -41,4 +44,45 @@ pub fn assert_function_calls_equal<T: ResourceTracker>(left: &FunctionCall<T>, r
     assert_eq!(left.method_call, right.method_call);
     assert_eq!(left.arg_runtime_ids, right.arg_runtime_ids);
     assert_eq!(left.kwarg_runtime_ids, right.kwarg_runtime_ids);
+}
+
+/// Test helper for runtime-observer and compatibility tests that performs deep
+/// equality assertions across significant `OsCall<T>` fields.
+pub fn assert_os_calls_equal<T: ResourceTracker>(left: &OsCall<T>, right: &OsCall<T>) {
+    assert_eq!(left.function, right.function);
+    assert_eq!(left.args, right.args);
+    assert_eq!(left.kwargs, right.kwargs);
+    assert_eq!(left.call_id, right.call_id);
+    assert_eq!(left.arg_runtime_ids, right.arg_runtime_ids);
+    assert_eq!(left.kwarg_runtime_ids, right.kwarg_runtime_ids);
+}
+
+/// Test helper for Track A REPL compatibility checks that performs deep
+/// equality assertions across significant `ReplFunctionCall<T>` fields.
+pub fn assert_repl_function_calls_equal<T: ResourceTracker>(left: &ReplFunctionCall<T>, right: &ReplFunctionCall<T>) {
+    assert_eq!(left.function_name, right.function_name);
+    assert_eq!(left.args, right.args);
+    assert_eq!(left.kwargs, right.kwargs);
+    assert_eq!(left.call_id, right.call_id);
+    assert_eq!(left.method_call, right.method_call);
+    assert_eq!(left.arg_runtime_ids, right.arg_runtime_ids);
+    assert_eq!(left.kwarg_runtime_ids, right.kwarg_runtime_ids);
+}
+
+/// Test helper for Track A REPL compatibility checks that performs deep
+/// equality assertions across significant `ReplOsCall<T>` fields.
+pub fn assert_repl_os_calls_equal<T: ResourceTracker>(left: &ReplOsCall<T>, right: &ReplOsCall<T>) {
+    assert_eq!(left.function, right.function);
+    assert_eq!(left.args, right.args);
+    assert_eq!(left.kwargs, right.kwargs);
+    assert_eq!(left.call_id, right.call_id);
+    assert_eq!(left.arg_runtime_ids, right.arg_runtime_ids);
+    assert_eq!(left.kwarg_runtime_ids, right.kwarg_runtime_ids);
+}
+
+/// Asserts that two exceptions expose the same observable public details.
+pub fn assert_exceptions_equal(left: &MontyException, right: &MontyException) {
+    assert_eq!(left.exc_type(), right.exc_type());
+    assert_eq!(left.message(), right.message());
+    assert_eq!(left.to_string(), right.to_string());
 }
