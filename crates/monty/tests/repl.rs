@@ -4,8 +4,8 @@
 //! only the newly fed snippet each time.
 
 use monty::{
-    ExtFunctionResult, MontyException, MontyObject, MontyRepl, NoLimitTracker, PrintWriter, ReplContinuationMode,
-    ReplProgress, ReplStartError, ResourceTracker, detect_repl_continuation_mode,
+    ExtFunctionResult, MontyException, MontyObject, MontyRepl, NameLookupResult, NoLimitTracker, PrintWriter,
+    ReplContinuationMode, ReplProgress, ReplStartError, ResourceTracker, detect_repl_continuation_mode,
 };
 
 #[test]
@@ -38,6 +38,16 @@ fn assert_name_error(result: Result<MontyObject, MontyException>, name: &str) {
     let expected_message = format!("name '{name}' is not defined");
     assert_eq!(error.exc_type(), monty::ExcType::NameError);
     assert_eq!(error.message(), Some(expected_message.as_str()));
+}
+
+fn assert_runtime_error_exception(error: &MontyException, expected_message: &str) {
+    assert_eq!(error.exc_type(), monty::ExcType::RuntimeError);
+    assert_eq!(error.message(), Some(expected_message));
+}
+
+fn assert_runtime_error(result: Result<MontyObject, MontyException>, expected_message: &str) {
+    let error = result.expect_err("snippet should raise RuntimeError");
+    assert_runtime_error_exception(&error, expected_message);
 }
 
 #[test]
@@ -317,6 +327,59 @@ fn repl_start_compile_error_keeps_reserved_global_slot() {
 }
 
 #[test]
+fn repl_feed_invalid_input_keeps_reserved_slots_and_repl_usable() {
+    let (mut repl, init_output) = init_repl("");
+    assert_eq!(init_output, MontyObject::None);
+
+    assert_runtime_error(
+        repl.feed_run(
+            "reserved_output = incoming_input",
+            vec![("incoming_input".to_string(), MontyObject::Repr("bad".to_string()))],
+            PrintWriter::Stdout,
+        ),
+        "invalid input type: 'Repr' is not a valid input value",
+    );
+    assert_name_error(feed_run_print(&mut repl, "incoming_input"), "incoming_input");
+    assert_name_error(feed_run_print(&mut repl, "reserved_output"), "reserved_output");
+
+    assert_eq!(
+        feed_run_print(&mut repl, "incoming_input = 41\nreserved_output = incoming_input + 1").unwrap(),
+        MontyObject::None
+    );
+    assert_eq!(
+        feed_run_print(&mut repl, "reserved_output").unwrap(),
+        MontyObject::Int(42)
+    );
+}
+
+#[test]
+fn repl_start_invalid_input_keeps_reserved_slots_and_repl_usable() {
+    let (repl, init_output) = init_repl("");
+    assert_eq!(init_output, MontyObject::None);
+
+    let err = repl
+        .feed_start(
+            "reserved_output = incoming_input",
+            vec![("incoming_input".to_string(), MontyObject::Repr("bad".to_string()))],
+            PrintWriter::Stdout,
+        )
+        .expect_err("expected invalid input error");
+    let ReplStartError { mut repl, error } = *err;
+    assert_runtime_error_exception(&error, "invalid input type: 'Repr' is not a valid input value");
+    assert_name_error(feed_run_print(&mut repl, "incoming_input"), "incoming_input");
+    assert_name_error(feed_run_print(&mut repl, "reserved_output"), "reserved_output");
+
+    assert_eq!(
+        feed_run_print(&mut repl, "incoming_input = 41\nreserved_output = incoming_input + 1").unwrap(),
+        MontyObject::None
+    );
+    assert_eq!(
+        feed_run_print(&mut repl, "reserved_output").unwrap(),
+        MontyObject::Int(42)
+    );
+}
+
+#[test]
 fn repl_abandon_function_call_preserves_globals_and_metadata() {
     let (repl, _) = init_repl("");
 
@@ -329,6 +392,33 @@ fn repl_abandon_function_call_preserves_globals_and_metadata() {
         .unwrap();
     let call = progress.into_function_call().expect("expected function call");
     let mut repl = call.into_repl();
+
+    assert_eq!(feed_run_print(&mut repl, "captured").unwrap(), MontyObject::Int(41));
+    assert_eq!(feed_run_print(&mut repl, "helper()").unwrap(), MontyObject::Int(42));
+}
+
+#[test]
+fn repl_name_lookup_invalid_host_value_preserves_globals_and_metadata() {
+    let (repl, _) = init_repl("");
+
+    let progress = repl
+        .feed_start(
+            "captured = 41\ndef helper():\n    return captured + 1\nmissing_name",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let lookup = progress.into_name_lookup().expect("expected name lookup");
+    assert_eq!(lookup.name, "missing_name");
+
+    let err = lookup
+        .resume(
+            NameLookupResult::Value(MontyObject::Repr("bad".to_string())),
+            PrintWriter::Stdout,
+        )
+        .expect_err("expected invalid name lookup result");
+    let ReplStartError { mut repl, error } = *err;
+    assert_runtime_error_exception(&error, "invalid name lookup result: 'Repr' is not a valid input value");
 
     assert_eq!(feed_run_print(&mut repl, "captured").unwrap(), MontyObject::Int(41));
     assert_eq!(feed_run_print(&mut repl, "helper()").unwrap(), MontyObject::Int(42));
@@ -349,6 +439,36 @@ fn repl_abandon_resolve_futures_preserves_globals_and_metadata() {
     let progress = call.resume_pending(PrintWriter::Stdout).unwrap();
     let state = progress.into_resolve_futures().expect("expected resolve futures");
     let mut repl = state.into_repl();
+
+    assert_eq!(feed_run_print(&mut repl, "captured").unwrap(), MontyObject::Int(41));
+    assert_eq!(feed_run_print(&mut repl, "helper()").unwrap(), MontyObject::Int(42));
+}
+
+#[test]
+fn repl_resolve_futures_unknown_call_id_preserves_globals_and_metadata() {
+    let (repl, _) = init_repl("");
+
+    let progress = repl
+        .feed_start(
+            "captured = 41\ndef helper():\n    return captured + 1\nasync def main():\n    value = await foo()\n    return value\nawait main()",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let call = progress.into_function_call().expect("expected function call");
+    let progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+    let state = progress.into_resolve_futures().expect("expected resolve futures");
+    let expected_pending = state.pending_call_ids().to_vec();
+
+    let err = state
+        .resume(
+            vec![(9999, ExtFunctionResult::Return(MontyObject::Int(1)))],
+            PrintWriter::Stdout,
+        )
+        .expect_err("expected unknown call_id error");
+    let ReplStartError { mut repl, error } = *err;
+    let expected_message = format!("unknown call_id 9999, expected one of: {expected_pending:?}");
+    assert_runtime_error_exception(&error, &expected_message);
 
     assert_eq!(feed_run_print(&mut repl, "captured").unwrap(), MontyObject::Int(41));
     assert_eq!(feed_run_print(&mut repl, "helper()").unwrap(), MontyObject::Int(42));
