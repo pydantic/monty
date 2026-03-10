@@ -291,15 +291,7 @@ impl PyTrait for Value {
                 (HeapData::LongInt(a), HeapData::LongInt(b)) => Ok(a.inner().partial_cmp(b.inner())),
                 (HeapData::Str(a), HeapData::Str(b)) => Ok(a.as_str().partial_cmp(b.as_str())),
                 (HeapData::Tuple(_), HeapData::Tuple(_)) => {
-                    // Take data out of the heap to allow re-entrant access via &mut VM
-                    let left = vm.heap.take_data(*id1);
-                    let right = vm.heap.take_data(*id2);
-                    let HeapData::Tuple(a) = &left else { unreachable!() };
-                    let HeapData::Tuple(b) = &right else { unreachable!() };
-                    let result = a.py_cmp(b, vm);
-                    vm.heap.restore_data(*id2, right);
-                    vm.heap.restore_data(*id1, left);
-                    result
+                    Heap::with_two(vm, *id1, *id2, |vm, left, right| left.py_cmp(&right, vm))
                 }
                 _ => Ok(None),
             },
@@ -456,13 +448,7 @@ impl PyTrait for Value {
             (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 + b))),
             (Self::Float(a), Self::Int(b)) => Ok(Some(Self::Float(a + *b as f64))),
             (Self::Ref(id1), Self::Ref(id2)) => {
-                // Take data out of the heap to allow re-entrant access via &mut VM
-                let left = vm.heap.take_data(*id1);
-                let right = vm.heap.take_data(*id2);
-                let result = left.py_add(&right, vm);
-                vm.heap.restore_data(*id2, right);
-                vm.heap.restore_data(*id1, left);
-                result
+                Heap::with_two(vm, *id1, *id2, |vm, left, right| left.py_add(&right, vm))
             }
             (Self::InternString(s1), Self::InternString(s2)) => {
                 let concat = format!("{}{}", interns.get_str(*s1), interns.get_str(*s2));
@@ -556,13 +542,7 @@ impl PyTrait for Value {
             }
             // LongInt - LongInt
             (Self::Ref(id1), Self::Ref(id2)) => {
-                // Take data out of the heap to allow re-entrant access via &mut VM
-                let left = vm.heap.take_data(*id1);
-                let right = vm.heap.take_data(*id2);
-                let result = left.py_sub(&right, vm);
-                vm.heap.restore_data(*id2, right);
-                vm.heap.restore_data(*id1, left);
-                result
+                Heap::with_two(vm, *id1, *id2, |vm, left, right| left.py_sub(&right, vm))
             }
             // Float - Float
             (Self::Float(a), Self::Float(b)) => Ok(Some(Self::Float(a - b))),
@@ -617,13 +597,7 @@ impl PyTrait for Value {
             }
             // LongInt % LongInt
             (Self::Ref(id1), Self::Ref(id2)) => {
-                // Take data out of the heap to allow re-entrant access via &mut VM
-                let left = vm.heap.take_data(*id1);
-                let right = vm.heap.take_data(*id2);
-                let result = left.py_mod(&right, vm);
-                vm.heap.restore_data(*id2, right);
-                vm.heap.restore_data(*id1, left);
-                result
+                Heap::with_two(vm, *id1, *id2, |vm, left, right| left.py_mod(&right, vm))
             }
             (Self::Float(v1), Self::Float(v2)) => {
                 if *v2 == 0.0 {
@@ -730,11 +704,7 @@ impl PyTrait for Value {
                 Ok(result)
             }
             (Self::Ref(id), Self::Ref(_)) => {
-                // Take data out of the heap to allow re-entrant access via &mut VM
-                let mut data = vm.heap.take_data(*id);
-                let result = data.to_mut().py_iadd(other, vm, Some(*id));
-                vm.heap.restore_data(*id, data);
-                result
+                Heap::with_entry_mut(vm, *id, |vm, mut data| data.py_iadd(other, vm, Some(*id)))
             }
             _ => Ok(false),
         }
@@ -1313,14 +1283,7 @@ impl PyTrait for Value {
     fn py_getitem(&self, key: &Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Self> {
         let interns = vm.interns;
         match self {
-            Self::Ref(id) => {
-                // Take entry out to allow re-entrant access via &mut VM
-                let id = *id;
-                let data = vm.heap.take_data(id);
-                let result = data.py_getitem(key, vm);
-                vm.heap.restore_data(id, data);
-                result
-            }
+            Self::Ref(id) => Heap::with_entry_mut(vm, *id, |vm, data| data.py_getitem(key, vm)),
             Self::InternString(string_id) => {
                 // Check for slice first
                 if let Self::Ref(key_id) = key
@@ -1380,14 +1343,7 @@ impl PyTrait for Value {
 
     fn py_setitem(&mut self, key: Self, value: Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<()> {
         match self {
-            Self::Ref(id) => {
-                // Take entry out to allow re-entrant access via &mut VM
-                let id = *id;
-                let mut data = vm.heap.take_data(id);
-                let result = data.to_mut().py_setitem(key, value, vm);
-                vm.heap.restore_data(id, data);
-                result
-            }
+            Self::Ref(id) => Heap::with_entry_mut(vm, *id, |vm, mut data| data.py_setitem(key, value, vm)),
             _ => Err(ExcType::type_error(format!(
                 "'{}' object does not support item assignment",
                 self.py_type(vm.heap)
@@ -1560,15 +1516,96 @@ impl Value {
     /// - Str: substring search
     pub fn py_contains(&self, item: &Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
         match self {
-            Self::Ref(heap_id) => {
-                // Take data out of the heap to allow re-entrant access via &mut VM.
-                // This allows iterating over container elements while calling py_eq
-                // (which needs &mut VM for comparing nested heap values).
-                let mut data = vm.heap.take_data(*heap_id);
-                let result = py_contains_heap_data(&mut data, item, vm);
-                vm.heap.restore_data(*heap_id, data);
-                result
-            }
+            Self::Ref(heap_id) => Heap::with_entry_mut(vm, *heap_id, |vm, data| match data {
+                HeapDataMut::List(list) => {
+                    for el in list.as_slice() {
+                        if item.py_eq(el, vm)? {
+                            return Ok(true);
+                        }
+                    }
+                    Ok(false)
+                }
+                HeapDataMut::Tuple(tuple) => {
+                    for el in tuple.as_slice() {
+                        if item.py_eq(el, vm)? {
+                            return Ok(true);
+                        }
+                    }
+                    Ok(false)
+                }
+                HeapDataMut::Dict(dict) => dict.get(item, vm).map(|m| m.is_some()),
+                HeapDataMut::DictKeysView(view) => Heap::with_entry_mut(vm, view.dict_id(), |vm, dict_data| {
+                    let HeapDataMut::Dict(dict) = dict_data else {
+                        panic!("dict_keys view must reference a dict");
+                    };
+                    dict.get(item, vm).map(|m| m.is_some())
+                }),
+                HeapDataMut::DictItemsView(view) => {
+                    let Some((key, value)) = cloned_items_view_candidate(item, vm) else {
+                        return Ok(false);
+                    };
+                    let mut key_guard = HeapGuard::new(key, vm);
+                    let (key, vm) = key_guard.as_parts_mut();
+                    let mut value_guard = HeapGuard::new(value, vm);
+                    let (value, vm) = value_guard.as_parts_mut();
+                    Heap::with_entry_mut(vm, view.dict_id(), |vm, dict_data| {
+                        let HeapDataMut::Dict(dict) = dict_data else {
+                            panic!("dict_items view must reference a dict");
+                        };
+                        match dict.get(key, vm) {
+                            Ok(Some(existing_value)) => value.py_eq(existing_value, vm).map_err(RunError::from),
+                            Ok(None) => Ok(false),
+                            Err(e) => Err(e),
+                        }
+                    })
+                }
+                HeapDataMut::DictValuesView(view) => Heap::with_entry_mut(vm, view.dict_id(), |vm, dict_data| {
+                    let HeapDataMut::Dict(dict) = dict_data else {
+                        panic!("dict_values view must reference a dict");
+                    };
+                    for (_, value) in dict.iter() {
+                        if item.py_eq(value, vm)? {
+                            return Ok(true);
+                        }
+                    }
+                    Ok(false)
+                }),
+                HeapDataMut::Set(set) => set.contains(item, vm),
+                HeapDataMut::FrozenSet(fset) => fset.contains(item, vm),
+                HeapDataMut::Str(s) => str_contains(s.as_str(), item, vm.heap, vm.interns),
+                HeapDataMut::Range(range) => {
+                    // Range containment is O(1) - check bounds and step alignment
+                    let n = match item {
+                        Value::Int(i) => *i,
+                        Value::Bool(b) => i64::from(*b),
+                        Value::Float(f) => {
+                            // Floats are contained if they equal an integer in the range
+                            // e.g., 3.0 in range(5) is True, but 3.5 in range(5) is False
+                            if f.fract() != 0.0 {
+                                return Ok(false);
+                            }
+                            // Check if float is within i64 range and convert safely
+                            // f64 can represent integers up to 2^53 exactly
+                            let int_val = f.trunc();
+                            if int_val < i64::MIN as f64 || int_val > i64::MAX as f64 {
+                                return Ok(false);
+                            }
+                            // Safe conversion: we've verified it's a whole number in i64 range
+                            #[expect(clippy::cast_possible_truncation)]
+                            let n = int_val as i64;
+                            n
+                        }
+                        _ => return Ok(false),
+                    };
+                    Ok(range.contains(n))
+                }
+                other => {
+                    let type_name = other.py_type(vm.heap);
+                    Err(ExcType::type_error(format!(
+                        "argument of type '{type_name}' is not iterable"
+                    )))
+                }
+            }),
             Self::InternString(string_id) => {
                 let container_str = vm.interns.get_str(*string_id);
                 str_contains(container_str, item, vm.heap, vm.interns)
@@ -2290,126 +2327,6 @@ fn extract_bigint(value: &Value, heap: &Heap<impl ResourceTracker>) -> Option<Bi
             }
         }
         _ => None,
-    }
-}
-
-/// Performs containment checks on heap data that has been taken out of the heap.
-///
-/// This is the inner logic for `Value::py_contains` when the container is a heap
-/// object. The data has already been taken via `take_data` so the VM's heap is
-/// available for re-entrant operations like `py_eq` comparisons.
-fn py_contains_heap_data(
-    data: &mut HeapData,
-    item: &Value,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
-) -> RunResult<bool> {
-    match data {
-        HeapData::List(list) => {
-            for el in list.as_slice() {
-                if item.py_eq(el, vm)? {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        }
-        HeapData::Tuple(tuple) => {
-            for el in tuple.as_slice() {
-                if item.py_eq(el, vm)? {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        }
-        HeapData::Dict(dict) => dict.get(item, vm).map(|m| m.is_some()),
-        HeapData::DictKeysView(view) => {
-            let dict_id = view.dict_id();
-            let dict_data = vm.heap.take_data(dict_id);
-            let result = match &dict_data {
-                HeapData::Dict(dict) => dict.get(item, vm).map(|m| m.is_some()),
-                _ => panic!("dict_keys view must reference a dict"),
-            };
-            vm.heap.restore_data(dict_id, dict_data);
-            result
-        }
-        HeapData::DictItemsView(view) => {
-            let Some((key, value)) = cloned_items_view_candidate(item, vm) else {
-                return Ok(false);
-            };
-            let mut key_guard = HeapGuard::new(key, vm);
-            let (key, vm) = key_guard.as_parts_mut();
-            let mut value_guard = HeapGuard::new(value, vm);
-            let (value, vm) = value_guard.as_parts_mut();
-            let dict_id = view.dict_id();
-            let dict_data = vm.heap.take_data(dict_id);
-            let HeapData::Dict(ref dict) = dict_data else {
-                panic!("dict_items view must reference a dict");
-            };
-            let result = match dict.get(key, vm) {
-                Ok(Some(existing_value)) => value.py_eq(existing_value, vm).map_err(RunError::from),
-                Ok(None) => Ok(false),
-                Err(e) => Err(e),
-            };
-            vm.heap.restore_data(dict_id, dict_data);
-            result
-        }
-        HeapData::DictValuesView(view) => {
-            let dict_id = view.dict_id();
-            let dict_data = vm.heap.take_data(dict_id);
-            let HeapData::Dict(ref dict) = dict_data else {
-                panic!("dict_values view must reference a dict");
-            };
-            let mut result = Ok(false);
-            for (_, value) in dict.iter() {
-                match item.py_eq(value, vm) {
-                    Ok(true) => {
-                        result = Ok(true);
-                        break;
-                    }
-                    Ok(false) => {}
-                    Err(e) => {
-                        result = Err(e.into());
-                        break;
-                    }
-                }
-            }
-            vm.heap.restore_data(dict_id, dict_data);
-            result
-        }
-        HeapData::Set(set) => set.contains(item, vm),
-        HeapData::FrozenSet(fset) => fset.contains(item, vm),
-        HeapData::Str(s) => str_contains(s.as_str(), item, vm.heap, vm.interns),
-        HeapData::Range(range) => {
-            // Range containment is O(1) - check bounds and step alignment
-            let n = match item {
-                Value::Int(i) => *i,
-                Value::Bool(b) => i64::from(*b),
-                Value::Float(f) => {
-                    // Floats are contained if they equal an integer in the range
-                    // e.g., 3.0 in range(5) is True, but 3.5 in range(5) is False
-                    if f.fract() != 0.0 {
-                        return Ok(false);
-                    }
-                    // Check if float is within i64 range and convert safely
-                    // f64 can represent integers up to 2^53 exactly
-                    let int_val = f.trunc();
-                    if int_val < i64::MIN as f64 || int_val > i64::MAX as f64 {
-                        return Ok(false);
-                    }
-                    // Safe conversion: we've verified it's a whole number in i64 range
-                    #[expect(clippy::cast_possible_truncation)]
-                    let n = int_val as i64;
-                    n
-                }
-                _ => return Ok(false),
-            };
-            Ok(range.contains(n))
-        }
-        other => {
-            let type_name = other.to_mut().py_type(vm.heap);
-            Err(ExcType::type_error(format!(
-                "argument of type '{type_name}' is not iterable"
-            )))
-        }
     }
 }
 
