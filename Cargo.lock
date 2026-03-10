@@ -1505,6 +1505,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "libm"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
 name = "libredox"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1619,7 +1625,7 @@ dependencies = [
 
 [[package]]
 name = "monty"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "ahash",
  "codspeed-criterion-compat",
@@ -1629,6 +1635,7 @@ dependencies = [
  "hashbrown 0.16.1",
  "indexmap",
  "itertools 0.14.0",
+ "libm",
  "num-bigint",
  "num-integer",
  "num-traits",
@@ -1648,7 +1655,7 @@ dependencies = [
 
 [[package]]
 name = "monty-cli"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "clap",
  "monty",
@@ -1658,7 +1665,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fuzz"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
@@ -1667,7 +1674,7 @@ dependencies = [
 
 [[package]]
 name = "monty-js"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "monty",
  "monty_type_checking",
@@ -1681,7 +1688,7 @@ dependencies = [
 
 [[package]]
 name = "monty_type_checking"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "monty_typeshed",
  "pretty_assertions",
@@ -1695,7 +1702,7 @@ dependencies = [
 
 [[package]]
 name = "monty_typeshed"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "path-slash",
  "ruff_db",
@@ -2122,7 +2129,7 @@ dependencies = [
 
 [[package]]
 name = "pydantic-monty"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "indexmap",
  "monty",
