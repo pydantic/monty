@@ -311,101 +311,32 @@ impl<'i> Prepare<'i> {
     /// slot-based approach, we achieve the same effect by pre-allocating slots for all
     /// module-level names before the main prepare pass.
     ///
-    /// Recurses into control flow blocks (if/for/while/try) because Python has no block
-    /// scoping — names defined inside these blocks are still module-level globals.
+    /// Reuses `collect_scope_info_from_node` to avoid duplicating the node traversal logic.
     fn pre_scan_module_names(&mut self, nodes: &[ParseNode]) {
         debug_assert!(self.is_module_scope);
+        // Collect all names that will be assigned at module level.
+        // We reuse collect_scope_info_from_node which already handles all node types
+        // including walrus expressions, unpack targets, and control flow recursion.
+        let mut assigned_names = AHashSet::new();
+        let mut global_names = AHashSet::new();
+        let mut nonlocal_names = AHashSet::new();
         for node in nodes {
-            match node {
-                Node::FunctionDef(RawFunctionDef { name, .. }) => {
-                    self.ensure_name_slot(name.name_id);
-                }
-                Node::Assign { target, .. }
-                | Node::OpAssign { target, .. }
-                | Node::SubscriptOpAssign { target, .. }
-                | Node::SubscriptAssign { target, .. } => {
-                    self.ensure_name_slot(target.name_id);
-                }
-                Node::UnpackAssign { targets, .. } => {
-                    self.pre_scan_unpack_targets(targets);
-                }
-                Node::Import { binding, .. } => {
-                    self.ensure_name_slot(binding.name_id);
-                }
-                Node::ImportFrom { names, .. } => {
-                    for (_, binding) in names {
-                        self.ensure_name_slot(binding.name_id);
-                    }
-                }
-                // Recurse into control flow — Python has no block scoping
-                Node::For {
-                    target, body, or_else, ..
-                } => {
-                    self.pre_scan_unpack_target(target);
-                    self.pre_scan_module_names(body);
-                    self.pre_scan_module_names(or_else);
-                }
-                Node::If { body, or_else, .. } | Node::While { body, or_else, .. } => {
-                    self.pre_scan_module_names(body);
-                    self.pre_scan_module_names(or_else);
-                }
-                Node::Try(try_block) => {
-                    self.pre_scan_module_names(&try_block.body);
-                    for handler in &try_block.handlers {
-                        if let Some(name) = &handler.name {
-                            self.ensure_name_slot(name.name_id);
-                        }
-                        self.pre_scan_module_names(&handler.body);
-                    }
-                    self.pre_scan_module_names(&try_block.or_else);
-                    self.pre_scan_module_names(&try_block.finally);
-                }
-                // Statements that don't define names at module level
-                Node::Pass
-                | Node::Expr(_)
-                | Node::Return(_)
-                | Node::ReturnNone
-                | Node::Raise(_)
-                | Node::Assert { .. }
-                | Node::AttrAssign { .. }
-                | Node::Break { .. }
-                | Node::Continue { .. }
-                | Node::Global { .. }
-                | Node::Nonlocal { .. } => {}
-            }
+            collect_scope_info_from_node(
+                node,
+                &mut global_names,
+                &mut nonlocal_names,
+                &mut assigned_names,
+                self.interner,
+            );
         }
-    }
-
-    /// Pre-scans an unpack target to register all names it binds.
-    fn pre_scan_unpack_target(&mut self, target: &UnpackTarget) {
-        match target {
-            UnpackTarget::Name(ident) | UnpackTarget::Starred(ident) => {
-                self.ensure_name_slot(ident.name_id);
+        // Pre-allocate a namespace slot for each name so the global_name_map
+        // snapshot passed to function bodies is complete.
+        for name in assigned_names {
+            if !self.name_map.contains_key(name.as_str()) {
+                let id = NamespaceId::new(self.namespace_size);
+                self.namespace_size += 1;
+                self.name_map.insert(name, id);
             }
-            UnpackTarget::Tuple { targets, .. } => {
-                self.pre_scan_unpack_targets(targets);
-            }
-        }
-    }
-
-    /// Pre-scans a list of unpack targets to register all names they bind.
-    fn pre_scan_unpack_targets(&mut self, targets: &[UnpackTarget]) {
-        for target in targets {
-            self.pre_scan_unpack_target(target);
-        }
-    }
-
-    /// Ensures a name has a slot allocated in the module namespace.
-    ///
-    /// If the name already exists (e.g., from input variables), this is a no-op.
-    /// Otherwise, a new slot is allocated. The slot index is stable — when `get_id`
-    /// later processes this name, it will find the existing entry.
-    fn ensure_name_slot(&mut self, name_id: StringId) {
-        let name_str = self.interner.get_str(name_id);
-        if let Entry::Vacant(e) = self.name_map.entry(name_str.to_string()) {
-            let id = NamespaceId::new(self.namespace_size);
-            self.namespace_size += 1;
-            e.insert(id);
         }
     }
 
