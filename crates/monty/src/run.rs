@@ -319,15 +319,12 @@ impl Executor {
         self.populate_inputs(inputs, &mut vm)?;
         let frame_exit_result = vm.run_module(&self.module_code);
 
-        // Convert return value while VM is alive
-        let py_object = frame_exit_to_object(frame_exit_result, &mut vm)
-            .map_err(|e| e.into_python_exception(&self.interns, &self.code))?;
-
-        // Take globals out of the VM so we can access the heap for refcount queries.
+        // Take globals out of the VM so we can inspect them, but keep VM alive
+        // for heap access and later conversion.
         let globals = vm.take_globals();
-        vm.cleanup();
 
-        // Compute ref counts from globals
+        // Read refcounts BEFORE converting the return value, because
+        // `frame_exit_to_object` drops the return value (decrementing its refcount).
         let mut counts = ahash::AHashMap::new();
         let mut unique_ids = HashSet::new();
 
@@ -336,12 +333,18 @@ impl Executor {
             if idx < globals.len()
                 && let Value::Ref(id) = &globals[idx]
             {
-                counts.insert(name.clone(), heap.get_refcount(*id));
+                counts.insert(name.clone(), vm.heap.get_refcount(*id));
                 unique_ids.insert(*id);
             }
         }
         let unique_refs = unique_ids.len();
-        let heap_count = heap.entry_count();
+        let heap_count = vm.heap.entry_count();
+
+        // Convert return value while VM is still alive (needs access to interns)
+        let py_object = frame_exit_to_object(frame_exit_result, &mut vm)
+            .map_err(|e| e.into_python_exception(&self.interns, &self.code))?;
+
+        vm.cleanup();
 
         // Drop globals with proper ref counting
         for value in globals {
