@@ -46,6 +46,11 @@ pub struct PrepareResult {
 pub(crate) fn prepare(parse_result: ParseResult, input_names: Vec<String>) -> Result<PrepareResult, ParseError> {
     let ParseResult { nodes, interner } = parse_result;
     let mut p = Prepare::new_module(input_names, &interner);
+    // Pre-scan all module-level names so function bodies can resolve forward references.
+    // In CPython, names inside function bodies are resolved at call time, not definition time,
+    // so `def foo(): return bar()` works even when `bar` is defined after `foo`. We achieve
+    // this by ensuring the global name_map is complete before any function body is prepared.
+    p.pre_scan_module_names(&nodes);
     let mut prepared_nodes = p.prepare_nodes(nodes)?;
 
     // In the root frame, the last expression is implicitly returned
@@ -77,6 +82,7 @@ pub(crate) fn prepare_with_existing_names(
 ) -> Result<PrepareResult, ParseError> {
     let ParseResult { nodes, interner } = parse_result;
     let mut p = Prepare::new_module_with_name_map(existing_name_map, &interner);
+    p.pre_scan_module_names(&nodes);
     let mut prepared_nodes = p.prepare_nodes(nodes)?;
 
     // In the root frame, the last expression is implicitly returned to match REPL behavior.
@@ -294,6 +300,112 @@ impl<'i> Prepare<'i> {
             free_var_map,
             cell_var_map,
             unassigned_ref_names: AHashSet::new(),
+        }
+    }
+
+    /// Pre-scans module-level statements to register all names that will be defined.
+    ///
+    /// This ensures the global `name_map` is complete before any function body is prepared,
+    /// enabling forward references. In CPython, names inside function bodies are resolved at
+    /// call time (via dictionary lookup), so definition order doesn't matter. In Monty's
+    /// slot-based approach, we achieve the same effect by pre-allocating slots for all
+    /// module-level names before the main prepare pass.
+    ///
+    /// Recurses into control flow blocks (if/for/while/try) because Python has no block
+    /// scoping — names defined inside these blocks are still module-level globals.
+    fn pre_scan_module_names(&mut self, nodes: &[ParseNode]) {
+        debug_assert!(self.is_module_scope);
+        for node in nodes {
+            match node {
+                Node::FunctionDef(RawFunctionDef { name, .. }) => {
+                    self.ensure_name_slot(name.name_id);
+                }
+                Node::Assign { target, .. }
+                | Node::OpAssign { target, .. }
+                | Node::SubscriptOpAssign { target, .. }
+                | Node::SubscriptAssign { target, .. } => {
+                    self.ensure_name_slot(target.name_id);
+                }
+                Node::UnpackAssign { targets, .. } => {
+                    self.pre_scan_unpack_targets(targets);
+                }
+                Node::Import { binding, .. } => {
+                    self.ensure_name_slot(binding.name_id);
+                }
+                Node::ImportFrom { names, .. } => {
+                    for (_, binding) in names {
+                        self.ensure_name_slot(binding.name_id);
+                    }
+                }
+                // Recurse into control flow — Python has no block scoping
+                Node::For {
+                    target, body, or_else, ..
+                } => {
+                    self.pre_scan_unpack_target(target);
+                    self.pre_scan_module_names(body);
+                    self.pre_scan_module_names(or_else);
+                }
+                Node::If { body, or_else, .. } | Node::While { body, or_else, .. } => {
+                    self.pre_scan_module_names(body);
+                    self.pre_scan_module_names(or_else);
+                }
+                Node::Try(try_block) => {
+                    self.pre_scan_module_names(&try_block.body);
+                    for handler in &try_block.handlers {
+                        if let Some(name) = &handler.name {
+                            self.ensure_name_slot(name.name_id);
+                        }
+                        self.pre_scan_module_names(&handler.body);
+                    }
+                    self.pre_scan_module_names(&try_block.or_else);
+                    self.pre_scan_module_names(&try_block.finally);
+                }
+                // Statements that don't define names at module level
+                Node::Pass
+                | Node::Expr(_)
+                | Node::Return(_)
+                | Node::ReturnNone
+                | Node::Raise(_)
+                | Node::Assert { .. }
+                | Node::AttrAssign { .. }
+                | Node::Break { .. }
+                | Node::Continue { .. }
+                | Node::Global { .. }
+                | Node::Nonlocal { .. } => {}
+            }
+        }
+    }
+
+    /// Pre-scans an unpack target to register all names it binds.
+    fn pre_scan_unpack_target(&mut self, target: &UnpackTarget) {
+        match target {
+            UnpackTarget::Name(ident) | UnpackTarget::Starred(ident) => {
+                self.ensure_name_slot(ident.name_id);
+            }
+            UnpackTarget::Tuple { targets, .. } => {
+                self.pre_scan_unpack_targets(targets);
+            }
+        }
+    }
+
+    /// Pre-scans a list of unpack targets to register all names they bind.
+    fn pre_scan_unpack_targets(&mut self, targets: &[UnpackTarget]) {
+        for target in targets {
+            self.pre_scan_unpack_target(target);
+        }
+    }
+
+    /// Ensures a name has a slot allocated in the module namespace.
+    ///
+    /// If the name already exists (e.g., from input variables), this is a no-op.
+    /// Otherwise, a new slot is allocated. The slot index is stable — when `get_id`
+    /// later processes this name, it will find the existing entry.
+    fn ensure_name_slot(&mut self, name_id: StringId) {
+        let name_str = self.interner.get_str(name_id);
+        if let Entry::Vacant(e) = self.name_map.entry(name_str.to_string()) {
+            let id = NamespaceId::new(self.namespace_size);
+            self.namespace_size += 1;
+            e.insert(id);
         }
     }
 

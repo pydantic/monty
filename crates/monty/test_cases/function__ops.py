@@ -292,3 +292,73 @@ def double(x):
 
 
 assert double(x) == 10, 'global used as argument, param shadows inside'
+
+
+# === Forward function references ===
+# In CPython, names inside function bodies are resolved at call time,
+# so definition order at module level doesn't matter.
+
+def caller():
+    return callee()
+
+
+def callee():
+    return 'hello from callee'
+
+
+assert caller() == 'hello from callee', 'forward function reference'
+
+
+# Chain of forward references
+def chain_a():
+    return chain_b()
+
+
+def chain_b():
+    return chain_c()
+
+
+def chain_c():
+    return 42
+
+
+assert chain_a() == 42, 'chained forward references'
+
+
+# Forward reference to a function that takes arguments
+def uses_helper(val):
+    return helper(val, 10)
+
+
+def helper(a, b):
+    return a + b
+
+
+assert uses_helper(5) == 15, 'forward reference with arguments'
+
+
+# Forward reference with variable defined after function
+def reads_global_var():
+    return later_var
+
+
+later_var = 'defined later'
+assert reads_global_var() == 'defined later', 'forward reference to global variable'
+
+
+# Mutual recursion via forward references
+def is_even(n):
+    if n == 0:
+        return True
+    return is_odd(n - 1)
+
+
+def is_odd(n):
+    if n == 0:
+        return False
+    return is_even(n - 1)
+
+
+assert is_even(4) is True, 'mutual recursion: is_even(4)'
+assert is_odd(3) is True, 'mutual recursion: is_odd(3)'
+assert is_even(3) is False, 'mutual recursion: is_even(3)'
