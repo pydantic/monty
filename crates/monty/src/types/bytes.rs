@@ -1651,7 +1651,7 @@ fn parse_bytes_splitlines_args(args: ArgValues, vm: &mut VM<'_, '_, impl Resourc
         defer_drop!(key, vm);
         let mut value_guard = HeapGuard::new(value, vm);
 
-        let Some(keyword_name) = key.as_either_str(&value_guard.heap().heap) else {
+        let Some(keyword_name) = key.as_either_str(value_guard.heap().heap) else {
             return Err(ExcType::type_error("keywords must be strings"));
         };
 

@@ -6,7 +6,7 @@ use super::VM;
 use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, SimpleException},
-    heap::{Heap, HeapData, HeapGuard},
+    heap::{Heap, HeapData, HeapGuard, HeapReadOutput},
     heap_data::HeapDataMut,
     intern::StringId,
     resource::ResourceTracker,
@@ -260,17 +260,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 _ => "<unknown>".to_string(),
             };
 
-            // Use with_entry_mut to avoid borrow conflict: takes data out temporarily
-            let result = Heap::with_entry_mut(this, dict_id, |this, data| {
-                if let HeapDataMut::Dict(dict) = data {
-                    dict.set(key, value, this)
-                } else {
-                    Err(RunError::internal("DictMerge: entry is not a Dict"))
-                }
-            });
+            let HeapReadOutput::Dict(mut dict) = this.heap.read(dict_id) else {
+                unreachable!("DictMerge: entry is not a Dict")
+            };
 
-            // If set returned Some, the key already existed (duplicate kwarg)
-            if let Some(old_value) = result? {
+            if let Some(old_value) = dict.set(key, value, this)? {
                 old_value.drop_with_heap(this);
                 return Err(ExcType::type_error_multiple_values(&func_name, &key_str));
             }

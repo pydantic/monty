@@ -1320,7 +1320,7 @@ impl<T: ResourceTracker> Drop for Heap<T> {
     fn drop(&mut self) {
         // Mark all contained Objects as Dereferenced before dropping.
         // We use py_dec_ref_ids for this since it handles the marking
-        // (we ignore the collected IDs since we're dropping everything anyway).
+        // (we ignore the collected IDs since we're dropped everything anyway).
         let mut dummy_stack = Vec::new();
         for value in self.entries.iter_mut().flatten() {
             if let Some(data) = &mut value.data {
@@ -1329,3 +1329,11 @@ impl<T: ResourceTracker> Drop for Heap<T> {
         }
     }
 }
+
+/// Compile-fail soundness tests for [`HeapReader`].
+///
+/// Gated behind `--cfg heap_reader_compile_fail_tests` so they are only compiled
+/// when the integration test harness runs `cargo check` with the appropriate flags.
+#[cfg(heap_reader_compile_fail_tests)]
+#[path = "../tests/heap_reader_compile_fail_cases/cases.rs"]
+mod heap_reader_compile_fail_cases;

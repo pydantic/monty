@@ -6,7 +6,7 @@ use std::{
 
 use ahash::AHashSet;
 use hashbrown::{HashTable, hash_table::Entry};
-use smallvec::smallvec;
+use smallvec::{SmallVec, smallvec};
 
 use super::{DictItemsView, DictKeysView, DictValuesView, MontyIter, PyTrait, allocate_tuple};
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapRead},
     intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -217,7 +217,62 @@ impl Dict {
             Ok(None)
         }
     }
+}
 
+impl<'h> HeapRead<'h, Dict> {
+    /// Sets a key-value pair in the dict.
+    ///
+    /// The caller transfers ownership of `key` and `value` to the dict. Their refcounts
+    /// are NOT incremented here - the caller is responsible for ensuring the refcounts
+    /// were already incremented (e.g., via `clone_with_heap` or `evaluate_use`).
+    ///
+    /// If the key already exists, replaces the old value and returns it (caller now
+    /// owns the old value and is responsible for its refcount).
+    /// Returns Err if key is unhashable.
+    pub fn set(
+        &mut self,
+        key: Value,
+        value: Value,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<Option<Value>> {
+        // Track if we're adding a reference for GC optimization
+        if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
+            self.get_mut(vm.heap).contains_refs = true;
+        }
+
+        // Handle hash computation errors explicitly so we can drop key/value properly
+        let (opt_index, hash) = match self.find_index_hash(&key, vm) {
+            Ok(result) => result,
+            Err(e) => {
+                // Drop the key and value before returning the error
+                key.drop_with_heap(vm);
+                value.drop_with_heap(vm);
+                return Err(e);
+            }
+        };
+
+        let entry = DictEntry { key, value, hash };
+        if let Some(index) = opt_index {
+            // Key exists, replace in place to preserve insertion order
+            let old_entry = std::mem::replace(&mut self.get_mut(vm.heap).entries[index], entry);
+
+            // Decrement refcount for old key (we're discarding it)
+            old_entry.key.drop_with_heap(vm);
+            // Transfer ownership of the old value to caller (no clone needed)
+            Ok(Some(old_entry.value))
+        } else {
+            // Key doesn't exist, add new pair to indices and entries
+            let this = self.get_mut(vm.heap);
+            let index = this.entries.len();
+            this.entries.push(entry);
+            this.indices
+                .insert_unique(hash, index, |index| this.entries[*index].hash);
+            Ok(None)
+        }
+    }
+}
+
+impl Dict {
     /// Removes and returns a key-value pair from the dict.
     ///
     /// Returns Ok(Some((key, value))) if key exists, Ok(None) if key doesn't exist.
@@ -345,6 +400,42 @@ impl Dict {
             .find(hash, |v| key.py_eq(&self.entries[*v].key, vm).unwrap_or(false))
             .copied();
         Ok((opt_index, hash))
+    }
+}
+
+impl<'h> HeapRead<'h, Dict> {
+    fn find_index_hash(
+        &self,
+        key: &Value,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<(Option<usize>, u64)> {
+        let hash = key
+            .py_hash(vm.heap, vm.interns)?
+            .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type(vm.heap)))?;
+
+        // Dict keys are typically shallow (strings, ints, tuples of primitives),
+        // so recursion errors are unlikely. If one occurs, treat it as "not equal" -
+        // the key lookup fails but doesn't crash.
+        //
+        // Collect candidate indices during the lookup to avoid borrow tracker issues
+        let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
+        let this = self.get(vm.heap);
+        this.indices.find(hash, |v| {
+            if this.entries[*v].hash == hash {
+                candidates.push(*v);
+            }
+            false
+        });
+
+        for candidate_index in candidates {
+            let candidate_key = self.get(vm.heap).entries[candidate_index].key.clone_with_heap(vm);
+            defer_drop!(candidate_key, vm);
+            if key.py_eq(candidate_key, vm)? {
+                return Ok((Some(candidate_index), hash));
+            }
+        }
+
+        Ok((None, hash))
     }
 }
 
