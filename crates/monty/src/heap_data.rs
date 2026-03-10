@@ -619,15 +619,11 @@ macro_rules! impl_py_trait_dispatch {
                     (Self::DictKeysView(a), Self::DictKeysView(b)) => a.py_eq(b, vm),
                     (Self::DictItemsView(a), Self::DictItemsView(b)) => a.py_eq(b, vm),
                     (Self::DictValuesView(_), Self::DictValuesView(_)) => Ok(false),
-                    (Self::DictKeysView(a), Self::Set(b)) | (Self::Set(b), Self::DictKeysView(a)) => {
-                        a.eq_set(b, vm)
-                    }
+                    (Self::DictKeysView(a), Self::Set(b)) | (Self::Set(b), Self::DictKeysView(a)) => a.eq_set(b, vm),
                     (Self::DictKeysView(a), Self::FrozenSet(b)) | (Self::FrozenSet(b), Self::DictKeysView(a)) => {
                         a.eq_frozenset(b, vm)
                     }
-                    (Self::DictItemsView(a), Self::Set(b)) | (Self::Set(b), Self::DictItemsView(a)) => {
-                        a.eq_set(b, vm)
-                    }
+                    (Self::DictItemsView(a), Self::Set(b)) | (Self::Set(b), Self::DictItemsView(a)) => a.eq_set(b, vm),
                     (Self::DictItemsView(a), Self::FrozenSet(b)) | (Self::FrozenSet(b), Self::DictItemsView(a)) => {
                         a.eq_frozenset(b, vm)
                     }
@@ -656,6 +652,19 @@ macro_rules! impl_py_trait_dispatch {
                     | (Self::Coroutine(_), Self::Coroutine(_))
                     | (Self::GatherFuture(_), Self::GatherFuture(_)) => Ok(false),
                     _ => Ok(false), // Different types are never equal
+                }
+            }
+
+            fn py_cmp(
+                &self,
+                other: &Self,
+                vm: &mut VM<'_, '_, impl ResourceTracker>,
+            ) -> Result<Option<std::cmp::Ordering>, ResourceError> {
+                match (self, other) {
+                    (Self::Str(a), Self::Str(b)) => a.py_cmp(b, vm),
+                    (Self::Bytes(a), Self::Bytes(b)) => a.py_cmp(b, vm),
+                    (Self::Tuple(a), Self::Tuple(b)) => a.py_cmp(b, vm),
+                    _ => Ok(None),
                 }
             }
 

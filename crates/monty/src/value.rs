@@ -236,7 +236,7 @@ impl PyTrait for Value {
                 if *id1 == *id2 {
                     return Ok(true);
                 }
-                Heap::with_two(vm, *id1, *id2, |vm, left, right| left.py_eq(&right, vm))
+                Heap::with_two(vm, *id1, *id2, |vm, left, right| left.py_eq(right, vm))
             }
 
             // Builtins equality - just check the enums are equal
@@ -291,7 +291,7 @@ impl PyTrait for Value {
                 (HeapData::LongInt(a), HeapData::LongInt(b)) => Ok(a.inner().partial_cmp(b.inner())),
                 (HeapData::Str(a), HeapData::Str(b)) => Ok(a.as_str().partial_cmp(b.as_str())),
                 (HeapData::Tuple(_), HeapData::Tuple(_)) => {
-                    Heap::with_two(vm, *id1, *id2, |vm, left, right| left.py_cmp(&right, vm))
+                    Heap::with_two(vm, *id1, *id2, |vm, left, right| left.py_cmp(right, vm))
                 }
                 _ => Ok(None),
             },
@@ -448,7 +448,7 @@ impl PyTrait for Value {
             (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 + b))),
             (Self::Float(a), Self::Int(b)) => Ok(Some(Self::Float(a + *b as f64))),
             (Self::Ref(id1), Self::Ref(id2)) => {
-                Heap::with_two(vm, *id1, *id2, |vm, left, right| left.py_add(&right, vm))
+                Heap::with_two(vm, *id1, *id2, |vm, left, right| left.py_add(right, vm))
             }
             (Self::InternString(s1), Self::InternString(s2)) => {
                 let concat = format!("{}{}", interns.get_str(*s1), interns.get_str(*s2));
@@ -542,7 +542,7 @@ impl PyTrait for Value {
             }
             // LongInt - LongInt
             (Self::Ref(id1), Self::Ref(id2)) => {
-                Heap::with_two(vm, *id1, *id2, |vm, left, right| left.py_sub(&right, vm))
+                Heap::with_two(vm, *id1, *id2, |vm, left, right| left.py_sub(right, vm))
             }
             // Float - Float
             (Self::Float(a), Self::Float(b)) => Ok(Some(Self::Float(a - b))),
@@ -597,7 +597,7 @@ impl PyTrait for Value {
             }
             // LongInt % LongInt
             (Self::Ref(id1), Self::Ref(id2)) => {
-                Heap::with_two(vm, *id1, *id2, |vm, left, right| left.py_mod(&right, vm))
+                Heap::with_two(vm, *id1, *id2, |vm, left, right| left.py_mod(right, vm))
             }
             (Self::Float(v1), Self::Float(v2)) => {
                 if *v2 == 0.0 {
@@ -1576,9 +1576,9 @@ impl Value {
                 HeapDataMut::Range(range) => {
                     // Range containment is O(1) - check bounds and step alignment
                     let n = match item {
-                        Value::Int(i) => *i,
-                        Value::Bool(b) => i64::from(*b),
-                        Value::Float(f) => {
+                        Self::Int(i) => *i,
+                        Self::Bool(b) => i64::from(*b),
+                        Self::Float(f) => {
                             // Floats are contained if they equal an integer in the range
                             // e.g., 3.0 in range(5) is True, but 3.5 in range(5) is False
                             if f.fract() != 0.0 {

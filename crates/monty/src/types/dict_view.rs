@@ -62,11 +62,7 @@ impl DictKeysView {
     ///
     /// Two keys views compare equal when they expose the same live key set,
     /// even if they are distinct view objects over distinct dictionaries.
-    pub(crate) fn eq_view(
-        self,
-        other: Self,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-    ) -> Result<bool, ResourceError> {
+    pub(crate) fn eq_view(self, other: Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         if self.dict_id == other.dict_id {
             return Ok(true);
         }
@@ -80,11 +76,7 @@ impl DictKeysView {
     }
 
     /// Compares this keys view to a mutable set using set membership semantics.
-    pub(crate) fn eq_set(
-        self,
-        other: &Set,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-    ) -> Result<bool, ResourceError> {
+    pub(crate) fn eq_set(self, other: &Set, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         Heap::with_entry_mut(vm, self.dict_id, |vm, data| {
             let HeapDataMut::Dict(dict) = data else {
                 panic!("dict_keys view must always reference a dict");
@@ -234,29 +226,36 @@ impl DictItemsView {
     }
 
     /// Compares this items view to another items view using live dict item semantics.
-    pub(crate) fn eq_view(
-        self,
-        other: Self,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-    ) -> Result<bool, ResourceError> {
+    pub(crate) fn eq_view(self, other: Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         if self.dict_id == other.dict_id {
             return Ok(true);
         }
 
         Heap::with_two(vm, self.dict_id, other.dict_id, |vm, left, right| {
-            let (HeapData::Dict(left_dict), HeapData::Dict(right_dict)) = (left, right) else {
+            let (HeapData::Dict(left), HeapData::Dict(right)) = (left, right) else {
                 panic!("dict_items view must always reference dicts");
             };
-            eq_dict_views(left_dict, right_dict, vm)
+            if left.len() != right.len() {
+                return Ok(false);
+            }
+            let token = vm.heap.incr_recursion_depth()?;
+            defer_drop!(token, vm);
+            for (key, value) in left {
+                vm.heap.check_time()?;
+                if let Ok(Some(other_v)) = right.get(key, vm) {
+                    if !value.py_eq(other_v, vm)? {
+                        return Ok(false);
+                    }
+                } else {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
         })
     }
 
     /// Compares this items view to a mutable set using set membership semantics.
-    pub(crate) fn eq_set(
-        self,
-        other: &Set,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-    ) -> Result<bool, ResourceError> {
+    pub(crate) fn eq_set(self, other: &Set, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         Heap::with_entry_mut(vm, self.dict_id, |vm, data| {
             let HeapDataMut::Dict(dict) = data else {
                 panic!("dict_items view must always reference a dict");
@@ -447,33 +446,6 @@ impl PyTrait for DictValuesView {
         write_dict_values_contents(f, self.dict(vm.heap), vm, heap_ids)?;
         f.write_str("])")
     }
-}
-
-/// Compares two dicts for equality using `Dict::get` and `Value::py_eq`.
-///
-/// This is used by `DictItemsView::eq_view` inside `Heap::with_two()` closures
-/// where the closure receives `&mut VM`.
-fn eq_dict_views(
-    left: &Dict,
-    right: &Dict,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
-) -> Result<bool, ResourceError> {
-    if left.len() != right.len() {
-        return Ok(false);
-    }
-    let token = vm.heap.incr_recursion_depth()?;
-    defer_drop!(token, vm);
-    for (key, value) in left.iter() {
-        vm.heap.check_time()?;
-        if let Ok(Some(other_v)) = right.get(key, vm) {
-            if !value.py_eq(other_v, vm)? {
-                return Ok(false);
-            }
-        } else {
-            return Ok(false);
-        }
-    }
-    Ok(true)
 }
 
 /// Compares two dicts for key-set equality using membership checks.
