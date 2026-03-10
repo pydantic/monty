@@ -12,7 +12,7 @@ use crate::{
     bytecode::FrameExit,
     defer_drop,
     exception_private::{ExcType, RunError},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput},
     heap_data::CellValue,
     intern::{FunctionId, StringId},
     os::OsFunction,
@@ -269,7 +269,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         match obj {
             Value::Ref(heap_id) => {
                 defer_drop!(obj, this);
-                Heap::call_attr(this, heap_id, &attr, args)
+                heap_read_call_attr(this, heap_id, &attr, args)
             }
             Value::InternString(string_id) => {
                 // Call string method on interned string literal using the unified dispatcher
@@ -763,5 +763,26 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         ))?;
 
         Ok(CallResult::FramePushed)
+    }
+}
+
+/// Dispatches `py_call_attr` via `HeapReader::read()` instead of the take-and-restore
+/// pattern (`Heap::call_attr`).
+///
+/// The key benefit is that data stays in the heap, enabling self-referential operations
+/// like `d.update(d)` and `x.extend(x)` to work correctly. Types with `HeapRead`-based
+/// `call_attr` methods use the short-lived borrow pattern for reads/writes; remaining
+/// types fall back to the old take-and-restore path.
+fn heap_read_call_attr<T: ResourceTracker>(
+    vm: &mut VM<'_, '_, T>,
+    id: HeapId,
+    attr: &EitherStr,
+    args: ArgValues,
+) -> Result<CallResult, RunError> {
+    match vm.heap.read(id) {
+        HeapReadOutput::List(list) => Ok(list.call_attr(id, vm, attr, args)?),
+        HeapReadOutput::Dict(dict) => Ok(dict.call_attr(id, vm, attr, args)?),
+        // Types that don't yet have HeapRead call_attr fall back to take-and-restore
+        _ => Heap::call_attr(vm, id, attr, args),
     }
 }

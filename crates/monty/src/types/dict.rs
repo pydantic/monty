@@ -14,7 +14,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapRead},
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -561,6 +561,290 @@ impl<'h> HeapRead<'h, Dict> {
             old_value.drop_with_heap(vm);
         }
         Ok(())
+    }
+}
+
+impl<'h> HeapRead<'h, Dict> {
+    /// Dispatches a method call on a dict accessed through `HeapRead`.
+    ///
+    /// This replaces the take-and-restore `py_call_attr` pattern. Because the dict
+    /// data stays in the heap, self-referential operations like `d.update(d)` work
+    /// correctly — the source dict remains accessible through the heap during iteration.
+    pub(crate) fn call_attr(
+        mut self,
+        self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        attr: &EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        let Some(method) = attr.static_string() else {
+            args.drop_with_heap(vm);
+            return Err(ExcType::attribute_error(Type::Dict, attr.as_str(vm.interns)));
+        };
+
+        let value = match method {
+            StaticStrings::Get => {
+                let (key, default) = args.get_one_two_args("get", vm.heap)?;
+                defer_drop!(key, vm);
+                let default = default.unwrap_or(Value::None);
+                let mut default_guard = HeapGuard::new(default, vm);
+                let vm = default_guard.heap();
+                match self.get_cloned(key, vm)? {
+                    Some(v) => Ok(v),
+                    None => Ok(default_guard.into_inner()),
+                }
+            }
+            StaticStrings::Keys => {
+                args.check_zero_args("dict.keys", vm.heap)?;
+                let view_id = vm.heap.allocate(HeapData::DictKeysView(DictKeysView::new(self_id)))?;
+                vm.heap.inc_ref(self_id);
+                Ok(Value::Ref(view_id))
+            }
+            StaticStrings::Values => {
+                args.check_zero_args("dict.values", vm.heap)?;
+                let view_id = vm
+                    .heap
+                    .allocate(HeapData::DictValuesView(DictValuesView::new(self_id)))?;
+                vm.heap.inc_ref(self_id);
+                Ok(Value::Ref(view_id))
+            }
+            StaticStrings::Items => {
+                args.check_zero_args("dict.items", vm.heap)?;
+                let view_id = vm.heap.allocate(HeapData::DictItemsView(DictItemsView::new(self_id)))?;
+                vm.heap.inc_ref(self_id);
+                Ok(Value::Ref(view_id))
+            }
+            StaticStrings::Pop => self.hr_pop(args, vm),
+            StaticStrings::Clear => {
+                args.check_zero_args("dict.clear", vm.heap)?;
+                self.hr_clear(vm);
+                Ok(Value::None)
+            }
+            StaticStrings::Copy => {
+                args.check_zero_args("dict.copy", vm.heap)?;
+                self.hr_copy(vm)
+            }
+            StaticStrings::Update => self.hr_update(args, vm),
+            StaticStrings::Setdefault => self.hr_setdefault(args, vm),
+            StaticStrings::Popitem => {
+                args.check_zero_args("dict.popitem", vm.heap)?;
+                self.hr_popitem(vm)
+            }
+            StaticStrings::Fromkeys => dict_fromkeys(args, vm),
+            _ => {
+                args.drop_with_heap(vm);
+                return Err(ExcType::attribute_error(Type::Dict, attr.as_str(vm.interns)));
+            }
+        };
+        value.map(CallResult::Value)
+    }
+
+    /// `dict.pop(key[, default])` via HeapRead.
+    fn hr_pop(&mut self, args: ArgValues, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        let (key, default) = args.get_one_two_args("pop", vm.heap)?;
+        defer_drop!(key, vm);
+        let mut default_guard = HeapGuard::new(default, vm);
+
+        // Find the key using the candidate-based lookup
+        let (opt_index, _hash) = self.find_index_hash(key, default_guard.heap())?;
+
+        if let Some(index) = opt_index {
+            let vm = default_guard.heap();
+            // Remove the entry
+            let entry = self.get_mut(vm.heap).entries.remove(index);
+            // Remove from index table and rebuild (same as dict_popitem)
+            let this = self.get_mut(vm.heap);
+            this.indices.clear();
+            for (idx, e) in this.entries.iter().enumerate() {
+                this.indices.insert_unique(e.hash, idx, |&i| this.entries[i].hash);
+            }
+            // Drop the old key, return the value
+            entry.key.drop_with_heap(vm);
+            Ok(entry.value)
+        } else {
+            let (default, vm) = default_guard.into_parts();
+            if let Some(d) = default {
+                Ok(d)
+            } else {
+                Err(ExcType::key_error(key, vm))
+            }
+        }
+    }
+
+    /// `dict.clear()` via HeapRead.
+    fn hr_clear(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>) {
+        let entries: Vec<DictEntry> = self.get_mut(vm.heap).entries.drain(..).collect();
+        self.get_mut(vm.heap).indices.clear();
+        entries.drop_with_heap(vm);
+    }
+
+    /// `dict.copy()` via HeapRead — returns a shallow copy.
+    fn hr_copy(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        let len = self.get(vm.heap).entries.len();
+        let mut pairs = Vec::with_capacity(len);
+        for i in 0..len {
+            let key = self.clone_key_at(i, vm);
+            let value = self.clone_value_at(i, vm);
+            pairs.push((key, value));
+        }
+        let new_dict = Dict::from_pairs(pairs, vm)?;
+        let heap_id = vm.heap.allocate(HeapData::Dict(new_dict))?;
+        Ok(Value::Ref(heap_id))
+    }
+
+    /// `dict.update([other], **kwargs)` via HeapRead.
+    ///
+    /// Because data stays in the heap, `d.update(d)` works correctly — the source
+    /// dict is accessible through the heap while we iterate and copy its pairs.
+    fn hr_update(&mut self, args: ArgValues, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        let (pos_iter, kwargs) = args.into_parts();
+        defer_drop_mut!(pos_iter, vm);
+        let mut kwargs_guard = HeapGuard::new(kwargs, vm);
+
+        if let Some(other_value) = pos_iter.next() {
+            let other_value_guard = HeapGuard::new(other_value, kwargs_guard.heap());
+            if pos_iter.len() != 0 {
+                return Err(ExcType::type_error_at_most("dict.update", 1, pos_iter.len() + 1));
+            }
+            let other_value = other_value_guard.into_inner();
+            self.hr_merge_from_value(other_value, kwargs_guard.heap())?;
+        }
+
+        let kwargs = kwargs_guard.into_inner();
+        self.hr_merge_from_kwargs(kwargs, vm)?;
+        Ok(Value::None)
+    }
+
+    /// Merges key-value pairs from a dict or iterable-of-pairs into self via HeapRead.
+    ///
+    /// For dict sources, uses HeapReader::read() to access the source dict through
+    /// the heap, enabling self-referential updates like `d.update(d)`.
+    fn hr_merge_from_value(&mut self, other_value: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<()> {
+        let mut guard = HeapGuard::new(other_value, vm);
+        let (other_value, vm) = guard.as_parts_mut();
+        if let Value::Ref(id) = other_value {
+            let src_id = *id;
+            if let HeapReadOutput::Dict(src) = vm.heap.read(src_id) {
+                let len = src.get(vm.heap).entries.len();
+                let mut pairs = Vec::with_capacity(len);
+                for i in 0..len {
+                    let key = src.clone_key_at(i, vm);
+                    let value = src.clone_value_at(i, vm);
+                    pairs.push((key, value));
+                }
+
+                // Apply cloned pairs into self
+                for (key, value) in pairs {
+                    let old_value = self.set(key, value, vm)?;
+                    old_value.drop_with_heap(vm);
+                }
+                // guard drops other_value here
+                return Ok(());
+            }
+        }
+
+        // Non-dict values are interpreted as iterable-of-pairs
+        let (other_value, vm) = guard.into_parts();
+        self.hr_merge_from_iterable_pairs(other_value, vm)
+    }
+
+    /// Merges key-value pairs from an iterable of 2-item pairs.
+    fn hr_merge_from_iterable_pairs(
+        &mut self,
+        iterable: Value,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<()> {
+        let iter = MontyIter::new(iterable, vm)?;
+        defer_drop_mut!(iter, vm);
+
+        while let Some(item) = iter.for_next(vm)? {
+            let pair_iter = MontyIter::new(item, vm)?;
+            defer_drop_mut!(pair_iter, vm);
+
+            let Some(key) = pair_iter.for_next(vm)? else {
+                return Err(ExcType::type_error(
+                    "dictionary update sequence element has length 0; 2 is required",
+                ));
+            };
+            let mut key_guard = HeapGuard::new(key, vm);
+
+            let Some(value) = pair_iter.for_next(key_guard.heap())? else {
+                return Err(ExcType::type_error(
+                    "dictionary update sequence element has length 1; 2 is required",
+                ));
+            };
+            let mut value_guard = HeapGuard::new(value, key_guard.heap());
+
+            if let Some(extra) = pair_iter.for_next(value_guard.heap())? {
+                extra.drop_with_heap(value_guard.heap());
+                return Err(ExcType::type_error(
+                    "dictionary update sequence element has length > 2; 2 is required",
+                ));
+            }
+
+            let value = value_guard.into_inner();
+            let key = key_guard.into_inner();
+
+            if let Some(old_value) = self.set(key, value, vm)? {
+                old_value.drop_with_heap(vm);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Merges kwargs into self.
+    fn hr_merge_from_kwargs(
+        &mut self,
+        kwargs: KwargsValues,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<()> {
+        let kwargs_iter = kwargs.into_iter();
+        defer_drop_mut!(kwargs_iter, vm);
+        for (key, value) in kwargs_iter {
+            let old_value = self.set(key, value, vm)?;
+            old_value.drop_with_heap(vm);
+        }
+        Ok(())
+    }
+
+    /// `dict.setdefault(key[, default])` via HeapRead.
+    fn hr_setdefault(&mut self, args: ArgValues, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        let (key, default) = args.get_one_two_args("setdefault", vm.heap)?;
+        let default = default.unwrap_or(Value::None);
+        defer_drop!(key, vm);
+
+        // Check if key exists
+        if let Some(existing) = self.get_cloned(key, vm)? {
+            default.drop_with_heap(vm);
+            Ok(existing)
+        } else {
+            // Key doesn't exist - insert default and return a clone
+            let return_value = default.clone_with_heap(vm);
+            let key_clone = key.clone_with_heap(vm);
+            if let Some(old_value) = self.set(key_clone, default, vm)? {
+                old_value.drop_with_heap(vm);
+            }
+            Ok(return_value)
+        }
+    }
+
+    /// `dict.popitem()` via HeapRead.
+    fn hr_popitem(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        if self.get(vm.heap).is_empty() {
+            return Err(ExcType::key_error_popitem_empty_dict());
+        }
+
+        let entry = self.get_mut(vm.heap).entries.pop().expect("dict is not empty");
+
+        // Rebuild indices
+        let this = self.get_mut(vm.heap);
+        this.indices.clear();
+        for (idx, e) in this.entries.iter().enumerate() {
+            this.indices.insert_unique(e.hash, idx, |&i| this.entries[i].hash);
+        }
+
+        Ok(allocate_tuple(smallvec![entry.key, entry.value], vm.heap)?)
     }
 }
 
