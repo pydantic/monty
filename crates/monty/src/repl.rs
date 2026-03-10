@@ -24,7 +24,7 @@ use crate::{
     parse::parse_with_interner,
     prepare::prepare_with_existing_names,
     resource::ResourceTracker,
-    run_progress::{ExtFunctionResult, NameLookupResult},
+    run_progress::{ConvertedExit, ExtFunctionResult, NameLookupResult, convert_frame_exit},
     value::Value,
 };
 
@@ -49,9 +49,11 @@ pub struct MontyRepl<T: ResourceTracker> {
     interns: Interns,
     /// Persistent heap across snippets.
     heap: Heap<T>,
-    /// Persistent global variables across snippets.
+    /// Persistent global variable values across snippets.
     ///
-    /// Indexed by slot number from the compiler's global-name map.
+    /// Indexed by `NamespaceId` slots from `global_name_map`. Between snippet
+    /// executions these are the only VM values that persist — stack and frames
+    /// are transient.
     globals: Vec<Value>,
 }
 
@@ -120,31 +122,27 @@ impl<T: ResourceTracker> MontyRepl<T> {
         };
 
         this.ensure_globals_size(executor.namespace_size);
-        if let Err(error) = this.inject_inputs(input_values, &executor) {
+
+        let mut vm = VM::new(mem::take(&mut this.globals), &mut this.heap, &executor.interns, print);
+
+        // Inject inputs with VM alive
+        if let Err(error) = inject_inputs_into_vm(&executor, input_values, &mut vm) {
+            this.globals = vm.take_globals();
+            vm.cleanup();
             return Err(Box::new(ReplStartError { repl: this, error }));
         }
 
-        // Move globals into the VM for execution.
-        let globals = mem::take(&mut this.globals);
-        let mut vm = VM::new(globals, &mut this.heap, &executor.interns, print);
         let vm_result = vm.run_module(&executor.module_code);
 
-        if matches!(
-            &vm_result,
-            Ok(FrameExit::ExternalCall { .. }
-                | FrameExit::OsCall { .. }
-                | FrameExit::MethodCall { .. }
-                | FrameExit::ResolveFutures(_)
-                | FrameExit::NameLookup { .. })
-        ) {
-            // Snapshot path: globals move into the VMSnapshot.
+        // Convert while VM alive, then snapshot or reclaim globals
+        let converted = convert_frame_exit(vm_result, &mut vm);
+        if converted.needs_snapshot() {
             let vm_state = vm.snapshot();
-            handle_repl_vm_result(vm_result, Some(vm_state), executor, this)
+            build_repl_progress(converted, Some(vm_state), executor, this)
         } else {
-            // Completion/error path: reclaim globals before cleanup.
             this.globals = vm.take_globals();
             vm.cleanup();
-            handle_repl_vm_result(vm_result, None, executor, this)
+            build_repl_progress(converted, None, executor, this)
         }
     }
 
@@ -179,40 +177,29 @@ impl<T: ResourceTracker> MontyRepl<T> {
             input_names,
         )?;
 
-        let ReplExecutor {
-            namespace_size,
-            name_map,
-            module_code,
-            interns,
-            code,
-            input_names,
-        } = executor;
+        self.ensure_globals_size(executor.namespace_size);
 
-        self.ensure_globals_size(namespace_size);
+        let mut vm = VM::new(mem::take(&mut self.globals), &mut self.heap, &executor.interns, print);
 
-        // Inject input values into their pre-assigned namespace slots.
-        for (name, obj) in input_names.iter().zip(input_values) {
-            let slot = name_map[name];
-            let value = obj
-                .to_value(&mut self.heap, &interns)
-                .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?;
-            let old = mem::replace(&mut self.globals[slot.index()], value);
-            old.drop_with_heap(&mut self.heap);
+        if let Err(e) = inject_inputs_into_vm(&executor, input_values, &mut vm) {
+            self.globals = vm.take_globals();
+            vm.cleanup();
+            return Err(e);
         }
 
-        // Move globals into the VM for execution, reclaim after completion.
-        let globals = mem::take(&mut self.globals);
-        let mut vm = VM::new(globals, &mut self.heap, &interns, print);
-        let mut frame_exit_result = vm.run_module(&module_code);
+        let mut frame_exit_result = vm.run_module(&executor.module_code);
 
         // Handle NameLookup exits by raising NameError through the VM so that
         // traceback information is properly captured. In the non-iterative REPL path,
         // there's no host to resolve names, so all NameLookup exits become NameErrors.
         while let Ok(FrameExit::NameLookup { name_id, .. }) = &frame_exit_result {
-            let name = interns.get_str(*name_id);
+            let name = executor.interns.get_str(*name_id);
             let err = ExcType::name_error(name);
             frame_exit_result = vm.resume_with_exception(err.into());
         }
+
+        // Convert output while VM alive
+        let result = frame_exit_to_object(frame_exit_result, &mut vm);
 
         // Reclaim globals before cleanup.
         self.globals = vm.take_globals();
@@ -221,11 +208,16 @@ impl<T: ResourceTracker> MontyRepl<T> {
         // Commit compiler metadata even on runtime errors.
         // Snippets can mutate globals before raising, and those values may contain
         // FunctionId/StringId values that must be interpreted with the updated tables.
+        let ReplExecutor {
+            name_map,
+            interns,
+            code,
+            ..
+        } = executor;
         self.global_name_map = name_map;
         self.interns = interns;
 
-        frame_exit_to_object(frame_exit_result, &mut self.heap, &self.interns)
-            .map_err(|e| e.into_python_exception(&self.interns, &code))
+        result.map_err(|e| e.into_python_exception(&self.interns, &code))
     }
 
     /// Grows the globals vector to at least `size` slots.
@@ -236,23 +228,6 @@ impl<T: ResourceTracker> MontyRepl<T> {
         if self.globals.len() < size {
             self.globals.resize_with(size, || Value::Undefined);
         }
-    }
-
-    /// Converts `MontyObject` inputs to `Value`s and places them in their assigned
-    /// namespace slots before execution begins.
-    ///
-    /// Input names were pre-registered in the name map by `new_repl_snippet`, so their
-    /// slots are already allocated. This just converts and stores the values.
-    fn inject_inputs(&mut self, inputs: Vec<MontyObject>, executor: &ReplExecutor) -> Result<(), MontyException> {
-        for (name, obj) in executor.input_names.iter().zip(inputs) {
-            let slot = executor.name_map[name];
-            let value = obj
-                .to_value(&mut self.heap, &executor.interns)
-                .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?;
-            let old = mem::replace(&mut self.globals[slot.index()], value);
-            old.drop_with_heap(&mut self.heap);
-        }
-        Ok(())
     }
 
     /// Returns the generated filename for the next interactive snippet.
@@ -558,38 +533,10 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
         let ReplSnapshot {
             mut repl,
             executor,
-            mut vm_state,
+            vm_state,
         } = snapshot;
 
-        // Resolve the name lookup result BEFORE restoring the VM, since the VM
-        // borrows heap mutably and we need direct access for caching.
-        let resolved_value = match result {
-            NameLookupResult::Value(obj) => {
-                let value = match obj.to_value(&mut repl.heap, &executor.interns) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        let error = MontyException::runtime_error(format!("invalid name lookup result: {e}"));
-                        return Err(Box::new(ReplStartError { repl, error }));
-                    }
-                };
-
-                // Cache in the appropriate slot (globals vector or VM stack).
-                let slot = namespace_slot as usize;
-                let target = if is_global {
-                    &mut vm_state.globals[slot]
-                } else {
-                    let stack_base = vm_state.current_stack_base();
-                    &mut vm_state.stack[stack_base + slot]
-                };
-                let old = mem::replace(target, value.clone_with_heap(&repl.heap));
-                old.drop_with_heap(&mut repl.heap);
-
-                Some(value)
-            }
-            NameLookupResult::Undefined => None,
-        };
-
-        // Now restore the VM
+        // Restore the VM first, then convert inside its lifetime
         let mut vm = VM::restore(
             vm_state,
             &executor.module_code,
@@ -598,31 +545,50 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
             print,
         );
 
-        // Resume execution: either push the resolved value or raise NameError
-        // through the VM so that traceback information is properly captured.
-        let vm_result = if let Some(value) = resolved_value {
-            vm.push(value);
-            vm.run()
-        } else {
-            let err: RunError = ExcType::name_error(&name).into();
-            vm.resume_with_exception(err)
+        // Resolve the name lookup result with the VM alive
+        let vm_result = match result {
+            NameLookupResult::Value(obj) => {
+                let value = match obj.to_value(&mut vm) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        repl.globals = vm.take_globals();
+                        vm.cleanup();
+                        let error = MontyException::runtime_error(format!("invalid name lookup result: {e}"));
+                        return Err(Box::new(ReplStartError { repl, error }));
+                    }
+                };
+
+                // Cache the resolved value in the appropriate slot
+                let slot = namespace_slot as usize;
+                if is_global {
+                    let cloned = value.clone_with_heap(vm.heap);
+                    let old = mem::replace(&mut vm.globals[slot], cloned);
+                    old.drop_with_heap(vm.heap);
+                } else {
+                    let stack_base = vm.current_stack_base();
+                    let cloned = value.clone_with_heap(vm.heap);
+                    let old = mem::replace(&mut vm.stack[stack_base + slot], cloned);
+                    old.drop_with_heap(vm.heap);
+                }
+
+                vm.push(value);
+                vm.run()
+            }
+            NameLookupResult::Undefined => {
+                let err: RunError = ExcType::name_error(&name).into();
+                vm.resume_with_exception(err)
+            }
         };
 
-        // Handle snapshot vs completion: reclaim globals on the completion path.
-        if matches!(
-            &vm_result,
-            Ok(FrameExit::ExternalCall { .. }
-                | FrameExit::OsCall { .. }
-                | FrameExit::MethodCall { .. }
-                | FrameExit::ResolveFutures(_)
-                | FrameExit::NameLookup { .. })
-        ) {
+        // Convert while VM alive, then snapshot or reclaim globals
+        let converted = convert_frame_exit(vm_result, &mut vm);
+        if converted.needs_snapshot() {
             let vm_state = vm.snapshot();
-            handle_repl_vm_result(vm_result, Some(vm_state), executor, repl)
+            build_repl_progress(converted, Some(vm_state), executor, repl)
         } else {
             repl.globals = vm.take_globals();
             vm.cleanup();
-            handle_repl_vm_result(vm_result, None, executor, repl)
+            build_repl_progress(converted, None, executor, repl)
         }
     }
 }
@@ -756,21 +722,15 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
 
         let vm_result = vm.run();
 
-        // Handle snapshot vs completion: reclaim globals on the completion path.
-        if matches!(
-            &vm_result,
-            Ok(FrameExit::ExternalCall { .. }
-                | FrameExit::OsCall { .. }
-                | FrameExit::MethodCall { .. }
-                | FrameExit::ResolveFutures(_)
-                | FrameExit::NameLookup { .. })
-        ) {
+        // Convert while VM alive, then snapshot or reclaim globals
+        let converted = convert_frame_exit(vm_result, &mut vm);
+        if converted.needs_snapshot() {
             let vm_state = vm.snapshot();
-            handle_repl_vm_result(vm_result, Some(vm_state), executor, repl)
+            build_repl_progress(converted, Some(vm_state), executor, repl)
         } else {
             repl.globals = vm.take_globals();
             vm.cleanup();
-            handle_repl_vm_result(vm_result, None, executor, repl)
+            build_repl_progress(converted, None, executor, repl)
         }
     }
 }
@@ -934,8 +894,9 @@ pub(crate) struct ReplSnapshot<T: ResourceTracker> {
 impl<T: ResourceTracker> ReplSnapshot<T> {
     /// Extracts the REPL session, restoring globals from the VM snapshot.
     ///
-    /// When a snapshot is taken, `mem::take` moves globals into the VM.
-    /// This method puts them back so the REPL can be used for further snippets.
+    /// When a snapshot is taken, globals live inside the `VMSnapshot`.
+    /// This method creates an empty snapshot from just the globals so the REPL
+    /// can be used for further snippets.
     fn into_repl(self) -> MontyRepl<T> {
         let Self { mut repl, vm_state, .. } = self;
         repl.globals = vm_state.globals;
@@ -978,21 +939,15 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
             }
         };
 
-        // Handle snapshot vs completion: reclaim globals on the completion path.
-        if matches!(
-            &vm_result,
-            Ok(FrameExit::ExternalCall { .. }
-                | FrameExit::OsCall { .. }
-                | FrameExit::MethodCall { .. }
-                | FrameExit::ResolveFutures(_)
-                | FrameExit::NameLookup { .. })
-        ) {
+        // Convert while VM alive, then snapshot or reclaim globals
+        let converted = convert_frame_exit(vm_result, &mut vm);
+        if converted.needs_snapshot() {
             let vm_state = vm.snapshot();
-            handle_repl_vm_result(vm_result, Some(vm_state), executor, repl)
+            build_repl_progress(converted, Some(vm_state), executor, repl)
         } else {
             repl.globals = vm.take_globals();
             vm.cleanup();
-            handle_repl_vm_result(vm_result, None, executor, repl)
+            build_repl_progress(converted, None, executor, repl)
         }
     }
 }
@@ -1001,37 +956,60 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
 // Private helper functions
 // ---------------------------------------------------------------------------
 
+/// Injects input values into the VM's global namespace slots.
+///
+/// Converts each `MontyObject` to a `Value` while the VM is alive, then stores
+/// it in the global slot that the compiler assigned for the corresponding input name.
+fn inject_inputs_into_vm(
+    executor: &ReplExecutor,
+    input_values: Vec<MontyObject>,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
+) -> Result<(), MontyException> {
+    for (name, obj) in executor.input_names.iter().zip(input_values) {
+        let slot = executor
+            .name_map
+            .get(name)
+            .expect("input name should have a namespace slot")
+            .index();
+        let value = obj
+            .to_value(vm)
+            .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?;
+        let old = mem::replace(&mut vm.globals[slot], value);
+        old.drop_with_heap(vm.heap);
+    }
+    Ok(())
+}
+
 /// Converts module/frame exit results into plain `MontyObject` outputs.
 ///
-/// REPL initialization executes like normal module execution, which must reject
-/// suspendable outcomes when called through non-iterative APIs.
+/// Used by the non-iterative `feed_run` path where suspendable outcomes (external calls,
+/// name lookups) are not supported and should produce errors.
 fn frame_exit_to_object(
     frame_exit_result: RunResult<FrameExit>,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<MontyObject> {
     match frame_exit_result? {
-        FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, heap, interns)),
+        FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, vm)),
         FrameExit::ExternalCall {
             function_name, args, ..
         } => {
-            args.drop_with_heap(heap);
-            let function_name = function_name.as_str(interns);
+            args.drop_with_heap(vm.heap);
+            let function_name = function_name.as_str(vm.interns);
             Err(ExcType::not_implemented(format!(
                 "External function '{function_name}' not implemented with standard execution"
             ))
             .into())
         }
         FrameExit::OsCall { function, args, .. } => {
-            args.drop_with_heap(heap);
+            args.drop_with_heap(vm.heap);
             Err(ExcType::not_implemented(format!(
                 "OS function '{function}' not implemented with standard execution"
             ))
             .into())
         }
         FrameExit::MethodCall { method_name, args, .. } => {
-            args.drop_with_heap(heap);
-            let name = method_name.as_str(interns);
+            args.drop_with_heap(vm.heap);
+            let name = method_name.as_str(vm.interns);
             Err(
                 ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution"))
                     .into(),
@@ -1041,19 +1019,19 @@ fn frame_exit_to_object(
             Err(ExcType::not_implemented("async futures not supported by standard execution.").into())
         }
         FrameExit::NameLookup { name_id, .. } => {
-            let name = interns.get_str(name_id);
+            let name = vm.interns.get_str(name_id);
             Err(ExcType::name_error(name).into())
         }
     }
 }
 
-/// Handles a `FrameExit` result and converts it to REPL progress.
+/// Assembles a `ReplProgress` from already-converted data.
 ///
-/// This mirrors `handle_vm_result` but preserves REPL heap/globals on
-/// completion by returning `ReplProgress::Complete { repl, value }`.
-/// On runtime errors, the REPL is preserved inside a `ReplStartError`.
-fn handle_repl_vm_result<T: ResourceTracker>(
-    result: RunResult<FrameExit>,
+/// This is the REPL equivalent of `build_run_progress`. On completion/error,
+/// compiler metadata is committed to the REPL so subsequent snippets see
+/// updated intern tables and name maps.
+fn build_repl_progress<T: ResourceTracker>(
+    converted: ConvertedExit,
     vm_state: Option<VMSnapshot>,
     executor: ReplExecutor,
     mut repl: MontyRepl<T>,
@@ -1068,87 +1046,56 @@ fn handle_repl_vm_result<T: ResourceTracker>(
         };
     }
 
-    match result {
-        Ok(FrameExit::Return(value)) => {
-            let output = MontyObject::new(value, &mut repl.heap, &executor.interns);
+    match converted {
+        ConvertedExit::Complete(obj) => {
             let ReplExecutor { name_map, interns, .. } = executor;
             repl.global_name_map = name_map;
             repl.interns = interns;
-            Ok(ReplProgress::Complete { repl, value: output })
+            Ok(ReplProgress::Complete { repl, value: obj })
         }
-        Ok(FrameExit::ExternalCall {
+        ConvertedExit::FunctionCall {
             function_name,
             args,
+            kwargs,
             call_id,
-            ..
-        }) => {
-            let function_name = function_name.into_string(&executor.interns);
-            let (args_py, kwargs_py) = args.into_py_objects(&mut repl.heap, &executor.interns);
-
-            Ok(ReplProgress::FunctionCall(ReplFunctionCall {
-                function_name,
-                args: args_py,
-                kwargs: kwargs_py,
-                call_id: call_id.raw(),
-                method_call: false,
-                snapshot: new_repl_snapshot!(),
-            }))
-        }
-        Ok(FrameExit::OsCall {
+            method_call,
+        } => Ok(ReplProgress::FunctionCall(ReplFunctionCall {
+            function_name,
+            args,
+            kwargs,
+            call_id,
+            method_call,
+            snapshot: new_repl_snapshot!(),
+        })),
+        ConvertedExit::OsCall {
             function,
             args,
+            kwargs,
             call_id,
-        }) => {
-            let (args_py, kwargs_py) = args.into_py_objects(&mut repl.heap, &executor.interns);
-
-            Ok(ReplProgress::OsCall(ReplOsCall {
-                function,
-                args: args_py,
-                kwargs: kwargs_py,
-                call_id: call_id.raw(),
-                snapshot: new_repl_snapshot!(),
-            }))
-        }
-        Ok(FrameExit::MethodCall {
-            method_name,
+        } => Ok(ReplProgress::OsCall(ReplOsCall {
+            function,
             args,
+            kwargs,
             call_id,
-        }) => {
-            let function_name = method_name.into_string(&executor.interns);
-            let (args_py, kwargs_py) = args.into_py_objects(&mut repl.heap, &executor.interns);
-
-            Ok(ReplProgress::FunctionCall(ReplFunctionCall {
-                function_name,
-                args: args_py,
-                kwargs: kwargs_py,
-                call_id: call_id.raw(),
-                method_call: true,
-                snapshot: new_repl_snapshot!(),
-            }))
-        }
-        Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
-            let pending_call_ids: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
-            Ok(ReplProgress::ResolveFutures(ReplResolveFutures {
-                repl,
-                executor,
-                vm_state: vm_state.expect("snapshot should exist for ResolveFutures"),
-                pending_call_ids,
-            }))
-        }
-        Ok(FrameExit::NameLookup {
-            name_id,
+            snapshot: new_repl_snapshot!(),
+        })),
+        ConvertedExit::ResolveFutures(pending_call_ids) => Ok(ReplProgress::ResolveFutures(ReplResolveFutures {
+            repl,
+            executor,
+            vm_state: vm_state.expect("snapshot should exist for ResolveFutures"),
+            pending_call_ids,
+        })),
+        ConvertedExit::NameLookup {
+            name,
             namespace_slot,
             is_global,
-        }) => {
-            let name = executor.interns.get_str(name_id).to_owned();
-            Ok(ReplProgress::NameLookup(ReplNameLookup {
-                name,
-                namespace_slot,
-                is_global,
-                snapshot: new_repl_snapshot!(),
-            }))
-        }
-        Err(err) => {
+        } => Ok(ReplProgress::NameLookup(ReplNameLookup {
+            name,
+            namespace_slot,
+            is_global,
+            snapshot: new_repl_snapshot!(),
+        })),
+        ConvertedExit::Error(err) => {
             let error = err.into_python_exception(&executor.interns, &executor.code);
             // Commit compiler metadata even on runtime errors, matching feed() behavior.
             // Snippets can create new variables or functions before raising, and those

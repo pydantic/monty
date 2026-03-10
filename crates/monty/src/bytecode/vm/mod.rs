@@ -511,20 +511,6 @@ pub struct VMSnapshot {
     scheduler: Option<Scheduler>,
 }
 
-impl VMSnapshot {
-    /// Returns the `stack_base` of the current (topmost) call frame.
-    ///
-    /// Used by `NameLookup` to determine which stack region to cache
-    /// resolved values into when the lookup originated from a function scope
-    /// (i.e., `is_global` is false).
-    pub fn current_stack_base(&self) -> usize {
-        self.frames
-            .last()
-            .expect("VMSnapshot should have at least one frame")
-            .stack_base
-    }
-}
-
 // ============================================================================
 // Virtual Machine
 // ============================================================================
@@ -544,7 +530,7 @@ pub struct VM<'a, 'p, T: ResourceTracker> {
     /// Each function frame's locals occupy `stack[frame.stack_base..frame.stack_base + frame.locals_count]`,
     /// with operands pushed above. Module-level frames have `locals_count = 0`
     /// because globals are stored separately.
-    stack: Vec<Value>,
+    pub(crate) stack: Vec<Value>,
 
     /// Module-level (global) variable storage.
     ///
@@ -691,23 +677,6 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
             ext_function_load_ip: None,
         }
     }
-    /// Consumes the VM and creates a snapshot for pause/resume if needed.
-    pub fn check_snapshot(mut self, result: &RunResult<FrameExit>) -> Option<VMSnapshot> {
-        if matches!(
-            result,
-            Ok(FrameExit::ExternalCall { .. }
-                | FrameExit::OsCall { .. }
-                | FrameExit::MethodCall { .. }
-                | FrameExit::ResolveFutures(_)
-                | FrameExit::NameLookup { .. })
-        ) {
-            Some(self.snapshot())
-        } else {
-            self.cleanup();
-            None
-        }
-    }
-
     /// Consumes the VM and creates a snapshot for pause/resume.
     ///
     /// **Ownership transfer:** This method takes `self` by value, consuming the VM.
@@ -752,6 +721,17 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
             scheduler.cleanup(self.heap);
         }
         self.globals.drain(..).drop_with_heap(self.heap);
+    }
+
+    /// Returns the `stack_base` of the current (topmost) call frame.
+    ///
+    /// Used by `NameLookup` resolution to determine which stack region to cache
+    /// resolved values into when the lookup originated from a function scope.
+    pub fn current_stack_base(&self) -> usize {
+        self.frames
+            .last()
+            .expect("VM should have at least one frame")
+            .stack_base
     }
 
     /// Takes ownership of the globals vector, replacing it with an empty vec.
@@ -1585,7 +1565,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// Pushes the return value onto the stack and continues execution.
     pub fn resume(&mut self, obj: MontyObject) -> Result<FrameExit, RunError> {
         let value = obj
-            .to_value(self.heap, self.interns)
+            .to_value(self)
             .map_err(|e| SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {e}"))))?;
         self.push(value);
         self.run()

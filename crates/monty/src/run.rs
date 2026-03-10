@@ -12,7 +12,7 @@ use crate::{
     parse::parse,
     prepare::prepare,
     resource::{NoLimitTracker, ResourceTracker},
-    run_progress::{RunProgress, handle_vm_result},
+    run_progress::{RunProgress, build_run_progress, check_snapshot_from_converted, convert_frame_exit},
     value::Value,
 };
 
@@ -144,20 +144,19 @@ impl MontyRun {
     ) -> Result<RunProgress<T>, MontyException> {
         let executor = self.executor;
 
-        // Create heap and prepare globals
+        // Create heap and VM with empty globals, then populate inputs with VM alive
         let mut heap = Heap::new(executor.namespace_size, resource_tracker);
-        let globals = executor.prepare_globals(inputs, &mut heap)?;
-
-        // Create and run VM
+        let globals = executor.empty_globals();
         let mut vm = VM::new(globals, &mut heap, &executor.interns, print);
+        executor.populate_inputs(inputs, &mut vm)?;
 
         // Start execution
         let vm_result = vm.run_module(&executor.module_code);
 
-        let vm_state = vm.check_snapshot(&vm_result);
-
-        // Handle the result using the destructured parts
-        handle_vm_result(vm_result, vm_state, executor, heap)
+        // Three-phase conversion: convert while VM alive, then snapshot, then build progress
+        let converted = convert_frame_exit(vm_result, &mut vm);
+        let vm_state = check_snapshot_from_converted(&converted, vm);
+        build_run_progress(converted, vm_state, executor, heap)
     }
 }
 
@@ -243,10 +242,11 @@ impl Executor {
     ) -> Result<MontyObject, MontyException> {
         let heap_capacity = self.heap_capacity.load(Ordering::Relaxed);
         let mut heap = Heap::new(heap_capacity, resource_tracker);
-        let globals = self.prepare_globals(inputs, &mut heap)?;
+        let globals = self.empty_globals();
 
-        // Create and run VM
+        // Create VM first, then populate inputs with VM alive
         let mut vm = VM::new(globals, &mut heap, &self.interns, print);
+        self.populate_inputs(inputs, &mut vm)?;
         let mut frame_exit_result = vm.run_module(&self.module_code);
 
         // Handle NameLookup and ExternalCall exits by raising NameError through the VM
@@ -281,6 +281,9 @@ impl Executor {
             }
         }
 
+        // Convert output while VM is still alive
+        let result = frame_exit_to_object(frame_exit_result, &mut vm);
+
         // Clean up VM state before it goes out of scope
         vm.cleanup();
 
@@ -288,8 +291,7 @@ impl Executor {
             self.heap_capacity.store(heap.size(), Ordering::Relaxed);
         }
 
-        frame_exit_to_object(frame_exit_result, &mut heap, &self.interns)
-            .map_err(|e| e.into_python_exception(&self.interns, &self.code))
+        result.map_err(|e| e.into_python_exception(&self.interns, &self.code))
     }
 
     /// Executes the code and returns both the result and reference count data, used for testing only.
@@ -310,11 +312,16 @@ impl Executor {
         use std::collections::HashSet;
 
         let mut heap = Heap::new(self.namespace_size, NoLimitTracker);
-        let globals = self.prepare_globals(inputs, &mut heap)?;
+        let globals = self.empty_globals();
 
-        // Create and run VM with Stdout for output
+        // Create VM, populate inputs, and run
         let mut vm = VM::new(globals, &mut heap, &self.interns, PrintWriter::Stdout);
+        self.populate_inputs(inputs, &mut vm)?;
         let frame_exit_result = vm.run_module(&self.module_code);
+
+        // Convert return value while VM is alive
+        let py_object = frame_exit_to_object(frame_exit_result, &mut vm)
+            .map_err(|e| e.into_python_exception(&self.interns, &self.code))?;
 
         // Take globals out of the VM so we can access the heap for refcount queries.
         let globals = vm.take_globals();
@@ -341,10 +348,6 @@ impl Executor {
             value.drop_with_heap(&mut heap);
         }
 
-        // Now convert the return value to MontyObject (this drops the Value, decrementing refcount)
-        let py_object = frame_exit_to_object(frame_exit_result, &mut heap, &self.interns)
-            .map_err(|e| e.into_python_exception(&self.interns, &self.code))?;
-
         let allocations_since_gc = heap.get_allocations_since_gc();
 
         Ok(RefCountOutput {
@@ -356,62 +359,68 @@ impl Executor {
         })
     }
 
-    /// Prepares the global variable storage for execution.
+    /// Creates an empty globals vector with all slots set to `Undefined`.
     ///
-    /// Fills input values into the first N slots, then fills remaining slots with `Undefined`.
-    /// External function names are no longer pre-populated; they are resolved lazily
-    /// via `NameLookup` at runtime when the code first accesses them.
-    pub(crate) fn prepare_globals(
+    /// Used to initialize global storage before input population. The VM is created
+    /// with these empty globals, then [`populate_inputs`](Self::populate_inputs) fills
+    /// the input slots while the VM is alive.
+    pub(crate) fn empty_globals(&self) -> Vec<Value> {
+        (0..self.namespace_size).map(|_| Value::Undefined).collect()
+    }
+
+    /// Converts `MontyObject` inputs to `Value`s and writes them into the VM's globals.
+    ///
+    /// This runs with the VM alive so that `to_value` has access to the full VM context.
+    /// On error partway through, the VM's `cleanup()` (via drop) will drain globals and
+    /// properly decrement refcounts for any already-converted values.
+    pub(crate) fn populate_inputs(
         &self,
         inputs: Vec<MontyObject>,
-        heap: &mut Heap<impl ResourceTracker>,
-    ) -> Result<Vec<Value>, MontyException> {
-        let Some(extra) = self.namespace_size.checked_sub(inputs.len()) else {
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
+    ) -> Result<(), MontyException> {
+        if inputs.len() > self.namespace_size {
             return Err(MontyException::runtime_error("too many inputs for namespace"));
-        };
-        let mut globals: Vec<Value> = Vec::with_capacity(self.namespace_size);
-        // Convert each MontyObject to a Value, propagating any invalid input errors
-        for input in inputs {
-            globals.push(
-                input
-                    .to_value(heap, &self.interns)
-                    .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?,
-            );
         }
-        if extra > 0 {
-            globals.extend((0..extra).map(|_| Value::Undefined));
+        for (i, input) in inputs.into_iter().enumerate() {
+            let value = input
+                .to_value(vm)
+                .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?;
+            vm.globals[i] = value;
         }
-        Ok(globals)
+        Ok(())
     }
 }
 
+/// Converts module/frame exit results into plain `MontyObject` outputs.
+///
+/// Used by non-iterative execution paths where suspendable outcomes (external calls,
+/// name lookups) are not supported and should produce errors.
 fn frame_exit_to_object(
     frame_exit_result: RunResult<FrameExit>,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<MontyObject> {
     match frame_exit_result? {
-        FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, heap, interns)),
+        FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, vm)),
         FrameExit::ExternalCall {
             function_name, args, ..
         } => {
-            args.drop_with_heap(heap);
-            let function_name = function_name.as_str(interns);
+            args.drop_with_heap(vm.heap);
+            let function_name = function_name.as_str(vm.interns);
             Err(ExcType::not_implemented(format!(
                 "External function '{function_name}' not implemented with standard execution"
             ))
             .into())
         }
         FrameExit::OsCall { function, args, .. } => {
-            args.drop_with_heap(heap);
+            args.drop_with_heap(vm.heap);
             Err(ExcType::not_implemented(format!(
                 "OS function '{function}' not implemented with standard execution"
             ))
             .into())
         }
         FrameExit::MethodCall { method_name, args, .. } => {
-            args.drop_with_heap(heap);
-            let name = method_name.as_str(interns);
+            args.drop_with_heap(vm.heap);
+            let name = method_name.as_str(vm.interns);
             Err(
                 ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution"))
                     .into(),
@@ -421,7 +430,7 @@ fn frame_exit_to_object(
             Err(ExcType::not_implemented("async futures not supported by standard execution.").into())
         }
         FrameExit::NameLookup { name_id, .. } => {
-            let name = interns.get_str(name_id);
+            let name = vm.interns.get_str(name_id);
             Err(ExcType::name_error(name).into())
         }
     }

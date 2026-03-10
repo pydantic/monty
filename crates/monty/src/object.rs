@@ -11,6 +11,7 @@ use num_traits::Zero;
 
 use crate::{
     builtins::{Builtins, BuiltinsFunctions},
+    bytecode::VM,
     exception_private::{ExcType, SimpleException},
     heap::{Heap, HeapData, HeapId},
     intern::Interns,
@@ -187,9 +188,9 @@ impl MontyObject {
     /// then properly drops the Value via `drop_with_heap` to maintain reference counting.
     ///
     /// The `interns` parameter is used to look up interned string/bytes content.
-    pub(crate) fn new(value: Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> Self {
-        let py_obj = Self::from_value(&value, heap, interns);
-        value.drop_with_heap(heap);
+    pub(crate) fn new(value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Self {
+        let py_obj = Self::from_value(&value, vm.heap, vm.interns);
+        value.drop_with_heap(vm.heap);
         py_obj
     }
 
@@ -207,33 +208,29 @@ impl MontyObject {
     /// # Errors
     /// Returns `InvalidInputError` if called on the `Repr` variant,
     /// as it is only valid as an output from code execution, not as an input.
-    pub(crate) fn to_value(
-        self,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> Result<Value, InvalidInputError> {
+    pub(crate) fn to_value(self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<Value, InvalidInputError> {
         match self {
             Self::Ellipsis => Ok(Value::Ellipsis),
             Self::None => Ok(Value::None),
             Self::Bool(b) => Ok(Value::Bool(b)),
             Self::Int(i) => Ok(Value::Int(i)),
-            Self::BigInt(bi) => Ok(LongInt::new(bi).into_value(heap)?),
+            Self::BigInt(bi) => Ok(LongInt::new(bi).into_value(vm.heap)?),
             Self::Float(f) => Ok(Value::Float(f)),
-            Self::String(s) => Ok(Value::Ref(heap.allocate(HeapData::Str(Str::new(s)))?)),
-            Self::Bytes(b) => Ok(Value::Ref(heap.allocate(HeapData::Bytes(Bytes::new(b)))?)),
+            Self::String(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Str(Str::new(s)))?)),
+            Self::Bytes(b) => Ok(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b)))?)),
             Self::List(items) => {
                 let values: Vec<Value> = items
                     .into_iter()
-                    .map(|item| item.to_value(heap, interns))
+                    .map(|item| item.to_value(vm))
                     .collect::<Result<_, _>>()?;
-                Ok(Value::Ref(heap.allocate(HeapData::List(List::new(values)))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(values)))?))
             }
             Self::Tuple(items) => {
                 let values = items
                     .into_iter()
-                    .map(|item| item.to_value(heap, interns))
+                    .map(|item| item.to_value(vm))
                     .collect::<Result<_, _>>()?;
-                allocate_tuple(values, heap).map_err(InvalidInputError::Resource)
+                allocate_tuple(values, vm.heap).map_err(InvalidInputError::Resource)
             }
             Self::NamedTuple {
                 type_name,
@@ -242,44 +239,44 @@ impl MontyObject {
             } => {
                 let values: Vec<Value> = values
                     .into_iter()
-                    .map(|item| item.to_value(heap, interns))
+                    .map(|item| item.to_value(vm))
                     .collect::<Result<_, _>>()?;
                 let field_name_strs: Vec<EitherStr> = field_names.into_iter().map(Into::into).collect();
                 let nt = NamedTuple::new(type_name, field_name_strs, values);
-                Ok(Value::Ref(heap.allocate(HeapData::NamedTuple(nt))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::NamedTuple(nt))?))
             }
             Self::Dict(map) => {
                 let pairs: Result<Vec<(Value, Value)>, InvalidInputError> = map
                     .into_iter()
-                    .map(|(k, v)| Ok((k.to_value(heap, interns)?, v.to_value(heap, interns)?)))
+                    .map(|(k, v)| Ok((k.to_value(vm)?, v.to_value(vm)?)))
                     .collect();
-                let dict = Dict::from_pairs(pairs?, heap, interns)
+                let dict = Dict::from_pairs(pairs?, vm.heap, vm.interns)
                     .map_err(|_| InvalidInputError::invalid_type("unhashable dict keys"))?;
-                Ok(Value::Ref(heap.allocate(HeapData::Dict(dict))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))?))
             }
             Self::Set(items) => {
                 let mut set = Set::new();
                 for item in items {
-                    let value = item.to_value(heap, interns)?;
-                    set.add(value, heap, interns)
+                    let value = item.to_value(vm)?;
+                    set.add(value, vm.heap, vm.interns)
                         .map_err(|_| InvalidInputError::invalid_type("unhashable set element"))?;
                 }
-                Ok(Value::Ref(heap.allocate(HeapData::Set(set))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Set(set))?))
             }
             Self::FrozenSet(items) => {
                 let mut set = Set::new();
                 for item in items {
-                    let value = item.to_value(heap, interns)?;
-                    set.add(value, heap, interns)
+                    let value = item.to_value(vm)?;
+                    set.add(value, vm.heap, vm.interns)
                         .map_err(|_| InvalidInputError::invalid_type("unhashable frozenset element"))?;
                 }
                 // Convert to frozenset by extracting storage
                 let frozenset = FrozenSet::from_set(set);
-                Ok(Value::Ref(heap.allocate(HeapData::FrozenSet(frozenset))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::FrozenSet(frozenset))?))
             }
             Self::Exception { exc_type, arg } => {
                 let exc = SimpleException::new(exc_type, arg);
-                Ok(Value::Ref(heap.allocate(HeapData::Exception(exc))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Exception(exc))?))
             }
             Self::Dataclass {
                 name,
@@ -292,14 +289,14 @@ impl MontyObject {
                 // Convert attrs to Dict
                 let pairs: Result<Vec<(Value, Value)>, InvalidInputError> = attrs
                     .into_iter()
-                    .map(|(k, v)| Ok((k.to_value(heap, interns)?, v.to_value(heap, interns)?)))
+                    .map(|(k, v)| Ok((k.to_value(vm)?, v.to_value(vm)?)))
                     .collect();
-                let dict = Dict::from_pairs(pairs?, heap, interns)
+                let dict = Dict::from_pairs(pairs?, vm.heap, vm.interns)
                     .map_err(|_| InvalidInputError::invalid_type("unhashable dataclass attr keys"))?;
                 let dc = Dataclass::new(name, type_id, field_names, dict, frozen);
-                Ok(Value::Ref(heap.allocate(HeapData::Dataclass(dc))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Dataclass(dc))?))
             }
-            Self::Path(s) => Ok(Value::Ref(heap.allocate(HeapData::Path(Path::new(s)))?)),
+            Self::Path(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(s)))?)),
             Self::Type(t) => Ok(Value::Builtin(Builtins::Type(t))),
             Self::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
             Self::Function { name, .. } => {
@@ -307,10 +304,10 @@ impl MontyObject {
                 // (common case: the function has the same name as the variable it was
                 // assigned to), use the lightweight `Value::ExtFunction(StringId)`.
                 // Otherwise, allocate a `HeapData::ExtFunction(String)` on the heap.
-                if let Some(string_id) = interns.get_string_id_by_name(&name) {
+                if let Some(string_id) = vm.interns.get_string_id_by_name(&name) {
                     Ok(Value::ExtFunction(string_id))
                 } else {
-                    Ok(Value::Ref(heap.allocate(HeapData::ExtFunction(name))?))
+                    Ok(Value::Ref(vm.heap.allocate(HeapData::ExtFunction(name))?))
                 }
             }
             Self::Repr(_) => Err(InvalidInputError::invalid_type("'Repr' is not a valid input value")),
