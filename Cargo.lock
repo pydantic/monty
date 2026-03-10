@@ -1625,7 +1625,7 @@ dependencies = [
 
 [[package]]
 name = "monty"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "ahash",
  "codspeed-criterion-compat",
@@ -1655,7 +1655,7 @@ dependencies = [
 
 [[package]]
 name = "monty-cli"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "clap",
  "monty",
@@ -1665,7 +1665,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fuzz"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
@@ -1674,7 +1674,7 @@ dependencies = [
 
 [[package]]
 name = "monty-js"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "monty",
  "monty_type_checking",
@@ -1688,7 +1688,7 @@ dependencies = [
 
 [[package]]
 name = "monty_type_checking"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "monty_typeshed",
  "pretty_assertions",
@@ -1702,7 +1702,7 @@ dependencies = [
 
 [[package]]
 name = "monty_typeshed"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "path-slash",
  "ruff_db",
@@ -2129,7 +2129,7 @@ dependencies = [
 
 [[package]]
 name = "pydantic-monty"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "indexmap",
  "monty",
