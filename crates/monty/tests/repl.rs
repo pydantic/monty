@@ -33,6 +33,13 @@ fn init_repl(code: &str) -> (MontyRepl<NoLimitTracker>, MontyObject) {
     (repl, output)
 }
 
+fn assert_name_error(result: Result<MontyObject, MontyException>, name: &str) {
+    let error = result.expect_err("snippet should raise NameError");
+    let expected_message = format!("name '{name}' is not defined");
+    assert_eq!(error.exc_type(), monty::ExcType::NameError);
+    assert_eq!(error.message(), Some(expected_message.as_str()));
+}
+
 #[test]
 fn repl_persists_state_and_definitions() {
     let (mut repl, _) = init_repl("x = 10");
@@ -93,6 +100,7 @@ fn repl_feed_compile_error_keeps_reserved_global_slot() {
         error.message(),
         Some("nonlocal declaration not allowed at module level")
     );
+    assert_name_error(feed_run_print(&mut repl, "reserved_name"), "reserved_name");
 
     assert_eq!(
         feed_run_print(&mut repl, "reserved_name = 42").unwrap(),
@@ -296,6 +304,7 @@ fn repl_start_compile_error_keeps_reserved_global_slot() {
         error.message(),
         Some("nonlocal declaration not allowed at module level")
     );
+    assert_name_error(feed_run_print(&mut repl, "reserved_name"), "reserved_name");
 
     assert_eq!(
         feed_run_print(&mut repl, "reserved_name = 42").unwrap(),
@@ -305,6 +314,44 @@ fn repl_start_compile_error_keeps_reserved_global_slot() {
         feed_run_print(&mut repl, "reserved_name").unwrap(),
         MontyObject::Int(42)
     );
+}
+
+#[test]
+fn repl_abandon_function_call_preserves_globals_and_metadata() {
+    let (repl, _) = init_repl("");
+
+    let progress = repl
+        .feed_start(
+            "captured = 41\ndef helper():\n    return captured + 1\next_fn()",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let call = progress.into_function_call().expect("expected function call");
+    let mut repl = call.into_repl();
+
+    assert_eq!(feed_run_print(&mut repl, "captured").unwrap(), MontyObject::Int(41));
+    assert_eq!(feed_run_print(&mut repl, "helper()").unwrap(), MontyObject::Int(42));
+}
+
+#[test]
+fn repl_abandon_resolve_futures_preserves_globals_and_metadata() {
+    let (repl, _) = init_repl("");
+
+    let progress = repl
+        .feed_start(
+            "captured = 41\ndef helper():\n    return captured + 1\nasync def main():\n    value = await foo()\n    return value\nawait main()",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let call = progress.into_function_call().expect("expected function call");
+    let progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+    let state = progress.into_resolve_futures().expect("expected resolve futures");
+    let mut repl = state.into_repl();
+
+    assert_eq!(feed_run_print(&mut repl, "captured").unwrap(), MontyObject::Int(41));
+    assert_eq!(feed_run_print(&mut repl, "helper()").unwrap(), MontyObject::Int(42));
 }
 
 #[test]

@@ -20,9 +20,9 @@ use crate::{
 ///
 /// This struct holds the outputs of name resolution and AST transformation:
 /// - The namespace size (number of slots needed at module level)
-/// - A mapping from variable names to their namespace indices (for ref-count testing)
 /// - The transformed AST nodes with all names resolved, ready for compilation
 /// - The string interner containing all interned identifiers and filenames
+/// - In `ref-count-return` builds, a name map for looking up variables by slot
 pub struct PrepareResult {
     /// Number of items in the namespace (at module level, this IS the global namespace)
     pub namespace_size: usize,
@@ -31,6 +31,7 @@ pub struct PrepareResult {
     /// This map is used by:
     /// - ref-count tests for looking up variables by name
     /// - initial REPL compilation to seed stable global slot IDs across later snippets
+    #[cfg(feature = "ref-count-return")]
     pub name_map: AHashMap<String, NamespaceId>,
     /// The prepared AST nodes with all names resolved to namespace indices.
     /// Function definitions are inline as `PreparedFunctionDef` variants.
@@ -75,6 +76,7 @@ pub(crate) fn prepare(parse_result: ParseResult, input_names: Vec<String>) -> Re
 
     Ok(PrepareResult {
         namespace_size: p.namespace_size,
+        #[cfg(feature = "ref-count-return")]
         name_map: p.name_map,
         nodes: prepared_nodes,
         interner,
@@ -87,9 +89,10 @@ pub(crate) fn prepare(parse_result: ParseResult, input_names: Vec<String>) -> Re
 /// directly in `existing_name_map`. This ensures snippets can be compiled independently while sharing
 /// one persistent global namespace.
 ///
-/// If preparation fails, any newly reserved slots stay in `existing_name_map`. That is intentional for
-/// REPL compilation: the corresponding namespace entries remain `Undefined`, so preserving the slots is
-/// harmless and avoids cloning the full map before each feed.
+/// If preparation fails, any newly reserved entries remain in `existing_name_map`.
+/// That is intentional for REPL compilation: the extra entries are harmless
+/// because the namespace slots stay `Undefined`. This avoids cloning the
+/// full map on every feed.
 pub(crate) fn prepare_with_existing_names(
     parse_result: ParseResult,
     existing_name_map: &mut AHashMap<String, NamespaceId>,

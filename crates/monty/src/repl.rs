@@ -115,7 +115,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
             &input_script_name,
             &mut this.global_name_map,
             &this.interns,
-            input_names,
+            &input_names,
         ) {
             Ok(exec) => exec,
             Err(error) => return Err(Box::new(ReplStartError { repl: this, error })),
@@ -127,9 +127,11 @@ impl<T: ResourceTracker> MontyRepl<T> {
 
         // Inject inputs with VM alive
         if let Err(error) = inject_inputs_into_vm(&executor, input_values, &mut vm) {
-            this.globals = vm.take_globals();
-            vm.cleanup();
-            return Err(Box::new(ReplStartError { repl: this, error }));
+            let globals = reclaim_globals_from_vm(&mut vm);
+            drop(vm);
+            this.globals = globals;
+            let repl = commit_repl_compiler_metadata(this, executor);
+            return Err(Box::new(ReplStartError { repl, error }));
         }
 
         let vm_result = vm.run_module(&executor.module_code);
@@ -177,7 +179,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
             &input_script_name,
             &mut self.global_name_map,
             &self.interns,
-            input_names,
+            &input_names,
         )?;
 
         self.ensure_globals_size(executor.namespace_size);
@@ -185,8 +187,11 @@ impl<T: ResourceTracker> MontyRepl<T> {
         let mut vm = VM::new(mem::take(&mut self.globals), &mut self.heap, &executor.interns, print);
 
         if let Err(e) = inject_inputs_into_vm(&executor, input_values, &mut vm) {
-            self.globals = vm.take_globals();
-            vm.cleanup();
+            let globals = reclaim_globals_from_vm(&mut vm);
+            drop(vm);
+            self.globals = globals;
+            let ReplExecutor { interns, .. } = executor;
+            self.interns = interns;
             return Err(e);
         }
 
@@ -353,8 +358,9 @@ impl<T: ResourceTracker> ReplProgress<T> {
     ///
     /// Use this to recover the REPL when you need to abandon the current
     /// snippet (e.g. because `feed_run` doesn't support async futures).
-    /// The REPL state reflects any mutations that occurred before the
-    /// snapshot was taken.
+    /// The returned REPL includes any globals and compiler metadata produced
+    /// before the snapshot was taken, so later snippets can keep using the
+    /// session without replaying the abandoned code.
     #[must_use]
     pub fn into_repl(self) -> MontyRepl<T> {
         match self {
@@ -415,7 +421,8 @@ pub struct ReplFunctionCall<T: ResourceTracker> {
 impl<T: ResourceTracker> ReplFunctionCall<T> {
     /// Extracts the REPL session, discarding the in-flight execution state.
     ///
-    /// Restores globals from the VM snapshot so the REPL remains usable.
+    /// Restores globals and compiler metadata from the VM snapshot so the REPL
+    /// remains usable without replaying the abandoned snippet.
     #[must_use]
     pub fn into_repl(self) -> MontyRepl<T> {
         self.snapshot.into_repl()
@@ -463,7 +470,8 @@ pub struct ReplOsCall<T: ResourceTracker> {
 impl<T: ResourceTracker> ReplOsCall<T> {
     /// Extracts the REPL session, discarding the in-flight execution state.
     ///
-    /// Restores globals from the VM snapshot so the REPL remains usable.
+    /// Restores globals and compiler metadata from the VM snapshot so the REPL
+    /// remains usable without replaying the abandoned snippet.
     #[must_use]
     pub fn into_repl(self) -> MontyRepl<T> {
         self.snapshot.into_repl()
@@ -504,7 +512,8 @@ pub struct ReplNameLookup<T: ResourceTracker> {
 impl<T: ResourceTracker> ReplNameLookup<T> {
     /// Extracts the REPL session, discarding the in-flight execution state.
     ///
-    /// Restores globals from the VM snapshot so the REPL remains usable.
+    /// Restores globals and compiler metadata from the VM snapshot so the REPL
+    /// remains usable without replaying the abandoned snippet.
     #[must_use]
     pub fn into_repl(self) -> MontyRepl<T> {
         self.snapshot.into_repl()
@@ -547,9 +556,11 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
                 let value = match obj.to_value(&mut vm) {
                     Ok(v) => v,
                     Err(e) => {
-                        repl.globals = vm.take_globals();
-                        vm.cleanup();
                         let error = MontyException::runtime_error(format!("invalid name lookup result: {e}"));
+                        let globals = reclaim_globals_from_vm(&mut vm);
+                        drop(vm);
+                        repl.globals = globals;
+                        let repl = commit_repl_compiler_metadata(repl, executor);
                         return Err(Box::new(ReplStartError { repl, error }));
                     }
                 };
@@ -611,9 +622,18 @@ pub struct ReplResolveFutures<T: ResourceTracker> {
 
 impl<T: ResourceTracker> ReplResolveFutures<T> {
     /// Extracts the REPL session, discarding the in-flight execution state.
+    ///
+    /// Restores globals and compiler metadata from the suspended VM state so
+    /// later snippets can keep using any values created before suspension.
     #[must_use]
     pub fn into_repl(self) -> MontyRepl<T> {
-        self.repl
+        let Self {
+            repl,
+            executor,
+            vm_state,
+            ..
+        } = self;
+        restore_repl_from_suspended_state(repl, executor, vm_state)
     }
 
     /// Returns unresolved call IDs for this suspended state.
@@ -656,11 +676,13 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
         );
 
         if let Some(call_id) = invalid_call_id {
-            repl.globals = vm.take_globals();
-            vm.cleanup();
             let error = MontyException::runtime_error(format!(
                 "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
             ));
+            let globals = reclaim_globals_from_vm(&mut vm);
+            drop(vm);
+            repl.globals = globals;
+            let repl = commit_repl_compiler_metadata(repl, executor);
             return Err(Box::new(ReplStartError { repl, error }));
         }
 
@@ -668,10 +690,12 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
             match ext_result {
                 ExtFunctionResult::Return(obj) => {
                     if let Err(e) = vm.resolve_future(call_id, obj) {
-                        repl.globals = vm.take_globals();
-                        vm.cleanup();
                         let error =
                             MontyException::runtime_error(format!("Invalid return type for call {call_id}: {e}"));
+                        let globals = reclaim_globals_from_vm(&mut vm);
+                        drop(vm);
+                        repl.globals = globals;
+                        let repl = commit_repl_compiler_metadata(repl, executor);
                         return Err(Box::new(ReplStartError { repl, error }));
                     }
                 }
@@ -684,9 +708,11 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
         }
 
         if let Some(error) = vm.take_failed_task_error() {
-            repl.globals = vm.take_globals();
-            vm.cleanup();
             let error = error.into_python_exception(&executor.interns, &executor.code);
+            let globals = reclaim_globals_from_vm(&mut vm);
+            drop(vm);
+            repl.globals = globals;
+            let repl = commit_repl_compiler_metadata(repl, executor);
             return Err(Box::new(ReplStartError { repl, error }));
         }
 
@@ -695,9 +721,11 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
         let loaded_task = match vm.load_ready_task_if_needed() {
             Ok(loaded) => loaded,
             Err(e) => {
-                repl.globals = vm.take_globals();
-                vm.cleanup();
                 let error = e.into_python_exception(&executor.interns, &executor.code);
+                let globals = reclaim_globals_from_vm(&mut vm);
+                drop(vm);
+                repl.globals = globals;
+                let repl = commit_repl_compiler_metadata(repl, executor);
                 return Err(Box::new(ReplStartError { repl, error }));
             }
         };
@@ -833,11 +861,11 @@ impl ReplExecutor {
         script_name: &str,
         existing_name_map: &mut AHashMap<String, NamespaceId>,
         existing_interns: &Interns,
-        input_names: Vec<String>,
+        input_names: &[String],
     ) -> Result<Self, MontyException> {
         // Pre-register input names so they get stable slots before preparation.
         let mut input_slots = Vec::with_capacity(input_names.len());
-        for name in &input_names {
+        for name in input_names {
             let next_slot = existing_name_map.len();
             let slot = *existing_name_map
                 .entry(name.clone())
@@ -889,15 +917,19 @@ pub(crate) struct ReplSnapshot<T: ResourceTracker> {
 }
 
 impl<T: ResourceTracker> ReplSnapshot<T> {
-    /// Extracts the REPL session, restoring globals from the VM snapshot.
+    /// Extracts the REPL session, restoring globals and compiler metadata.
     ///
     /// When a snapshot is taken, globals live inside the `VMSnapshot`.
-    /// This method creates an empty snapshot from just the globals so the REPL
-    /// can be used for further snippets.
+    /// The matching intern/function tables live in the `ReplExecutor`. This
+    /// method restores both so the REPL can be used for further snippets without
+    /// replaying the abandoned execution.
     fn into_repl(self) -> MontyRepl<T> {
-        let Self { mut repl, vm_state, .. } = self;
-        repl.globals = vm_state.globals;
-        repl
+        let Self {
+            repl,
+            executor,
+            vm_state,
+        } = self;
+        restore_repl_from_suspended_state(repl, executor, vm_state)
     }
 
     /// Continues snippet execution with an external result.
@@ -952,6 +984,44 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
 // ---------------------------------------------------------------------------
 // Private helper functions
 // ---------------------------------------------------------------------------
+
+/// Commits compiler metadata from a compiled REPL snippet back to the session.
+///
+/// Incremental compilation can append global slots and compile new intern/function
+/// tables before snippet execution completes. Whenever a compiled snippet hands the
+/// REPL back to the caller, these tables must move with it so any globals restored
+/// from execution snapshots remain interpretable.
+fn commit_repl_compiler_metadata<T: ResourceTracker>(mut repl: MontyRepl<T>, executor: ReplExecutor) -> MontyRepl<T> {
+    let ReplExecutor { interns, .. } = executor;
+    repl.interns = interns;
+    repl
+}
+
+/// Restores a REPL from suspended execution by committing globals and compiler metadata.
+///
+/// Suspended snippets keep globals inside the VM snapshot and compiler metadata inside
+/// the `ReplExecutor`. If the caller abandons that suspended snippet via `into_repl()`,
+/// both pieces must be restored together to avoid mixing new global slots with stale
+/// intern/function tables.
+fn restore_repl_from_suspended_state<T: ResourceTracker>(
+    mut repl: MontyRepl<T>,
+    executor: ReplExecutor,
+    vm_state: VMSnapshot,
+) -> MontyRepl<T> {
+    repl.globals = vm_state.globals;
+    commit_repl_compiler_metadata(repl, executor)
+}
+
+/// Reclaims globals from a live VM before the caller drops it.
+///
+/// This is used on host-side error paths that occur after a snippet has already been
+/// compiled or partially executed but before `build_repl_progress` can consume the VM.
+/// The caller must drop the VM before moving the REPL or executor back out.
+fn reclaim_globals_from_vm<T: ResourceTracker>(vm: &mut VM<'_, '_, T>) -> Vec<Value> {
+    let globals = vm.take_globals();
+    vm.cleanup();
+    globals
+}
 
 /// Injects input values into the VM's global namespace slots.
 ///
@@ -1019,9 +1089,9 @@ fn frame_exit_to_object(
 
 /// Assembles a `ReplProgress` from already-converted data.
 ///
-/// This is the REPL equivalent of `build_run_progress`. On completion/error,
-/// compiler metadata is committed to the REPL so subsequent snippets see
-/// updated intern tables and name maps.
+/// This is the REPL equivalent of `build_run_progress`. Completion and runtime-error
+/// paths commit compiler metadata immediately; suspended states keep the executor so
+/// `into_repl()` can commit the same metadata if the caller abandons execution.
 fn build_repl_progress<T: ResourceTracker>(
     converted: ConvertedExit,
     vm_state: Option<VMSnapshot>,
