@@ -402,6 +402,6 @@ pub(crate) fn call_type_method(
         _ => {}
     }
     // Other types or unknown methods - report actual type name, not 'type'
-    args.drop_with_heap(vm.heap);
+    args.drop_with_heap(vm);
     Err(ExcType::attribute_error(t, vm.interns.get_str(method_id)))
 }

@@ -189,7 +189,7 @@ impl MontyObject {
     /// The `interns` parameter is used to look up interned string/bytes content.
     pub(crate) fn new(value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Self {
         let py_obj = Self::from_value(&value, vm);
-        value.drop_with_heap(vm.heap);
+        value.drop_with_heap(vm);
         py_obj
     }
 

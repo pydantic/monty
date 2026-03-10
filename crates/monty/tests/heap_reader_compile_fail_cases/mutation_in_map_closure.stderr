@@ -1,13 +1,92 @@
+    --> crates/monty/src/heap.rs:1337:7
+     |
+1337 | #[cfg(heap_reader_compile_fail_tests)]
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: expected names are: `codspeed`, `docsrs`, `feature`, and `test` and 31 more
+     = help: consider using a Cargo feature instead
+     = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+              [lints.rust]
+              unexpected_cfgs = { level = "warn", check-cfg = ['cfg(heap_reader_compile_fail_tests)'] }
+     = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(heap_reader_compile_fail_tests)");` to the top of the `build.rs`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: requested on the command line with `-W unexpected-cfgs`
+  --> crates/monty/src/../tests/heap_reader_compile_fail_cases/cases.rs:20:7
+   |
+20 | #[cfg(heap_reader_compile_fail_test_heap_mutation_while_reading)]
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(heap_reader_compile_fail_test_heap_mutation_while_reading)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(heap_reader_compile_fail_test_heap_mutation_while_reading)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+  --> crates/monty/src/../tests/heap_reader_compile_fail_cases/cases.rs:39:7
+   |
+39 | #[cfg(heap_reader_compile_fail_test_double_get_mut)]
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(heap_reader_compile_fail_test_double_get_mut)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(heap_reader_compile_fail_test_double_get_mut)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+  --> crates/monty/src/../tests/heap_reader_compile_fail_cases/cases.rs:62:7
+   |
+62 | #[cfg(heap_reader_compile_fail_test_dec_ref_while_reading)]
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(heap_reader_compile_fail_test_dec_ref_while_reading)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(heap_reader_compile_fail_test_dec_ref_while_reading)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+  --> crates/monty/src/../tests/heap_reader_compile_fail_cases/cases.rs:81:7
+   |
+81 | #[cfg(heap_reader_compile_fail_test_smuggle_heap_read)]
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(heap_reader_compile_fail_test_smuggle_heap_read)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(heap_reader_compile_fail_test_smuggle_heap_read)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+   --> crates/monty/src/../tests/heap_reader_compile_fail_cases/cases.rs:101:7
+    |
+101 | #[cfg(heap_reader_compile_fail_test_mutation_in_map_closure)]
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(heap_reader_compile_fail_test_mutation_in_map_closure)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(heap_reader_compile_fail_test_mutation_in_map_closure)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+   --> crates/monty/src/../tests/heap_reader_compile_fail_cases/cases.rs:125:7
+    |
+125 | #[cfg(heap_reader_compile_fail_test_read_while_ref_alive)]
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(heap_reader_compile_fail_test_read_while_ref_alive)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(heap_reader_compile_fail_test_read_while_ref_alive)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
 error[E0500]: closure requires unique access to `*heap` but it is already borrowed
    --> crates/monty/src/../tests/heap_reader_compile_fail_cases/cases.rs:112:18
     |
 109 |             .get(heap)
-    |                  ------ borrow occurs here
+    |                  ---- borrow occurs here
 ...
 112 |             .map(|_v| {
     |              --- ^^^^ closure construction occurs here
     |              |
     |              first borrow later used by call
 113 |                 heap.heap_mut().dec_ref(other_id);
-    |                 ----------- second borrow occurs due to use of `*heap` in closure
+    |                 ---- second borrow occurs due to use of `*heap` in closure
 For more information about this error, try `rustc --explain E0500`.

@@ -13,7 +13,7 @@ use crate::{
     asyncio::CallId,
     bytecode::{FrameExit, VM, VMSnapshot},
     exception_private::{RunError, RunResult},
-    heap::Heap,
+    heap::{Heap, HeapReader},
     io::PrintWriter,
     object::MontyObject,
     os::OsFunction,
@@ -313,50 +313,55 @@ impl<T: ResourceTracker> NameLookup<T> {
     pub fn resume(
         mut self,
         result: impl Into<NameLookupResult>,
-        print: PrintWriter<'_>,
+        mut print: PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
-        // Restore the VM first, then convert inside its lifetime
-        let mut vm = VM::restore(
-            self.snapshot.vm_state,
-            &self.snapshot.executor.module_code,
-            &mut self.snapshot.heap,
-            &self.snapshot.executor.interns,
-            print,
-        );
+        let result = result.into();
 
-        // Resolve the name lookup result with the VM alive
-        let vm_result = match result.into() {
-            NameLookupResult::Value(obj) => {
-                let value = obj.to_value(&mut vm).map_err(|e| {
-                    vm.cleanup();
-                    MontyException::runtime_error(format!("invalid name lookup result: {e}"))
-                })?;
+        let (converted, vm_state) = HeapReader::with(&mut self.snapshot.heap, |heap| {
+            // Restore the VM first, then convert inside its lifetime
+            let mut vm = VM::restore(
+                self.snapshot.vm_state,
+                &self.snapshot.executor.module_code,
+                heap,
+                &self.snapshot.executor.interns,
+                print.reborrow(),
+            );
 
-                // Cache the resolved value in the appropriate slot
-                let slot = self.namespace_slot as usize;
-                if self.is_global {
-                    let cloned = value.clone_with_heap(vm.heap);
-                    let old = mem::replace(&mut vm.globals[slot], cloned);
-                    old.drop_with_heap(vm.heap);
-                } else {
-                    let stack_base = vm.current_stack_base();
-                    let cloned = value.clone_with_heap(vm.heap);
-                    let old = mem::replace(&mut vm.stack[stack_base + slot], cloned);
-                    old.drop_with_heap(vm.heap);
+            // Resolve the name lookup result with the VM alive
+            let vm_result = match result {
+                NameLookupResult::Value(obj) => {
+                    let value = obj.to_value(&mut vm).map_err(|e| {
+                        vm.cleanup();
+                        MontyException::runtime_error(format!("invalid name lookup result: {e}"))
+                    })?;
+
+                    // Cache the resolved value in the appropriate slot
+                    let slot = self.namespace_slot as usize;
+                    if self.is_global {
+                        let cloned = value.clone_with_heap(&vm);
+                        let old = mem::replace(&mut vm.globals[slot], cloned);
+                        old.drop_with_heap(&mut vm);
+                    } else {
+                        let stack_base = vm.current_stack_base();
+                        let cloned = value.clone_with_heap(&vm);
+                        let old = mem::replace(&mut vm.stack[stack_base + slot], cloned);
+                        old.drop_with_heap(&mut vm);
+                    }
+
+                    vm.push(value);
+                    vm.run()
                 }
+                NameLookupResult::Undefined => {
+                    let err = ExcType::name_error(&self.name);
+                    vm.resume_with_exception(err.into())
+                }
+            };
 
-                vm.push(value);
-                vm.run()
-            }
-            NameLookupResult::Undefined => {
-                let err = ExcType::name_error(&self.name);
-                vm.resume_with_exception(err.into())
-            }
-        };
-
-        // Three-phase: convert while VM alive, snapshot, build progress
-        let converted = convert_frame_exit(vm_result, &mut vm);
-        let vm_state = check_snapshot_from_converted(&converted, vm);
+            // Three-phase: convert while VM alive, snapshot, build progress
+            let converted = convert_frame_exit(vm_result, &mut vm);
+            let vm_state = check_snapshot_from_converted(&converted, vm);
+            Ok((converted, vm_state))
+        })?;
         build_run_progress(converted, vm_state, self.snapshot.executor, self.snapshot.heap)
     }
 }
@@ -420,7 +425,7 @@ impl<T: ResourceTracker> ResolveFutures<T> {
     pub fn resume(
         self,
         results: Vec<(u32, ExtFunctionResult)>,
-        print: PrintWriter<'_>,
+        mut print: PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         let Self {
             executor,
@@ -435,67 +440,71 @@ impl<T: ResourceTracker> ResolveFutures<T> {
             .find(|(call_id, _)| !pending_call_ids.contains(call_id))
             .map(|(call_id, _)| *call_id);
 
-        // Restore the VM from the snapshot (must happen before any error return to clean up properly).
-        let mut vm = VM::restore(vm_state, &executor.module_code, &mut heap, &executor.interns, print);
+        let (converted, vm_state) = HeapReader::with(&mut heap, |heap| {
+            // Restore the VM from the snapshot (must happen before any error return to clean up properly).
+            let mut vm = VM::restore(
+                vm_state,
+                &executor.module_code,
+                heap,
+                &executor.interns,
+                print.reborrow(),
+            );
 
-        // Now check for invalid call_ids after VM is restored.
-        if let Some(call_id) = invalid_call_id {
-            vm.cleanup();
-            return Err(MontyException::runtime_error(format!(
-                "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
-            )));
-        }
+            // Now check for invalid call_ids after VM is restored.
+            if let Some(call_id) = invalid_call_id {
+                vm.cleanup();
+                return Err(MontyException::runtime_error(format!(
+                    "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
+                )));
+            }
 
-        for (call_id, ext_result) in results {
-            match ext_result {
-                ExtFunctionResult::Return(obj) => vm.resolve_future(call_id, obj).map_err(|e| {
-                    MontyException::runtime_error(format!("Invalid return type for call {call_id}: {e}"))
-                })?,
-                ExtFunctionResult::Error(exc) => vm.fail_future(call_id, exc.into()),
-                ExtFunctionResult::Future(_) => {}
-                ExtFunctionResult::NotFound(function_name) => {
-                    vm.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name));
+            for (call_id, ext_result) in results {
+                match ext_result {
+                    ExtFunctionResult::Return(obj) => vm.resolve_future(call_id, obj).map_err(|e| {
+                        MontyException::runtime_error(format!("Invalid return type for call {call_id}: {e}"))
+                    })?,
+                    ExtFunctionResult::Error(exc) => vm.fail_future(call_id, exc.into()),
+                    ExtFunctionResult::Future(_) => {}
+                    ExtFunctionResult::NotFound(function_name) => {
+                        vm.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name));
+                    }
                 }
             }
-        }
 
-        // Check if the current task has failed.
-        if let Some(error) = vm.take_failed_task_error() {
-            vm.cleanup();
-            return Err(error.into_python_exception(&executor.interns, &executor.code));
-        }
-
-        // Push resolved value for main task if it was blocked.
-        let main_task_ready = vm.prepare_current_task_after_resolve();
-
-        let loaded_task = match vm.load_ready_task_if_needed() {
-            Ok(loaded) => loaded,
-            Err(e) => {
+            // Check if the current task has failed.
+            if let Some(error) = vm.take_failed_task_error() {
                 vm.cleanup();
-                return Err(e.into_python_exception(&executor.interns, &executor.code));
+                return Err(error.into_python_exception(&executor.interns, &executor.code));
             }
-        };
 
-        // If no task is ready and there are still pending calls, return ResolveFutures.
-        if !main_task_ready && !loaded_task {
-            let pending_call_ids = vm.get_pending_call_ids();
-            if !pending_call_ids.is_empty() {
-                let vm_state = vm.snapshot();
-                let pending_call_ids: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
-                return Ok(RunProgress::ResolveFutures(Self {
-                    executor,
-                    vm_state,
-                    heap,
-                    pending_call_ids,
-                }));
+            // Push resolved value for main task if it was blocked.
+            let main_task_ready = vm.prepare_current_task_after_resolve();
+
+            let loaded_task = match vm.load_ready_task_if_needed() {
+                Ok(loaded) => loaded,
+                Err(e) => {
+                    vm.cleanup();
+                    return Err(e.into_python_exception(&executor.interns, &executor.code));
+                }
+            };
+
+            // If no task is ready and there are still pending calls, return ResolveFutures.
+            if !main_task_ready && !loaded_task {
+                let pending_call_ids = vm.get_pending_call_ids();
+                if !pending_call_ids.is_empty() {
+                    let vm_state = vm.snapshot();
+                    let pending_call_ids: Vec<u32> = pending_call_ids.iter().map(|id| id.raw()).collect();
+                    return Ok((ConvertedExit::ResolveFutures(pending_call_ids), Some(vm_state)));
+                }
             }
-        }
 
-        let result = vm.run();
+            let result = vm.run();
 
-        // Three-phase: convert while VM alive, snapshot, build progress
-        let converted = convert_frame_exit(result, &mut vm);
-        let vm_state = check_snapshot_from_converted(&converted, vm);
+            // Three-phase: convert while VM alive, snapshot, build progress
+            let converted = convert_frame_exit(result, &mut vm);
+            let vm_state = check_snapshot_from_converted(&converted, vm);
+            Ok((converted, vm_state))
+        })?;
         build_run_progress(converted, vm_state, executor, heap)
     }
 }
@@ -525,35 +534,38 @@ impl<T: ResourceTracker> Snapshot<T> {
     pub(crate) fn run(
         mut self,
         result: impl Into<ExtFunctionResult>,
-        print: PrintWriter<'_>,
+        mut print: PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         let ext_result = result.into();
 
-        let mut vm = VM::restore(
-            self.vm_state,
-            &self.executor.module_code,
-            &mut self.heap,
-            &self.executor.interns,
-            print,
-        );
+        let (converted, vm_state) = HeapReader::with(&mut self.heap, |heap| {
+            let mut vm = VM::restore(
+                self.vm_state,
+                &self.executor.module_code,
+                heap,
+                &self.executor.interns,
+                print.reborrow(),
+            );
 
-        let vm_result = match ext_result {
-            ExtFunctionResult::Return(obj) => vm.resume(obj),
-            ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
-            ExtFunctionResult::Future(raw_call_id) => {
-                let call_id = CallId::new(raw_call_id);
-                vm.add_pending_call(call_id);
-                vm.push(Value::ExternalFuture(call_id));
-                vm.run()
-            }
-            ExtFunctionResult::NotFound(function_name) => {
-                vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
-            }
-        };
+            let vm_result = match ext_result {
+                ExtFunctionResult::Return(obj) => vm.resume(obj),
+                ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
+                ExtFunctionResult::Future(raw_call_id) => {
+                    let call_id = CallId::new(raw_call_id);
+                    vm.add_pending_call(call_id);
+                    vm.push(Value::ExternalFuture(call_id));
+                    vm.run()
+                }
+                ExtFunctionResult::NotFound(function_name) => {
+                    vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
+                }
+            };
 
-        // Three-phase: convert while VM alive, snapshot, build progress
-        let converted = convert_frame_exit(vm_result, &mut vm);
-        let vm_state = check_snapshot_from_converted(&converted, vm);
+            // Three-phase: convert while VM alive, snapshot, build progress
+            let converted = convert_frame_exit(vm_result, &mut vm);
+            let vm_state = check_snapshot_from_converted(&converted, vm);
+            (converted, vm_state)
+        });
         build_run_progress(converted, vm_state, self.executor, self.heap)
     }
 }

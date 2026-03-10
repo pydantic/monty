@@ -106,10 +106,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         let copied_items: Vec<Value> = match iterable {
             Value::Ref(id) => match this.heap.get(*id) {
-                HeapData::List(list) => list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect(),
-                HeapData::Tuple(tuple) => tuple.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect(),
-                HeapData::Set(set) => set.storage().iter().map(|v| v.clone_with_heap(this.heap)).collect(),
-                HeapData::Dict(dict) => dict.iter().map(|(k, _)| k.clone_with_heap(this.heap)).collect(),
+                HeapData::List(list) => list.as_slice().iter().map(|v| v.clone_with_heap(this)).collect(),
+                HeapData::Tuple(tuple) => tuple.as_slice().iter().map(|v| v.clone_with_heap(this)).collect(),
+                HeapData::Set(set) => set.storage().iter().map(|v| v.clone_with_heap(this)).collect(),
+                HeapData::Dict(dict) => dict.iter().map(|(k, _)| k.clone_with_heap(this)).collect(),
                 HeapData::Str(s) => {
                     // Need to allocate strings for each character
                     let chars: Vec<char> = s.as_str().chars().collect();
@@ -175,7 +175,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         let copied_items: SmallVec<_> = if let Value::Ref(id) = list_ref {
             if let HeapData::List(list) = this.heap.get(*id) {
-                list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect()
+                list.as_slice().iter().map(|v| v.clone_with_heap(this)).collect()
             } else {
                 return Err(RunError::internal("ListToTuple: expected list"));
             }
@@ -216,7 +216,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
             if let HeapData::Dict(dict) = this.heap.get(*id) {
                 dict.iter()
-                    .map(|(k, v)| (k.clone_with_heap(this.heap), v.clone_with_heap(this.heap)))
+                    .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
                     .collect()
             } else {
                 let type_name = mapping.py_type(this.heap).to_string();
@@ -307,7 +307,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
             if let HeapData::Dict(dict) = this.heap.get(*id) {
                 dict.iter()
-                    .map(|(k, v)| (k.clone_with_heap(this.heap), v.clone_with_heap(this.heap)))
+                    .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
                     .collect()
             } else {
                 let type_ = mapping.py_type(this.heap);
@@ -340,7 +340,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             })?;
             // Silently drop any old value — PEP 448 dict literals allow duplicate keys
             if let Some(old_val) = old {
-                old_val.drop_with_heap(this.heap);
+                old_val.drop_with_heap(this);
             }
         }
 
@@ -366,10 +366,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // Clone items from the iterable (same sources as list_extend)
         let copied_items: Vec<Value> = match iterable {
             Value::Ref(id) => match this.heap.get(*id) {
-                HeapData::List(list) => list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect(),
-                HeapData::Tuple(tuple) => tuple.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect(),
-                HeapData::Set(set) => set.storage().iter().map(|v| v.clone_with_heap(this.heap)).collect(),
-                HeapData::Dict(dict) => dict.iter().map(|(k, _)| k.clone_with_heap(this.heap)).collect(),
+                HeapData::List(list) => list.as_slice().iter().map(|v| v.clone_with_heap(this)).collect(),
+                HeapData::Tuple(tuple) => tuple.as_slice().iter().map(|v| v.clone_with_heap(this)).collect(),
+                HeapData::Set(set) => set.storage().iter().map(|v| v.clone_with_heap(this)).collect(),
+                HeapData::Dict(dict) => dict.iter().map(|(k, _)| k.clone_with_heap(this)).collect(),
                 HeapData::Str(s) => {
                     let chars: Vec<char> = s.as_str().chars().collect();
                     let mut items = Vec::with_capacity(chars.len());
@@ -564,14 +564,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                         if list_len != count {
                             return Err(unpack_size_error(count, list_len));
                         }
-                        list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect()
+                        list.as_slice().iter().map(|v| v.clone_with_heap(this)).collect()
                     }
                     HeapData::Tuple(tuple) => {
                         let tuple_len = tuple.as_slice().len();
                         if tuple_len != count {
                             return Err(unpack_size_error(count, tuple_len));
                         }
-                        tuple.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect()
+                        tuple.as_slice().iter().map(|v| v.clone_with_heap(this)).collect()
                     }
                     HeapData::Str(s) => {
                         let str_len = s.as_str().chars().count();
@@ -647,14 +647,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                         if list_len < min_items {
                             return Err(unpack_ex_too_few_error(min_items, list_len));
                         }
-                        list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect()
+                        list.as_slice().iter().map(|v| v.clone_with_heap(this)).collect()
                     }
                     HeapData::Tuple(tuple) => {
                         let tuple_len = tuple.as_slice().len();
                         if tuple_len < min_items {
                             return Err(unpack_ex_too_few_error(min_items, tuple_len));
                         }
-                        tuple.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect()
+                        tuple.as_slice().iter().map(|v| v.clone_with_heap(this)).collect()
                     }
                     HeapData::Str(s) => {
                         // Collect chars once to avoid double iteration over UTF-8 data

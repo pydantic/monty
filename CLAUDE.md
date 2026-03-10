@@ -91,7 +91,7 @@ For very simple cases with a single linear code path and no branching between ac
 
 ```rust
 let iter = self.pop();
-iter.drop_with_heap(&mut self.heap); // single path, no branching
+iter.drop_with_heap(self); // single path, no branching
 ```
 
 Avoid manual `drop_with_heap` whenever there are multiple code paths (branching, `?`, `continue`, early returns) between acquiring and releasing the value — that is exactly where `defer_drop!` or `HeapGuard` prevent leaks by guaranteeing cleanup on every path.

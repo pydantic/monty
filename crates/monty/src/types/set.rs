@@ -104,11 +104,11 @@ impl SetStorage {
             Ok(Some(h)) => h,
             Ok(None) => {
                 let err = ExcType::type_error_unhashable_set_element(value.py_type(vm.heap));
-                value.drop_with_heap(vm.heap);
+                value.drop_with_heap(vm);
                 return Err(err);
             }
             Err(e) => {
-                value.drop_with_heap(vm.heap);
+                value.drop_with_heap(vm);
                 return Err(e.into());
             }
         };
@@ -120,7 +120,7 @@ impl SetStorage {
 
         if existing.is_some() {
             // Value already in set, drop the new value
-            value.drop_with_heap(vm.heap);
+            value.drop_with_heap(vm);
             Ok(false)
         } else {
             // Add new entry

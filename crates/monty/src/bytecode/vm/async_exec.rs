@@ -122,7 +122,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Extract coroutine data before mutating
         let func_id = coro.func_id;
-        let namespace_values: Vec<Value> = coro.namespace.iter().map(|v| v.clone_with_heap(this.heap)).collect();
+        let namespace_values: Vec<Value> = coro.namespace.iter().map(|v| v.clone_with_heap(this)).collect();
 
         // Mark coroutine as Running
         if let HeapDataMut::Coroutine(coro_mut) = this.heap.get_mut(heap_id) {

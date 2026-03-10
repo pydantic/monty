@@ -320,7 +320,7 @@ impl PyTrait for Bytes {
         args: ArgValues,
     ) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
-            args.drop_with_heap(vm.heap);
+            args.drop_with_heap(vm);
             return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(vm.interns)));
         };
 
@@ -339,7 +339,7 @@ pub fn call_bytes_method(
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let Some(method) = StaticStrings::from_string_id(method_id) else {
-        args.drop_with_heap(vm.heap);
+        args.drop_with_heap(vm);
         return Err(ExcType::attribute_error(Type::Bytes, vm.interns.get_str(method_id)));
     };
     call_bytes_method_impl(bytes, method, args, vm)
@@ -1651,7 +1651,7 @@ fn parse_bytes_splitlines_args(args: ArgValues, vm: &mut VM<'_, '_, impl Resourc
         defer_drop!(key, vm);
         let mut value_guard = HeapGuard::new(value, vm);
 
-        let Some(keyword_name) = key.as_either_str(value_guard.heap().heap) else {
+        let Some(keyword_name) = key.as_either_str(&value_guard.heap().heap) else {
             return Err(ExcType::type_error("keywords must be strings"));
         };
 

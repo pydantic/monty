@@ -1414,10 +1414,10 @@ impl Value {
     /// Returns the module name if this value is a module, otherwise returns "<unknown>".
     ///
     /// Used for error messages in `from module import name` when the name doesn't exist.
-    pub fn module_name(&self, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> String {
+    pub fn module_name(&self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> String {
         match self {
-            Self::Ref(id) => match heap.get(*id) {
-                HeapData::Module(module) => interns.get_str(module.name()).to_string(),
+            Self::Ref(id) => match vm.heap.get(*id) {
+                HeapData::Module(module) => vm.interns.get_str(module.name()).to_string(),
                 _ => "<unknown>".to_string(),
             },
             _ => "<unknown>".to_string(),
@@ -1679,7 +1679,7 @@ impl Value {
                         match dc.set_attr(name_value, value, vm) {
                             Ok(old_value) => {
                                 if let Some(old) = old_value {
-                                    old.drop_with_heap(vm.heap);
+                                    old.drop_with_heap(vm);
                                 }
                                 Ok(())
                             }
@@ -1691,12 +1691,12 @@ impl Value {
                 })
             } else {
                 let type_name = vm.heap.get(heap_id).py_type(vm.heap);
-                value.drop_with_heap(vm.heap);
+                value.drop_with_heap(vm);
                 Err(ExcType::attribute_error_no_setattr(type_name, attr_name))
             }
         } else {
             let type_name = self.py_type(vm.heap);
-            value.drop_with_heap(vm.heap);
+            value.drop_with_heap(vm);
             Err(ExcType::attribute_error_no_setattr(type_name, attr_name))
         }
     }

@@ -160,7 +160,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 }
 
                 // Push exception value onto stack (handler expects it)
-                let exc_for_stack = exc_value.clone_with_heap(this.heap);
+                let exc_for_stack = exc_value.clone_with_heap(this);
                 this.push(exc_for_stack);
 
                 // Reclaim exc_value from guard - it's being pushed onto exception_stack

@@ -556,7 +556,7 @@ fn list_remove(list: &mut List, args: ArgValues, vm: &mut VM<'_, '_, impl Resour
         Some(idx) => {
             // Remove the element and drop its refcount
             let removed = list.items.remove(idx);
-            removed.drop_with_heap(vm.heap);
+            removed.drop_with_heap(vm);
             Ok(Value::None)
         }
         None => Err(ExcType::value_error_remove_not_in_list()),
@@ -823,6 +823,7 @@ mod tests {
     use super::*;
     use crate::{
         PrintWriter,
+        heap::HeapReader,
         intern::{InternerBuilder, Interns},
         resource::NoLimitTracker,
         types::LongInt,
@@ -865,8 +866,10 @@ mod tests {
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
-        let mut vm = VM::new(Vec::new(), &mut heap, &interns, PrintWriter::Disabled);
-        let result = Heap::with_entry_mut(&mut vm, list_id, |vm, mut data| data.py_setitem(key, new_value, vm));
+        let result = HeapReader::with(&mut heap, |heap| {
+            let mut vm = VM::new(Vec::new(), heap, &interns, PrintWriter::Disabled);
+            Heap::with_entry_mut(&mut vm, list_id, |vm, mut data| data.py_setitem(key, new_value, vm))
+        });
 
         assert!(result.is_ok());
 
@@ -893,8 +896,10 @@ mod tests {
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
-        let mut vm = VM::new(Vec::new(), &mut heap, &interns, PrintWriter::Disabled);
-        let result = Heap::with_entry_mut(&mut vm, list_id, |vm, mut data| data.py_setitem(key, new_value, vm));
+        let result = HeapReader::with(&mut heap, |heap| {
+            let mut vm = VM::new(Vec::new(), heap, &interns, PrintWriter::Disabled);
+            Heap::with_entry_mut(&mut vm, list_id, |vm, mut data| data.py_setitem(key, new_value, vm))
+        });
 
         assert!(result.is_ok());
 
@@ -919,8 +924,10 @@ mod tests {
         heap.inc_ref(index_id);
 
         // This should fail with IndexError because i64::MAX is out of bounds for a 1-element list
-        let mut vm = VM::new(Vec::new(), &mut heap, &interns, PrintWriter::Disabled);
-        let result = Heap::with_entry_mut(&mut vm, list_id, |vm, mut data| data.py_setitem(key, new_value, vm));
+        let result = HeapReader::with(&mut heap, |heap| {
+            let mut vm = VM::new(Vec::new(), heap, &interns, PrintWriter::Disabled);
+            Heap::with_entry_mut(&mut vm, list_id, |vm, mut data| data.py_setitem(key, new_value, vm))
+        });
 
         assert!(result.is_err());
 

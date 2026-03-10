@@ -387,7 +387,7 @@ impl<T: ResourceTracker> Iterator for HeapedMontyIter<'_, '_, '_, T> {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.0.size_hint(self.1.heap);
+        let remaining = self.0.size_hint(&self.1.heap);
         (remaining, Some(remaining))
     }
 }

@@ -508,7 +508,7 @@ impl PyTrait for Dict {
         args: ArgValues,
     ) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
-            args.drop_with_heap(vm.heap);
+            args.drop_with_heap(vm);
             return Err(ExcType::attribute_error(Type::Dict, attr.as_str(vm.interns)));
         };
 
@@ -585,7 +585,7 @@ impl PyTrait for Dict {
             // fromkeys is a classmethod but also accessible on instances
             StaticStrings::Fromkeys => dict_fromkeys(args, vm),
             _ => {
-                args.drop_with_heap(vm.heap);
+                args.drop_with_heap(vm);
                 return Err(ExcType::attribute_error(Type::Dict, attr.as_str(vm.interns)));
             }
         };
@@ -673,13 +673,13 @@ fn dict_merge_from_value(
             // Clone key-value pairs from the source dict.
             let pairs: Vec<(Value, Value)> = src_dict
                 .iter()
-                .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
+                .map(|(k, v)| (k.clone_with_heap(vm), v.clone_with_heap(vm)))
                 .collect();
 
             // Apply pairs into the target dict.
             for (key, value) in pairs {
                 let old_value = dict.set(key, value, vm)?;
-                old_value.drop_with_heap(vm.heap);
+                old_value.drop_with_heap(vm);
             }
             return Ok(());
         }

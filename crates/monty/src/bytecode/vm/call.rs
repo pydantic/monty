@@ -571,7 +571,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         };
         let copied_kwargs: Vec<(Value, Value)> = dict
             .iter()
-            .map(|(k, v)| (k.clone_with_heap(this.heap), v.clone_with_heap(this.heap)))
+            .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
             .collect();
 
         let kwargs_values = if copied_kwargs.is_empty() {
@@ -649,7 +649,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             for (i, maybe_param_idx) in func.cell_param_indices.iter().enumerate() {
                 let cell_slot = param_count + i;
                 let cell_value = if let Some(param_idx) = maybe_param_idx {
-                    namespace[*param_idx].clone_with_heap(this.heap)
+                    namespace[*param_idx].clone_with_heap(this)
                 } else {
                     Value::Undefined
                 };
@@ -726,7 +726,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             for (i, maybe_param_idx) in func.cell_param_indices.iter().enumerate() {
                 let cell_slot = param_count + i;
                 let cell_value = if let Some(param_idx) = maybe_param_idx {
-                    namespace[*param_idx].clone_with_heap(this.heap)
+                    namespace[*param_idx].clone_with_heap(this)
                 } else {
                     Value::Undefined
                 };

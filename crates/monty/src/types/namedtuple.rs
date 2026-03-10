@@ -175,7 +175,7 @@ impl PyTrait for NamedTuple {
 
         // Get by index with bounds checking
         match self.get_by_index(index) {
-            Some(value) => Ok(value.clone_with_heap(vm.heap)),
+            Some(value) => Ok(value.clone_with_heap(vm)),
             None => Err(ExcType::tuple_index_error()),
         }
     }
@@ -252,7 +252,7 @@ impl PyTrait for NamedTuple {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         let attr_name = attr.as_str(vm.interns);
         if let Some(value) = self.get_by_name(attr_name, vm.interns) {
-            Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap))))
+            Ok(Some(CallResult::Value(value.clone_with_heap(vm))))
         } else {
             // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
             Err(ExcType::attribute_error(self.name(vm.interns), attr_name))

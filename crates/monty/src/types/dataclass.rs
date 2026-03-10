@@ -301,7 +301,7 @@ impl PyTrait for Dataclass {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         let attr_name = attr.as_str(vm.interns);
         match self.attrs.get_by_str(attr_name, vm.heap, vm.interns) {
-            Some(value) => Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap)))),
+            Some(value) => Ok(Some(CallResult::Value(value.clone_with_heap(vm)))),
             // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
             None => Err(ExcType::attribute_error(self.name(vm.interns), attr_name)),
         }

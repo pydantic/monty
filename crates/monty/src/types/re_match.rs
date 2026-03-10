@@ -381,7 +381,7 @@ impl PyTrait for ReMatch {
                 let default = args.get_zero_one_arg("re.Match.groupdict", vm.heap)?;
                 let default = default.unwrap_or(Value::None);
                 let result = self.get_groupdict(&default, vm)?;
-                default.drop_with_heap(vm.heap);
+                default.drop_with_heap(vm);
                 result
             }
             Some(StaticStrings::Start) => {

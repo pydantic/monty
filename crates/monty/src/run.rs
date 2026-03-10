@@ -5,7 +5,7 @@ use crate::{
     ExcType, MontyException,
     bytecode::{Code, Compiler, FrameExit, VM},
     exception_private::RunResult,
-    heap::{DropWithHeap, Heap},
+    heap::{DropWithHeap, Heap, HeapReader},
     intern::Interns,
     io::PrintWriter,
     object::MontyObject,
@@ -140,22 +140,25 @@ impl MontyRun {
         self,
         inputs: Vec<MontyObject>,
         resource_tracker: T,
-        print: PrintWriter<'_>,
+        mut print: PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
         let executor = self.executor;
 
         // Create heap and VM with empty globals, then populate inputs with VM alive
         let mut heap = Heap::new(executor.namespace_size, resource_tracker);
         let globals = executor.empty_globals();
-        let mut vm = VM::new(globals, &mut heap, &executor.interns, print);
-        executor.populate_inputs(inputs, &mut vm)?;
+        let (converted, vm_state) = HeapReader::with(&mut heap, |heap| {
+            let mut vm = VM::new(globals, heap, &executor.interns, print.reborrow());
+            executor.populate_inputs(inputs, &mut vm)?;
 
-        // Start execution
-        let vm_result = vm.run_module(&executor.module_code);
+            // Start execution
+            let vm_result = vm.run_module(&executor.module_code);
 
-        // Three-phase conversion: convert while VM alive, then snapshot, then build progress
-        let converted = convert_frame_exit(vm_result, &mut vm);
-        let vm_state = check_snapshot_from_converted(&converted, vm);
+            // Three-phase conversion: convert while VM alive, then snapshot, then build progress
+            let converted = convert_frame_exit(vm_result, &mut vm);
+            let vm_state = check_snapshot_from_converted(&converted, vm);
+            Ok((converted, vm_state))
+        })?;
         build_run_progress(converted, vm_state, executor, heap)
     }
 }
@@ -238,54 +241,58 @@ impl Executor {
         &self,
         inputs: Vec<MontyObject>,
         resource_tracker: impl ResourceTracker,
-        print: PrintWriter<'_>,
+        mut print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
         let heap_capacity = self.heap_capacity.load(Ordering::Relaxed);
         let mut heap = Heap::new(heap_capacity, resource_tracker);
         let globals = self.empty_globals();
 
         // Create VM first, then populate inputs with VM alive
-        let mut vm = VM::new(globals, &mut heap, &self.interns, print);
-        self.populate_inputs(inputs, &mut vm)?;
-        let mut frame_exit_result = vm.run_module(&self.module_code);
+        let result = HeapReader::with(&mut heap, |heap| {
+            let mut vm = VM::new(globals, heap, &self.interns, print.reborrow());
+            self.populate_inputs(inputs, &mut vm)?;
+            let mut frame_exit_result = vm.run_module(&self.module_code);
 
-        // Handle NameLookup and ExternalCall exits by raising NameError through the VM
-        // so that traceback information is properly captured. In the non-iterative path,
-        // there's no host to resolve names or external functions, so these become NameErrors.
-        loop {
-            match frame_exit_result {
-                Ok(FrameExit::NameLookup { name_id, .. }) => {
-                    let name = self.interns.get_str(name_id);
-                    let err = ExcType::name_error(name);
-                    frame_exit_result = vm.resume_with_exception(err.into());
-                }
-                Ok(FrameExit::ExternalCall {
-                    function_name,
-                    args,
-                    name_load_ip,
-                    ..
-                }) => {
-                    // In standard execution, an ExtFunction from LoadGlobalCallable/
-                    // LoadLocalCallable means the name was undefined — raise NameError.
-                    // Restore the frame IP to the load instruction so the traceback
-                    // points to the name reference, not the call expression.
-                    if let Some(load_ip) = name_load_ip {
-                        vm.set_instruction_ip(load_ip);
+            // Handle NameLookup and ExternalCall exits by raising NameError through the VM
+            // so that traceback information is properly captured. In the non-iterative path,
+            // there's no host to resolve names or external functions, so these become NameErrors.
+            loop {
+                match frame_exit_result {
+                    Ok(FrameExit::NameLookup { name_id, .. }) => {
+                        let name = self.interns.get_str(name_id);
+                        let err = ExcType::name_error(name);
+                        frame_exit_result = vm.resume_with_exception(err.into());
                     }
-                    let name = function_name.as_str(&self.interns);
-                    args.drop_with_heap(vm.heap);
-                    let err = ExcType::name_error(name);
-                    frame_exit_result = vm.resume_with_exception(err.into());
+                    Ok(FrameExit::ExternalCall {
+                        function_name,
+                        args,
+                        name_load_ip,
+                        ..
+                    }) => {
+                        // In standard execution, an ExtFunction from LoadGlobalCallable/
+                        // LoadLocalCallable means the name was undefined — raise NameError.
+                        // Restore the frame IP to the load instruction so the traceback
+                        // points to the name reference, not the call expression.
+                        if let Some(load_ip) = name_load_ip {
+                            vm.set_instruction_ip(load_ip);
+                        }
+                        let name = function_name.as_str(&self.interns);
+                        args.drop_with_heap(&mut vm);
+                        let err = ExcType::name_error(name);
+                        frame_exit_result = vm.resume_with_exception(err.into());
+                    }
+                    _ => break,
                 }
-                _ => break,
             }
-        }
 
-        // Convert output while VM is still alive
-        let result = frame_exit_to_object(frame_exit_result, &mut vm);
+            // Convert output while VM is still alive
+            let result = frame_exit_to_object(frame_exit_result, &mut vm);
 
-        // Clean up VM state before it goes out of scope
-        vm.cleanup();
+            // Clean up VM state before it goes out of scope
+            vm.cleanup();
+
+            result
+        });
 
         if heap.size() > heap_capacity {
             self.heap_capacity.store(heap.size(), Ordering::Relaxed);
@@ -407,7 +414,7 @@ fn frame_exit_to_object(
         FrameExit::ExternalCall {
             function_name, args, ..
         } => {
-            args.drop_with_heap(vm.heap);
+            args.drop_with_heap(vm);
             let function_name = function_name.as_str(vm.interns);
             Err(ExcType::not_implemented(format!(
                 "External function '{function_name}' not implemented with standard execution"
@@ -415,14 +422,14 @@ fn frame_exit_to_object(
             .into())
         }
         FrameExit::OsCall { function, args, .. } => {
-            args.drop_with_heap(vm.heap);
+            args.drop_with_heap(vm);
             Err(ExcType::not_implemented(format!(
                 "OS function '{function}' not implemented with standard execution"
             ))
             .into())
         }
         FrameExit::MethodCall { method_name, args, .. } => {
-            args.drop_with_heap(vm.heap);
+            args.drop_with_heap(vm);
             let name = method_name.as_str(vm.interns);
             Err(
                 ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution"))

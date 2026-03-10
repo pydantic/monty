@@ -444,7 +444,7 @@ fn call_str_method_impl(
             str_join(s, iterable, vm)
         }
         _ => {
-            args.drop_with_heap(vm.heap);
+            args.drop_with_heap(vm);
             Err(ExcType::attribute_error(Type::Str, method.into()))
         }
     }

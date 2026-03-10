@@ -24,7 +24,7 @@ use crate::{
     asyncio::{CallId, TaskId},
     bytecode::{code::Code, op::Opcode},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReader},
     heap_data::{Closure, FunctionDefaults, HeapDataMut},
     intern::{FunctionId, Interns, StringId},
     io::PrintWriter,
@@ -524,7 +524,7 @@ pub struct VMSnapshot {
 /// # Lifetimes
 /// * `'a` - Lifetime of the heap, namespaces, and interns
 /// * `'p` - Lifetime of the print writer's internal references
-pub struct VM<'a, 'p, T: ResourceTracker> {
+pub struct VM<'h, 'a, T: ResourceTracker> {
     /// Operand stack — locals and operands interleaved per frame.
     ///
     /// Each function frame's locals occupy `stack[frame.stack_base..frame.stack_base + frame.locals_count]`,
@@ -543,13 +543,13 @@ pub struct VM<'a, 'p, T: ResourceTracker> {
     frames: Vec<CallFrame<'a>>,
 
     /// Heap for reference-counted objects.
-    pub(crate) heap: &'a mut Heap<T>,
+    pub(crate) heap: &'h mut HeapReader<'h, T>,
 
     /// Interned strings/bytes.
     pub(crate) interns: &'a Interns,
 
     /// Print output writer, borrowed so callers retain access to collected output.
-    pub(crate) print_writer: PrintWriter<'p>,
+    pub(crate) print_writer: PrintWriter<'a>,
 
     /// Stack of exceptions being handled for nested except blocks.
     ///
@@ -592,13 +592,13 @@ pub struct VM<'a, 'p, T: ResourceTracker> {
     ext_function_load_ip: Option<usize>,
 }
 
-impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
+impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     /// Creates a new VM with the given runtime context.
     pub fn new(
         globals: Vec<Value>,
-        heap: &'a mut Heap<T>,
+        heap: &'h mut HeapReader<'h, T>,
         interns: &'a Interns,
-        print_writer: PrintWriter<'p>,
+        print_writer: PrintWriter<'a>,
     ) -> Self {
         Self {
             stack: Vec::with_capacity(64),
@@ -631,9 +631,9 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     pub fn restore(
         snapshot: VMSnapshot,
         module_code: &'a Code,
-        heap: &'a mut Heap<T>,
+        heap: &'h mut HeapReader<'h, T>,
         interns: &'a Interns,
-        print_writer: PrintWriter<'p>,
+        print_writer: PrintWriter<'a>,
     ) -> Self {
         // Reconstruct call frames from serialized form
         let frames: Vec<CallFrame<'_>> = snapshot
@@ -1769,7 +1769,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
             }));
         }
 
-        self.push(value.clone_with_heap(self.heap));
+        self.push(value.clone_with_heap(self));
         Ok(None)
     }
 
@@ -1786,7 +1786,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
             self.ext_function_load_ip = Some(self.instruction_ip);
             self.push(Value::ExtFunction(name_id));
         } else {
-            self.push(value.clone_with_heap(self.heap));
+            self.push(value.clone_with_heap(self));
         }
     }
 
@@ -1796,7 +1796,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// it pushes `Value::ExtFunction(name_id)` so that the subsequent `CallFunction` opcode
     /// can yield `FunctionCall` instead.
     fn load_global_callable(&mut self, slot: u16, name_id: StringId) {
-        let value = self.globals[slot as usize].clone_with_heap(self.heap);
+        let value = self.globals[slot as usize].clone_with_heap(self);
 
         if matches!(value, Value::Undefined) {
             // Save the load instruction's IP so NameError tracebacks point to the name
@@ -1846,7 +1846,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// instead of immediately raising `NameError`. This allows the host to provide
     /// external function bindings lazily.
     fn load_global(&mut self, slot: u16) -> Result<Option<FrameExit>, RunError> {
-        let value = self.globals[slot as usize].clone_with_heap(self.heap);
+        let value = self.globals[slot as usize].clone_with_heap(self);
 
         // Check for undefined value — raise appropriate error or yield to host
         if matches!(value, Value::Undefined) {

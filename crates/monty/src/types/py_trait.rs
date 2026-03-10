@@ -287,8 +287,8 @@ pub trait PyTrait {
     ///
     /// Default implementation returns TypeError.
     fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<()> {
-        key.drop_with_heap(vm.heap);
-        value.drop_with_heap(vm.heap);
+        key.drop_with_heap(vm);
+        value.drop_with_heap(vm);
         Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!("'{}' object does not support item assignment", self.py_type(vm.heap)),
