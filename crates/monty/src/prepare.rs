@@ -1,6 +1,7 @@
 use std::collections::hash_map::Entry;
 
 use ahash::{AHashMap, AHashSet};
+use indexmap::IndexSet;
 
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg},
@@ -37,6 +38,22 @@ pub struct PrepareResult {
     pub nodes: Vec<PreparedNode>,
     /// The string interner containing all interned identifiers and filenames.
     pub interner: InternerBuilder,
+}
+
+trait AssignedNameCollector {
+    fn insert_name(&mut self, name: String);
+}
+
+impl AssignedNameCollector for AHashSet<String> {
+    fn insert_name(&mut self, name: String) {
+        self.insert(name);
+    }
+}
+
+impl AssignedNameCollector for IndexSet<String> {
+    fn insert_name(&mut self, name: String) {
+        self.insert(name);
+    }
 }
 
 /// Prepares parsed nodes for compilation by resolving names and building the initial namespace.
@@ -317,7 +334,7 @@ impl<'i> Prepare<'i> {
         // Collect all names that will be assigned at module level.
         // We reuse collect_scope_info_from_node which already handles all node types
         // including walrus expressions, unpack targets, and control flow recursion.
-        let mut assigned_names = AHashSet::new();
+        let mut assigned_names = IndexSet::new();
         let mut global_names = AHashSet::new();
         let mut nonlocal_names = AHashSet::new();
         for node in nodes {
@@ -1973,7 +1990,7 @@ fn collect_scope_info_from_node(
     node: &ParseNode,
     global_names: &mut AHashSet<String>,
     nonlocal_names: &mut AHashSet<String>,
-    assigned_names: &mut AHashSet<String>,
+    assigned_names: &mut impl AssignedNameCollector,
     interner: &InternerBuilder,
 ) {
     match node {
@@ -1988,7 +2005,7 @@ fn collect_scope_info_from_node(
             }
         }
         Node::Assign { target, object } => {
-            assigned_names.insert(interner.get_str(target.name_id).to_string());
+            assigned_names.insert_name(interner.get_str(target.name_id).to_string());
             // Scan value expression for walrus operators
             collect_assigned_names_from_expr(object, assigned_names, interner);
         }
@@ -2001,7 +2018,7 @@ fn collect_scope_info_from_node(
             collect_assigned_names_from_expr(object, assigned_names, interner);
         }
         Node::OpAssign { target, object, .. } => {
-            assigned_names.insert(interner.get_str(target.name_id).to_string());
+            assigned_names.insert_name(interner.get_str(target.name_id).to_string());
             // Scan value expression for walrus operators
             collect_assigned_names_from_expr(object, assigned_names, interner);
         }
@@ -2064,7 +2081,7 @@ fn collect_scope_info_from_node(
         Node::FunctionDef(RawFunctionDef { name, .. }) => {
             // Function definition creates a local binding for the function name
             // But we don't recurse into the function body - that's a separate scope
-            assigned_names.insert(interner.get_str(name.name_id).to_string());
+            assigned_names.insert_name(interner.get_str(name.name_id).to_string());
         }
         Node::Try(Try {
             body,
@@ -2079,7 +2096,7 @@ fn collect_scope_info_from_node(
             for handler in handlers {
                 // Exception variable name is assigned
                 if let Some(ref name) = handler.name {
-                    assigned_names.insert(interner.get_str(name.name_id).to_string());
+                    assigned_names.insert_name(interner.get_str(name.name_id).to_string());
                 }
                 for n in &handler.body {
                     collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
@@ -2094,12 +2111,12 @@ fn collect_scope_info_from_node(
         }
         // Import creates a binding for the module name (or alias)
         Node::Import { binding, .. } => {
-            assigned_names.insert(interner.get_str(binding.name_id).to_string());
+            assigned_names.insert_name(interner.get_str(binding.name_id).to_string());
         }
         // ImportFrom creates bindings for each imported name (or alias)
         Node::ImportFrom { names, .. } => {
             for (_import_name, binding) in names {
-                assigned_names.insert(interner.get_str(binding.name_id).to_string());
+                assigned_names.insert_name(interner.get_str(binding.name_id).to_string());
             }
         }
         // Statements with expressions that may contain walrus operators
@@ -2125,11 +2142,15 @@ fn collect_scope_info_from_node(
 /// Per PEP 572, walrus operator targets are assignments in the enclosing scope.
 /// This function recursively scans expressions to find all `Named` expression targets.
 /// It does NOT recurse into lambda bodies as those have their own scope.
-fn collect_assigned_names_from_expr(expr: &ExprLoc, assigned_names: &mut AHashSet<String>, interner: &InternerBuilder) {
+fn collect_assigned_names_from_expr(
+    expr: &ExprLoc,
+    assigned_names: &mut impl AssignedNameCollector,
+    interner: &InternerBuilder,
+) {
     match &expr.expr {
         Expr::Named { target, value } => {
             // The target of a walrus operator is assigned in this scope
-            assigned_names.insert(interner.get_str(target.name_id).to_string());
+            assigned_names.insert_name(interner.get_str(target.name_id).to_string());
             // Also scan the value expression
             collect_assigned_names_from_expr(value, assigned_names, interner);
         }
@@ -2241,7 +2262,7 @@ fn collect_assigned_names_from_expr(expr: &ExprLoc, assigned_names: &mut AHashSe
 /// Helper to collect assigned names from argument expressions.
 fn collect_assigned_names_from_args(
     args: &ArgExprs,
-    assigned_names: &mut AHashSet<String>,
+    assigned_names: &mut impl AssignedNameCollector,
     interner: &InternerBuilder,
 ) {
     match args {
@@ -3044,15 +3065,44 @@ fn collect_referenced_names_from_fstring_parts(
 /// Collects all names from an unpack target into the given set.
 ///
 /// Recursively traverses nested tuples to find all identifier names.
-fn collect_names_from_unpack_target(target: &UnpackTarget, names: &mut AHashSet<String>, interner: &InternerBuilder) {
+fn collect_names_from_unpack_target(
+    target: &UnpackTarget,
+    names: &mut impl AssignedNameCollector,
+    interner: &InternerBuilder,
+) {
     match target {
         UnpackTarget::Name(ident) | UnpackTarget::Starred(ident) => {
-            names.insert(interner.get_str(ident.name_id).to_string());
+            names.insert_name(interner.get_str(ident.name_id).to_string());
         }
         UnpackTarget::Tuple { targets, .. } => {
             for t in targets {
                 collect_names_from_unpack_target(t, names, interner);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse::parse;
+
+    #[test]
+    fn prepare_with_existing_names_appends_new_globals_in_first_seen_order() {
+        let mut existing_name_map = AHashMap::new();
+        existing_name_map.insert("existing".to_string(), NamespaceId::new(0));
+
+        let parse_result = parse(
+            "def caller():\n    return callee()\n\nvalue = 1\n\ndef callee():\n    return value\n",
+            "test.py",
+        )
+        .expect("parse succeeds");
+        let prepared = prepare_with_existing_names(parse_result, existing_name_map).expect("prepare succeeds");
+
+        assert_eq!(prepared.name_map["existing"].index(), 0);
+        assert_eq!(prepared.name_map["caller"].index(), 1);
+        assert_eq!(prepared.name_map["value"].index(), 2);
+        assert_eq!(prepared.name_map["callee"].index(), 3);
+        assert_eq!(prepared.namespace_size, 4);
     }
 }
