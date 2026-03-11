@@ -137,6 +137,19 @@ assert two_breaks([1, 200, 3]) == [1, 'too big'], 'second break taken'
 assert two_breaks([-5]) == ['negative'], 'negative on first item'
 assert two_breaks([999]) == ['too big'], 'too big on first item'
 
+# === Double continue (unreachable second continue) ===
+def double_continue(items):
+    out = []
+    for x in items:
+        out.append(x)
+        continue
+        continue
+    return out
+
+
+assert double_continue([1, 2, 3]) == [1, 2, 3], 'double continue keeps normal loop output'
+assert double_continue([]) == [], 'double continue handles empty input'
+
 # === Continue on every iteration ===
 result = []
 for x in [1, 2, 3]:
