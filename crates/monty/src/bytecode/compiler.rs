@@ -2168,6 +2168,10 @@ impl<'a> Compiler<'a> {
             return Err(CompileError::new("'break' outside loop", position));
         }
 
+        // `break` never falls through, but we still compile following statements in the same
+        // block. Preserve the statement-entry depth for that unreachable compilation so
+        // stack-effect tracking remains stable across dead code.
+        let dead_code_depth = self.code.stack_depth();
         let target_loop_depth = self.loop_stack.len() - 1;
 
         // If inside except handlers, clean up ALL exception states
@@ -2197,11 +2201,7 @@ impl<'a> Compiler<'a> {
                 jump,
                 target_loop_depth,
             });
-            // Set stack depth for unreachable cleanup code (see comment below)
-            if self.except_handler_depth > 0 {
-                self.code
-                    .set_stack_depth(u16::try_from(self.except_handler_depth).unwrap_or(u16::MAX));
-            }
+            self.code.set_stack_depth(dead_code_depth);
             return Ok(());
         }
 
@@ -2209,13 +2209,7 @@ impl<'a> Compiler<'a> {
         let jump = self.code.emit_jump(Opcode::Jump);
         self.loop_stack[target_loop_depth].break_jumps.push(jump);
 
-        // The code following this break is unreachable at runtime, but the compiler
-        // will still emit cleanup code for each enclosing except handler (ClearException + Pop).
-        // Set stack depth so those unreachable pops don't cause negative stack tracking.
-        if self.except_handler_depth > 0 {
-            self.code
-                .set_stack_depth(u16::try_from(self.except_handler_depth).unwrap_or(u16::MAX));
-        }
+        self.code.set_stack_depth(dead_code_depth);
 
         Ok(())
     }
@@ -2230,6 +2224,9 @@ impl<'a> Compiler<'a> {
             return Err(CompileError::new("'continue' not properly in loop", position));
         }
 
+        // `continue` never falls through. Preserve the statement-entry stack depth so
+        // subsequent dead statements in this block are compiled with the right abstract stack.
+        let dead_code_depth = self.code.stack_depth();
         let target_loop_depth = self.loop_stack.len() - 1;
 
         // If inside except handlers, clean up ALL exception states
@@ -2252,11 +2249,7 @@ impl<'a> Compiler<'a> {
                 jump,
                 target_loop_depth,
             });
-            // Set stack depth for unreachable cleanup code (see comment below)
-            if self.except_handler_depth > 0 {
-                self.code
-                    .set_stack_depth(u16::try_from(self.except_handler_depth).unwrap_or(u16::MAX));
-            }
+            self.code.set_stack_depth(dead_code_depth);
             return Ok(());
         }
 
@@ -2264,13 +2257,7 @@ impl<'a> Compiler<'a> {
         let loop_start = self.loop_stack[target_loop_depth].start;
         self.code.emit_jump_to(Opcode::Jump, loop_start);
 
-        // The code following this continue is unreachable at runtime, but the compiler
-        // will still emit cleanup code for each enclosing except handler (ClearException + Pop).
-        // Set stack depth so those unreachable pops don't cause negative stack tracking.
-        if self.except_handler_depth > 0 {
-            self.code
-                .set_stack_depth(u16::try_from(self.except_handler_depth).unwrap_or(u16::MAX));
-        }
+        self.code.set_stack_depth(dead_code_depth);
 
         Ok(())
     }
