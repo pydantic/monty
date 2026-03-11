@@ -25,7 +25,7 @@ indexmap = { workspace = true }
 serde = { workspace = true }
 postcard = { workspace = true }
 strum = { version = "0.27", features = ["derive"] }
-hashbrown = "0.16.1"
+hashbrown = "0.16"
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 num-integer = { workspace = true }
