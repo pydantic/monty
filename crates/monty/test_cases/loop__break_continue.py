@@ -104,6 +104,7 @@ for x in [1, 2, 3]:
     result.append('after')  # unreachable
 assert result == ['before'], 'break on first iteration'
 
+
 # === Double break (unreachable second break) ===
 def double_break(value):
     for i in range(0, 1):
@@ -111,8 +112,10 @@ def double_break(value):
         break
     return value
 
+
 assert double_break('hello') == 'hello', 'double break returns value correctly'
 assert double_break(42) == 42, 'double break works with int'
+
 
 # === Two breaks in different branches (both reachable) ===
 def two_breaks(items):
@@ -126,6 +129,7 @@ def two_breaks(items):
             break
         result.append(x)
     return result
+
 
 assert two_breaks([1, 2, 3]) == [1, 2, 3], 'no break taken'
 assert two_breaks([1, -1, 3]) == [1, 'negative'], 'first break taken'
