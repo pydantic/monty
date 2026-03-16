@@ -313,6 +313,52 @@ impl PyTrait<'_> for Dataclass {
     }
 }
 
+impl<'h> HeapRead<'h, Dataclass> {
+    /// Dispatches a method call on a heap-allocated dataclass via the `HeapRead` pattern.
+    ///
+    /// Public attributes not found in `attrs` are dispatched as `MethodCall` for the
+    /// host to resolve. Existing attrs that aren't callable produce `TypeError`.
+    pub(crate) fn call_attr(
+        self,
+        self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        attr: &EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        let attr_str = attr.as_str(vm.interns);
+
+        // Public methods: attribute not starting with '_' and not in attrs dict
+        if !attr_str.starts_with('_') {
+            let found_in_attrs = self
+                .get(vm.heap)
+                .attrs
+                .get_by_str(attr_str, vm.heap, vm.interns)
+                .is_some();
+            if !found_in_attrs {
+                // Dispatch as method call — inc ref and prepend self
+                vm.heap.inc_ref(self_id);
+                let self_arg = Value::Ref(self_id);
+                let args_with_self = args.prepend(self_arg);
+                return Ok(CallResult::MethodCall(attr.clone(), args_with_self));
+            }
+        }
+
+        // Not a method call — handle directly
+        let method_name = attr.as_str(vm.interns);
+        defer_drop!(args, vm);
+
+        // If the attribute exists in attrs, it's a data value (not callable)
+        if let Some(value) = self.get(vm.heap).attrs.get_by_str(method_name, vm.heap, vm.interns) {
+            let type_name = value.py_type(vm.heap);
+            Err(ExcType::type_error_not_callable_object(type_name))
+        } else {
+            // Use the class name (e.g., "Point") not "Dataclass"
+            let name = self.get(vm.heap).name(vm.interns);
+            Err(ExcType::attribute_error(name, method_name))
+        }
+    }
+}
+
 // Custom serde implementation for Dataclass.
 // Serializes all five fields.
 impl serde::Serialize for Dataclass {

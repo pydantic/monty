@@ -21,7 +21,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapRead},
     intern::{Interns, StaticStrings},
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
     resource::{ResourceError, ResourceTracker, check_estimated_size},
@@ -38,7 +38,7 @@ use crate::{
 ///
 /// Custom serde serializes only the pattern string and flags, recompiling the
 /// regex on deserialization. This supports Monty's snapshot/restore feature.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct RePattern {
     /// The original Python regex pattern string.
     pattern: String,
@@ -374,6 +374,24 @@ impl PyTrait<'_> for RePattern {
             _ => return Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns))),
         }?;
         Ok(CallResult::Value(result))
+    }
+}
+
+impl<'h> HeapRead<'h, RePattern> {
+    /// Dispatches a method call on a heap-allocated `RePattern` via the `HeapRead` pattern.
+    ///
+    /// RePattern contains no heap references (owned strings and compiled regexes), so
+    /// cloning releases the heap borrow and allows methods to allocate freely. The
+    /// compiled `Regex` objects are cheaply cloneable (internally reference-counted).
+    pub(crate) fn call_attr(
+        self,
+        self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        attr: &EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        let mut re_pattern = self.get(vm.heap).clone();
+        re_pattern.py_call_attr(self_id, vm, attr, args)
     }
 }
 

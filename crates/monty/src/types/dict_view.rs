@@ -8,7 +8,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
+    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::{Dict, FrozenSet, MontyIter, PyTrait, Set, Type, allocate_tuple, iter::advance_on_heap},
@@ -232,6 +232,30 @@ impl PyTrait<'_> for DictKeysView {
     }
 }
 
+impl<'h> HeapRead<'h, DictKeysView> {
+    /// Dispatches a method call on a dict_keys view via the `HeapRead` pattern.
+    ///
+    /// `DictKeysView` is a `Copy` type (just a `HeapId`), so we copy it out of the
+    /// heap read and delegate to the existing method.
+    pub(crate) fn call_attr(
+        self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        attr: &crate::value::EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        let view = *self.get(vm.heap);
+        match attr.static_string() {
+            Some(StaticStrings::Isdisjoint) => {
+                let other = args.get_one_arg("dict_keys.isdisjoint", vm.heap)?;
+                defer_drop!(other, vm);
+                Ok(CallResult::Value(Value::Bool(view.isdisjoint_from_value(other, vm)?)))
+            }
+            _ => Err(ExcType::attribute_error(Type::DictKeys, attr.as_str(vm.interns))),
+        }
+    }
+}
+
 /// Live view returned by `dict.items()`.
 ///
 /// The view stays linked to the original dictionary so iteration, `len()`, and
@@ -427,6 +451,30 @@ impl PyTrait<'_> for DictItemsView {
     }
 }
 
+impl<'h> HeapRead<'h, DictItemsView> {
+    /// Dispatches a method call on a dict_items view via the `HeapRead` pattern.
+    ///
+    /// `DictItemsView` is a `Copy` type (just a `HeapId`), so we copy it out of the
+    /// heap read and delegate to the existing method.
+    pub(crate) fn call_attr(
+        self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        attr: &crate::value::EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        let view = *self.get(vm.heap);
+        match attr.static_string() {
+            Some(StaticStrings::Isdisjoint) => {
+                let other = args.get_one_arg("dict_items.isdisjoint", vm.heap)?;
+                defer_drop!(other, vm);
+                Ok(CallResult::Value(Value::Bool(view.isdisjoint_from_value(other, vm)?)))
+            }
+            _ => Err(ExcType::attribute_error(Type::DictItems, attr.as_str(vm.interns))),
+        }
+    }
+}
+
 /// Live view returned by `dict.values()`.
 ///
 /// Unlike keys/items views, `dict_values` is intentionally not set-like in
@@ -491,6 +539,24 @@ impl PyTrait<'_> for DictValuesView {
         f.write_str("dict_values([")?;
         write_dict_values_contents(f, self.dict(vm.heap), vm, heap_ids)?;
         f.write_str("])")
+    }
+}
+
+impl<'h> HeapRead<'h, DictValuesView> {
+    /// dict_values has no callable methods — always returns `AttributeError`.
+    #[expect(
+        clippy::unused_self,
+        reason = "call_attr must consume the HeapRead to release the borrow"
+    )]
+    pub(crate) fn call_attr(
+        self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        attr: &crate::value::EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        args.drop_with_heap(vm);
+        Err(ExcType::attribute_error(Type::DictValues, attr.as_str(vm.interns)))
     }
 }
 

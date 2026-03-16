@@ -16,9 +16,7 @@ use smallvec::SmallVec;
 pub(crate) use crate::heap_data::HeapData;
 pub(crate) use crate::heap_traits::{ContainsHeap, DropWithHeap, HeapGuard, ImmutableHeapGuard};
 use crate::{
-    args::ArgValues,
     asyncio::{Coroutine, GatherFuture, GatherItem},
-    bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, SimpleException},
     heap_data::{CellValue, Closure, FunctionDefaults, HeapDataMut},
     intern::Interns,
@@ -27,7 +25,7 @@ use crate::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
         MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, allocate_tuple,
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Unique identifier for values stored inside the heap arena.
@@ -511,32 +509,6 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
     }
 }
 
-macro_rules! take_data {
-    ($self:ident, $id:expr, $func_name:literal) => {
-        $self
-            .entries
-            .get_mut($id.index())
-            .expect(concat!("Heap::", $func_name, ": slot missing"))
-            .as_mut()
-            .expect(concat!("Heap::", $func_name, ": object already freed"))
-            .data
-            .take()
-            .expect(concat!("Heap::", $func_name, ": data already borrowed"))
-    };
-}
-
-macro_rules! restore_data {
-    ($self:ident, $id:expr, $new_data:expr, $func_name:literal) => {{
-        let entry = $self
-            .entries
-            .get_mut($id.index())
-            .expect(concat!("Heap::", $func_name, ": slot missing"))
-            .as_mut()
-            .expect(concat!("Heap::", $func_name, ": object already freed"));
-        entry.data = Some($new_data);
-    }};
-}
-
 /// GC interval - run GC every 100,000 applicable allocations.
 ///
 /// This is intentionally infrequent to minimize overhead while still
@@ -872,30 +844,6 @@ impl<T: ResourceTracker> Heap<T> {
             None => HashState::Unhashable,
         };
         Ok(hash)
-    }
-
-    /// Calls an attribute on the heap entry, returning an `CallResult` that may signal
-    /// OS, external, or method calls.
-    ///
-    /// Temporarily takes ownership of the payload to avoid borrow conflicts when attribute
-    /// implementations also need mutable heap access (e.g. for refcounting).
-    ///
-    /// Returns `CallResult` which may be:
-    /// - `Value(v)` - Method completed synchronously with value `v`
-    /// - `OsCall(func, args)` - Method needs OS operation; VM should yield to host
-    /// - `ExternalCall(id, args)` - Method needs external function call
-    /// - `MethodCall(name, args)` - Dataclass method call; VM should yield to host
-    pub fn call_attr(vm: &mut VM<'_, '_, T>, id: HeapId, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        // Take data out so the borrow of self.entries ends
-        let heap = &mut *vm.heap;
-        let mut data = take_data!(heap, id, "call_attr");
-
-        let result = data.0.get_mut().py_call_attr(id, vm, attr, args);
-
-        // Restore data
-        let heap = &mut *vm.heap;
-        restore_data!(heap, id, data, "call_attr");
-        result
     }
 
     /// Returns the reference count for the heap entry at the given ID.

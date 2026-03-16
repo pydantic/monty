@@ -17,7 +17,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{Heap, HeapData, HeapId, HeapRead},
     intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
     types::{Dict, PyTrait, Str, Type, allocate_tuple, str::string_repr_fmt},
@@ -412,6 +412,24 @@ impl PyTrait<'_> for ReMatch {
             _ => return Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns))),
         };
         Ok(CallResult::Value(result))
+    }
+}
+
+impl<'h> HeapRead<'h, ReMatch> {
+    /// Dispatches a method call on a heap-allocated `ReMatch` via the `HeapRead` pattern.
+    ///
+    /// ReMatch contains no heap references (all owned strings/integers), so cloning
+    /// is safe and straightforward. The clone releases the heap borrow, allowing
+    /// methods to allocate on the heap freely.
+    pub(crate) fn call_attr(
+        self,
+        self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        attr: &EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        let mut re_match = self.get(vm.heap).clone();
+        re_match.py_call_attr(self_id, vm, attr, args)
     }
 }
 

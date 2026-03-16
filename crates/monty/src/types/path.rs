@@ -14,7 +14,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapRead},
     intern::{Interns, StaticStrings},
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
@@ -563,6 +563,90 @@ impl PyTrait<'_> for Path {
                 // Both as_posix() and __fspath__() return the string representation
                 Ok(Value::Ref(
                     heap.allocate(HeapData::Str(Str::new(self.as_posix().to_owned())))?,
+                ))
+            }
+            _ => {
+                args.drop_with_heap(heap);
+                return Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)));
+            }
+        };
+        value.map(CallResult::Value)
+    }
+}
+
+impl<'h> HeapRead<'h, Path> {
+    /// Dispatches a method call on a heap-allocated Path via the `HeapRead` pattern.
+    ///
+    /// Clones the path data (just a `String`) to avoid holding a heap borrow across
+    /// method calls that need `&mut Heap` for allocations. This is acceptable because
+    /// paths are typically short strings.
+    pub(crate) fn call_attr(
+        self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        attr: &EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        let Some(method) = attr.static_string() else {
+            args.drop_with_heap(vm);
+            return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
+        };
+
+        // Clone path data so we can release the heap borrow
+        let path = self.get(vm.heap).clone();
+        let heap = &mut *vm.heap;
+        let interns = vm.interns;
+
+        // Check if this is an OS method that requires host system access
+        if let Ok(os_fn) = OsFunction::try_from(method) {
+            let path_arg = Value::Ref(heap.allocate(HeapData::Path(path))?);
+            let os_args = prepend_path_arg(path_arg, args);
+            return Ok(CallResult::OsCall(os_fn, os_args));
+        }
+
+        // Pure methods (no I/O)
+        let value = match method {
+            StaticStrings::IsAbsolute => {
+                args.check_zero_args("is_absolute", heap)?;
+                Ok(Value::Bool(path.is_absolute()))
+            }
+            StaticStrings::Joinpath => {
+                let pos_args = args.into_pos_only("joinpath", heap)?;
+                defer_drop!(pos_args, heap);
+                let result = fold_joinpath(path, pos_args.as_slice(), heap, interns)?;
+                Ok(Value::Ref(heap.allocate(HeapData::Path(result))?))
+            }
+            StaticStrings::WithName => {
+                let name_val = args.get_one_arg("with_name", heap)?;
+                defer_drop!(name_val, heap);
+                let name = extract_path_string(name_val, heap, interns)?;
+                let result = path
+                    .with_name(name)
+                    .map_err(|e| crate::exception_private::SimpleException::new_msg(ExcType::ValueError, &e))?;
+                Ok(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))?))
+            }
+            StaticStrings::WithStem => {
+                let stem_val = args.get_one_arg("with_stem", heap)?;
+                defer_drop!(stem_val, heap);
+                let stem = extract_path_string(stem_val, heap, interns)?;
+                let result = path
+                    .with_stem(stem)
+                    .map_err(|e| crate::exception_private::SimpleException::new_msg(ExcType::ValueError, &e))?;
+                Ok(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))?))
+            }
+            StaticStrings::WithSuffix => {
+                let suffix_val = args.get_one_arg("with_suffix", heap)?;
+                defer_drop!(suffix_val, heap);
+                let suffix = extract_path_string(suffix_val, heap, interns)?;
+                let result = path
+                    .with_suffix(suffix)
+                    .map_err(|e| crate::exception_private::SimpleException::new_msg(ExcType::ValueError, &e))?;
+                Ok(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))?))
+            }
+            StaticStrings::AsPosix | StaticStrings::Fspath => {
+                args.check_zero_args(method.into(), heap)?;
+                Ok(Value::Ref(
+                    heap.allocate(HeapData::Str(Str::new(path.as_posix().to_owned())))?,
                 ))
             }
             _ => {

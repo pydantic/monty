@@ -77,7 +77,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapRead},
     intern::{Interns, StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
     types::List,
@@ -325,6 +325,32 @@ impl PyTrait<'_> for Bytes {
         };
 
         call_bytes_method_impl(self.as_slice(), method, args, vm).map(CallResult::Value)
+    }
+}
+
+impl<'h> HeapRead<'h, Bytes> {
+    /// Dispatches a method call on heap-allocated bytes via the `HeapRead` pattern.
+    ///
+    /// Clones the inner byte data to avoid holding a heap borrow across the method
+    /// call, which would conflict with the `&mut VM` needed by method implementations.
+    /// This is acceptable because Python bytes are immutable and bytes methods always
+    /// produce new values.
+    pub(crate) fn call_attr(
+        self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        attr: &EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        let Some(method) = attr.static_string() else {
+            args.drop_with_heap(vm);
+            return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(vm.interns)));
+        };
+
+        // Clone the byte data so we can release the heap borrow before calling
+        // the method implementation, which needs &mut VM.
+        let bytes: Vec<u8> = self.get(vm.heap).as_slice().to_vec();
+        call_bytes_method_impl(&bytes, method, args, vm).map(CallResult::Value)
     }
 }
 

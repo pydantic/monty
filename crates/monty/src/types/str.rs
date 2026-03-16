@@ -14,7 +14,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapRead},
     intern::{StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
     types::Type,
@@ -293,6 +293,32 @@ impl PyTrait<'_> for Str {
 
         let args = args_guard.into_inner();
         call_str_method_impl(&self.0, method, args, vm).map(CallResult::Value)
+    }
+}
+
+impl<'h> HeapRead<'h, Str> {
+    /// Dispatches a method call on a heap-allocated string via the `HeapRead` pattern.
+    ///
+    /// Clones the inner string data to avoid holding a heap borrow across the method
+    /// call, which would conflict with the `&mut VM` needed by method implementations.
+    /// This is acceptable because Python strings are immutable and string methods always
+    /// produce new values.
+    pub(crate) fn call_attr(
+        self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        attr: &EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        let Some(method) = attr.static_string() else {
+            args.drop_with_heap(vm);
+            return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
+        };
+
+        // Clone the string data so we can release the heap borrow before calling
+        // the method implementation, which needs &mut VM.
+        let s: String = self.get(vm.heap).as_str().to_owned();
+        call_str_method_impl(&s, method, args, vm).map(CallResult::Value)
     }
 }
 

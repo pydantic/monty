@@ -10,9 +10,8 @@ use num_integer::Integer;
 
 use crate::{
     ExcType, ResourceError, ResourceTracker,
-    args::ArgValues,
     asyncio::{Coroutine, GatherFuture, GatherItem},
-    bytecode::{CallResult, VM},
+    bytecode::VM,
     defer_drop,
     exception_private::{RunResult, SimpleException},
     heap::{Heap, HeapId},
@@ -21,7 +20,7 @@ use crate::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
         MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type,
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// HeapData captures every runtime value that must live in the arena.
@@ -896,36 +895,6 @@ macro_rules! impl_py_trait_dispatch {
                     Self::List(list) => list.py_iadd(other, vm, self_id),
                     Self::Dict(dict) => dict.py_iadd(other, vm, self_id),
                     _ => Ok(false),
-                }
-            }
-
-            fn py_call_attr(
-                &mut self,
-                self_id: HeapId,
-                vm: &mut VM<'_, '_, impl ResourceTracker>,
-                attr: &EitherStr,
-                args: ArgValues,
-            ) -> RunResult<CallResult> {
-                match self {
-                    Self::Str(s) => s.py_call_attr(self_id, vm, attr, args),
-                    Self::Bytes(b) => b.py_call_attr(self_id, vm, attr, args),
-                    Self::List(l) => l.py_call_attr(self_id, vm, attr, args),
-                    Self::Tuple(t) => t.py_call_attr(self_id, vm, attr, args),
-                    Self::Dict(d) => d.py_call_attr(self_id, vm, attr, args),
-                    Self::DictKeysView(view) => view.py_call_attr(self_id, vm, attr, args),
-                    Self::DictItemsView(view) => view.py_call_attr(self_id, vm, attr, args),
-                    Self::DictValuesView(view) => view.py_call_attr(self_id, vm, attr, args),
-                    Self::Set(s) => s.py_call_attr(self_id, vm, attr, args),
-                    Self::FrozenSet(fs) => fs.py_call_attr(self_id, vm, attr, args),
-                    Self::Dataclass(dc) => dc.py_call_attr(self_id, vm, attr, args),
-                    Self::Path(p) => p.py_call_attr(self_id, vm, attr, args),
-                    Self::Module(m) => m.py_call_attr(self_id, vm, attr, args),
-                    Self::ReMatch(m) => m.py_call_attr(self_id, vm, attr, args),
-                    Self::RePattern(p) => p.py_call_attr(self_id, vm, attr, args),
-                    _ => Err(ExcType::attribute_error(
-                        self.py_type(vm.heap),
-                        attr.as_str(vm.interns),
-                    )),
                 }
             }
 

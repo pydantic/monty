@@ -385,6 +385,19 @@ impl PyTrait<'_> for Tuple {
         }
     }
 
+    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
+        !self.items.is_empty()
+    }
+
+    fn py_repr_fmt(
+        &self,
+        f: &mut impl Write,
+        vm: &VM<'_, '_, impl ResourceTracker>,
+        heap_ids: &mut AHashSet<HeapId>,
+    ) -> std::fmt::Result {
+        repr_sequence_fmt('(', ')', &self.items, f, vm, heap_ids)
+    }
+
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
@@ -401,18 +414,83 @@ impl PyTrait<'_> for Tuple {
             }
         }
     }
+}
 
-    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
-        !self.items.is_empty()
+impl<'h> HeapRead<'h, Tuple> {
+    /// Dispatches a method call on a heap-allocated tuple via the `HeapRead` pattern.
+    ///
+    /// Tuple methods (`index`, `count`) iterate items and compare with `py_eq`, which
+    /// needs `&mut VM`. Uses short-lived borrows to read item data from the heap,
+    /// then clone for comparison.
+    pub(crate) fn call_attr(
+        self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        attr: &EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        match attr.static_string() {
+            Some(StaticStrings::Index) => self.hr_index(args, vm).map(CallResult::Value),
+            Some(StaticStrings::Count) => self.hr_count(args, vm).map(CallResult::Value),
+            _ => {
+                args.drop_with_heap(vm);
+                Err(ExcType::attribute_error(Type::Tuple, attr.as_str(vm.interns)))
+            }
+        }
     }
 
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &VM<'_, '_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
-    ) -> std::fmt::Result {
-        repr_sequence_fmt('(', ')', &self.items, f, vm, heap_ids)
+    /// `tuple.index(value[, start[, end]])` via HeapRead.
+    fn hr_index(&self, args: ArgValues, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        let pos_args = args.into_pos_only("tuple.index", vm.heap)?;
+        defer_drop!(pos_args, vm);
+
+        let len = self.get(vm.heap).as_slice().len();
+        let (value, start, end) = match pos_args.as_slice() {
+            [] => return Err(ExcType::type_error_at_least("tuple.index", 1, 0)),
+            [value] => (value, 0, len),
+            [value, start_arg] => {
+                let start = normalize_tuple_index(start_arg.as_int(vm.heap)?, len);
+                (value, start, len)
+            }
+            [value, start_arg, end_arg] => {
+                let start = normalize_tuple_index(start_arg.as_int(vm.heap)?, len);
+                let end = normalize_tuple_index(end_arg.as_int(vm.heap)?, len).max(start);
+                (value, start, end)
+            }
+            other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
+        };
+
+        for i in start..end {
+            let item = self.clone_item(i, vm);
+            let is_eq = value.py_eq(&item, vm)?;
+            item.drop_with_heap(vm);
+            if is_eq {
+                let idx = i64::try_from(i).expect("index exceeds i64::MAX");
+                return Ok(Value::Int(idx));
+            }
+        }
+
+        Err(ExcType::value_error_not_in_tuple())
+    }
+
+    /// `tuple.count(value)` via HeapRead.
+    fn hr_count(&self, args: ArgValues, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        let value = args.get_one_arg("tuple.count", vm.heap)?;
+        defer_drop!(value, vm);
+
+        let len = self.get(vm.heap).as_slice().len();
+        let mut count = 0usize;
+        for i in 0..len {
+            let item = self.clone_item(i, vm);
+            let is_eq = value.py_eq(&item, vm)?;
+            item.drop_with_heap(vm);
+            if is_eq {
+                count += 1;
+            }
+        }
+
+        let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
+        Ok(Value::Int(count_i64))
     }
 }
 
