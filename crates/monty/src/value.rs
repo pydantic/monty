@@ -18,8 +18,7 @@ use crate::{
     builtins::Builtins,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput},
-    heap_data::HeapDataMut,
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput},
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker, check_div_size, check_lshift_size, check_pow_size, check_repeat_size},
@@ -238,7 +237,7 @@ impl PyTrait<'_> for Value {
                 }
                 let left = vm.heap.read(*id1);
                 let right = vm.heap.read(*id2);
-                match (&left, &right) {
+                match (left, right) {
                     // Simple types: compare with shared borrows (no &mut VM needed)
                     (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => {
                         Ok(a.get(vm.heap).as_str() == b.get(vm.heap).as_str())
@@ -270,17 +269,17 @@ impl PyTrait<'_> for Value {
                         }
                     }
                     // Container types: use HeapRead-specific comparison methods
-                    (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.eq(b, vm),
-                    (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.eq(b, vm),
+                    (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.eq(&b, vm),
+                    (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.eq(&b, vm),
                     // Container types with HeapRead eq methods
-                    (HeapReadOutput::Dict(a), HeapReadOutput::Dict(b)) => a.eq(b, vm),
-                    (HeapReadOutput::Set(a), HeapReadOutput::Set(b)) => a.eq(b, vm),
-                    (HeapReadOutput::FrozenSet(a), HeapReadOutput::FrozenSet(b)) => a.eq(b, vm),
+                    (HeapReadOutput::Dict(a), HeapReadOutput::Dict(b)) => a.eq(&b, vm),
+                    (HeapReadOutput::Set(a), HeapReadOutput::Set(b)) => a.eq(&b, vm),
+                    (HeapReadOutput::FrozenSet(a), HeapReadOutput::FrozenSet(b)) => a.eq(&b, vm),
                     // NamedTuple: element-wise comparison via HeapRead clone_item
-                    (HeapReadOutput::NamedTuple(a), HeapReadOutput::NamedTuple(b)) => a.eq(b, vm),
+                    (HeapReadOutput::NamedTuple(a), HeapReadOutput::NamedTuple(b)) => a.eq(&b, vm),
                     // NamedTuple/Tuple cross-type comparison
                     (HeapReadOutput::NamedTuple(nt), HeapReadOutput::Tuple(t))
-                    | (HeapReadOutput::Tuple(t), HeapReadOutput::NamedTuple(nt)) => nt.eq_tuple(t, vm),
+                    | (HeapReadOutput::Tuple(t), HeapReadOutput::NamedTuple(nt)) => nt.eq_tuple(&t, vm),
                     // DictKeysView comparisons — copy view to local, pass HeapRead directly
                     (HeapReadOutput::DictKeysView(a), HeapReadOutput::DictKeysView(b)) => {
                         let a_view = DictKeysView::new(a.get(vm.heap).dict_id());
@@ -289,19 +288,19 @@ impl PyTrait<'_> for Value {
                     }
                     (HeapReadOutput::DictKeysView(a), HeapReadOutput::Set(b)) => {
                         let view = DictKeysView::new(a.get(vm.heap).dict_id());
-                        view.eq_set_read(b, vm)
+                        view.eq_set_read(&b, vm)
                     }
                     (HeapReadOutput::Set(b), HeapReadOutput::DictKeysView(a)) => {
                         let view = DictKeysView::new(a.get(vm.heap).dict_id());
-                        view.eq_set_read(b, vm)
+                        view.eq_set_read(&b, vm)
                     }
                     (HeapReadOutput::DictKeysView(a), HeapReadOutput::FrozenSet(b)) => {
                         let view = DictKeysView::new(a.get(vm.heap).dict_id());
-                        view.eq_frozenset_read(b, vm)
+                        view.eq_frozenset_read(&b, vm)
                     }
                     (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictKeysView(a)) => {
                         let view = DictKeysView::new(a.get(vm.heap).dict_id());
-                        view.eq_frozenset_read(b, vm)
+                        view.eq_frozenset_read(&b, vm)
                     }
                     // DictItemsView comparisons
                     (HeapReadOutput::DictItemsView(a), HeapReadOutput::DictItemsView(b)) => {
@@ -311,32 +310,25 @@ impl PyTrait<'_> for Value {
                     }
                     (HeapReadOutput::DictItemsView(a), HeapReadOutput::Set(b)) => {
                         let view = DictItemsView::new(a.get(vm.heap).dict_id());
-                        view.eq_set_read(b, vm)
+                        view.eq_set_read(&b, vm)
                     }
                     (HeapReadOutput::Set(b), HeapReadOutput::DictItemsView(a)) => {
                         let view = DictItemsView::new(a.get(vm.heap).dict_id());
-                        view.eq_set_read(b, vm)
+                        view.eq_set_read(&b, vm)
                     }
                     (HeapReadOutput::DictItemsView(a), HeapReadOutput::FrozenSet(b)) => {
                         let view = DictItemsView::new(a.get(vm.heap).dict_id());
-                        view.eq_frozenset_read(b, vm)
+                        view.eq_frozenset_read(&b, vm)
                     }
                     (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictItemsView(a)) => {
                         let view = DictItemsView::new(a.get(vm.heap).dict_id());
-                        view.eq_frozenset_read(b, vm)
+                        view.eq_frozenset_read(&b, vm)
                     }
-                    // Dataclass equality — uses with_two since inline Dict comparison
-                    // requires &mut VM for element py_eq while Dict is embedded in Dataclass
-                    (HeapReadOutput::Dataclass(_), HeapReadOutput::Dataclass(_)) => {
-                        Heap::with_two(vm, *id1, *id2, |vm, a, b| {
-                            let (HeapData::Dataclass(a), HeapData::Dataclass(b)) = (a, b) else {
-                                unreachable!()
-                            };
-                            if a.name(vm.interns) != b.name(vm.interns) {
-                                return Ok(false);
-                            }
-                            a.attrs().py_eq(b.attrs(), vm)
-                        })
+                    (HeapReadOutput::Dataclass(a), HeapReadOutput::Dataclass(b)) => {
+                        if a.name(vm) != b.name(vm) {
+                            return Ok(false);
+                        }
+                        a.attrs().eq(&b.attrs(), vm)
                     }
                     // Pure data comparisons (no VM needed)
                     (HeapReadOutput::Slice(a), HeapReadOutput::Slice(b)) => {
@@ -2056,30 +2048,19 @@ impl Value {
         let attr_name = vm.interns.get_str(name_id);
 
         if let Self::Ref(heap_id) = self {
-            let heap_id = *heap_id;
-            let is_dataclass = matches!(vm.heap.get(heap_id), HeapData::Dataclass(_));
-
-            if is_dataclass {
-                let name_value = Self::InternString(name_id);
-                Heap::with_entry_mut(vm, heap_id, |vm, data| {
-                    if let HeapDataMut::Dataclass(dc) = data {
-                        match dc.set_attr(name_value, value, vm) {
-                            Ok(old_value) => {
-                                if let Some(old) = old_value {
-                                    old.drop_with_heap(vm);
-                                }
-                                Ok(())
-                            }
-                            Err(e) => Err(e),
-                        }
-                    } else {
-                        unreachable!("type changed during borrow")
-                    }
-                })
-            } else {
-                let type_name = vm.heap.get(heap_id).py_type(vm.heap);
-                value.drop_with_heap(vm);
-                Err(ExcType::attribute_error_no_setattr(type_name, attr_name))
+            #[expect(clippy::single_match_else, reason = "expect this to grow in future")]
+            match vm.heap.read(*heap_id) {
+                HeapReadOutput::Dataclass(dc) => {
+                    let old_value = dc.set_attr(Self::InternString(name_id), value, vm)?;
+                    old_value.drop_with_heap(vm);
+                    Ok(())
+                }
+                _ => {
+                    // TODO: add `py_type` on `HeapReadOutput` to avoid double lookup
+                    let type_name = vm.heap.get(*heap_id).py_type(vm.heap);
+                    value.drop_with_heap(vm);
+                    Err(ExcType::attribute_error_no_setattr(type_name, attr_name))
+                }
             }
         } else {
             let type_name = self.py_type(vm.heap);

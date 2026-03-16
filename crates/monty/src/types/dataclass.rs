@@ -8,7 +8,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapId},
+    heap::{Heap, HeapId, HeapRead, heap_read_as_field},
     intern::Interns,
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -116,6 +116,14 @@ impl Dataclass {
     pub fn is_frozen(&self) -> bool {
         self.frozen
     }
+}
+
+impl<'h> HeapRead<'h, Dataclass> {
+    /// Returns the class name.
+    #[must_use]
+    pub fn name<'a>(&'a self, vm: &'a VM<'h, '_, impl ResourceTracker>) -> &'a str {
+        self.get(vm.heap).name.as_str(vm.interns)
+    }
 
     /// Sets an attribute value.
     ///
@@ -125,12 +133,12 @@ impl Dataclass {
     ///
     /// Returns `FrozenInstanceError` if the dataclass is frozen.
     pub fn set_attr(
-        &mut self,
+        self,
         name: Value,
         value: Value,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
     ) -> RunResult<Option<Value>> {
-        if self.frozen {
+        if self.get(vm.heap).frozen {
             // Get attribute name for error message
             let attr_name = match &name {
                 Value::InternString(id) => vm.interns.get_str(*id).to_string(),
@@ -141,9 +149,15 @@ impl Dataclass {
             value.drop_with_heap(vm);
             return Err(ExcType::frozen_instance_error(&attr_name));
         }
-        self.attrs.set(name, value, vm)
+        self.attrs().set(name, value, vm)
     }
 
+    pub fn attrs(self) -> HeapRead<'h, Dict> {
+        heap_read_as_field!(self, Dataclass, attrs)
+    }
+}
+
+impl Dataclass {
     /// Computes the hash for this dataclass if it's frozen.
     ///
     /// Returns `Ok(Some(hash))` for frozen (immutable) dataclasses, `Ok(None)` for mutable ones.

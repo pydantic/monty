@@ -283,7 +283,7 @@ pub struct HeapRead<'a, T: ?Sized> {
 
 impl<'a, T: ?Sized> HeapRead<'a, T> {
     /// Accesses the value contained in this reference.
-    pub fn get<'r>(&self, _: &'r HeapReader<'a, impl ResourceTracker>) -> &'r T {
+    pub fn get<'r, RT: ResourceTracker>(&self, _: &'r HeapReader<'a, RT>) -> &'r T {
         // SAFETY: (DH)
         //  - The HeapReader has an invariant lifetime 'a which guarantees that this HeapRead
         //    came from the heap borrowed by this HeapReader.
@@ -333,7 +333,45 @@ impl<'a, T: ?Sized> HeapRead<'a, T> {
         // the same layout (transparent wrapper around a pointer)
         unsafe { NonNull::cast(self.into()).as_ref() }
     }
+
+    /// Casts this reader to a field of type `U` at some `offset` within the struct.
+    ///
+    /// # Safety
+    ///   - The field of type `U` must ALWAYS exist at `offset` within `T` (i.e. `T` cannot be an enum, union etc)
+    unsafe fn cast_as_member<U>(self, offset: usize) -> HeapRead<'a, U> {
+        HeapRead {
+            // SAFETY: (DH) - caller of this function guarantees the offset & cast is valid
+            value: unsafe { self.value.byte_add(offset) }.cast(),
+            borrow: PhantomData,
+        }
+    }
 }
+
+/// Unsafe helper for `heap_read_as_field`, do not use. Same safety invariants as `HeapRead::cast_as_member`.
+pub(crate) unsafe fn cast_as_member_type_hinted<'a, T, U>(
+    heap_read: HeapRead<'a, T>,
+    offset: usize,
+    _type_hint: impl for<'s> Fn(&'s HeapRead<'a, T>) -> *const U,
+) -> HeapRead<'a, U> {
+    // SAFETY: (DH) - caller upholds `cast_as_member` contract
+    unsafe { heap_read.cast_as_member(offset) }
+}
+
+macro_rules! heap_read_as_field {
+    ($heap_read:ident, $ty:ty, $field:ident) => {{
+        let offset = std::mem::offset_of!($ty, $field);
+        #[expect(unreachable_code)]
+        let type_hint = |read: &$crate::heap::HeapRead<'_, $ty>| {
+            &raw const read.get::<$crate::NoLimitTracker>(unreachable!()).$field
+        };
+        // SAFETY: (DH)
+        //  - `std::mem::offset_of!` guarantees there is a field at fixed offset
+        //  - `type_hint` guarantees that the field is of type `U` for the safety contract
+        unsafe { $crate::heap::cast_as_member_type_hinted($heap_read, offset, type_hint) }
+    }};
+}
+
+pub(crate) use heap_read_as_field;
 
 /// A single entry inside the heap arena, storing refcount, payload, and hash metadata.
 ///
@@ -858,70 +896,6 @@ impl<T: ResourceTracker> Heap<T> {
         let heap = &mut *vm.heap;
         restore_data!(heap, id, data, "call_attr");
         result
-    }
-
-    /// Gives mutable access to a heap entry while allowing reentrant heap usage
-    /// inside the closure (e.g. to read other values or allocate results).
-    ///
-    /// The data is temporarily taken from the heap entry, so the closure can safely
-    /// mutate both the entry data and the heap (e.g. to allocate new values).
-    /// The data is automatically restored after the closure completes.
-    pub fn with_entry_mut<'a, 'p, F, R>(vm: &mut VM<'a, 'p, T>, id: HeapId, f: F) -> R
-    where
-        F: FnOnce(&mut VM<'a, 'p, T>, HeapDataMut) -> R,
-    {
-        // Take data out in a block so the borrow of self.entries ends
-        let heap = &mut *vm.heap;
-        let mut data = take_data!(heap, id, "with_entry_mut");
-
-        let result = f(vm, data.0.get_mut().to_mut());
-
-        // Restore data
-        let heap = &mut *vm.heap;
-        restore_data!(heap, id, data, "with_entry_mut");
-        result
-    }
-
-    /// Temporarily takes ownership of two heap entries so their data can be borrowed
-    /// simultaneously while still permitting mutable access to the VM (e.g. to
-    /// allocate results). Automatically restores both entries after the closure
-    /// finishes executing.
-    ///
-    /// This is a static method that takes `&mut VM` instead of `&mut self` so that
-    /// the closure receives `&mut VM` — matching the `with_entry_mut` pattern and
-    /// allowing the closure to call methods that need `vm` (e.g. `py_eq`).
-    pub fn with_two<'a, 'p, F, R>(vm: &mut VM<'a, 'p, T>, left: HeapId, right: HeapId, f: F) -> R
-    where
-        F: FnOnce(&mut VM<'a, 'p, T>, &HeapData, &HeapData) -> R,
-    {
-        if left == right {
-            // Same value - take data once and pass it twice
-            let heap = &mut *vm.heap;
-            let data = take_data!(heap, left, "with_two");
-
-            // SAFETY: data was taken from the heap above and is valid; we create two shared
-            // references to the same value which is sound since both are &-references.
-            let result = f(vm, unsafe { &*data.0.get() }, unsafe { &*data.0.get() });
-
-            let heap = &mut *vm.heap;
-            restore_data!(heap, left, data, "with_two");
-            result
-        } else {
-            // Different values - take both
-            let heap = &mut *vm.heap;
-            let left_data = take_data!(heap, left, "with_two (left)");
-            let right_data = take_data!(heap, right, "with_two (right)");
-
-            // SAFETY: left_data and right_data were taken from different heap slots above;
-            // creating shared references to each is sound since they are distinct values.
-            let result = f(vm, unsafe { &*left_data.0.get() }, unsafe { &*right_data.0.get() });
-
-            // Restore in reverse order
-            let heap = &mut *vm.heap;
-            restore_data!(heap, right, right_data, "with_two (right)");
-            restore_data!(heap, left, left_data, "with_two (left)");
-            result
-        }
     }
 
     /// Returns the reference count for the heap entry at the given ID.

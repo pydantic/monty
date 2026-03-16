@@ -1,5 +1,6 @@
 #![doc = include_str!("../../../README.md")]
-// first to include defer_drop macro
+// these files first because they include macros for the rest of the crate to use
+mod heap;
 mod heap_traits;
 
 mod args;
@@ -11,7 +12,6 @@ mod exception_public;
 mod expressions;
 mod fstring;
 mod function;
-mod heap;
 mod heap_data;
 mod intern;
 mod io;
