@@ -42,6 +42,7 @@ fn normalize_stderr(stderr: &str) -> String {
                 && !line.starts_with("    Blocking")
                 && !line.starts_with("error: could not compile")
                 && !line.starts_with("warning: build failed")
+                && !line.starts_with("error: process didn't exit successfully:")
                 && !line.is_empty()
         })
         .collect::<Vec<_>>()
