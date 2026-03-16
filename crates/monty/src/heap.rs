@@ -169,10 +169,9 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
             .expect("HeapReader::read: slot missing")
             .as_ref()
             .expect("HeapReader::read: object already freed");
-        let data = entry.data.as_ref().expect("HeapReader::read: data currently borrowed");
 
         // Get the raw pointer from the UnsafeCell — this has SharedReadWrite permission.
-        let base: *mut HeapData = data.0.get();
+        let base: *mut HeapData = entry.data.0.get();
 
         // SAFETY: Match on a shared reference (`&*base`) to read the discriminant without
         // creating a Unique retag. The shared retag is compatible with existing
@@ -385,8 +384,8 @@ pub(crate) use heap_read_as_field;
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct HeapValue {
     refcount: Cell<usize>,
-    /// The payload data. Temporarily `None` while borrowed via `with_entry_mut`/`call_attr`.
-    data: Option<UnsafeHeapData>,
+    /// The payload data
+    data: UnsafeHeapData,
     /// Current hashing status / cached hash value
     hash_state: HashState,
 }
@@ -664,7 +663,7 @@ impl<T: ResourceTracker> Heap<T> {
         let hash_state = HashState::for_data(&data);
         let new_entry = HeapValue {
             refcount: Cell::new(1),
-            data: Some(UnsafeHeapData(UnsafeCell::new(data))),
+            data: UnsafeHeapData(UnsafeCell::new(data)),
             hash_state,
         };
 
@@ -734,15 +733,10 @@ impl<T: ResourceTracker> Heap<T> {
                 self.free_list.push(current_id);
 
                 // Notify tracker of freed memory
-                if let Some(data) = &mut value.data {
-                    self.tracker.on_free(|| data.0.get_mut().py_estimate_size());
-                }
+                self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
 
                 // Collect child IDs and push onto work stack for iterative processing
-                if let Some(mut data) = value.data {
-                    data.0.get_mut().to_mut().py_dec_ref_ids(&mut work_stack);
-                    drop(data);
-                }
+                value.data.0.get_mut().to_mut().py_dec_ref_ids(&mut work_stack);
             }
 
             let Some(next_id) = work_stack.pop() else {
@@ -759,15 +753,13 @@ impl<T: ResourceTracker> Heap<T> {
     /// or the data is currently borrowed via `with_entry_mut`/`call_attr`.
     #[must_use]
     pub fn get(&self, id: HeapId) -> &HeapData {
-        let data = self
+        let data = &self
             .entries
             .get(id.index())
             .expect("Heap::get: slot missing")
             .as_ref()
             .expect("Heap::get: object already freed")
-            .data
-            .as_ref()
-            .expect("Heap::get: data currently borrowed");
+            .data;
         // SAFETY: (DH) no mutable references into `HeapData` is possible while the heap is borrowed
         unsafe { &*data.0.get() }
     }
@@ -784,8 +776,6 @@ impl<T: ResourceTracker> Heap<T> {
             .as_mut()
             .expect("Heap::get_mut: object already freed")
             .data
-            .as_mut()
-            .expect("Heap::get_mut: data currently borrowed")
             .0
             .get_mut()
             .to_mut()
@@ -814,7 +804,7 @@ impl<T: ResourceTracker> Heap<T> {
         }
 
         // Handle Cell specially - uses identity-based hashing (like Python cell objects)
-        if let Some(HeapData::Cell(_)) = entry.data.as_mut().map(|d| d.0.get_mut()) {
+        if let HeapData::Cell(_) = entry.data.0.get_mut() {
             let mut hasher = DefaultHasher::new();
             id.hash(&mut hasher);
             let hash = hasher.finish();
@@ -1030,10 +1020,8 @@ impl<T: ResourceTracker> Heap<T> {
             reachable[idx] = true;
 
             // Add children to work list
-            if let Some(Some(entry)) = self.entries.get_mut(idx)
-                && let Some(data) = &mut entry.data
-            {
-                collect_child_ids(data.0.get_mut(), &mut work_list);
+            if let Some(Some(entry)) = self.entries.get_mut(idx) {
+                collect_child_ids(entry.data.0.get_mut(), &mut work_list);
             }
         }
 
@@ -1046,17 +1034,13 @@ impl<T: ResourceTracker> Heap<T> {
             // This entry is unreachable - free it
             if let Some(mut value) = value.take() {
                 // Notify tracker of freed memory
-                if let Some(data) = &mut value.data {
-                    self.tracker.on_free(|| data.0.get_mut().py_estimate_size());
-                }
+                self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
 
                 self.free_list.push(HeapId(id));
 
                 // Mark Values as Dereferenced when ref-count-panic is enabled
                 #[cfg(feature = "ref-count-panic")]
-                if let Some(mut data) = value.data {
-                    data.0.get_mut().py_dec_ref_ids(&mut Vec::new());
-                }
+                value.data.0.get_mut().py_dec_ref_ids(&mut Vec::new());
             }
         }
 
@@ -1474,9 +1458,7 @@ impl<T: ResourceTracker> Drop for Heap<T> {
         // (we ignore the collected IDs since we're dropped everything anyway).
         let mut dummy_stack = Vec::new();
         for value in self.entries.iter_mut().flatten() {
-            if let Some(data) = &mut value.data {
-                data.0.get_mut().py_dec_ref_ids(&mut dummy_stack);
-            }
+            value.data.0.get_mut().py_dec_ref_ids(&mut dummy_stack);
         }
     }
 }
