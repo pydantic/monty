@@ -1,9 +1,4 @@
-use std::{
-    borrow::Cow,
-    fmt::Write,
-    hash::{DefaultHasher, Hash, Hasher},
-    mem::discriminant,
-};
+use std::{borrow::Cow, fmt::Write};
 
 use ahash::AHashSet;
 use num_integer::Integer;
@@ -15,7 +10,7 @@ use crate::{
     defer_drop,
     exception_private::{RunResult, SimpleException},
     heap::{Heap, HeapId},
-    intern::{FunctionId, Interns},
+    intern::FunctionId,
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
         MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type,
@@ -376,122 +371,7 @@ pub(crate) struct FunctionDefaults {
     pub defaults: Vec<Value>,
 }
 
-impl HeapDataMut<'_> {
-    /// Computes hash for immutable heap types that can be used as dict keys.
-    ///
-    /// Returns `Ok(Some(hash))` for immutable types (Str, Bytes, Tuple of hashables).
-    /// Returns `Ok(None)` for mutable types (List, Dict) which cannot be dict keys.
-    /// Returns `Err(ResourceError::Recursion)` if the recursion limit is exceeded
-    /// while hashing deeply nested containers (e.g., tuples of tuples).
-    ///
-    /// This is called lazily when the value is first used as a dict key,
-    /// avoiding unnecessary hash computation for values that are never used as keys.
-    pub fn compute_hash_if_immutable(
-        &self,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> Result<Option<u64>, ResourceError> {
-        match self {
-            // Hash just the actual string or bytes content for consistency with Value::InternString/InternBytes
-            // hence we don't include the discriminant
-            Self::Str(s) => {
-                let mut hasher = DefaultHasher::new();
-                s.as_str().hash(&mut hasher);
-                Ok(Some(hasher.finish()))
-            }
-            Self::Bytes(b) => {
-                let mut hasher = DefaultHasher::new();
-                b.as_slice().hash(&mut hasher);
-                Ok(Some(hasher.finish()))
-            }
-            Self::FrozenSet(fs) => {
-                // FrozenSet hash is XOR of element hashes (order-independent)
-                // Recursion depth is checked inside compute_hash
-                fs.compute_hash(heap, interns)
-            }
-            Self::Tuple(t) => {
-                let token = heap.incr_recursion_depth()?;
-                crate::defer_drop!(token, heap);
-                let mut hasher = DefaultHasher::new();
-                discriminant(self).hash(&mut hasher);
-                // Tuple is hashable only if all elements are hashable
-                for obj in t.as_slice() {
-                    match obj.py_hash(heap, interns)? {
-                        Some(h) => h.hash(&mut hasher),
-                        None => return Ok(None),
-                    }
-                }
-                Ok(Some(hasher.finish()))
-            }
-            Self::NamedTuple(nt) => {
-                let token = heap.incr_recursion_depth()?;
-                crate::defer_drop!(token, heap);
-                let mut hasher = DefaultHasher::new();
-                discriminant(self).hash(&mut hasher);
-                // Hash only by elements (not type_name) to match equality semantics
-                for obj in nt.as_vec() {
-                    match obj.py_hash(heap, interns)? {
-                        Some(h) => h.hash(&mut hasher),
-                        None => return Ok(None),
-                    }
-                }
-                Ok(Some(hasher.finish()))
-            }
-            Self::Closure(closure) => {
-                let mut hasher = DefaultHasher::new();
-                discriminant(self).hash(&mut hasher);
-                // TODO, this is NOT proper hashing, we should somehow hash the function properly
-                closure.func_id.hash(&mut hasher);
-                Ok(Some(hasher.finish()))
-            }
-            Self::FunctionDefaults(fd) => {
-                let mut hasher = DefaultHasher::new();
-                discriminant(self).hash(&mut hasher);
-                // TODO, this is NOT proper hashing, we should somehow hash the function properly
-                fd.func_id.hash(&mut hasher);
-                Ok(Some(hasher.finish()))
-            }
-            Self::Range(range) => {
-                let mut hasher = DefaultHasher::new();
-                discriminant(self).hash(&mut hasher);
-                range.start.hash(&mut hasher);
-                range.stop.hash(&mut hasher);
-                range.step.hash(&mut hasher);
-                Ok(Some(hasher.finish()))
-            }
-            // Dataclass hashability depends on the mutable flag
-            // Recursion depth is checked inside compute_hash
-            Self::Dataclass(dc) => dc.compute_hash(heap, interns),
-            // Slices are immutable and hashable (like in CPython)
-            Self::Slice(slice) => {
-                let mut hasher = DefaultHasher::new();
-                discriminant(self).hash(&mut hasher);
-                slice.start.hash(&mut hasher);
-                slice.stop.hash(&mut hasher);
-                slice.step.hash(&mut hasher);
-                Ok(Some(hasher.finish()))
-            }
-            // Path is immutable and hashable
-            Self::Path(path) => {
-                let mut hasher = DefaultHasher::new();
-                discriminant(self).hash(&mut hasher);
-                path.as_str().hash(&mut hasher);
-                Ok(Some(hasher.finish()))
-            }
-            // LongInt is immutable and hashable
-            Self::LongInt(li) => Ok(Some(li.hash())),
-            // ExtFunction is hashable by name
-            Self::ExtFunction(name) => {
-                let mut hasher = DefaultHasher::new();
-                discriminant(self).hash(&mut hasher);
-                name.hash(&mut hasher);
-                Ok(Some(hasher.finish()))
-            }
-            // other types cannot be hashed (Cell is handled specially in get_or_compute_hash)
-            _ => Ok(None),
-        }
-    }
-}
+impl HeapDataMut<'_> {}
 
 /// Shared dispatch macro for `PyTrait` methods on `HeapData` and `HeapDataMut`.
 ///

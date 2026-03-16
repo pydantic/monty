@@ -157,46 +157,6 @@ impl<'h> HeapRead<'h, Dataclass> {
     }
 }
 
-impl Dataclass {
-    /// Computes the hash for this dataclass if it's frozen.
-    ///
-    /// Returns `Ok(Some(hash))` for frozen (immutable) dataclasses, `Ok(None)` for mutable ones.
-    /// Returns `Err(ResourceError::Recursion)` if the recursion limit is exceeded.
-    /// The hash is computed from the class name and declared field values only.
-    pub fn compute_hash(
-        &self,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> Result<Option<u64>, ResourceError> {
-        use std::{
-            collections::hash_map::DefaultHasher,
-            hash::{Hash, Hasher},
-        };
-
-        // Only frozen (immutable) dataclasses are hashable
-        if !self.frozen {
-            return Ok(None);
-        }
-
-        let token = heap.incr_recursion_depth()?;
-        defer_drop!(token, heap);
-        let mut hasher = DefaultHasher::new();
-        // Hash the class name
-        self.name.hash(&mut hasher);
-        // Hash each declared field (name, value) pair in order
-        for field_name in &self.field_names {
-            field_name.hash(&mut hasher);
-            if let Some(value) = self.attrs.get_by_str(field_name, heap, interns) {
-                match value.py_hash(heap, interns)? {
-                    Some(h) => h.hash(&mut hasher),
-                    None => return Ok(None),
-                }
-            }
-        }
-        Ok(Some(hasher.finish()))
-    }
-}
-
 impl PyTrait<'_> for Dataclass {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::Dataclass

@@ -11,7 +11,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapRead},
-    intern::{Interns, StaticStrings},
+    intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::Type,
     value::{EitherStr, Value},
@@ -39,6 +39,16 @@ pub(crate) struct SetStorage {
 }
 
 impl SetStorage {
+    /// Returns the number of entries (including any tombstones in sparse layouts).
+    pub(crate) fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns a reference to the value at the given entry index.
+    pub(crate) fn entry_value(&self, index: usize) -> &Value {
+        &self.entries[index].value
+    }
+
     /// Creates a new empty set storage.
     fn new() -> Self {
         Self::default()
@@ -1603,28 +1613,6 @@ impl FrozenSet {
     /// Checks if the frozenset contains a value.
     pub fn contains(&self, value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
         self.0.contains(value, vm)
-    }
-
-    /// Computes the hash of this frozenset.
-    ///
-    /// The hash is the XOR of all element hashes, making it order-independent.
-    /// Checks recursion depth before recursing into element hashes.
-    pub fn compute_hash(
-        &self,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> Result<Option<u64>, ResourceError> {
-        let token = heap.incr_recursion_depth()?;
-        defer_drop!(token, heap);
-        let mut hash: u64 = 0;
-        for entry in &self.0.entries {
-            // All elements must be hashable (enforced at construction)
-            match entry.value.py_hash(heap, interns)? {
-                Some(h) => hash ^= h,
-                None => return Ok(None),
-            }
-        }
-        Ok(Some(hash))
     }
 
     /// Creates a frozenset from a Set, consuming the Set's storage.
