@@ -61,8 +61,9 @@ fn check_compile_fail(test_name: &str) {
         .args(["check", "-p", "monty"])
         .env(
             "RUSTFLAGS",
-            format!("--cfg heap_reader_compile_fail_tests --cfg {test_cfg}"),
+            format!("--cfg heap_reader_compile_fail_tests --cfg {test_cfg} --diagnostic-width=140"),
         )
+        .env("CARGO_TERM_COLOR", "never")
         .output()
         .expect("failed to run cargo check");
 
