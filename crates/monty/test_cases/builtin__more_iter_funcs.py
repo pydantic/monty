@@ -97,6 +97,28 @@ except TypeError as e:
     assert e.args == ('min expected at least 1 argument, got 0',), 'min kwargs-only arity error matches CPython'
 
 try:
+    max(nope=1)
+    assert False, 'max with only unexpected kwargs should still raise the zero-arg TypeError'
+except TypeError as e:
+    assert e.args == ('max expected at least 1 argument, got 0',), (
+        'max zero-arg error takes precedence over kwargs validation'
+    )
+
+try:
+    min(nope=1)
+    assert False, 'min with only unexpected kwargs should still raise the zero-arg TypeError'
+except TypeError as e:
+    assert e.args == ('min expected at least 1 argument, got 0',), (
+        'min zero-arg error takes precedence over kwargs validation'
+    )
+
+try:
+    max(key=int, nope=1)
+    assert False, 'max with mixed kwargs and no positional args should still raise the zero-arg TypeError'
+except TypeError as e:
+    assert e.args == ('max expected at least 1 argument, got 0',), 'max zero-arg error beats mixed kwargs validation'
+
+try:
     max(1, 2, default=3)
     assert False, 'max with multiple args and default should raise TypeError'
 except TypeError as e:
@@ -175,6 +197,22 @@ try:
 except TypeError as e:
     assert e.args == ('keywords must be strings',), 'max non-string keyword key error matches CPython'
 
+try:
+    max([1, 'a'])
+    assert False, 'max with incomparable iterable items should raise TypeError'
+except TypeError as e:
+    assert e.args == ("'>' not supported between instances of 'str' and 'int'",), (
+        'max iterable comparison error matches CPython'
+    )
+
+try:
+    min(1, 'a')
+    assert False, 'min with incomparable positional args should raise TypeError'
+except TypeError as e:
+    assert e.args == ("'<' not supported between instances of 'str' and 'int'",), (
+        'min positional comparison error matches CPython'
+    )
+
 max_key_map = {10: 1, 20: 3, 30: 3, 40: 2}
 assert max([10, 20, 30, 40], key=lambda item: max_key_map[item]) == 20, (
     'max returns first item among repeated maximal keys'
@@ -231,6 +269,14 @@ assert sorted([3, 1, 2], reverse=1) == [3, 2, 1], 'sorted reverse=1 (truthy)'
 assert sorted([3, -1, 2, -4], key=abs) == [-1, 2, 3, -4], 'sorted key=abs'
 assert sorted(['banana', 'apple', 'cherry'], key=len) == ['apple', 'banana', 'cherry'], 'sorted key=len'
 assert sorted([3, 1, 2], key=None) == [1, 2, 3], 'sorted key=None same as no key'
+
+try:
+    sorted([1], key=abs, **{'key': len})
+    assert False, 'duplicate sorted key should raise TypeError'
+except TypeError as e:
+    assert e.args == ("sorted() got multiple values for keyword argument 'key'",), (
+        'sorted duplicate key error matches CPython'
+    )
 
 
 def negate(x):

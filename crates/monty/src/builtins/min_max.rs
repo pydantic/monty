@@ -8,6 +8,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{Heap, HeapGuard},
+    heap_traits::DropWithHeap,
     resource::ResourceTracker,
     types::{MontyIter, PyTrait},
     value::Value,
@@ -45,18 +46,22 @@ fn builtin_min_max(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, i
     };
     let (positional, kwargs) = args.into_parts();
     defer_drop_mut!(positional, vm);
-    let (key_fn, default_value) = parse_min_max_kwargs(kwargs, func_name, vm)?;
-    defer_drop!(key_fn, vm);
-    let mut default_guard = HeapGuard::new(default_value, vm);
-    let (default_value, vm) = default_guard.as_parts_mut();
 
     let Some(first_arg) = positional.next() else {
+        kwargs.drop_with_heap(vm);
         return Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!("{func_name} expected at least 1 argument, got 0"),
         )
         .into());
     };
+
+    let mut first_arg_guard = HeapGuard::new(first_arg, vm);
+    let (key_fn, default_value) = parse_min_max_kwargs(kwargs, func_name, first_arg_guard.heap())?;
+    let (first_arg, vm) = first_arg_guard.into_parts();
+    defer_drop!(key_fn, vm);
+    let mut default_guard = HeapGuard::new(default_value, vm);
+    let (default_value, vm) = default_guard.as_parts_mut();
 
     // decide what to do based on remaining arguments
     if positional.len() == 0 {
@@ -176,40 +181,44 @@ fn parse_min_max_kwargs(
     defer_drop_mut!(kwargs, vm);
 
     let mut default_guard = HeapGuard::new(None::<Value>, vm);
-    let (default_value, vm) = default_guard.as_parts_mut();
-    let mut key_guard = HeapGuard::new(None::<Value>, vm);
-    let (key_fn, vm) = key_guard.as_parts_mut();
+    let key_fn = {
+        let (default_value, vm) = default_guard.as_parts_mut();
+        let mut key_guard = HeapGuard::new(None::<Value>, vm);
+        {
+            let (key_fn, vm) = key_guard.as_parts_mut();
 
-    for (kw_key, value) in kwargs {
-        defer_drop!(kw_key, vm);
-        let mut value = HeapGuard::new(value, vm);
+            for (kw_key, value) in kwargs {
+                defer_drop!(kw_key, vm);
+                let mut value = HeapGuard::new(value, vm);
 
-        let Some(keyword_name) = kw_key.as_either_str(value.heap().heap) else {
-            return Err(ExcType::type_error_kwargs_nonstring_key());
-        };
+                let Some(keyword_name) = kw_key.as_either_str(value.heap().heap) else {
+                    return Err(ExcType::type_error_kwargs_nonstring_key());
+                };
 
-        let keyword_name = keyword_name.as_str(value.heap().interns);
-        if keyword_name == "key" {
-            if key_fn.is_some() {
-                return Err(ExcType::type_error_multiple_values(func_name, keyword_name));
+                let keyword_name = keyword_name.as_str(value.heap().interns);
+                if keyword_name == "key" {
+                    if key_fn.is_some() {
+                        return Err(ExcType::type_error_multiple_values(func_name, keyword_name));
+                    }
+                    *key_fn = Some(value.into_inner());
+                } else if keyword_name == "default" {
+                    if default_value.is_some() {
+                        return Err(ExcType::type_error_multiple_values(func_name, keyword_name));
+                    }
+                    *default_value = Some(value.into_inner());
+                } else {
+                    return Err(ExcType::type_error_unexpected_keyword(func_name, keyword_name));
+                }
             }
-            *key_fn = Some(value.into_inner());
-        } else if keyword_name == "default" {
-            if default_value.is_some() {
-                return Err(ExcType::type_error_multiple_values(func_name, keyword_name));
-            }
-            *default_value = Some(value.into_inner());
-        } else {
-            return Err(ExcType::type_error_unexpected_keyword(func_name, keyword_name));
         }
-    }
 
-    let key_fn = match key_guard.into_inner() {
-        Some(value) if matches!(value, Value::None) => {
-            value.drop_with_heap(default_guard.heap());
-            None
+        match key_guard.into_inner() {
+            Some(value) if matches!(value, Value::None) => {
+                value.drop_with_heap(default_guard.heap());
+                None
+            }
+            other => other,
         }
-        other => other,
     };
 
     Ok((key_fn, default_guard.into_inner()))
@@ -240,11 +249,11 @@ fn candidate_wins(
     is_min: bool,
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<bool> {
-    let Some(ordering) = current.py_cmp(candidate, vm)? else {
-        return Err(ord_not_supported(current, candidate, vm.heap));
+    let Some(ordering) = candidate.py_cmp(current, vm)? else {
+        return Err(ord_not_supported(candidate, current, is_min, vm.heap));
     };
 
-    Ok((is_min && ordering == Ordering::Greater) || (!is_min && ordering == Ordering::Less))
+    Ok((is_min && ordering == Ordering::Less) || (!is_min && ordering == Ordering::Greater))
 }
 
 /// Creates the CPython-compatible error for `default=` with multiple positional args.
@@ -258,10 +267,11 @@ fn default_with_multiple_args(func_name: &str) -> RunError {
 }
 
 #[cold]
-fn ord_not_supported(left: &Value, right: &Value, heap: &Heap<impl ResourceTracker>) -> RunError {
+fn ord_not_supported(left: &Value, right: &Value, is_min: bool, heap: &Heap<impl ResourceTracker>) -> RunError {
     let left_type = left.py_type(heap);
     let right_type = right.py_type(heap);
+    let operator = if is_min { '<' } else { '>' };
     ExcType::type_error(format!(
-        "'<' not supported between instances of '{left_type}' and '{right_type}'"
+        "'{operator}' not supported between instances of '{left_type}' and '{right_type}'"
     ))
 }

@@ -23,6 +23,40 @@ assert result == 4, 'builtin max with multiple *args'
 result = min(*[5, 3], *[7, 1])
 assert result == 1, 'builtin min with multiple *args'
 
+# Builtin type and exception constructors should keep their public names in
+# **kwargs merge errors, not fall back to '<unknown>'.
+try:
+    list(**1)
+    assert False, 'list with non-mapping **arg should raise TypeError'
+except TypeError as e:
+    assert e.args == ('list() argument after ** must be a mapping, not int',), (
+        'builtin type non-mapping **kwargs error keeps type name'
+    )
+
+try:
+    ValueError(**1)
+    assert False, 'ValueError with non-mapping **arg should raise TypeError'
+except TypeError as e:
+    assert e.args == ('ValueError() argument after ** must be a mapping, not int',), (
+        'builtin exception non-mapping **kwargs error keeps exception name'
+    )
+
+try:
+    list(a=1, **{'a': 2})
+    assert False, 'list with duplicate **kwargs should raise TypeError'
+except TypeError as e:
+    assert e.args == ("list() got multiple values for keyword argument 'a'",), (
+        'builtin type duplicate **kwargs error keeps type name'
+    )
+
+try:
+    ValueError(a=1, **{'a': 2})
+    assert False, 'ValueError with duplicate **kwargs should raise TypeError'
+except TypeError as e:
+    assert e.args == ("ValueError() got multiple values for keyword argument 'a'",), (
+        'builtin exception duplicate **kwargs error keeps exception name'
+    )
+
 # === Expression-based callable with GeneralizedCall (compile_call_args path) ===
 # funcs[0](*[1,2], *[3,4]) exercises the GeneralizedCall branch in compile_call_args
 funcs = [f]
