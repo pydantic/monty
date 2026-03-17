@@ -256,6 +256,20 @@ assert sorted([3, 1, 2, 1, 3]) == [1, 1, 2, 3, 3], 'sorted with duplicates'
 # sorted with range
 assert sorted(range(5, 0, -1)) == [1, 2, 3, 4, 5], 'sorted range'
 
+try:
+    sorted(1, 2)
+    assert False, 'sorted() with too many positional arguments should raise TypeError'
+except TypeError as e:
+    assert e.args == ('sorted expected 1 argument, got 2',), 'sorted() positional arity error matches CPython'
+
+try:
+    sorted([1], nope=1)
+    assert False, 'sorted() with invalid keyword should raise TypeError'
+except TypeError as e:
+    assert e.args == ("sort() got an unexpected keyword argument 'nope'",), (
+        'sorted() invalid keyword error matches CPython'
+    )
+
 # === sorted() with reverse ===
 assert sorted([3, 1, 2], reverse=True) == [3, 2, 1], 'sorted reverse=True'
 assert sorted([3, 1, 2], reverse=False) == [1, 2, 3], 'sorted reverse=False'

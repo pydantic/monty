@@ -100,10 +100,18 @@ fn parse_sorted_args(
     // Parse keyword arguments: key and reverse
     let mut iterable_guard = HeapGuard::new(iterable, vm);
     let vm = iterable_guard.heap();
-    let (key_arg, reverse_arg) =
-        kwargs.parse_named_kwargs_pair("sorted", "key", "reverse", vm.heap, vm.interns, |func_name, key_str| {
-            ExcType::type_error(format!("'{key_str}' is an invalid keyword argument for {func_name}()"))
-        })?;
+    let (key_arg, reverse_arg) = kwargs.parse_named_kwargs_pair(
+        "sorted",
+        "key",
+        "reverse",
+        vm.heap,
+        vm.interns,
+        |_func_name, key_str| {
+            // CPython currently reuses the list.sort()-style wording here rather than
+            // saying "sorted() got ...", so match that exact user-visible message.
+            ExcType::type_error_unexpected_keyword("sort", key_str)
+        },
+    )?;
 
     // Convert reverse to bool (default false)
     let reverse = if let Some(v) = reverse_arg {
