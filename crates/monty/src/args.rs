@@ -129,10 +129,11 @@ impl ArgValues {
         }
     }
 
-    /// Extracts two keyword-only arguments by name.
+    /// Extracts a keyword-only pair by name.
     ///
     /// Validates that no positional arguments are provided and only the specified
-    /// keyword arguments are present. Returns `(None, None)` for missing kwargs.
+    /// keyword arguments are present. Returns `(None, None)` when neither keyword
+    /// is provided.
     ///
     /// # Arguments
     /// * `method_name` - Method name for error messages (e.g., "list.sort")
@@ -144,7 +145,7 @@ impl ArgValues {
     /// - Any positional arguments are provided
     /// - A keyword argument other than `kwarg1` or `kwarg2` is provided
     /// - A keyword is not a string
-    pub fn extract_two_kwargs_only(
+    pub fn extract_keyword_only_pair(
         self,
         method_name: &str,
         kwarg1: &str,
@@ -154,44 +155,18 @@ impl ArgValues {
     ) -> RunResult<(Option<Value>, Option<Value>)> {
         let (pos, kwargs) = self.into_parts();
         defer_drop!(pos, heap);
-        let kwargs = kwargs.into_iter();
-        defer_drop_mut!(kwargs, heap);
 
         // Check no positional arguments
         if pos.len() > 0 {
+            kwargs.drop_with_heap(heap);
             return Err(ExcType::type_error_no_args(method_name, 1));
         }
 
-        // Parse keyword arguments
-        // Guards are reversed so that destructure can pull them
-        let mut val2_guard = HeapGuard::new(None, heap);
-        let (val2, heap) = val2_guard.as_parts_mut();
-        let mut val1_guard = HeapGuard::new(None, heap);
-        let (val1, heap) = val1_guard.as_parts_mut();
-
-        for (key, value) in kwargs {
-            defer_drop!(key, heap);
-            let mut value = HeapGuard::new(value, heap);
-
-            let Some(keyword_name) = key.as_either_str(value.heap()) else {
-                return Err(ExcType::type_error("keywords must be strings"));
-            };
-
-            let key_str = keyword_name.as_str(interns);
-            let old = if key_str == kwarg1 {
-                val1.replace(value.into_inner())
-            } else if key_str == kwarg2 {
-                val2.replace(value.into_inner())
-            } else {
-                return Err(ExcType::type_error(format!(
-                    "'{key_str}' is an invalid keyword argument for {method_name}()"
-                )));
-            };
-
-            old.drop_with_heap(heap);
-        }
-
-        Ok((val1_guard.into_inner(), val2_guard.into_inner()))
+        kwargs.parse_named_kwargs_pair(method_name, kwarg1, kwarg2, heap, interns, |method_name, key_str| {
+            ExcType::type_error(format!(
+                "'{key_str}' is an invalid keyword argument for {method_name}()"
+            ))
+        })
     }
 
     /// Prepends a value as the first positional argument.
@@ -453,6 +428,60 @@ impl KwargsValues {
             )
             .into())
         }
+    }
+
+    /// Parses a fixed pair of named keyword arguments with duplicate checking.
+    ///
+    /// This helper is intentionally narrow: it covers the common builtin/method
+    /// pattern of accepting a tiny fixed keyword surface such as `key/default`
+    /// or `key/reverse`, while leaving positional-argument validation and any
+    /// post-processing to the caller.
+    ///
+    /// `unexpected_keyword` formats the call-site-specific error for keywords
+    /// other than `kwarg1` and `kwarg2`.
+    pub fn parse_named_kwargs_pair(
+        self,
+        func_name: &str,
+        kwarg1: &str,
+        kwarg2: &str,
+        heap: &mut Heap<impl ResourceTracker>,
+        interns: &Interns,
+        unexpected_keyword: impl Fn(&str, &str) -> RunError,
+    ) -> RunResult<(Option<Value>, Option<Value>)> {
+        let kwargs = self.into_iter();
+        defer_drop_mut!(kwargs, heap);
+
+        // Guards are reversed so that destructure can pull them.
+        let mut val2_guard = HeapGuard::new(None::<Value>, heap);
+        let (val2, heap) = val2_guard.as_parts_mut();
+        let mut val1_guard = HeapGuard::new(None::<Value>, heap);
+        let (val1, heap) = val1_guard.as_parts_mut();
+
+        for (key, value) in kwargs {
+            defer_drop!(key, heap);
+            let mut value = HeapGuard::new(value, heap);
+
+            let Some(keyword_name) = key.as_either_str(value.heap()) else {
+                return Err(ExcType::type_error_kwargs_nonstring_key());
+            };
+
+            let key_str = keyword_name.as_str(interns);
+            if key_str == kwarg1 {
+                if val1.is_some() {
+                    return Err(ExcType::type_error_multiple_values(func_name, key_str));
+                }
+                *val1 = Some(value.into_inner());
+            } else if key_str == kwarg2 {
+                if val2.is_some() {
+                    return Err(ExcType::type_error_multiple_values(func_name, key_str));
+                }
+                *val2 = Some(value.into_inner());
+            } else {
+                return Err(unexpected_keyword(func_name, key_str));
+            }
+        }
+
+        Ok((val1_guard.into_inner(), val2_guard.into_inner()))
     }
 }
 

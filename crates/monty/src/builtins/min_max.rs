@@ -177,51 +177,24 @@ fn parse_min_max_kwargs(
     func_name: &str,
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<(Option<Value>, Option<Value>)> {
-    let kwargs = kwargs.into_iter();
-    defer_drop_mut!(kwargs, vm);
+    let (key_fn, default_value) = kwargs.parse_named_kwargs_pair(
+        func_name,
+        "key",
+        "default",
+        vm.heap,
+        vm.interns,
+        ExcType::type_error_unexpected_keyword,
+    )?;
 
-    let mut default_guard = HeapGuard::new(None::<Value>, vm);
-    let key_fn = {
-        let (default_value, vm) = default_guard.as_parts_mut();
-        let mut key_guard = HeapGuard::new(None::<Value>, vm);
-        {
-            let (key_fn, vm) = key_guard.as_parts_mut();
-
-            for (kw_key, value) in kwargs {
-                defer_drop!(kw_key, vm);
-                let mut value = HeapGuard::new(value, vm);
-
-                let Some(keyword_name) = kw_key.as_either_str(value.heap().heap) else {
-                    return Err(ExcType::type_error_kwargs_nonstring_key());
-                };
-
-                let keyword_name = keyword_name.as_str(value.heap().interns);
-                if keyword_name == "key" {
-                    if key_fn.is_some() {
-                        return Err(ExcType::type_error_multiple_values(func_name, keyword_name));
-                    }
-                    *key_fn = Some(value.into_inner());
-                } else if keyword_name == "default" {
-                    if default_value.is_some() {
-                        return Err(ExcType::type_error_multiple_values(func_name, keyword_name));
-                    }
-                    *default_value = Some(value.into_inner());
-                } else {
-                    return Err(ExcType::type_error_unexpected_keyword(func_name, keyword_name));
-                }
-            }
+    let key_fn = match key_fn {
+        Some(value) if matches!(value, Value::None) => {
+            value.drop_with_heap(vm);
+            None
         }
-
-        match key_guard.into_inner() {
-            Some(value) if matches!(value, Value::None) => {
-                value.drop_with_heap(default_guard.heap());
-                None
-            }
-            other => other,
-        }
+        other => other,
     };
 
-    Ok((key_fn, default_guard.into_inner()))
+    Ok((key_fn, default_value))
 }
 
 /// Calls the user-provided key function for a single candidate value.

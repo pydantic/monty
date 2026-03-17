@@ -1724,7 +1724,10 @@ impl<'a> Compiler<'a> {
                 self.interns.get_string_id_by_name(name)?
             }
             Builtins::ExcType(exc_type) => self.interns.get_string_id_by_name(&exc_type.to_string())?,
-            Builtins::Type(type_) => self.interns.get_string_id_by_name(&type_.to_string())?,
+            Builtins::Type(type_) => {
+                let name = type_.builtin_name()?;
+                self.interns.get_string_id_by_name(name)?
+            }
         };
 
         u16::try_from(name_id.index()).ok()

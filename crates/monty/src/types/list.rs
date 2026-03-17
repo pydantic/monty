@@ -663,7 +663,7 @@ fn normalize_list_index(index: i64, len: usize) -> usize {
 /// Performs an in-place sort on a list with optional key function and reverse flag.
 fn do_list_sort(list: &mut List, args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<(), RunError> {
     // Parse keyword-only arguments: key and reverse
-    let (key_arg, reverse_arg) = args.extract_two_kwargs_only("list.sort", "key", "reverse", vm.heap, vm.interns)?;
+    let (key_arg, reverse_arg) = args.extract_keyword_only_pair("list.sort", "key", "reverse", vm.heap, vm.interns)?;
 
     // Convert reverse to bool (default false)
     let reverse = if let Some(v) = reverse_arg {

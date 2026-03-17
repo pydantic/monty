@@ -109,6 +109,33 @@ impl fmt::Display for Type {
 }
 
 impl Type {
+    /// Returns the Python source-level name for builtin types that can be called directly.
+    ///
+    /// This differs from `Display` for internal representation-only names such as
+    /// `Type::Iterator`, which displays as `iterator` for repr/type output but is
+    /// exposed as the builtin constructor `iter` in Python source.
+    #[must_use]
+    pub const fn builtin_name(self) -> Option<&'static str> {
+        match self {
+            Self::Bool => Some("bool"),
+            Self::Int => Some("int"),
+            Self::Float => Some("float"),
+            Self::Str => Some("str"),
+            Self::Bytes => Some("bytes"),
+            Self::List => Some("list"),
+            Self::Tuple => Some("tuple"),
+            Self::Dict => Some("dict"),
+            Self::Set => Some("set"),
+            Self::FrozenSet => Some("frozenset"),
+            Self::Range => Some("range"),
+            Self::Slice => Some("slice"),
+            Self::Iterator => Some("iter"),
+            Self::Type => Some("type"),
+            Self::Property => Some("property"),
+            _ => None,
+        }
+    }
+
     /// Resolves a bare Python name to a builtin type, if it is one.
     ///
     /// Only matches names that are true Python builtins — accessible without any import.
