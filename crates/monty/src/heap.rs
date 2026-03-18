@@ -3,7 +3,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
     marker::PhantomData,
-    mem::{ManuallyDrop, discriminant, size_of},
+    mem::{ManuallyDrop, MaybeUninit, discriminant, size_of},
     ptr::NonNull,
     vec,
 };
@@ -459,21 +459,32 @@ const PAGE_SIZE: usize = 256;
 
 /// Paged storage for heap entries that guarantees address stability.
 ///
-/// Entries are stored in fixed-size pages (`Box<[Option<HeapValue>]>`).
+/// Entries are stored in fixed-size pages of `MaybeUninit<Option<HeapValue>>`.
+/// Only slots that have been `push`ed are initialized — new pages are allocated
+/// without touching the memory, avoiding the cost of writing `None` to every slot.
+///
 /// Once a page is allocated, it is never reallocated or moved in memory.
 /// This is the key invariant that makes `HeapRead` pointers safe: a `NonNull<T>`
 /// derived from an entry's data will remain valid for the entry's entire lifetime.
 ///
 /// Index `i` maps to `pages[i / PAGE_SIZE][i % PAGE_SIZE]`.
-#[derive(Debug)]
 struct PagedEntries {
-    pages: Vec<Box<[Option<HeapValue>]>>,
-    /// Total number of slots (including freed ones). Always equals
-    /// `pages.len() * PAGE_SIZE` rounded down to the actual number of pushed entries.
+    pages: Vec<Box<[MaybeUninit<Option<HeapValue>>]>>,
+    /// Total number of initialized slots (including freed ones).
     len: usize,
 }
 
+impl std::fmt::Debug for PagedEntries {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PagedEntries")
+            .field("len", &self.len)
+            .field("pages", &self.pages.len())
+            .finish()
+    }
+}
+
 impl PagedEntries {
+    /// Creates a new paged storage with no pre-allocated pages.
     fn new() -> Self {
         Self {
             pages: Vec::new(),
@@ -498,7 +509,8 @@ impl PagedEntries {
             "PagedEntries::get: index {index} out of bounds (len={})",
             self.len
         );
-        self.pages[index / PAGE_SIZE][index % PAGE_SIZE].as_ref()
+        // SAFETY: (DH) all slots at indices < self.len have been initialized via `push`.
+        unsafe { self.pages[index / PAGE_SIZE][index % PAGE_SIZE].assume_init_ref() }.as_ref()
     }
 
     /// Returns a mutable reference to the entry at `index`.
@@ -512,7 +524,8 @@ impl PagedEntries {
             "PagedEntries::get_mut: index {index} out of bounds (len={})",
             self.len
         );
-        &mut self.pages[index / PAGE_SIZE][index % PAGE_SIZE]
+        // SAFETY: (DH) all slots at indices < self.len have been initialized via `push`.
+        unsafe { self.pages[index / PAGE_SIZE][index % PAGE_SIZE].assume_init_mut() }
     }
 
     /// Appends a new entry and returns its index.
@@ -522,16 +535,12 @@ impl PagedEntries {
         let slot_idx = index % PAGE_SIZE;
 
         if page_idx >= self.pages.len() {
-            // Allocate a new page filled with None
-            let mut page = Box::new_uninit_slice(PAGE_SIZE);
-            page.iter_mut().for_each(|slot| {
-                slot.write(None);
-            });
-            // SAFETY: (DH) just fully initialized the page
-            self.pages.push(unsafe { page.assume_init() });
+            // Allocate a new page WITHOUT initializing — only slots written via
+            // `push` will be initialized, avoiding the cost of zeroing the whole page.
+            self.pages.push(Box::new_uninit_slice(PAGE_SIZE));
         }
 
-        self.pages[page_idx][slot_idx] = value;
+        self.pages[page_idx][slot_idx].write(value);
         self.len += 1;
         index
     }
@@ -540,21 +549,43 @@ impl PagedEntries {
     #[inline]
     fn try_get_mut(&mut self, index: usize) -> Option<&mut Option<HeapValue>> {
         if index < self.len {
-            Some(&mut self.pages[index / PAGE_SIZE][index % PAGE_SIZE])
+            // SAFETY: (DH) all slots at indices < self.len have been initialized via `push`.
+            Some(unsafe { self.pages[index / PAGE_SIZE][index % PAGE_SIZE].assume_init_mut() })
         } else {
             None
         }
     }
 
-    /// Iterates over all entries as shared references.
+    /// Iterates over all initialized entries as shared references.
     fn iter(&self) -> impl Iterator<Item = &Option<HeapValue>> {
-        self.pages.iter().flat_map(|page| page.iter()).take(self.len)
+        self.pages
+            .iter()
+            .flat_map(|page| page.iter())
+            .take(self.len)
+            // SAFETY: (DH) all slots at indices < self.len have been initialized via `push`.
+            .map(|slot| unsafe { slot.assume_init_ref() })
     }
 
-    /// Iterates over all entries as mutable references.
+    /// Iterates over all initialized entries as mutable references.
     fn iter_mut(&mut self) -> impl Iterator<Item = &mut Option<HeapValue>> {
         let len = self.len;
-        self.pages.iter_mut().flat_map(|page| page.iter_mut()).take(len)
+        self.pages
+            .iter_mut()
+            .flat_map(|page| page.iter_mut())
+            .take(len)
+            // SAFETY: (DH) all slots at indices < self.len have been initialized via `push`.
+            .map(|slot| unsafe { slot.assume_init_mut() })
+    }
+}
+
+impl Drop for PagedEntries {
+    fn drop(&mut self) {
+        for i in 0..self.len {
+            // SAFETY: (DH) all slots at indices < self.len have been initialized via `push`.
+            unsafe {
+                self.pages[i / PAGE_SIZE][i % PAGE_SIZE].assume_init_drop();
+            }
+        }
     }
 }
 
