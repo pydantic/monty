@@ -288,19 +288,19 @@ impl PyTrait<'_> for Value {
                     }
                     (HeapReadOutput::DictKeysView(a), HeapReadOutput::Set(b)) => {
                         let view = DictKeysView::new(a.get(vm.heap).dict_id());
-                        view.eq_set_read(&b, vm)
+                        view.eq_set(&b, vm)
                     }
                     (HeapReadOutput::Set(b), HeapReadOutput::DictKeysView(a)) => {
                         let view = DictKeysView::new(a.get(vm.heap).dict_id());
-                        view.eq_set_read(&b, vm)
+                        view.eq_set(&b, vm)
                     }
                     (HeapReadOutput::DictKeysView(a), HeapReadOutput::FrozenSet(b)) => {
                         let view = DictKeysView::new(a.get(vm.heap).dict_id());
-                        view.eq_frozenset_read(&b, vm)
+                        view.eq_frozenset(&b, vm)
                     }
                     (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictKeysView(a)) => {
                         let view = DictKeysView::new(a.get(vm.heap).dict_id());
-                        view.eq_frozenset_read(&b, vm)
+                        view.eq_frozenset(&b, vm)
                     }
                     // DictItemsView comparisons
                     (HeapReadOutput::DictItemsView(a), HeapReadOutput::DictItemsView(b)) => {
@@ -310,19 +310,19 @@ impl PyTrait<'_> for Value {
                     }
                     (HeapReadOutput::DictItemsView(a), HeapReadOutput::Set(b)) => {
                         let view = DictItemsView::new(a.get(vm.heap).dict_id());
-                        view.eq_set_read(&b, vm)
+                        view.eq_set(&b, vm)
                     }
                     (HeapReadOutput::Set(b), HeapReadOutput::DictItemsView(a)) => {
                         let view = DictItemsView::new(a.get(vm.heap).dict_id());
-                        view.eq_set_read(&b, vm)
+                        view.eq_set(&b, vm)
                     }
                     (HeapReadOutput::DictItemsView(a), HeapReadOutput::FrozenSet(b)) => {
                         let view = DictItemsView::new(a.get(vm.heap).dict_id());
-                        view.eq_frozenset_read(&b, vm)
+                        view.eq_frozenset(&b, vm)
                     }
                     (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictItemsView(a)) => {
                         let view = DictItemsView::new(a.get(vm.heap).dict_id());
-                        view.eq_frozenset_read(&b, vm)
+                        view.eq_frozenset(&b, vm)
                     }
                     (HeapReadOutput::Dataclass(a), HeapReadOutput::Dataclass(b)) => {
                         if a.name(vm) != b.name(vm) {

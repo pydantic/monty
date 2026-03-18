@@ -76,20 +76,7 @@ impl DictKeysView {
     }
 
     /// Compares this keys view to a mutable set using set membership semantics.
-    pub(crate) fn eq_set(self, other: &Set, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        let HeapReadOutput::Dict(dict) = vm.heap.read(self.dict_id) else {
-            panic!("dict_keys view must always reference a dict");
-        };
-        dict_keys_eq_set_like_via_reader(
-            &dict,
-            other.len(),
-            |key, vm| matches!(other.contains(key, vm), Ok(true)),
-            vm,
-        )
-    }
-
-    /// Compares this keys view to a set via HeapRead, avoiding borrow conflicts.
-    pub(crate) fn eq_set_read<'h>(
+    pub(crate) fn eq_set<'h>(
         self,
         other: &HeapRead<'h, Set>,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
@@ -106,24 +93,7 @@ impl DictKeysView {
     }
 
     /// Compares this keys view to a frozenset using set membership semantics.
-    pub(crate) fn eq_frozenset(
-        self,
-        other: &FrozenSet,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-    ) -> Result<bool, ResourceError> {
-        let HeapReadOutput::Dict(dict) = vm.heap.read(self.dict_id) else {
-            panic!("dict_keys view must always reference a dict");
-        };
-        dict_keys_eq_set_like_via_reader(
-            &dict,
-            other.len(),
-            |key, vm| matches!(other.contains(key, vm), Ok(true)),
-            vm,
-        )
-    }
-
-    /// Compares this keys view to a frozenset via HeapRead, avoiding borrow conflicts.
-    pub(crate) fn eq_frozenset_read<'h>(
+    pub(crate) fn eq_frozenset<'h>(
         self,
         other: &HeapRead<'h, FrozenSet>,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
@@ -295,20 +265,7 @@ impl DictItemsView {
     }
 
     /// Compares this items view to a mutable set using set membership semantics.
-    pub(crate) fn eq_set(self, other: &Set, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        let HeapReadOutput::Dict(dict) = vm.heap.read(self.dict_id) else {
-            panic!("dict_items view must always reference a dict");
-        };
-        dict_items_eq_set_like_via_reader(
-            &dict,
-            other.len(),
-            |item, vm| matches!(other.contains(item, vm), Ok(true)),
-            vm,
-        )
-    }
-
-    /// Compares this items view to a set via HeapRead, avoiding borrow conflicts.
-    pub(crate) fn eq_set_read<'h>(
+    pub(crate) fn eq_set<'h>(
         self,
         other: &HeapRead<'h, Set>,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
@@ -325,24 +282,7 @@ impl DictItemsView {
     }
 
     /// Compares this items view to a frozenset using set membership semantics.
-    pub(crate) fn eq_frozenset(
-        self,
-        other: &FrozenSet,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-    ) -> Result<bool, ResourceError> {
-        let HeapReadOutput::Dict(dict) = vm.heap.read(self.dict_id) else {
-            panic!("dict_items view must always reference a dict");
-        };
-        dict_items_eq_set_like_via_reader(
-            &dict,
-            other.len(),
-            |item, vm| matches!(other.contains(item, vm), Ok(true)),
-            vm,
-        )
-    }
-
-    /// Compares this items view to a frozenset via HeapRead, avoiding borrow conflicts.
-    pub(crate) fn eq_frozenset_read<'h>(
+    pub(crate) fn eq_frozenset<'h>(
         self,
         other: &HeapRead<'h, FrozenSet>,
         vm: &mut VM<'h, '_, impl ResourceTracker>,

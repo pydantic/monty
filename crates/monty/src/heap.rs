@@ -1265,7 +1265,7 @@ impl<T: ResourceTracker> Heap<T> {
 
                 // Mark Values as Dereferenced when ref-count-panic is enabled
                 #[cfg(feature = "ref-count-panic")]
-                value.data.0.get_mut().py_dec_ref_ids(&mut Vec::new());
+                py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut Vec::new());
             }
         }
 
@@ -1683,8 +1683,63 @@ impl<T: ResourceTracker> Drop for Heap<T> {
         // (we ignore the collected IDs since we're dropped everything anyway).
         let mut dummy_stack = Vec::new();
         for value in self.entries.iter_mut().filter_map(|o| o.as_mut()) {
-            value.data.0.get_mut().py_dec_ref_ids(&mut dummy_stack);
+            py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut dummy_stack);
         }
+    }
+}
+
+#[cfg(feature = "ref-count-panic")]
+fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
+    match data {
+        HeapData::Str(s) => s.py_dec_ref_ids(stack),
+        HeapData::Bytes(b) => b.py_dec_ref_ids(stack),
+        HeapData::List(l) => l.py_dec_ref_ids(stack),
+        HeapData::Tuple(t) => t.py_dec_ref_ids(stack),
+        HeapData::NamedTuple(nt) => nt.py_dec_ref_ids(stack),
+        HeapData::Dict(d) => d.py_dec_ref_ids(stack),
+        HeapData::DictKeysView(view) => view.py_dec_ref_ids(stack),
+        HeapData::DictItemsView(view) => view.py_dec_ref_ids(stack),
+        HeapData::DictValuesView(view) => view.py_dec_ref_ids(stack),
+        HeapData::Set(s) => s.py_dec_ref_ids(stack),
+        HeapData::FrozenSet(fs) => fs.py_dec_ref_ids(stack),
+        HeapData::Closure(closure) => {
+            // Decrement ref count for captured cells
+            stack.extend(closure.cells.iter().copied());
+            // Decrement ref count for default values that are heap references
+            for default in &mut closure.defaults {
+                default.py_dec_ref_ids(stack);
+            }
+        }
+        HeapData::FunctionDefaults(fd) => {
+            // Decrement ref count for default values that are heap references
+            for default in &mut fd.defaults {
+                default.py_dec_ref_ids(stack);
+            }
+        }
+        HeapData::Cell(cell) => cell.0.py_dec_ref_ids(stack),
+        HeapData::Dataclass(dc) => dc.py_dec_ref_ids(stack),
+        HeapData::Iter(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::Module(m) => m.py_dec_ref_ids(stack),
+        HeapData::Coroutine(coro) => {
+            // Decrement ref count for namespace values that are heap references
+            for value in &mut coro.namespace {
+                value.py_dec_ref_ids(stack);
+            }
+        }
+        HeapData::GatherFuture(gather) => {
+            // Decrement ref count for coroutine HeapIds
+            for item in &gather.items {
+                if let GatherItem::Coroutine(id) = item {
+                    stack.push(*id);
+                }
+            }
+            // Decrement ref count for result values that are heap references
+            for result in gather.results.iter_mut().flatten() {
+                result.py_dec_ref_ids(stack);
+            }
+        }
+        // other types have no nested heap references
+        _ => {}
     }
 }
 
