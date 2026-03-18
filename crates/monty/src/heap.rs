@@ -523,9 +523,12 @@ impl PagedEntries {
 
         if page_idx >= self.pages.len() {
             // Allocate a new page filled with None
-            let mut page = Vec::new();
-            page.resize_with(PAGE_SIZE, || None);
-            self.pages.push(page.into_boxed_slice());
+            let mut page = Box::new_uninit_slice(PAGE_SIZE);
+            page.iter_mut().for_each(|slot| {
+                slot.write(None);
+            });
+            // SAFETY: (DH) just fully initialized the page
+            self.pages.push(unsafe { page.assume_init() });
         }
 
         self.pages[page_idx][slot_idx] = value;
