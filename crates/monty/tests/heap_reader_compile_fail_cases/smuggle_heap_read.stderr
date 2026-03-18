@@ -7,7 +7,7 @@ error[E0521]: borrowed data escapes outside of closure
    |                             ---- `heap` is a reference that is only valid in the closure body
 ...
 89 |         smuggled = Some(a);
-   |         ^^^^^^^^^^^^^^^^^^ `heap` escapes the closure body here
+   |         ^^^^^^^^ `heap` escapes the closure body here
    |
    = note: requirement occurs because of the type `heap::HeapRead<'_, list::List>`, which makes the generic argument `'_` invariant
    = note: the struct `heap::HeapRead<'a, T>` is invariant over the parameter `'a`

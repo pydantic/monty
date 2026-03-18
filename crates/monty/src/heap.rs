@@ -3,7 +3,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
     marker::PhantomData,
-    mem::{discriminant, size_of},
+    mem::{ManuallyDrop, discriminant, size_of},
     ptr::NonNull,
     vec,
 };
@@ -125,7 +125,7 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
         /// `*mut HeapData` pointer so it inherits the `SharedReadWrite` permission from
         /// the `UnsafeCell`, allowing both reads and writes.
         #[inline]
-        fn heap_read<'a, T>(base: *mut HeapData, field: &T) -> HeapRead<'a, T> {
+        fn heap_read<'a, T>(base: *mut HeapData, field: &T, readers: NonNull<Cell<usize>>) -> HeapRead<'a, T> {
             let base_addr = base as usize;
             let field_addr = std::ptr::from_ref(field) as usize;
             let offset = field_addr - base_addr;
@@ -134,6 +134,7 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
                 // offset, preserving the `SharedReadWrite` permission. No reference retag
                 // occurs — we only use the `&T` for its address, not to derive the pointer.
                 value: unsafe { NonNull::new_unchecked(base.byte_add(offset).cast::<T>()) },
+                readers,
                 borrow: PhantomData,
             }
         }
@@ -150,7 +151,7 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
             clippy::borrowed_box,
             reason = "We intentionally take &Box<T> to signal this is for boxed HeapData variants; &T would lose that context"
         )]
-        fn heap_read_boxed<'a, T>(boxed: &Box<T>) -> HeapRead<'a, T> {
+        fn heap_read_boxed<'a, T>(boxed: &Box<T>, readers: NonNull<Cell<usize>>) -> HeapRead<'a, T> {
             HeapRead {
                 // SAFETY: The Box's allocation is valid for reads/writes as long as the
                 // HeapData containing it is alive. The HeapReader guarantees the entry
@@ -158,6 +159,7 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
                 // pointer — this is sound because all mutation goes through `get_mut` which
                 // requires `&mut HeapReader`, ensuring exclusive access.
                 value: unsafe { NonNull::new_unchecked(std::ptr::from_ref(boxed.as_ref()).cast_mut()) },
+                readers,
                 borrow: PhantomData,
             }
         }
@@ -166,9 +168,12 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
         let entry = heap
             .entries
             .get(id.index())
-            .expect("HeapReader::read: slot missing")
-            .as_ref()
             .expect("HeapReader::read: object already freed");
+
+        // Increment the reader count for this entry. The corresponding decrement
+        // happens in `HeapRead::drop`.
+        entry.readers.set(entry.readers.get() + 1);
+        let readers = NonNull::from(&entry.readers);
 
         // Get the raw pointer from the UnsafeCell — this has SharedReadWrite permission.
         let base: *mut HeapData = entry.data.0.get();
@@ -179,35 +184,39 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
         // The `heap_read` helper then derives the NonNull from `base` (not from `&T`),
         // so the returned pointer retains full SharedReadWrite permission.
         match unsafe { &*base } {
-            HeapData::Str(s) => HeapReadOutput::Str(heap_read(base, s)),
-            HeapData::Bytes(bytes) => HeapReadOutput::Bytes(heap_read(base, bytes)),
-            HeapData::List(list) => HeapReadOutput::List(heap_read(base, list)),
-            HeapData::Tuple(tuple) => HeapReadOutput::Tuple(heap_read(base, tuple)),
-            HeapData::NamedTuple(named_tuple) => HeapReadOutput::NamedTuple(heap_read(base, named_tuple)),
-            HeapData::Dict(dict) => HeapReadOutput::Dict(heap_read(base, dict)),
-            HeapData::DictItemsView(v) => HeapReadOutput::DictItemsView(heap_read(base, v)),
-            HeapData::DictKeysView(v) => HeapReadOutput::DictKeysView(heap_read(base, v)),
-            HeapData::DictValuesView(v) => HeapReadOutput::DictValuesView(heap_read(base, v)),
-            HeapData::Set(set) => HeapReadOutput::Set(heap_read(base, set)),
-            HeapData::FrozenSet(frozen_set) => HeapReadOutput::FrozenSet(heap_read(base, frozen_set)),
-            HeapData::Closure(closure) => HeapReadOutput::Closure(heap_read(base, closure)),
+            HeapData::Str(s) => HeapReadOutput::Str(heap_read(base, s, readers)),
+            HeapData::Bytes(bytes) => HeapReadOutput::Bytes(heap_read(base, bytes, readers)),
+            HeapData::List(list) => HeapReadOutput::List(heap_read(base, list, readers)),
+            HeapData::Tuple(tuple) => HeapReadOutput::Tuple(heap_read(base, tuple, readers)),
+            HeapData::NamedTuple(named_tuple) => HeapReadOutput::NamedTuple(heap_read(base, named_tuple, readers)),
+            HeapData::Dict(dict) => HeapReadOutput::Dict(heap_read(base, dict, readers)),
+            HeapData::DictItemsView(v) => HeapReadOutput::DictItemsView(heap_read(base, v, readers)),
+            HeapData::DictKeysView(v) => HeapReadOutput::DictKeysView(heap_read(base, v, readers)),
+            HeapData::DictValuesView(v) => HeapReadOutput::DictValuesView(heap_read(base, v, readers)),
+            HeapData::Set(set) => HeapReadOutput::Set(heap_read(base, set, readers)),
+            HeapData::FrozenSet(frozen_set) => HeapReadOutput::FrozenSet(heap_read(base, frozen_set, readers)),
+            HeapData::Closure(closure) => HeapReadOutput::Closure(heap_read(base, closure, readers)),
             HeapData::FunctionDefaults(function_defaults) => {
-                HeapReadOutput::FunctionDefaults(heap_read(base, function_defaults))
+                HeapReadOutput::FunctionDefaults(heap_read(base, function_defaults, readers))
             }
-            HeapData::ExtFunction(name) => HeapReadOutput::ExtFunction(heap_read(base, name)),
-            HeapData::Cell(cell_value) => HeapReadOutput::Cell(heap_read(base, cell_value)),
-            HeapData::Range(range) => HeapReadOutput::Range(heap_read(base, range)),
-            HeapData::Slice(slice) => HeapReadOutput::Slice(heap_read(base, slice)),
-            HeapData::Exception(simple_exception) => HeapReadOutput::Exception(heap_read(base, simple_exception)),
-            HeapData::Dataclass(dataclass) => HeapReadOutput::Dataclass(heap_read(base, dataclass)),
-            HeapData::Iter(monty_iter) => HeapReadOutput::Iter(heap_read(base, monty_iter)),
-            HeapData::LongInt(l) => HeapReadOutput::LongInt(heap_read(base, l)),
-            HeapData::Module(module) => HeapReadOutput::Module(heap_read(base, module)),
-            HeapData::Coroutine(coroutine) => HeapReadOutput::Coroutine(heap_read(base, coroutine)),
-            HeapData::GatherFuture(gather_future) => HeapReadOutput::GatherFuture(heap_read(base, gather_future)),
-            HeapData::Path(path) => HeapReadOutput::Path(heap_read(base, path)),
-            HeapData::RePattern(re_pattern) => HeapReadOutput::RePattern(heap_read_boxed(re_pattern)),
-            HeapData::ReMatch(re_match) => HeapReadOutput::ReMatch(heap_read(base, re_match)),
+            HeapData::ExtFunction(name) => HeapReadOutput::ExtFunction(heap_read(base, name, readers)),
+            HeapData::Cell(cell_value) => HeapReadOutput::Cell(heap_read(base, cell_value, readers)),
+            HeapData::Range(range) => HeapReadOutput::Range(heap_read(base, range, readers)),
+            HeapData::Slice(slice) => HeapReadOutput::Slice(heap_read(base, slice, readers)),
+            HeapData::Exception(simple_exception) => {
+                HeapReadOutput::Exception(heap_read(base, simple_exception, readers))
+            }
+            HeapData::Dataclass(dataclass) => HeapReadOutput::Dataclass(heap_read(base, dataclass, readers)),
+            HeapData::Iter(monty_iter) => HeapReadOutput::Iter(heap_read(base, monty_iter, readers)),
+            HeapData::LongInt(l) => HeapReadOutput::LongInt(heap_read(base, l, readers)),
+            HeapData::Module(module) => HeapReadOutput::Module(heap_read(base, module, readers)),
+            HeapData::Coroutine(coroutine) => HeapReadOutput::Coroutine(heap_read(base, coroutine, readers)),
+            HeapData::GatherFuture(gather_future) => {
+                HeapReadOutput::GatherFuture(heap_read(base, gather_future, readers))
+            }
+            HeapData::Path(path) => HeapReadOutput::Path(heap_read(base, path, readers)),
+            HeapData::RePattern(re_pattern) => HeapReadOutput::RePattern(heap_read_boxed(re_pattern, readers)),
+            HeapData::ReMatch(re_match) => HeapReadOutput::ReMatch(heap_read(base, re_match, readers)),
         }
     }
 }
@@ -268,14 +277,28 @@ pub enum HeapReadOutput<'a> {
     ReMatch(HeapRead<'a, ReMatch>),
 }
 
-#[repr(transparent)]
 pub struct HeapRead<'a, T: ?Sized> {
     value: NonNull<T>,
+    /// Pointer to the `readers` counter in the owning `HeapValue`.
+    ///
+    /// Incremented on creation, decremented on drop. This ensures `dec_ref`
+    /// cannot free the entry while any `HeapRead` pointing into it exists.
+    readers: NonNull<Cell<usize>>,
     /// Makes the lifetime `'a` invariant. In combination with the invariant lifetime
     /// on `HeapReader` and the `HeapReader::with` API, this guarantees that this
     /// `HeapRead` originated from that matching `HeapReader` (there is no way to
     /// construct another `HeapReader` with the same lifetime).
     borrow: PhantomData<fn(&'a T) -> &'a T>,
+}
+
+impl<T: ?Sized> Drop for HeapRead<'_, T> {
+    fn drop(&mut self) {
+        // SAFETY: (DH) the readers pointer is valid for the lifetime of the HeapValue,
+        // which is guaranteed by the paged storage (addresses never move) and the
+        // reader count itself (dec_ref cannot free an entry with active readers).
+        let cell = unsafe { self.readers.as_ref() };
+        cell.set(cell.get() - 1);
+    }
 }
 
 impl<'a, T: ?Sized> HeapRead<'a, T> {
@@ -284,14 +307,12 @@ impl<'a, T: ?Sized> HeapRead<'a, T> {
         // SAFETY: (DH)
         //  - The HeapReader has an invariant lifetime 'a which guarantees that this HeapRead
         //    came from the heap borrowed by this HeapReader.
-        //  - (FIXME) The address of the `HeapValue` never changes.
-        //    (This will require `Heap` entries to be stored in `Box<[Option<HeapValue>]>` pages so that
-        //     they are never dropped if the `Vec` extends, the entries vec is never shrunk.)
-        //    (This will also necessitate making `HeapData` non-optional inside `HeapValue`, removing the
-        //     `take_data!` technique, which this `HeapReader` API should fully supersede anyway.)
-        //  - (FIXME) The HeapRead contains a strong reference to the underlying value, which
-        //    guarantees that it will never be decref'd while the `HeapRead` exists.
-        //    (Probably will fix this by having a `.readers` field in `HeapValue`)
+        //  - The address of the `HeapValue` never changes because entries are stored in
+        //    paged storage (`PagedEntries`) where each page is a `Box<[Option<HeapValue>]>`
+        //    that is never reallocated or moved.
+        //  - The HeapRead holds a strong reader reference (via the `readers` counter in
+        //    `HeapValue`) which guarantees the entry will never be freed by `dec_ref`
+        //    while this `HeapRead` exists.
         //  - The type of the `HeapValue` can never change once allocated. This is
         //    guaranteed by never exposing `&mut HeapData` outside of this module.
         //  - The borrow on `HeapReader` guarantees that there are no mutable borrows on any heap
@@ -307,38 +328,38 @@ impl<'a, T: ?Sized> HeapRead<'a, T> {
 
     /// Cast this reader around some type T which is a transparent wrapper around U
     /// to its inner type. Name peel comes from `TransparentWrapper::peel` method.
+    ///
+    /// Transfers ownership of the reader count from `self` to the returned `HeapRead`
+    /// (no net increment/decrement).
     #[expect(dead_code)]
     pub fn peel<U>(self) -> HeapRead<'a, U>
     where
         T: TransparentWrapper<U>,
     {
+        // Wrap in `ManuallyDrop` to avoid dropping `self` - transferring ownerhship of `readers`
+        let this = ManuallyDrop::new(self);
         HeapRead {
             // NB this pointer casting is safe because `T` is a transparent wrapper around `U`,
             // this means all the safety protections listed in `.get` about accessing `T` also
             // apply to `U`.
-            value: NonNull::cast(self.value),
+            value: NonNull::cast(this.value),
+            readers: this.readers,
             borrow: PhantomData,
         }
     }
 
-    #[expect(dead_code)]
-    pub fn peel_ref<U>(&self) -> &HeapRead<'a, U>
-    where
-        T: TransparentWrapper<U>,
-    {
-        // SAFETY: this is safe for the same reason peel() is safe, and all `HeapRead` have
-        // the same layout (transparent wrapper around a pointer)
-        unsafe { NonNull::cast(self.into()).as_ref() }
-    }
-
     /// Casts this reader to a field of type `U` at some `offset` within the struct.
+    ///
+    /// Transfers ownership of the reader count from `self` to the returned `HeapRead`.
     ///
     /// # Safety
     ///   - The field of type `U` must ALWAYS exist at `offset` within `T` (i.e. `T` cannot be an enum, union etc)
     unsafe fn cast_as_member<U>(self, offset: usize) -> HeapRead<'a, U> {
+        let this = ManuallyDrop::new(self);
         HeapRead {
             // SAFETY: (DH) - caller of this function guarantees the offset & cast is valid
-            value: unsafe { self.value.byte_add(offset) }.cast(),
+            value: unsafe { this.value.byte_add(offset) }.cast(),
+            readers: this.readers,
             borrow: PhantomData,
         }
     }
@@ -384,6 +405,14 @@ pub(crate) use heap_read_as_field;
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct HeapValue {
     refcount: Cell<usize>,
+    /// Number of active `HeapRead` pointers into this entry's data.
+    ///
+    /// Incremented when `HeapReader::read` creates a `HeapRead`, decremented when
+    /// the `HeapRead` is dropped. `dec_ref` panics if it would free an entry that
+    /// still has active readers — this guarantees that `HeapRead` pointers remain
+    /// valid for as long as they exist.
+    #[serde(skip, default)] // should always be 0 during serde ops
+    readers: Cell<usize>,
     /// The payload data
     data: UnsafeHeapData,
     /// Current hashing status / cached hash value
@@ -422,6 +451,134 @@ impl<'de> serde::Deserialize<'de> for UnsafeHeapData {
     }
 }
 
+/// Number of entries per page in the paged heap storage.
+///
+/// Each page is a `Box<[Option<HeapValue>]>` that is never moved once allocated.
+/// This guarantees that pointers into entries (used by `HeapRead`) remain valid
+/// even as the heap grows and new pages are appended.
+const PAGE_SIZE: usize = 256;
+
+/// Paged storage for heap entries that guarantees address stability.
+///
+/// Entries are stored in fixed-size pages (`Box<[Option<HeapValue>]>`).
+/// Once a page is allocated, it is never reallocated or moved in memory.
+/// This is the key invariant that makes `HeapRead` pointers safe: a `NonNull<T>`
+/// derived from an entry's data will remain valid for the entry's entire lifetime.
+///
+/// Index `i` maps to `pages[i / PAGE_SIZE][i % PAGE_SIZE]`.
+#[derive(Debug)]
+struct PagedEntries {
+    pages: Vec<Box<[Option<HeapValue>]>>,
+    /// Total number of slots (including freed ones). Always equals
+    /// `pages.len() * PAGE_SIZE` rounded down to the actual number of pushed entries.
+    len: usize,
+}
+
+impl PagedEntries {
+    fn new() -> Self {
+        Self {
+            pages: Vec::new(),
+            len: 0,
+        }
+    }
+
+    /// Returns the total number of slots (including freed/None ones).
+    #[inline]
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Returns a shared reference to the entry at `index`.
+    ///
+    /// # Panics
+    /// Panics if `index >= len`.
+    #[inline]
+    fn get(&self, index: usize) -> Option<&HeapValue> {
+        assert!(
+            index < self.len,
+            "PagedEntries::get: index {index} out of bounds (len={})",
+            self.len
+        );
+        self.pages[index / PAGE_SIZE][index % PAGE_SIZE].as_ref()
+    }
+
+    /// Returns a mutable reference to the entry at `index`.
+    ///
+    /// # Panics
+    /// Panics if `index >= len`.
+    #[inline]
+    fn get_mut(&mut self, index: usize) -> &mut Option<HeapValue> {
+        assert!(
+            index < self.len,
+            "PagedEntries::get_mut: index {index} out of bounds (len={})",
+            self.len
+        );
+        &mut self.pages[index / PAGE_SIZE][index % PAGE_SIZE]
+    }
+
+    /// Appends a new entry and returns its index.
+    fn push(&mut self, value: Option<HeapValue>) -> usize {
+        let index = self.len;
+        let page_idx = index / PAGE_SIZE;
+        let slot_idx = index % PAGE_SIZE;
+
+        if page_idx >= self.pages.len() {
+            // Allocate a new page filled with None
+            let page: Vec<Option<HeapValue>> = std::iter::repeat_with(|| None).take(PAGE_SIZE).collect();
+            self.pages.push(page.into_boxed_slice());
+        }
+
+        self.pages[page_idx][slot_idx] = value;
+        self.len += 1;
+        index
+    }
+
+    /// Returns a mutable reference to the entry at `index`, or `None` if out of bounds.
+    #[inline]
+    fn try_get_mut(&mut self, index: usize) -> Option<&mut Option<HeapValue>> {
+        if index < self.len {
+            Some(&mut self.pages[index / PAGE_SIZE][index % PAGE_SIZE])
+        } else {
+            None
+        }
+    }
+
+    /// Iterates over all entries as shared references.
+    fn iter(&self) -> impl Iterator<Item = &Option<HeapValue>> {
+        self.pages.iter().flat_map(|page| page.iter()).take(self.len)
+    }
+
+    /// Iterates over all entries as mutable references.
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut Option<HeapValue>> {
+        let len = self.len;
+        self.pages.iter_mut().flat_map(|page| page.iter_mut()).take(len)
+    }
+}
+
+impl serde::Serialize for PagedEntries {
+    /// Serializes as a flat `Vec<Option<HeapValue>>` for compatibility.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut seq = serializer.serialize_seq(Some(self.len))?;
+        for entry in self.iter() {
+            seq.serialize_element(entry)?;
+        }
+        seq.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PagedEntries {
+    /// Deserializes from a flat `Vec<Option<HeapValue>>` and repacks into pages.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let flat: Vec<Option<HeapValue>> = Vec::deserialize(deserializer)?;
+        let mut paged = Self::new();
+        for entry in flat {
+            paged.push(entry);
+        }
+        Ok(paged)
+    }
+}
+
 /// Zero-size token returned by [`Heap::incr_recursion_depth`].
 ///
 /// Represents one level of recursion depth that must be released when the
@@ -456,7 +613,7 @@ impl DropWithHeap for RecursionToken {
 /// handles the Drop constraint by using `std::mem::take` during serialization.
 #[derive(Debug)]
 pub(crate) struct Heap<T: ResourceTracker> {
-    entries: Vec<Option<HeapValue>>,
+    entries: PagedEntries,
     /// IDs of freed slots available for reuse. Populated by `dec_ref`, consumed by `allocate`.
     free_list: Vec<HeapId>,
     /// Resource tracker for enforcing limits and scheduling GC.
@@ -490,7 +647,7 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize)]
         struct HeapFields<T> {
-            entries: Vec<Option<HeapValue>>,
+            entries: PagedEntries,
             free_list: Vec<HeapId>,
             tracker: T,
             may_have_cycles: bool,
@@ -518,9 +675,9 @@ impl<T: ResourceTracker> Heap<T> {
     /// Creates a new heap with the given resource tracker.
     ///
     /// Use this to create heaps with custom resource limits or GC scheduling.
-    pub fn new(capacity: usize, tracker: T) -> Self {
+    pub fn new(_capacity: usize, tracker: T) -> Self {
         let mut this = Self {
-            entries: Vec::with_capacity(capacity),
+            entries: PagedEntries::new(),
             free_list: Vec::new(),
             tracker,
             may_have_cycles: false,
@@ -663,19 +820,18 @@ impl<T: ResourceTracker> Heap<T> {
         let hash_state = HashState::for_data(&data);
         let new_entry = HeapValue {
             refcount: Cell::new(1),
+            readers: Cell::new(0),
             data: UnsafeHeapData(UnsafeCell::new(data)),
             hash_state,
         };
 
         let id = if let Some(id) = self.free_list.pop() {
             // Reuse a freed slot
-            self.entries[id.index()] = Some(new_entry);
+            *self.entries.get_mut(id.index()) = Some(new_entry);
             id
         } else {
             // No free slots, append new entry
-            let id = self.entries.len();
-            self.entries.push(Some(new_entry));
-            HeapId(id)
+            HeapId(self.entries.push(Some(new_entry)))
         };
 
         Ok(id)
@@ -703,8 +859,6 @@ impl<T: ResourceTracker> Heap<T> {
         let value = self
             .entries
             .get(id.index())
-            .expect("Heap::inc_ref: slot missing")
-            .as_ref()
             .expect("Heap::inc_ref: object already freed");
         value.refcount.update(|r| r + 1);
     }
@@ -716,27 +870,33 @@ impl<T: ResourceTracker> Heap<T> {
     /// This is analogous to CPython's "trashcan" mechanism for safe deallocation.
     ///
     /// # Panics
-    /// Panics if the value ID is invalid or the value has already been freed.
+    /// Panics if the value ID is invalid, the value has already been freed, or
+    /// the refcount would reach zero while active `HeapRead` readers exist.
     pub fn dec_ref(&mut self, id: HeapId) {
         let mut current_id = id;
         let mut work_stack = Vec::new();
         loop {
-            let slot = self
-                .entries
-                .get_mut(current_id.index())
-                .expect("Heap::dec_ref: slot missing");
+            let slot = self.entries.get_mut(current_id.index());
             let entry = slot.as_mut().expect("Heap::dec_ref: object already freed");
             if entry.refcount.get() > 1 {
                 entry.refcount.update(|r| r - 1);
-            } else if let Some(mut value) = slot.take() {
-                // refcount == 1, free the value and add slot to free list for reuse
-                self.free_list.push(current_id);
+            } else {
+                assert!(
+                    entry.readers.get() == 0,
+                    "Heap::dec_ref: cannot free HeapId({}) with {} active reader(s)",
+                    current_id.index(),
+                    entry.readers.get(),
+                );
+                if let Some(mut value) = slot.take() {
+                    // refcount == 1 and no readers, free the value and add slot to free list
+                    self.free_list.push(current_id);
 
-                // Notify tracker of freed memory
-                self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
+                    // Notify tracker of freed memory
+                    self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
 
-                // Collect child IDs and push onto work stack for iterative processing
-                value.data.0.get_mut().to_mut().py_dec_ref_ids(&mut work_stack);
+                    // Collect child IDs and push onto work stack for iterative processing
+                    value.data.0.get_mut().to_mut().py_dec_ref_ids(&mut work_stack);
+                }
             }
 
             let Some(next_id) = work_stack.pop() else {
@@ -756,8 +916,6 @@ impl<T: ResourceTracker> Heap<T> {
         let data = &self
             .entries
             .get(id.index())
-            .expect("Heap::get: slot missing")
-            .as_ref()
             .expect("Heap::get: object already freed")
             .data;
         // SAFETY: (DH) no mutable references into `HeapData` is possible while the heap is borrowed
@@ -772,7 +930,6 @@ impl<T: ResourceTracker> Heap<T> {
     pub fn get_mut(&mut self, id: HeapId) -> HeapDataMut<'_> {
         self.entries
             .get_mut(id.index())
-            .expect("Heap::get_mut: slot missing")
             .as_mut()
             .expect("Heap::get_mut: object already freed")
             .data
@@ -793,7 +950,6 @@ impl<T: ResourceTracker> Heap<T> {
         let entry = self
             .entries
             .get_mut(id.index())
-            .expect("Heap::get_or_compute_hash: slot missing")
             .as_mut()
             .expect("Heap::get_or_compute_hash: object already freed");
 
@@ -822,7 +978,6 @@ impl<T: ResourceTracker> Heap<T> {
         let entry = self
             .entries
             .get_mut(id.index())
-            .expect("Heap::get_or_compute_hash: slot missing after compute")
             .as_mut()
             .expect("Heap::get_or_compute_hash: object freed during compute");
         entry.hash_state = match hash {
@@ -843,8 +998,6 @@ impl<T: ResourceTracker> Heap<T> {
     pub fn get_refcount(&self, id: HeapId) -> usize {
         self.entries
             .get(id.index())
-            .expect("Heap::get_refcount: slot missing")
-            .as_ref()
             .expect("Heap::get_refcount: object already freed")
             .refcount
             .get()
@@ -860,8 +1013,8 @@ impl<T: ResourceTracker> Heap<T> {
     #[must_use]
     #[cfg(feature = "ref-count-return")]
     pub fn entry_count(&self) -> usize {
-        // 1.. to skip index 0 which is the empty tuple singleton
-        self.entries[1..].iter().filter(|o| o.is_some()).count()
+        // Skip index 0 which is the empty tuple singleton
+        self.entries.iter().skip(1).filter(|o| o.is_some()).count()
     }
 
     /// Helper for List in-place add: extends the destination vec with items from a heap list.
@@ -1020,7 +1173,7 @@ impl<T: ResourceTracker> Heap<T> {
             reachable[idx] = true;
 
             // Add children to work list
-            if let Some(Some(entry)) = self.entries.get_mut(idx) {
+            if let Some(Some(entry)) = self.entries.try_get_mut(idx) {
                 collect_child_ids(entry.data.0.get_mut(), &mut work_list);
             }
         }
@@ -1457,7 +1610,7 @@ impl<T: ResourceTracker> Drop for Heap<T> {
         // We use py_dec_ref_ids for this since it handles the marking
         // (we ignore the collected IDs since we're dropped everything anyway).
         let mut dummy_stack = Vec::new();
-        for value in self.entries.iter_mut().flatten() {
+        for value in self.entries.iter_mut().filter_map(|o| o.as_mut()) {
             value.data.0.get_mut().py_dec_ref_ids(&mut dummy_stack);
         }
     }
