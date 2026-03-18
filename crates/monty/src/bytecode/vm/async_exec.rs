@@ -373,8 +373,13 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 // Create result list
                 let list_id = self.heap.allocate(HeapData::List(List::new(results)))?;
 
+                // Release the GatherFuture - this will cascade to release coroutines
+                let waiter = gather.get(self.heap).waiter;
+                drop(gather);
+                self.heap.dec_ref(gid);
+
                 // Unblock waiter and switch to it
-                if let Some(waiter_id) = gather.get(self.heap).waiter {
+                if let Some(waiter_id) = waiter {
                     self.scheduler.make_ready(waiter_id);
                     // Remove from ready queue since we're switching directly to it
                     self.scheduler.remove_from_ready_queue(waiter_id);
@@ -387,10 +392,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     self.push(Value::Ref(list_id));
                     return Ok(AwaitResult::FramePushed);
                 }
-
-                // Release the GatherFuture - this will cascade to release coroutines
-                drop(gather);
-                self.heap.dec_ref(gid);
 
                 // No waiter (shouldn't happen but handle gracefully)
                 return Ok(AwaitResult::ValueReady(Value::Ref(list_id)));
