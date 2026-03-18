@@ -485,11 +485,15 @@ impl std::fmt::Debug for PagedEntries {
 
 impl PagedEntries {
     /// Creates a new paged storage with no pre-allocated pages.
-    fn new() -> Self {
-        Self {
-            pages: Vec::new(),
-            len: 0,
+    fn new(capacity: usize) -> Self {
+        let page_count = capacity.div_ceil(PAGE_SIZE);
+        let mut pages = Vec::with_capacity(page_count);
+        for _ in 0..page_count {
+            // SAFETY: We will only read/write to initialized slots (up to `len`), and
+            // the MaybeUninit wrapper allows us to avoid initializing the whole page.
+            pages.push(Box::new_uninit_slice(PAGE_SIZE));
         }
+        Self { pages, len: 0 }
     }
 
     /// Returns the total number of slots (including freed/None ones).
@@ -605,7 +609,7 @@ impl<'de> serde::Deserialize<'de> for PagedEntries {
     /// Deserializes from a flat `Vec<Option<HeapValue>>` and repacks into pages.
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let flat: Vec<Option<HeapValue>> = Vec::deserialize(deserializer)?;
-        let mut paged = Self::new();
+        let mut paged = Self::new(flat.len());
         for entry in flat {
             paged.push(entry);
         }
@@ -709,9 +713,9 @@ impl<T: ResourceTracker> Heap<T> {
     /// Creates a new heap with the given resource tracker.
     ///
     /// Use this to create heaps with custom resource limits or GC scheduling.
-    pub fn new(_capacity: usize, tracker: T) -> Self {
+    pub fn new(capacity: usize, tracker: T) -> Self {
         let mut this = Self {
-            entries: PagedEntries::new(),
+            entries: PagedEntries::new(capacity),
             free_list: Vec::new(),
             tracker,
             may_have_cycles: false,
