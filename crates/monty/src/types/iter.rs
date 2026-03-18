@@ -34,8 +34,7 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     exception_private::{ExcType, RunResult},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
-    heap_data::HeapDataMut,
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput},
     intern::{BytesId, Interns, StringId},
     resource::ResourceTracker,
     types::{PyTrait, Range, dict_view::DictView, str::allocate_char},
@@ -332,7 +331,7 @@ impl MontyIter {
                 }
                 let i = self.index;
                 let expected_len = if *checks_mutation { *len } else { None };
-                let item = get_heap_item(vm.heap, *heap_id, i, expected_len)?;
+                let item = get_heap_item(vm, *heap_id, i, expected_len)?;
                 // Check for list exhaustion (list can shrink during iteration)
                 let Some(item) = item else {
                     return Ok(None);
@@ -407,36 +406,27 @@ impl<T: ResourceTracker> Iterator for HeapedMontyIter<'_, '_, '_, T> {
 ///
 /// Returns `Ok(None)` when the iterator is exhausted.
 /// Returns `Err` for dict/set size changes or allocation failures.
-pub(crate) fn advance_on_heap(
-    heap: &mut Heap<impl ResourceTracker>,
-    iter_id: HeapId,
-    interns: &Interns,
-) -> RunResult<Option<Value>> {
-    // Fast path: Range and InternBytes don't need additional heap access,
-    // so we can handle them with a single mutable borrow.
-    {
-        let HeapDataMut::Iter(iter) = heap.get_mut(iter_id) else {
-            panic!("advance_on_heap: expected Iterator on heap");
-        };
-        if let Some(result) = iter.try_advance_simple(interns) {
-            return result;
-        }
-    }
-    // Mutable borrow ends here, allowing the multi-phase approach below
-
-    // Multi-phase approach for IterStr and HeapRef (need heap access during value retrieval)
-    // Phase 1: Get iterator state (immutable borrow ends after this block)
-    let HeapData::Iter(iter) = heap.get(iter_id) else {
+pub(crate) fn advance_on_heap(vm: &mut VM<'_, '_, impl ResourceTracker>, iter_id: HeapId) -> RunResult<Option<Value>> {
+    let HeapReadOutput::Iter(mut iter) = vm.heap.read(iter_id) else {
         panic!("advance_on_heap: expected Iterator on heap");
     };
-    let Some(state) = iter.iter_state() else {
+
+    // Fast path: Range and InternBytes don't need additional heap access,
+    // so we can handle them with a single mutable borrow.
+    if let Some(result) = iter.get_mut(vm.heap).try_advance_simple(vm.interns) {
+        return result;
+    }
+
+    // Multi-phase approach for IterStr and HeapRef (need heap access during value retrieval)
+    // Phase 1: Get iterator state
+    let Some(state) = iter.get(vm.heap).iter_state() else {
         return Ok(None); // Iterator exhausted
     };
 
     // Phase 2: Based on state, get the value and determine char_len for strings
     let (value, string_char_len) = match state {
         IterState::IterStr { char, char_len } => {
-            let value = allocate_char(char, heap)?;
+            let value = allocate_char(char, vm.heap)?;
             (value, Some(char_len))
         }
         IterState::HeapIndex {
@@ -444,7 +434,7 @@ pub(crate) fn advance_on_heap(
             index,
             expected_len,
         } => {
-            let item = get_heap_item(heap, heap_id, index, expected_len)?;
+            let item = get_heap_item(vm, heap_id, index, expected_len)?;
             // Check for list exhaustion (list can shrink during iteration)
             let Some(item) = item else {
                 return Ok(None);
@@ -454,10 +444,7 @@ pub(crate) fn advance_on_heap(
     };
 
     // Phase 3: Advance the iterator
-    let HeapDataMut::Iter(iter) = heap.get_mut(iter_id) else {
-        panic!("advance_on_heap: expected Iterator on heap");
-    };
-    iter.advance(string_char_len);
+    iter.get_mut(vm.heap).advance(string_char_len);
 
     Ok(Some(value))
 }
@@ -467,21 +454,21 @@ pub(crate) fn advance_on_heap(
 /// Returns `Ok(None)` if the index is out of bounds (for lists that shrunk during iteration).
 /// Returns `Err` if a dict/set changed size during iteration (RuntimeError).
 fn get_heap_item(
-    heap: &mut Heap<impl ResourceTracker>,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
     heap_id: HeapId,
     index: usize,
     expected_len: Option<usize>,
 ) -> RunResult<Option<Value>> {
-    match heap.get(heap_id) {
+    match vm.heap.get(heap_id) {
         HeapData::List(list) => {
             // Check if list shrunk during iteration
             if index >= list.len() {
                 return Ok(None);
             }
-            Ok(Some(list.as_slice()[index].clone_with_heap(heap)))
+            Ok(Some(list.as_slice()[index].clone_with_heap(vm)))
         }
-        HeapData::Tuple(tuple) => Ok(Some(tuple.as_slice()[index].clone_with_heap(heap))),
-        HeapData::NamedTuple(namedtuple) => Ok(Some(namedtuple.as_vec()[index].clone_with_heap(heap))),
+        HeapData::Tuple(tuple) => Ok(Some(tuple.as_slice()[index].clone_with_heap(vm))),
+        HeapData::NamedTuple(namedtuple) => Ok(Some(namedtuple.as_vec()[index].clone_with_heap(vm))),
         HeapData::Dict(dict) => {
             // Check for dict mutation
             if let Some(expected) = expected_len
@@ -490,22 +477,22 @@ fn get_heap_item(
                 return Err(ExcType::runtime_error_dict_changed_size());
             }
             Ok(Some(
-                dict.key_at(index).expect("index should be valid").clone_with_heap(heap),
+                dict.key_at(index).expect("index should be valid").clone_with_heap(vm),
             ))
         }
         HeapData::DictKeysView(view) => {
-            let dict = view.dict(heap);
+            let dict = view.dict(vm.heap);
             if let Some(expected) = expected_len
                 && dict.len() != expected
             {
                 return Err(ExcType::runtime_error_dict_changed_size());
             }
             Ok(Some(
-                dict.key_at(index).expect("index should be valid").clone_with_heap(heap),
+                dict.key_at(index).expect("index should be valid").clone_with_heap(vm),
             ))
         }
         HeapData::DictItemsView(view) => {
-            let dict = view.dict(heap);
+            let dict = view.dict(vm.heap);
             if let Some(expected) = expected_len
                 && dict.len() != expected
             {
@@ -513,21 +500,19 @@ fn get_heap_item(
             }
             let (key, value) = dict.item_at(index).expect("index should be valid");
             Ok(Some(crate::types::allocate_tuple(
-                smallvec::smallvec![key.clone_with_heap(heap), value.clone_with_heap(heap)],
-                heap,
+                smallvec::smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)],
+                vm.heap,
             )?))
         }
         HeapData::DictValuesView(view) => {
-            let dict = view.dict(heap);
+            let dict = view.dict(vm.heap);
             if let Some(expected) = expected_len
                 && dict.len() != expected
             {
                 return Err(ExcType::runtime_error_dict_changed_size());
             }
             Ok(Some(
-                dict.value_at(index)
-                    .expect("index should be valid")
-                    .clone_with_heap(heap),
+                dict.value_at(index).expect("index should be valid").clone_with_heap(vm),
             ))
         }
         HeapData::Bytes(bytes) => Ok(Some(Value::Int(i64::from(bytes.as_slice()[index])))),
@@ -542,7 +527,7 @@ fn get_heap_item(
                 set.storage()
                     .value_at(index)
                     .expect("index should be valid")
-                    .clone_with_heap(heap),
+                    .clone_with_heap(vm),
             ))
         }
         HeapData::FrozenSet(frozenset) => Ok(Some(
@@ -550,7 +535,7 @@ fn get_heap_item(
                 .storage()
                 .value_at(index)
                 .expect("index should be valid")
-                .clone_with_heap(heap),
+                .clone_with_heap(vm),
         )),
         _ => panic!("get_heap_item: unexpected heap data type"),
     }
@@ -575,32 +560,31 @@ fn get_heap_item(
 pub fn iterator_next(
     iter_value: &Value,
     default: Option<Value>,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let Value::Ref(iter_id) = iter_value else {
         // Not a heap value - can't be an iterator
         if let Some(d) = default {
-            d.drop_with_heap(heap);
+            d.drop_with_heap(vm);
         }
-        return Err(ExcType::type_error_not_iterable(iter_value.py_type(heap)));
+        return Err(ExcType::type_error_not_iterable(iter_value.py_type(vm.heap)));
     };
 
     // Check that it's actually an iterator
-    if !matches!(heap.get(*iter_id), HeapData::Iter(_)) {
+    if !matches!(vm.heap.get(*iter_id), HeapData::Iter(_)) {
         if let Some(d) = default {
-            d.drop_with_heap(heap);
+            d.drop_with_heap(vm);
         }
-        let data_type = heap.get(*iter_id).py_type(heap);
+        let data_type = vm.heap.get(*iter_id).py_type(vm.heap);
         return Err(ExcType::type_error(format!("'{data_type}' object is not an iterator")));
     }
 
     // Get next item using the MontyIter::advance_on_heap method
-    match advance_on_heap(heap, *iter_id, interns)? {
+    match advance_on_heap(vm, *iter_id)? {
         Some(item) => {
             // Drop default if provided since we don't need it
             if let Some(d) = default {
-                d.drop_with_heap(heap);
+                d.drop_with_heap(vm);
             }
             Ok(item)
         }

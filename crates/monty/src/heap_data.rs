@@ -195,135 +195,6 @@ impl HeapData {
     pub fn is_coroutine(&self) -> bool {
         matches!(self, Self::Coroutine(_))
     }
-
-    /// Re-cast this as `HeapDataMut` for mutation.
-    ///
-    /// This is an important part of the Heap invariants: we never allow `&mut HeapData`
-    /// outside of the heap module to prevent heap data changing type during execution.
-    pub(crate) fn to_mut(&mut self) -> HeapDataMut<'_> {
-        match self {
-            Self::Str(s) => HeapDataMut::Str(s),
-            Self::Bytes(b) => HeapDataMut::Bytes(b),
-            Self::List(l) => HeapDataMut::List(l),
-            Self::Tuple(t) => HeapDataMut::Tuple(t),
-            Self::NamedTuple(nt) => HeapDataMut::NamedTuple(nt),
-            Self::Dict(d) => HeapDataMut::Dict(d),
-            Self::DictKeysView(view) => HeapDataMut::DictKeysView(view),
-            Self::DictItemsView(view) => HeapDataMut::DictItemsView(view),
-            Self::DictValuesView(view) => HeapDataMut::DictValuesView(view),
-            Self::Set(s) => HeapDataMut::Set(s),
-            Self::FrozenSet(fs) => HeapDataMut::FrozenSet(fs),
-            Self::Closure(closure) => HeapDataMut::Closure(closure),
-            Self::FunctionDefaults(fd) => HeapDataMut::FunctionDefaults(fd),
-            Self::Cell(cell) => HeapDataMut::Cell(cell),
-            Self::Range(r) => HeapDataMut::Range(r),
-            Self::Slice(s) => HeapDataMut::Slice(s),
-            Self::Exception(e) => HeapDataMut::Exception(e),
-            Self::Dataclass(dc) => HeapDataMut::Dataclass(dc),
-            Self::Iter(iter) => HeapDataMut::Iter(iter),
-            Self::LongInt(li) => HeapDataMut::LongInt(li),
-            Self::Module(m) => HeapDataMut::Module(m),
-            Self::Coroutine(coro) => HeapDataMut::Coroutine(coro),
-            Self::GatherFuture(gather) => HeapDataMut::GatherFuture(gather),
-            Self::Path(p) => HeapDataMut::Path(p),
-            Self::ReMatch(m) => HeapDataMut::ReMatch(m),
-            Self::RePattern(p) => HeapDataMut::RePattern(p),
-            Self::ExtFunction(s) => HeapDataMut::ExtFunction(s),
-        }
-    }
-}
-
-/// Mutable reference to `HeapData` inner values
-#[derive(Debug)]
-pub(crate) enum HeapDataMut<'a> {
-    Str(&'a mut Str),
-    Bytes(&'a mut Bytes),
-    List(&'a mut List),
-    Tuple(&'a mut Tuple),
-    NamedTuple(&'a mut NamedTuple),
-    Dict(&'a mut Dict),
-    DictKeysView(&'a mut DictKeysView),
-    DictItemsView(&'a mut DictItemsView),
-    DictValuesView(&'a mut DictValuesView),
-    Set(&'a mut Set),
-    FrozenSet(&'a mut FrozenSet),
-    Closure(&'a mut Closure),
-    FunctionDefaults(&'a mut FunctionDefaults),
-    /// A cell wrapping a single mutable value for closure support.
-    ///
-    /// Cells enable nonlocal variable access by providing a heap-allocated
-    /// container that can be shared between a function and its nested functions.
-    /// Both the outer function and inner function hold references to the same
-    /// cell, allowing modifications to propagate across scope boundaries.
-    Cell(&'a mut CellValue),
-    /// A range object (e.g., `range(10)` or `range(1, 10, 2)`).
-    ///
-    /// Stored on the heap to keep `Value` enum small (16 bytes). Range objects
-    /// are immutable and hashable.
-    Range(&'a mut Range),
-    /// A slice object (e.g., `slice(1, 10, 2)` or from `x[1:10:2]`).
-    ///
-    /// Stored on the heap to keep `Value` enum small. Slice objects represent
-    /// start:stop:step indices for sequence slicing operations.
-    Slice(&'a mut Slice),
-    /// An exception instance (e.g., `ValueError('message')`).
-    ///
-    /// Stored on the heap to keep `Value` enum small (16 bytes). Exceptions
-    /// are created when exception types are called or when `raise` is executed.
-    Exception(&'a mut SimpleException),
-    /// A dataclass instance with fields and method references.
-    ///
-    /// Contains a class name, a Dict of field name -> value mappings, and a set
-    /// of method names that trigger external function calls when invoked.
-    Dataclass(&'a mut Dataclass),
-    /// An iterator for for-loop iteration and the `iter()` type constructor.
-    ///
-    /// Created by the `GetIter` opcode or `iter()` builtin, advanced by `ForIter`.
-    /// Stores iteration state for lists, tuples, strings, ranges, dicts, and sets.
-    Iter(&'a mut MontyIter),
-    /// An arbitrary precision integer (LongInt).
-    ///
-    /// Stored on the heap to keep `Value` enum at 16 bytes. Python has one `int` type,
-    /// so LongInt is an implementation detail - we use `Value::Int(i64)` for performance
-    /// when values fit, and promote to LongInt on overflow. When LongInt results fit back
-    /// in i64, they are demoted back to `Value::Int` for performance.
-    LongInt(&'a mut LongInt),
-    /// A Python module (e.g., `sys`, `typing`).
-    ///
-    /// Modules have a name and a dictionary of attributes. They are created by
-    /// import statements and can have refs to other heap values in their attributes.
-    Module(&'a mut Module),
-    /// A coroutine object from an async function call.
-    ///
-    /// Contains pre-bound arguments and captured cells, ready to be awaited.
-    /// When awaited, a new frame is pushed using the stored namespace.
-    Coroutine(&'a mut Coroutine),
-    /// A gather() result tracking multiple coroutines/tasks.
-    ///
-    /// Created by asyncio.gather() and spawns tasks when awaited.
-    GatherFuture(&'a mut GatherFuture),
-    /// A filesystem path from `pathlib.Path`.
-    ///
-    /// Stored on the heap to provide Python-compatible path operations.
-    /// Pure methods (name, parent, etc.) are handled directly by the VM.
-    /// I/O methods (exists, read_text, etc.) yield external function calls.
-    Path(&'a mut Path),
-    /// A regex match result from `re.match()`, `re.search()`, etc.
-    ///
-    /// Stores matched text, capture groups, and positions. All data is owned
-    /// (no heap references), so reference counting is trivial.
-    ReMatch(&'a mut ReMatch),
-    /// A compiled regex pattern from `re.compile()`.
-    ///
-    /// Wraps a compiled regex with the original pattern string and flags.
-    /// Custom serde serializes only the pattern and flags, recompiling on deserialize.
-    RePattern(&'a mut RePattern),
-    /// Reference to an external function where the name was not interned.
-    ///
-    /// Created when the host resolves a name lookup to a callable whose name
-    /// does not match any interned string (e.g., the host returns a function
-    /// with a different `__name__` than the variable it was assigned to).
-    ExtFunction(&'a mut String),
 }
 
 /// Thin wrapper around `Value` which is used in the `Cell` variant above.
@@ -370,8 +241,6 @@ pub(crate) struct FunctionDefaults {
     /// Evaluated default parameter values (if any).
     pub defaults: Vec<Value>,
 }
-
-impl HeapDataMut<'_> {}
 
 /// Shared dispatch macro for `PyTrait` methods on `HeapData` and `HeapDataMut`.
 ///
@@ -813,5 +682,4 @@ macro_rules! impl_py_trait_dispatch {
     };
 }
 
-impl_py_trait_dispatch!(HeapDataMut<'_>);
 impl_py_trait_dispatch!(HeapData);

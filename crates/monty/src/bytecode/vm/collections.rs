@@ -7,7 +7,6 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, SimpleException},
     heap::{HeapData, HeapGuard, HeapReadOutput},
-    heap_data::HeapDataMut,
     intern::StringId,
     resource::ResourceTracker,
     types::{Dict, List, PyTrait, Set, Slice, Type, allocate_tuple, slice::value_to_option_i64, str::allocate_char},
@@ -143,9 +142,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let has_refs = copied_items.iter().any(|v| matches!(v, Value::Ref(_)));
 
         // Extend the list
-        if let Value::Ref(id) = list_ref
-            && let HeapDataMut::List(list) = this.heap.get_mut(*id)
-        {
+        if let Value::Ref(id) = list_ref {
+            let HeapReadOutput::List(mut list) = this.heap.read(*id) else {
+                panic!("list_extend: expected List on heap");
+            };
+            let list = list.get_mut(this.heap);
             // Update contains_refs before extending
             if has_refs {
                 list.set_contains_refs();

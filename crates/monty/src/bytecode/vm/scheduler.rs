@@ -18,8 +18,7 @@ use crate::{
     args::ArgValues,
     asyncio::{CallId, TaskId},
     exception_private::RunError,
-    heap::{DropWithHeap, HeapId},
-    heap_data::HeapDataMut,
+    heap::{DropWithHeap, HeapId, HeapReadOutput, HeapReader},
     parse::CodeRange,
     value::Value,
 };
@@ -458,11 +457,7 @@ impl Scheduler {
     /// # Arguments
     /// * `task_id` - ID of the task to cancel
     /// * `heap` - Heap for dropping values and cell cleanup
-    pub fn cancel_task(
-        &mut self,
-        task_id: TaskId,
-        heap: &mut crate::heap::Heap<impl crate::resource::ResourceTracker>,
-    ) {
+    pub fn cancel_task(&mut self, task_id: TaskId, heap: &mut HeapReader<'_, impl crate::resource::ResourceTracker>) {
         // If task already finished, clean up its result value and return
         if self.get_task(task_id).is_finished() {
             let task = self.get_task_mut(task_id);
@@ -497,12 +492,13 @@ impl Scheduler {
                 self.cancel_task(inner_task_id, heap);
             }
 
-            // Cleanup the inner GatherFuture - extract data first to avoid borrow conflict
-            let (items, results) = if let HeapDataMut::GatherFuture(gather) = heap.get_mut(inner_gather_id) {
-                (std::mem::take(&mut gather.items), std::mem::take(&mut gather.results))
-            } else {
-                (vec![], vec![])
+            // Cleanup the inner GatherFuture
+            let HeapReadOutput::GatherFuture(mut gather) = heap.read(inner_gather_id) else {
+                panic!("inner_gather_id doesn't point to a GatherFuture")
             };
+            let gather_mut = gather.get_mut(heap);
+            let items = std::mem::take(&mut gather_mut.items);
+            let results = std::mem::take(&mut gather_mut.results);
 
             // Now cleanup the extracted data with mutable heap access
             for item in items {
@@ -515,6 +511,7 @@ impl Scheduler {
             }
 
             // Dec_ref the gather itself
+            drop(gather);
             heap.dec_ref(inner_gather_id);
         }
 

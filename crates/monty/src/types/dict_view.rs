@@ -710,7 +710,7 @@ pub(crate) fn collect_iterable_to_set(
         };
         let mut set_guard = crate::heap::HeapGuard::new(Set::new(), vm);
         let (set, vm) = set_guard.as_parts_mut();
-        while let Some(item) = advance_on_heap(vm.heap, *iter_id, vm.interns)? {
+        while let Some(item) = advance_on_heap(vm, *iter_id)? {
             set.add(item, vm)?;
         }
         return Ok(set_guard.into_inner());

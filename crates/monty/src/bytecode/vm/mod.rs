@@ -24,8 +24,8 @@ use crate::{
     asyncio::{CallId, TaskId},
     bytecode::{code::Code, op::Opcode},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReader},
-    heap_data::{Closure, FunctionDefaults, HeapDataMut},
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput, HeapReader},
+    heap_data::{Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StringId},
     io::PrintWriter,
     modules::BuiltinModule,
@@ -1234,7 +1234,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
 
                     // Use advance_iterator which avoids std::mem::replace overhead
                     // by using a two-phase approach: read state, get value, update index
-                    match advance_on_heap(self.heap, heap_id, self.interns) {
+                    match advance_on_heap(self, heap_id) {
                         Ok(Some(value)) => self.push(value),
                         Ok(None) => {
                             // Iterator exhausted - pop it and jump to end
@@ -1939,10 +1939,10 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         let (value, this) = guard.as_parts_mut();
 
         let cell_id = this.cell_id_from_local(cached_frame, slot);
-        match this.heap.get_mut(cell_id) {
-            HeapDataMut::Cell(c) => std::mem::swap(&mut c.0, value),
-            _ => panic!("StoreCell: entry is not a Cell"),
-        }
+        let HeapReadOutput::Cell(mut cell) = this.heap.read(cell_id) else {
+            panic!("StoreCell: entry is not a Cell")
+        };
+        std::mem::swap(&mut cell.get_mut(this.heap).0, value);
     }
 }
 
