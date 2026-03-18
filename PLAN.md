@@ -1,221 +1,135 @@
-# Plan: Replace `with_entry_mut` / `with_two` with `HeapRead`
+# HeapReader Branch Cleanup Plan
 
-## Background
+## Context
 
-`Heap::with_entry_mut` and `Heap::with_two` use a "take-and-restore" pattern: they temporarily remove `HeapData` from the heap entry, pass it to a closure along with `&mut VM`, then restore it. This avoids Rust borrow conflicts but has re-entrancy problems — if the closure triggers another `with_entry_mut` on the *same* ID, the data is `None` and the VM panics.
+The `HeapRead`/`HeapReader` pattern has been introduced. `Value` methods (`py_eq`, `py_add`,
+`py_getitem`, `py_setitem`, `py_call_attr`, etc.) now dispatch through `HeapRead` instead of
+the old `Heap::get()` -> `HeapData` -> `PyTrait` chain. This leaves a significant amount of
+dead code in the old dispatch path.
 
-The new `HeapReader` / `HeapRead` API avoids this by using pointer-based access with lifetime-invariant guards. A `HeapRead<'h, T>` is a lightweight handle that borrows data through the `HeapReader`, accessed via `get(&self, heap)` / `get_mut(&mut self, heap)`. Multiple `HeapRead` handles can coexist (replacing `with_two`), and the data is never removed from the heap.
+## Goal
 
-## `HeapRead` method pattern
+Remove dead `PyTrait` methods and their per-type implementations that are no longer reachable,
+and slim `PyTrait` to only the methods still used through `HeapData`.
 
-Methods are implemented directly on `HeapRead<'h, T>` via `impl<'h> HeapRead<'h, T>` blocks, giving natural method call syntax. The `Dict` implementation demonstrates this:
+## Dead `HeapData` Dispatch Methods
 
-```rust
-impl<'h> HeapRead<'h, Dict> {
-    pub fn set(
-        &mut self,
-        key: Value,
-        value: Value,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> RunResult<Option<Value>> {
-        self.get_mut(vm.heap).contains_refs = true;
-        let (opt_index, hash) = self.find_index_hash(&key, vm)?;
-        // ...
-    }
+The following `PyTrait` method implementations on `HeapData` (in `impl_py_trait_dispatch!` in
+`heap_data.rs`) are never called -- `Value` dispatches through `HeapRead` instead:
 
-    fn find_index_hash(
-        &self,
-        key: &Value,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-    ) -> RunResult<(Option<usize>, u64)> {
-        // collect candidates via hash, then py_eq each
-    }
-}
-```
+- `py_eq` (~60 lines)
+- `py_add` (~18 lines)
+- `py_sub` (~20 lines)
+- `py_mod` (~19 lines)
+- `py_mod_eq` (~11 lines)
+- `py_iadd` (~10 lines)
+- `py_getitem` (~13 lines)
+- `py_setitem` (~13 lines)
 
-Call site usage:
-```rust
-let HeapReadOutput::Dict(mut dict) = this.heap.read(dict_id) else {
-    unreachable!("...");
-};
-if let Some(old_value) = dict.set(key, value, this)? {
-    old_value.drop_with_heap(this);
-}
-```
+## Per-Type `PyTrait` Methods to Remove
 
-Key points:
-- Methods on `HeapRead<'h, T>` use `self.get(vm.heap)` / `self.get_mut(vm.heap)` to access the underlying `T`
-- The `'h` lifetime ties the `HeapRead` to the `HeapReader` and `VM`, preventing escapes
-- `&mut self` methods can interleave reads (`self.get(vm.heap)`) with VM mutations (allocation, `py_eq`, etc.)
-- Private helpers (like `find_index_hash`) live in the same `impl` block
-- Each type keeps its own `impl<'h> HeapRead<'h, T>` block in its own module (e.g., `dict.rs`)
+Once the `HeapData` dispatch methods above are removed, the per-type `PyTrait` implementations
+they dispatched to become dead too. Remove these for every type that now has `HeapRead`
+equivalents:
 
-## Inventory of all call sites
+### List (`list.rs`)
 
-### `Heap::with_entry_mut` (22 call sites)
+- `List::py_getitem` (~28 lines)
+- `List::py_setitem` (~53 lines)
+- `List::py_eq` (~14 lines)
+- `List::py_add` (~11 lines)
+- `List::py_iadd` (~45 lines)
+- `List::py_call_attr` (~20 lines)
+- `call_list_method` fn + all its helper fns: `list_insert`, `list_pop`, `list_remove`,
+  `list_clear`, `list_copy`, `list_extend`, `list_index`, `list_count` (~300 lines total)
+- `List::append(&mut self, heap, item)` -- the direct version (only called from the dead
+  `call_list_method` and `list_extend` paths)
+- `List::insert(&mut self, heap, index, item)` -- same situation
 
-#### `collections.rs` — collection-building opcodes
+### Dict (`dict.rs`)
 
-| # | Location | Usage | Complexity |
-|---|----------|-------|------------|
-| 1 | `collections.rs:326` | `dict_update` — `dict.set(key, value)` in loop | Medium — same as dict_merge |
-| 2 | `collections.rs:406` | `set_extend` — `set.add(item)` in loop | Medium — needs `HeapRead<Set>::add` |
-| 3 | `collections.rs:441` | `list_append` — `list.append(value)` | Easy — simple append, no re-entrancy |
-| 4 | `collections.rs:469` | `set_add` — `set.add(value)` | Medium — needs `HeapRead<Set>::add` |
-| 5 | `collections.rs:500` | `dict_set_item` — `dict.set(key, value)` | Medium — same as dict_merge |
+- `Dict::py_getitem`
+- `Dict::py_setitem`
+- `Dict::py_eq`
+- `Dict::py_add`
+- `Dict::py_iadd`
+- `Dict::py_call_attr` + its helper fns (old dispatch path)
 
-#### `binary.rs` — binary/set operators
+### Tuple (`tuple.rs`)
 
-| # | Location | Usage | Complexity |
-|---|----------|-------|------------|
-| 6 | `binary.rs:409` | `set_binary_op` — `set.binary_op_value(rhs, op)` | Hard — set binary ops read `rhs` which may also be on heap |
+- `Tuple::py_getitem`
+- `Tuple::py_eq`
+- `Tuple::py_add`
+- `Tuple::py_cmp`
+- `Tuple::py_call_attr`
 
-#### `value.rs` — core value operations
+### Set (`set.rs`)
 
-| # | Location | Usage | Complexity |
-|---|----------|-------|------------|
-| 7 | `value.rs:707` | `py_iadd` — in-place add for `Ref(id)` | Hard — `py_iadd` on HeapData dispatches to list/bytes/etc |
-| 8 | `value.rs:1286` | `py_getitem` — `data.py_getitem(key)` | Hard — dispatches to list/dict/tuple getitem, may call `py_eq` |
-| 9 | `value.rs:1346` | `py_setitem` — `data.py_setitem(key, value)` | Hard — dispatches to list/dict setitem |
-| 10 | `value.rs:1519` | `py_contains` — outer container dispatch | Hard — dispatches to list/tuple/dict/set/str contains with `py_eq` |
-| 11 | `value.rs:1537` | `py_contains` — nested `DictKeysView` → dict lookup | Hard — nested `with_entry_mut` |
-| 12 | `value.rs:1551` | `py_contains` — nested `DictItemsView` → dict lookup | Hard — nested `with_entry_mut` |
-| 13 | `value.rs:1562` | `py_contains` — nested `DictValuesView` → dict values | Hard — nested `with_entry_mut` |
-| 14 | `value.rs:1633` | `py_getattr` — `data.py_getattr(attr)` | Hard — dispatches to many types, may allocate |
-| 15 | `value.rs:1677` | `py_set_attr` — dataclass `dc.set_attr(name, value)` | Medium — only dataclass, limited dispatch |
+- `Set::py_eq`
+- `Set::py_sub`
+- `Set::py_call_attr`
+- `FrozenSet::py_eq`
+- `FrozenSet::py_sub`
+- `FrozenSet::py_call_attr`
 
-#### `dict_view.rs` — dict view comparisons
+### Other Types
 
-| # | Location | Usage | Complexity |
-|---|----------|-------|------------|
-| 16 | `dict_view.rs:80` | `DictKeysView::eq_set` — dict keys vs set | Medium — iterates dict keys, calls `set.contains` |
-| 17 | `dict_view.rs:99` | `DictKeysView::eq_frozenset` — dict keys vs frozenset | Medium — same pattern as eq_set |
-| 18 | `dict_view.rs:118` | `DictKeysView::to_set` — materialize keys to set | Easy — just clones keys |
-| 19 | `dict_view.rs:259` | `DictItemsView::eq_set` — dict items vs set | Medium |
-| 20 | `dict_view.rs:278` | `DictItemsView::eq_frozenset` — dict items vs frozenset | Medium |
-| 21 | `dict_view.rs:296` | `DictItemsView::to_set` — materialize items to set | Easy — clones + allocates tuples |
+- `DictKeysView::py_call_attr`, `DictItemsView::py_call_attr`, `DictValuesView::py_call_attr`
+- `Dataclass::py_call_attr`
+- `Path::py_call_attr`
+- `Str::py_call_attr`
+- `Bytes::py_call_attr`
+- `RePattern::py_call_attr`
+- `ReMatch::py_call_attr`
 
-#### `list.rs` — tests only
+### Verify Before Removing
 
-| # | Location | Usage | Complexity |
-|---|----------|-------|------------|
-| 22-24 | `list.rs:871,901,929` | Tests — `py_setitem` on list | N/A — tests, update after API change |
+For each type, confirm no remaining callers exist outside the dead `HeapData` dispatch path.
+The types that still need `py_getitem`/`py_setitem` on the raw type (e.g. `Range::py_getitem`,
+`NamedTuple::py_getitem`) should be checked -- if they're only called from the dead `HeapData`
+dispatch and have `HeapRead` equivalents, they can go too.
 
-### `Heap::with_two` (7 call sites)
+## Slim `PyTrait` Itself
 
-| # | Location | Usage | Complexity |
-|---|----------|-------|------------|
-| 1 | `value.rs:239` | `py_eq` — `Ref(id1)` vs `Ref(id2)` | Medium — reads both, calls `py_eq` on HeapData |
-| 2 | `value.rs:294` | `py_cmp` — tuple comparison | Easy — only for tuples |
-| 3 | `value.rs:451` | `py_add` — `Ref + Ref` | Medium — dispatches to type-specific add |
-| 4 | `value.rs:545` | `py_sub` — `Ref - Ref` | Medium — LongInt subtraction |
-| 5 | `value.rs:600` | `py_mod` — `Ref % Ref` | Medium — LongInt modulo |
-| 6 | `dict_view.rs:70` | `DictKeysView::eq_view` — keys view vs keys view | Medium — iterates + `py_eq` |
-| 7 | `dict_view.rs:234` | `DictItemsView::eq_view` — items view vs items view | Medium — iterates + `py_eq` |
+After removing the dead methods from all implementers, remove the method declarations from the
+`PyTrait` trait. The trait should be left with only the methods still used through `HeapData`:
 
-## Migration strategy
+**Keep:**
+- `py_type`
+- `py_len`
+- `py_bool`
+- `py_repr_fmt` / `py_repr` / `py_str`
+- `py_dec_ref_ids`
+- `py_estimate_size`
 
-### Phase 1: Implement `HeapRead` methods for container mutations (Easy/Medium)
+**Remove from trait:**
+- `py_eq`
+- `py_add`
+- `py_sub`
+- `py_mod`
+- `py_mod_eq`
+- `py_iadd`
+- `py_mult` (default impl only)
+- `py_div` (default impl only)
+- `py_floordiv` (default impl only)
+- `py_pow` (default impl only)
+- `py_getitem`
+- `py_setitem`
+- `py_call_attr`
+- `py_cmp`
 
-The existing `impl<'h> HeapRead<'h, Dict>` with `set` and `find_index_hash` is the template. Add equivalent `impl<'h> HeapRead<'h, T>` blocks for other container types.
+This prevents dead dispatch from silently coming back.
 
-**Step 1a:** Add `impl<'h> HeapRead<'h, Set>` with `add` and `contains` methods (needed for set_extend, set_add)
+## Estimated Savings
 
-**Step 1b:** Add `impl<'h> HeapRead<'h, List>` with `append` method (needed for list_append — trivial since append doesn't call `py_eq`)
+~400-600 lines removed from the diff.
 
-**Step 1c:** Convert `collections.rs` call sites #1–5:
-- `dict_update` (site 1) → `heap.read(dict_id)` then `dict.set(key, value, vm)`
-- `set_extend` (site 2) → `heap.read(set_id)` then `set.add(item, vm)`
-- `list_append` (site 3) → `heap.read(list_id)` then `list.append(value, vm)` or direct push
-- `set_add` (site 4) → `heap.read(set_id)` then `set.add(value, vm)`
-- `dict_set_item` (site 5) → `heap.read(dict_id)` then `dict.set(key, value, vm)`
+## Approach
 
-**Step 1d:** Convert `dict_view.rs` sites #16–21:
-- `to_set` (sites 18, 21) → `heap.read(dict_id)` then iterate via `dict.get(vm.heap)`
-- `eq_set` / `eq_frozenset` (sites 16, 17, 19, 20) → `heap.read(dict_id)` then iterate with contains check
-
-**Step 1e:** Convert `value.rs:1677` — `py_set_attr` for dataclass (site 15)
-- Add `impl<'h> HeapRead<'h, Dataclass>` with `set_attr` method
-
-### Phase 2: Replace `with_two` with dual `HeapRead` (Medium)
-
-Two `HeapRead` handles can coexist — `heap.read(id1)` and `heap.read(id2)` return independent handles. Access data via `handle.get(vm.heap)`.
-
-**Step 2a:** Convert arithmetic operations (sites 1–5 of `with_two`):
-- `py_eq` at `value.rs:239`
-- `py_cmp` at `value.rs:294`
-- `py_add` at `value.rs:451`
-- `py_sub` at `value.rs:545`
-- `py_mod` at `value.rs:600`
-
-Pattern:
-```rust
-// Before:
-Heap::with_two(vm, *id1, *id2, |vm, left, right| left.py_add(right, vm))
-
-// After:
-let left = vm.heap.read(*id1);
-let right = vm.heap.read(*id2);
-left.get(vm.heap).py_add(right.get(vm.heap), vm)
-```
-
-Note: `PyTrait` methods like `py_add`/`py_eq` currently take `&mut VM`. For types that need VM access during comparison (e.g., tuples calling element-wise `py_eq`), add `impl<'h> HeapRead<'h, Tuple>` with methods that can interleave `get()` calls with VM operations.
-
-**Step 2b:** Convert dict view comparisons (sites 6–7 of `with_two`):
-- `DictKeysView::eq_view` at `dict_view.rs:70`
-- `DictItemsView::eq_view` at `dict_view.rs:234`
-
-### Phase 3: Convert complex dispatch sites (Hard)
-
-These sites use `with_entry_mut` to dispatch through `HeapDataMut` trait methods that need `&mut VM`. Replace with `heap.read()` + match on `HeapReadOutput` variant + type-specific `HeapRead` methods.
-
-**Step 3a:** `py_getattr` (site 14) — `data.py_getattr(attr, vm)`
-- Each type's `py_getattr` may allocate on the heap
-- Solution: `heap.read(id)`, match on `HeapReadOutput`, call `HeapRead<T>::py_getattr` per type
-
-**Step 3b:** `py_getitem` (site 8) — `data.py_getitem(key, vm)`
-- Dict getitem calls `py_eq` for key lookup → add `HeapRead<Dict>::get` method
-- List/tuple getitem with slice keys read the slice from heap
-- Solution: add `HeapRead<T>::py_getitem` for each container type
-
-**Step 3c:** `py_setitem` (site 9) — `data.py_setitem(key, value, vm)`
-- Dict setitem already has `HeapRead<Dict>::set`
-- List setitem needs slice support → add `HeapRead<List>::py_setitem`
-
-**Step 3d:** `py_contains` (site 10) — big match on container type
-- Add `HeapRead<Dict>::get`, `HeapRead<Set>::contains` for key/element lookup
-- List/tuple: iterate via `handle.get(vm.heap).as_slice()`, call `py_eq` per element
-- Nested dict view sites (11–13): use double `heap.read()` — one for the view, one for the dict
-
-**Step 3e:** `py_iadd` (site 7) — in-place operations
-- List iadd extends from another iterable → `HeapRead<List>::iadd`
-- Bytes iadd concatenates → `HeapRead<Bytes>::iadd` or simpler approach
-
-**Step 3f:** `set_binary_op` (site 6 of `with_entry_mut`) — set operations reading rhs
-- `HeapRead<Set>::binary_op_value` and `HeapRead<FrozenSet>::binary_op_value`
-
-### Phase 4: Update tests and remove old API
-
-**Step 4a:** Update `list.rs` test sites (22–24) to use new API
-
-**Step 4b:** Remove `Heap::with_entry_mut` and `Heap::with_two`
-
-**Step 4c:** Remove `HeapDataMut` if no longer needed (it was the "taken out" mutable wrapper)
-
-**Step 4d:** Remove `take_data!` / `restore_data!` macros
-
-## Key design decisions
-
-1. **Methods on `HeapRead<'h, T>`**: Methods live directly on `HeapRead<'h, T>` via `impl<'h> HeapRead<'h, T>` blocks in each type's module. This gives natural `handle.method(args, vm)` syntax and keeps type-specific logic co-located with the type. Each type module (e.g., `dict.rs`, `set.rs`, `list.rs`) owns its own `HeapRead` impl block.
-
-2. **`HeapReadOutput` for dispatch**: The `HeapReadOutput` enum replaces `HeapDataMut` for match-based dispatch. Call sites do `let HeapReadOutput::Dict(mut dict) = heap.read(id) else { ... }` when the type is known, or match on all variants for generic dispatch (like `py_getattr`).
-
-3. **Two reads at once**: For `with_two` replacements, two `HeapRead` handles coexist. The borrow checker ensures safety through the `HeapReader` lifetime.
-
-4. **Incremental migration**: Each phase can be landed independently. The old `with_entry_mut` / `with_two` coexist with the new `HeapRead` pattern during migration.
-
-## Ordering recommendation
-
-Phase 1 → Phase 2 → Phase 3 → Phase 4
-
-Start with the easy collection sites to build out the `HeapRead<T>` method library, then tackle the two-entry reads, then the complex dispatch sites. Remove the old API only after everything is converted.
+1. Remove the 8 dead methods from `impl_py_trait_dispatch!` in `heap_data.rs`
+2. Compiler errors will identify which per-type `PyTrait` impls are now missing -- remove them
+3. Compiler warnings (`dead_code`) will identify helper fns only reachable from the removed
+   methods -- remove those too
+4. Remove the method declarations from the `PyTrait` trait itself
+5. Run `make format-rs && make lint-rs` to clean up
+6. Run `make test-ref-count-panic` to verify nothing broke
