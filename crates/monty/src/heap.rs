@@ -933,57 +933,7 @@ impl<T: ResourceTracker> Heap<T> {
                     self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
 
                     // Collect child IDs and push onto work stack for iterative processing
-                    match value.data.0.get_mut() {
-                        HeapData::Str(s) => s.py_dec_ref_ids(&mut work_stack),
-                        HeapData::Bytes(b) => b.py_dec_ref_ids(&mut work_stack),
-                        HeapData::List(l) => l.py_dec_ref_ids(&mut work_stack),
-                        HeapData::Tuple(t) => t.py_dec_ref_ids(&mut work_stack),
-                        HeapData::NamedTuple(nt) => nt.py_dec_ref_ids(&mut work_stack),
-                        HeapData::Dict(d) => d.py_dec_ref_ids(&mut work_stack),
-                        HeapData::DictKeysView(view) => view.py_dec_ref_ids(&mut work_stack),
-                        HeapData::DictItemsView(view) => view.py_dec_ref_ids(&mut work_stack),
-                        HeapData::DictValuesView(view) => view.py_dec_ref_ids(&mut work_stack),
-                        HeapData::Set(s) => s.py_dec_ref_ids(&mut work_stack),
-                        HeapData::FrozenSet(fs) => fs.py_dec_ref_ids(&mut work_stack),
-                        HeapData::Closure(closure) => {
-                            // Decrement ref count for captured cells
-                            work_stack.extend(closure.cells.iter().copied());
-                            // Decrement ref count for default values that are heap references
-                            for default in &mut closure.defaults {
-                                default.py_dec_ref_ids(&mut work_stack);
-                            }
-                        }
-                        HeapData::FunctionDefaults(fd) => {
-                            // Decrement ref count for default values that are heap references
-                            for default in &mut fd.defaults {
-                                default.py_dec_ref_ids(&mut work_stack);
-                            }
-                        }
-                        HeapData::Cell(cell) => cell.0.py_dec_ref_ids(&mut work_stack),
-                        HeapData::Dataclass(dc) => dc.py_dec_ref_ids(&mut work_stack),
-                        HeapData::Iter(iter) => iter.py_dec_ref_ids(&mut work_stack),
-                        HeapData::Module(m) => m.py_dec_ref_ids(&mut work_stack),
-                        HeapData::Coroutine(coro) => {
-                            // Decrement ref count for namespace values that are heap references
-                            for value in &mut coro.namespace {
-                                value.py_dec_ref_ids(&mut work_stack);
-                            }
-                        }
-                        HeapData::GatherFuture(gather) => {
-                            // Decrement ref count for coroutine HeapIds
-                            for item in &gather.items {
-                                if let GatherItem::Coroutine(id) = item {
-                                    work_stack.push(*id);
-                                }
-                            }
-                            // Decrement ref count for result values that are heap references
-                            for result in gather.results.iter_mut().flatten() {
-                                result.py_dec_ref_ids(&mut work_stack);
-                            }
-                        }
-                        // other types have no nested heap references
-                        _ => {}
-                    }
+                    py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut work_stack);
                 }
             }
 
@@ -1688,7 +1638,6 @@ impl<T: ResourceTracker> Drop for Heap<T> {
     }
 }
 
-#[cfg(feature = "ref-count-panic")]
 fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
     match data {
         HeapData::Str(s) => s.py_dec_ref_ids(stack),
