@@ -3,17 +3,18 @@ use std::{borrow::Cow, fmt::Write};
 use ahash::AHashSet;
 
 use crate::{
-    ResourceTracker,
+    ExcType, ResourceTracker,
+    args::ArgValues,
     asyncio::{Coroutine, GatherFuture, GatherItem},
-    bytecode::VM,
-    exception_private::SimpleException,
-    heap::{Heap, HeapId},
+    bytecode::{CallResult, VM},
+    exception_private::{RunError, SimpleException},
+    heap::{DropWithHeap, Heap, HeapId, HeapReadOutput},
     intern::FunctionId,
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
         MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type,
     },
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// HeapData captures every runtime value that must live in the arena.
@@ -424,6 +425,40 @@ impl HeapData {
             Self::Path(p) => Cow::Owned(p.as_str().to_owned()),
             // All other types use repr
             _ => self.py_repr(vm),
+        }
+    }
+}
+
+impl<'h> HeapReadOutput<'h> {
+    pub fn call_attr<T: ResourceTracker>(
+        self,
+        vm: &mut VM<'h, '_, T>,
+        self_id: HeapId,
+        attr: &EitherStr,
+        args: ArgValues,
+    ) -> Result<CallResult, RunError> {
+        match self {
+            HeapReadOutput::Str(s) => Ok(s.call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::Bytes(b) => Ok(b.call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::List(list) => Ok(list.call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::Tuple(t) => Ok(t.call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::Dict(dict) => Ok(dict.call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::DictKeysView(view) => Ok(view.call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::DictItemsView(view) => Ok(view.call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::DictValuesView(view) => Ok(view.call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::Set(s) => Ok(s.call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::FrozenSet(fs) => Ok(fs.call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::Dataclass(dc) => Ok(dc.call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::Path(p) => Ok(p.call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::Module(m) => Ok(m.call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::ReMatch(m) => Ok(m.call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::RePattern(p) => Ok(p.call_attr(self_id, vm, attr, args)?),
+            // Types without methods — return AttributeError
+            _ => {
+                args.drop_with_heap(vm);
+                let type_name = vm.heap.get(self_id).py_type(vm.heap);
+                Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)))
+            }
         }
     }
 }

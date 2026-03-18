@@ -12,7 +12,7 @@ use crate::{
     bytecode::FrameExit,
     defer_drop,
     exception_private::{ExcType, RunError},
-    heap::{DropWithHeap, HeapData, HeapGuard, HeapId, HeapReadOutput},
+    heap::{DropWithHeap, HeapData, HeapGuard, HeapId},
     heap_data::CellValue,
     intern::{FunctionId, StringId},
     os::OsFunction,
@@ -269,7 +269,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         match obj {
             Value::Ref(heap_id) => {
                 defer_drop!(obj, this);
-                heap_read_call_attr(this, heap_id, &attr, args)
+                this.heap.read(heap_id).call_attr(this, heap_id, &attr, args)
             }
             Value::InternString(string_id) => {
                 // Call string method on interned string literal using the unified dispatcher
@@ -763,43 +763,5 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         ))?;
 
         Ok(CallResult::FramePushed)
-    }
-}
-
-/// Dispatches `py_call_attr` via `HeapReader::read()` instead of the take-and-restore
-/// pattern.
-///
-/// Data stays in the heap, enabling self-referential operations like `d.update(d)` and
-/// `x.extend(x)` to work correctly. Each type with methods has a `HeapRead<T>::call_attr`
-/// that uses the short-lived borrow pattern. Types without methods (closures, ranges, etc.)
-/// return `AttributeError` directly.
-fn heap_read_call_attr<T: ResourceTracker>(
-    vm: &mut VM<'_, '_, T>,
-    id: HeapId,
-    attr: &EitherStr,
-    args: ArgValues,
-) -> Result<CallResult, RunError> {
-    match vm.heap.read(id) {
-        HeapReadOutput::Str(s) => Ok(s.call_attr(id, vm, attr, args)?),
-        HeapReadOutput::Bytes(b) => Ok(b.call_attr(id, vm, attr, args)?),
-        HeapReadOutput::List(list) => Ok(list.call_attr(id, vm, attr, args)?),
-        HeapReadOutput::Tuple(t) => Ok(t.call_attr(id, vm, attr, args)?),
-        HeapReadOutput::Dict(dict) => Ok(dict.call_attr(id, vm, attr, args)?),
-        HeapReadOutput::DictKeysView(view) => Ok(view.call_attr(id, vm, attr, args)?),
-        HeapReadOutput::DictItemsView(view) => Ok(view.call_attr(id, vm, attr, args)?),
-        HeapReadOutput::DictValuesView(view) => Ok(view.call_attr(id, vm, attr, args)?),
-        HeapReadOutput::Set(s) => Ok(s.call_attr(id, vm, attr, args)?),
-        HeapReadOutput::FrozenSet(fs) => Ok(fs.call_attr(id, vm, attr, args)?),
-        HeapReadOutput::Dataclass(dc) => Ok(dc.call_attr(id, vm, attr, args)?),
-        HeapReadOutput::Path(p) => Ok(p.call_attr(id, vm, attr, args)?),
-        HeapReadOutput::Module(m) => Ok(m.call_attr(id, vm, attr, args)?),
-        HeapReadOutput::ReMatch(m) => Ok(m.call_attr(id, vm, attr, args)?),
-        HeapReadOutput::RePattern(p) => Ok(p.call_attr(id, vm, attr, args)?),
-        // Types without methods — return AttributeError
-        _ => {
-            args.drop_with_heap(vm);
-            let type_name = vm.heap.get(id).py_type(vm.heap);
-            Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)))
-        }
     }
 }
