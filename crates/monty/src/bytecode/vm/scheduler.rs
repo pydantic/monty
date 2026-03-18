@@ -1,8 +1,4 @@
-//! Task scheduler for async execution.
-//!
-//! This module implements the scheduler for managing concurrent async tasks
-//! and tracking external function calls. The scheduler is always present
-//! (created at VM initialization) to maintain separation of concerns.
+//! Task scheduler for async execution and call ID allocation.
 //!
 //! # Task Model
 //!
@@ -146,13 +142,12 @@ pub(crate) struct PendingCallData {
     pub creator_task: TaskId,
 }
 
-/// Scheduler for managing concurrent async tasks and external call tracking.
+/// Scheduler for managing call IDs, async tasks, and external call tracking.
 ///
-/// The scheduler is always present (created at VM initialization) to maintain
-/// separation of concerns. All async-related state lives here:
+/// Always present on the VM (not optional). Owns the `next_call_id` counter
+/// used by both sync and async code paths, plus all async-related state:
 /// - Task management (creation, scheduling, completion)
-/// - External call ID allocation and tracking
-/// - Resolution of pending futures
+/// - External call tracking and resolution
 ///
 /// # Main Task
 ///
@@ -240,14 +235,6 @@ impl Scheduler {
         let id = CallId::new(self.next_call_id);
         self.next_call_id += 1;
         id
-    }
-
-    /// Sets the next call ID counter.
-    ///
-    /// Used when lazily creating the scheduler to inherit the call ID counter
-    /// from the VM, ensuring call IDs remain unique across the transition.
-    pub fn set_next_call_id(&mut self, id: u32) {
-        self.next_call_id = id;
     }
 
     /// Stores pending call data for an external function call.

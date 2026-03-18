@@ -500,15 +500,10 @@ pub struct VMSnapshot {
     /// IP of the instruction that caused the pause (for exception handling).
     instruction_ip: usize,
 
-    /// Counter for external call IDs when scheduler is not initialized.
-    next_call_id: u32,
-
-    /// Scheduler state for async execution (optional).
+    /// Scheduler state (always present).
     ///
-    /// Contains all task state, pending calls, and resolved futures.
-    /// This enables async execution to be paused and resumed across host calls.
-    /// None if no async operations have been performed yet.
-    scheduler: Option<Scheduler>,
+    /// Contains call ID counter, task state, pending calls, and resolved futures.
+    scheduler: Scheduler,
 }
 
 // ============================================================================
@@ -565,17 +560,12 @@ pub struct VM<'a, 'p, T: ResourceTracker> {
     /// This allows us to find the correct exception handler when an error occurs.
     instruction_ip: usize,
 
-    /// Counter for external call IDs when scheduler is not initialized.
+    /// Scheduler for task management and call ID allocation.
     ///
-    /// Used by `allocate_call_id()` when no scheduler exists (sync code paths).
-    /// When a scheduler is created, this counter is transferred to it.
-    next_call_id: u32,
-
-    /// Scheduler for async task management (lazy — only created when needed).
-    ///
-    /// Manages concurrent tasks, external call tracking, and task switching.
-    /// Created lazily on first async operation to avoid allocations for sync code.
-    scheduler: Option<Scheduler>,
+    /// Always present — owns `next_call_id` (used by both sync and async paths)
+    /// plus async task state. Internal collections don't allocate until first use,
+    /// so sync-only code pays only for the main task entry.
+    scheduler: Scheduler,
 
     /// Module-level code (for restoring main task frames).
     ///
@@ -609,8 +599,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
             print_writer,
             exception_stack: Vec::new(),
             instruction_ip: 0,
-            next_call_id: 0,
-            scheduler: None,            // Lazy - no allocation for sync code
+            scheduler: Scheduler::new(),
             ext_function_load_ip: None, // Set by LoadGlobalCallable/LoadLocalCallable
             module_code: None,
         }
@@ -671,7 +660,6 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
             print_writer,
             exception_stack: snapshot.exception_stack,
             instruction_ip: snapshot.instruction_ip,
-            next_call_id: snapshot.next_call_id,
             scheduler: snapshot.scheduler,
             module_code: Some(module_code),
             ext_function_load_ip: None,
@@ -694,7 +682,6 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
             frames: self.frames.into_iter().map(|f| f.serialize()).collect(),
             exception_stack: self.exception_stack,
             instruction_ip: self.instruction_ip,
-            next_call_id: self.next_call_id,
             scheduler: self.scheduler,
         }
     }
@@ -717,9 +704,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
         // Clean up current task's stack values and frame cell references
         self.cleanup_current_task();
         // Clean up scheduler state (task stacks, pending calls, resolved values, frame cells)
-        if let Some(scheduler) = &mut self.scheduler {
-            scheduler.cleanup(self.heap);
-        }
+        self.scheduler.cleanup(self.heap);
         self.globals.drain(..).drop_with_heap(self.heap);
     }
 
@@ -743,18 +728,8 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     }
 
     /// Allocates a new `CallId` for an external function call.
-    ///
-    /// Works with or without a scheduler. If a scheduler exists, delegates to it.
-    /// Otherwise, uses the VM's `next_call_id` counter directly, avoiding
-    /// scheduler creation overhead for synchronous external calls.
     fn allocate_call_id(&mut self) -> CallId {
-        if let Some(scheduler) = &mut self.scheduler {
-            scheduler.allocate_call_id()
-        } else {
-            let id = CallId::new(self.next_call_id);
-            self.next_call_id += 1;
-            id
-        }
+        self.scheduler.allocate_call_id()
     }
 
     /// Returns true if we're on the main task (or no async at all).
@@ -763,9 +738,7 @@ impl<'a, 'p, T: ResourceTracker> VM<'a, 'p, T> {
     /// module-level completion (return to host) or spawned task completion
     /// (handle task completion and switch).
     fn is_main_task(&self) -> bool {
-        self.scheduler
-            .as_ref()
-            .is_none_or(|s| s.current_task_id().is_none_or(TaskId::is_main))
+        self.scheduler.current_task_id().is_none_or(TaskId::is_main)
     }
 
     /// Main execution loop.
