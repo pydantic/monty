@@ -523,7 +523,8 @@ impl PagedEntries {
 
         if page_idx >= self.pages.len() {
             // Allocate a new page filled with None
-            let page: Vec<Option<HeapValue>> = std::iter::repeat_with(|| None).take(PAGE_SIZE).collect();
+            let mut page = Vec::new();
+            page.resize_with(PAGE_SIZE, || None);
             self.pages.push(page.into_boxed_slice());
         }
 
