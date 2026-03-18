@@ -12,7 +12,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{Heap, HeapData, HeapId, HeapItem},
     resource::{ResourceError, ResourceTracker},
     types::{PyTrait, Type},
     value::Value,
@@ -274,12 +274,14 @@ impl PyTrait for Range {
             write!(f, "range({}, {}, {})", self.start, self.stop, self.step)
         }
     }
+}
+
+impl HeapItem for Range {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // Range doesn't contain heap references, nothing to do
-    }
-
-    fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
     }
 }

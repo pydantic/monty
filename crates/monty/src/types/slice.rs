@@ -12,7 +12,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{Heap, HeapData, HeapId, HeapItem},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::{PyTrait, Type},
@@ -183,10 +183,6 @@ impl PyTrait for Slice {
         Type::Slice
     }
 
-    fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
-
     fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         // Slices don't have a length in Python
         None
@@ -216,10 +212,6 @@ impl PyTrait for Slice {
         f.write_char(')')
     }
 
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
-        // Slice doesn't contain heap references, nothing to do
-    }
-
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         // Fast path: interned strings can be matched by ID without string comparison
         if let Some(ss) = attr.static_string() {
@@ -237,6 +229,16 @@ impl PyTrait for Slice {
             "step" => Ok(Some(CallResult::Value(option_i64_to_value(self.step)))),
             _ => Ok(None),
         }
+    }
+}
+
+impl HeapItem for Slice {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
+        // Slice doesn't contain heap references, nothing to do
     }
 }
 

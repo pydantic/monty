@@ -77,16 +77,6 @@ pub trait PyTrait {
         Ok(None)
     }
 
-    /// Pushes any contained `HeapId`s onto the stack for reference counting.
-    ///
-    /// This is called during `dec_ref` to find nested heap references that
-    /// need their refcounts decremented when this value is freed.
-    ///
-    /// When the `ref-count-panic` feature is enabled, this method also marks all
-    /// contained `Value`s as `Dereferenced` to prevent Drop panics. This
-    /// co-locates the cleanup logic with the reference collection logic.
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>);
-
     /// Returns the truthiness of the value following Python semantics.
     ///
     /// Container types should typically report `false` when empty.
@@ -255,17 +245,6 @@ pub trait PyTrait {
         args.drop_with_heap(vm);
         Err(ExcType::attribute_error(self.py_type(vm.heap), attr.as_str(vm.interns)))
     }
-
-    /// Estimates the memory size in bytes of this value.
-    ///
-    /// Used by resource tracking to enforce memory limits. Returns the approximate
-    /// heap footprint including struct overhead and variable-length data (e.g., string
-    /// contents, list elements).
-    ///
-    /// Note: For containers holding `Value::Ref` entries, this counts the size of
-    /// the reference slots, not the referenced objects. Nested objects are sized
-    /// separately when they are allocated.
-    fn py_estimate_size(&self) -> usize;
 
     /// Python subscript get operation (`__getitem__`), e.g., `d[key]`.
     ///

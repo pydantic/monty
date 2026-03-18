@@ -9,7 +9,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem},
     intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -609,10 +609,6 @@ impl PyTrait for Set {
         Type::Set
     }
 
-    fn py_estimate_size(&self) -> usize {
-        self.0.estimate_size()
-    }
-
     fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         Some(self.len())
     }
@@ -624,10 +620,6 @@ impl PyTrait for Set {
         let token = vm.heap.incr_recursion_depth()?;
         defer_drop!(token, vm);
         self.0.eq(&other.0, vm)
-    }
-
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        self.0.collect_dec_ref_ids(stack);
     }
 
     fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
@@ -945,6 +937,16 @@ impl Set {
     }
 }
 
+impl HeapItem for Set {
+    fn py_estimate_size(&self) -> usize {
+        self.0.estimate_size()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        self.0.collect_dec_ref_ids(stack);
+    }
+}
+
 /// Python frozenset type - immutable, unordered collection of unique hashable elements.
 ///
 /// FrozenSets support the same set algebra operations as sets (union, intersection,
@@ -1078,10 +1080,6 @@ impl PyTrait for FrozenSet {
         Type::FrozenSet
     }
 
-    fn py_estimate_size(&self) -> usize {
-        self.0.estimate_size()
-    }
-
     fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         Some(self.len())
     }
@@ -1093,10 +1091,6 @@ impl PyTrait for FrozenSet {
         let token = vm.heap.incr_recursion_depth()?;
         defer_drop!(token, vm);
         self.0.eq(&other.0, vm)
-    }
-
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        self.0.collect_dec_ref_ids(stack);
     }
 
     fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
@@ -1190,6 +1184,16 @@ impl PyTrait for FrozenSet {
     ) -> Result<Option<Value>, crate::resource::ResourceError> {
         // Same limitation as Set - needs interns
         Ok(None)
+    }
+}
+
+impl HeapItem for FrozenSet {
+    fn py_estimate_size(&self) -> usize {
+        self.0.estimate_size()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        self.0.collect_dec_ref_ids(stack);
     }
 }
 

@@ -15,7 +15,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{RunResult, SimpleException},
-    heap::{Heap, HeapId},
+    heap::{Heap, HeapId, HeapItem},
     intern::{FunctionId, Interns},
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
@@ -377,6 +377,101 @@ pub(crate) struct FunctionDefaults {
     pub defaults: Vec<Value>,
 }
 
+impl HeapItem for CellValue {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Value>()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        self.0.py_dec_ref_ids(stack);
+    }
+}
+
+impl HeapItem for Closure {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.cells.len() * std::mem::size_of::<HeapId>()
+            + self.defaults.len() * std::mem::size_of::<Value>()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        // Decrement ref count for captured cells
+        stack.extend(self.cells.iter().copied());
+        // Decrement ref count for default values that are heap references
+        for default in &mut self.defaults {
+            default.py_dec_ref_ids(stack);
+        }
+    }
+}
+
+impl HeapItem for FunctionDefaults {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>() + self.defaults.len() * std::mem::size_of::<Value>()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        // Decrement ref count for default values that are heap references
+        for default in &mut self.defaults {
+            default.py_dec_ref_ids(stack);
+        }
+    }
+}
+
+impl HeapItem for SimpleException {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>() + self.arg().map_or(0, String::len)
+    }
+
+    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
+        // Exceptions don't contain heap references
+    }
+}
+
+impl HeapItem for LongInt {
+    fn py_estimate_size(&self) -> usize {
+        self.estimate_size()
+    }
+
+    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
+        // LongInt doesn't contain heap references
+    }
+}
+
+impl HeapItem for Coroutine {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>() + self.namespace.len() * std::mem::size_of::<Value>()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        // Decrement ref count for namespace values that are heap references
+        for value in &mut self.namespace {
+            value.py_dec_ref_ids(stack);
+        }
+    }
+}
+
+impl HeapItem for GatherFuture {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.items.len() * std::mem::size_of::<GatherItem>()
+            + self.results.len() * std::mem::size_of::<Option<Value>>()
+            + self.pending_calls.len() * std::mem::size_of::<crate::asyncio::CallId>()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        // Decrement ref count for coroutine HeapIds
+        for item in &self.items {
+            if let GatherItem::Coroutine(id) = item {
+                stack.push(*id);
+            }
+        }
+        // Decrement ref count for result values that are heap references
+        for result in self.results.iter_mut().flatten() {
+            result.py_dec_ref_ids(stack);
+        }
+    }
+}
+
 impl HeapDataMut<'_> {
     /// Computes hash for immutable heap types that can be used as dict keys.
     ///
@@ -532,45 +627,6 @@ macro_rules! impl_py_trait_dispatch {
                 }
             }
 
-            fn py_estimate_size(&self) -> usize {
-                match self {
-                    Self::Str(s) => s.py_estimate_size(),
-                    Self::Bytes(b) => b.py_estimate_size(),
-                    Self::List(l) => l.py_estimate_size(),
-                    Self::Tuple(t) => t.py_estimate_size(),
-                    Self::NamedTuple(nt) => nt.py_estimate_size(),
-                    Self::Dict(d) => d.py_estimate_size(),
-                    Self::DictKeysView(view) => view.py_estimate_size(),
-                    Self::DictItemsView(view) => view.py_estimate_size(),
-                    Self::DictValuesView(view) => view.py_estimate_size(),
-                    Self::Set(s) => s.py_estimate_size(),
-                    Self::FrozenSet(fs) => fs.py_estimate_size(),
-                    // TODO: should include size of captured cells and defaults
-                    Self::Closure(_) | Self::FunctionDefaults(_) => 0,
-                    Self::Cell(cell) => std::mem::size_of::<Value>() + cell.0.py_estimate_size(),
-                    Self::Range(_) => std::mem::size_of::<Range>(),
-                    Self::Slice(s) => s.py_estimate_size(),
-                    Self::Exception(e) => std::mem::size_of::<SimpleException>() + e.arg().map_or(0, String::len),
-                    Self::Dataclass(dc) => dc.py_estimate_size(),
-                    Self::Iter(_) => std::mem::size_of::<MontyIter>(),
-                    Self::LongInt(li) => li.estimate_size(),
-                    Self::Module(m) => std::mem::size_of::<Module>() + m.attrs().py_estimate_size(),
-                    Self::Coroutine(coro) => {
-                        std::mem::size_of::<Coroutine>() + coro.namespace.len() * std::mem::size_of::<Value>()
-                    }
-                    Self::GatherFuture(gather) => {
-                        std::mem::size_of::<GatherFuture>()
-                            + gather.items.len() * std::mem::size_of::<crate::asyncio::GatherItem>()
-                            + gather.results.len() * std::mem::size_of::<Option<Value>>()
-                            + gather.pending_calls.len() * std::mem::size_of::<crate::asyncio::CallId>()
-                    }
-                    Self::Path(p) => p.py_estimate_size(),
-                    Self::ReMatch(m) => m.py_estimate_size(),
-                    Self::RePattern(p) => p.py_estimate_size(),
-                    Self::ExtFunction(s) => std::mem::size_of::<String>() + s.len(),
-                }
-            }
-
             fn py_len(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
                 match self {
                     Self::Str(s) => s.py_len(vm),
@@ -665,60 +721,6 @@ macro_rules! impl_py_trait_dispatch {
                     (Self::Bytes(a), Self::Bytes(b)) => a.py_cmp(b, vm),
                     (Self::Tuple(a), Self::Tuple(b)) => a.py_cmp(b, vm),
                     _ => Ok(None),
-                }
-            }
-
-            fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-                match self {
-                    Self::Str(s) => s.py_dec_ref_ids(stack),
-                    Self::Bytes(b) => b.py_dec_ref_ids(stack),
-                    Self::List(l) => l.py_dec_ref_ids(stack),
-                    Self::Tuple(t) => t.py_dec_ref_ids(stack),
-                    Self::NamedTuple(nt) => nt.py_dec_ref_ids(stack),
-                    Self::Dict(d) => d.py_dec_ref_ids(stack),
-                    Self::DictKeysView(view) => view.py_dec_ref_ids(stack),
-                    Self::DictItemsView(view) => view.py_dec_ref_ids(stack),
-                    Self::DictValuesView(view) => view.py_dec_ref_ids(stack),
-                    Self::Set(s) => s.py_dec_ref_ids(stack),
-                    Self::FrozenSet(fs) => fs.py_dec_ref_ids(stack),
-                    Self::Closure(closure) => {
-                        // Decrement ref count for captured cells
-                        stack.extend(closure.cells.iter().copied());
-                        // Decrement ref count for default values that are heap references
-                        for default in &mut closure.defaults {
-                            default.py_dec_ref_ids(stack);
-                        }
-                    }
-                    Self::FunctionDefaults(fd) => {
-                        // Decrement ref count for default values that are heap references
-                        for default in &mut fd.defaults {
-                            default.py_dec_ref_ids(stack);
-                        }
-                    }
-                    Self::Cell(cell) => cell.0.py_dec_ref_ids(stack),
-                    Self::Dataclass(dc) => dc.py_dec_ref_ids(stack),
-                    Self::Iter(iter) => iter.py_dec_ref_ids(stack),
-                    Self::Module(m) => m.py_dec_ref_ids(stack),
-                    Self::Coroutine(coro) => {
-                        // Decrement ref count for namespace values that are heap references
-                        for value in &mut coro.namespace {
-                            value.py_dec_ref_ids(stack);
-                        }
-                    }
-                    Self::GatherFuture(gather) => {
-                        // Decrement ref count for coroutine HeapIds
-                        for item in &gather.items {
-                            if let GatherItem::Coroutine(id) = item {
-                                stack.push(*id);
-                            }
-                        }
-                        // Decrement ref count for result values that are heap references
-                        for result in gather.results.iter_mut().flatten() {
-                            result.py_dec_ref_ids(stack);
-                        }
-                    }
-                    // other types have no nested heap references
-                    _ => {}
                 }
             }
 
@@ -983,3 +985,75 @@ macro_rules! impl_py_trait_dispatch {
 
 impl_py_trait_dispatch!(HeapDataMut<'_>);
 impl_py_trait_dispatch!(HeapData);
+
+/// Shared dispatch macro for `HeapItem` methods on `HeapData` and `HeapDataMut`.
+///
+/// Dispatches `py_estimate_size` and `py_dec_ref_ids` to the inner type's
+/// `HeapItem` implementation. For types without a dedicated `HeapItem` impl
+/// (like `ExtFunction` wrapping `String`), the logic is inlined here.
+macro_rules! impl_heap_item_dispatch {
+    ($self_ty:ty) => {
+        impl HeapItem for $self_ty {
+            fn py_estimate_size(&self) -> usize {
+                match self {
+                    Self::Str(s) => s.py_estimate_size(),
+                    Self::Bytes(b) => b.py_estimate_size(),
+                    Self::List(l) => l.py_estimate_size(),
+                    Self::Tuple(t) => t.py_estimate_size(),
+                    Self::NamedTuple(nt) => nt.py_estimate_size(),
+                    Self::Dict(d) => d.py_estimate_size(),
+                    Self::DictKeysView(view) => view.py_estimate_size(),
+                    Self::DictItemsView(view) => view.py_estimate_size(),
+                    Self::DictValuesView(view) => view.py_estimate_size(),
+                    Self::Set(s) => s.py_estimate_size(),
+                    Self::FrozenSet(fs) => fs.py_estimate_size(),
+                    Self::Closure(closure) => closure.py_estimate_size(),
+                    Self::FunctionDefaults(fd) => fd.py_estimate_size(),
+                    Self::Cell(cell) => cell.py_estimate_size(),
+                    Self::Range(r) => r.py_estimate_size(),
+                    Self::Slice(s) => s.py_estimate_size(),
+                    Self::Exception(e) => e.py_estimate_size(),
+                    Self::Dataclass(dc) => dc.py_estimate_size(),
+                    Self::Iter(iter) => iter.py_estimate_size(),
+                    Self::LongInt(li) => li.py_estimate_size(),
+                    Self::Module(m) => m.py_estimate_size(),
+                    Self::Coroutine(coro) => coro.py_estimate_size(),
+                    Self::GatherFuture(gather) => gather.py_estimate_size(),
+                    Self::Path(p) => p.py_estimate_size(),
+                    Self::ReMatch(m) => m.py_estimate_size(),
+                    Self::RePattern(p) => p.py_estimate_size(),
+                    Self::ExtFunction(s) => std::mem::size_of::<String>() + s.len(),
+                }
+            }
+
+            fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+                match self {
+                    Self::Str(s) => s.py_dec_ref_ids(stack),
+                    Self::Bytes(b) => b.py_dec_ref_ids(stack),
+                    Self::List(l) => l.py_dec_ref_ids(stack),
+                    Self::Tuple(t) => t.py_dec_ref_ids(stack),
+                    Self::NamedTuple(nt) => nt.py_dec_ref_ids(stack),
+                    Self::Dict(d) => d.py_dec_ref_ids(stack),
+                    Self::DictKeysView(view) => view.py_dec_ref_ids(stack),
+                    Self::DictItemsView(view) => view.py_dec_ref_ids(stack),
+                    Self::DictValuesView(view) => view.py_dec_ref_ids(stack),
+                    Self::Set(s) => s.py_dec_ref_ids(stack),
+                    Self::FrozenSet(fs) => fs.py_dec_ref_ids(stack),
+                    Self::Closure(closure) => closure.py_dec_ref_ids(stack),
+                    Self::FunctionDefaults(fd) => fd.py_dec_ref_ids(stack),
+                    Self::Cell(cell) => cell.py_dec_ref_ids(stack),
+                    Self::Dataclass(dc) => dc.py_dec_ref_ids(stack),
+                    Self::Iter(iter) => iter.py_dec_ref_ids(stack),
+                    Self::Module(m) => m.py_dec_ref_ids(stack),
+                    Self::Coroutine(coro) => coro.py_dec_ref_ids(stack),
+                    Self::GatherFuture(gather) => gather.py_dec_ref_ids(stack),
+                    // Types with no nested heap references
+                    _ => {}
+                }
+            }
+        }
+    };
+}
+
+impl_heap_item_dispatch!(HeapDataMut<'_>);
+impl_heap_item_dispatch!(HeapData);

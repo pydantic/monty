@@ -14,7 +14,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem},
     intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -396,11 +396,6 @@ impl PyTrait for Dict {
         Type::Dict
     }
 
-    fn py_estimate_size(&self) -> usize {
-        // Dict size: struct overhead + entries (2 Values per entry for key+value)
-        std::mem::size_of::<Self>() + self.len() * 2 * std::mem::size_of::<Value>()
-    }
-
     fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         Some(self.len())
     }
@@ -423,25 +418,6 @@ impl PyTrait for Dict {
             }
         }
         Ok(true)
-    }
-
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        // Skip iteration if no refs - major GC optimization for dicts of primitives
-        if !self.contains_refs {
-            return;
-        }
-        for entry in &mut self.entries {
-            if let Value::Ref(id) = &entry.key {
-                stack.push(*id);
-                #[cfg(feature = "ref-count-panic")]
-                entry.key.dec_ref_forget();
-            }
-            if let Value::Ref(id) = &entry.value {
-                stack.push(*id);
-                #[cfg(feature = "ref-count-panic")]
-                entry.value.dec_ref_forget();
-            }
-        }
     }
 
     fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
@@ -590,6 +566,32 @@ impl PyTrait for Dict {
             }
         };
         value.map(CallResult::Value)
+    }
+}
+
+impl HeapItem for Dict {
+    fn py_estimate_size(&self) -> usize {
+        // Dict size: struct overhead + entries (2 Values per entry for key+value)
+        std::mem::size_of::<Self>() + self.len() * 2 * std::mem::size_of::<Value>()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        // Skip iteration if no refs - major GC optimization for dicts of primitives
+        if !self.contains_refs {
+            return;
+        }
+        for entry in &mut self.entries {
+            if let Value::Ref(id) = &entry.key {
+                stack.push(*id);
+                #[cfg(feature = "ref-count-panic")]
+                entry.key.dec_ref_forget();
+            }
+            if let Value::Ref(id) = &entry.value {
+                stack.push(*id);
+                #[cfg(feature = "ref-count-panic")]
+                entry.value.dec_ref_forget();
+            }
+        }
     }
 }
 

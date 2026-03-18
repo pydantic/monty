@@ -34,7 +34,7 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     exception_private::{ExcType, RunResult},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem},
     heap_data::HeapDataMut,
     intern::{BytesId, Interns, StringId},
     resource::ResourceTracker,
@@ -795,5 +795,15 @@ impl DropWithHeap for MontyIter {
     #[inline]
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         Self::drop_with_heap(self, heap);
+    }
+}
+
+impl HeapItem for MontyIter {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        self.value.py_dec_ref_ids(stack);
     }
 }

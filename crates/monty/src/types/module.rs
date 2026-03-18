@@ -5,10 +5,10 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapGuard, HeapId},
+    heap::{Heap, HeapGuard, HeapId, HeapItem},
     intern::{Interns, StringId},
     resource::ResourceTracker,
-    types::{Dict, PyTrait},
+    types::Dict,
     value::{EitherStr, Value},
 };
 
@@ -142,5 +142,15 @@ impl Module {
                 attr.as_str(vm.interns),
             )),
         }
+    }
+}
+
+impl HeapItem for Module {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>() + self.attrs.py_estimate_size()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        self.attrs.py_dec_ref_ids(stack);
     }
 }

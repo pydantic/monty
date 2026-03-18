@@ -141,15 +141,6 @@ impl PyTrait for Value {
         }
     }
 
-    /// Returns 0 for Value since immediate values are stack-allocated.
-    ///
-    /// Heap-allocated values (Ref variants) have their size tracked when
-    /// the HeapData is allocated, not here.
-    fn py_estimate_size(&self) -> usize {
-        // Value is stack-allocated; heap data is sized separately when allocated
-        0
-    }
-
     fn py_len(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         match self {
             // Count Unicode characters, not bytes, to match Python semantics
@@ -318,15 +309,6 @@ impl PyTrait for Value {
                 Ok(interns.get_bytes(*b1).partial_cmp(interns.get_bytes(*b2)))
             }
             _ => Ok(None),
-        }
-    }
-
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        if let Self::Ref(id) = self {
-            stack.push(*id);
-            // Mark as Dereferenced to prevent Drop panic
-            #[cfg(feature = "ref-count-panic")]
-            self.dec_ref_forget();
         }
     }
 
@@ -1926,6 +1908,19 @@ impl Value {
     pub fn dec_ref_forget(&mut self) {
         let old = std::mem::replace(self, Self::Dereferenced);
         std::mem::forget(old);
+    }
+
+    /// Pushes any contained `HeapId` onto the stack for reference counting.
+    ///
+    /// For `Value::Ref` variants, pushes the heap ID so the referenced object's
+    /// refcount can be decremented. When `ref-count-panic` is enabled, also marks
+    /// this value as `Dereferenced` to prevent Drop panics.
+    pub fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        if let Self::Ref(id) = self {
+            stack.push(*id);
+            #[cfg(feature = "ref-count-panic")]
+            self.dec_ref_forget();
+        }
     }
 
     /// Converts the value into a keyword string representation if possible.
