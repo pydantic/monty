@@ -246,88 +246,68 @@ impl std::ops::Deref for Bytes {
     }
 }
 
-impl PyTrait<'_> for Bytes {
+impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::Bytes
     }
 
-    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
-        Some(self.0.len())
+    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+        Some(self.get(vm.heap).0.len())
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
-        let heap = &mut *vm.heap;
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
-            && let HeapData::Slice(slice) = heap.get(*id)
+            && let HeapData::Slice(slice) = vm.heap.get(*id)
         {
+            // Clone the slice to release the borrow on heap before accessing self
+            let slice = slice.clone();
+            let b = self.get(vm.heap);
             let (start, stop, step) = slice
-                .indices(self.0.len())
+                .indices(b.0.len())
                 .map_err(|()| ExcType::value_error_slice_step_zero())?;
 
-            let sliced_bytes = get_bytes_slice(&self.0, start, stop, step);
-            let heap_id = heap.allocate(HeapData::Bytes(Self::new(sliced_bytes)))?;
+            let sliced_bytes = get_bytes_slice(&b.0, start, stop, step);
+            let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(sliced_bytes)))?;
             return Ok(Value::Ref(heap_id));
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
-        let index = key.as_index(heap, Type::Bytes)?;
+        let index = key.as_index(vm.heap, Type::Bytes)?;
 
         // Use helper for byte indexing
-        let byte = get_byte_at_index(&self.0, index).ok_or_else(ExcType::bytes_index_error)?;
+        let b = self.get(vm.heap);
+        let byte = get_byte_at_index(&b.0, index).ok_or_else(ExcType::bytes_index_error)?;
         Ok(Value::Int(i64::from(byte)))
     }
 
-    fn py_eq(&self, other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Ok(self.0 == other.0)
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        Ok(self.get(vm.heap).0 == other.get(vm.heap).0)
     }
 
     fn py_cmp(
         &self,
         other: &Self,
-        _vm: &mut VM<'_, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
     ) -> Result<Option<Ordering>, ResourceError> {
-        Ok(Some(self.0.cmp(&other.0)))
+        Ok(Some(self.get(vm.heap).0.cmp(&other.get(vm.heap).0)))
     }
 
-    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
-        !self.0.is_empty()
+    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        !self.get(vm.heap).0.is_empty()
     }
 
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        _vm: &VM<'_, '_, impl ResourceTracker>,
+        vm: &VM<'h, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> std::fmt::Result {
-        bytes_repr_fmt(&self.0, f)
+        bytes_repr_fmt(&self.get(vm.heap).0, f)
     }
 
     fn py_call_attr(
         &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
-        let Some(method) = attr.static_string() else {
-            args.drop_with_heap(vm);
-            return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(vm.interns)));
-        };
-
-        call_bytes_method_impl(self.as_slice(), method, args, vm).map(CallResult::Value)
-    }
-}
-
-impl<'h> HeapRead<'h, Bytes> {
-    /// Dispatches a method call on heap-allocated bytes via the `HeapRead` pattern.
-    ///
-    /// Clones the inner byte data to avoid holding a heap borrow across the method
-    /// call, which would conflict with the `&mut VM` needed by method implementations.
-    /// This is acceptable because Python bytes are immutable and bytes methods always
-    /// produce new values.
-    pub(crate) fn call_attr(
-        self,
         _self_id: HeapId,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
         attr: &EitherStr,
@@ -375,7 +355,7 @@ pub fn call_bytes_method(
 /// Calls a bytes method on a byte slice.
 ///
 /// This is the unified implementation for bytes method calls, used by both
-/// heap-allocated `Bytes` (via `py_call_attr`) and interned bytes literals
+/// `HeapRead<Bytes>::py_call_attr()` for heap-allocated bytes and interned bytes literals
 /// (`Value::InternBytes`).
 fn call_bytes_method_impl(
     bytes: &[u8],

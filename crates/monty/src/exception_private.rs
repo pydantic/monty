@@ -273,18 +273,6 @@ impl ExcType {
         SimpleException::new_msg(Self::TypeError, format!("'{type_}' object can't be awaited")).into()
     }
 
-    /// Creates a TypeError for item assignment on types that don't support it.
-    ///
-    /// Matches CPython's format: `TypeError: '{type}' object does not support item assignment`
-    #[must_use]
-    pub(crate) fn type_error_not_sub_assignment(type_: Type) -> RunError {
-        SimpleException::new_msg(
-            Self::TypeError,
-            format!("'{type_}' object does not support item assignment"),
-        )
-        .into()
-    }
-
     /// Creates a TypeError for unhashable types when calling `hash()`.
     ///
     /// This matches Python 3.14's error message: `TypeError: unhashable type: 'list'`

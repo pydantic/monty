@@ -79,8 +79,24 @@ impl<'h> HeapRead<'h, Module> {
     ///
     /// Uses `get_by_str` (which only needs `&Heap`) for the attribute lookup, then
     /// clones the found value via a short-lived borrow before calling the function.
+    /// Alias for `call_attr` to match the `PyTrait` naming convention used by
+    /// `heap_read_call_attr` in `heap_data.rs`.
+    pub(crate) fn py_call_attr(
+        &mut self,
+        self_id: HeapId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        attr: &EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        self.call_attr(self_id, vm, attr, args)
+    }
+
+    /// Dispatches a method call on a heap-allocated module via the `HeapRead` pattern.
+    ///
+    /// Uses `get_by_str` (which only needs `&Heap`) for the attribute lookup, then
+    /// clones the found value via a short-lived borrow before calling the function.
     pub(crate) fn call_attr(
-        self,
+        &self,
         _self_id: HeapId,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
         attr: &EitherStr,

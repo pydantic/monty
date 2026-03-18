@@ -260,7 +260,7 @@ impl PyTrait<'_> for Value {
                         }
                     }
                     // Container types: use HeapRead-specific comparison methods
-                    (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.eq(&b, vm),
+                    (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_eq(&b, vm),
                     (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.eq(&b, vm),
                     // Container types with HeapRead eq methods
                     (HeapReadOutput::Dict(a), HeapReadOutput::Dict(b)) => a.eq(&b, vm),
@@ -433,7 +433,7 @@ impl PyTrait<'_> for Value {
         }
     }
 
-    fn py_bool(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> bool {
         match self {
             Self::Undefined => false,
             Self::Ellipsis => true,
@@ -450,7 +450,7 @@ impl PyTrait<'_> for Value {
             Self::ExternalFuture(_) => true,                    // ExternalFutures are always truthy
             Self::InternString(string_id) => !vm.interns.get_str(*string_id).is_empty(),
             Self::InternBytes(bytes_id) => !vm.interns.get_bytes(*bytes_id).is_empty(),
-            Self::Ref(id) => vm.heap.get(*id).py_bool(vm),
+            Self::Ref(id) => vm.heap.read(*id).py_bool(vm),
             #[cfg(feature = "ref-count-panic")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
@@ -459,7 +459,7 @@ impl PyTrait<'_> for Value {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'_, '_, impl ResourceTracker>,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> std::fmt::Result {
         let interns = vm.interns;
@@ -502,7 +502,7 @@ impl PyTrait<'_> for Value {
                     }
                 } else {
                     heap_ids.insert(*id);
-                    let result = vm.heap.get(*id).py_repr_fmt(f, vm, heap_ids);
+                    let result = vm.heap.read(*id).py_repr_fmt(f, vm, heap_ids);
                     heap_ids.remove(id);
                     result
                 }
@@ -566,7 +566,7 @@ impl PyTrait<'_> for Value {
                         result.extend_from_slice(b_bytes);
                         Ok(Some(Self::Ref(vm.heap.allocate(HeapData::Bytes(result.into()))?)))
                     }
-                    (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.add(b, vm),
+                    (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_add(b, vm),
                     (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.add(b, vm),
                     (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
                         let bi = a.get(vm.heap).inner() + b.get(vm.heap).inner();
@@ -851,7 +851,7 @@ impl PyTrait<'_> for Value {
             (Self::Ref(id), Self::Ref(_)) => {
                 let output = vm.heap.read(*id);
                 match output {
-                    HeapReadOutput::List(mut list) => list.iadd(other, vm, Some(*id)),
+                    HeapReadOutput::List(mut list) => list.py_iadd(other, vm, Some(*id)),
                     _ => Ok(false),
                 }
             }
@@ -1472,7 +1472,7 @@ impl PyTrait<'_> for Value {
                             .ok_or_else(ExcType::bytes_index_error)?;
                         Ok(Self::Int(i64::from(byte)))
                     }
-                    HeapReadOutput::List(list) => list.getitem(key, vm),
+                    HeapReadOutput::List(list) => list.py_getitem(key, vm),
                     HeapReadOutput::Tuple(tuple) => {
                         // Check for slice first
                         if let Self::Ref(key_id) = key
@@ -1654,7 +1654,7 @@ impl PyTrait<'_> for Value {
             Self::Ref(id) => {
                 let output = vm.heap.read(*id);
                 match output {
-                    HeapReadOutput::List(mut list) => list.setitem(key, value, vm),
+                    HeapReadOutput::List(mut list) => list.py_setitem(key, value, vm),
                     HeapReadOutput::Dict(mut dict) => dict.setitem(key, value, vm),
                     _ => {
                         key.drop_with_heap(vm);

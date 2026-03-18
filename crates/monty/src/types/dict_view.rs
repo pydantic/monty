@@ -142,31 +142,12 @@ impl DictKeysView {
     }
 }
 
-impl DictView for DictKeysView {
-    fn dict_id(&self) -> HeapId {
-        self.dict_id
-    }
-}
-
-impl PyTrait<'_> for DictKeysView {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
-        Type::DictKeys
-    }
-
-    fn py_len(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
-        Some(self.dict(vm.heap).len())
-    }
-
-    fn py_eq(
-        &self,
-        other: &Self,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-    ) -> Result<bool, crate::resource::ResourceError> {
-        self.eq_view(*other, vm)
-    }
-
-    fn py_repr_fmt(
-        &self,
+impl DictKeysView {
+    /// Writes the repr format for a bare `DictKeysView` (not behind `HeapRead`).
+    ///
+    /// Delegates to the same helpers used by the `PyTrait` impl on `HeapRead<DictKeysView>`.
+    pub(crate) fn py_repr_fmt(
+        self,
         f: &mut impl Write,
         vm: &VM<'_, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
@@ -175,32 +156,48 @@ impl PyTrait<'_> for DictKeysView {
         write_dict_keys_contents(f, self.dict(vm.heap), vm, heap_ids)?;
         f.write_str("])")
     }
+}
 
-    fn py_call_attr(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-        attr: &crate::value::EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
-        match attr.static_string() {
-            Some(StaticStrings::Isdisjoint) => {
-                let other = args.get_one_arg("dict_keys.isdisjoint", vm.heap)?;
-                defer_drop!(other, vm);
-                Ok(CallResult::Value(Value::Bool(self.isdisjoint_from_value(other, vm)?)))
-            }
-            _ => Err(ExcType::attribute_error(Type::DictKeys, attr.as_str(vm.interns))),
-        }
+impl DictView for DictKeysView {
+    fn dict_id(&self) -> HeapId {
+        self.dict_id
     }
 }
 
-impl<'h> HeapRead<'h, DictKeysView> {
-    /// Dispatches a method call on a dict_keys view via the `HeapRead` pattern.
-    ///
-    /// `DictKeysView` is a `Copy` type (just a `HeapId`), so we copy it out of the
-    /// heap read and delegate to the existing method.
-    pub(crate) fn call_attr(
-        self,
+impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
+    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+        Type::DictKeys
+    }
+
+    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+        let view = *self.get(vm.heap);
+        Some(view.dict(vm.heap).len())
+    }
+
+    fn py_eq(
+        &self,
+        other: &Self,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<bool, crate::resource::ResourceError> {
+        let view = *self.get(vm.heap);
+        let other_view = *other.get(vm.heap);
+        view.eq_view(other_view, vm)
+    }
+
+    fn py_repr_fmt(
+        &self,
+        f: &mut impl Write,
+        vm: &VM<'h, '_, impl ResourceTracker>,
+        heap_ids: &mut AHashSet<HeapId>,
+    ) -> std::fmt::Result {
+        let view = *self.get(vm.heap);
+        f.write_str("dict_keys([")?;
+        write_dict_keys_contents(f, view.dict(vm.heap), vm, heap_ids)?;
+        f.write_str("])")
+    }
+
+    fn py_call_attr(
+        &mut self,
         _self_id: HeapId,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
         attr: &crate::value::EitherStr,
@@ -333,31 +330,12 @@ impl DictItemsView {
     }
 }
 
-impl DictView for DictItemsView {
-    fn dict_id(&self) -> HeapId {
-        self.dict_id
-    }
-}
-
-impl PyTrait<'_> for DictItemsView {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
-        Type::DictItems
-    }
-
-    fn py_len(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
-        Some(self.dict(vm.heap).len())
-    }
-
-    fn py_eq(
-        &self,
-        other: &Self,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-    ) -> Result<bool, crate::resource::ResourceError> {
-        self.eq_view(*other, vm)
-    }
-
-    fn py_repr_fmt(
-        &self,
+impl DictItemsView {
+    /// Writes the repr format for a bare `DictItemsView` (not behind `HeapRead`).
+    ///
+    /// Delegates to the same helpers used by the `PyTrait` impl on `HeapRead<DictItemsView>`.
+    pub(crate) fn py_repr_fmt(
+        self,
         f: &mut impl Write,
         vm: &VM<'_, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
@@ -366,32 +344,48 @@ impl PyTrait<'_> for DictItemsView {
         write_dict_items_contents(f, self.dict(vm.heap), vm, heap_ids)?;
         f.write_str("])")
     }
+}
 
-    fn py_call_attr(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-        attr: &crate::value::EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
-        match attr.static_string() {
-            Some(StaticStrings::Isdisjoint) => {
-                let other = args.get_one_arg("dict_items.isdisjoint", vm.heap)?;
-                defer_drop!(other, vm);
-                Ok(CallResult::Value(Value::Bool(self.isdisjoint_from_value(other, vm)?)))
-            }
-            _ => Err(ExcType::attribute_error(Type::DictItems, attr.as_str(vm.interns))),
-        }
+impl DictView for DictItemsView {
+    fn dict_id(&self) -> HeapId {
+        self.dict_id
     }
 }
 
-impl<'h> HeapRead<'h, DictItemsView> {
-    /// Dispatches a method call on a dict_items view via the `HeapRead` pattern.
-    ///
-    /// `DictItemsView` is a `Copy` type (just a `HeapId`), so we copy it out of the
-    /// heap read and delegate to the existing method.
-    pub(crate) fn call_attr(
-        self,
+impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
+    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+        Type::DictItems
+    }
+
+    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+        let view = *self.get(vm.heap);
+        Some(view.dict(vm.heap).len())
+    }
+
+    fn py_eq(
+        &self,
+        other: &Self,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<bool, crate::resource::ResourceError> {
+        let view = *self.get(vm.heap);
+        let other_view = *other.get(vm.heap);
+        view.eq_view(other_view, vm)
+    }
+
+    fn py_repr_fmt(
+        &self,
+        f: &mut impl Write,
+        vm: &VM<'h, '_, impl ResourceTracker>,
+        heap_ids: &mut AHashSet<HeapId>,
+    ) -> std::fmt::Result {
+        let view = *self.get(vm.heap);
+        f.write_str("dict_items([")?;
+        write_dict_items_contents(f, view.dict(vm.heap), vm, heap_ids)?;
+        f.write_str("])")
+    }
+
+    fn py_call_attr(
+        &mut self,
         _self_id: HeapId,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
         attr: &crate::value::EitherStr,
@@ -443,30 +437,11 @@ impl DictValuesView {
     }
 }
 
-impl DictView for DictValuesView {
-    fn dict_id(&self) -> HeapId {
-        self.dict_id
-    }
-}
-
-impl PyTrait<'_> for DictValuesView {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
-        Type::DictValues
-    }
-
-    fn py_len(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
-        Some(self.dict(vm.heap).len())
-    }
-
-    fn py_eq(
-        &self,
-        _other: &Self,
-        _vm: &mut VM<'_, '_, impl ResourceTracker>,
-    ) -> Result<bool, crate::resource::ResourceError> {
-        Ok(false)
-    }
-
-    fn py_repr_fmt(
+impl DictValuesView {
+    /// Writes the repr format for a bare `DictValuesView` (not behind `HeapRead`).
+    ///
+    /// Delegates to the same helpers used by the `PyTrait` impl on `HeapRead<DictValuesView>`.
+    pub(crate) fn py_repr_fmt(
         &self,
         f: &mut impl Write,
         vm: &VM<'_, '_, impl ResourceTracker>,
@@ -478,14 +453,44 @@ impl PyTrait<'_> for DictValuesView {
     }
 }
 
-impl<'h> HeapRead<'h, DictValuesView> {
-    /// dict_values has no callable methods — always returns `AttributeError`.
-    #[expect(
-        clippy::unused_self,
-        reason = "call_attr must consume the HeapRead to release the borrow"
-    )]
-    pub(crate) fn call_attr(
-        self,
+impl DictView for DictValuesView {
+    fn dict_id(&self) -> HeapId {
+        self.dict_id
+    }
+}
+
+impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
+    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+        Type::DictValues
+    }
+
+    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+        let view = *self.get(vm.heap);
+        Some(view.dict(vm.heap).len())
+    }
+
+    fn py_eq(
+        &self,
+        _other: &Self,
+        _vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> Result<bool, crate::resource::ResourceError> {
+        Ok(false)
+    }
+
+    fn py_repr_fmt(
+        &self,
+        f: &mut impl Write,
+        vm: &VM<'h, '_, impl ResourceTracker>,
+        heap_ids: &mut AHashSet<HeapId>,
+    ) -> std::fmt::Result {
+        let view = *self.get(vm.heap);
+        f.write_str("dict_values([")?;
+        write_dict_values_contents(f, view.dict(vm.heap), vm, heap_ids)?;
+        f.write_str("])")
+    }
+
+    fn py_call_attr(
+        &mut self,
         _self_id: HeapId,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
         attr: &crate::value::EitherStr,

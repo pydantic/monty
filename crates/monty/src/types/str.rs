@@ -56,20 +56,6 @@ impl Str {
             }
         }
     }
-
-    /// Handles slice-based indexing for strings.
-    ///
-    /// Returns a new string containing the selected characters (Unicode-aware).
-    fn getitem_slice(&self, slice: &crate::types::Slice, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let char_count = self.0.chars().count();
-        let (start, stop, step) = slice
-            .indices(char_count)
-            .map_err(|()| ExcType::value_error_slice_step_zero())?;
-
-        let result_str = get_str_slice(&self.0, start, stop, step);
-        let heap_id = heap.allocate(HeapData::Str(Self::from(result_str)))?;
-        Ok(Value::Ref(heap_id))
-    }
 }
 
 impl From<String> for Str {
@@ -202,100 +188,86 @@ impl std::ops::Deref for Str {
     }
 }
 
-impl PyTrait<'_> for Str {
+impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::Str
     }
 
-    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
         // Count Unicode characters, not bytes, to match Python semantics
-        Some(self.0.chars().count())
+        Some(self.get(vm.heap).0.chars().count())
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
-        let heap = &mut *vm.heap;
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
-            && let HeapData::Slice(slice) = heap.get(*id)
+            && let HeapData::Slice(slice) = vm.heap.get(*id)
         {
             // Clone the slice to release the borrow on heap before calling getitem_slice
             let slice = slice.clone();
-            return self.getitem_slice(&slice, heap);
+            let s = self.get(vm.heap);
+            let char_count = s.0.chars().count();
+            let (start, stop, step) = slice
+                .indices(char_count)
+                .map_err(|()| ExcType::value_error_slice_step_zero())?;
+
+            let result_str = get_str_slice(&s.0, start, stop, step);
+            let heap_id = vm.heap.allocate(HeapData::Str(Str::from(result_str)))?;
+            return Ok(Value::Ref(heap_id));
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
-        let index = key.as_index(heap, Type::Str)?;
+        let index = key.as_index(vm.heap, Type::Str)?;
 
         // Use single-pass indexing to avoid Vec<char> allocation
-        let c = get_char_at_index(&self.0, index).ok_or_else(ExcType::str_index_error)?;
-        Ok(allocate_char(c, heap)?)
+        let s = self.get(vm.heap);
+        let c = get_char_at_index(&s.0, index).ok_or_else(ExcType::str_index_error)?;
+        Ok(allocate_char(c, vm.heap)?)
     }
 
-    fn py_eq(&self, other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Ok(self.0 == other.0)
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        Ok(self.get(vm.heap).0 == other.get(vm.heap).0)
     }
 
-    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
-        !self.0.is_empty()
+    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        !self.get(vm.heap).0.is_empty()
     }
 
     fn py_cmp(
         &self,
         other: &Self,
-        _vm: &mut VM<'_, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
     ) -> Result<Option<Ordering>, ResourceError> {
-        Ok(Some(self.0.cmp(&other.0)))
+        Ok(Some(self.get(vm.heap).0.cmp(&other.get(vm.heap).0)))
     }
 
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        _vm: &VM<'_, '_, impl ResourceTracker>,
+        vm: &VM<'h, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> fmt::Result {
-        string_repr_fmt(&self.0, f)
+        string_repr_fmt(&self.get(vm.heap).0, f)
     }
 
-    fn py_str(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Cow<'static, str> {
-        self.0.clone().into_string().into()
+    fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Cow<'static, str> {
+        self.get(vm.heap).0.clone().into_string().into()
     }
 
     fn py_add(
         &self,
         other: &Self,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
     ) -> Result<Option<Value>, crate::resource::ResourceError> {
-        let result = format!("{}{}", self.0, other.0);
+        let self_str = self.get(vm.heap).0.clone();
+        let other_str = other.get(vm.heap).0.clone();
+        let result = format!("{self_str}{other_str}");
         let id = vm.heap.allocate(HeapData::Str(result.into()))?;
         Ok(Some(Value::Ref(id)))
     }
 
     fn py_call_attr(
         &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
-        let args_guard = HeapGuard::new(args, vm.heap);
-        let Some(method) = attr.static_string() else {
-            return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
-        };
-
-        let args = args_guard.into_inner();
-        call_str_method_impl(&self.0, method, args, vm).map(CallResult::Value)
-    }
-}
-
-impl<'h> HeapRead<'h, Str> {
-    /// Dispatches a method call on a heap-allocated string via the `HeapRead` pattern.
-    ///
-    /// Clones the inner string data to avoid holding a heap borrow across the method
-    /// call, which would conflict with the `&mut VM` needed by method implementations.
-    /// This is acceptable because Python strings are immutable and string methods always
-    /// produce new values.
-    pub(crate) fn call_attr(
-        self,
         _self_id: HeapId,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
         attr: &EitherStr,
@@ -344,7 +316,7 @@ pub fn call_str_method(
 /// Dispatches a method call on a string value.
 ///
 /// This is the unified implementation for string method calls, used by both:
-/// - `Str::py_call_attr()` for heap-allocated strings
+/// - `HeapRead<Str>::py_call_attr()` for heap-allocated strings
 /// - `call_str_method()` for interned string literals from the VM
 ///
 /// # Not Yet Implemented

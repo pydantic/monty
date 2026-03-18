@@ -269,7 +269,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         match obj {
             Value::Ref(heap_id) => {
                 defer_drop!(obj, this);
-                this.heap.read(heap_id).call_attr(this, heap_id, &attr, args)
+                this.heap.read(heap_id).py_call_attr(heap_id, this, &attr, args)
             }
             Value::InternString(string_id) => {
                 // Call string method on interned string literal using the unified dispatcher

@@ -454,26 +454,20 @@ impl Path {
     }
 }
 
-impl PyTrait<'_> for Path {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
-        Type::Path
-    }
-
-    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
-        // Paths don't have a length in Python
-        None
-    }
-
-    fn py_eq(&self, other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Ok(self.path == other.path)
-    }
-
-    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
-        // Paths are always truthy (even empty paths)
+impl Path {
+    /// Returns whether this path is truthy (always true in Python).
+    ///
+    /// Kept as an inherent method so `HeapData` can call it without going
+    /// through a `HeapRead` handle.
+    pub fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         true
     }
 
-    fn py_repr_fmt(
+    /// Formats this path for `repr()` output.
+    ///
+    /// Kept as an inherent method so `HeapData` can call it without going
+    /// through a `HeapRead` handle.
+    pub fn py_repr_fmt(
         &self,
         f: &mut impl Write,
         _vm: &VM<'_, '_, impl ResourceTracker>,
@@ -481,6 +475,34 @@ impl PyTrait<'_> for Path {
     ) -> std::fmt::Result {
         // Format like: PosixPath('/usr/bin')
         write!(f, "PosixPath('{}')", self.path)
+    }
+}
+
+impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
+    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+        Type::Path
+    }
+
+    fn py_len(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+        // Paths don't have a length in Python
+        None
+    }
+
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        Ok(self.get(vm.heap).path == other.get(vm.heap).path)
+    }
+
+    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        self.get(vm.heap).py_bool(vm)
+    }
+
+    fn py_repr_fmt(
+        &self,
+        f: &mut impl Write,
+        vm: &VM<'h, '_, impl ResourceTracker>,
+        heap_ids: &mut AHashSet<HeapId>,
+    ) -> std::fmt::Result {
+        self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
     }
 
     /// Handles attribute calls on Path objects, including both pure methods (no I/O)
@@ -491,89 +513,6 @@ impl PyTrait<'_> for Path {
     /// Pure methods (is_absolute, joinpath, etc.) are handled directly.
     fn py_call_attr(
         &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
-        let heap = &mut *vm.heap;
-        let interns = vm.interns;
-        let Some(method) = attr.static_string() else {
-            args.drop_with_heap(heap);
-            return Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)));
-        };
-
-        // Check if this is an OS method that requires host system access
-        if let Ok(os_fn) = OsFunction::try_from(method) {
-            // Package path as first argument for OS call (as Path, not string)
-            let path_arg = Value::Ref(heap.allocate(HeapData::Path(self.clone()))?);
-            let os_args = prepend_path_arg(path_arg, args);
-            return Ok(CallResult::OsCall(os_fn, os_args));
-        }
-
-        // Pure methods (no I/O)
-        let value = match method {
-            StaticStrings::IsAbsolute => {
-                args.check_zero_args("is_absolute", heap)?;
-                Ok(Value::Bool(self.is_absolute()))
-            }
-            StaticStrings::Joinpath => {
-                let pos_args = args.into_pos_only("joinpath", heap)?;
-                defer_drop!(pos_args, heap);
-                let path = fold_joinpath(self.clone(), pos_args.as_slice(), heap, interns)?;
-                Ok(Value::Ref(heap.allocate(HeapData::Path(path))?))
-            }
-            StaticStrings::WithName => {
-                let name_val = args.get_one_arg("with_name", heap)?;
-                defer_drop!(name_val, heap);
-                let name = extract_path_string(name_val, heap, interns)?;
-                let result = self
-                    .with_name(name)
-                    .map_err(|e| crate::exception_private::SimpleException::new_msg(ExcType::ValueError, &e))?;
-                Ok(Value::Ref(heap.allocate(HeapData::Path(Self::new(result)))?))
-            }
-            StaticStrings::WithStem => {
-                let stem_val = args.get_one_arg("with_stem", heap)?;
-                defer_drop!(stem_val, heap);
-                let stem = extract_path_string(stem_val, heap, interns)?;
-                let result = self
-                    .with_stem(stem)
-                    .map_err(|e| crate::exception_private::SimpleException::new_msg(ExcType::ValueError, &e))?;
-                Ok(Value::Ref(heap.allocate(HeapData::Path(Self::new(result)))?))
-            }
-            StaticStrings::WithSuffix => {
-                let suffix_val = args.get_one_arg("with_suffix", heap)?;
-                defer_drop!(suffix_val, heap);
-                let suffix = extract_path_string(suffix_val, heap, interns)?;
-                let result = self
-                    .with_suffix(suffix)
-                    .map_err(|e| crate::exception_private::SimpleException::new_msg(ExcType::ValueError, &e))?;
-                Ok(Value::Ref(heap.allocate(HeapData::Path(Self::new(result)))?))
-            }
-            StaticStrings::AsPosix | StaticStrings::Fspath => {
-                args.check_zero_args(method.into(), heap)?;
-                // Both as_posix() and __fspath__() return the string representation
-                Ok(Value::Ref(
-                    heap.allocate(HeapData::Str(Str::new(self.as_posix().to_owned())))?,
-                ))
-            }
-            _ => {
-                args.drop_with_heap(heap);
-                return Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)));
-            }
-        };
-        value.map(CallResult::Value)
-    }
-}
-
-impl<'h> HeapRead<'h, Path> {
-    /// Dispatches a method call on a heap-allocated Path via the `HeapRead` pattern.
-    ///
-    /// Clones the path data (just a `String`) to avoid holding a heap borrow across
-    /// method calls that need `&mut Heap` for allocations. This is acceptable because
-    /// paths are typically short strings.
-    pub(crate) fn call_attr(
-        self,
         _self_id: HeapId,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
         attr: &EitherStr,

@@ -87,7 +87,7 @@ pub trait PyTrait<'h> {
     /// Returns the truthiness of the value following Python semantics.
     ///
     /// Container types should typically report `false` when empty.
-    fn py_bool(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
         self.py_len(vm) != Some(0)
     }
 

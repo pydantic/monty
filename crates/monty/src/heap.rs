@@ -4,6 +4,7 @@ use std::{
     hash::{Hash, Hasher},
     marker::PhantomData,
     mem::{ManuallyDrop, MaybeUninit, discriminant, size_of},
+    ops::{Deref, DerefMut},
     ptr::NonNull,
     vec,
 };
@@ -353,28 +354,54 @@ impl<'a, T: ?Sized> HeapRead<'a, T> {
     ///
     /// # Safety
     ///   - The field of type `U` must ALWAYS exist at `offset` within `T` (i.e. `T` cannot be an enum, union etc)
-    unsafe fn cast_as_member<U>(self, offset: usize) -> HeapRead<'a, U> {
-        let this = ManuallyDrop::new(self);
-        HeapRead {
+    unsafe fn cast_as_member_ref<U>(&self, offset: usize) -> HeapReadMember<'_, 'a, U> {
+        HeapReadMember {
             // SAFETY: (DH) - caller of this function guarantees the offset & cast is valid
-            value: unsafe { this.value.byte_add(offset) }.cast(),
-            readers: this.readers,
-            borrow: PhantomData,
+            inner: ManuallyDrop::new(HeapRead {
+                // SAFETY: caller guarantees offset points to a valid field of type U within T
+                value: unsafe { self.value.byte_add(offset) }.cast(),
+                // dangling is fine because this heapread will never be dropped, and it is
+                // also not `Clone` so there's no risk of this value ever being used
+                readers: NonNull::dangling(),
+                borrow: PhantomData,
+            }),
+            original: PhantomData,
         }
     }
 }
 
-/// Unsafe helper for `heap_read_as_field`, do not use. Same safety invariants as `HeapRead::cast_as_member`.
-pub(crate) unsafe fn cast_as_member_type_hinted<'a, T, U>(
-    heap_read: HeapRead<'a, T>,
-    offset: usize,
-    _type_hint: impl for<'s> Fn(&'s HeapRead<'a, T>) -> *const U,
-) -> HeapRead<'a, U> {
-    // SAFETY: (DH) - caller upholds `cast_as_member` contract
-    unsafe { heap_read.cast_as_member(offset) }
+/// Represents the reborrow of a `HeapRead` as a reference to a field of the original type.
+pub struct HeapReadMember<'original, 'a, U> {
+    // inner is a projected HeapRead which will never be dropped
+    inner: ManuallyDrop<HeapRead<'a, U>>,
+    original: PhantomData<&'original U>,
 }
 
-macro_rules! heap_read_as_field {
+impl<'a, U> Deref for HeapReadMember<'_, 'a, U> {
+    type Target = HeapRead<'a, U>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<U> DerefMut for HeapReadMember<'_, '_, U> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+/// Unsafe helper for `heap_read_as_field`, do not use. Same safety invariants as `HeapRead::cast_as_member`.
+pub(crate) unsafe fn cast_as_member_ref_type_hinted<'r, 'a, T, U>(
+    heap_read: &'r HeapRead<'a, T>,
+    offset: usize,
+    _type_hint: impl for<'s> Fn(&'s HeapRead<'a, T>) -> *const U,
+) -> HeapReadMember<'r, 'a, U> {
+    // SAFETY: (DH) - caller upholds `cast_as_member` contract
+    unsafe { heap_read.cast_as_member_ref(offset) }
+}
+
+macro_rules! heap_read_ref_as_field {
     ($heap_read:ident, $ty:ty, $field:ident) => {{
         let offset = std::mem::offset_of!($ty, $field);
         #[expect(unreachable_code)]
@@ -384,11 +411,11 @@ macro_rules! heap_read_as_field {
         // SAFETY: (DH)
         //  - `std::mem::offset_of!` guarantees there is a field at fixed offset
         //  - `type_hint` guarantees that the field is of type `U` for the safety contract
-        unsafe { $crate::heap::cast_as_member_type_hinted($heap_read, offset, type_hint) }
+        unsafe { $crate::heap::cast_as_member_ref_type_hinted($heap_read, offset, type_hint) }
     }};
 }
 
-pub(crate) use heap_read_as_field;
+pub(crate) use heap_read_ref_as_field;
 
 /// A single entry inside the heap arena, storing refcount, payload, and hash metadata.
 ///
@@ -1037,24 +1064,6 @@ impl<T: ResourceTracker> Heap<T> {
     pub fn entry_count(&self) -> usize {
         // Skip index 0 which is the empty tuple singleton
         self.entries.iter().skip(1).filter(|o| o.is_some()).count()
-    }
-
-    /// Helper for List in-place add: extends the destination vec with items from a heap list.
-    ///
-    /// This method exists to work around borrow checker limitations when List::py_iadd
-    /// needs to read from one heap entry while extending another. By keeping both
-    /// the read and the refcount increments within Heap's impl block, we can use the
-    /// take/restore pattern to avoid the lifetime propagation issues.
-    ///
-    /// Returns `true` if successful, `false` if the source ID is not a List.
-    pub fn iadd_extend_list(&mut self, source_id: HeapId, dest: &mut Vec<Value>) -> bool {
-        if let HeapData::List(list) = self.get(source_id) {
-            let items: Vec<Value> = list.as_slice().iter().map(|v| v.clone_with_heap(self)).collect();
-            dest.extend(items);
-            true
-        } else {
-            false
-        }
     }
 
     /// Multiplies a heap-allocated value by an `i64`.

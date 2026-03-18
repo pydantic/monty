@@ -1170,19 +1170,21 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                 }
                 Opcode::JumpIfTrueOrPop => {
                     let offset = fetch_i16!(cached_frame);
-                    if self.peek().py_bool(self) {
+                    let value = self.pop();
+                    if value.py_bool(self) {
+                        self.push(value);
                         jump_relative!(cached_frame.ip, offset);
                     } else {
-                        let value = self.pop();
                         value.drop_with_heap(self);
                     }
                 }
                 Opcode::JumpIfFalseOrPop => {
                     let offset = fetch_i16!(cached_frame);
-                    if self.peek().py_bool(self) {
-                        let value = self.pop();
+                    let value = self.pop();
+                    if value.py_bool(self) {
                         value.drop_with_heap(self);
                     } else {
+                        self.push(value);
                         jump_relative!(cached_frame.ip, offset);
                     }
                 }

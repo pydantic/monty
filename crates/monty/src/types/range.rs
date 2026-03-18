@@ -12,7 +12,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId, HeapItem},
+    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     resource::{ResourceError, ResourceTracker},
     types::{PyTrait, Type},
     value::Value,
@@ -203,66 +203,20 @@ impl Default for Range {
     }
 }
 
-impl PyTrait<'_> for Range {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
-        Type::Range
-    }
-
-    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
-        Some(self.len())
-    }
-
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
-        // Check for slice first (Value::Ref pointing to HeapData::Slice)
-        if let Value::Ref(id) = key
-            && let HeapData::Slice(slice) = vm.heap.get(*id)
-        {
-            // Clone the slice to release the borrow on heap before calling getitem_slice
-            let slice = slice.clone();
-            return self.getitem_slice(&slice, vm.heap);
-        }
-
-        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
-        let index = key.as_index(vm.heap, Type::Range)?;
-
-        // Get range length for normalization
-        let len = i64::try_from(self.len()).expect("range length exceeds i64::MAX");
-        let normalized = if index < 0 { index + len } else { index };
-
-        // Bounds check
-        if normalized < 0 || normalized >= len {
-            return Err(ExcType::range_index_error());
-        }
-
-        // Calculate: start + normalized * step
-        // Use checked arithmetic to avoid overflow in intermediate calculations
-        let offset = normalized
-            .checked_mul(self.step)
-            .and_then(|v| self.start.checked_add(v))
-            .expect("range element calculation overflowed");
-        Ok(Value::Int(offset))
-    }
-
-    fn py_eq(&self, other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        // Compare ranges by their actual sequences, not parameters.
-        // Two ranges are equal if they produce the same elements.
-        let len1 = self.len();
-        let len2 = other.len();
-        if len1 != len2 {
-            return Ok(false);
-        }
-        // Same length - compare first element and step (if non-empty)
-        if len1 == 0 {
-            return Ok(true); // Both empty
-        }
-        Ok(self.start == other.start && self.step == other.step)
-    }
-
-    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
+impl Range {
+    /// Returns whether this range is truthy (non-empty).
+    ///
+    /// Kept as an inherent method so `HeapData` can call it without going
+    /// through a `HeapRead` handle.
+    pub fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         !self.is_empty()
     }
 
-    fn py_repr_fmt(
+    /// Formats this range for `repr()` output.
+    ///
+    /// Kept as an inherent method so `HeapData` can call it without going
+    /// through a `HeapRead` handle.
+    pub fn py_repr_fmt(
         &self,
         f: &mut impl Write,
         _vm: &VM<'_, '_, impl ResourceTracker>,
@@ -273,6 +227,80 @@ impl PyTrait<'_> for Range {
         } else {
             write!(f, "range({}, {}, {})", self.start, self.stop, self.step)
         }
+    }
+}
+
+impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
+    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+        Type::Range
+    }
+
+    fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+        Some(self.get(vm.heap).len())
+    }
+
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+        // Check for slice first (Value::Ref pointing to HeapData::Slice)
+        if let Value::Ref(id) = key
+            && let HeapData::Slice(slice) = vm.heap.get(*id)
+        {
+            // Clone the slice to release the borrow on heap before calling getitem_slice
+            let slice = slice.clone();
+            let range = *self.get(vm.heap);
+            return range.getitem_slice(&slice, vm.heap);
+        }
+
+        let range = *self.get(vm.heap);
+
+        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
+        let index = key.as_index(vm.heap, Type::Range)?;
+
+        // Get range length for normalization
+        let len = i64::try_from(range.len()).expect("range length exceeds i64::MAX");
+        let normalized = if index < 0 { index + len } else { index };
+
+        // Bounds check
+        if normalized < 0 || normalized >= len {
+            return Err(ExcType::range_index_error());
+        }
+
+        // Calculate: start + normalized * step
+        // Use checked arithmetic to avoid overflow in intermediate calculations
+        let offset = normalized
+            .checked_mul(range.step)
+            .and_then(|v| range.start.checked_add(v))
+            .expect("range element calculation overflowed");
+        Ok(Value::Int(offset))
+    }
+
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        let a = self.get(vm.heap);
+        let b = other.get(vm.heap);
+        // Compare ranges by their actual sequences, not parameters.
+        // Two ranges are equal if they produce the same elements.
+        let len1 = a.len();
+        let len2 = b.len();
+        if len1 != len2 {
+            return Ok(false);
+        }
+        // Same length - compare first element and step (if non-empty)
+        if len1 == 0 {
+            return Ok(true); // Both empty
+        }
+        Ok(a.start == b.start && a.step == b.step)
+    }
+
+    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        self.get(vm.heap).py_bool(vm)
+    }
+
+    fn py_repr_fmt(
+        &self,
+        f: &mut impl Write,
+        vm: &VM<'h, '_, impl ResourceTracker>,
+        heap_ids: &mut AHashSet<HeapId>,
+    ) -> std::fmt::Result {
+        self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
     }
 }
 

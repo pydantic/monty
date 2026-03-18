@@ -12,7 +12,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId, HeapItem},
+    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     resource::{ResourceError, ResourceTracker},
     types::{PyTrait, Type},
     value::Value,
@@ -177,26 +177,20 @@ fn normalize_index(index: i64, length: i64, lower: i64, upper: i64) -> i64 {
     normalized.clamp(lower, upper)
 }
 
-impl PyTrait<'_> for Slice {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
-        Type::Slice
-    }
-
-    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
-        // Slices don't have a length in Python
-        None
-    }
-
-    fn py_eq(&self, other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Ok(self.start == other.start && self.stop == other.stop && self.step == other.step)
-    }
-
-    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
-        // Slices are always truthy in Python
+impl Slice {
+    /// Returns whether this slice is truthy (always true in Python).
+    ///
+    /// Kept as an inherent method so `HeapData` can call it without going
+    /// through a `HeapRead` handle.
+    pub fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         true
     }
 
-    fn py_repr_fmt(
+    /// Formats this slice for `repr()` output.
+    ///
+    /// Kept as an inherent method so `HeapData` can call it without going
+    /// through a `HeapRead` handle.
+    pub fn py_repr_fmt(
         &self,
         f: &mut impl Write,
         _vm: &VM<'_, '_, impl ResourceTracker>,
@@ -209,6 +203,36 @@ impl PyTrait<'_> for Slice {
         f.write_str(", ")?;
         format_option_i64(f, self.step)?;
         f.write_char(')')
+    }
+}
+
+impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
+    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+        Type::Slice
+    }
+
+    fn py_len(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+        // Slices don't have a length in Python
+        None
+    }
+
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        let a = self.get(vm.heap);
+        let b = other.get(vm.heap);
+        Ok(a.start == b.start && a.stop == b.stop && a.step == b.step)
+    }
+
+    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        self.get(vm.heap).py_bool(vm)
+    }
+
+    fn py_repr_fmt(
+        &self,
+        f: &mut impl Write,
+        vm: &VM<'h, '_, impl ResourceTracker>,
+        heap_ids: &mut AHashSet<HeapId>,
+    ) -> std::fmt::Result {
+        self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
     }
 }
 

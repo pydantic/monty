@@ -278,25 +278,20 @@ impl RePattern {
     }
 }
 
-impl PyTrait<'_> for RePattern {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
-        Type::RePattern
-    }
-
-    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
-        None
-    }
-
-    fn py_eq(&self, other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Ok(self == other)
-    }
-
-    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
-        // Pattern objects are always truthy (matching CPython).
+impl RePattern {
+    /// Returns whether this pattern is truthy (always true, matching CPython).
+    ///
+    /// Kept as an inherent method so `HeapData` can call it without going
+    /// through a `HeapRead` handle.
+    pub fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         true
     }
 
-    fn py_repr_fmt(
+    /// Formats this pattern for `repr()` output.
+    ///
+    /// Kept as an inherent method so `HeapData` can call it without going
+    /// through a `HeapRead` handle.
+    pub fn py_repr_fmt(
         &self,
         f: &mut impl Write,
         _vm: &VM<'_, '_, impl ResourceTracker>,
@@ -322,68 +317,83 @@ impl PyTrait<'_> for RePattern {
         }
         write!(f, ")")
     }
+}
 
+impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
+    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+        Type::RePattern
+    }
+
+    fn py_len(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+        None
+    }
+
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        Ok(self.get(vm.heap) == other.get(vm.heap))
+    }
+
+    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        self.get(vm.heap).py_bool(vm)
+    }
+
+    fn py_repr_fmt(
+        &self,
+        f: &mut impl Write,
+        vm: &VM<'h, '_, impl ResourceTracker>,
+        heap_ids: &mut AHashSet<HeapId>,
+    ) -> std::fmt::Result {
+        self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
+    }
+
+    /// Handles attribute calls on RePattern objects (search, match, findall, sub, etc.).
+    ///
+    /// Clones the pattern data to release the heap borrow, then dispatches to the
+    /// appropriate method. The compiled `Regex` objects are cheaply cloneable
+    /// (internally reference-counted).
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
+        let re_pattern = self.get(vm.heap).clone();
         let result = match attr.static_string() {
             Some(StaticStrings::Search) => {
                 let arg = args.get_one_arg("Pattern.search", vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = value_to_str(arg, vm.heap, vm.interns)?.into_owned();
-                self.search(&text, vm.heap)
+                re_pattern.search(&text, vm.heap)
             }
             Some(StaticStrings::Match) => {
                 let arg = args.get_one_arg("Pattern.match", vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = value_to_str(arg, vm.heap, vm.interns)?.into_owned();
-                self.match_start(&text, vm.heap)
+                re_pattern.match_start(&text, vm.heap)
             }
             Some(StaticStrings::Fullmatch) => {
                 let arg = args.get_one_arg("Pattern.fullmatch", vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = value_to_str(arg, vm.heap, vm.interns)?.into_owned();
-                self.fullmatch(&text, vm.heap)
+                re_pattern.fullmatch(&text, vm.heap)
             }
             Some(StaticStrings::Findall) => {
                 let arg = args.get_one_arg("Pattern.findall", vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = value_to_str(arg, vm.heap, vm.interns)?.into_owned();
-                self.findall(&text, vm.heap)
+                re_pattern.findall(&text, vm.heap)
             }
-            Some(StaticStrings::Sub) => call_pattern_sub(self, args, vm.heap, vm.interns),
-            Some(StaticStrings::Split) => call_pattern_split(self, args, vm.heap, vm.interns),
+            Some(StaticStrings::Sub) => call_pattern_sub(&re_pattern, args, vm.heap, vm.interns),
+            Some(StaticStrings::Split) => call_pattern_split(&re_pattern, args, vm.heap, vm.interns),
             Some(StaticStrings::Finditer) => {
                 let arg = args.get_one_arg("Pattern.finditer", vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = value_to_str(arg, vm.heap, vm.interns)?.into_owned();
-                self.finditer(&text, vm.heap)
+                re_pattern.finditer(&text, vm.heap)
             }
             _ => return Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns))),
         }?;
         Ok(CallResult::Value(result))
-    }
-}
-
-impl<'h> HeapRead<'h, RePattern> {
-    /// Dispatches a method call on a heap-allocated `RePattern` via the `HeapRead` pattern.
-    ///
-    /// RePattern contains no heap references (owned strings and compiled regexes), so
-    /// cloning releases the heap borrow and allows methods to allocate freely. The
-    /// compiled `Regex` objects are cheaply cloneable (internally reference-counted).
-    pub(crate) fn call_attr(
-        self,
-        self_id: HeapId,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
-        let mut re_pattern = self.get(vm.heap).clone();
-        re_pattern.py_call_attr(self_id, vm, attr, args)
     }
 }
 

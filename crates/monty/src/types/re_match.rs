@@ -191,29 +191,6 @@ impl ReMatch {
         Err(ExcType::re_match_group_index_error())
     }
 
-    /// Implements `m[key]` subscript access on match objects.
-    ///
-    /// Supports integer indexing (like `m[0]`, `m[1]`), bool indexing,
-    /// and string indexing for named groups (like `m['name']`).
-    pub fn py_getitem(&self, key: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
-        match key {
-            Value::Int(n) => self.get_group(*n, vm.heap),
-            Value::Bool(b) => self.get_group(i64::from(*b), vm.heap),
-            Value::InternString(id) => {
-                let name = vm.interns.get_str(*id);
-                self.get_group_by_name(name, vm.heap)
-            }
-            Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-                HeapData::Str(s) => {
-                    let name = s.as_str().to_owned();
-                    self.get_group_by_name(&name, vm.heap)
-                }
-                _ => Err(ExcType::re_match_group_index_error()),
-            },
-            _ => Err(ExcType::re_match_group_index_error()),
-        }
-    }
-
     /// Returns a dict mapping named group names to their matched strings.
     ///
     /// Groups that didn't participate in the match have the `default` value
@@ -326,26 +303,20 @@ impl ReMatch {
     }
 }
 
-impl PyTrait<'_> for ReMatch {
-    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
-        Type::ReMatch
-    }
-
-    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
-        None
-    }
-
-    fn py_eq(&self, _other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        // Match objects are not comparable
-        Ok(false)
-    }
-
-    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
-        // Match objects are always truthy
+impl ReMatch {
+    /// Returns whether this match is truthy (always true, matching CPython).
+    ///
+    /// Kept as an inherent method so `HeapData` can call it without going
+    /// through a `HeapRead` handle.
+    pub fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         true
     }
 
-    fn py_repr_fmt(
+    /// Formats this match for `repr()` output.
+    ///
+    /// Kept as an inherent method so `HeapData` can call it without going
+    /// through a `HeapRead` handle.
+    pub fn py_repr_fmt(
         &self,
         f: &mut impl Write,
         _vm: &VM<'_, '_, impl ResourceTracker>,
@@ -355,60 +326,76 @@ impl PyTrait<'_> for ReMatch {
         string_repr_fmt(&self.full_match, f)?;
         f.write_char('>')
     }
+}
 
+impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
+    fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
+        Type::ReMatch
+    }
+
+    fn py_len(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
+        None
+    }
+
+    fn py_eq(&self, _other: &Self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+        // Match objects are not comparable
+        Ok(false)
+    }
+
+    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        self.get(vm.heap).py_bool(vm)
+    }
+
+    fn py_repr_fmt(
+        &self,
+        f: &mut impl Write,
+        vm: &VM<'h, '_, impl ResourceTracker>,
+        heap_ids: &mut AHashSet<HeapId>,
+    ) -> std::fmt::Result {
+        self.get(vm.heap).py_repr_fmt(f, vm, heap_ids)
+    }
+
+    /// Handles attribute calls on ReMatch objects (group, groups, groupdict, etc.).
+    ///
+    /// Clones the match data to release the heap borrow, then dispatches to the
+    /// appropriate method. ReMatch contains no heap references (all owned
+    /// strings/integers), so cloning is safe and straightforward.
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
+        let re_match = self.get(vm.heap).clone();
         let result = match attr.static_string() {
-            Some(StaticStrings::Group) => call_group(self, args, vm.heap, vm.interns)?,
+            Some(StaticStrings::Group) => call_group(&re_match, args, vm.heap, vm.interns)?,
             Some(StaticStrings::Groups) => {
                 args.check_zero_args("re.Match.groups", vm.heap)?;
-                self.get_groups(vm.heap)?
+                re_match.get_groups(vm.heap)?
             }
             Some(StaticStrings::Groupdict) => {
                 let default = args.get_zero_one_arg("re.Match.groupdict", vm.heap)?;
                 let default = default.unwrap_or(Value::None);
-                let result = self.get_groupdict(&default, vm)?;
+                let result = re_match.get_groupdict(&default, vm)?;
                 default.drop_with_heap(vm);
                 result
             }
             Some(StaticStrings::Start) => {
                 let n = extract_optional_group_arg(args, "re.Match.start", 0, vm.heap)?;
-                self.get_start(n)?
+                re_match.get_start(n)?
             }
             Some(StaticStrings::End) => {
                 let n = extract_optional_group_arg(args, "re.Match.end", 0, vm.heap)?;
-                self.get_end(n)?
+                re_match.get_end(n)?
             }
             Some(StaticStrings::Span) => {
                 let n = extract_optional_group_arg(args, "re.Match.span", 0, vm.heap)?;
-                self.get_span(n, vm.heap)?
+                re_match.get_span(n, vm.heap)?
             }
             _ => return Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns))),
         };
         Ok(CallResult::Value(result))
-    }
-}
-
-impl<'h> HeapRead<'h, ReMatch> {
-    /// Dispatches a method call on a heap-allocated `ReMatch` via the `HeapRead` pattern.
-    ///
-    /// ReMatch contains no heap references (all owned strings/integers), so cloning
-    /// is safe and straightforward. The clone releases the heap borrow, allowing
-    /// methods to allocate on the heap freely.
-    pub(crate) fn call_attr(
-        self,
-        self_id: HeapId,
-        vm: &mut VM<'h, '_, impl ResourceTracker>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
-        let mut re_match = self.get(vm.heap).clone();
-        re_match.py_call_attr(self_id, vm, attr, args)
     }
 }
 

@@ -8,7 +8,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapId, HeapItem, HeapRead, heap_read_as_field},
+    heap::{Heap, HeapId, HeapItem, HeapRead, HeapReadMember, heap_read_ref_as_field},
     intern::Interns,
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -116,6 +116,45 @@ impl Dataclass {
     pub fn is_frozen(&self) -> bool {
         self.frozen
     }
+
+    /// Writes the repr format for a bare `Dataclass` (not behind `HeapRead`).
+    ///
+    /// Format: `ClassName(field1=value1, field2=value2, ...)`
+    /// Only declared fields are shown, not dynamically added attributes.
+    pub(crate) fn py_repr_fmt(
+        &self,
+        f: &mut impl Write,
+        vm: &VM<'_, '_, impl ResourceTracker>,
+        heap_ids: &mut AHashSet<HeapId>,
+    ) -> std::fmt::Result {
+        let heap = &*vm.heap;
+        let Some(token) = heap.incr_recursion_depth_for_repr() else {
+            return f.write_str("...");
+        };
+        crate::defer_drop_immutable_heap!(token, heap);
+
+        f.write_str(self.name(vm.interns))?;
+        f.write_char('(')?;
+
+        let mut first = true;
+        for field_name in &self.field_names {
+            if !first {
+                f.write_str(", ")?;
+            }
+            first = false;
+
+            f.write_str(field_name)?;
+            f.write_char('=')?;
+
+            if let Some(value) = self.attrs.get_by_str(field_name, heap, vm.interns) {
+                value.py_repr_fmt(f, vm, heap_ids)?;
+            } else {
+                f.write_str("<?>")?;
+            }
+        }
+
+        f.write_char(')')
+    }
 }
 
 impl<'h> HeapRead<'h, Dataclass> {
@@ -152,27 +191,34 @@ impl<'h> HeapRead<'h, Dataclass> {
         self.attrs().set(name, value, vm)
     }
 
-    pub fn attrs(self) -> HeapRead<'h, Dict> {
-        heap_read_as_field!(self, Dataclass, attrs)
+    pub fn attrs(&self) -> HeapReadMember<'_, 'h, Dict> {
+        heap_read_ref_as_field!(self, Dataclass, attrs)
     }
 }
 
-impl PyTrait<'_> for Dataclass {
+impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
     fn py_type(&self, _heap: &Heap<impl ResourceTracker>) -> Type {
         Type::Dataclass
     }
 
-    fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
         // Dataclasses don't have a length
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         // Dataclasses are equal if they have the same name and equal attrs
-        Ok(self.name == other.name && self.attrs.py_eq(&other.attrs, vm)?)
+        let names_eq = self.get(vm.heap).name == other.get(vm.heap).name;
+        if !names_eq {
+            return Ok(false);
+        }
+        // Compare attrs dicts directly. We can't use self.attrs() here because
+        // it consumes the HeapRead and py_eq only has &self. Instead, compare
+        // the bare Dict values element-wise.
+        self.attrs().py_eq(&other.attrs(), vm)
     }
 
-    fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
         // Dataclass instances are always truthy (like Python objects)
         true
     }
@@ -180,7 +226,7 @@ impl PyTrait<'_> for Dataclass {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'_, '_, impl ResourceTracker>,
+        vm: &VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> std::fmt::Result {
         // Check depth limit before recursing
@@ -192,11 +238,12 @@ impl PyTrait<'_> for Dataclass {
 
         // Format: ClassName(field1=value1, field2=value2, ...)
         // Only declared fields are shown, not dynamically added attributes
-        f.write_str(self.name(vm.interns))?;
+        let dc = self.get(vm.heap);
+        f.write_str(dc.name(vm.interns))?;
         f.write_char('(')?;
 
         let mut first = true;
-        for field_name in &self.field_names {
+        for field_name in &dc.field_names {
             if !first {
                 f.write_str(", ")?;
             }
@@ -207,7 +254,7 @@ impl PyTrait<'_> for Dataclass {
             f.write_char('=')?;
 
             // Look up value in attrs
-            if let Some(value) = self.attrs.get_by_str(field_name, heap, vm.interns) {
+            if let Some(value) = self.get(vm.heap).attrs.get_by_str(field_name, heap, vm.interns) {
                 value.py_repr_fmt(f, vm, heap_ids)?;
             } else {
                 // Field not found - shouldn't happen for well-formed dataclasses
@@ -228,46 +275,6 @@ impl PyTrait<'_> for Dataclass {
     /// - Private/dunder attributes that aren't in attrs produce `AttributeError`
     fn py_call_attr(
         &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
-        let heap = &mut *vm.heap;
-        let interns = vm.interns;
-        let attr_str = attr.as_str(interns);
-        // Only public methods (no underscore prefix = no dunders, no private)
-        if !attr_str.starts_with('_') && self.attrs.get_by_str(attr_str, heap, interns).is_none() {
-            // Clone self and prepend to args for the method call
-            // inc_ref works even when data is taken out (refcount metadata is separate)
-            heap.inc_ref(self_id);
-            let self_arg = Value::Ref(self_id);
-            let args_with_self = args.prepend(self_arg);
-            Ok(CallResult::MethodCall(attr.clone(), args_with_self))
-        } else {
-            // Not a method call — handle directly
-            let method_name = attr.as_str(interns);
-            defer_drop!(args, heap);
-
-            // If the attribute exists in attrs, it's a data value (not callable)
-            if let Some(value) = self.attrs.get_by_str(method_name, heap, interns) {
-                let type_name = value.py_type(heap);
-                Err(ExcType::type_error_not_callable_object(type_name))
-            } else {
-                // Attribute doesn't exist — use the class name (e.g., "Point") not "Dataclass"
-                Err(ExcType::attribute_error(self.name(interns), method_name))
-            }
-        }
-    }
-}
-
-impl<'h> HeapRead<'h, Dataclass> {
-    /// Dispatches a method call on a heap-allocated dataclass via the `HeapRead` pattern.
-    ///
-    /// Public attributes not found in `attrs` are dispatched as `MethodCall` for the
-    /// host to resolve. Existing attrs that aren't callable produce `TypeError`.
-    pub(crate) fn call_attr(
-        self,
         self_id: HeapId,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
         attr: &EitherStr,
