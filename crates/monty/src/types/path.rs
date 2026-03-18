@@ -14,7 +14,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapRead},
+    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
     os::OsFunction,
     resource::{ResourceError, ResourceTracker},
@@ -483,14 +483,6 @@ impl PyTrait<'_> for Path {
         write!(f, "PosixPath('{}')", self.path)
     }
 
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
-        // Path doesn't contain heap references, nothing to do
-    }
-
-    fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.path.capacity()
-    }
-
     /// Handles attribute calls on Path objects, including both pure methods (no I/O)
     /// and OS methods that require host system access.
     ///
@@ -655,5 +647,15 @@ impl<'h> HeapRead<'h, Path> {
             }
         };
         value.map(CallResult::Value)
+    }
+}
+
+impl HeapItem for Path {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>() + self.path.capacity()
+    }
+
+    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
+        // Path doesn't contain heap references, nothing to do
     }
 }

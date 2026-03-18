@@ -18,3 +18,4 @@
 /crates/fuzz/artifacts/
 /crates/fuzz/corpus/
 /.worktrees/
+/.zed/

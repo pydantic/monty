@@ -8,7 +8,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
+    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::{Dict, FrozenSet, MontyIter, PyTrait, Set, Type, allocate_tuple, iter::advance_on_heap},
@@ -153,10 +153,6 @@ impl PyTrait<'_> for DictKeysView {
         Type::DictKeys
     }
 
-    fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
-
     fn py_len(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         Some(self.dict(vm.heap).len())
     }
@@ -167,10 +163,6 @@ impl PyTrait<'_> for DictKeysView {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> Result<bool, crate::resource::ResourceError> {
         self.eq_view(*other, vm)
-    }
-
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        stack.push(self.dict_id);
     }
 
     fn py_repr_fmt(
@@ -223,6 +215,16 @@ impl<'h> HeapRead<'h, DictKeysView> {
             }
             _ => Err(ExcType::attribute_error(Type::DictKeys, attr.as_str(vm.interns))),
         }
+    }
+}
+
+impl HeapItem for DictKeysView {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        stack.push(self.dict_id);
     }
 }
 
@@ -342,10 +344,6 @@ impl PyTrait<'_> for DictItemsView {
         Type::DictItems
     }
 
-    fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
-
     fn py_len(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         Some(self.dict(vm.heap).len())
     }
@@ -356,10 +354,6 @@ impl PyTrait<'_> for DictItemsView {
         vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> Result<bool, crate::resource::ResourceError> {
         self.eq_view(*other, vm)
-    }
-
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        stack.push(self.dict_id);
     }
 
     fn py_repr_fmt(
@@ -415,6 +409,16 @@ impl<'h> HeapRead<'h, DictItemsView> {
     }
 }
 
+impl HeapItem for DictItemsView {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        stack.push(self.dict_id);
+    }
+}
+
 /// Live view returned by `dict.values()`.
 ///
 /// Unlike keys/items views, `dict_values` is intentionally not set-like in
@@ -450,10 +454,6 @@ impl PyTrait<'_> for DictValuesView {
         Type::DictValues
     }
 
-    fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
-
     fn py_len(&self, vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         Some(self.dict(vm.heap).len())
     }
@@ -464,10 +464,6 @@ impl PyTrait<'_> for DictValuesView {
         _vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> Result<bool, crate::resource::ResourceError> {
         Ok(false)
-    }
-
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        stack.push(self.dict_id);
     }
 
     fn py_repr_fmt(
@@ -497,6 +493,16 @@ impl<'h> HeapRead<'h, DictValuesView> {
     ) -> RunResult<CallResult> {
         args.drop_with_heap(vm);
         Err(ExcType::attribute_error(Type::DictValues, attr.as_str(vm.interns)))
+    }
+}
+
+impl HeapItem for DictValuesView {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        stack.push(self.dict_id);
     }
 }
 

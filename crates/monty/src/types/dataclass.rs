@@ -8,7 +8,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapId, HeapRead, heap_read_as_field},
+    heap::{Heap, HeapId, HeapItem, HeapRead, heap_read_as_field},
     intern::Interns,
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -162,13 +162,6 @@ impl PyTrait<'_> for Dataclass {
         Type::Dataclass
     }
 
-    fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.name.py_estimate_size()
-            + self.field_names.iter().map(String::len).sum::<usize>()
-            + self.attrs.py_estimate_size()
-    }
-
     fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         // Dataclasses don't have a length
         None
@@ -177,11 +170,6 @@ impl PyTrait<'_> for Dataclass {
     fn py_eq(&self, other: &Self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         // Dataclasses are equal if they have the same name and equal attrs
         Ok(self.name == other.name && self.attrs.py_eq(&other.attrs, vm)?)
-    }
-
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        // Delegate to the attrs Dict which handles all nested heap references
-        self.attrs.py_dec_ref_ids(stack);
     }
 
     fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
@@ -316,6 +304,20 @@ impl<'h> HeapRead<'h, Dataclass> {
             let name = self.get(vm.heap).name(vm.interns);
             Err(ExcType::attribute_error(name, method_name))
         }
+    }
+}
+
+impl HeapItem for Dataclass {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.name.py_estimate_size()
+            + self.field_names.iter().map(String::len).sum::<usize>()
+            + self.attrs.py_estimate_size()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        // Delegate to the attrs Dict which handles all nested heap references
+        self.attrs.py_dec_ref_ids(stack);
     }
 }
 

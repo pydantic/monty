@@ -12,7 +12,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{Heap, HeapData, HeapId, HeapItem},
     resource::{ResourceError, ResourceTracker},
     types::{PyTrait, Type},
     value::Value,
@@ -182,10 +182,6 @@ impl PyTrait<'_> for Slice {
         Type::Slice
     }
 
-    fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
-
     fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         // Slices don't have a length in Python
         None
@@ -213,6 +209,12 @@ impl PyTrait<'_> for Slice {
         f.write_str(", ")?;
         format_option_i64(f, self.step)?;
         f.write_char(')')
+    }
+}
+
+impl HeapItem for Slice {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>()
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {

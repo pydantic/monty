@@ -2,9 +2,49 @@ use std::{mem::ManuallyDrop, ptr::addr_of};
 
 use crate::{
     ResourceTracker,
-    heap::{Heap, RecursionToken},
+    heap::{Heap, HeapId, RecursionToken},
     value::Value,
 };
+
+/// Heap lifecycle operations for memory tracking and reference cleanup.
+///
+/// This trait captures the two responsibilities shared by all heap-stored types:
+///
+/// 1. **Memory estimation** (`py_estimate_size`): reporting approximate byte footprint
+///    for resource tracking and memory limit enforcement.
+///
+/// 2. **Reference collection** (`py_dec_ref_ids`): collecting contained `HeapId`s during
+///    reference count decrement so child objects can be freed iteratively.
+///
+/// Unlike `PyTrait`, which provides Python-level operations (equality, repr, arithmetic),
+/// `HeapItem` is purely about heap lifecycle management. This separation allows types like
+/// `Closure` and `FunctionDefaults` to participate in heap bookkeeping without needing
+/// the full `PyTrait` interface.
+///
+/// Every `HeapData` variant must implement this trait (either directly on the inner type,
+/// or inline in the dispatch for types we don't own like `String`).
+pub(crate) trait HeapItem {
+    /// Estimates the memory size in bytes of this value.
+    ///
+    /// Used by resource tracking to enforce memory limits. Returns the approximate
+    /// heap footprint including struct overhead and variable-length data (e.g., string
+    /// contents, list elements).
+    ///
+    /// Note: For containers holding `Value::Ref` entries, this counts the size of
+    /// the reference slots, not the referenced objects. Nested objects are sized
+    /// separately when they are allocated.
+    fn py_estimate_size(&self) -> usize;
+
+    /// Pushes any contained `HeapId`s onto the stack for reference counting.
+    ///
+    /// This is called during `dec_ref` to find nested heap references that
+    /// need their refcounts decremented when this value is freed.
+    ///
+    /// When the `ref-count-panic` feature is enabled, this method also marks all
+    /// contained `Value`s as `Dereferenced` to prevent Drop panics. This
+    /// co-locates the cleanup logic with the reference collection logic.
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>);
+}
 
 /// This trait represents types that contain a `Heap`; it allows for more complex structures
 /// to participate in the `HeapGuard` pattern.

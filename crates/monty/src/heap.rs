@@ -14,7 +14,7 @@ use smallvec::SmallVec;
 // Re-export items moved to `heap_traits` so that `crate::heap::HeapGuard` etc. continue
 // to resolve (used by the `defer_drop!` macros and throughout the codebase).
 pub(crate) use crate::heap_data::HeapData;
-pub(crate) use crate::heap_traits::{ContainsHeap, DropWithHeap, HeapGuard, ImmutableHeapGuard};
+pub(crate) use crate::heap_traits::{ContainsHeap, DropWithHeap, HeapGuard, HeapItem, ImmutableHeapGuard};
 use crate::{
     asyncio::{Coroutine, GatherFuture, GatherItem},
     exception_private::{ExcType, RunResult, SimpleException},
@@ -23,7 +23,7 @@ use crate::{
     resource::{ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
-        MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, allocate_tuple,
+        MontyIter, NamedTuple, Path, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, allocate_tuple,
     },
     value::Value,
 };

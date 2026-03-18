@@ -14,7 +14,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapRead},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead},
     intern::{StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
     types::Type,
@@ -207,10 +207,6 @@ impl PyTrait<'_> for Str {
         Type::Str
     }
 
-    fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.0.len()
-    }
-
     fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         // Count Unicode characters, not bytes, to match Python semantics
         Some(self.0.chars().count())
@@ -237,11 +233,6 @@ impl PyTrait<'_> for Str {
 
     fn py_eq(&self, other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         Ok(self.0 == other.0)
-    }
-
-    /// Interns don't contain nested heap references.
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
-        // No-op: strings don't hold Value references
     }
 
     fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
@@ -319,6 +310,16 @@ impl<'h> HeapRead<'h, Str> {
         // the method implementation, which needs &mut VM.
         let s: String = self.get(vm.heap).as_str().to_owned();
         call_str_method_impl(&s, method, args, vm).map(CallResult::Value)
+    }
+}
+
+impl HeapItem for Str {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>() + self.0.len()
+    }
+
+    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
+        // No-op: strings don't hold Value references
     }
 }
 

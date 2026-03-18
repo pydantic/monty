@@ -21,7 +21,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapRead},
+    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
     resource::{ResourceError, ResourceTracker, check_estimated_size},
@@ -291,10 +291,6 @@ impl PyTrait<'_> for RePattern {
         Ok(self == other)
     }
 
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
-        // No heap references — all data is owned.
-    }
-
     fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         // Pattern objects are always truthy (matching CPython).
         true
@@ -325,10 +321,6 @@ impl PyTrait<'_> for RePattern {
             write!(f, ", {}", flag_parts.join("|"))?;
         }
         write!(f, ")")
-    }
-
-    fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.pattern.len()
     }
 
     fn py_call_attr(
@@ -392,6 +384,16 @@ impl<'h> HeapRead<'h, RePattern> {
     ) -> RunResult<CallResult> {
         let mut re_pattern = self.get(vm.heap).clone();
         re_pattern.py_call_attr(self_id, vm, attr, args)
+    }
+}
+
+impl HeapItem for RePattern {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>() + self.pattern.len()
+    }
+
+    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
+        // No heap references — all data is owned.
     }
 }
 

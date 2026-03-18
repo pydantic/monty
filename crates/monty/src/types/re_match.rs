@@ -17,7 +17,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId, HeapRead},
+    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
     types::{Dict, PyTrait, Str, Type, allocate_tuple, str::string_repr_fmt},
@@ -340,10 +340,6 @@ impl PyTrait<'_> for ReMatch {
         Ok(false)
     }
 
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
-        // No heap references — all data is owned strings and integers.
-    }
-
     fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         // Match objects are always truthy
         true
@@ -358,23 +354,6 @@ impl PyTrait<'_> for ReMatch {
         write!(f, "<re.Match object; span=({}, {}), match=", self.start, self.end)?;
         string_repr_fmt(&self.full_match, f)?;
         f.write_char('>')
-    }
-
-    fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.full_match.len()
-            + self.input_string.len()
-            + self.pattern_string.len()
-            + self
-                .groups
-                .iter()
-                .map(|g| g.as_ref().map_or(0, String::len))
-                .sum::<usize>()
-            + self
-                .named_groups
-                .iter()
-                .map(|(name, _)| name.len() + std::mem::size_of::<usize>())
-                .sum::<usize>()
     }
 
     fn py_call_attr(
@@ -430,6 +409,29 @@ impl<'h> HeapRead<'h, ReMatch> {
     ) -> RunResult<CallResult> {
         let mut re_match = self.get(vm.heap).clone();
         re_match.py_call_attr(self_id, vm, attr, args)
+    }
+}
+
+impl HeapItem for ReMatch {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.full_match.len()
+            + self.input_string.len()
+            + self.pattern_string.len()
+            + self
+                .groups
+                .iter()
+                .map(|g| g.as_ref().map_or(0, String::len))
+                .sum::<usize>()
+            + self
+                .named_groups
+                .iter()
+                .map(|(name, _)| name.len() + std::mem::size_of::<usize>())
+                .sum::<usize>()
+    }
+
+    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
+        // No heap references — all data is owned strings and integers.
     }
 }
 

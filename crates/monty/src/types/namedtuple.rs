@@ -24,7 +24,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapId, HeapRead},
+    heap::{Heap, HeapId, HeapItem, HeapRead},
     intern::{Interns, StringId},
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -249,13 +249,6 @@ impl PyTrait<'_> for NamedTuple {
         Type::NamedTuple
     }
 
-    fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.name.py_estimate_size()
-            + self.field_names.len() * std::mem::size_of::<StringId>()
-            + self.items.len() * std::mem::size_of::<Value>()
-    }
-
     fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         Some(self.items.len())
     }
@@ -288,24 +281,6 @@ impl PyTrait<'_> for NamedTuple {
             }
         }
         Ok(true)
-    }
-
-    /// Pushes all heap IDs contained in this named tuple onto the stack.
-    ///
-    /// Called during garbage collection to decrement refcounts of nested values.
-    /// When `ref-count-panic` is enabled, also marks all Values as Dereferenced.
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        // Skip iteration if no refs - GC optimization for tuples of primitives
-        if !self.contains_refs {
-            return;
-        }
-        for obj in &mut self.items {
-            if let Value::Ref(id) = obj {
-                stack.push(*id);
-                #[cfg(feature = "ref-count-panic")]
-                obj.dec_ref_forget();
-            }
-        }
     }
 
     fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
@@ -341,5 +316,32 @@ impl PyTrait<'_> for NamedTuple {
 
         f.write_char(')')?;
         Ok(())
+    }
+}
+
+impl HeapItem for NamedTuple {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.name.py_estimate_size()
+            + self.field_names.len() * std::mem::size_of::<StringId>()
+            + self.items.len() * std::mem::size_of::<Value>()
+    }
+
+    /// Pushes all heap IDs contained in this named tuple onto the stack.
+    ///
+    /// Called during garbage collection to decrement refcounts of nested values.
+    /// When `ref-count-panic` is enabled, also marks all Values as Dereferenced.
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        // Skip iteration if no refs - GC optimization for tuples of primitives
+        if !self.contains_refs {
+            return;
+        }
+        for obj in &mut self.items {
+            if let Value::Ref(id) = obj {
+                stack.push(*id);
+                #[cfg(feature = "ref-count-panic")]
+                obj.dec_ref_forget();
+            }
+        }
     }
 }

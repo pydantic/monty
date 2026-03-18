@@ -10,7 +10,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapRead, HeapReadOutput},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     sorting::{apply_permutation, sort_indices},
@@ -745,10 +745,6 @@ impl PyTrait<'_> for List {
         Type::List
     }
 
-    fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.items.len() * std::mem::size_of::<Value>()
-    }
-
     fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         Some(self.items.len())
     }
@@ -852,20 +848,6 @@ impl PyTrait<'_> for List {
         Ok(true)
     }
 
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        // Skip iteration if no refs - major GC optimization for lists of primitives
-        if !self.contains_refs {
-            return;
-        }
-        for obj in &mut self.items {
-            if let Value::Ref(id) = obj {
-                stack.push(*id);
-                #[cfg(feature = "ref-count-panic")]
-                obj.dec_ref_forget();
-            }
-        }
-    }
-
     fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
         !self.items.is_empty()
     }
@@ -960,6 +942,26 @@ impl PyTrait<'_> for List {
 
         let args = args_guard.into_inner();
         call_list_method(self, method, args, vm).map(CallResult::Value)
+    }
+}
+
+impl HeapItem for List {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>() + self.items.len() * std::mem::size_of::<Value>()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        // Skip iteration if no refs - major GC optimization for lists of primitives
+        if !self.contains_refs {
+            return;
+        }
+        for obj in &mut self.items {
+            if let Value::Ref(id) = obj {
+                stack.push(*id);
+                #[cfg(feature = "ref-count-panic")]
+                obj.dec_ref_forget();
+            }
+        }
     }
 }
 

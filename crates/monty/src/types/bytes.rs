@@ -77,7 +77,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapRead},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
     types::List,
@@ -251,10 +251,6 @@ impl PyTrait<'_> for Bytes {
         Type::Bytes
     }
 
-    fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.0.len()
-    }
-
     fn py_len(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> Option<usize> {
         Some(self.0.len())
     }
@@ -284,11 +280,6 @@ impl PyTrait<'_> for Bytes {
 
     fn py_eq(&self, other: &Self, _vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
         Ok(self.0 == other.0)
-    }
-
-    /// Bytes don't contain nested heap references.
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
-        // No-op: bytes don't hold Value references
     }
 
     fn py_cmp(
@@ -351,6 +342,16 @@ impl<'h> HeapRead<'h, Bytes> {
         // the method implementation, which needs &mut VM.
         let bytes: Vec<u8> = self.get(vm.heap).as_slice().to_vec();
         call_bytes_method_impl(&bytes, method, args, vm).map(CallResult::Value)
+    }
+}
+
+impl HeapItem for Bytes {
+    fn py_estimate_size(&self) -> usize {
+        std::mem::size_of::<Self>() + self.0.len()
+    }
+
+    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
+        // No-op: bytes don't hold Value references
     }
 }
 
