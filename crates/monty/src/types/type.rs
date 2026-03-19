@@ -397,7 +397,7 @@ pub(crate) fn call_type_method(
     match (t, method_id) {
         (Type::Dict, m) if m == StaticStrings::Fromkeys => return dict_fromkeys(args, vm),
         (Type::Bytes, m) if m == StaticStrings::Fromhex => {
-            return bytes_fromhex(args, vm.heap, vm.interns);
+            return bytes_fromhex(args, vm);
         }
         _ => {}
     }

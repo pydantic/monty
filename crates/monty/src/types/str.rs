@@ -344,27 +344,27 @@ fn call_str_method_impl(
         // Simple transformations (no arguments)
         StaticStrings::Lower => {
             args.check_zero_args("str.lower", vm.heap)?;
-            str_lower(s, vm.heap)
+            str_lower(s, vm)
         }
         StaticStrings::Upper => {
             args.check_zero_args("str.upper", vm.heap)?;
-            str_upper(s, vm.heap)
+            str_upper(s, vm)
         }
         StaticStrings::Capitalize => {
             args.check_zero_args("str.capitalize", vm.heap)?;
-            str_capitalize(s, vm.heap)
+            str_capitalize(s, vm)
         }
         StaticStrings::Title => {
             args.check_zero_args("str.title", vm.heap)?;
-            str_title(s, vm.heap)
+            str_title(s, vm)
         }
         StaticStrings::Swapcase => {
             args.check_zero_args("str.swapcase", vm.heap)?;
-            str_swapcase(s, vm.heap)
+            str_swapcase(s, vm)
         }
         StaticStrings::Casefold => {
             args.check_zero_args("str.casefold", vm.heap)?;
-            str_casefold(s, vm.heap)
+            str_casefold(s, vm)
         }
         // Predicate methods (no arguments, return bool)
         StaticStrings::Isalpha => {
@@ -428,7 +428,7 @@ fn call_str_method_impl(
         StaticStrings::Center => str_center(s, args, vm),
         StaticStrings::Ljust => str_ljust(s, args, vm),
         StaticStrings::Rjust => str_rjust(s, args, vm),
-        StaticStrings::Zfill => str_zfill(s, args, vm.heap),
+        StaticStrings::Zfill => str_zfill(s, args, vm),
         // Additional methods
         StaticStrings::Encode => str_encode(s, args, vm),
         StaticStrings::Isidentifier => {
@@ -560,19 +560,19 @@ impl fmt::Display for StringRepr<'_> {
 // =============================================================================
 
 /// Implements Python's `str.lower()` method.
-fn str_lower(s: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-    allocate_string(s.to_lowercase(), heap)
+fn str_lower(s: &str, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+    allocate_string(s.to_lowercase(), vm.heap)
 }
 
 /// Implements Python's `str.upper()` method.
-fn str_upper(s: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-    allocate_string(s.to_uppercase(), heap)
+fn str_upper(s: &str, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+    allocate_string(s.to_uppercase(), vm.heap)
 }
 
 /// Implements Python's `str.capitalize()` method.
 ///
 /// Returns a copy of the string with its first character capitalized and the rest lowercased.
-fn str_capitalize(s: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+fn str_capitalize(s: &str, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
     let mut chars = s.chars();
     let result = match chars.next() {
         None => String::new(),
@@ -584,14 +584,14 @@ fn str_capitalize(s: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<V
             result
         }
     };
-    allocate_string(result, heap)
+    allocate_string(result, vm.heap)
 }
 
 /// Implements Python's `str.title()` method.
 ///
 /// Returns a titlecased version of the string where words start with an uppercase
 /// character and the remaining characters are lowercase.
-fn str_title(s: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+fn str_title(s: &str, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
     let mut result = String::with_capacity(s.len());
     let mut prev_is_cased = false;
 
@@ -604,13 +604,13 @@ fn str_title(s: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value>
         prev_is_cased = c.is_alphabetic();
     }
 
-    allocate_string(result, heap)
+    allocate_string(result, vm.heap)
 }
 
 /// Implements Python's `str.swapcase()` method.
 ///
 /// Returns a copy of the string with uppercase characters converted to lowercase and vice versa.
-fn str_swapcase(s: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+fn str_swapcase(s: &str, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
     let mut result = String::with_capacity(s.len());
 
     for c in s.chars() {
@@ -623,16 +623,16 @@ fn str_swapcase(s: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Val
         }
     }
 
-    allocate_string(result, heap)
+    allocate_string(result, vm.heap)
 }
 
 /// Implements Python's `str.casefold()` method.
 ///
 /// Returns a casefolded copy of the string. Casefolding is similar to lowercasing
 /// but more aggressive because it is intended for caseless string matching.
-fn str_casefold(s: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+fn str_casefold(s: &str, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
     // Rust's to_lowercase() is equivalent to Unicode casefolding for most purposes
-    allocate_string(s.to_lowercase(), heap)
+    allocate_string(s.to_lowercase(), vm.heap)
 }
 
 // =============================================================================
@@ -1018,13 +1018,13 @@ fn parse_search_args(
         }
         [sub_value, start_value] => {
             let sub = extract_string_arg(sub_value, vm)?;
-            let start = optional_index(start_value, 0, str_len, vm.heap)?;
+            let start = optional_index(start_value, 0, str_len, vm)?;
             Ok((sub, start, str_len))
         }
         [sub_value, start_value, end_value] => {
             let sub = extract_string_arg(sub_value, vm)?;
-            let start = optional_index(start_value, 0, str_len, vm.heap)?;
-            let end = optional_index(end_value, str_len, str_len, vm.heap)?;
+            let start = optional_index(start_value, 0, str_len, vm)?;
+            let end = optional_index(end_value, str_len, str_len, vm)?;
             Ok((sub, start, end))
         }
         [] => Err(ExcType::type_error_at_least(method, 1, 0)),
@@ -1053,13 +1053,13 @@ fn parse_prefix_suffix_args(
         }
         [prefix_value, start_value] => {
             let prefixes = extract_str_or_tuple_of_str(prefix_value, vm)?;
-            let start = optional_index(start_value, 0, str_len, vm.heap)?;
+            let start = optional_index(start_value, 0, str_len, vm)?;
             Ok((prefixes, start, str_len))
         }
         [prefix_value, start_value, end_value] => {
             let prefixes = extract_str_or_tuple_of_str(prefix_value, vm)?;
-            let start = optional_index(start_value, 0, str_len, vm.heap)?;
-            let end = optional_index(end_value, str_len, str_len, vm.heap)?;
+            let start = optional_index(start_value, 0, str_len, vm)?;
+            let end = optional_index(end_value, str_len, str_len, vm)?;
             Ok((prefixes, start, end))
         }
         [] => Err(ExcType::type_error_at_least(method, 1, 0)),
@@ -1120,11 +1120,11 @@ fn extract_string_arg(value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) 
 }
 
 /// Extracts an integer from a Value, returning an error if not an integer.
-fn extract_int_arg(value: &Value, heap: &Heap<impl ResourceTracker>) -> RunResult<i64> {
+fn extract_int_arg(value: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<i64> {
     match value {
         Value::Int(i) => Ok(*i),
         Value::Ref(heap_id) => {
-            if let HeapData::LongInt(li) = heap.get(*heap_id) {
+            if let HeapData::LongInt(li) = vm.heap.get(*heap_id) {
                 // Try to convert to i64
                 li.to_i64().ok_or_else(|| ExcType::type_error("integer too large"))
             } else {
@@ -1157,12 +1157,12 @@ fn optional_index(
     value: &Value,
     default: usize,
     str_len: usize,
-    heap: &Heap<impl ResourceTracker>,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<usize> {
     if matches!(value, Value::None) {
         Ok(default)
     } else {
-        Ok(normalize_index(extract_int_arg(value, heap)?, str_len))
+        Ok(normalize_index(extract_int_arg(value, vm)?, str_len))
     }
 }
 
@@ -1408,7 +1408,7 @@ fn parse_split_args(
     // Extract positional maxsplit (default -1)
     let mut has_pos_maxsplit = maxsplit_value.is_some();
     let mut maxsplit = if let Some(v) = maxsplit_value.as_ref() {
-        extract_int_arg(v, vm.heap)?
+        extract_int_arg(v, vm)?
     } else {
         -1
     };
@@ -1443,7 +1443,7 @@ fn parse_split_args(
                         "{method}() got multiple values for argument 'maxsplit'"
                     )));
                 }
-                maxsplit = extract_int_arg(value, vm.heap)?;
+                maxsplit = extract_int_arg(value, vm)?;
                 has_pos_maxsplit = true;
             }
             _ => {
@@ -1737,7 +1737,7 @@ fn parse_replace_args(
 
     let mut has_pos_count = count_value.is_some();
     let mut count = if let Some(v) = count_value.as_ref() {
-        extract_int_arg(v, vm.heap)?
+        extract_int_arg(v, vm)?
     } else {
         -1
     };
@@ -1758,7 +1758,7 @@ fn parse_replace_args(
                     "{method}() got multiple values for argument 'count'"
                 )));
             }
-            count = extract_int_arg(value, vm.heap)?;
+            count = extract_int_arg(value, vm)?;
             has_pos_count = true;
         } else {
             return Err(ExcType::type_error(format!(
@@ -1856,7 +1856,7 @@ fn parse_justify_args(
 
     match pos.as_slice() {
         [width_value] => {
-            let w = extract_int_arg(width_value, vm.heap)?;
+            let w = extract_int_arg(width_value, vm)?;
             let width = if w < 0 {
                 0
             } else {
@@ -1865,7 +1865,7 @@ fn parse_justify_args(
             Ok((width, ' '))
         }
         [width_value, fillchar_value] => {
-            let w = extract_int_arg(width_value, vm.heap)?;
+            let w = extract_int_arg(width_value, vm)?;
             let width = if w < 0 {
                 0
             } else {
@@ -1886,10 +1886,10 @@ fn parse_justify_args(
 ///
 /// Returns a copy of the string left filled with ASCII '0' digits to make a
 /// string of length width. A sign prefix is handled correctly.
-fn str_zfill(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-    let width_value = args.get_one_arg("str.zfill", heap)?;
-    defer_drop!(width_value, heap);
-    let width_i64 = extract_int_arg(width_value, heap)?;
+fn str_zfill(s: &str, args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+    let width_value = args.get_one_arg("str.zfill", vm.heap)?;
+    defer_drop!(width_value, vm);
+    let width_i64 = extract_int_arg(width_value, vm)?;
 
     // Safe cast: treat negative as 0, saturate large positive values
     let width = if width_i64 < 0 {
@@ -1903,7 +1903,7 @@ fn str_zfill(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>) ->
         s.to_owned()
     } else {
         // zfill always pads with ASCII '0' (1 byte)
-        check_repeat_size(width, 1, heap.tracker())?;
+        check_repeat_size(width, 1, vm.heap.tracker())?;
         let pad = width - len;
         let mut chars = s.chars();
         let first = chars.next();
@@ -1926,7 +1926,7 @@ fn str_zfill(s: &str, args: ArgValues, heap: &mut Heap<impl ResourceTracker>) ->
         result
     };
 
-    allocate_string(result, heap)
+    allocate_string(result, vm.heap)
 }
 
 /// Implements Python's `str.encode(encoding='utf-8', errors='strict')` method.
