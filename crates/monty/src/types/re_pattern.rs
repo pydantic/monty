@@ -279,14 +279,6 @@ impl RePattern {
 }
 
 impl RePattern {
-    /// Returns whether this pattern is truthy (always true, matching CPython).
-    ///
-    /// Kept as an inherent method so `HeapData` can call it without going
-    /// through a `HeapRead` handle.
-    pub fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
-        true
-    }
-
     /// Formats this pattern for `repr()` output.
     ///
     /// Kept as an inherent method so `HeapData` can call it without going
@@ -332,8 +324,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
         Ok(self.get(vm.heap) == other.get(vm.heap))
     }
 
-    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
-        self.get(vm.heap).py_bool(vm)
+    fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        // Pattern always truthy
+        true
     }
 
     fn py_repr_fmt(

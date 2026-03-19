@@ -304,14 +304,6 @@ impl ReMatch {
 }
 
 impl ReMatch {
-    /// Returns whether this match is truthy (always true, matching CPython).
-    ///
-    /// Kept as an inherent method so `HeapData` can call it without going
-    /// through a `HeapRead` handle.
-    pub fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
-        true
-    }
-
     /// Formats this match for `repr()` output.
     ///
     /// Kept as an inherent method so `HeapData` can call it without going
@@ -342,8 +334,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
         Ok(false)
     }
 
-    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
-        self.get(vm.heap).py_bool(vm)
+    fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        // Match always truthy
+        true
     }
 
     fn py_repr_fmt(

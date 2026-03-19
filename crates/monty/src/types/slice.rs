@@ -178,14 +178,6 @@ fn normalize_index(index: i64, length: i64, lower: i64, upper: i64) -> i64 {
 }
 
 impl Slice {
-    /// Returns whether this slice is truthy (always true in Python).
-    ///
-    /// Kept as an inherent method so `HeapData` can call it without going
-    /// through a `HeapRead` handle.
-    pub fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
-        true
-    }
-
     /// Formats this slice for `repr()` output.
     ///
     /// Kept as an inherent method so `HeapData` can call it without going
@@ -222,8 +214,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
         Ok(a.start == b.start && a.stop == b.stop && a.step == b.step)
     }
 
-    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
-        self.get(vm.heap).py_bool(vm)
+    fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        // Slice always truthy
+        true
     }
 
     fn py_repr_fmt(

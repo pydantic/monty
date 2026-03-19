@@ -362,102 +362,100 @@ fn call_bytes_method_impl<'h>(
     args: ArgValues,
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let heap = &mut *vm.heap;
-    let interns = vm.interns;
     match method {
         // Decode method
-        StaticStrings::Decode => bytes_decode(bytes, args, heap, interns),
+        StaticStrings::Decode => bytes_decode(bytes, args, vm),
         // Simple transformations (no arguments)
         StaticStrings::Lower => {
-            args.check_zero_args("bytes.lower", heap)?;
-            bytes_lower(bytes, heap)
+            args.check_zero_args("bytes.lower", vm.heap)?;
+            bytes_lower(bytes, vm)
         }
         StaticStrings::Upper => {
-            args.check_zero_args("bytes.upper", heap)?;
-            bytes_upper(bytes, heap)
+            args.check_zero_args("bytes.upper", vm.heap)?;
+            bytes_upper(bytes, vm)
         }
         StaticStrings::Capitalize => {
-            args.check_zero_args("bytes.capitalize", heap)?;
-            bytes_capitalize(bytes, heap)
+            args.check_zero_args("bytes.capitalize", vm.heap)?;
+            bytes_capitalize(bytes, vm)
         }
         StaticStrings::Title => {
-            args.check_zero_args("bytes.title", heap)?;
-            bytes_title(bytes, heap)
+            args.check_zero_args("bytes.title", vm.heap)?;
+            bytes_title(bytes, vm)
         }
         StaticStrings::Swapcase => {
-            args.check_zero_args("bytes.swapcase", heap)?;
-            bytes_swapcase(bytes, heap)
+            args.check_zero_args("bytes.swapcase", vm.heap)?;
+            bytes_swapcase(bytes, vm)
         }
         // Predicate methods (no arguments, return bool)
         StaticStrings::Isalpha => {
-            args.check_zero_args("bytes.isalpha", heap)?;
+            args.check_zero_args("bytes.isalpha", vm.heap)?;
             Ok(Value::Bool(bytes_isalpha(bytes.get(vm.heap))))
         }
         StaticStrings::Isdigit => {
-            args.check_zero_args("bytes.isdigit", heap)?;
+            args.check_zero_args("bytes.isdigit", vm.heap)?;
             Ok(Value::Bool(bytes_isdigit(bytes.get(vm.heap))))
         }
         StaticStrings::Isalnum => {
-            args.check_zero_args("bytes.isalnum", heap)?;
+            args.check_zero_args("bytes.isalnum", vm.heap)?;
             Ok(Value::Bool(bytes_isalnum(bytes.get(vm.heap))))
         }
         StaticStrings::Isspace => {
-            args.check_zero_args("bytes.isspace", heap)?;
+            args.check_zero_args("bytes.isspace", vm.heap)?;
             Ok(Value::Bool(bytes_isspace(bytes.get(vm.heap))))
         }
         StaticStrings::Islower => {
-            args.check_zero_args("bytes.islower", heap)?;
+            args.check_zero_args("bytes.islower", vm.heap)?;
             Ok(Value::Bool(bytes_islower(bytes.get(vm.heap))))
         }
         StaticStrings::Isupper => {
-            args.check_zero_args("bytes.isupper", heap)?;
+            args.check_zero_args("bytes.isupper", vm.heap)?;
             Ok(Value::Bool(bytes_isupper(bytes.get(vm.heap))))
         }
         StaticStrings::Isascii => {
-            args.check_zero_args("bytes.isascii", heap)?;
+            args.check_zero_args("bytes.isascii", vm.heap)?;
             Ok(Value::Bool(bytes.get(vm.heap).iter().all(|&b| b <= 127)))
         }
         StaticStrings::Istitle => {
-            args.check_zero_args("bytes.istitle", heap)?;
+            args.check_zero_args("bytes.istitle", vm.heap)?;
             Ok(Value::Bool(bytes_istitle(bytes.get(vm.heap))))
         }
         // Search methods
-        StaticStrings::Count => bytes_count(bytes, args, heap, interns),
-        StaticStrings::Find => bytes_find(bytes, args, heap, interns),
-        StaticStrings::Rfind => bytes_rfind(bytes, args, heap, interns),
-        StaticStrings::Index => bytes_index(bytes, args, heap, interns),
-        StaticStrings::Rindex => bytes_rindex(bytes, args, heap, interns),
-        StaticStrings::Startswith => bytes_startswith(bytes, args, heap, interns),
-        StaticStrings::Endswith => bytes_endswith(bytes, args, heap, interns),
+        StaticStrings::Count => bytes_count(bytes, args, vm),
+        StaticStrings::Find => bytes_find(bytes, args, vm),
+        StaticStrings::Rfind => bytes_rfind(bytes, args, vm),
+        StaticStrings::Index => bytes_index(bytes, args, vm),
+        StaticStrings::Rindex => bytes_rindex(bytes, args, vm),
+        StaticStrings::Startswith => bytes_startswith(bytes, args, vm),
+        StaticStrings::Endswith => bytes_endswith(bytes, args, vm),
         // Strip/trim methods
-        StaticStrings::Strip => bytes_strip(bytes, args, heap, interns),
-        StaticStrings::Lstrip => bytes_lstrip(bytes, args, heap, interns),
-        StaticStrings::Rstrip => bytes_rstrip(bytes, args, heap, interns),
-        StaticStrings::Removeprefix => bytes_removeprefix(bytes, args, heap, interns),
-        StaticStrings::Removesuffix => bytes_removesuffix(bytes, args, heap, interns),
+        StaticStrings::Strip => bytes_strip(bytes, args, vm),
+        StaticStrings::Lstrip => bytes_lstrip(bytes, args, vm),
+        StaticStrings::Rstrip => bytes_rstrip(bytes, args, vm),
+        StaticStrings::Removeprefix => bytes_removeprefix(bytes, args, vm),
+        StaticStrings::Removesuffix => bytes_removesuffix(bytes, args, vm),
         // Split methods
-        StaticStrings::Split => bytes_split(bytes, args, heap, interns),
-        StaticStrings::Rsplit => bytes_rsplit(bytes, args, heap, interns),
+        StaticStrings::Split => bytes_split(bytes, args, vm),
+        StaticStrings::Rsplit => bytes_rsplit(bytes, args, vm),
         StaticStrings::Splitlines => bytes_splitlines(bytes, args, vm),
-        StaticStrings::Partition => bytes_partition(bytes, args, heap, interns),
-        StaticStrings::Rpartition => bytes_rpartition(bytes, args, heap, interns),
+        StaticStrings::Partition => bytes_partition(bytes, args, vm),
+        StaticStrings::Rpartition => bytes_rpartition(bytes, args, vm),
         // Replace/padding methods
-        StaticStrings::Replace => bytes_replace(bytes, args, heap, interns),
-        StaticStrings::Center => bytes_center(bytes, args, heap, interns),
-        StaticStrings::Ljust => bytes_ljust(bytes, args, heap, interns),
-        StaticStrings::Rjust => bytes_rjust(bytes, args, heap, interns),
-        StaticStrings::Zfill => bytes_zfill(bytes, args, heap),
+        StaticStrings::Replace => bytes_replace(bytes, args, vm),
+        StaticStrings::Center => bytes_center(bytes, args, vm),
+        StaticStrings::Ljust => bytes_ljust(bytes, args, vm),
+        StaticStrings::Rjust => bytes_rjust(bytes, args, vm),
+        StaticStrings::Zfill => bytes_zfill(bytes, args, vm),
         // Join method
         StaticStrings::Join => {
             let iterable = args.get_one_arg("bytes.join", vm.heap)?;
             bytes_join(bytes, iterable, vm)
         }
         // Hex method
-        StaticStrings::Hex => bytes_hex(bytes, args, heap, interns),
+        StaticStrings::Hex => bytes_hex(bytes, args, vm),
         // fromhex is a classmethod but also accessible on instances
-        StaticStrings::Fromhex => bytes_fromhex(args, heap, interns),
+        StaticStrings::Fromhex => bytes_fromhex(args, vm.heap, vm.interns),
         _ => {
-            args.drop_with_heap(heap);
+            args.drop_with_heap(vm.heap);
             Err(ExcType::attribute_error(Type::Bytes, method.into()))
         }
     }
@@ -510,19 +508,18 @@ pub fn bytes_repr(bytes: &[u8]) -> String {
 /// Implements Python's `bytes.decode([encoding[, errors]])` method.
 ///
 /// Converts bytes to a string. Currently only supports UTF-8 encoding.
-fn bytes_decode(
-    bytes: &[u8],
+fn bytes_decode<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (encoding, errors) = args.get_zero_one_two_args("bytes.decode", heap)?;
-    defer_drop!(encoding, heap);
-    defer_drop!(errors, heap); // NB we don't use errors argument yet
+    let (encoding, errors) = args.get_zero_one_two_args("bytes.decode", vm.heap)?;
+    defer_drop!(encoding, vm);
+    defer_drop!(errors, vm); // NB we don't use errors argument yet
 
     // Check encoding (default UTF-8)
     let encoding = if let Some(enc) = encoding {
-        get_encoding_str(enc, heap, interns)?.to_ascii_lowercase()
+        get_encoding_str(enc, vm.heap, vm.interns)?.to_ascii_lowercase()
     } else {
         "utf-8".to_owned()
     };
@@ -532,14 +529,12 @@ fn bytes_decode(
         return Err(ExcType::lookup_error_unknown_encoding(&encoding));
     }
 
-    // Decode as UTF-8
-    match std::str::from_utf8(bytes) {
-        Ok(s) => {
-            let heap_id = heap.allocate(HeapData::Str(Str::from(s.to_owned())))?;
-            Ok(Value::Ref(heap_id))
-        }
-        Err(_) => Err(ExcType::unicode_decode_error_invalid_utf8()),
-    }
+    // Decode as UTF-8 — copy into owned String before releasing the heap borrow
+    let s = std::str::from_utf8(bytes.get(vm.heap))
+        .map(str::to_owned)
+        .map_err(|_| ExcType::unicode_decode_error_invalid_utf8())?;
+    let heap_id = vm.heap.allocate(HeapData::Str(Str::from(s)))?;
+    Ok(Value::Ref(heap_id))
 }
 
 /// Helper function to extract encoding string from a value.
@@ -564,15 +559,15 @@ fn get_encoding_str<'a>(
 /// Implements Python's `bytes.count(sub[, start[, end]])` method.
 ///
 /// Returns the number of non-overlapping occurrences of the subsequence.
-fn bytes_count(
-    bytes: &[u8],
+fn bytes_count<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (sub, start, end) = parse_bytes_sub_args("bytes.count", bytes.len(), args, heap, interns)?;
+    let len = bytes.get(vm.heap).len();
+    let (sub, start, end) = parse_bytes_sub_args("bytes.count", len, args, vm.heap, vm.interns)?;
 
-    let slice = &bytes[start..end];
+    let slice = &bytes.get(vm.heap)[start..end];
     let count = if sub.is_empty() {
         // Empty subsequence: count positions between each byte plus 1
         slice.len() + 1
@@ -602,15 +597,15 @@ fn count_non_overlapping(haystack: &[u8], needle: &[u8]) -> usize {
 /// Implements Python's `bytes.find(sub[, start[, end]])` method.
 ///
 /// Returns the lowest index where the subsequence is found, or -1 if not found.
-fn bytes_find(
-    bytes: &[u8],
+fn bytes_find<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (sub, start, end) = parse_bytes_sub_args("bytes.find", bytes.len(), args, heap, interns)?;
+    let len = bytes.get(vm.heap).len();
+    let (sub, start, end) = parse_bytes_sub_args("bytes.find", len, args, vm.heap, vm.interns)?;
 
-    let slice = &bytes[start..end];
+    let slice = &bytes.get(vm.heap)[start..end];
     let result = if sub.is_empty() {
         // Empty subsequence: always found at start position
         Some(0)
@@ -633,15 +628,15 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// Implements Python's `bytes.index(sub[, start[, end]])` method.
 ///
 /// Like find(), but raises ValueError if the subsequence is not found.
-fn bytes_index(
-    bytes: &[u8],
+fn bytes_index<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (sub, start, end) = parse_bytes_sub_args("bytes.index", bytes.len(), args, heap, interns)?;
+    let len = bytes.get(vm.heap).len();
+    let (sub, start, end) = parse_bytes_sub_args("bytes.index", len, args, vm.heap, vm.interns)?;
 
-    let slice = &bytes[start..end];
+    let slice = &bytes.get(vm.heap)[start..end];
     let result = if sub.is_empty() {
         // Empty subsequence: always found at start position
         Some(0)
@@ -663,16 +658,15 @@ fn bytes_index(
 /// Returns True if bytes starts with the specified prefix.
 /// Accepts bytes or a tuple of bytes as prefix. If a tuple is given, returns True
 /// if any of the prefixes match.
-fn bytes_startswith(
-    bytes: &[u8],
+fn bytes_startswith<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (prefix_arg, start, end) =
-        parse_bytes_prefix_suffix_args("bytes.startswith", bytes.len(), args, heap, interns)?;
+    let len = bytes.get(vm.heap).len();
+    let (prefix_arg, start, end) = parse_bytes_prefix_suffix_args("bytes.startswith", len, args, vm.heap, vm.interns)?;
 
-    let slice = &bytes[start..end];
+    let slice = &bytes.get(vm.heap)[start..end];
     let result = match prefix_arg {
         PrefixSuffixArg::Single(prefix_bytes) => slice.starts_with(&prefix_bytes),
         PrefixSuffixArg::Multiple(prefixes) => prefixes.iter().any(|p| slice.starts_with(p)),
@@ -685,15 +679,15 @@ fn bytes_startswith(
 /// Returns True if bytes ends with the specified suffix.
 /// Accepts bytes or a tuple of bytes as suffix. If a tuple is given, returns True
 /// if any of the suffixes match.
-fn bytes_endswith(
-    bytes: &[u8],
+fn bytes_endswith<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (suffix_arg, start, end) = parse_bytes_prefix_suffix_args("bytes.endswith", bytes.len(), args, heap, interns)?;
+    let len = bytes.get(vm.heap).len();
+    let (suffix_arg, start, end) = parse_bytes_prefix_suffix_args("bytes.endswith", len, args, vm.heap, vm.interns)?;
 
-    let slice = &bytes[start..end];
+    let slice = &bytes.get(vm.heap)[start..end];
     let result = match suffix_arg {
         PrefixSuffixArg::Single(suffix_bytes) => slice.ends_with(&suffix_bytes),
         PrefixSuffixArg::Multiple(suffixes) => suffixes.iter().any(|s| slice.ends_with(s)),
@@ -896,43 +890,45 @@ fn normalize_bytes_index(index: i64, len: usize) -> usize {
 /// Implements Python's `bytes.lower()` method.
 ///
 /// Returns a copy of the bytes with all ASCII uppercase characters converted to lowercase.
-fn bytes_lower(bytes: &[u8], heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-    let result: Vec<u8> = bytes.iter().map(|&b| b.to_ascii_lowercase()).collect();
-    allocate_bytes(result, heap)
+fn bytes_lower<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+    let result: Vec<u8> = bytes.get(vm.heap).iter().map(|&b| b.to_ascii_lowercase()).collect();
+    allocate_bytes(result, vm.heap)
 }
 
 /// Implements Python's `bytes.upper()` method.
 ///
 /// Returns a copy of the bytes with all ASCII lowercase characters converted to uppercase.
-fn bytes_upper(bytes: &[u8], heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-    let result: Vec<u8> = bytes.iter().map(|&b| b.to_ascii_uppercase()).collect();
-    allocate_bytes(result, heap)
+fn bytes_upper<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+    let result: Vec<u8> = bytes.get(vm.heap).iter().map(|&b| b.to_ascii_uppercase()).collect();
+    allocate_bytes(result, vm.heap)
 }
 
 /// Implements Python's `bytes.capitalize()` method.
 ///
 /// Returns a copy of the bytes with the first byte capitalized (if ASCII) and
 /// the rest lowercased.
-fn bytes_capitalize(bytes: &[u8], heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-    let mut result = Vec::with_capacity(bytes.len());
-    if let Some((&first, rest)) = bytes.split_first() {
+fn bytes_capitalize<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+    let data = bytes.get(vm.heap);
+    let mut result = Vec::with_capacity(data.len());
+    if let Some((&first, rest)) = data.split_first() {
         result.push(first.to_ascii_uppercase());
         for &b in rest {
             result.push(b.to_ascii_lowercase());
         }
     }
-    allocate_bytes(result, heap)
+    allocate_bytes(result, vm.heap)
 }
 
 /// Implements Python's `bytes.title()` method.
 ///
 /// Returns a titlecased version of the bytes where words start with an uppercase
 /// ASCII character and the remaining characters are lowercase.
-fn bytes_title(bytes: &[u8], heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-    let mut result = Vec::with_capacity(bytes.len());
+fn bytes_title<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
+    let data = bytes.get(vm.heap);
+    let mut result = Vec::with_capacity(data.len());
     let mut prev_is_cased = false;
 
-    for &b in bytes {
+    for &b in data {
         if prev_is_cased {
             result.push(b.to_ascii_lowercase());
         } else {
@@ -941,15 +937,16 @@ fn bytes_title(bytes: &[u8], heap: &mut Heap<impl ResourceTracker>) -> RunResult
         prev_is_cased = b.is_ascii_alphabetic();
     }
 
-    allocate_bytes(result, heap)
+    allocate_bytes(result, vm.heap)
 }
 
 /// Implements Python's `bytes.swapcase()` method.
 ///
 /// Returns a copy of the bytes with ASCII uppercase characters converted to
 /// lowercase and vice versa.
-fn bytes_swapcase(bytes: &[u8], heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+fn bytes_swapcase<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
     let result: Vec<u8> = bytes
+        .get(vm.heap)
         .iter()
         .map(|&b| {
             if b.is_ascii_uppercase() {
@@ -961,7 +958,7 @@ fn bytes_swapcase(bytes: &[u8], heap: &mut Heap<impl ResourceTracker>) -> RunRes
             }
         })
         .collect();
-    allocate_bytes(result, heap)
+    allocate_bytes(result, vm.heap)
 }
 
 // =============================================================================
@@ -1068,15 +1065,15 @@ fn bytes_istitle(bytes: &[u8]) -> bool {
 /// Implements Python's `bytes.rfind(sub[, start[, end]])` method.
 ///
 /// Returns the highest index where the subsequence is found, or -1 if not found.
-fn bytes_rfind(
-    bytes: &[u8],
+fn bytes_rfind<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (sub, start, end) = parse_bytes_sub_args("bytes.rfind", bytes.len(), args, heap, interns)?;
+    let len = bytes.get(vm.heap).len();
+    let (sub, start, end) = parse_bytes_sub_args("bytes.rfind", len, args, vm.heap, vm.interns)?;
 
-    let slice = &bytes[start..end];
+    let slice = &bytes.get(vm.heap)[start..end];
     let result = if sub.is_empty() {
         // Empty subsequence: always found at end position
         Some(slice.len())
@@ -1102,15 +1099,15 @@ fn rfind_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// Implements Python's `bytes.rindex(sub[, start[, end]])` method.
 ///
 /// Like rfind(), but raises ValueError if the subsequence is not found.
-fn bytes_rindex(
-    bytes: &[u8],
+fn bytes_rindex<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (sub, start, end) = parse_bytes_sub_args("bytes.rindex", bytes.len(), args, heap, interns)?;
+    let len = bytes.get(vm.heap).len();
+    let (sub, start, end) = parse_bytes_sub_args("bytes.rindex", len, args, vm.heap, vm.interns)?;
 
-    let slice = &bytes[start..end];
+    let slice = &bytes.get(vm.heap)[start..end];
     let result = if sub.is_empty() {
         Some(slice.len())
     } else {
@@ -1134,55 +1131,52 @@ fn bytes_rindex(
 ///
 /// Returns a copy of the bytes with leading and trailing bytes removed.
 /// If chars is not specified, ASCII whitespace bytes are removed.
-fn bytes_strip(
-    bytes: &[u8],
+fn bytes_strip<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let value = args.get_zero_one_arg("bytes.strip", heap)?;
-    defer_drop!(value, heap);
+    let value = args.get_zero_one_arg("bytes.strip", vm.heap)?;
+    defer_drop!(value, vm);
     let result = match value {
-        None | Some(Value::None) => bytes_strip_whitespace_both(bytes),
-        Some(v) => bytes_strip_both(bytes, extract_bytes_only(v, heap, interns)?),
+        None | Some(Value::None) => bytes_strip_whitespace_both(bytes.get(vm.heap)).to_vec(),
+        Some(v) => bytes_strip_both(bytes.get(vm.heap), extract_bytes_only(v, vm.heap, vm.interns)?).to_vec(),
     };
-    allocate_bytes(result.to_vec(), heap)
+    allocate_bytes(result, vm.heap)
 }
 
 /// Implements Python's `bytes.lstrip([chars])` method.
 ///
 /// Returns a copy of the bytes with leading bytes removed.
-fn bytes_lstrip(
-    bytes: &[u8],
+fn bytes_lstrip<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let value = args.get_zero_one_arg("bytes.lstrip", heap)?;
-    defer_drop!(value, heap);
+    let value = args.get_zero_one_arg("bytes.lstrip", vm.heap)?;
+    defer_drop!(value, vm);
     let result = match value {
-        None | Some(Value::None) => bytes_strip_whitespace_start(bytes),
-        Some(v) => bytes_strip_start(bytes, extract_bytes_only(v, heap, interns)?),
+        None | Some(Value::None) => bytes_strip_whitespace_start(bytes.get(vm.heap)).to_vec(),
+        Some(v) => bytes_strip_start(bytes.get(vm.heap), extract_bytes_only(v, vm.heap, vm.interns)?).to_vec(),
     };
-    allocate_bytes(result.to_vec(), heap)
+    allocate_bytes(result, vm.heap)
 }
 
 /// Implements Python's `bytes.rstrip([chars])` method.
 ///
 /// Returns a copy of the bytes with trailing bytes removed.
-fn bytes_rstrip(
-    bytes: &[u8],
+fn bytes_rstrip<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let value = args.get_zero_one_arg("bytes.rstrip", heap)?;
-    defer_drop!(value, heap);
+    let value = args.get_zero_one_arg("bytes.rstrip", vm.heap)?;
+    defer_drop!(value, vm);
     let result = match value {
-        None | Some(Value::None) => bytes_strip_whitespace_end(bytes),
-        Some(v) => bytes_strip_end(bytes, extract_bytes_only(v, heap, interns)?),
+        None | Some(Value::None) => bytes_strip_whitespace_end(bytes.get(vm.heap)).to_vec(),
+        Some(v) => bytes_strip_end(bytes.get(vm.heap), extract_bytes_only(v, vm.heap, vm.interns)?).to_vec(),
     };
-    allocate_bytes(result.to_vec(), heap)
+    allocate_bytes(result, vm.heap)
 }
 
 /// Strips bytes in `chars` from both ends of the byte slice.
@@ -1236,44 +1230,44 @@ fn bytes_strip_whitespace_end(bytes: &[u8]) -> &[u8] {
 ///
 /// If the bytes start with the prefix, return bytes[len(prefix):].
 /// Otherwise, return a copy of the original bytes.
-fn bytes_removeprefix(
-    bytes: &[u8],
+fn bytes_removeprefix<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let prefix_value = args.get_one_arg("bytes.removeprefix", heap)?;
-    defer_drop!(prefix_value, heap);
-    let prefix = extract_bytes_only(prefix_value, heap, interns)?;
+    let prefix_value = args.get_one_arg("bytes.removeprefix", vm.heap)?;
+    defer_drop!(prefix_value, vm);
+    let prefix = extract_bytes_only(prefix_value, vm.heap, vm.interns)?;
 
-    let result = if bytes.starts_with(prefix) {
-        bytes[prefix.len()..].to_vec()
+    let data = bytes.get(vm.heap);
+    let result = if data.starts_with(prefix) {
+        data[prefix.len()..].to_vec()
     } else {
-        bytes.to_vec()
+        data.to_vec()
     };
-    allocate_bytes(result, heap)
+    allocate_bytes(result, vm.heap)
 }
 
 /// Implements Python's `bytes.removesuffix(suffix)` method.
 ///
 /// If the bytes end with the suffix, return bytes[:-len(suffix)].
 /// Otherwise, return a copy of the original bytes.
-fn bytes_removesuffix(
-    bytes: &[u8],
+fn bytes_removesuffix<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let suffix_value = args.get_one_arg("bytes.removesuffix", heap)?;
-    defer_drop!(suffix_value, heap);
-    let suffix = extract_bytes_only(suffix_value, heap, interns)?;
+    let suffix_value = args.get_one_arg("bytes.removesuffix", vm.heap)?;
+    defer_drop!(suffix_value, vm);
+    let suffix = extract_bytes_only(suffix_value, vm.heap, vm.interns)?;
 
-    let result = if bytes.ends_with(suffix) && !suffix.is_empty() {
-        bytes[..bytes.len() - suffix.len()].to_vec()
+    let data = bytes.get(vm.heap);
+    let result = if data.ends_with(suffix) && !suffix.is_empty() {
+        data[..data.len() - suffix.len()].to_vec()
     } else {
-        bytes.to_vec()
+        data.to_vec()
     };
-    allocate_bytes(result, heap)
+    allocate_bytes(result, vm.heap)
 }
 
 // =============================================================================
@@ -1283,88 +1277,98 @@ fn bytes_removesuffix(
 /// Implements Python's `bytes.split([sep[, maxsplit]])` method.
 ///
 /// Returns a list of the bytes split by the separator.
-fn bytes_split(
-    bytes: &[u8],
+fn bytes_split<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (sep, maxsplit) = parse_bytes_split_args("bytes.split", args, heap, interns)?;
+    let (sep, maxsplit) = parse_bytes_split_args("bytes.split", args, vm.heap, vm.interns)?;
 
-    let parts: Vec<&[u8]> = match &sep {
-        Some(sep) => {
-            if sep.is_empty() {
-                return Err(ExcType::value_error_empty_separator());
+    // Collect split parts into owned Vecs so the immutable heap borrow from
+    // `bytes.get()` ends before we allocate.
+    let parts: Vec<Vec<u8>> = {
+        let data = bytes.get(vm.heap);
+        let slices: Vec<&[u8]> = match &sep {
+            Some(sep) => {
+                if sep.is_empty() {
+                    return Err(ExcType::value_error_empty_separator());
+                }
+                if maxsplit < 0 {
+                    bytes_split_by_seq(data, sep)
+                } else {
+                    let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
+                    bytes_splitn_by_seq(data, sep, max + 1)
+                }
             }
-            if maxsplit < 0 {
-                bytes_split_by_seq(bytes, sep)
-            } else {
-                let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                bytes_splitn_by_seq(bytes, sep, max + 1)
+            None => {
+                if maxsplit < 0 {
+                    bytes_split_whitespace(data)
+                } else {
+                    let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
+                    bytes_splitn_whitespace(data, max)
+                }
             }
-        }
-        None => {
-            if maxsplit < 0 {
-                bytes_split_whitespace(bytes)
-            } else {
-                let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                bytes_splitn_whitespace(bytes, max)
-            }
-        }
+        };
+        slices.into_iter().map(<[u8]>::to_vec).collect()
     };
 
     let mut list_items = Vec::with_capacity(parts.len());
     for part in parts {
-        heap.check_time()?;
-        list_items.push(allocate_bytes(part.to_vec(), heap)?);
+        vm.heap.check_time()?;
+        list_items.push(allocate_bytes(part, vm.heap)?);
     }
 
     let list = List::new(list_items);
-    let heap_id = heap.allocate(HeapData::List(list))?;
+    let heap_id = vm.heap.allocate(HeapData::List(list))?;
     Ok(Value::Ref(heap_id))
 }
 
 /// Implements Python's `bytes.rsplit([sep[, maxsplit]])` method.
 ///
 /// Returns a list of the bytes split by the separator, splitting from the right.
-fn bytes_rsplit(
-    bytes: &[u8],
+fn bytes_rsplit<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (sep, maxsplit) = parse_bytes_split_args("bytes.rsplit", args, heap, interns)?;
+    let (sep, maxsplit) = parse_bytes_split_args("bytes.rsplit", args, vm.heap, vm.interns)?;
 
-    let parts: Vec<&[u8]> = match &sep {
-        Some(sep) => {
-            if sep.is_empty() {
-                return Err(ExcType::value_error_empty_separator());
+    // Collect split parts into owned Vecs so the immutable heap borrow from
+    // `bytes.get()` ends before we allocate.
+    let parts: Vec<Vec<u8>> = {
+        let data = bytes.get(vm.heap);
+        let slices: Vec<&[u8]> = match &sep {
+            Some(sep) => {
+                if sep.is_empty() {
+                    return Err(ExcType::value_error_empty_separator());
+                }
+                if maxsplit < 0 {
+                    bytes_split_by_seq(data, sep)
+                } else {
+                    let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
+                    bytes_rsplitn_by_seq(data, sep, max + 1)
+                }
             }
-            if maxsplit < 0 {
-                bytes_split_by_seq(bytes, sep)
-            } else {
-                let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                bytes_rsplitn_by_seq(bytes, sep, max + 1)
+            None => {
+                if maxsplit < 0 {
+                    bytes_split_whitespace(data)
+                } else {
+                    let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
+                    bytes_rsplitn_whitespace(data, max)
+                }
             }
-        }
-        None => {
-            if maxsplit < 0 {
-                bytes_split_whitespace(bytes)
-            } else {
-                let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                bytes_rsplitn_whitespace(bytes, max)
-            }
-        }
+        };
+        slices.into_iter().map(<[u8]>::to_vec).collect()
     };
 
     let mut list_items = Vec::with_capacity(parts.len());
     for part in parts {
-        heap.check_time()?;
-        list_items.push(allocate_bytes(part.to_vec(), heap)?);
+        vm.heap.check_time()?;
+        list_items.push(allocate_bytes(part, vm.heap)?);
     }
 
     let list = List::new(list_items);
-    let heap_id = heap.allocate(HeapData::List(list))?;
+    let heap_id = vm.heap.allocate(HeapData::List(list))?;
     Ok(Value::Ref(heap_id))
 }
 
@@ -1588,12 +1592,20 @@ fn bytes_rsplitn_whitespace(bytes: &[u8], maxsplit: usize) -> Vec<&[u8]> {
 /// Implements Python's `bytes.splitlines([keepends])` method.
 ///
 /// Returns a list of the lines in the bytes, breaking at line boundaries.
-fn bytes_splitlines(bytes: &[u8], args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+fn bytes_splitlines<'h>(
+    bytes: &HeapRead<'h, [u8]>,
+    args: ArgValues,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
+) -> RunResult<Value> {
     let keepends = parse_bytes_splitlines_args(args, vm)?;
+
+    // Copy bytes data upfront so we can interleave reads with mutable heap operations
+    // (check_time, allocate) in the loop below.
+    let data = bytes.get(vm.heap).to_vec();
+    let len = data.len();
 
     let mut lines = Vec::new();
     let mut start = 0;
-    let len = bytes.len();
 
     while start < len {
         vm.heap.check_time()?;
@@ -1602,7 +1614,7 @@ fn bytes_splitlines(bytes: &[u8], args: ArgValues, vm: &mut VM<'_, '_, impl Reso
         let mut line_end = start;
 
         while end < len {
-            match bytes[end] {
+            match data[end] {
                 b'\n' => {
                     line_end = end;
                     end += 1;
@@ -1611,7 +1623,7 @@ fn bytes_splitlines(bytes: &[u8], args: ArgValues, vm: &mut VM<'_, '_, impl Reso
                 b'\r' => {
                     line_end = end;
                     end += 1;
-                    if end < len && bytes[end] == b'\n' {
+                    if end < len && data[end] == b'\n' {
                         end += 1;
                     }
                     break;
@@ -1624,9 +1636,9 @@ fn bytes_splitlines(bytes: &[u8], args: ArgValues, vm: &mut VM<'_, '_, impl Reso
         }
 
         let line = if keepends {
-            &bytes[start..end]
+            &data[start..end]
         } else {
-            &bytes[start..line_end]
+            &data[start..line_end]
         };
         lines.push(allocate_bytes(line.to_vec(), vm.heap)?);
         start = end;
@@ -1689,64 +1701,64 @@ fn parse_bytes_splitlines_args(args: ArgValues, vm: &mut VM<'_, '_, impl Resourc
 /// Implements Python's `bytes.partition(sep)` method.
 ///
 /// Splits the bytes at the first occurrence of sep, and returns a 3-tuple.
-fn bytes_partition(
-    bytes: &[u8],
+fn bytes_partition<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let sep_value = args.get_one_arg("bytes.partition", heap)?;
-    defer_drop!(sep_value, heap);
-    let sep = extract_bytes_only(sep_value, heap, interns)?;
+    let sep_value = args.get_one_arg("bytes.partition", vm.heap)?;
+    defer_drop!(sep_value, vm);
+    let sep = extract_bytes_only(sep_value, vm.heap, vm.interns)?;
 
     if sep.is_empty() {
         return Err(ExcType::value_error_empty_separator());
     }
 
-    let (before, sep_found, after) = match find_subsequence(bytes, sep) {
-        Some(pos) => (bytes[..pos].to_vec(), sep.to_vec(), bytes[pos + sep.len()..].to_vec()),
-        None => (bytes.to_vec(), Vec::new(), Vec::new()),
+    let data = bytes.get(vm.heap);
+    let (before, sep_found, after) = match find_subsequence(data, sep) {
+        Some(pos) => (data[..pos].to_vec(), sep.to_vec(), data[pos + sep.len()..].to_vec()),
+        None => (data.to_vec(), Vec::new(), Vec::new()),
     };
 
-    let before_val = allocate_bytes(before, heap)?;
-    let sep_val = allocate_bytes(sep_found, heap)?;
-    let after_val = allocate_bytes(after, heap)?;
+    let before_val = allocate_bytes(before, vm.heap)?;
+    let sep_val = allocate_bytes(sep_found, vm.heap)?;
+    let after_val = allocate_bytes(after, vm.heap)?;
 
     Ok(crate::types::allocate_tuple(
         smallvec![before_val, sep_val, after_val],
-        heap,
+        vm.heap,
     )?)
 }
 
 /// Implements Python's `bytes.rpartition(sep)` method.
 ///
 /// Splits the bytes at the last occurrence of sep, and returns a 3-tuple.
-fn bytes_rpartition(
-    bytes: &[u8],
+fn bytes_rpartition<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let sep_value = args.get_one_arg("bytes.rpartition", heap)?;
-    defer_drop!(sep_value, heap);
-    let sep = extract_bytes_only(sep_value, heap, interns)?;
+    let sep_value = args.get_one_arg("bytes.rpartition", vm.heap)?;
+    defer_drop!(sep_value, vm);
+    let sep = extract_bytes_only(sep_value, vm.heap, vm.interns)?;
 
     if sep.is_empty() {
         return Err(ExcType::value_error_empty_separator());
     }
 
-    let (before, sep_found, after) = match rfind_subsequence(bytes, sep) {
-        Some(pos) => (bytes[..pos].to_vec(), sep.to_vec(), bytes[pos + sep.len()..].to_vec()),
-        None => (Vec::new(), Vec::new(), bytes.to_vec()),
+    let data = bytes.get(vm.heap);
+    let (before, sep_found, after) = match rfind_subsequence(data, sep) {
+        Some(pos) => (data[..pos].to_vec(), sep.to_vec(), data[pos + sep.len()..].to_vec()),
+        None => (Vec::new(), Vec::new(), data.to_vec()),
     };
 
-    let before_val = allocate_bytes(before, heap)?;
-    let sep_val = allocate_bytes(sep_found, heap)?;
-    let after_val = allocate_bytes(after, heap)?;
+    let before_val = allocate_bytes(before, vm.heap)?;
+    let sep_val = allocate_bytes(sep_found, vm.heap)?;
+    let after_val = allocate_bytes(after, vm.heap)?;
 
     Ok(crate::types::allocate_tuple(
         smallvec![before_val, sep_val, after_val],
-        heap,
+        vm.heap,
     )?)
 }
 
@@ -1757,24 +1769,26 @@ fn bytes_rpartition(
 /// Implements Python's `bytes.replace(old, new[, count])` method.
 ///
 /// Returns a copy with all occurrences of old replaced by new.
-fn bytes_replace(
-    bytes: &[u8],
+fn bytes_replace<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (old, new, count) = parse_bytes_replace_args("bytes.replace", args, heap, interns)?;
+    let (old, new, count) = parse_bytes_replace_args("bytes.replace", args, vm.heap, vm.interns)?;
 
-    check_replace_size(bytes.len(), old.len(), new.len(), count, heap.tracker())?;
+    // Copy bytes upfront because replace helpers interleave reads with check_time.
+    let data = bytes.get(vm.heap).to_vec();
+
+    check_replace_size(data.len(), old.len(), new.len(), count, vm.heap.tracker())?;
 
     let result = if count < 0 {
-        bytes_replace_all(bytes, &old, &new, heap)?
+        bytes_replace_all(&data, &old, &new, vm.heap)?
     } else {
         let n = usize::try_from(count).unwrap_or(usize::MAX);
-        bytes_replace_n(bytes, &old, &new, n, heap)?
+        bytes_replace_n(&data, &old, &new, n, vm.heap)?
     };
 
-    allocate_bytes(result, heap)
+    allocate_bytes(result, vm.heap)
 }
 
 /// Parses arguments for bytes.replace method.
@@ -1930,19 +1944,20 @@ fn bytes_replace_n(
 /// Implements Python's `bytes.center(width[, fillbyte])` method.
 ///
 /// Returns centered in a bytes of length width.
-fn bytes_center(
-    bytes: &[u8],
+fn bytes_center<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (width, fillbyte) = parse_bytes_justify_args("bytes.center", args, heap, interns)?;
-    let len = bytes.len();
+    let (width, fillbyte) = parse_bytes_justify_args("bytes.center", args, vm.heap, vm.interns)?;
+
+    let data = bytes.get(vm.heap);
+    let len = data.len();
 
     let result = if width <= len {
-        bytes.to_vec()
+        data.to_vec()
     } else {
-        check_repeat_size(width, 1, heap.tracker())?;
+        check_repeat_size(width, 1, vm.heap.tracker())?;
         let total_pad = width - len;
         let left_pad = total_pad / 2;
         let right_pad = total_pad - left_pad;
@@ -1950,70 +1965,72 @@ fn bytes_center(
         for _ in 0..left_pad {
             result.push(fillbyte);
         }
-        result.extend_from_slice(bytes);
+        result.extend_from_slice(data);
         for _ in 0..right_pad {
             result.push(fillbyte);
         }
         result
     };
 
-    allocate_bytes(result, heap)
+    allocate_bytes(result, vm.heap)
 }
 
 /// Implements Python's `bytes.ljust(width[, fillbyte])` method.
 ///
 /// Returns left-justified in a bytes of length width.
-fn bytes_ljust(
-    bytes: &[u8],
+fn bytes_ljust<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (width, fillbyte) = parse_bytes_justify_args("bytes.ljust", args, heap, interns)?;
-    let len = bytes.len();
+    let (width, fillbyte) = parse_bytes_justify_args("bytes.ljust", args, vm.heap, vm.interns)?;
+
+    let data = bytes.get(vm.heap);
+    let len = data.len();
 
     let result = if width <= len {
-        bytes.to_vec()
+        data.to_vec()
     } else {
-        check_repeat_size(width, 1, heap.tracker())?;
+        check_repeat_size(width, 1, vm.heap.tracker())?;
         let pad = width - len;
         let mut result = Vec::with_capacity(width);
-        result.extend_from_slice(bytes);
+        result.extend_from_slice(data);
         for _ in 0..pad {
             result.push(fillbyte);
         }
         result
     };
 
-    allocate_bytes(result, heap)
+    allocate_bytes(result, vm.heap)
 }
 
 /// Implements Python's `bytes.rjust(width[, fillbyte])` method.
 ///
 /// Returns right-justified in a bytes of length width.
-fn bytes_rjust(
-    bytes: &[u8],
+fn bytes_rjust<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (width, fillbyte) = parse_bytes_justify_args("bytes.rjust", args, heap, interns)?;
-    let len = bytes.len();
+    let (width, fillbyte) = parse_bytes_justify_args("bytes.rjust", args, vm.heap, vm.interns)?;
+
+    let data = bytes.get(vm.heap);
+    let len = data.len();
 
     let result = if width <= len {
-        bytes.to_vec()
+        data.to_vec()
     } else {
-        check_repeat_size(width, 1, heap.tracker())?;
+        check_repeat_size(width, 1, vm.heap.tracker())?;
         let pad = width - len;
         let mut result = Vec::with_capacity(width);
         for _ in 0..pad {
             result.push(fillbyte);
         }
-        result.extend_from_slice(bytes);
+        result.extend_from_slice(data);
         result
     };
 
-    allocate_bytes(result, heap)
+    allocate_bytes(result, vm.heap)
 }
 
 /// Parses arguments for bytes justify methods (center, ljust, rjust).
@@ -2057,38 +2074,44 @@ fn parse_bytes_justify_args(
 /// Implements Python's `bytes.zfill(width)` method.
 ///
 /// Returns a copy of the bytes left filled with ASCII '0' digits.
-fn bytes_zfill(bytes: &[u8], args: ArgValues, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-    let width_value = args.get_one_arg("bytes.zfill", heap)?;
-    defer_drop!(width_value, heap);
-    let width_i64 = width_value.as_int(heap)?;
+fn bytes_zfill<'h>(
+    bytes: &HeapRead<'h, [u8]>,
+    args: ArgValues,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
+) -> RunResult<Value> {
+    let width_value = args.get_one_arg("bytes.zfill", vm.heap)?;
+    defer_drop!(width_value, vm);
+    let width_i64 = width_value.as_int(vm.heap)?;
 
     let width = if width_i64 < 0 {
         0
     } else {
         usize::try_from(width_i64).unwrap_or(usize::MAX)
     };
-    let len = bytes.len();
+
+    let data = bytes.get(vm.heap);
+    let len = data.len();
 
     let result = if width <= len {
-        bytes.to_vec()
+        data.to_vec()
     } else {
-        check_repeat_size(width, 1, heap.tracker())?;
+        check_repeat_size(width, 1, vm.heap.tracker())?;
         let pad = width - len;
         let mut result = Vec::with_capacity(width);
 
         // Handle sign prefix
-        if !bytes.is_empty() && (bytes[0] == b'+' || bytes[0] == b'-') {
-            result.push(bytes[0]);
+        if !data.is_empty() && (data[0] == b'+' || data[0] == b'-') {
+            result.push(data[0]);
             result.resize(pad + 1, b'0');
-            result.extend_from_slice(&bytes[1..]);
+            result.extend_from_slice(&data[1..]);
         } else {
             result.resize(pad, b'0');
-            result.extend_from_slice(bytes);
+            result.extend_from_slice(data);
         }
         result
     };
 
-    allocate_bytes(result, heap)
+    allocate_bytes(result, vm.heap)
 }
 
 // =============================================================================
@@ -2098,7 +2121,11 @@ fn bytes_zfill(bytes: &[u8], args: ArgValues, heap: &mut Heap<impl ResourceTrack
 /// Implements Python's `bytes.join(iterable)` method.
 ///
 /// Joins elements of the iterable with the separator bytes.
-fn bytes_join(separator: &[u8], iterable: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+fn bytes_join<'h>(
+    separator: &HeapRead<'h, [u8]>,
+    iterable: Value,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
+) -> RunResult<Value> {
     let Ok(iter) = MontyIter::new(iterable, vm) else {
         return Err(ExcType::type_error_join_not_iterable());
     };
@@ -2111,7 +2138,7 @@ fn bytes_join(separator: &[u8], iterable: Value, vm: &mut VM<'_, '_, impl Resour
         defer_drop!(item, vm);
 
         if index > 0 {
-            result.extend_from_slice(separator);
+            result.extend_from_slice(separator.get(vm.heap));
         }
 
         // Check item is bytes and extract its content
@@ -2149,15 +2176,15 @@ fn bytes_join(separator: &[u8], iterable: Value, vm: &mut VM<'_, '_, impl Resour
 /// Implements Python's `bytes.hex([sep[, bytes_per_sep]])` method.
 ///
 /// Returns a string containing the hexadecimal representation of the bytes.
-fn bytes_hex(
-    bytes: &[u8],
+fn bytes_hex<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (sep, bytes_per_sep) = parse_bytes_hex_args(args, heap, interns)?;
+    let (sep, bytes_per_sep) = parse_bytes_hex_args(args, vm.heap, vm.interns)?;
 
-    let hex_chars: Vec<char> = bytes
+    let data = bytes.get(vm.heap);
+    let hex_chars: Vec<char> = data
         .iter()
         .flat_map(|b| {
             let hi = (b >> 4) & 0xf;
@@ -2177,7 +2204,7 @@ fn bytes_hex(
         .collect();
 
     let result = if let Some(sep) = sep {
-        if bytes_per_sep == 0 || bytes.is_empty() {
+        if bytes_per_sep == 0 || data.is_empty() {
             hex_chars.iter().collect()
         } else {
             // Insert separator every `bytes_per_sep` bytes (2*bytes_per_sep hex chars)
@@ -2214,7 +2241,7 @@ fn bytes_hex(
         hex_chars.iter().collect()
     };
 
-    crate::types::str::allocate_string(result, heap)
+    crate::types::str::allocate_string(result, vm.heap)
 }
 
 /// Parses arguments for bytes.hex method.

@@ -455,14 +455,6 @@ impl Path {
 }
 
 impl Path {
-    /// Returns whether this path is truthy (always true in Python).
-    ///
-    /// Kept as an inherent method so `HeapData` can call it without going
-    /// through a `HeapRead` handle.
-    pub fn py_bool(&self, _vm: &VM<'_, '_, impl ResourceTracker>) -> bool {
-        true
-    }
-
     /// Formats this path for `repr()` output.
     ///
     /// Kept as an inherent method so `HeapData` can call it without going
@@ -492,8 +484,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
         Ok(self.get(vm.heap).path == other.get(vm.heap).path)
     }
 
-    fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
-        self.get(vm.heap).py_bool(vm)
+    fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
+        /// Path always truthy in Python
+        true
     }
 
     fn py_repr_fmt(

@@ -221,6 +221,7 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
         }
     }
 
+    #[expect(clippy::unused_self, reason = "'a lifetime is used to create the safety guarantees")]
     pub fn protect<'t, U: ?Sized>(&mut self, value: &'t U) -> BorrowedHeapRead<'t, 'a, U> {
         BorrowedHeapRead {
             inner: ManuallyDrop::new(HeapRead {
@@ -472,7 +473,7 @@ impl<'a, U> Deref for BorrowedHeapReadMut<'_, 'a, U> {
     }
 }
 
-impl<'a, U> DerefMut for BorrowedHeapReadMut<'_, 'a, U> {
+impl<U> DerefMut for BorrowedHeapReadMut<'_, '_, U> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }

@@ -442,7 +442,7 @@ impl DictValuesView {
     ///
     /// Delegates to the same helpers used by the `PyTrait` impl on `HeapRead<DictValuesView>`.
     pub(crate) fn py_repr_fmt(
-        &self,
+        self,
         f: &mut impl Write,
         vm: &VM<'_, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
