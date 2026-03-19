@@ -60,7 +60,7 @@ impl Str {
     /// Handles slice-based indexing for strings.
     ///
     /// Returns a new string containing the selected characters (Unicode-aware).
-    fn getitem_slice(&self, slice: &crate::types::Slice, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    fn getitem_slice(&self, slice: &crate::types::Slice, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         let char_count = self.0.chars().count();
         let (start, stop, step) = slice
             .indices(char_count)
@@ -120,7 +120,7 @@ pub fn allocate_string(s: String, heap: &mut Heap<impl ResourceTracker>) -> RunR
 /// Non-ASCII characters are allocated on the heap.
 ///
 /// This is used by string iteration and `chr()` builtin.
-pub fn allocate_char(c: char, heap: &mut Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
+pub fn allocate_char(c: char, heap: &Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
     if c.is_ascii() {
         Ok(Value::InternString(StringId::from_ascii(c as u8)))
     } else {
@@ -213,14 +213,12 @@ impl PyTrait for Str {
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
-        let heap = &mut *vm.heap;
+        let heap = &*vm.heap;
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = heap.get(*id)
         {
-            // Clone the slice to release the borrow on heap before calling getitem_slice
-            let slice = slice.clone();
-            return self.getitem_slice(&slice, heap);
+            return self.getitem_slice(slice, heap);
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt

@@ -144,7 +144,7 @@ impl From<Tuple> for TupleVec {
 /// ```
 pub fn allocate_tuple(
     items: SmallVec<[Value; TUPLE_INLINE_CAPACITY]>,
-    heap: &mut Heap<impl ResourceTracker>,
+    heap: &Heap<impl ResourceTracker>,
 ) -> Result<Value, crate::resource::ResourceError> {
     if items.is_empty() {
         Ok(heap.get_empty_tuple())

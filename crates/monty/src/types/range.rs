@@ -151,7 +151,7 @@ impl Range {
     ///
     /// Returns a new range object representing the sliced view.
     /// The new range has computed start, stop, and step values.
-    fn getitem_slice(&self, slice: &crate::types::Slice, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    fn getitem_slice(&self, slice: &crate::types::Slice, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         let range_len = self.len();
         let (start, stop, step) = slice
             .indices(range_len)
@@ -217,9 +217,7 @@ impl PyTrait for Range {
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = vm.heap.get(*id)
         {
-            // Clone the slice to release the borrow on heap before calling getitem_slice
-            let slice = slice.clone();
-            return self.getitem_slice(&slice, vm.heap);
+            return self.getitem_slice(slice, vm.heap);
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt

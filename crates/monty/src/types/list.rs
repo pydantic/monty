@@ -183,7 +183,7 @@ impl List {
     /// Handles slice-based indexing for lists.
     ///
     /// Returns a new list containing the selected elements.
-    fn getitem_slice(&self, slice: &crate::types::Slice, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    fn getitem_slice(&self, slice: &crate::types::Slice, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         let (start, stop, step) = slice
             .indices(self.items.len())
             .map_err(|()| ExcType::value_error_slice_step_zero())?;
@@ -210,14 +210,12 @@ impl PyTrait for List {
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
-        let heap = &mut *vm.heap;
+        let heap = &*vm.heap;
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = heap.get(*id)
         {
-            // Clone the slice to release the borrow on heap before calling getitem_slice
-            let slice = slice.clone();
-            return self.getitem_slice(&slice, heap);
+            return self.getitem_slice(slice, heap);
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
@@ -779,7 +777,7 @@ pub(crate) fn get_slice_items(
     start: usize,
     stop: usize,
     step: i64,
-    heap: &mut Heap<impl ResourceTracker>,
+    heap: &Heap<impl ResourceTracker>,
 ) -> RunResult<Vec<Value>> {
     let mut result = Vec::new();
 
