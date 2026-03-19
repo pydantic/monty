@@ -843,7 +843,7 @@ mod tests {
         list_items: Vec<Value>,
         index_value: BigInt,
     ) -> (Heap<NoLimitTracker>, HeapId, HeapId) {
-        let mut heap = Heap::new(16, NoLimitTracker);
+        let heap = Heap::new(16, NoLimitTracker);
         let list = List::new(list_items);
         let list_id = heap.allocate(HeapData::List(list)).unwrap();
         let long_int = LongInt::new(index_value);

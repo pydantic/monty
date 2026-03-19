@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     fmt,
     sync::atomic::{AtomicU16, Ordering},
     time::{Duration, Instant},
@@ -243,13 +244,13 @@ pub trait ResourceTracker: fmt::Debug {
     ///
     /// # Arguments
     /// * `size` - Approximate size in bytes of the allocation
-    fn on_allocate(&mut self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError>;
+    fn on_allocate(&self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError>;
 
     /// Called when memory is freed (during dec_ref or garbage collection).
     ///
     /// # Arguments
     /// * `size` - Size in bytes of the freed allocation
-    fn on_free(&mut self, get_size: impl FnOnce() -> usize);
+    fn on_free(&self, get_size: impl FnOnce() -> usize);
 
     /// Called periodically (at statement boundaries) to check time limits.
     ///
@@ -292,12 +293,12 @@ pub struct NoLimitTracker;
 
 impl ResourceTracker for NoLimitTracker {
     #[inline]
-    fn on_allocate(&mut self, _: impl FnOnce() -> usize) -> Result<(), ResourceError> {
+    fn on_allocate(&self, _: impl FnOnce() -> usize) -> Result<(), ResourceError> {
         Ok(())
     }
 
     #[inline]
-    fn on_free(&mut self, _: impl FnOnce() -> usize) {}
+    fn on_free(&self, _: impl FnOnce() -> usize) {}
 
     #[inline]
     fn check_time(&self) -> Result<(), ResourceError> {
@@ -412,17 +413,31 @@ const TIME_CHECK_INTERVAL: u16 = 10;
 ///
 /// When serialized/deserialized, the `start_time` is reset to `Instant::now()`.
 /// This means time limits restart from zero after deserialization.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+/// A resource tracker that enforces configurable limits.
+///
+/// Tracks allocation count, memory usage, and execution time, returning
+/// errors when limits are exceeded. Also schedules garbage collection
+/// at configurable intervals.
+///
+/// Uses `Cell` for `allocation_count` and `current_memory` to allow
+/// `on_allocate` and `on_free` to take `&self` (enabling `&self` on
+/// `Heap::allocate`). This follows the same interior mutability pattern
+/// as `check_counter` (which uses `AtomicU16`).
+///
+/// When serialized/deserialized, the `start_time` is reset to `Instant::now()`.
+/// This means time limits restart from zero after deserialization.
+#[derive(Debug)]
 pub struct LimitedTracker {
     limits: ResourceLimits,
     /// When execution started (for time limit checking).
     /// Reset to `Instant::now()` on deserialization.
-    #[serde(skip, default = "Instant::now")]
     start_time: Instant,
-    /// Total number of allocations made.
-    allocation_count: usize,
-    /// Current approximate memory usage in bytes.
-    current_memory: usize,
+    /// Total number of allocations made. Uses `Cell` for interior mutability
+    /// so that `on_allocate(&self)` can increment without `&mut self`.
+    allocation_count: Cell<usize>,
+    /// Current approximate memory usage in bytes. Uses `Cell` for interior
+    /// mutability so that `on_allocate`/`on_free` can update without `&mut self`.
+    current_memory: Cell<usize>,
     /// Counter for rate-limiting `Instant::elapsed()` calls in `check_time`.
     ///
     /// Uses `AtomicU16` for interior mutability since `check_time` takes `&self`
@@ -440,8 +455,8 @@ impl LimitedTracker {
         Self {
             limits,
             start_time: Instant::now(),
-            allocation_count: 0,
-            current_memory: 0,
+            allocation_count: Cell::new(0),
+            current_memory: Cell::new(0),
             check_counter: AtomicU16::new(0),
         }
     }
@@ -449,13 +464,13 @@ impl LimitedTracker {
     /// Returns the current allocation count.
     #[must_use]
     pub fn allocation_count(&self) -> usize {
-        self.allocation_count
+        self.allocation_count.get()
     }
 
     /// Returns the current approximate memory usage.
     #[must_use]
     pub fn current_memory(&self) -> usize {
-        self.current_memory
+        self.current_memory.get()
     }
 
     /// Returns the elapsed time since tracker creation.
@@ -476,21 +491,23 @@ impl LimitedTracker {
 }
 
 impl ResourceTracker for LimitedTracker {
-    fn on_allocate(&mut self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError> {
+    fn on_allocate(&self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError> {
+        let count = self.allocation_count.get();
         // Check allocation count limit
         if let Some(max) = self.limits.max_allocations
-            && self.allocation_count >= max
+            && count >= max
         {
             return Err(ResourceError::Allocation {
                 limit: max,
-                count: self.allocation_count + 1,
+                count: count + 1,
             });
         }
 
         let size = get_size();
         // Check memory limit
+        let current_mem = self.current_memory.get();
         if let Some(max) = self.limits.max_memory {
-            let new_memory = self.current_memory + size;
+            let new_memory = current_mem + size;
             if new_memory > max {
                 return Err(ResourceError::Memory {
                     limit: max,
@@ -500,14 +517,15 @@ impl ResourceTracker for LimitedTracker {
         }
 
         // Update tracking state
-        self.allocation_count += 1;
-        self.current_memory += size;
+        self.allocation_count.set(count + 1);
+        self.current_memory.set(current_mem + size);
 
         Ok(())
     }
 
-    fn on_free(&mut self, get_size: impl FnOnce() -> usize) {
-        self.current_memory = self.current_memory.saturating_sub(get_size());
+    fn on_free(&self, get_size: impl FnOnce() -> usize) {
+        let current = self.current_memory.get();
+        self.current_memory.set(current.saturating_sub(get_size()));
     }
 
     fn check_time(&self) -> Result<(), ResourceError> {
@@ -546,7 +564,7 @@ impl ResourceTracker for LimitedTracker {
     fn check_large_result(&self, estimated_bytes: usize) -> Result<(), ResourceError> {
         // Check if this would exceed memory limit
         if let Some(max) = self.limits.max_memory {
-            let new_memory = self.current_memory.saturating_add(estimated_bytes);
+            let new_memory = self.current_memory.get().saturating_add(estimated_bytes);
             if new_memory > max {
                 return Err(ResourceError::Memory {
                     limit: max,
@@ -555,5 +573,35 @@ impl ResourceTracker for LimitedTracker {
             }
         }
         Ok(())
+    }
+}
+
+impl serde::Serialize for LimitedTracker {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("LimitedTracker", 3)?;
+        state.serialize_field("limits", &self.limits)?;
+        state.serialize_field("allocation_count", &self.allocation_count.get())?;
+        state.serialize_field("current_memory", &self.current_memory.get())?;
+        state.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for LimitedTracker {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        struct Fields {
+            limits: ResourceLimits,
+            allocation_count: usize,
+            current_memory: usize,
+        }
+        let fields = Fields::deserialize(deserializer)?;
+        Ok(Self {
+            limits: fields.limits,
+            start_time: Instant::now(),
+            allocation_count: Cell::new(fields.allocation_count),
+            current_memory: Cell::new(fields.current_memory),
+            check_counter: AtomicU16::new(0),
+        })
     }
 }

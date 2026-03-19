@@ -18,6 +18,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult},
     heap_data::HeapDataMut,
+    heap_entries::HeapEntries,
     intern::Interns,
     resource::{ResourceError, ResourceTracker, check_mult_size, check_repeat_size},
     types::{List, LongInt, PyTrait, Tuple, allocate_tuple},
@@ -29,6 +30,12 @@ use crate::{
 pub struct HeapId(usize);
 
 impl HeapId {
+    /// Creates a `HeapId` from a raw index.
+    #[inline]
+    pub(crate) fn from_index(index: usize) -> Self {
+        Self(index)
+    }
+
     /// Returns the raw index value.
     #[inline]
     pub fn index(self) -> usize {
@@ -142,16 +149,17 @@ impl DropWithHeap for RecursionToken {
 /// handles the Drop constraint by using `std::mem::take` during serialization.
 #[derive(Debug)]
 pub(crate) struct Heap<T: ResourceTracker> {
-    entries: Vec<Option<HeapValue>>,
-    /// IDs of freed slots available for reuse. Populated by `dec_ref`, consumed by `allocate`.
-    free_list: Vec<HeapId>,
+    /// Paged storage for heap entries with integrated free list.
+    entries: HeapEntries,
     /// Resource tracker for enforcing limits and scheduling GC.
     tracker: T,
     /// True if reference cycles may exist. Set when a container stores a Ref,
     /// cleared after GC completes. When false, GC can skip mark-sweep entirely.
-    may_have_cycles: bool,
+    /// Uses `Cell` for interior mutability so that `allocate(&self)` can set this flag.
+    may_have_cycles: Cell<bool>,
     /// Number of GC applicable allocations since the last GC.
-    allocations_since_gc: u32,
+    /// Uses `Cell` for interior mutability so that `allocate(&self)` can increment.
+    allocations_since_gc: Cell<u32>,
     /// Current recursion depth — incremented on function calls and data structure traversals.
     ///
     /// Uses `Cell` for interior mutability so that methods with only `&Heap`
@@ -163,11 +171,15 @@ impl<T: ResourceTracker + serde::Serialize> serde::Serialize for Heap<T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
         let mut state = serializer.serialize_struct("Heap", 6)?;
-        state.serialize_field("entries", &self.entries)?;
-        state.serialize_field("free_list", &self.free_list)?;
+        // Serialize entries as a flat sequence for wire format compatibility.
+        // HeapEntries doesn't implement Serialize directly, so we collect into
+        // a Vec to use the standard Vec serialization.
+        let entries_vec: Vec<&Option<HeapValue>> = self.entries.iter().collect();
+        state.serialize_field("entries", &entries_vec)?;
+        state.serialize_field("free_list", self.entries.free_list_slice())?;
         state.serialize_field("tracker", &self.tracker)?;
-        state.serialize_field("may_have_cycles", &self.may_have_cycles)?;
-        state.serialize_field("allocations_since_gc", &self.allocations_since_gc)?;
+        state.serialize_field("may_have_cycles", &self.may_have_cycles.get())?;
+        state.serialize_field("allocations_since_gc", &self.allocations_since_gc.get())?;
         state.end()
     }
 }
@@ -184,11 +196,10 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
         }
         let fields = HeapFields::<T>::deserialize(deserializer)?;
         Ok(Self {
-            entries: fields.entries,
-            free_list: fields.free_list,
+            entries: HeapEntries::from_vecs(fields.entries, fields.free_list),
             tracker: fields.tracker,
-            may_have_cycles: fields.may_have_cycles,
-            allocations_since_gc: fields.allocations_since_gc,
+            may_have_cycles: Cell::new(fields.may_have_cycles),
+            allocations_since_gc: Cell::new(fields.allocations_since_gc),
             recursion_depth: Cell::new(0),
         })
     }
@@ -199,7 +210,6 @@ macro_rules! take_data {
         $self
             .entries
             .get_mut($id.index())
-            .expect(concat!("Heap::", $func_name, ": slot missing"))
             .as_mut()
             .expect(concat!("Heap::", $func_name, ": object already freed"))
             .data
@@ -210,12 +220,12 @@ macro_rules! take_data {
 
 macro_rules! restore_data {
     ($self:ident, $id:expr, $new_data:expr, $func_name:literal) => {{
-        let entry = $self
-            .entries
-            .get_mut($id.index())
-            .expect(concat!("Heap::", $func_name, ": slot missing"))
-            .as_mut()
-            .expect(concat!("Heap::", $func_name, ": object already freed"));
+        let entry =
+            $self
+                .entries
+                .get_mut($id.index())
+                .as_mut()
+                .expect(concat!("Heap::", $func_name, ": object already freed"));
         entry.data = Some($new_data);
     }};
 }
@@ -231,12 +241,11 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// Use this to create heaps with custom resource limits or GC scheduling.
     pub fn new(capacity: usize, tracker: T) -> Self {
-        let mut this = Self {
-            entries: Vec::with_capacity(capacity),
-            free_list: Vec::new(),
+        let this = Self {
+            entries: HeapEntries::with_capacity(capacity),
             tracker,
-            may_have_cycles: false,
-            allocations_since_gc: 0,
+            may_have_cycles: Cell::new(false),
+            allocations_since_gc: Cell::new(0),
             recursion_depth: Cell::new(0),
         };
         // TBC: should the empty tuple contribute to the resource limits?
@@ -326,7 +335,7 @@ impl<T: ResourceTracker> Heap<T> {
         self.recursion_depth.set(depth);
     }
 
-    /// Number of entries in the heap
+    /// Number of entries in the heap (including freed slots).
     pub fn size(&self) -> usize {
         self.entries.len()
     }
@@ -337,8 +346,8 @@ impl<T: ResourceTracker> Heap<T> {
     /// to another heap object. This enables the GC to skip mark-sweep entirely
     /// when no cycles are possible.
     #[inline]
-    pub fn mark_potential_cycle(&mut self) {
-        self.may_have_cycles = true;
+    pub fn mark_potential_cycle(&self) {
+        self.may_have_cycles.set(true);
     }
 
     /// Returns the number of GC-tracked allocations since the last garbage collection.
@@ -347,7 +356,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// and resets to 0 when `collect_garbage` runs. Useful for testing GC behavior.
     #[cfg(feature = "ref-count-return")]
     pub fn get_allocations_since_gc(&self) -> u32 {
-        self.allocations_since_gc
+        self.allocations_since_gc.get()
     }
 
     /// Allocates a new heap entry.
@@ -360,15 +369,16 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// When allocating a container that contains heap references, marks potential
     /// cycles to enable garbage collection.
-    pub fn allocate(&mut self, data: HeapData) -> Result<HeapId, ResourceError> {
+    pub fn allocate(&self, data: HeapData) -> Result<HeapId, ResourceError> {
         self.tracker.on_allocate(|| data.py_estimate_size())?;
         if data.is_gc_tracked() {
-            self.allocations_since_gc = self.allocations_since_gc.wrapping_add(1);
+            self.allocations_since_gc
+                .set(self.allocations_since_gc.get().wrapping_add(1));
             // Mark potential cycles if this container has heap references.
             // This is essential for types like Dict where setitem doesn't call
             // mark_potential_cycle() - the allocation is the only place to detect refs.
             if data.has_refs() {
-                self.may_have_cycles = true;
+                self.may_have_cycles.set(true);
             }
         }
 
@@ -379,17 +389,7 @@ impl<T: ResourceTracker> Heap<T> {
             hash_state,
         };
 
-        let id = if let Some(id) = self.free_list.pop() {
-            // Reuse a freed slot
-            self.entries[id.index()] = Some(new_entry);
-            id
-        } else {
-            // No free slots, append new entry
-            let id = self.entries.len();
-            self.entries.push(Some(new_entry));
-            HeapId(id)
-        };
-
+        let id = self.entries.allocate(new_entry);
         Ok(id)
     }
 
@@ -401,7 +401,7 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// The returned `Value` has its reference count incremented, so the caller
     /// owns a reference and must call `dec_ref` when done.
-    pub fn get_empty_tuple(&mut self) -> Value {
+    pub fn get_empty_tuple(&self) -> Value {
         // Return existing singleton with incremented refcount
         self.inc_ref(EMPTY_TUPLE_ID);
         Value::Ref(EMPTY_TUPLE_ID)
@@ -415,8 +415,6 @@ impl<T: ResourceTracker> Heap<T> {
         let value = self
             .entries
             .get(id.index())
-            .expect("Heap::inc_ref: slot missing")
-            .as_ref()
             .expect("Heap::inc_ref: object already freed");
         value.refcount.update(|r| r + 1);
     }
@@ -433,16 +431,13 @@ impl<T: ResourceTracker> Heap<T> {
         let mut current_id = id;
         let mut work_stack = Vec::new();
         loop {
-            let slot = self
-                .entries
-                .get_mut(current_id.index())
-                .expect("Heap::dec_ref: slot missing");
+            let slot = self.entries.get_mut(current_id.index());
             let entry = slot.as_mut().expect("Heap::dec_ref: object already freed");
             if entry.refcount.get() > 1 {
                 entry.refcount.update(|r| r - 1);
             } else if let Some(value) = slot.take() {
                 // refcount == 1, free the value and add slot to free list for reuse
-                self.free_list.push(current_id);
+                self.entries.free(current_id);
 
                 // Notify tracker of freed memory
                 if let Some(ref data) = value.data {
@@ -472,8 +467,6 @@ impl<T: ResourceTracker> Heap<T> {
     pub fn get(&self, id: HeapId) -> &HeapData {
         self.entries
             .get(id.index())
-            .expect("Heap::get: slot missing")
-            .as_ref()
             .expect("Heap::get: object already freed")
             .data
             .as_ref()
@@ -488,7 +481,6 @@ impl<T: ResourceTracker> Heap<T> {
     pub fn get_mut(&mut self, id: HeapId) -> HeapDataMut<'_> {
         self.entries
             .get_mut(id.index())
-            .expect("Heap::get_mut: slot missing")
             .as_mut()
             .expect("Heap::get_mut: object already freed")
             .data
@@ -509,7 +501,6 @@ impl<T: ResourceTracker> Heap<T> {
         let entry = self
             .entries
             .get_mut(id.index())
-            .expect("Heap::get_or_compute_hash: slot missing")
             .as_mut()
             .expect("Heap::get_or_compute_hash: object already freed");
 
@@ -538,7 +529,6 @@ impl<T: ResourceTracker> Heap<T> {
         let entry = self
             .entries
             .get_mut(id.index())
-            .expect("Heap::get_or_compute_hash: slot missing after compute")
             .as_mut()
             .expect("Heap::get_or_compute_hash: object freed during compute");
         entry.data = Some(data);
@@ -647,8 +637,6 @@ impl<T: ResourceTracker> Heap<T> {
     pub fn get_refcount(&self, id: HeapId) -> usize {
         self.entries
             .get(id.index())
-            .expect("Heap::get_refcount: slot missing")
-            .as_ref()
             .expect("Heap::get_refcount: object already freed")
             .refcount
             .get()
@@ -664,8 +652,8 @@ impl<T: ResourceTracker> Heap<T> {
     #[must_use]
     #[cfg(feature = "ref-count-return")]
     pub fn entry_count(&self) -> usize {
-        // 1.. to skip index 0 which is the empty tuple singleton
-        self.entries[1..].iter().filter(|o| o.is_some()).count()
+        // Skip index 0 which is the empty tuple singleton
+        self.entries.iter().skip(1).filter(|o| o.is_some()).count()
     }
 
     /// Helper for List in-place add: extends the destination vec with items from a heap list.
@@ -791,7 +779,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// and the number of allocations since the last GC exceeds the interval.
     #[inline]
     pub fn should_gc(&self) -> bool {
-        self.may_have_cycles && self.allocations_since_gc >= GC_INTERVAL
+        self.may_have_cycles.get() && self.allocations_since_gc.get() >= GC_INTERVAL
     }
 
     /// Runs mark-sweep garbage collection to free unreachable cycles.
@@ -824,7 +812,7 @@ impl<T: ResourceTracker> Heap<T> {
             reachable[idx] = true;
 
             // Add children to work list
-            if let Some(Some(entry)) = self.entries.get(idx)
+            if let Some(entry) = self.entries.get(idx)
                 && let Some(ref data) = entry.data
             {
                 collect_child_ids(data, &mut work_list);
@@ -832,6 +820,9 @@ impl<T: ResourceTracker> Heap<T> {
         }
 
         // Sweep phase: free unreachable values
+        // Collect freed IDs separately to avoid borrowing entries mutably twice
+        // (iter_mut borrows entries, and free also needs mutable access).
+        let mut freed_ids = Vec::new();
         for (id, value) in self.entries.iter_mut().enumerate() {
             if reachable[id] {
                 continue;
@@ -844,7 +835,7 @@ impl<T: ResourceTracker> Heap<T> {
                     self.tracker.on_free(|| data.py_estimate_size());
                 }
 
-                self.free_list.push(HeapId(id));
+                freed_ids.push(HeapId::from_index(id));
 
                 // Mark Values as Dereferenced when ref-count-panic is enabled
                 #[cfg(feature = "ref-count-panic")]
@@ -853,10 +844,13 @@ impl<T: ResourceTracker> Heap<T> {
                 }
             }
         }
+        for id in freed_ids {
+            self.entries.free(id);
+        }
 
         // Reset cycle flag after GC - cycles have been collected
-        self.may_have_cycles = false;
-        self.allocations_since_gc = 0;
+        self.may_have_cycles.set(false);
+        self.allocations_since_gc.set(0);
     }
 }
 
@@ -1064,8 +1058,8 @@ impl<T: ResourceTracker> Drop for Heap<T> {
         // We use py_dec_ref_ids for this since it handles the marking
         // (we ignore the collected IDs since we're dropping everything anyway).
         let mut dummy_stack = Vec::new();
-        for value in self.entries.iter_mut().flatten() {
-            if let Some(data) = &mut value.data {
+        for entry in self.entries.iter_mut().flatten() {
+            if let Some(data) = &mut entry.data {
                 data.py_dec_ref_ids(&mut dummy_stack);
             }
         }

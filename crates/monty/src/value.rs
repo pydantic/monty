@@ -2435,7 +2435,7 @@ mod tests {
     /// This bypasses `LongInt::into_value()` which would demote i64-fitting values.
     /// Used to test defensive code paths that handle LongInt-as-index scenarios.
     fn create_heap_with_longint(value: BigInt) -> (Heap<NoLimitTracker>, HeapId) {
-        let mut heap = Heap::new(16, NoLimitTracker);
+        let heap = Heap::new(16, NoLimitTracker);
         let long_int = LongInt::new(value);
         let heap_id = heap.allocate(HeapData::LongInt(long_int)).unwrap();
         (heap, heap_id)
