@@ -453,7 +453,7 @@ fn call_bytes_method_impl<'h>(
         // Hex method
         StaticStrings::Hex => bytes_hex(bytes, args, vm),
         // fromhex is a classmethod but also accessible on instances
-        StaticStrings::Fromhex => bytes_fromhex(args, vm.heap, vm.interns),
+        StaticStrings::Fromhex => bytes_fromhex(args, vm),
         _ => {
             args.drop_with_heap(vm.heap);
             Err(ExcType::attribute_error(Type::Bytes, method.into()))
@@ -2293,21 +2293,21 @@ fn parse_bytes_hex_args(
 ///
 /// Creates bytes from a hexadecimal string. Whitespace is allowed between byte pairs,
 /// but not between the two digits of a byte.
-pub fn bytes_fromhex(args: ArgValues, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Value> {
-    let hex_value = args.get_one_arg("bytes.fromhex", heap)?;
-    defer_drop!(hex_value, heap);
+pub fn bytes_fromhex(args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
+    let hex_value = args.get_one_arg("bytes.fromhex", vm.heap)?;
+    defer_drop!(hex_value, vm);
 
     let hex_str = match hex_value {
-        Value::InternString(id) => interns.get_str(*id),
+        Value::InternString(id) => vm.interns.get_str(*id),
         Value::Ref(heap_id) => {
-            if let HeapData::Str(s) = heap.get(*heap_id) {
+            if let HeapData::Str(s) = vm.heap.get(*heap_id) {
                 s.as_str()
             } else {
                 return Err(ExcType::type_error("fromhex() argument must be str, not bytes"));
             }
         }
         _ => {
-            let t = hex_value.py_type(heap);
+            let t = hex_value.py_type(vm.heap);
             return Err(ExcType::type_error(format!("fromhex() argument must be str, not {t}")));
         }
     };
@@ -2365,7 +2365,7 @@ pub fn bytes_fromhex(args: ArgValues, heap: &mut Heap<impl ResourceTracker>, int
         result.push((hi_val << 4) | lo_val);
     }
 
-    allocate_bytes(result, heap)
+    allocate_bytes(result, vm.heap)
 }
 
 /// Converts a hex character to its numeric value.

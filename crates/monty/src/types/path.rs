@@ -485,7 +485,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
-        /// Path always truthy in Python
+        // Path always truthy in Python
         true
     }
 
