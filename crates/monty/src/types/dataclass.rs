@@ -8,7 +8,10 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapId, HeapItem, HeapRead, HeapReadMember, heap_read_ref_as_field},
+    heap::{
+        BorrowedHeapRead, BorrowedHeapReadMut, Heap, HeapId, HeapItem, HeapRead, heap_read_ref_as_field,
+        heap_read_ref_as_field_mut,
+    },
     intern::Interns,
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -172,7 +175,7 @@ impl<'h> HeapRead<'h, Dataclass> {
     ///
     /// Returns `FrozenInstanceError` if the dataclass is frozen.
     pub fn set_attr(
-        self,
+        &mut self,
         name: Value,
         value: Value,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
@@ -188,11 +191,15 @@ impl<'h> HeapRead<'h, Dataclass> {
             value.drop_with_heap(vm);
             return Err(ExcType::frozen_instance_error(&attr_name));
         }
-        self.attrs().set(name, value, vm)
+        self.attrs_mut().set(name, value, vm)
     }
 
-    pub fn attrs(&self) -> HeapReadMember<'_, 'h, Dict> {
+    pub fn attrs(&self) -> BorrowedHeapRead<'_, 'h, Dict> {
         heap_read_ref_as_field!(self, Dataclass, attrs)
+    }
+
+    pub fn attrs_mut(&mut self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
+        heap_read_ref_as_field_mut!(self, Dataclass, attrs)
     }
 }
 

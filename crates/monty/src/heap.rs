@@ -220,6 +220,17 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
             HeapData::ReMatch(re_match) => HeapReadOutput::ReMatch(heap_read(base, re_match, readers)),
         }
     }
+
+    pub fn protect<'t, U: ?Sized>(&mut self, value: &'t U) -> BorrowedHeapRead<'t, 'a, U> {
+        BorrowedHeapRead {
+            inner: ManuallyDrop::new(HeapRead {
+                value: NonNull::from(value),
+                readers: NonNull::dangling(),
+                borrow: PhantomData,
+            }),
+            original: PhantomData,
+        }
+    }
 }
 
 impl<T: ResourceTracker> ContainsHeap for HeapReader<'_, T> {
@@ -354,8 +365,29 @@ impl<'a, T: ?Sized> HeapRead<'a, T> {
     ///
     /// # Safety
     ///   - The field of type `U` must ALWAYS exist at `offset` within `T` (i.e. `T` cannot be an enum, union etc)
-    unsafe fn cast_as_member_ref<U>(&self, offset: usize) -> HeapReadMember<'_, 'a, U> {
-        HeapReadMember {
+    unsafe fn cast_as_member_ref<U>(&self, offset: usize) -> BorrowedHeapRead<'_, 'a, U> {
+        BorrowedHeapRead {
+            // SAFETY: (DH) - caller of this function guarantees the offset & cast is valid
+            inner: ManuallyDrop::new(HeapRead {
+                // SAFETY: caller guarantees offset points to a valid field of type U within T
+                value: unsafe { self.value.byte_add(offset) }.cast(),
+                // dangling is fine because this heapread will never be dropped, and it is
+                // also not `Clone` so there's no risk of this value ever being used
+                readers: NonNull::dangling(),
+                borrow: PhantomData,
+            }),
+            original: PhantomData,
+        }
+    }
+
+    /// Casts this reader to a field of type `U` at some `offset` within the struct.
+    ///
+    /// Transfers ownership of the reader count from `self` to the returned `HeapRead`.
+    ///
+    /// # Safety
+    ///   - The field of type `U` must ALWAYS exist at `offset` within `T` (i.e. `T` cannot be an enum, union etc)
+    unsafe fn cast_as_member_ref_mut<U>(&mut self, offset: usize) -> BorrowedHeapReadMut<'_, 'a, U> {
+        BorrowedHeapReadMut {
             // SAFETY: (DH) - caller of this function guarantees the offset & cast is valid
             inner: ManuallyDrop::new(HeapRead {
                 // SAFETY: caller guarantees offset points to a valid field of type U within T
@@ -370,24 +402,32 @@ impl<'a, T: ?Sized> HeapRead<'a, T> {
     }
 }
 
+impl<'a, T> HeapRead<'a, Vec<T>> {
+    pub fn as_slice(&self, reader: &HeapReader<'a, impl ResourceTracker>) -> BorrowedHeapRead<'_, 'a, [T]> {
+        BorrowedHeapRead {
+            inner: ManuallyDrop::new(HeapRead {
+                value: NonNull::from(self.get(reader).as_slice()),
+                readers: NonNull::dangling(),
+                borrow: PhantomData,
+            }),
+            original: PhantomData,
+        }
+    }
+}
+
 /// Represents the reborrow of a `HeapRead` as a reference to a field of the original type.
-pub struct HeapReadMember<'original, 'a, U> {
+pub struct BorrowedHeapRead<'original, 'a, U: ?Sized> {
     // inner is a projected HeapRead which will never be dropped
     inner: ManuallyDrop<HeapRead<'a, U>>,
     original: PhantomData<&'original U>,
 }
 
-impl<'a, U> Deref for HeapReadMember<'_, 'a, U> {
+// NB no DerefMut - would need to have a `BorrowedHeapReadMut`
+impl<'a, U: ?Sized> Deref for BorrowedHeapRead<'_, 'a, U> {
     type Target = HeapRead<'a, U>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
-    }
-}
-
-impl<U> DerefMut for HeapReadMember<'_, '_, U> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
     }
 }
 
@@ -396,13 +436,13 @@ pub(crate) unsafe fn cast_as_member_ref_type_hinted<'r, 'a, T, U>(
     heap_read: &'r HeapRead<'a, T>,
     offset: usize,
     _type_hint: impl for<'s> Fn(&'s HeapRead<'a, T>) -> *const U,
-) -> HeapReadMember<'r, 'a, U> {
+) -> BorrowedHeapRead<'r, 'a, U> {
     // SAFETY: (DH) - caller upholds `cast_as_member` contract
     unsafe { heap_read.cast_as_member_ref(offset) }
 }
 
 macro_rules! heap_read_ref_as_field {
-    ($heap_read:ident, $ty:ty, $field:ident) => {{
+    ($heap_read:ident, $ty:ty, $field:tt) => {{
         let offset = std::mem::offset_of!($ty, $field);
         #[expect(unreachable_code)]
         let type_hint = |read: &$crate::heap::HeapRead<'_, $ty>| {
@@ -416,6 +456,53 @@ macro_rules! heap_read_ref_as_field {
 }
 
 pub(crate) use heap_read_ref_as_field;
+
+/// Represents the reborrow of a `HeapRead` as a reference to a field of the original type.
+pub struct BorrowedHeapReadMut<'original, 'a, U> {
+    // inner is a projected HeapRead which will never be dropped
+    inner: ManuallyDrop<HeapRead<'a, U>>,
+    original: PhantomData<&'original mut U>,
+}
+
+impl<'a, U> Deref for BorrowedHeapReadMut<'_, 'a, U> {
+    type Target = HeapRead<'a, U>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<'a, U> DerefMut for BorrowedHeapReadMut<'_, 'a, U> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+/// Unsafe helper for `heap_read_as_field`, do not use. Same safety invariants as `HeapRead::cast_as_member`.
+pub(crate) unsafe fn cast_as_member_ref_mut_type_hinted<'r, 'a, T, U>(
+    heap_read: &'r mut HeapRead<'a, T>,
+    offset: usize,
+    _type_hint: impl for<'s> Fn(&'s HeapRead<'a, T>) -> *const U,
+) -> BorrowedHeapReadMut<'r, 'a, U> {
+    // SAFETY: (DH) - caller upholds `cast_as_member` contract
+    unsafe { heap_read.cast_as_member_ref_mut(offset) }
+}
+
+macro_rules! heap_read_ref_as_field_mut {
+    ($heap_read:ident, $ty:ty, $field:ident) => {{
+        let offset = std::mem::offset_of!($ty, $field);
+        #[expect(unreachable_code)]
+        let type_hint = |read: &$crate::heap::HeapRead<'_, $ty>| {
+            &raw const read.get::<$crate::NoLimitTracker>(unreachable!()).$field
+        };
+        // SAFETY: (DH)
+        //  - `std::mem::offset_of!` guarantees there is a field at fixed offset
+        //  - `type_hint` guarantees that the field is of type `U` for the safety contract
+        unsafe { $crate::heap::cast_as_member_ref_mut_type_hinted($heap_read, offset, type_hint) }
+    }};
+}
+
+pub(crate) use heap_read_ref_as_field_mut;
 
 /// A single entry inside the heap arena, storing refcount, payload, and hash metadata.
 ///

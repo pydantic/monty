@@ -77,7 +77,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{Interns, StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
     types::List,
@@ -318,9 +318,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
             return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(vm.interns)));
         };
 
-        // Clone the byte data so we can release the heap borrow before calling
-        // the method implementation, which needs &mut VM.
-        let bytes: Vec<u8> = self.get(vm.heap).as_slice().to_vec();
+        let field = heap_read_ref_as_field!(self, Bytes, 0);
+        let bytes = field.as_slice(vm.heap);
         call_bytes_method_impl(&bytes, method, args, vm).map(CallResult::Value)
     }
 }
@@ -349,19 +348,19 @@ pub fn call_bytes_method(
         args.drop_with_heap(vm);
         return Err(ExcType::attribute_error(Type::Bytes, vm.interns.get_str(method_id)));
     };
-    call_bytes_method_impl(bytes, method, args, vm)
+    call_bytes_method_impl(&vm.heap.protect(bytes), method, args, vm)
 }
 
 /// Calls a bytes method on a byte slice.
 ///
 /// This is the unified implementation for bytes method calls, used by both
-/// `HeapRead<Bytes>::py_call_attr()` for heap-allocated bytes and interned bytes literals
+/// heap-allocated `Bytes` (via `py_call_attr`) and interned bytes literals
 /// (`Value::InternBytes`).
-fn call_bytes_method_impl(
-    bytes: &[u8],
+fn call_bytes_method_impl<'h>(
+    bytes: &HeapRead<'h, [u8]>,
     method: StaticStrings,
     args: ArgValues,
-    vm: &mut VM<'_, '_, impl ResourceTracker>,
+    vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let heap = &mut *vm.heap;
     let interns = vm.interns;
@@ -392,35 +391,35 @@ fn call_bytes_method_impl(
         // Predicate methods (no arguments, return bool)
         StaticStrings::Isalpha => {
             args.check_zero_args("bytes.isalpha", heap)?;
-            Ok(Value::Bool(bytes_isalpha(bytes)))
+            Ok(Value::Bool(bytes_isalpha(bytes.get(vm.heap))))
         }
         StaticStrings::Isdigit => {
             args.check_zero_args("bytes.isdigit", heap)?;
-            Ok(Value::Bool(bytes_isdigit(bytes)))
+            Ok(Value::Bool(bytes_isdigit(bytes.get(vm.heap))))
         }
         StaticStrings::Isalnum => {
             args.check_zero_args("bytes.isalnum", heap)?;
-            Ok(Value::Bool(bytes_isalnum(bytes)))
+            Ok(Value::Bool(bytes_isalnum(bytes.get(vm.heap))))
         }
         StaticStrings::Isspace => {
             args.check_zero_args("bytes.isspace", heap)?;
-            Ok(Value::Bool(bytes_isspace(bytes)))
+            Ok(Value::Bool(bytes_isspace(bytes.get(vm.heap))))
         }
         StaticStrings::Islower => {
             args.check_zero_args("bytes.islower", heap)?;
-            Ok(Value::Bool(bytes_islower(bytes)))
+            Ok(Value::Bool(bytes_islower(bytes.get(vm.heap))))
         }
         StaticStrings::Isupper => {
             args.check_zero_args("bytes.isupper", heap)?;
-            Ok(Value::Bool(bytes_isupper(bytes)))
+            Ok(Value::Bool(bytes_isupper(bytes.get(vm.heap))))
         }
         StaticStrings::Isascii => {
             args.check_zero_args("bytes.isascii", heap)?;
-            Ok(Value::Bool(bytes.iter().all(|&b| b <= 127)))
+            Ok(Value::Bool(bytes.get(vm.heap).iter().all(|&b| b <= 127)))
         }
         StaticStrings::Istitle => {
             args.check_zero_args("bytes.istitle", heap)?;
-            Ok(Value::Bool(bytes_istitle(bytes)))
+            Ok(Value::Bool(bytes_istitle(bytes.get(vm.heap))))
         }
         // Search methods
         StaticStrings::Count => bytes_count(bytes, args, heap, interns),

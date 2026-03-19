@@ -256,7 +256,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Calls an attribute on an object.
     ///
     /// For heap-allocated objects (`Value::Ref`), dispatches to the type's
-    /// `HeapRead<T>::call_attr` via `heap_read_call_attr()`, which may return
+    /// attribute call implementation via `py_call_attr`, which may return
     /// `CallResult::OsCall`, `CallResult::External`, or
     /// `CallResult::MethodCall` for operations that require host involvement.
     ///

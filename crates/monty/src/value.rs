@@ -459,7 +459,7 @@ impl PyTrait<'_> for Value {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &mut VM<'_, '_, impl ResourceTracker>,
+        vm: &VM<'_, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> std::fmt::Result {
         let interns = vm.interns;
@@ -502,7 +502,7 @@ impl PyTrait<'_> for Value {
                     }
                 } else {
                     heap_ids.insert(*id);
-                    let result = vm.heap.read(*id).py_repr_fmt(f, vm, heap_ids);
+                    let result = vm.heap.get(*id).py_repr_fmt(f, vm, heap_ids);
                     heap_ids.remove(id);
                     result
                 }
@@ -2032,7 +2032,7 @@ impl Value {
         if let Self::Ref(heap_id) = self {
             #[expect(clippy::single_match_else, reason = "expect this to grow in future")]
             match vm.heap.read(*heap_id) {
-                HeapReadOutput::Dataclass(dc) => {
+                HeapReadOutput::Dataclass(mut dc) => {
                     let old_value = dc.set_attr(Self::InternString(name_id), value, vm)?;
                     old_value.drop_with_heap(vm);
                     Ok(())
